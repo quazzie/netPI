@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Agent</RootNamespace>
+    <AssemblyName>netPI.Agent</AssemblyName>
+    <Description>Agent runtime: model loop, tool execution, steering, cancellation (PLAN §10-§12). Reloadable netPI plugin.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+</Project>
