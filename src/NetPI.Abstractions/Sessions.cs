@@ -42,6 +42,21 @@ public interface ISessionStore
     ValueTask<SessionInfo> CreateAsync(string? workspacePath, CancellationToken cancellationToken = default);
     ValueTask<SessionInfo?> GetAsync(string id, CancellationToken cancellationToken = default);
     ValueTask AppendAsync(SessionEntry entry, CancellationToken cancellationToken = default);
+
+    /// <summary>Most recent sessions first (drawer listing, PLAN §43).</summary>
+    ValueTask<IReadOnlyList<SessionInfo>> ListAsync(int count = 50, CancellationToken cancellationToken = default);
+
+    /// <summary>Update a session title (drawer rename, PLAN §43).</summary>
+    ValueTask RenameAsync(string id, string title, CancellationToken cancellationToken = default);
+
+    /// <summary>Remember the model/reasoning selected for a session (PLAN §14).</summary>
+    ValueTask SetModelAsync(string sessionId, string? modelId, string? reasoningLevel,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Update the workspace path of a session (Settings overlay, PLAN §43).</summary>
+    ValueTask SetWorkspaceAsync(string sessionId, string? workspacePath,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Paginated read of entries in append order (oldest first).</summary>
     ValueTask<IReadOnlyList<SessionEntry>> ReadAsync(
         string sessionId,

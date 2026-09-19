@@ -177,7 +177,11 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
     {
         await using var cmd = _connection.CreateCommand();
         cmd.CommandText = """
-            UPDATE sessions SET model_id = $m, reasoning_level = $r, updated_at = $now WHERE id = $s;
+            UPDATE sessions SET
+                model_id = COALESCE($m, model_id),
+                reasoning_level = COALESCE($r, reasoning_level),
+                updated_at = $now
+            WHERE id = $s;
             """;
         cmd.Parameters.AddWithValue("$s", sessionId);
         cmd.Parameters.AddWithValue("$m", modelId ?? (object)DBNull.Value);
@@ -185,6 +189,19 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         cmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         await cmd.ExecuteNonQueryAsync(ct);
     }
+
+    public async ValueTask SetWorkspaceAsync(string sessionId, string? workspacePath, CancellationToken ct = default)
+    {
+        await using var cmd = _connection.CreateCommand();
+        cmd.CommandText = """
+            UPDATE sessions SET workspace = $w, updated_at = $now WHERE id = $s;
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$w", workspacePath ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
 
     // ---- pagination ------------------------------------------------------
 

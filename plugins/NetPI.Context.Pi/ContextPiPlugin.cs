@@ -18,6 +18,7 @@ public sealed class ContextPlugin : INetPiPlugin
     {
         _provider = new SystemPromptProvider();
         context.Services.Register<ISystemPromptProvider>("system-prompt", _provider);
+        context.Services.Register<IWorkspaceContextBuilder>("workspace-context", new WorkspaceContextBuilder());
         context.Log.Information("Context plugin ready");
         await ValueTask.CompletedTask;
     }
@@ -153,4 +154,11 @@ public sealed class SystemPromptProvider : ISystemPromptProvider
         await ValueTask.CompletedTask;
         return sb.ToString();
     }
+}
+
+/// <summary>Wraps <see cref="ContextDiscovery"/> as the cross-ALC contract.</summary>
+public sealed class WorkspaceContextBuilder : IWorkspaceContextBuilder
+{
+    public ValueTask<SystemPromptInputs> BuildAsync(string workspace, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(ContextDiscovery.BuildForWorkspace(workspace));
 }
