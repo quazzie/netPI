@@ -1,0 +1,14 @@
+# build output
+artifacts/
+bin/
+obj/
+dist/
+build/
+
+# dependencies
+node_modules/
+
+# local runtime state
+*.log
+.DS_Store
+*.dll

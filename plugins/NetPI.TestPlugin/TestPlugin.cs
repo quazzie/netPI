@@ -1,0 +1,71 @@
+using System.Text.Json;
+using NetPI.Abstractions;
+
+
+namespace NetPI.TestPlugin;
+
+/// <summary>
+/// A dummy service exposed by the test plugin through the host service registry.
+/// </summary>
+public sealed class TestService
+{
+    /// <summary>Which generation produced this instance.</summary>
+    public string Generation { get; init; } = "unknown";
+
+    /// <summary>Monotonic per-instance counter, handy for proving a new instance after reload.</summary>
+    public long Counter { get; private set; }
+
+    public long Bump() => ++Counter;
+}
+
+/// <summary>Event published/subscribed by the test plugin to prove bus ownership on unload.</summary>
+public sealed record TestPluginEvent(string Generation, string Text);
+
+/// <summary>
+/// Minimal real plugin: registers <see cref="TestService"/> and subscribes to
+/// <see cref="TestPluginEvent"/>. Used by the host's reload demo and the
+/// reload-proof tests (PLAN §50).
+/// </summary>
+public sealed class TestPlugin : INetPiPlugin
+{
+    private TestService? _service;
+
+    public PluginInfo Info { get; } = new("netPI.TestPlugin", "Test Plugin", "0.1.0");
+
+    public async ValueTask LoadAsync(IPluginContext context, CancellationToken cancellationToken)
+    {
+        var generation = context.OwnConfig.ValueKind == JsonValueKind.Object
+            ? context.OwnConfig.TryGetProperty("generation", out var g) && g.ValueKind == JsonValueKind.String
+                ? g.GetString()!
+                : "gen"
+            : "gen";
+
+        var service = new TestService { Generation = generation };
+        _service = service;
+        context.Services.Register<TestService>("test.service", service);
+        context.Events.Subscribe<TestPluginEvent>(e =>
+        {
+            context.Log.Information($"TestPlugin[{generation}] saw event: {e}");
+        });
+        context.Log.Information($"TestPlugin loaded (generation '{generation}')");
+        await ValueTask.CompletedTask;
+    }
+
+    public ValueTask StartAsync(CancellationToken cancellationToken)
+    {
+        _service?.Bump();
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask StopAsync(CancellationToken cancellationToken)
+    {
+        // Drain: a real plugin would stop servers here.
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask UnloadAsync(CancellationToken cancellationToken)
+    {
+        _service = null;
+        return ValueTask.CompletedTask;
+    }
+}

@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Abstractions</RootNamespace>
+    <AssemblyName>netPI.Abstractions</AssemblyName>
+  </PropertyGroup>
+</Project>
