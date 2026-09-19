@@ -16,4 +16,7 @@
   <ItemGroup>
     <ProjectReference Include="..\NetPI.Abstractions\NetPI.Abstractions.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
 </Project>

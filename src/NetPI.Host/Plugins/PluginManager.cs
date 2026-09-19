@@ -225,12 +225,60 @@ public sealed class PluginManager
         }
     }
 
+    /// <summary>
+    /// Pre-loads native (unmanaged) libraries that ship inside the plugin
+    /// directory (e.g. <c>e_sqlite3.dll</c> for SQLitePCLRaw). P/Invoke
+    /// <c>DllImport</c> probes the process default search path, which does
+    /// not include collectible plugin ALCs; pre-loading via the default ALC
+    /// makes the DllImport resolve. Idempotent and best-effort.
+    /// </summary>
+    private static void PreloadNativeAssets(string pluginDir)
+    {
+        // Recursively collect candidate native libraries under the plugin
+        // directory (runtimes/<rid>/native/*.dll, top-level *.so / *.dylib,
+        // or any *.dll that happens to be native). NativeLibrary.TryLoad on a
+        // managed dll simply returns false, so this is safe.
+        var candidates = new List<string>();
+        void Collect(string dir)
+        {
+            if (!Directory.Exists(dir)) return;
+            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+                if (f.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
+                    f.EndsWith(".so", StringComparison.OrdinalIgnoreCase) ||
+                    f.EndsWith(".dylib", StringComparison.OrdinalIgnoreCase))
+                    candidates.Add(f);
+        }
+
+        foreach (var runtimesDir in Directory.EnumerateDirectories(pluginDir, "runtimes"))
+            Collect(runtimesDir);
+
+        // Top-level native libraries (no runtimes/ nesting).
+        CollectTopLevelOnly(pluginDir, candidates);
+
+        foreach (var path in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try { System.Runtime.InteropServices.NativeLibrary.Load(path); }
+
+
+            catch { /* best-effort; the runtime may load it lazily */ }
+        }
+    }
+
+    private static void CollectTopLevelOnly(string pluginDir, List<string> candidates)
+    {
+        foreach (var f in Directory.EnumerateFiles(pluginDir, "*", SearchOption.TopDirectoryOnly))
+            if (f.EndsWith(".so", StringComparison.OrdinalIgnoreCase) ||
+                f.EndsWith(".dylib", StringComparison.OrdinalIgnoreCase))
+                candidates.Add(f);
+    }
     private INetPiPlugin? FindPluginInstance(PluginLoadContext alc, string pluginDir)
     {
         // Explicitly load every local assembly into the collectible ALC so it
         // shows up in alc.Assemblies (a fresh collectible ALC starts empty of
         // plugin assemblies).
         var assemblies = new List<Assembly>();
+        PreloadNativeAssets(pluginDir);
+
         foreach (var dll in Directory.EnumerateFiles(pluginDir, "*.dll", SearchOption.TopDirectoryOnly)
             .Where(f => !string.Equals(Path.GetFileNameWithoutExtension(f),
                 PluginLoadContext.AbstractionsAssemblyName, StringComparison.OrdinalIgnoreCase)))
@@ -245,27 +293,28 @@ public sealed class PluginManager
             }
         }
 
-        Assembly? candidate = assemblies
+        // Pick the assembly that actually implements INetPiPlugin (the
+        // plugin's own assembly), not the alphabetically-first package dll.
+        INetPiPlugin? found = null;
+        foreach (var asm in assemblies
             .Where(a => !a.IsDynamic && a.GetName().Name is not null)
-            .Where(a => a.IsCollectible)
-            .FirstOrDefault();
-
-        if (candidate is null) return null;
-
-        try
+            .Where(a => a.IsCollectible))
         {
-            var types = candidate.GetTypes();
-            var impls = types.Where(t => t is { IsClass: true, IsAbstract: false } && typeof(INetPiPlugin).IsAssignableFrom(t)).ToList();
-            if (impls.Count == 0) return null;
-            if (impls.Count > 1)
-                _logger.LogWarning("Multiple INetPiPlugin implementations found; using {First}", impls[0].Name);
-            return (INetPiPlugin)Activator.CreateInstance(impls[0])!;
+            try
+            {
+                var types = asm.GetTypes();
+                var impls = types.Where(t => t is { IsClass: true, IsAbstract: false } && typeof(INetPiPlugin).IsAssignableFrom(t)).ToList();
+                if (impls.Count == 0) continue;
+                if (found is not null)
+                    _logger.LogWarning("Multiple INetPiPlugin implementations found across assemblies; using first");
+                found = (INetPiPlugin)Activator.CreateInstance(impls[0])!;
+            }
+            catch (ReflectionTypeLoadException rtle)
+            {
+                _logger.LogWarning($"could not fully load plugin types in '{asm.GetName().Name}': {rtle.LoaderExceptions?.FirstOrDefault()?.Message}");
+            }
         }
-        catch (ReflectionTypeLoadException rtle)
-        {
-            throw new PluginLoadException(candidate.GetName().Name!,
-                "could not fully load plugin types: " + rtle.LoaderExceptions?.FirstOrDefault()?.Message, rtle);
-        }
+        return found;
     }
     // ----------------------------------------------------------------------
     // Reload (PLAN §6)

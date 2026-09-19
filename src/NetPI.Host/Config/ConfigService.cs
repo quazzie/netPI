@@ -94,6 +94,53 @@ public sealed class ConfigService : IConfigService, IDisposable
 
     public JsonElement GetHostRaw() => Resolve("host");
 
+    /// <summary>
+    /// Deep-merge <paramref name="properties"/> into <c>plugins:&lt;pluginId&gt;</c>
+    /// in config.json and persist the file (PLAN §36). The file is re-read on
+    /// every access, so the change takes effect at the next plugin reload.
+    /// </summary>
+    public void MergePluginSection(string pluginId, JsonElement properties)
+    {
+        lock (_gate)
+        {
+            if (properties.ValueKind != JsonValueKind.Object) return;
+
+            JsonNode? root;
+            try
+            {
+                var json = File.Exists(_configPath) ? File.ReadAllText(_configPath) : null;
+                root = string.IsNullOrWhiteSpace(json) ? null : JsonNode.Parse(json);
+            }
+            catch (JsonException)
+            {
+                root = null; // corrupt file: rebuild from the plugin section
+            }
+            root ??= new JsonObject();
+            if (root is not JsonObject rootObj) return;
+
+            if (rootObj["plugins"] is not JsonObject plugins)
+                rootObj["plugins"] = plugins = new JsonObject();
+
+            var key = pluginId.ToLowerInvariant();
+            var target = plugins[key] as JsonObject ?? new JsonObject();
+            DeepMergeInto(target, JsonNode.Parse(properties.ToString())!.AsObject());
+            plugins[key] = target;
+
+            File.WriteAllText(_configPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        }
+    }
+
+    private static void DeepMergeInto(JsonObject target, JsonObject source)
+    {
+        foreach (var (k, v) in source)
+        {
+            if (v is JsonObject srcObj && target[k] is JsonObject dstObj)
+                DeepMergeInto(dstObj, srcObj);
+            else
+                target[k] = v?.DeepClone();
+        }
+    }
+
     public void Dispose()
     {
     }

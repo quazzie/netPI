@@ -16,7 +16,8 @@ var options = new PluginManagerOptions
     PluginDirectory = pluginDir,
     RuntimeDirectory = runtimeDir,
     SkipCacheCopy = skipCache,
-};
+    };
+
 
 var logDir = Path.Combine(runtimeDir, "logs");
 var logger = LoggerFactory.Create(b =>
@@ -36,6 +37,30 @@ logger.LogInformation("netPI host: plugins='{Plugins}' runtime='{Home}' cacheCop
     options.PluginDirectory, runtimeDir, skipCache ? "off" : "on");
 
 await runtime.StartAsync();
+
+// ---- host-owned plugin surfaces (PLAN §36) ----------------------------------
+// The Web plugin resolves these cross-ALC; the host registers them with a null
+// owner so they live for the whole process.
+{
+    var facade = new NetPI.Host.Services.PluginManagerFacade(runtime.Plugins);
+    runtime.Services.Register("plugins", facade);
+    var configUpdater = new NetPI.Host.Services.HostConfigUpdater(runtime.Config);
+    runtime.Services.Register("host-config", configUpdater);
+    // AgentIdle reload gate: defer AgentIdle-policy reloads while a run is active.
+    runtime.Plugins.AgentIdleGate = async () =>
+    {
+        try
+        {
+            var runner = runtime.Services.Resolve<NetPI.Abstractions.IAgentRunner>("runner");
+            return !runner.IsRunning;
+        }
+        catch
+        {
+            return true; // agent plugin not loaded yet
+        }
+    };
+}
+
 
 Console.WriteLine();
 Console.WriteLine("netPI host is running. Commands: plugins | reload <id> | reloadall | gc | exit");

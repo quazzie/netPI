@@ -59,8 +59,9 @@ public sealed class ServiceRegistry : IServiceRegistry
 
     private static string PluginName(Entry e) => GetTarget(e.Owner)?.PluginId ?? "<host>";
 
-    private static PluginInstance? GetTarget(WeakReference<PluginInstance> wr) =>
-        wr.TryGetTarget(out var t) ? t : null;
+    private static PluginInstance? GetTarget(WeakReference<PluginInstance>? wr) =>
+        wr is not null && wr.TryGetTarget(out var t) ? t : null;
+
 
     /// <summary>
     /// Acquire a lease on a registered service whose expected type is a
