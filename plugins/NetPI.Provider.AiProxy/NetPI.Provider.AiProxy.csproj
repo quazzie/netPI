@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Provider.AiProxy</RootNamespace>
+    <AssemblyName>netPI.Provider.AiProxy</AssemblyName>
+    <Description>OpenAI-compatible model provider + model catalog (PLAN §13-§15). Reloadable netPI plugin.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+</Project>
