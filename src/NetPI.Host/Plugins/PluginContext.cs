@@ -81,10 +81,13 @@ internal sealed class PluginContextEvents(
         try
         {
             var sub = inner.Subscribe(handler, options);
-            owner.Subscriptions[sub.GetHashCode().ToString("x8")] = sub;
+            // The bus already tracks the handle on the owning plugin (it picks
+            // up the owner via ServiceRegistry.ServiceOwner.Current, set above)
+            // — do not double-track here, or per-plugin counts run high.
             return sub;
         }
         finally
+
         {
             ServiceRegistry.ServiceOwner.Current = previous;
         }
