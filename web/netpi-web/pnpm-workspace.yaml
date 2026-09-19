@@ -1,0 +1,4 @@
+allowBuilds:
+  svelte-preprocess: set this to true or false
+onlyBuiltDependencies:
+  - svelte-preprocess
