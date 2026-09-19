@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Tools</RootNamespace>
+    <AssemblyName>netPI.Tools</AssemblyName>
+    <Description>Filesystem + shell tools: read, write, edit, grep, bash, powershell (PLAN §18-§26). Reloadable netPI plugin.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+</Project>
