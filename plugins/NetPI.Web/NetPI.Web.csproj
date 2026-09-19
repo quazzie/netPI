@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Web</RootNamespace>
+    <AssemblyName>netPI.Web</AssemblyName>
+    <Description>Web surface: Kestrel, native WebSocket, static frontend serving (PLAN §36, §41). Reloadable netPI plugin.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+</Project>
