@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Context.Pi</RootNamespace>
+    <AssemblyName>netPI.Context.Pi</AssemblyName>
+    <Description>Workspace context discovery + system prompt builder (PLAN §43, §46). Reloadable netPI plugin.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+</Project>
