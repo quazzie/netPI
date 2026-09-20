@@ -1019,17 +1019,29 @@ body, button, input, textarea, select { font-family: var(--app-font, ui-sans-ser
   align-items: center;
   gap: 8px;
   margin: 0 0 10px;
-  color: #7f8998;
+  color: #7e8795;
   font-size: 11.5px;
 }
-.thinking-stream-label { flex: none; color: #9ba5b3; font-weight: 600; }
+.thinking-spark {
+  flex: none;
+  width: 14px;
+  color: #8b96a6;
+  font-size: 11px;
+  text-align: center;
+  animation: thinkingGlow 1.45s ease-in-out infinite;
+}
+@keyframes thinkingGlow {
+  0%, 100% { opacity: .38; transform: scale(.92); }
+  50% { opacity: .95; transform: scale(1); }
+}
 .thinking-stream-line {
   min-width: 0;
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #697484;
+  color: #858f9d;
+  font-style: italic;
 }
 .thinking-done { margin: 0 0 10px; }
 .thinking-pill {
