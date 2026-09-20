@@ -367,7 +367,10 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         var payload = BuildPayload(request);
         using var content = new StringContent(JsonSerializer.Serialize(payload, WireOpts), System.Text.Encoding.UTF8, "application/json");
 
-        using var resp = await _http.PostAsync($"{_baseUrl}/v1/chat/completions", content, cancellationToken);
+        // ResponseHeadersRead: must not wait for the full body (default
+        // ResponseFinished would buffer the whole stream and kill streaming).
+        using var resp = await _http.SendAsync(new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/v1/chat/completions") { Content = content },
+            System.Net.Http.HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!resp.IsSuccessStatusCode)
         {
             var err = await resp.Content.ReadAsStringAsync(cancellationToken);
@@ -390,10 +393,13 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream);
 
-        while (!reader.EndOfStream)
+        // CA2024: StreamReader.EndOfStream on an open network stream blocks
+        // synchronously until the end of the physical stream, which would make
+        // this loop consume the whole response at once instead of streaming.
+        // Read until ReadLineAsync returns null instead.
+        string? line;
+        while ((line = await reader.ReadLineAsync(cancellationToken)) is not null)
         {
-            string? line = await reader.ReadLineAsync(cancellationToken);
-            if (line is null) break;
             if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
             var data = line["data:".Length..].Trim();
             if (data == "[DONE]") break;
@@ -546,7 +552,10 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         var key = string.IsNullOrEmpty(request.SessionId) ? null : ChainKey(request.SessionId, request.ModelId);
         using var content = new StringContent(JsonSerializer.Serialize(payload, WireOpts), System.Text.Encoding.UTF8, "application/json");
 
-        using var resp = await _http.PostAsync($"{_baseUrl}/v1/responses", content, cancellationToken);
+        // ResponseHeadersRead: must not wait for the full body (default
+        // ResponseFinished would buffer the whole stream and kill streaming).
+        using var resp = await _http.SendAsync(new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/v1/responses") { Content = content },
+            System.Net.Http.HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!resp.IsSuccessStatusCode)
         {
             var err = await resp.Content.ReadAsStringAsync(cancellationToken);
@@ -560,10 +569,12 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream);
 
-        while (!reader.EndOfStream)
+        // CA2024: see the chat-completions path — EndOfStream blocks until the
+        // whole response arrives; read until ReadLineAsync returns null so the
+        // SSE stream is processed incrementally.
+        string? line;
+        while ((line = await reader.ReadLineAsync(cancellationToken)) is not null)
         {
-            string? line = await reader.ReadLineAsync(cancellationToken);
-            if (line is null) break;
             if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
             var data = line["data:".Length..].Trim();
             if (data.Length == 0 || data == "[DONE]") continue;
