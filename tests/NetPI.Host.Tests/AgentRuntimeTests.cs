@@ -16,9 +16,12 @@ internal sealed class FakeProvider : IModelProvider
 {
     private readonly Queue<IReadOnlyList<ModelEvent>> _turns;
     public FakeProvider(params IReadOnlyList<ModelEvent>[] turns) => _turns = new Queue<IReadOnlyList<ModelEvent>>(turns);
+    /// <summary>Messages sent on the most recent model call (PLAN §12 assertions).</summary>
+    public IReadOnlyList<AgentMessage>? LastMessages;
 
     public async IAsyncEnumerable<ModelEvent> RunAsync(ModelRequest request, CancellationToken cancellationToken)
     {
+        LastMessages = request.Messages;
         var events = _turns.Count > 0 ? _turns.Dequeue() : null;
         if (events is null) yield break;
         foreach (var ev in events)
@@ -190,6 +193,39 @@ public class AgentRuntimeTests
         // The tool round-trip still completes; the unknown tool is surfaced as an
         // error result, not an exception.
         Assert.Equal(2, result.Turns);
+    }
+
+    [Fact]
+    public async Task Steering_IsPerSessionAndDrainedBetweenTurns()
+    {
+        // PLAN §12: steering queues are per-session; a steer for the running
+        // session is injected after the tool batch, before the next model call.
+        var tool = new CountingLeaseTool(new NoopPluginContext());
+        var registry = new TestRegistry(tool);
+        var provider = new FakeProvider([
+            [new ModelStarted("model"), new ModelCompleted(Assistant(
+                new ToolCallPart("t1", "counting",
+                    JsonSerializer.SerializeToElement(new { }))))],
+            [new ModelCompleted(Assistant(new TextPart("done")))],
+        ]);
+        var ctx = new NoopPluginContext();
+        ctx.Add("provider", provider);
+        ctx.Add("tools", registry);
+        var rt = new AgentRuntime(ctx);
+
+        // Enqueue steering for the run's session while the run is busy.
+        await ((ISteeringQueue)rt).EnqueueAsync("use the other config", "s1");
+        Assert.Equal(1, ((ISteeringQueue)rt).PendingCount("s1"));
+
+        var result = await rt.RunAsync(Options("x"), CancellationToken.None);
+
+        Assert.True(result.Ok);
+        Assert.Equal(0, ((ISteeringQueue)rt).PendingCount("s1")); // drained
+        // The steering message reached the model in the second call.
+        Assert.Contains(
+            provider.LastMessages!,
+            m => m.Role == MessageRole.User
+                  && m.Parts.OfType<TextPart>().Any(t => t.Text == "use the other config"));
     }
 
     [Fact]

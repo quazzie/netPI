@@ -1,0 +1,38 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "netPI.Web/1.0.0": {
+        "dependencies": {
+          "netPI.Abstractions": "1.0.0"
+        },
+        "runtime": {
+          "netPI.Web.dll": {}
+        }
+      },
+      "netPI.Abstractions/1.0.0": {
+        "runtime": {
+          "netPI.Abstractions.dll": {
+            "fileVersion": "0.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "netPI.Web/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "netPI.Abstractions/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

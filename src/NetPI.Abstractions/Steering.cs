@@ -3,22 +3,25 @@ using System.Text.Json;
 namespace NetPI.Abstractions;
 
 /// <summary>
-/// Queue of user steering messages injected into a running agent run (PLAN §12).
-/// Owned by the agent runtime; other plugins (Web, UI) publish steering through it.
+/// A user steering message waiting to be injected into an agent run (PLAN §12).
+/// </summary>
+public sealed record QueuedUserMessage(string Text);
+
+/// <summary>
+/// Per-session steering queues (PLAN §12): each active session owns its own
+/// queue, and a steering message never cancels the running tool batch — it is
+/// appended after the batch completes and seen by the next model call.
 /// </summary>
 public interface ISteeringQueue
 {
     /// <summary>
-    /// Add a steering message for the active run. If no run is active it is
-    /// held until the next run begins.
+    /// Add a steering message for <paramref name="sessionId"/> (or the active
+    /// run when null). If no run is active it is held until the next run begins.
     /// </summary>
-    ValueTask EnqueueAsync(string text, CancellationToken cancellationToken = default);
+    ValueTask EnqueueAsync(string text, string? sessionId = null, CancellationToken cancellationToken = default);
 
-    /// <summary>Poll and remove the next pending steering message, or null when empty.</summary>
-    ValueTask<string?> TryDequeueAsync(CancellationToken cancellationToken = default);
-
-    /// <summary>Number of pending steering messages.</summary>
-    int PendingCount { get; }
+    /// <summary>Number of pending steering messages for the session (0 when null).</summary>
+    int PendingCount(string? sessionId = null);
 }
 
 /// <summary>

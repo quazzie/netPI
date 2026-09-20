@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using System.Text.Json;
 using NetPI.Abstractions;
 
@@ -39,7 +40,12 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     private volatile AgentState _state = AgentState.Idle;
     private string? _activeSession;
     private bool _everRan;
-    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _steer = new();
+    /// <summary>
+    /// PLAN §12: per-session steering queues. Each active session owns its own
+    /// Channel&lt;QueuedUserMessage&gt;; a steer never cancels the running batch —
+    /// it is drained at the turn boundary, after tool results are appended.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Channel<QueuedUserMessage>> _steer = new();
 
     public AgentRuntime(IPluginContext context)
     {
@@ -55,15 +61,35 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     internal string? RawSession => _activeSession;
     internal bool RawIdle => _everRan && _state == AgentState.Idle;
 
-    // ---- ISteeringQueue ----------------------------------------------------
-    public int PendingCount => _steer.Count;
-    public ValueTask EnqueueAsync(string text, CancellationToken ct = default)
+    // ---- ISteeringQueue (PLAN §12, per-session) -----------------------------
+    public int PendingCount(string? sessionId = null)
     {
-        _steer.Enqueue(text);
+        var ch = ChannelFor(sessionId);
+        return ch?.Reader.Count ?? 0;
+    }
+
+    public ValueTask EnqueueAsync(string text, string? sessionId = null, CancellationToken ct = default)
+    {
+        ChannelFor(sessionId).Writer.TryWrite(new QueuedUserMessage(text));
         return ValueTask.CompletedTask;
     }
-    public ValueTask<string?> TryDequeueAsync(CancellationToken ct = default)
-        => ValueTask.FromResult(_steer.TryDequeue(out var t) ? t : (string?)null);
+
+    /// <summary>Lazily create the session's steering channel (key: session id or "_global").</summary>
+    private Channel<QueuedUserMessage> ChannelFor(string? sessionId)
+        => _steer.GetOrAdd(sessionId ?? "_global", _ => Channel.CreateUnbounded<QueuedUserMessage>());
+
+    /// <summary>
+    /// Non-blocking poll of the run's session steering queue (null when empty).
+    /// Must not wait: a steer message is injected only when one is already
+    /// queued at the turn boundary, and the turn loop must keep moving.
+    /// </summary>
+    private ValueTask<QueuedUserMessage?> TryDequeueAsync(CancellationToken ct)
+    {
+        var ch = _steer.TryGetValue(_activeSession ?? "_global", out var c) ? c : null;
+        if (ch is null || !ch.Reader.TryRead(out var msg))
+            return ValueTask.FromResult<QueuedUserMessage?>(null);
+        return ValueTask.FromResult<QueuedUserMessage?>(msg);
+    }
 
     // ---- run ---------------------------------------------------------------
     public async ValueTask<AgentRunResult> RunAsync(AgentRunOptions options, CancellationToken ct)
@@ -104,11 +130,14 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 ct.ThrowIfCancellationRequested();
                 turns++;
 
-                // ---- steering check (between turns) -------------------------
+                // ---- steering check (between turns, after tool batch) ----------
+                // PLAN §12: a steering message never cancels the running tool
+                // batch; it is drained here, after results are appended, and
+                // injected as a User message seen by the next model call.
                 var steer = await TryDequeueAsync(ct);
                 if (steer is not null)
                 {
-                    var userMsg = new AgentMessage(NewId(), MessageRole.User, [new TextPart(steer)], DateTimeOffset.UtcNow);
+                    var userMsg = new AgentMessage(NewId(), MessageRole.User, [new TextPart(steer.Text)], DateTimeOffset.UtcNow);
                     transcript.Add(userMsg);
                     await AppendAsync(store, userMsg, ct);
                     await PublishAsync(AgentEventType.TurnBoundary, options, null, ct);

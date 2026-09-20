@@ -427,7 +427,8 @@ internal sealed class WebApp : IAsyncDisposable
 
             case "chat.steer":
                 if (_steering is null) { await SendErrorAsync(c, requestId, "steering unavailable", ct); break; }
-                await _steering.EnqueueAsync(S(p, "text") ?? "", ct);
+                // PLAN §12: steer targets the session (falls back to the active run).
+                await _steering.EnqueueAsync(S(p, "text") ?? "", S(p, "sessionId"), ct);
                 await SendAckAsync(c, requestId, ct);
                 break;
 
