@@ -11,10 +11,40 @@
   let shellStyle = $derived(
     `--left-panel-width:${ui.leftOpen ? ui.leftWidth : 0}px;--right-panel-width:${ui.rightOpen ? ui.rightWidth : 42}px`,
   );
+
+  function beginPanelResize(side: "left" | "right", e: PointerEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const startX = e.clientX;
+    const startWidth = side === "left" ? ui.leftWidth : ui.rightWidth;
+
+    document.body.classList.add("panel-resizing");
+
+    const move = (ev: PointerEvent) => {
+      const delta = ev.clientX - startX;
+      if (side === "left") ui.setLeftWidth(startWidth + delta, false);
+      else ui.setRightWidth(startWidth - delta, false);
+    };
+
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      document.body.classList.remove("panel-resizing");
+      ui.persistLayout();
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  }
 </script>
 
 <div class="app-shell" style={shellStyle}>
-  <LeftPanel />
+  <div class="left-slot">
+    <LeftPanel />
+  </div>
 
   <main class="chat-shell">
     {#if store.errorBanner}
@@ -30,4 +60,22 @@
   </main>
 
   <RightPanel />
+
+  {#if ui.leftOpen}
+    <div
+      class="panel-resizer panel-resizer-left"
+      style:left={`${ui.leftWidth - 3}px`}
+      title="Resize left panel"
+      onpointerdown={(e) => beginPanelResize("left", e)}
+    ></div>
+  {/if}
+
+  {#if ui.rightOpen}
+    <div
+      class="panel-resizer panel-resizer-right"
+      style:right={`${ui.rightWidth - 3}px`}
+      title="Resize right panel"
+      onpointerdown={(e) => beginPanelResize("right", e)}
+    ></div>
+  {/if}
 </div>
