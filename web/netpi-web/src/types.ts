@@ -17,6 +17,7 @@ export type InputModality = "text" | "image";
 
 export interface ReasoningProfile {
   levels?: string[];
+  defaultLevel?: string | null;
   [k: string]: unknown;
 }
 
