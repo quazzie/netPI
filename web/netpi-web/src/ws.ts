@@ -132,7 +132,7 @@ class NetPIWebSocket {
 
       case "session.created":
       case "session.updated":
-        store.session = p as SessionInfo;
+        store.applySession(p as SessionInfo);
         break;
 
       case "session.list":
@@ -227,6 +227,10 @@ class NetPIWebSocket {
 
       case "plugins.state":
         store.plugins = (p.plugins as PluginStatus[]) ?? [];
+        break;
+
+      case "ui.panels":
+        store.webPanels = p.panels ?? [];
         break;
 
       case "plugin.state":
