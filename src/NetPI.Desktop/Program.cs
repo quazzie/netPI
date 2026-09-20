@@ -208,8 +208,19 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
                 Trace(trace, "stage=port-already-open (host already running)");
                 return; // a host already serves :5173 — reuse it
             }
+            // Run the host from a snapshot in the runtime home (~/.netpi/host),
+            // the same mechanism as tools/keep-alive-host.ps1: a host running
+            // in place locks the bundled host/*.dll, so every `dotnet build` of
+            // the Desktop project fails to re-copy them (MSB3027) while the app
+            // is open. The bundled folder is staging only; the snapshot is
+            // rebuilt fresh at every launch.
             var baseDir = AppContext.BaseDirectory;
-            var host = Path.Combine(baseDir, "host", "netPI.Host.exe");
+            var stagingDir = Path.Combine(baseDir, "host");
+            var runtimeHome = Environment.GetEnvironmentVariable("NETPI_HOME")
+                ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".netpi");
+            var hostDir = Path.Combine(runtimeHome, "host");
+            SyncHostSnapshot(stagingDir, hostDir, trace);
+            var host = Path.Combine(hostDir, "netPI.Host.exe");
             if (!File.Exists(host))
                 throw new FileNotFoundException("netPI.Host.exe", host);
 
@@ -223,6 +234,7 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+
             Trace(trace, "stage=process.start");
             _host = Process.Start(psi) ?? throw new InvalidOperationException("host did not start");
             Trace(trace, $"stage=started pid={_host.Id}");
@@ -242,6 +254,38 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
             }
             Trace(trace, "stage=timeout waiting for port");
             throw new TimeoutException($"netPI host did not open port {Port} in 30s; see host-launch.log");
+        }
+
+        /// <summary>
+        /// Refresh the ~/.netpi/host snapshot from the bundled staging folder.
+        /// Files are only overwritten when the staged bytes changed (the running
+        /// snapshot's DLLs are locked while a host started from them is alive; a
+        /// busy copy that already has a usable prior snapshot is logged and
+        /// tolerated, a busy copy that does not rethrows).
+        /// </summary>
+        private static void SyncHostSnapshot(string stagingDir, string hostDir, string trace)
+        {
+            Directory.CreateDirectory(hostDir);
+            var files = Directory.EnumerateFiles(stagingDir, "*", SearchOption.AllDirectories);
+            foreach (var src in files)
+            {
+                var dst = Path.Combine(hostDir, Path.GetRelativePath(stagingDir, src));
+                Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+                var writeNeeded = !File.Exists(dst)
+                    || new FileInfo(src).LastWriteTimeUtc > new FileInfo(dst).LastWriteTimeUtc
+                    || new FileInfo(src).Length != new FileInfo(dst).Length;
+                if (!writeNeeded) continue;
+                try
+                {
+                    File.Copy(src, dst, overwrite: true);
+                    Trace(trace, $"stage=host-sync {Path.GetRelativePath(hostDir, dst)}");
+                }
+                catch (IOException ex)
+                {
+                    Trace(trace, $"stage=host-sync-busy {Path.GetRelativePath(hostDir, dst)} {ex.Message}");
+                    if (!File.Exists(dst)) throw;
+                }
+            }
         }
         /// <summary>Walk up from the output folder to the project root (the dir with plugins/).</summary>
         private static string? FindProjectRoot(string from)
