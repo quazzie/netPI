@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using NetPI.Abstractions;
@@ -288,5 +289,129 @@ public class ResponsesSseTests
         Assert.DoesNotContain(ev, e => e is ModelFailed);
         var done = Assert.Single(ev.OfType<ModelCompleted>());
         Assert.Equal("Hello world", done.Message.Parts.OfType<TextPart>().Single().Text);
+    }
+
+    // ---- chain (PLAN §14c) -------------------------------------------------
+
+    private static ModelRequest Sreq(string sessionId, params AgentMessage[] msgs) => new()
+    {
+        ModelId = "m",
+        SessionId = sessionId,
+        Messages = msgs,
+    };
+
+    private static AgentMessage User(string id, string text) =>
+        new(id, MessageRole.User, [new TextPart(text)], DateTimeOffset.UtcNow);
+
+    private static JsonElement Body(Route r) => JsonDocument.Parse(r.Body).RootElement;
+
+    private static Route ResponsesRun(WireHandler h) =>
+        h.Sent.Last(s => s.Method == "POST" && s.Url.EndsWith("/v1/responses", StringComparison.Ordinal) && IsResponsesRun(s.Body));
+
+    private const string RespFailed =
+        "event: response.created\ndata: {\"response\":{\"id\":\"rf1\"},\"type\":\"response.created\"}\n" +
+        "event: response.failed\ndata: {\"response\":{\"id\":\"rf1\",\"error\":{\"message\":\"boom\"}},\"type\":\"response.failed\"}\n";
+
+    [Fact]
+    public async Task Chain_SecondTurn_ChainsPreviousIdWithDeltaOnly()
+    {
+        var (p, h) = MakeWire("responses", CatalogRoute(RespText, "probe", ChatText));
+        await p.RefreshAsync(CancellationToken.None);
+
+        var u1 = User("u1", "hi");
+        var done = (await Collect(p, Sreq("s1", u1))).OfType<ModelCompleted>().Single();
+
+        // First run: reset shape — full input, no previous id, store:true.
+        var first = Body(ResponsesRun(h));
+        Assert.False(first.TryGetProperty("previous_response_id", out _));
+        Assert.True(first.GetProperty("store").GetBoolean());
+        Assert.Equal(1, first.GetProperty("input").GetArrayLength());
+
+        // Second turn: same transcript + the completed assistant message + a new
+        // user message → chain: previous_response_id + delta only (the covered
+        // u1+assistant items are NOT resent).
+        var u2 = User("u2", "next");
+        await Collect(p, Sreq("s1", u1, done.Message, u2));
+
+        var second = Body(ResponsesRun(h));
+        Assert.Equal("r1", second.GetProperty("previous_response_id").GetString());
+        var input = second.GetProperty("input");
+        Assert.Equal(1, input.GetArrayLength());
+        Assert.Equal("next", input[0].GetProperty("content")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task Chain_FailedRun_DoesNotAdvanceHead()
+    {
+        var (p, h) = MakeWire("responses", CatalogRoute(RespFailed, "probe", ChatText));
+        await p.RefreshAsync(CancellationToken.None);
+
+        var u1 = User("u1", "hi");
+        var ev = await Collect(p, Sreq("s1", u1));
+        // The pre-content failure is retried transparently via chat.
+        Assert.DoesNotContain(ev, e => e is ModelFailed);
+        Assert.Contains(ev, e => e is ModelCompleted);
+
+        // Next turn over the same transcript: no head was advanced → reset with
+        // the full input and no previous_response_id.
+        await Collect(p, Sreq("s1", u1, User("u2", "next")));
+        var body = Body(ResponsesRun(h));
+        Assert.False(body.TryGetProperty("previous_response_id", out _));
+        Assert.Equal(2, body.GetProperty("input").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Chain_TranscriptChanged_ResetsToFullInput()
+    {
+        var (p, h) = MakeWire("responses", CatalogRoute(RespText, "probe", ChatText));
+        await p.RefreshAsync(CancellationToken.None);
+        var sys = new AgentMessage("s", MessageRole.System, [new TextPart("be brief")], DateTimeOffset.UtcNow);
+        var done = (await Collect(p, Sreq("s1", sys, User("u1", "hi")))).OfType<ModelCompleted>().Single();
+
+        // The first user message was edited after the run → the fingerprint
+        // prefix no longer matches → reset, full input (3 items; system goes
+        // to instructions), no previous id.
+        await Collect(p, Sreq("s1", sys, User("u1", "edited"), done.Message, User("u2", "next")));
+        var body = Body(ResponsesRun(h));
+        Assert.False(body.TryGetProperty("previous_response_id", out _));
+        Assert.Equal("be brief", body.GetProperty("instructions").GetString());
+        Assert.Equal(4, body.GetProperty("input").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ToolBatch_EmitsOneItemPerResult_BothWires()
+    {
+        var asst = new AgentMessage("a1", MessageRole.Assistant,
+            [
+                new ToolCallPart("call_1", "add", JsonDocument.Parse("{\"a\":1}").RootElement.Clone()),
+                new ToolCallPart("call_2", "mul", JsonDocument.Parse("{\"b\":2}").RootElement.Clone()),
+            ], DateTimeOffset.UtcNow);
+        var tool = new AgentMessage("t1", MessageRole.Tool,
+            [
+                new ToolResultPart("call_1", "add", [new TextPart("2")]),
+                new ToolResultPart("call_2", "mul", [new TextPart("4")]),
+            ], DateTimeOffset.UtcNow);
+
+        // Responses wire: one function_call_output item per result (not just the
+        // first one).
+        var (pR, hR) = MakeWire("responses", CatalogRoute(RespText, "probe", ChatText));
+        await pR.RefreshAsync(CancellationToken.None);
+        await Collect(pR, Sreq("s1", asst, tool, User("u1", "again")));
+        var items = Body(ResponsesRun(hR)).GetProperty("input").EnumerateArray().ToList();
+        var fco = items.Where(it => it.GetProperty("type").GetString() == "function_call_output").ToList();
+        Assert.Equal(2, fco.Count);
+        Assert.Contains(fco, it => it.GetProperty("call_id").GetString() == "call_1");
+        Assert.Contains(fco, it => it.GetProperty("call_id").GetString() == "call_2");
+
+        // Chat wire: one tool message per tool_call_id.
+        var (pC, hC) = MakeWire("chat", CatalogRoute(RespText, "probe", ChatText));
+        await pC.RefreshAsync(CancellationToken.None);
+        await Collect(pC, Sreq("s1", asst, tool, User("u1", "again")));
+        var msgs = Body(hC.Sent.Single(s => s.Url.EndsWith("/v1/chat/completions", StringComparison.Ordinal)))
+            .GetProperty("messages").EnumerateArray().ToList();
+        var toolMsgs = msgs.Where(m => m.GetProperty("role").GetString() == "tool").ToList();
+        Assert.Equal(2, toolMsgs.Count);
+        Assert.Equal("call_1", toolMsgs[0].GetProperty("tool_call_id").GetString());
+        Assert.Equal("call_2", toolMsgs[1].GetProperty("tool_call_id").GetString());
     }
 }

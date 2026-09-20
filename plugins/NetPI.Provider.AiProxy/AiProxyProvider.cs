@@ -21,6 +21,34 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     private readonly IPluginLogger _log;
     private readonly string _wire; // "auto" (default) | "chat" | "responses" — PLAN §14b
     private IReadOnlyList<ModelInfo> _models = [];
+    /// <summary>
+    /// PLAN §14c: per-session Responses-wire chain head, keyed
+    /// <c>"sessionId|modelId"</c>. nInfer uses the chain's
+    /// <c>previous_response_id</c> as the session key (LiveSession KV-cache
+    /// retention vs RecentPrivate), so continuations must reference the last
+    /// successful run. Covered holds the fingerprints of the transcript
+    /// prefix the stored chain already contains: those items are NEVER
+    /// resent (the server appends the stored chain on top of the input —
+    /// resending them duplicates tokens). The head advances only on a
+    /// successful ModelCompleted; a failed or abandoned run leaves the head
+    /// in place (the transcript was not mutated, so it is still valid).
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ChainHead> _chainHeads = new();
+
+    /// <summary>PLAN §14c: one chain head for a session/model pair.</summary>
+    private sealed class ChainHead
+    {
+        /// <summary>Last successful response.id; sent as previous_response_id.</summary>
+        public string ResponseId = "";
+        /// <summary>Fingerprints of the transcript messages the stored chain covers.</summary>
+        public List<string> Covered = [];
+
+        public ChainHead(string responseId, List<string> covered)
+        {
+            ResponseId = responseId;
+            Covered = covered;
+        }
+    }
     private DateTimeOffset? _refreshedAt;
 
     public AiProxyProvider(HttpClient http, string baseUrl, IPluginLogger log, string wire = "auto")
@@ -363,11 +391,16 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         public List<MessagePart> Parts = new();
         public StringBuilder Text = new();
         public StringBuilder Think = new();
+        /// <summary>PLAN §14c: the <c>response.id</c> of this run (from response.created/completed).</summary>
+        public string? ResponseId;
+        /// <summary>PLAN §14c: true once a response.failed event has been seen (do not advance the chain).</summary>
+        public bool Failed;
     }
 
     private async IAsyncEnumerable<ModelEvent> RunResponsesAsync(ModelRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var payload = BuildResponsesPayload(request);
+        var (payload, covered) = BuildResponsesPayload(request);
+        var key = string.IsNullOrEmpty(request.SessionId) ? null : ChainKey(request.SessionId, request.ModelId);
         using var content = new StringContent(JsonSerializer.Serialize(payload, WireOpts), System.Text.Encoding.UTF8, "application/json");
 
         using var resp = await _http.PostAsync($"{_baseUrl}/v1/responses", content, cancellationToken);
@@ -423,6 +456,19 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             }
 
         var message = new AgentMessage(Guid.NewGuid().ToString("n"), MessageRole.Assistant, state.Parts, DateTimeOffset.UtcNow);
+
+        // PLAN §14c: advance the chain head only on a clean completion. The
+        // completed assistant message the caller will append to the transcript
+        // becomes the last covered item; failures leave the old head in place
+        // (the transcript was not mutated, so it is still valid).
+        if (key is not null && state.ResponseId is { } rid && state.Parts.Count > 0 && !state.Failed)
+        {
+            var newCovered = new List<string>(covered.Count + 1);
+            newCovered.AddRange(covered);
+            newCovered.Add(Fingerprint(message));
+            _chainHeads[key] = new ChainHead(rid, newCovered);
+        }
+
         yield return new ModelCompleted(message);
         yield break;
     }
@@ -439,7 +485,14 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         switch (type)
         {
             case "response.created" or "response.in_progress":
-                // ModelStarted is emitted once by RunResponsesAsync; nothing to do.
+                // ModelStarted is emitted once by RunResponsesAsync; capture
+                // the response.id (the chain head to advance, PLAN §14c).
+                if (root.TryGetProperty("response", out var respIdEl) && respIdEl.ValueKind == JsonValueKind.Object
+                    && respIdEl.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String)
+                {
+                    var rid = idEl.GetString();
+                    if (rid is { Length: > 0 }) s.ResponseId = rid;
+                }
                 break;
 
             case "response.output_item.added":
@@ -517,6 +570,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                 break;
 
             case "response.failed":
+                s.Failed = true; // PLAN §14c: a failed run never advances the chain
                 var msg = "";
                 if (root.TryGetProperty("response", out var rf) && rf.ValueKind == JsonValueKind.Object
                     && rf.TryGetProperty("error", out var e2) && e2.ValueKind == JsonValueKind.Object
@@ -531,64 +585,57 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         return events;
     }
 
-    /// <summary>Build the /v1/responses request body (PLAN §14b).</summary>
-    private static object BuildResponsesPayload(ModelRequest request)
+    /// <summary>
+    /// Build the /v1/responses request body (PLAN §14b/§14c). Returns the
+    /// payload plus the transcript prefix the stored chain covers (all
+    /// fingerprints on a reset/full-input run, the head's covered list on a
+    /// chained delta run).
+    /// </summary>
+    private (object Payload, List<string> Covered) BuildResponsesPayload(ModelRequest request)
     {
         var input = new List<object>();
         string? instructions = null;
+        List<string> covered;
+        var cur = MessageFingerprints(request.Messages);
 
-        foreach (var m in request.Messages)
+        // PLAN §14c: chain when the head still covers a matching transcript
+        // prefix: send previous_response_id plus only the delta beyond the
+        // covered prefix (tool results, new user messages) — the server
+        // appends the stored chain on top of the input, so covered items must
+        // NOT be resent. Anything else (first run, compaction, equal-length
+        // retry after failure) is a reset: full input, new head on success.
+        var chainHead = !string.IsNullOrEmpty(request.SessionId) ? GetChainHead(request.SessionId, request.ModelId) : null;
+        if (chainHead is { } head && cur.Count > head.Covered.Count
+            && cur.Take(head.Covered.Count).SequenceEqual(head.Covered))
         {
-            var text = string.Join("\n", m.Parts.OfType<TextPart>().Select(p => p.Text));
-            var thinking = m.Parts.OfType<ThinkingPart>().FirstOrDefault();
-
-            switch (m.Role)
-            {
-                case MessageRole.System:
-                    if (instructions is null && text.Length > 0) instructions = text;
-                    break;
-
-                case MessageRole.User:
-                    if (text.Length > 0)
-                        input.Add(new Dictionary<string, object>
-                        {
-                            ["type"] = "message", ["role"] = "user",
-                            ["content"] = new[] { new Dictionary<string, object> { ["type"] = "input_text", ["text"] = text } },
-                        });
-                    break;
-
-                case MessageRole.Assistant:
-                    if (thinking is not null && thinking.Text.Length > 0)
-                        input.Add(new Dictionary<string, object>
-                        {
-                            ["type"] = "reasoning",
-                            ["content"] = new[] { new Dictionary<string, object> { ["type"] = "reasoning_text", ["text"] = thinking.Text } },
-                        });
-                    if (text.Length > 0)
-                        input.Add(new Dictionary<string, object>
-                        {
-                            ["type"] = "message", ["role"] = "assistant",
-                            ["content"] = new[] { new Dictionary<string, object> { ["type"] = "output_text", ["text"] = text } },
-                        });
-                    foreach (var c in m.Parts.OfType<ToolCallPart>())
-                        input.Add(new Dictionary<string, object>
-                        {
-                            ["type"] = "function_call", ["call_id"] = c.Id,
-                            ["name"] = c.Name, ["arguments"] = c.Arguments.GetRawText(),
-                        });
-                    break;
-
-                case MessageRole.Tool:
-                    var res = m.Parts.OfType<ToolResultPart>().FirstOrDefault();
-                    if (res is not null)
-                        input.Add(new Dictionary<string, object>
-                        {
-                            ["type"] = "function_call_output", ["call_id"] = res.ToolCallId,
-                            ["output"] = string.Join("\n", res.Parts.OfType<TextPart>().Select(p => p.Text)),
-                        });
-                    break;
-            }
+            covered = head.Covered;
+            for (var i = head.Covered.Count; i < request.Messages.Count; i++)
+                BuildItemsForMessage(request.Messages[i], input, out _);
         }
+        else
+        {
+            covered = cur;
+            // instructions are always (re)sent; system messages carry no input items.
+            instructions = request.Messages
+                .Where(m => m.Role == MessageRole.System)
+                .Select(m => string.Join("\n", m.Parts.OfType<TextPart>().Select(p => p.Text)))
+                .FirstOrDefault(t => t.Length > 0);
+            foreach (var m in request.Messages)
+                if (m.Role != MessageRole.System)
+                    BuildItemsForMessage(m, input, out _);
+        }
+
+        var payload = new Dictionary<string, object>
+        {
+            ["model"] = request.ModelId,
+            ["stream"] = true,
+            ["store"] = true,
+            ["input"] = input,
+        };
+        if (chainHead is { } head2 && cur.Count > head2.Covered.Count
+            && cur.Take(head2.Covered.Count).SequenceEqual(head2.Covered))
+            payload["previous_response_id"] = head2.ResponseId;
+        if (instructions is not null) payload["instructions"] = instructions;
 
         var tools = request.Tools.Count > 0
             ? request.Tools.Select(t => new Dictionary<string, object>
@@ -596,23 +643,105 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                   ["type"] = "function", ["name"] = t.Name, ["description"] = t.Description, ["parameters"] = t.Parameters,
               }).ToList()
             : null;
-
-        var payload = new Dictionary<string, object>
-        {
-            ["model"] = request.ModelId,
-            ["stream"] = true,
-            ["store"] = false,
-            ["input"] = input,
-        };
-        if (instructions is not null) payload["instructions"] = instructions;
         if (tools is not null) payload["tools"] = tools;
         if (request.Temperature is { } t) payload["temperature"] = t;
         if (request.MaxTokens is { } mt) payload["max_output_tokens"] = mt;
         var rl = request.ReasoningLevel;
         if (!string.IsNullOrEmpty(rl) && !string.Equals(rl, "off", StringComparison.OrdinalIgnoreCase))
             payload["reasoning"] = new Dictionary<string, object> { ["effort"] = rl };
-        return payload;
+        return (payload, covered);
     }
+
+    /// <summary>Emit the /v1/responses input items for one transcript message.</summary>
+    private static void BuildItemsForMessage(AgentMessage m, List<object> input, out string? instructions)
+    {
+        instructions = null;
+        var text = string.Join("\n", m.Parts.OfType<TextPart>().Select(p => p.Text));
+        var thinking = m.Parts.OfType<ThinkingPart>().FirstOrDefault();
+
+        switch (m.Role)
+        {
+            case MessageRole.System:
+                if (text.Length > 0) instructions = text;
+                break;
+
+            case MessageRole.User:
+                if (text.Length > 0)
+                    input.Add(new Dictionary<string, object>
+                    {
+                        ["type"] = "message", ["role"] = "user",
+                        ["content"] = new[] { new Dictionary<string, object> { ["type"] = "input_text", ["text"] = text } },
+                    });
+                break;
+
+            case MessageRole.Assistant:
+                // Item order inside an assistant turn must be reasoning →
+                // message content → function calls (server rejects otherwise).
+                if (thinking is not null && thinking.Text.Length > 0)
+                    input.Add(new Dictionary<string, object>
+                    {
+                        ["type"] = "reasoning",
+                        ["content"] = new[] { new Dictionary<string, object> { ["type"] = "reasoning_text", ["text"] = thinking.Text } },
+                    });
+                if (text.Length > 0)
+                    input.Add(new Dictionary<string, object>
+                    {
+                        ["type"] = "message", ["role"] = "assistant",
+                        ["content"] = new[] { new Dictionary<string, object> { ["type"] = "output_text", ["text"] = text } },
+                    });
+                foreach (var c in m.Parts.OfType<ToolCallPart>())
+                    input.Add(new Dictionary<string, object>
+                    {
+                        ["type"] = "function_call", ["call_id"] = c.Id,
+                        ["name"] = c.Name, ["arguments"] = c.Arguments.GetRawText(),
+                    });
+                break;
+
+            case MessageRole.Tool:
+                // One function_call_output item per ToolResultPart (PLAN §14c):
+                // a single tool message carries an entire result batch.
+                foreach (var res in m.Parts.OfType<ToolResultPart>())
+                    input.Add(new Dictionary<string, object>
+                    {
+                        ["type"] = "function_call_output", ["call_id"] = res.ToolCallId,
+                        ["output"] = string.Join("\n", res.Parts.OfType<TextPart>().Select(p => p.Text)),
+                    });
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Stable per-message fingerprint (PLAN §14c): role + message id + every
+    /// part's kind and identifying payload. Message ids are stable for the
+    /// lifetime of an in-memory transcript; compaction rebuilds with new ids,
+    /// which is exactly the signal a chain head must reset on.
+    /// </summary>
+    private static string Fingerprint(AgentMessage m)
+    {
+        var b = new StringBuilder(m.Role.ToString());
+        b.Append('\u0001').Append(m.Id);
+        foreach (var p in m.Parts)
+        {
+            b.Append('\u0002').Append(p.Kind);
+            switch (p)
+            {
+                case TextPart t: b.Append(t.Text); break;
+                case ThinkingPart th: b.Append(th.Text); break;
+                case ToolCallPart tc: b.Append(tc.Id); break;
+                case ToolResultPart tr: b.Append(tr.ToolCallId); break;
+                case ImagePart img: b.Append(img.MimeType); break;
+            }
+        }
+        return b.ToString();
+    }
+
+    private static List<string> MessageFingerprints(IReadOnlyList<AgentMessage> messages)
+        => messages.Select(Fingerprint).ToList();
+
+    private ChainHead? GetChainHead(string sessionId, string modelId)
+        => _chainHeads.TryGetValue(ChainKey(sessionId, modelId), out var head) ? head : null;
+
+    private static string ChainKey(string sessionId, string modelId) => $"{sessionId}|{modelId}";
 
 
     // ---- payload building -------------------------------------------------
@@ -624,7 +753,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
 
     private static object BuildPayload(ModelRequest request)
     {
-        var messages = request.Messages.Select(MessageToJson).ToList();
+        var messages = request.Messages.SelectMany(MessageToJson).ToList();
         var tools = request.Tools.Count > 0
             ? request.Tools.Select(t => new Dictionary<string, object>
               {
@@ -658,7 +787,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         return payload;
     }
 
-    private static Dictionary<string, object> MessageToJson(AgentMessage m)
+    private static IEnumerable<Dictionary<string, object>> MessageToJson(AgentMessage m)
     {
         var role = m.Role switch
         {
@@ -696,15 +825,24 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
 
         if (m.Role == MessageRole.Tool)
         {
-            var res = m.Parts.OfType<ToolResultPart>().FirstOrDefault();
-            if (res is not null)
+            // A single tool message can carry an entire result batch (PLAN §14c);
+            // the chat wire needs one message per tool_call_id, so emit them all.
+            var res = m.Parts.OfType<ToolResultPart>().ToList();
+            if (res.Count == 0) yield break;
+            foreach (var r in res)
             {
-                msg["role"] = "tool";
-                msg["tool_call_id"] = res.ToolCallId;
-                msg["content"] = string.Join("\n", res.Parts.OfType<TextPart>().Select(p => p.Text));
+                yield return new Dictionary<string, object>
+                {
+                    ["role"] = "tool",
+                    ["tool_call_id"] = r.ToolCallId,
+                    ["content"] = string.Join("\n", r.Parts.OfType<TextPart>().Select(p => p.Text)),
+                };
             }
         }
-        return msg;
+        else
+        {
+            yield return msg;
+        }
     }
 
     private static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "…";
