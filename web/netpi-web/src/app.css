@@ -688,7 +688,39 @@ body, button, input, textarea, select { font-family: var(--app-font, ui-sans-ser
   min-height: 0;
   overflow: hidden;
 }
-
+/* panel resize handles: centered on the 2px borders flanking the panels */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  z-index: 30;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+.panel-resizer::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background .12s ease;
+}
+.panel-resizer:hover::after { background: #3b4553; }
+.panel-resizer-left {
+  position: absolute;
+  left: calc(var(--left-panel-width) - 3px);
+}
+.panel-resizer-right {
+  position: absolute;
+  right: calc(var(--right-panel-width) - 3px);
+}
+body.panel-resizing { cursor: col-resize; user-select: none; }
+body.panel-resizing * { cursor: col-resize !important; }
+body.panel-resizing .app-shell { transition: none; }
 .chat-shell {
   grid-area: chat;
   min-width: 0;
