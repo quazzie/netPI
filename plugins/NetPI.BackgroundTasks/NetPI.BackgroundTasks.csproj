@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.BackgroundTasks</RootNamespace>
+    <AssemblyName>netPI.BackgroundTasks</AssemblyName>
+    <Description>Background process management: start/output/list/kill with process-tree cleanup (PLAN §27-§28). Reloadable netPI plugin.</Description>
+
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+</Project>

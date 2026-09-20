@@ -257,7 +257,27 @@ public sealed class PowerShellTool : ShellToolBase
 {
     protected override string ShellId => "powershell";
     protected override IReadOnlyList<string> CommandPrefix => ["pwsh", "-NoProfile", "-Command"];
+    }
+
+/// <summary>
+/// Resolves a command string for a specific shell into a concrete
+/// <see cref="ResolvedCommand"/> (PLAN §26). Owned by the tools plugin and
+/// briefly leased by the background-tasks plugin before it spawns a process.
+/// </summary>
+public sealed class ShellCommandResolver : IShellCommandResolver
+{
+    private readonly string _shellId;
+    private readonly IReadOnlyList<string> _prefix;
+    public ShellCommandResolver(string shellId, IReadOnlyList<string> prefix) { _shellId = shellId; _prefix = prefix; }
+    public string ShellId => _shellId;
+    public ValueTask<ResolvedCommand> ResolveAsync(string command, string workingDirectory, CancellationToken ct)
+    {
+        var rc = new ResolvedCommand(_prefix[0], _prefix.Skip(1).Append(command).ToList(), workingDirectory, null);
+        return ValueTask.FromResult(rc);
+    }
 }
+
+
 
 /// <summary>
 /// The reloadable tools plugin (PLAN §18-§26). Registers read/write/edit/grep/
@@ -279,8 +299,16 @@ public sealed class ToolsPlugin : INetPiPlugin
         _registry = new ToolRegistryImpl();
         _registrations = _tools.Select(t => _registry.Register(t)).ToArray();
         context.Services.Register<IToolRegistry>("tools", _registry);
+        // Shell-command resolvers (PLAN §26) — leased by the background-tasks
+        // plugin to resolve a command to a concrete executable before it owns
+        // the process.
+        context.Services.Register<IShellCommandResolver>("resolver:bash",
+            new ShellCommandResolver("bash", ["bash", "-c"]));
+        context.Services.Register<IShellCommandResolver>("resolver:powershell",
+            new ShellCommandResolver("powershell", ["pwsh", "-NoProfile", "-Command"]));
         context.Log.Information($"Tools registered: {string.Join(", ", _tools.Select(t => t.Name))}");
         await ValueTask.CompletedTask;
+
     }
 
     public ValueTask StartAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
