@@ -62,8 +62,10 @@
         title={tab.title}
         onclick={() => select(tab.id)}
       >
-        <span class="vertical-tab-icon">{tab.icon}</span>
-        <span class="vertical-tab-title">{tab.title}</span>
+        <span class="vertical-tab-content">
+          <span class="vertical-tab-icon">{tab.icon}</span>
+          <span class="vertical-tab-title">{tab.title}</span>
+        </span>
       </button>
     {/each}
     <span class="rail-spacer"></span>
