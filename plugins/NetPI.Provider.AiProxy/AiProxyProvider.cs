@@ -207,29 +207,29 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             return n.Contains("reasoning", StringComparison.Ordinal) || IsEffortContainer(name);
         }
 
-        void Add(string? raw, bool allowArbitrary)
+        void Add(string? raw)
         {
             if (string.IsNullOrWhiteSpace(raw)) return;
             foreach (var piece in raw.Split([',', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                if (!allowArbitrary && !IsEffortToken(piece)) continue;
+                if (!IsEffortToken(piece)) continue;
                 if (seen.Add(piece)) values.Add(piece);
             }
         }
 
-        void Collect(JsonElement node, bool acceptStrings, int depth)
+        void Collect(JsonElement node, int depth)
         {
             if (depth > 8) return;
 
             switch (node.ValueKind)
             {
                 case JsonValueKind.String:
-                    Add(node.GetString(), acceptStrings);
+                    Add(node.GetString());
                     return;
 
                 case JsonValueKind.Array:
                     foreach (var item in node.EnumerateArray())
-                        Collect(item, acceptStrings, depth + 1);
+                        Collect(item, depth + 1);
                     return;
 
                 case JsonValueKind.Object:
@@ -240,26 +240,21 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                         // { efforts:[...] } and { profiles:{ low:{...}, high:{...} } }.
                         if (IsEffortToken(prop.Name)
                             && prop.Value.ValueKind is not JsonValueKind.False and not JsonValueKind.Null)
-                            Add(prop.Name, allowArbitrary: false);
+                            Add(prop.Name);
 
-                        var childAcceptsStrings = acceptStrings || IsEffortContainer(prop.Name);
-                        Collect(prop.Value, childAcceptsStrings, depth + 1);
+                        Collect(prop.Value, depth + 1);
                     }
                     return;
             }
         }
 
-        // Scan only reasoning/effort-related top-level metadata. Inside that
-        // subtree, recursively accept both the common array forms and keyed
-        // profile forms instead of coupling netPI to one AiProxy JSON shape.
+        // Scan only reasoning/effort-related top-level metadata. Once inside
+        // that subtree, accept only recognized effort tokens; metadata strings
+        // such as type:"observed" can therefore never become UI options.
         foreach (var prop in model.EnumerateObject())
         {
-            if (!IsReasoningField(prop.Name)) continue;
-            // The top-level "reasoning" object is a metadata namespace, not a
-            // list: only nested level/effort containers may contribute arbitrary
-            // string values. This avoids mistaking fields like type:"observed"
-            // for an effort name.
-            Collect(prop.Value, !prop.NameEquals("reasoning") && IsEffortContainer(prop.Name), 0);
+            if (IsReasoningField(prop.Name))
+                Collect(prop.Value, 0);
         }
 
         return values.Count > 0 ? values : null;
