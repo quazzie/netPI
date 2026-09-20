@@ -90,6 +90,7 @@ internal sealed class NoopPluginContext : IPluginContext
     public IServiceRegistry Services => _services;
     public IEventBus Events => new NoopEventBus();
     public ICommandRegistry Commands => new NetPI.Host.Services.CommandRegistry();
+    public IWebPanelRegistry WebPanels => new NetPI.Host.Services.WebPanelRegistry();
     public JsonElement OwnConfig => JsonDocument.Parse("{}").RootElement;
     public IPluginLogger Log => new NoopLogger();
     public IValueLease<object> LeaseSelf()
