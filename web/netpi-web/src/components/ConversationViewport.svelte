@@ -2,6 +2,7 @@
   import { createVirtualizer } from "@tanstack/svelte-virtual";
   import { store } from "../store.svelte";
   import BlockRenderer from "./conversation/BlockRenderer.svelte";
+  import { ws } from "../ws";
 
   let viewport: HTMLElement | null = $state(null);
 
@@ -37,10 +38,27 @@
     if (!viewport) return;
     stick =
       viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 60;
+    // PLAN §38: scrolling to the top triggers loading older entries.
+    if (viewport.scrollTop <= 40) ws.loadOlder();
   }
   $effect(() => {
     const n = store.blocks.length;
     if (stick && viewport && n) viewport.scrollTop = viewport.scrollHeight;
+  });
+
+  // PLAN §38: when an older page is prepended the list grows at the top —
+  // compensate the scroll so the block the user was looking at stays in place.
+  let lastVersion = store.prependVersion;
+  let totalAtVersion = total;
+  $effect(() => {
+    if (store.prependVersion !== lastVersion) {
+      const delta = total - totalAtVersion;
+      if (viewport && delta > 0) viewport.scrollTop += delta;
+      lastVersion = store.prependVersion;
+      totalAtVersion = total;
+    } else {
+      totalAtVersion = total;
+    }
   });
 </script>
 

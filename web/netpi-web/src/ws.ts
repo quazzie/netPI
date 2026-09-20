@@ -144,8 +144,19 @@ class NetPIWebSocket {
         break;
 
       case "session.entry":
+        this.ingestEntries(p, false);
+        break;
+
       case "session.entries":
-        this.ingestEntries(p);
+        this.ingestEntries(p, true);
+        break;
+
+      case "session.older":
+        // PLAN §38: a page of older entries, prepended in front of the transcript.
+        store.olderSeq = p.beforeSequence ?? 0;
+        store.moreAvailable = !!p.hasMore;
+        this.ingestEntries(p, false, true);
+        store.noteOlderLoaded();
         break;
 
       case "assistant.started":
@@ -240,11 +251,17 @@ class NetPIWebSocket {
     }
   }
 
-  /** Apply persisted transcript entries sent on session.open. */
-  private ingestEntries(p: any): void {
+  /** Apply persisted transcript entries.
+   * @param reset  payload carries a replace flag from session.entries
+   * @param prepend  insert in front of the current transcript (session.older) */
+  private ingestEntries(p: any, reset: boolean, prepend = false): void {
     const entries = p.entries ?? (p.entry ? [p.entry] : null);
     if (!entries) return;
-    if (p.replace) store.resetTranscript();
+    if (reset && p.replace) {
+      store.resetTranscript();
+      store.olderSeq = p.beforeSequence ?? 0;
+      store.moreAvailable = !!p.hasMore;
+    }
     for (const e of entries) {
       switch (e.type) {
         case "user_message": {
@@ -252,6 +269,10 @@ class NetPIWebSocket {
           // The composer already appended it optimistically (store.submit) — drop
           // the echo when the last block is a user block with identical text,
           // otherwise the message renders twice.
+          if (prepend) {
+            store.prependUser(e.text ?? "");
+            break;
+          }
           const last = store.blocks[store.blocks.length - 1];
           const isEcho = !p.replace &&
             last?.kind === "user" && (last.text ?? "") === (e.text ?? "");
@@ -259,10 +280,11 @@ class NetPIWebSocket {
           break;
         }
         case "assistant_message":
-          this.applyAssistantEntry(e);
+          this.applyAssistantEntry(e, prepend);
           break;
         case "compaction":
-          store.appendSystem(`Compaction: ${e.summary ?? "(summary)"}`);
+          if (prepend) store.prependSystem(`Compaction: ${e.summary ?? "(summary)"}`);
+          else store.appendSystem(`Compaction: ${e.summary ?? "(summary)"}`);
           break;
         default:
           break;
@@ -270,8 +292,8 @@ class NetPIWebSocket {
     }
   }
 
-  private applyAssistantEntry(e: any): void {
-    store.startAssistant();
+  private applyAssistantEntry(e: any, prepend = false): void {
+    store[prepend ? "prependAssistantShell" : "startAssistant"]();
     const a = store.activeAssistantId;
     // Rebuild the block from the persisted message parts.
     const parts = e.parts ?? [];
@@ -292,6 +314,18 @@ class NetPIWebSocket {
     }
     store.completeAssistant(e.usage as Usage | undefined);
   }
+  /** PLAN §38: request the next page of older transcript entries (scroll-up).
+   * The server responds with a session.older event; the ack resolves on receipt. */
+  loadOlder(): void {
+    const seq = store.olderSeq;
+    if (seq <= 0 || store.olderLoading || !store.moreAvailable) return;
+    store.olderLoading = true;
+    this.request("session.older", { beforeSequence: seq, count: 100 }).catch(() => {
+      store.olderLoading = false;
+    });
+  }
 }
 export const ws = new NetPIWebSocket();
 ws.connect();
+
+

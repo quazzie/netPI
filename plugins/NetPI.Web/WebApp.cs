@@ -694,7 +694,9 @@ internal sealed class WebApp : IAsyncDisposable
         var ws = S(p, "workspace");
         var created = await _store.CreateAsync(string.IsNullOrEmpty(ws) ? null : ws, ct);
         await SendAsync(c, "session.created", ToSessionJson(created), created.Id, ct);
-        await SendAsync(c, "session.entries", new { entries = new List<object>(), replace = true }, created.Id, ct);
+        await SendAsync(c, "session.entries",
+            new { entries = new List<object>(), replace = true, total = 0,
+                  hasMore = false, beforeSequence = 0 }, created.Id, ct);
         await SendAckAsync(c, requestId, ct);
     }
 
@@ -712,8 +714,12 @@ internal sealed class WebApp : IAsyncDisposable
         var total = info.EntryCount;
         var offset = Math.Max(0, total - pageSize);
         var entries = await _store.ReadAsync(sid, offset, pageSize, ct);
+        // PLAN §38: beforeSequence is the sequence of the OLDEST entry loaded —
+        // the client requests session.older { beforeSequence } on scroll-up.
+        var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
         await SendAsync(c, "session.entries",
-            new { entries = EntriesToJson(entries), replace = true, total = total, hasMore = offset > 0 }, sid, ct);
+            new { entries = EntriesToJson(entries), replace = true, total = total,
+                  hasMore = total > entries.Count, beforeSequence = beforeSeq }, sid, ct);
         await SendAckAsync(c, requestId, ct);
     }
 
@@ -733,8 +739,10 @@ internal sealed class WebApp : IAsyncDisposable
             return;
         }
         var entries = await _store.ReadBeforeAsync(sid, beforeSequence, count, ct);
+        var newOldest = entries.Count > 0 ? entries[0].Sequence : 0;
         await SendAsync(c, "session.older",
-            new { entries = EntriesToJson(entries), beforeSequence, hasMore = entries.Count == count }, sid, ct);
+            new { entries = EntriesToJson(entries), beforeSequence = newOldest,
+                  hasMore = entries.Count == count }, sid, ct);
         await SendAckAsync(c, requestId, ct);
     }
 

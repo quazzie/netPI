@@ -36,6 +36,12 @@ export class NetPIStore {
   blocks = $state<Block[]>([]);
   // The id of the block that is currently streaming, or null when idle.
   activeAssistantId = $state<string | null>(null);
+  // PLAN §38: scroll-up pagination — sequence of the oldest loaded entry,
+  // whether older entries remain, and a version bump (for scroll preservation).
+  olderSeq = $state(0);
+  moreAvailable = $state(false);
+  olderLoading = $state(false);
+  prependVersion = $state(0);
 
   // ---- model / reasoning ------------------------------------------------
   models = $state<ModelInfo[]>([]);
@@ -82,6 +88,33 @@ export class NetPIStore {
       done: false,
     };
     this.blocks.push(block);
+    this.activeAssistantId = id;
+    return id;
+  }
+
+  /** PLAN §38: prepend helpers — insert older transcript blocks in front of
+   * everything currently loaded. */
+  prependUser(text: string): string {
+    const id = uid("u");
+    this.blocks.unshift({ kind: "user", id, text, createdAt: Date.now() });
+    return id;
+  }
+  prependSystem(text: string): string {
+    const id = uid("s");
+    this.blocks.unshift({ kind: "system", id, text, createdAt: Date.now() });
+    return id;
+  }
+  prependAssistantShell(): string {
+    const id = uid("a");
+    const block: AssistantBlock = {
+      kind: "assistant",
+      id,
+      createdAt: Date.now(),
+      text: "",
+      toolCalls: [],
+      done: false,
+    };
+    this.blocks.unshift(block);
     this.activeAssistantId = id;
     return id;
   }
@@ -278,6 +311,15 @@ export class NetPIStore {
     this.queuedSteer = [];
     this.stats = { turns: 0, toolSteps: 0 };
     this.lastUsage = null;
+    this.olderSeq = 0;
+    this.moreAvailable = false;
+    this.olderLoading = false;
+  }
+
+  /** Called when a session.older page is ingested (scroll-up, PLAN §38). */
+  noteOlderLoaded(): void {
+    this.prependVersion++;
+    this.olderLoading = false;
   }
 }
 
