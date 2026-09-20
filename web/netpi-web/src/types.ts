@@ -48,6 +48,7 @@ export interface ThinkingBlock {
   id: string;
   text: string;
   done: boolean;
+  startedAt?: number;
   durationMs?: number;
 }
 
@@ -134,4 +135,13 @@ export interface SessionInfo {
   reasoningLevel?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+
+export interface WebPanelInfo {
+  id: string;
+  title: string;
+  icon: string;
+  entryUrl: string;
+  order: number;
 }
