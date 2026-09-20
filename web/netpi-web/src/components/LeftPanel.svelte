@@ -3,8 +3,7 @@
   import { ui } from "../ui.svelte";
   import { ws } from "../ws";
 
-  let view = $state<"sessions" | "settings">("sessions");
-  let workspace = $state("");
+   let workspace = $state("");
   let font = $derived(ui.font);
 
   $effect(() => {
@@ -43,11 +42,11 @@
     </div>
 
     <div class="left-switcher">
-      <button class:active={view === "sessions"} onclick={() => (view = "sessions")}>Sessions</button>
-      <button class:active={view === "settings"} onclick={() => (view = "settings")}>Settings</button>
+      <button class:active={ui.leftPage === "sessions"} onclick={() => (ui.leftPage = "sessions")}>Sessions</button>
+      <button class:active={ui.leftPage === "settings"} onclick={() => (ui.leftPage = "settings")}>Settings</button>
     </div>
 
-    {#if view === "sessions"}
+    {#if ui.leftPage === "sessions"}
       <div class="left-body">
         <button class="left-new" onclick={newSession}>＋ New session</button>
 
