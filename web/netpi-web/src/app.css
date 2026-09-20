@@ -1116,3 +1116,108 @@ body, button, input, textarea, select { font-family: var(--app-font, ui-sans-ser
     box-shadow: -18px 0 44px rgba(0,0,0,.35);
   }
 }
+
+
+/* DSH-like center chat ergonomics: pill composer, quiet mode chips, strong primary send. */
+.composer {
+  gap: 11px;
+  padding: 9px 10px 8px;
+  border-radius: 20px;
+  border-color: #2b3340;
+  background: #171b22;
+  box-shadow: 0 8px 26px rgba(0,0,0,.24), inset 0 0 0 .5px rgba(255,255,255,.018);
+}
+.composer textarea {
+  min-height: 38px;
+  padding: 5px 7px 0;
+  line-height: 1.55;
+  font-size: 14px;
+}
+.composer .toolbar {
+  min-height: 34px;
+  padding: 0 1px;
+  gap: 8px;
+}
+.composer .icon-btn {
+  width: 29px;
+  height: 29px;
+  border-radius: 999px;
+  background: #20252d;
+  color: #abb3bf;
+}
+.composer .icon-btn:hover {
+  background: #292f39;
+  color: #edf1f6;
+}
+.model-pick,
+.reason-pick {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: #aab2bf;
+  font-size: 12px;
+  font-weight: 500;
+}
+.model-pick:hover,
+.reason-pick:hover { background: #20252d; }
+.send-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: #679efe;
+  color: #fff;
+  font-size: 16px;
+  box-shadow: 0 2px 8px rgba(65, 116, 220, .28);
+}
+.send-btn:hover { background: #79a9ff; }
+.send-btn:disabled {
+  background: #26303e;
+  color: #788495;
+  box-shadow: none;
+}
+.stop-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+}
+.mode-label {
+  color: #7e8897;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+/* Tool calls read as process rows, not heavy cards. Expanded material gets the card. */
+.tool-card {
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  overflow: visible;
+}
+.tool-card:hover { background: rgba(255,255,255,.018); }
+.tool-card.running,
+.tool-card.error { border: 0; }
+.tool-head {
+  min-height: 32px;
+  padding: 3px 6px 3px 3px;
+  border-radius: 7px;
+}
+.tool-name { color: #9fa9b7; }
+.tool-summary { color: #727d8c; }
+.tool-file {
+  color: #9aa7b8;
+  text-decoration: underline dotted;
+  text-decoration-color: #596574;
+  text-underline-offset: 3px;
+}
+.tool-file:hover { color: #d4dbe5; text-decoration-color: currentColor; }
+.tool-detail {
+  margin: 3px 0 5px 16px;
+  padding: 9px 10px 10px;
+  border: 1px solid #252d38;
+  border-radius: 10px;
+  background: #10141a;
+}
+.tool-state.good { color: #7faa91; }
+.tool-duration { color: #636e7e; }
