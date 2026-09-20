@@ -841,13 +841,13 @@ internal sealed class WebApp : IAsyncDisposable
         // PLAN §14/§31: remember the model/reasoning for the session so a later
         // open restores them into the composer.
         if (!string.IsNullOrEmpty(model))
-            await _store.SetModelAsync(sid, model, string.IsNullOrEmpty(reasoning) ? null : reasoning, ct);
+            await _store.SetModelAsync(info.Id, model, string.IsNullOrEmpty(reasoning) ? null : reasoning, ct);
 
         var started = await _runner.StartRunAsync(new AgentRunRequest(sid, workspace, model, text,
             string.IsNullOrEmpty(reasoning) ? null : reasoning, null, null), ct);
-        if (!string.IsNullOrEmpty(started.Error))
+        if (!string.IsNullOrEmpty(started.Note))
         {
-            await SendErrorAsync(c, requestId, started.Error, ct);
+            await SendErrorAsync(c, requestId, started.Note, ct);
             return;
         }
 

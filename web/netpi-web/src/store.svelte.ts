@@ -69,7 +69,6 @@ export class NetPIStore {
   lastUsage = $state<Usage | null>(null);
 
   // ---- UI state ----------------------------------------------------------
-  overlay = $state<null | "settings"> (null);
   errorBanner = $state<string | null>(null);
   _modelQuery = $state("");
 
