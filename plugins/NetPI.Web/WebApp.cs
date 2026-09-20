@@ -622,7 +622,7 @@ internal sealed class WebApp : IAsyncDisposable
         var model = S(p, "model");
         var reasoning = S(p, "reasoning");
         var sessionId = S(p, "sessionId");
-        var workspace = S(p, "workspace");
+        var payloadWorkspace = S(p, "workspace");
 
         // Ensure a session exists (the runner persists the initial user entry).
         string? sid = sessionId;
@@ -631,10 +631,14 @@ internal sealed class WebApp : IAsyncDisposable
             info = await _store.GetAsync(sid, ct);
         if (info is null)
         {
-            info = await _store.CreateAsync(workspace, ct);
+            info = await _store.CreateAsync(payloadWorkspace, ct);
             sid = info.Id;
             await SendAsync(c, "session.created", ToSessionJson(info), sid, ct);
         }
+
+        // PLAN §18: the session record is the authoritative workspace — a follow-up
+        // chat.send need not (and usually does not) resend it.
+        var workspace = info.WorkspacePath ?? payloadWorkspace;
 
         await _runner.StartRunAsync(new AgentRunRequest(sid, workspace, model, text,
             string.IsNullOrEmpty(reasoning) ? null : reasoning, null, null), ct);

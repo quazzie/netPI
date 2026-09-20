@@ -43,15 +43,15 @@ public sealed class ReadTool : IAgentTool
         ("offset", "number", "Line number to start reading from (1-indexed). Optional."),
         ("limit", "number", "Maximum number of lines to read. Optional."));
 
-    public async ValueTask<ToolResult> ExecuteAsync(JsonElement arguments, CancellationToken ct)
+    public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
-        var path = Args.Str(arguments, "path");
+        var path = ctx.ResolvePath(Args.Str(ctx.Arguments, "path"));
         if (string.IsNullOrEmpty(path) || !File.Exists(path))
             return Error($"File not found: {path}");
         try
         {
-            var offset = Args.Int(arguments, "offset", 1);
-            var limit = Args.Int(arguments, "limit", int.MaxValue);
+            var offset = Args.Int(ctx.Arguments, "offset", 1);
+            var limit = Args.Int(ctx.Arguments, "limit", int.MaxValue);
             var lines = await File.ReadAllLinesAsync(path, ct);
             var slice = lines.Skip(Math.Max(0, offset - 1)).Take(limit).ToList();
             var text = string.Join("\n", slice);
@@ -76,10 +76,10 @@ public sealed class WriteTool : IAgentTool
         ("path", "string", "File path to write."),
         ("content", "string", "Full file content to write."));
 
-    public async ValueTask<ToolResult> ExecuteAsync(JsonElement arguments, CancellationToken ct)
+    public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
-        var path = Args.Str(arguments, "path");
-        var content = Args.Str(arguments, "content");
+        var path = ctx.ResolvePath(Args.Str(ctx.Arguments, "path"));
+        var content = Args.Str(ctx.Arguments, "content");
         if (string.IsNullOrEmpty(path))
             return new ToolResult("tool", "write", [new TextPart("path is required")], IsError: true);
         try
@@ -109,11 +109,11 @@ public sealed class EditTool : IAgentTool
         ("old", "string", "Exact text to find (must occur exactly once)."),
         ("new", "string", "Replacement text."));
 
-    public async ValueTask<ToolResult> ExecuteAsync(JsonElement arguments, CancellationToken ct)
+    public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
-        var path = Args.Str(arguments, "path");
-        var old = Args.Str(arguments, "old");
-        var newText = Args.Str(arguments, "new");
+        var path = ctx.ResolvePath(Args.Str(ctx.Arguments, "path"));
+        var old = Args.Str(ctx.Arguments, "old");
+        var newText = Args.Str(ctx.Arguments, "new");
         if (string.IsNullOrEmpty(path) || !File.Exists(path))
             return new ToolResult("tool", "edit", [new TextPart($"File not found: {path}")], IsError: true);
         try
@@ -144,11 +144,11 @@ public sealed class GrepTool : IAgentTool
         ("path", "string", "Directory to search (defaults to current dir)."),
         ("include", "string", "Optional glob filter, e.g. \"*.ts\". Optional."));
 
-    public async ValueTask<ToolResult> ExecuteAsync(JsonElement arguments, CancellationToken ct)
+    public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
-        var pattern = Args.Str(arguments, "pattern");
-        var dir = Args.Str(arguments, "path", Environment.CurrentDirectory);
-        var include = Args.OptStr(arguments, "include");
+        var pattern = Args.Str(ctx.Arguments, "pattern");
+        var dir = ctx.ResolvePath(Args.Str(ctx.Arguments, "path", ""));
+        var include = Args.OptStr(ctx.Arguments, "include");
         if (string.IsNullOrEmpty(pattern))
             return new ToolResult("tool", "grep", [new TextPart("pattern is required")], IsError: true);
         if (!Directory.Exists(dir))
@@ -221,24 +221,27 @@ public abstract class ShellToolBase : IAgentTool
         }
     }
 
-    public async ValueTask<ToolResult> ExecuteAsync(JsonElement arguments, CancellationToken ct)
+    public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
-        var command = Args.Str(arguments, "command");
+        var command = Args.Str(ctx.Arguments, "command");
         if (string.IsNullOrEmpty(command))
             return new ToolResult(Name, Name, [new TextPart("command is required")], IsError: true);
         try
         {
-            var timeoutMs = Args.Int(arguments, "timeout_ms", 120_000);
+            var timeoutMs = Args.Int(ctx.Arguments, "timeout_ms", 120_000);
             var (fileName, args) = Invocation;
             var psi = new ProcessStartInfo(fileName) { RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true, UseShellExecute = false, CreateNoWindow = true };
             foreach (var a in args) psi.ArgumentList.Add(a);
             psi.ArgumentList.Add(command);
-            var workdir = Args.OptStr(arguments, "workdir");
-            if (workdir is not null)
-                // PLAN §23: the WSL backend owns Windows↔WSL working-dir conversion.
+            var workdir = Args.OptStr(ctx.Arguments, "workdir");
+            // PLAN §25: default working directory is the session workspace; an
+            // explicit workdir argument wins. PLAN §23: WSL backend owns the
+            // Windows↔WSL working-dir conversion.
+            var effectiveWorkdir = workdir ?? ctx.Workspace;
+            if (effectiveWorkdir is not null && Directory.Exists(effectiveWorkdir))
                 psi.WorkingDirectory = _detected is { IsWsl: true }
-                    ? ShellDetector.ConvertToWslPath(workdir)
-                    : workdir;
+                    ? ShellDetector.ConvertToWslPath(effectiveWorkdir)
+                    : effectiveWorkdir;
 
 
             using var proc = new Process { StartInfo = psi };

@@ -89,6 +89,7 @@ public sealed class AgentRunner : IAgentRunner
                 Messages = transcript,
                 ReasoningLevel = request.ReasoningLevel,
                 Temperature = request.Temperature,
+                Workspace = workspace,
             }, cts.Token);
         }
         catch (OperationCanceledException)

@@ -249,11 +249,12 @@ public sealed class BackgroundStartTool : IAgentTool
         ("command", "string", "The command to run in the background."),
         ("workdir", "string", "Working directory. Optional."));
 
-    public async ValueTask<ToolResult> ExecuteAsync(JsonElement arguments, CancellationToken ct)
+    public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
-        var shell = PluginArgs.Str(arguments, "shell", "bash");
-        var command = PluginArgs.Str(arguments, "command");
-        var workdir = PluginArgs.OptStr(arguments, "workdir") ?? Environment.CurrentDirectory;
+        // PLAN §18/§25: default workdir is the session workspace.
+        var shell = PluginArgs.Str(ctx.Arguments, "shell", "bash");
+        var command = PluginArgs.Str(ctx.Arguments, "command");
+        var workdir = PluginArgs.OptStr(ctx.Arguments, "workdir") ?? ctx.Workspace;
         if (string.IsNullOrEmpty(command))
             return Error("command is required");
         try
@@ -282,11 +283,11 @@ public sealed class BackgroundOutputTool : IAgentTool
         ("jobId", "string", "The background job id from background_start."),
         ("offset", "number", "Cursor offset in characters. Optional (default 0)."));
 
-    public async ValueTask<ToolResult> ExecuteAsync(JsonElement arguments, CancellationToken ct)
+    public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
-        var jobId = PluginArgs.Str(arguments, "jobId");
+        var jobId = PluginArgs.Str(ctx.Arguments, "jobId");
         if (string.IsNullOrEmpty(jobId)) return Error("jobId is required");
-        var offset = PluginArgs.Int(arguments, "offset", 0);
+        var offset = PluginArgs.Int(ctx.Arguments, "offset", 0);
         var outp = await _mgr.GetOutputAsync(jobId, offset, ct);
         if (outp.State == BackgroundJobState.Failed && outp.Text == "no such job")
             return Error($"no such job {jobId}");
@@ -310,7 +311,7 @@ public sealed class BackgroundListTool : IAgentTool
     public string Description => "List all background jobs with their ids, state, and exit code.";
     public JsonElement Parameters => PluginArgs.Schema();
 
-    public async ValueTask<ToolResult> ExecuteAsync(JsonElement arguments, CancellationToken ct)
+    public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
         var jobs = await _mgr.ListAsync(ct);
         if (jobs.Count == 0) return new ToolResult(Name, Name, [new TextPart("no background jobs")], false);
@@ -332,9 +333,9 @@ public sealed class BackgroundKillTool : IAgentTool
     public JsonElement Parameters => PluginArgs.Schema(
         ("jobId", "string", "The background job id to kill."));
 
-    public async ValueTask<ToolResult> ExecuteAsync(JsonElement arguments, CancellationToken ct)
+    public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
-        var jobId = PluginArgs.Str(arguments, "jobId");
+        var jobId = PluginArgs.Str(ctx.Arguments, "jobId");
         if (string.IsNullOrEmpty(jobId)) return Error("jobId is required");
         var ok = await _mgr.KillAsync(jobId, ct);
         return ok

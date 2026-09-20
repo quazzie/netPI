@@ -10,6 +10,8 @@ public sealed record AgentRunOptions
     public string? ModelId { get; init; }
     public IReadOnlyList<AgentMessage> Messages { get; init; } = [];
     public string? ReasoningLevel { get; init; }
+    /// <summary>Session workspace (PLAN §18/§25): tool paths + shell cwd.</summary>
+    public string? Workspace { get; init; }
     public float? Temperature { get; init; }
     public int? MaxTurns { get; init; } = 32;
 }
@@ -213,7 +215,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                         execs.Add(Task.FromResult(new ToolResultPart(call.Id, call.Name, [new TextPart(error)], IsError: true)));
                         continue;
                     }
-                    execs.Add(ExecuteToolAsync(tool!, call, ct));
+                    execs.Add(ExecuteToolAsync(tool!, call, options, ct));
 
                 }
                 await Task.WhenAll(execs);
@@ -310,11 +312,15 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
 
     private sealed record ToolBatch(IReadOnlyList<(ToolCallPart Call, IAgentTool? Tool, string? Error)> Prepared);
 
-    private async Task<ToolResultPart> ExecuteToolAsync(IAgentTool tool, ToolCallPart call, CancellationToken ct)
+    private async Task<ToolResultPart> ExecuteToolAsync(IAgentTool tool, ToolCallPart call, AgentRunOptions options, CancellationToken ct)
     {
+        // PLAN §18/§25: every tool sees the session workspace — relative paths
+        // resolve against it and foreground shells start there.
+        var workspace = string.IsNullOrEmpty(options.Workspace) ? Environment.CurrentDirectory : options.Workspace!;
+        var toolCtx = new ToolContext(call.Arguments, workspace, options.SessionId);
         try
         {
-            var res = await tool.ExecuteAsync(call.Arguments, ct);
+            var res = await tool.ExecuteAsync(toolCtx, ct);
             return new ToolResultPart(call.Id, call.Name, res.Parts, res.IsError);
         }
         catch (Exception ex)

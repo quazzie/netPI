@@ -16,8 +16,13 @@ public interface IAgentTool
     /// <summary>JSON Schema describing parameters.</summary>
     JsonElement Parameters { get; }
 
-    /// <summary>Execute the tool. <paramref name="arguments"/> is the parsed JSON object.</summary>
-    ValueTask<ToolResult> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken);
+    /// <summary>
+    /// Execute the tool (PLAN §11/§18/§25). The context carries the parsed
+    /// arguments plus the session/workspace scope: relative paths resolve
+    /// against <see cref="ToolContext.Workspace"/> and foreground shells start
+    /// there.
+    /// </summary>
+    ValueTask<ToolResult> ExecuteAsync(ToolContext context, CancellationToken cancellationToken);
 }
 
 /// <summary>Registry of tools contributed by all active plugins.</summary>
@@ -31,4 +36,20 @@ public interface IToolRegistry
 
     /// <summary>Find a tool by name, or null.</summary>
     IAgentTool? Find(string name);
+}
+
+/// <summary>
+/// Execution context handed to every tool (PLAN §18/§25). Relative file
+/// paths resolve against <see cref="Workspace"/>; absolute paths and <c>..</c>
+/// are allowed (no permission prompt).
+/// </summary>
+public sealed record ToolContext(
+    JsonElement Arguments,
+    string Workspace,
+    string? SessionId)
+{
+    /// <summary>Resolve a path against the session workspace; absolute paths pass through.</summary>
+    public string ResolvePath(string? p) =>
+        string.IsNullOrEmpty(p) ? Workspace
+            : (Path.IsPathRooted(p) ? p : Path.GetFullPath(Path.Combine(Workspace, p)));
 }
