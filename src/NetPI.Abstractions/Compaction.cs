@@ -18,6 +18,17 @@ public sealed record CompactionRequest
 
     /// <summary>Optional reasoning level for the summarization call.</summary>
     public string? ReasoningLevel { get; init; }
+
+    /// <summary>
+    /// PLAN §32: prompt tokens of the LAST model request (provider-reported,
+    /// authoritative). 0 = unknown (no model call happened yet), in which case
+    /// the compaction service estimates the whole context from scratch.
+    /// </summary>
+    public int LastPromptTokens { get; init; }
+
+    /// <summary>PLAN §32: message count of the transcript sent in the last
+    /// model request — everything before it is covered by LastPromptTokens.</summary>
+    public int LastUsageMessageCount { get; init; }
 }
 
 /// <summary>

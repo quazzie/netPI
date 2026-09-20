@@ -73,6 +73,20 @@ internal static class TokenEstimator
         foreach (var m in messages) sum += Estimate(m);
         return sum;
     }
+
+    /// <summary>PLAN §32: context measurement = last provider-reported prompt
+    /// usage (authoritative) + estimate of the messages added SINCE that request.
+    /// Without a usage base (no model call yet) falls back to a full estimate.</summary>
+    public static int EstimateContext(
+        IReadOnlyList<AgentMessage> messages, int lastPromptTokens, int lastUsageMessageCount)
+    {
+        if (lastPromptTokens > 0 && lastUsageMessageCount > 0)
+        {
+            int covered = Math.Min(lastUsageMessageCount, messages.Count);
+            return lastPromptTokens + EstimateList(messages.Skip(covered).ToList());
+        }
+        return EstimateList(messages);
+    }
 }
 
 /// <summary>
@@ -121,7 +135,7 @@ public sealed class AutoCompactService : ICompaction
                               : null)
             ?? _config.DefaultContextWindow;
         int threshold = contextWindow - _config.ReserveTokens;
-        int estimated = TokenEstimator.EstimateList(messages);
+        int estimated = TokenEstimator.EstimateContext(messages, request.LastPromptTokens, request.LastUsageMessageCount);
         if (estimated <= threshold)
             return new CompactionResult(null, null);
 

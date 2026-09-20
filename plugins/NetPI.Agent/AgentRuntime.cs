@@ -47,6 +47,13 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     /// </summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Channel<QueuedUserMessage>> _steer = new();
 
+    /// <summary>PLAN §32: prompt tokens reported by the provider on the LAST model
+    /// request — the authoritative base for the context estimate.</summary>
+    private volatile int _lastUsagePromptTokens;
+    /// <summary>PLAN §32: transcript length (message count) of the LAST model
+    /// request — messages after this index were "added since" the provider usage.</summary>
+    private volatile int _lastUsageMessageCount;
+
     public AgentRuntime(IPluginContext context)
     {
         _ctx = context;
@@ -147,6 +154,10 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 _state = AgentState.CallingModel;
                 await PublishAsync(AgentEventType.BeforeModelRequest, options, null, ct);
 
+                // PLAN §32: remember this request's transcript size so the
+                // compaction estimate covers only the messages added since.
+                _lastUsageMessageCount = transcript.Count;
+                _lastUsagePromptTokens = 0; // reset; set from the usage event below
                 var request = new ModelRequest
                 {
                     ModelId = options.ModelId,
@@ -173,6 +184,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                         await foreach (var ev in provider.RunAsync(request, ct))
                         {
                             await PublishAsync(AgentEventType.ModelStreamEvent, options, ModelEventWireMapper.ToWire(ev), ct);
+                            if (ev is UsageUpdated uu) _lastUsagePromptTokens = uu.PromptTokens;
                             if (ev is ModelCompleted mc) assistant = mc.Message;
                             else if (ev is ModelFailed mf)
                             {
@@ -314,6 +326,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                             SessionId = options.SessionId ?? _activeSession ?? string.Empty,
                             ModelId = options.ModelId ?? string.Empty,
                             ReasoningLevel = options.ReasoningLevel,
+                            LastPromptTokens = _lastUsagePromptTokens,
+                            LastUsageMessageCount = _lastUsageMessageCount,
                         }, ct);
                         if (comp is { Performed: true } && comp.ActiveContext is { } active)
                         {
