@@ -103,7 +103,7 @@ public sealed class ContextDiscovery
             // its ordinary AGENTS.md (PLAN §16).
             var text = ReadCached(Path.Combine(netpi, "AGENTS.override.md"))
                 ?? ReadCached(Path.Combine(netpi, "AGENTS.md"));
-            if (text is not { Length: 0 })
+            if (text is { Length: > 0 })
                 layers.Add(($"{raw}\\.netpi\\AGENTS.md", text));
         }
         return layers;
