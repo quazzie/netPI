@@ -10,47 +10,30 @@
     return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
   }
 
-  /**
-   * Streaming reasoning is deliberately rendered as ONE replacing line,
-   * not an ever-growing block. Prefer the most recent non-empty line. Models
-   * that stream prose without newlines still get a compact tail so the row
-   * remains useful instead of becoming a horizontally scrolling paragraph.
-   */
-  function latestThought(text: string): string {
-    const normalized = text.replace(/\r/g, "");
-    const lines = normalized.split("\n");
-
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (line) return compactTail(line);
-    }
-
-    return "Thinking…";
-  }
-
-  function compactTail(text: string): string {
-    const clean = text.replace(/\s+/g, " ").trim();
-    if (clean.length <= 180) return clean;
-
-    // Keep the useful/current end of a long continuously-streamed thought.
-    // Prefer a sentence boundary near the tail, otherwise hard-tail it.
-    const tail = clean.slice(-180);
-    const boundary = tail.search(/[.!?]\s+/);
-    return boundary >= 0 && boundary < 80
-      ? tail.slice(boundary + 2).trim()
-      : "…" + tail.slice(1);
+  function latestLine(text: string): string {
+    const visible = text.trimEnd();
+    if (!visible) return "Thinking…";
+    const newline = visible.lastIndexOf("\n");
+    const line = (newline < 0 ? visible : visible.slice(newline + 1))
+      .replaceAll("**", "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (line.length <= 220) return line;
+    return "…" + line.slice(-219);
   }
 
   let expanded = $derived(thinking.done && (ui.keepThinkingOpen || userOpen));
   let finishedLabel = $derived(
-    thinking.durationMs ? `Thought for ${fmt(thinking.durationMs)}` : "Thinking",
+    thinking.durationMs ? `Thinking · ${fmt(thinking.durationMs)}` : "Thinking",
   );
 </script>
 
 {#if !thinking.done}
   <div class="thinking-stream" title={thinking.text || "Thinking…"} aria-live="polite">
-    <span class="thinking-spark" aria-hidden="true">✦</span>
-    <span class="thinking-stream-line">{latestThought(thinking.text)}</span>
+    <span class="thinking-row-icon" aria-hidden="true">◉</span>
+    <span class="thinking-row-title">Think</span>
+    <span class="thinking-row-sep" aria-hidden="true"></span>
+    <span class="thinking-stream-line">{latestLine(thinking.text)}</span>
   </div>
 {:else}
   <div class="thinking-done">
