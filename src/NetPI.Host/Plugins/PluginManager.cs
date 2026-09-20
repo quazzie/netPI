@@ -62,6 +62,17 @@ public sealed class PluginManager
         EventBus bus,
         ServiceRegistry registry,
         CommandRegistry commands,
+        IConfigService config,
+        ILogger logger)
+        : this(options, bus, registry, commands, new WebPanelRegistry(), config, logger)
+    {
+    }
+
+    public PluginManager(
+        PluginManagerOptions options,
+        EventBus bus,
+        ServiceRegistry registry,
+        CommandRegistry commands,
         WebPanelRegistry webPanels,
         IConfigService config,
         ILogger logger)
