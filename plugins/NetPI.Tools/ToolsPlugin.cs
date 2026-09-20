@@ -58,7 +58,11 @@ public sealed class ReadTool : IAgentTool
                 return Error($"Refusing to read binary file {path} ({bytes.Length} bytes). Convert it to text first or use the bash tool.");
             var offset = Math.Max(1, Args.Int(ctx.Arguments, "offset", 1));
             var limit = Math.Clamp(Args.Int(ctx.Arguments, "limit", 200), 1, 2000);
-            var lines = Encoding.UTF8.GetString(bytes).Split('\r', '\n');
+            var raw = Encoding.UTF8.GetString(bytes).Replace("\r\n", "\n").Replace("\r", "\n");
+            var lines = raw.Split('\n');
+            // A trailing newline must not count as an extra (empty) line.
+            if (lines.Length > 0 && string.IsNullOrEmpty(lines[^1]))
+                lines = lines.Take(lines.Length - 1).ToArray();
             var total = lines.Length;
             if (offset > total)
                 return Ok($"No lines at offset {offset} (file has {total} lines).");
@@ -247,9 +251,10 @@ public sealed class GrepTool : IAgentTool
                 var file = l[..c1];
                 var line = l[(c1 + 1)..c2];
                 var text = l[(c2 + 1)..];
+                var normWs = workspace.Replace('\\', '/');
                 file = file.Replace('\\', '/');
-                if (file.StartsWith(workspace, StringComparison.OrdinalIgnoreCase))
-                    file = file[workspace.Length..].TrimStart('/');
+                if (file.StartsWith(normWs, StringComparison.OrdinalIgnoreCase))
+                    file = file[normWs.Length..].TrimStart('/');
                 return file + ":" + line + ": " + text;
             })
             .Where(l => l.Contains(':'))

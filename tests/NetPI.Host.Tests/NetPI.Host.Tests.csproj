@@ -11,5 +11,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\NetPI.Host\NetPI.Host.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.TestPlugin\NetPI.TestPlugin.csproj" />
+    <ProjectReference Include="..\..\plugins\NetPI.Tools\NetPI.Tools.csproj" />
+    <ProjectReference Include="..\..\plugins\NetPI.Agent\NetPI.Agent.csproj" />
+    <ProjectReference Include="..\..\plugins\NetPI.Context.Pi\NetPI.Context.Pi.csproj" />
+    <ProjectReference Include="..\..\plugins\NetPI.Storage.Sqlite\NetPI.Storage.Sqlite.csproj" />
   </ItemGroup>
 </Project>
