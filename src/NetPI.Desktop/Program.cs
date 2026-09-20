@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.Json;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -65,9 +66,13 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
                     Close();
                     return;
                 }
+                // Native bridge for desktop-only affordances. The Web UI remains
+                // one Svelte/WebView surface; WinForms only supplies OS dialogs.
+                _view.CoreWebView2!.WebMessageReceived += OnWebMessageReceived;
+
                 // Show a waiting page while the host boots; it polls /bootstrap
                 // and reloads into the app once the host is up.
-                _view.CoreWebView2!.NavigateToString(WaitingPage);
+                _view.CoreWebView2.NavigateToString(WaitingPage);
                 try
                 {
                     await StartHostAsync();
@@ -86,6 +91,46 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
             // deadlocks WebView2's UI-context completion). Fire-and-forget.
             _ = InitWebViewAsync();
             FormClosed += (_, _) => KillHost();
+        }
+
+        private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(e.WebMessageAsJson);
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("type", out var typeEl) || typeEl.GetString() != "native.pickFiles")
+                    return;
+
+                var requestId = root.TryGetProperty("requestId", out var reqEl)
+                    ? reqEl.GetString() ?? string.Empty
+                    : string.Empty;
+
+                using var dialog = new OpenFileDialog
+                {
+                    Multiselect = true,
+                    CheckFileExists = true,
+                    CheckPathExists = true,
+                    Title = "Add files to netPI context",
+                    Filter = "All files (*.*)|*.*",
+                };
+
+                var paths = dialog.ShowDialog(this) == DialogResult.OK
+                    ? dialog.FileNames
+                    : Array.Empty<string>();
+
+                _view.CoreWebView2?.PostWebMessageAsJson(JsonSerializer.Serialize(new
+                {
+                    type = "native.filesPicked",
+                    requestId,
+                    paths,
+                }));
+            }
+            catch
+            {
+                // Ignore malformed/unrecognized page messages; the browser UI
+                // falls back to its workspace picker when the bridge is absent.
+            }
         }
 
         private async Task InitWebViewAsync()
