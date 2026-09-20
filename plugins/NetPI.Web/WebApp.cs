@@ -443,6 +443,7 @@ internal sealed class WebApp : IAsyncDisposable
                         var offset = Math.Max(0, total - pageSize);
                         var entries = await _store.ReadAsync(asid, offset, pageSize, ct);
                         var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
+                        await SendAsync(c, "session.updated", ToSessionJson(info), asid, ct);
                         await SendAsync(c, "session.entries",
                             new { entries = EntriesToJson(entries), replace = true, total = total,
                                   hasMore = total > entries.Count, beforeSequence = beforeSeq }, asid, ct);
