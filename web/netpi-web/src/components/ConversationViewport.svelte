@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import { store } from "../store.svelte";
   import BlockRenderer from "./conversation/BlockRenderer.svelte";
+  import AgentActivity from "./AgentActivity.svelte";
   import { ws } from "../ws";
 
   let viewport: HTMLElement | null = $state(null);
@@ -49,7 +50,7 @@
   // following the response.
   let tailSignal = $derived.by(() => {
     const last = store.blocks[store.blocks.length - 1];
-    if (!last) return "empty";
+    if (!last) return `empty:${store.activity ?? ""}`;
     if (last.kind !== "assistant")
       return `${store.blocks.length}:${last.id}`;
 
@@ -64,6 +65,7 @@
       last.thinking?.done ? 1 : 0,
       last.done ? 1 : 0,
       tools,
+      store.activity ?? "",
     ].join(":");
   });
 
@@ -104,7 +106,7 @@
 </script>
 
 <div class="conversation" bind:this={viewport} onscroll={onScroll}>
-  {#if store.blocks.length === 0}
+  {#if store.blocks.length === 0 && !store.activity}
     <div class="empty">
       <div class="empty-mark">π</div>
       <div class="empty-title">What are we building?</div>
@@ -115,6 +117,7 @@
       {#each store.blocks as b (b.id)}
         <BlockRenderer block={b} />
       {/each}
+      <AgentActivity />
     </div>
   {/if}
 
