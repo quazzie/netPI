@@ -161,7 +161,38 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 var toolMsg = new AgentMessage(NewId(), MessageRole.Tool, results, DateTimeOffset.UtcNow);
                 transcript.Add(toolMsg);
                 await AppendAsync(store, toolMsg, ct);
+
+                // ---- auto-compaction checkpoint (PLAN §32/§33) ----------------
+                // After tool results, before the next assistant response.
+                var compaction = TryResolveCompaction();
+                if (compaction is not null && compaction.IsAvailable && store is not null)
+                {
+                    try
+                    {
+                        var comp = await compaction.CompactAsync(new CompactionRequest
+                        {
+                            SessionId = options.SessionId ?? _activeSession ?? string.Empty,
+                            ModelId = options.ModelId ?? string.Empty,
+                            ReasoningLevel = options.ReasoningLevel,
+                        }, ct);
+                        if (comp is { Performed: true } && comp.ActiveContext is { } active)
+                        {
+                            // PLAN §31: context = system prompt + summary + retained tail.
+                            // The plugin's active context is [summary, retained...];
+                            // re-prepend this run's system prompt (if any).
+                            var rebuilt = new List<AgentMessage>(active);
+                            if (transcript.Count > 0 && transcript[0].Role == MessageRole.System)
+                                rebuilt.Insert(0, transcript[0]);
+                            transcript = rebuilt;
+                            await PublishAsync(AgentEventType.ContextBuilt, options, null, ct);
+                        }
+                    }
+
+                    catch (Exception ex) { _ctx.Log.Warning($"compaction checkpoint failed: {ex.Message}"); }
+                }
+
                 await PublishAsync(AgentEventType.TurnBoundary, options, null, ct);
+
             }
         }
         catch (OperationCanceledException)
@@ -196,6 +227,15 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         try { return _services.Resolve<T>(id); }
         catch (ServiceUnavailableException) { return default!; }
     }
+
+    /// <summary>Resolve the AutoCompact service if present (id "compaction").</summary>
+    private ICompaction? TryResolveCompaction()
+    {
+        try { return _services.Resolve<ICompaction>("compaction"); }
+        catch (ServiceUnavailableException) { return null; }
+    }
+
+
 
     private async ValueTask AppendAsync(ISessionStore? store, AgentMessage msg, CancellationToken ct)
     {

@@ -70,7 +70,10 @@ internal sealed class HostConfigUpdater : IHostConfigUpdate
         ["storage"] = "netpi.storage.sqlite",
         ["context"] = "netpi.context.pi",
         ["tools"] = "netpi.tools",
+        ["autocompact"] = "netpi.autoCompact",
+        ["auto-compact"] = "netpi.autoCompact",
     };
+
 
     public HostConfigUpdater(ConfigService config) => _config = config;
 

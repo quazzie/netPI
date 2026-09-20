@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.AutoCompact</RootNamespace>
+    <AssemblyName>netPI.AutoCompact</AssemblyName>
+    <Description>Context auto-compaction: threshold detection, summarization, and active-context rebuild (PLAN §31-§33). Reloadable netPI plugin.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+</Project>

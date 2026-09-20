@@ -39,6 +39,8 @@ internal sealed class WebApp : IAsyncDisposable
     private IPluginManagerFacade? _facade;
     private IHostConfigUpdate? _config;
     private ISteeringQueue? _steering;
+    private ICompaction? _compaction;
+
     private readonly List<IDisposable> _subs = [];
 
     // ---- hub ---------------------------------------------------------------
@@ -64,6 +66,7 @@ internal sealed class WebApp : IAsyncDisposable
         _facade = Resolve<IPluginManagerFacade>("plugins");
         _config = Resolve<IHostConfigUpdate>("host-config");
         _steering = Resolve<ISteeringQueue>("steering");
+        _compaction = Resolve<ICompaction>("compaction");
 
         _subs.Add(_ctx.Events.Subscribe<AgentEvent>(OnAgentEvent));
 
@@ -445,9 +448,46 @@ internal sealed class WebApp : IAsyncDisposable
             }
 
             case "session.compact":
-                // Phase 9 (AutoCompact) will implement this. Ack for now.
+            {
+                var sid = S(p, "sessionId");
+                var modelId = S(p, "model");
+                var reasoning = S(p, "reasoning");
+                bool ok = false; string note = "";
+
+                if (sid is not null && _compaction is not null && _compaction.IsAvailable)
+                {
+                    if (string.IsNullOrEmpty(modelId) && _catalog is not null && _catalog.Models.Count > 0)
+                        modelId = _catalog.Models[0].ModelId;
+                    if (!string.IsNullOrEmpty(modelId))
+                    {
+                        try
+                        {
+                            var result = await _compaction.CompactAsync(new CompactionRequest
+                            {
+                                SessionId = sid,
+                                ModelId = modelId,
+                                ReasoningLevel = reasoning,
+                            }, ct);
+                            ok = result is { Performed: true };
+                            note = ok ? "compacted" : "no-op (below threshold)";
+                            await BroadcastSession(sid, ct);
+                        }
+                        catch (Exception ex)
+                        {
+                            note = ex.Message;
+                            _log.Warning($"session.compact failed: {ex.Message}");
+                        }
+                    }
+                    else note = "no model";
+                }
+                else if (sid is null) note = "no sessionId";
+                else note = "compaction unavailable";
+
                 await SendAckAsync(c, requestId, ct);
+                await SendAsync(c, "session.compact.result", new { sessionId = sid, performed = ok, note }, sid, ct);
                 break;
+            }
+
 
             case "models.refresh":
                 if (_catalog is null) { await SendErrorAsync(c, requestId, "no catalog", ct); break; }

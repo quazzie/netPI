@@ -79,12 +79,8 @@ public sealed class AgentRunner : IAgentRunner
                 ? Environment.CurrentDirectory : request.WorkspacePath;
             var systemText = await BuildSystemPromptAsync(workspace);
 
-            var transcript = new List<AgentMessage>();
-            if (!string.IsNullOrWhiteSpace(systemText))
-                transcript.Add(new AgentMessage(Guid.NewGuid().ToString("n"), MessageRole.System,
-                    [new TextPart(systemText)], DateTimeOffset.UtcNow));
-            transcript.Add(new AgentMessage(Guid.NewGuid().ToString("n"), MessageRole.User,
-                [new TextPart(request.Text)], DateTimeOffset.UtcNow));
+            var transcript = await BuildTranscriptAsync(request, systemText, cts.Token);
+
 
             await _runtime.RunAsync(new AgentRunOptions
             {
@@ -147,9 +143,71 @@ public sealed class AgentRunner : IAgentRunner
         }
     }
 
+    /// <summary>
+    /// Build the transcript for a run (PLAN §31/§33): system prompt first, then
+    /// the active model context (compaction summary + retained tail when a
+    /// compaction has occurred, otherwise recent history). The current run's
+    /// user message was already persisted by StartRunAsync and is the newest
+    /// stored message.
+    /// </summary>
+    private async Task<List<AgentMessage>> BuildTranscriptAsync(
+        AgentRunRequest request, string systemText, CancellationToken ct)
+    {
+        var transcript = new List<AgentMessage>();
+
+        if (!string.IsNullOrWhiteSpace(systemText))
+            transcript.Add(new AgentMessage(Guid.NewGuid().ToString("n"), MessageRole.System,
+                [new TextPart(systemText)], DateTimeOffset.UtcNow));
+
+        // Active context: via the AutoCompact plugin (handles compaction
+        // reconstruction), else straight from the store.
+        try
+        {
+            if (!string.IsNullOrEmpty(request.SessionId))
+            {
+                var compaction = Resolve<ICompaction>("compaction");
+                var context = new List<AgentMessage>();
+                if (compaction is not null)
+                    context.AddRange(await compaction.BuildActiveContextAsync(request.SessionId, ct));
+
+                if (context.Count == 0)
+                {
+                    var store = Resolve<ISessionStore>("sessions");
+                    if (store is not null)
+                        context = (await store.ReadAsync(request.SessionId, 0, 200, ct))
+                            .Where(e => e.Kind == EntryKind.Message && e.Message is not null)
+                            .Select(e => e.Message!)
+                            .ToList();
+                }
+                // De-dup the current run's user message: if the retained tail
+                // already ends with it (it was just persisted by StartRunAsync),
+                // drop it — it is re-added fresh below so the model sees it once.
+                if (context.Count > 0 && context[^1].Role == MessageRole.User &&
+                    string.Equals(TextOf(context[^1]), request.Text, StringComparison.Ordinal))
+                    context.RemoveAt(context.Count - 1);
+                transcript.AddRange(context);
+
+            }
+        }
+        catch (Exception ex)
+        {
+            _ctx.Log.Warning($"context build failed: {ex.Message}");
+        }
+
+        transcript.Add(new AgentMessage(Guid.NewGuid().ToString("n"), MessageRole.User,
+            [new TextPart(request.Text)], DateTimeOffset.UtcNow));
+        return transcript;
+    }
+
+
     private T? Resolve<T>(string id) where T : notnull
     {
         try { return _ctx.Services.Resolve<T>(id); }
         catch (ServiceUnavailableException) { return default; }
     }
+
+    private static string TextOf(AgentMessage m)
+        => string.Join("\n", m.Parts.OfType<TextPart>().Select(p => p.Text));
+
+
 }

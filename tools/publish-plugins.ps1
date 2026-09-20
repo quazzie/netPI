@@ -14,7 +14,7 @@ $env:PATH = "$DotNetRoot;$env:PATH"
 
 $root = Split-Path $PSScriptRoot -Parent
 $plugins = @("NetPI.Agent","NetPI.Context.Pi","NetPI.Provider.AiProxy",
-             "NetPI.Storage.Sqlite","NetPI.TestPlugin","NetPI.Tools","NetPI.Web")
+             "NetPI.Storage.Sqlite","NetPI.AutoCompact","NetPI.TestPlugin","NetPI.Tools","NetPI.Web")
 
 foreach ($p in $plugins) {
   $dir = Join-Path $root "plugins/$p"

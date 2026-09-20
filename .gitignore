@@ -18,3 +18,9 @@ plugins/*/runtimes/
 plugins/*/*.deps.json
 plugins/*/*.runtimeconfig.json
 plugins/*/*.pdb
+
+# smoke-test artifacts
+smoke.out
+smoke.err
+smoke-*.mjs
+tmp-*.txt

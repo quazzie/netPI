@@ -211,9 +211,10 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         var list = new List<SessionEntry>();
         await using var cmd = _connection.CreateCommand();
         cmd.CommandText = """
-            SELECT id, entry_type, created_at, payload_json FROM session_entries
+            SELECT id, entry_type, created_at, seq, payload_json FROM session_entries
             WHERE session_id = $s ORDER BY seq LIMIT $cnt OFFSET $off;
             """;
+
         cmd.Parameters.AddWithValue("$s", sessionId);
         cmd.Parameters.AddWithValue("$off", offset);
         cmd.Parameters.AddWithValue("$cnt", count);
@@ -248,7 +249,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
     private static SessionEntry Rehydrate(string sessionId, SqliteDataReader r)
     {
         var kind = Enum.Parse<EntryKind>(r.GetString(1), ignoreCase: true);
-        var payloadJson = r.GetString(3);
+        var payloadJson = r.GetString(4);
         AgentMessage? msg = kind == EntryKind.Message
             ? MessageSerializer.Deserialize(JsonDocument.Parse(payloadJson).RootElement)
             : null;
@@ -257,8 +258,10 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
             : null;
         return new SessionEntry(
             r.GetString(0), sessionId, kind, msg, payload,
-            DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(2)));
+            DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(2)),
+            Sequence: r.GetInt32(3));
     }
+
 
     public void Dispose()
     {

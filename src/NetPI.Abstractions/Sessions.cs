@@ -21,8 +21,11 @@ public sealed record SessionEntry(
     EntryKind Kind,
     AgentMessage? Message,
     JsonElement? Payload,
-    DateTimeOffset CreatedAt)
+    DateTimeOffset CreatedAt,
+    /// <summary>Monotonic position in the session (1-based, PLAN §31). 0 when unassigned.</summary>
+    int Sequence = 0)
 {
+
     public override string ToString() => $"{Kind} {Id}";
 }
 

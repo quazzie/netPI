@@ -80,6 +80,9 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         var thinkingStarted = false;
         var tools = new Dictionary<int, ToolState>();
         var parts = new List<MessagePart>();
+        var textBuf = new StringBuilder();
+        var thinkBuf = new StringBuilder();
+
         var usageSeen = false;
 
         await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken);
@@ -97,15 +100,33 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             foreach (var ev in ParseChunk(data, ref textStarted, ref thinkingStarted, tools))
             {
                 if (ev is UsageUpdated) usageSeen = true;
+                if (ev is TextDelta td) textBuf.Append(td.Text);
+                else if (ev is ThinkingDelta tdt) thinkBuf.Append(tdt.Text);
                 yield return ev;
             }
         }
+
 
         if (textStarted) yield return new TextCompleted(TextBlockId);
         if (thinkingStarted) yield return new ThinkingCompleted(ThinkingBlockId);
         if (!usageSeen) yield return new UsageUpdated(0, 0, 0);
 
+        // ---- accumulate streamed parts into the completed message (PLAN §9) ----
+        if (thinkBuf.Length > 0) parts.Add(new ThinkingPart(thinkBuf.ToString()));
+        if (textBuf.Length > 0) parts.Add(new TextPart(textBuf.ToString()));
+        foreach (var tc in tools.Values)
+            if (tc.Started)
+            {
+                var argsJson = tc.FullArgs.Length > 0 ? tc.FullArgs.ToString().Trim() : string.Empty;
+                JsonElement argsEl;
+                try { argsEl = JsonDocument.Parse(argsJson).RootElement.Clone(); }
+                catch { argsEl = JsonDocument.Parse("{}").RootElement.Clone(); }
+                parts.Add(new ToolCallPart(tc.Id, tc.Name, argsEl));
+
+            }
+
         var message = new AgentMessage(Guid.NewGuid().ToString("n"), MessageRole.Assistant, parts, DateTimeOffset.UtcNow);
+
         yield return new ModelCompleted(message);
         yield break;
     }
@@ -178,7 +199,8 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                         if (fn.TryGetProperty("arguments", out var args) && args.ValueKind == JsonValueKind.String)
                         {
                             var piece = args.GetString() ?? "";
-                            if (piece.Length > 0) state.Args.Append(piece);
+                            if (piece.Length > 0) { state.Args.Append(piece); state.FullArgs.Append(piece); }
+
                         }
                     }
                     if (!state.Started) { state.Started = true; events.Add(new ToolCallStarted(state.Id, state.Name)); }
@@ -193,7 +215,8 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     private static int GetInt(JsonElement e, string prop)
         => e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : 0;
 
-    private sealed class ToolState { public string Id; public string Name; public StringBuilder Args = new(); public bool Started; public ToolState(string id, string name) { Id = id; Name = name; } }
+    private sealed class ToolState { public string Id; public string Name; public StringBuilder Args = new(); public StringBuilder FullArgs = new(); public bool Started; public ToolState(string id, string name) { Id = id; Name = name; } }
+
 
     // ---- payload building -------------------------------------------------
     private static readonly JsonSerializerOptions WireOpts = new()
