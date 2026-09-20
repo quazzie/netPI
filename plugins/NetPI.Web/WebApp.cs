@@ -45,6 +45,15 @@ internal sealed class WebApp : IAsyncDisposable
     // PLAN §41: tool.started → tool.output → tool.completed, with real duration.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _toolStarts = new();
 
+    // PLAN §39: per-session delta batcher (coalesce ~20ms windows).
+    private sealed class DeltaBatcher
+    {
+        public readonly object Gate = new();
+        public readonly System.Collections.Generic.Dictionary<string, System.Text.StringBuilder> Buffers = new();
+        public Task? Pending;
+    }
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DeltaBatcher> _batchers = new();
+
     // ---- hub ---------------------------------------------------------------
     private readonly HashSet<Client> _clients = [];
     private readonly object _clientsLock = new();
@@ -238,16 +247,17 @@ internal sealed class WebApp : IAsyncDisposable
                 SendEvent("thinking.started", new { }, sid);
                 break;
             case "thinking-delta":
-                SendEvent("thinking.delta", new { text = S(w, "text") ?? "" }, sid);
+                EnqueueDelta(sid, "thinking", S(w, "text") ?? "");
                 break;
             case "thinking-completed":
+                FlushDeltas(sid);
                 SendEvent("thinking.completed", new { }, sid);
                 break;
             case "text-delta":
-                SendEvent("text.delta", new { text = S(w, "text") ?? "" }, sid);
+                EnqueueDelta(sid, "text", S(w, "text") ?? "");
                 break;
             case "tool-call-arguments-delta":
-                SendEvent("tool.args", new { id = S(w, "toolCallId"), args = S(w, "text") ?? "" }, sid);
+                EnqueueDelta(sid, "args:" + (S(w, "toolCallId") ?? ""), S(w, "text") ?? "");
                 break;
             case "usage-updated":
                 _promptTokens = I(w, "promptTokens");
@@ -262,6 +272,7 @@ internal sealed class WebApp : IAsyncDisposable
                 break;
             case "model-completed":
 
+                FlushDeltas(sid);
                 SendEvent("assistant.completed", new
                 {
                     usage = _totalTokens > 0 ? new
@@ -858,6 +869,64 @@ internal sealed class WebApp : IAsyncDisposable
         lock (_clientsLock) snapshot = _clients.ToList();
         foreach (var c in snapshot)
             await c.SendSafeAsync(json, ct);
+    }
+
+    private const int DeltaFlushMs = 20;
+
+    /// <summary>PLAN §39: buffer a delta; a pending flush is scheduled for the
+    /// next ~20ms window (≈ one browser frame).</summary>
+    private void EnqueueDelta(string? sid, string lane, string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        var b = _batchers.GetOrAdd(sid ?? "", _ => new DeltaBatcher());
+        bool schedule;
+        lock (b.Gate)
+        {
+            if (!b.Buffers.TryGetValue(lane, out var buf))
+            {
+                buf = new System.Text.StringBuilder();
+                b.Buffers[lane] = buf;
+            }
+            buf.Append(text);
+            schedule = b.Pending is null;
+        }
+        if (!schedule) return;
+        b.Pending = Task.Delay(DeltaFlushMs).ContinueWith(_ => FlushDeltas(sid),
+            System.Threading.Tasks.TaskScheduler.Default);
+    }
+
+    /// <summary>PLAN §39: drain all buffered lanes for a session now
+    /// (window elapsed, or a boundary event forced the flush).</summary>
+    private void FlushDeltas(string? sid)
+    {
+        var key = sid ?? "";
+        if (!_batchers.TryGetValue(key, out var b)) return;
+        List<(string lane, string text)> drained;
+        lock (b.Gate)
+        {
+            if (b.Buffers.Count == 0)
+            {
+                b.Pending = null;
+                return;
+            }
+            drained = b.Buffers
+                .Select(kv => (kv.Key, kv.Value.ToString()))
+                .Where(x => x.Item2.Length > 0)
+                .ToList();
+            b.Buffers.Clear();
+            b.Pending = null;
+        }
+        foreach (var (lane, text) in drained)
+        {
+            if (lane == "thinking")
+                SendEvent("thinking.delta", new { text }, sid);
+            else if (lane == "text")
+                SendEvent("text.delta", new { text }, sid);
+            else if (lane.StartsWith("args:"))
+                SendEvent("tool.args", new { id = lane[5..], args = text }, sid);
+        }
+        if (drained.Count == 0 && b.Buffers.Count == 0)
+            _batchers.TryRemove(key, out _);
     }
 
     private void SendEvent(string type, object payload, string? sid) =>
