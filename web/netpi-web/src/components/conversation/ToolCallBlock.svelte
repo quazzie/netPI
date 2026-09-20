@@ -19,6 +19,7 @@
   let args = $derived(parsedArgs());
   let running = $derived(call.result === undefined);
   let shellLike = $derived(call.name === "bash" || call.name === "powershell");
+  let linkedFile = $derived(filePath());
 
   $effect(() => {
     if (!userToggled && running && shellLike) open = true;
@@ -96,15 +97,15 @@
     <span class="tool-chevron">{open ? "⌄" : "›"}</span>
     <span class="tool-name">{call.name}</span>
 
-    {#if filePath()}
+    {#if linkedFile}
       <a
         class="tool-file"
-        href={fileHref(filePath()!)}
+        href={fileHref(linkedFile)}
         target="_blank"
         rel="noopener"
-        title={filePath()!}
+        title={linkedFile}
         onclick={stopLink}
-      >{filePath()}</a>
+      >{linkedFile}</a>
     {:else}
       <span class="tool-summary" title={summary()}>{summary()}</span>
     {/if}
