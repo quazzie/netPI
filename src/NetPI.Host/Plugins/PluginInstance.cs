@@ -27,6 +27,9 @@ public sealed class PluginInstance
     /// <summary>Command registrations owned by this generation (PLAN §37); removed on unload.</summary>
     public NetPI.Host.Services.ScopedCommands? Commands { get; set; }
 
+    /// <summary>Web-panel registrations owned by this generation.</summary>
+    public NetPI.Host.Services.ScopedWebPanels? WebPanels { get; set; }
+
     /// <summary>Event subscription handles owned by this generation.</summary>
     public ConcurrentDictionary<string, IDisposable> Subscriptions { get; } = new();
 
