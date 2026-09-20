@@ -41,6 +41,7 @@ public sealed class ReadTool : IAgentTool
     public IReadOnlyList<string> Guidelines => [
         "Default is 200 lines, capped at 2000; 'Showing lines X-Y of Z' tells you when a file continues — pass offset=N to page.",
         "The file must exist; use grep or a shell command to locate it when the exact path is unknown.",
+        "User messages may contain @path or @\"path with spaces\" references; treat these as file references and use read when their contents are needed.",
     ];
     public JsonElement Parameters => Args.Schema(
         ("path", "string", "File path to read."),
