@@ -17,6 +17,12 @@ public sealed record ModelInfo(
     /// <summary>Input modalities the model accepts (PLAN §13). Defaults to text-only.</summary>
     public IReadOnlyList<string> InputModalities { get; init; } = ["text"];
 
+    /// <summary>
+    /// Provider-advertised default reasoning effort, when the catalog exposes
+    /// one. netPI never invents a default.
+    /// </summary>
+    public string? DefaultReasoningLevel { get; init; }
+
     public override string ToString() => $"{ModelId} ({DisplayName})";
 }
 
