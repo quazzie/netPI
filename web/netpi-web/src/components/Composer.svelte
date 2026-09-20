@@ -203,8 +203,7 @@
         ws.request("session.create", { workspace: store.session?.workspace || undefined }).catch((e) => store.setError(String(e)));
         break;
       case "/plugins":
-        ui.rightTab = "plugins";
-        ui.rightOpen = true;
+        ui.setRightTab("plugins", true);
         break;
       case "/settings":
       case "/workspace":
