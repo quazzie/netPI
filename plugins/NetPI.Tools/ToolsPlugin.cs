@@ -191,14 +191,35 @@ public sealed class GrepTool : IAgentTool
 public abstract class ShellToolBase : IAgentTool
 {
     protected abstract string ShellId { get; }
+    /// <summary>
+    /// Fallback prefix used when the plugin was constructed without a
+    /// <see cref="ShellDetection"/> (tests, or detection unavailable).
+    /// </summary>
     protected abstract IReadOnlyList<string> CommandPrefix { get; }
 
+    private readonly ShellDetection? _detected;
+
+    protected ShellToolBase(ShellDetection? detected = null) => _detected = detected;
+
     public string Name => ShellId;
-    public string Description => $"Run a {ShellId} command and return its output.";
+    public string Description => $"Run a {ShellId} command and return its output." +
+        (_detected is { } d ? $" Backend: {d.Label}." : "");
     public JsonElement Parameters => Args.Schema(
         ("command", "string", "The command to run."),
         ("workdir", "string", "Working directory. Optional."),
         ("timeout_ms", "number", "Timeout in ms (default 120000). Optional."));
+
+    /// <summary>The detected executable + argument prefix for this shell.</summary>
+    protected (string FileName, IReadOnlyList<string> Args) Invocation
+    {
+        get
+        {
+            if (_detected is { } d)
+                return (d.Executable, d.Arguments);
+
+            return (CommandPrefix[0], CommandPrefix.Skip(1).ToList());
+        }
+    }
 
     public async ValueTask<ToolResult> ExecuteAsync(JsonElement arguments, CancellationToken ct)
     {
@@ -208,11 +229,16 @@ public abstract class ShellToolBase : IAgentTool
         try
         {
             var timeoutMs = Args.Int(arguments, "timeout_ms", 120_000);
-            var psi = new ProcessStartInfo(CommandPrefix[0]) { RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true, UseShellExecute = false, CreateNoWindow = true };
-            foreach (var a in CommandPrefix.Skip(1)) psi.ArgumentList.Add(a);
+            var (fileName, args) = Invocation;
+            var psi = new ProcessStartInfo(fileName) { RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var a in args) psi.ArgumentList.Add(a);
             psi.ArgumentList.Add(command);
             var workdir = Args.OptStr(arguments, "workdir");
-            if (workdir is not null) psi.WorkingDirectory = workdir;
+            if (workdir is not null)
+                // PLAN §23: the WSL backend owns Windows↔WSL working-dir conversion.
+                psi.WorkingDirectory = _detected is { IsWsl: true }
+                    ? ShellDetector.ConvertToWslPath(workdir)
+                    : workdir;
 
 
             using var proc = new Process { StartInfo = psi };
@@ -251,18 +277,19 @@ public abstract class ShellToolBase : IAgentTool
 }
 
 /// <summary>Run a bash/sh command (POSIX shells).</summary>
-public sealed class BashTool : ShellToolBase
+public sealed class BashTool(ShellDetection? detected = null) : ShellToolBase(detected)
 {
     protected override string ShellId => "bash";
     protected override IReadOnlyList<string> CommandPrefix => ["bash", "-c"];
 }
 
 /// <summary>Run a PowerShell command (Windows).</summary>
-public sealed class PowerShellTool : ShellToolBase
+public sealed class PowerShellTool(ShellDetection? detected = null) : ShellToolBase(detected)
 {
     protected override string ShellId => "powershell";
     protected override IReadOnlyList<string> CommandPrefix => ["pwsh", "-NoProfile", "-Command"];
-    }
+}
+
 
 /// <summary>
 /// Resolves a command string for a specific shell into a concrete
@@ -272,15 +299,24 @@ public sealed class PowerShellTool : ShellToolBase
 public sealed class ShellCommandResolver : IShellCommandResolver
 {
     private readonly string _shellId;
-    private readonly IReadOnlyList<string> _prefix;
-    public ShellCommandResolver(string shellId, IReadOnlyList<string> prefix) { _shellId = shellId; _prefix = prefix; }
+
+    private readonly ShellDetection? _detected;
+    public ShellCommandResolver(string shellId, ShellDetection? detected) { _shellId = shellId; _detected = detected; }
     public string ShellId => _shellId;
     public ValueTask<ResolvedCommand> ResolveAsync(string command, string workingDirectory, CancellationToken ct)
     {
-        var rc = new ResolvedCommand(_prefix[0], _prefix.Skip(1).Append(command).ToList(), workingDirectory, null);
+        // PLAN §23/§26: resolve to the DETECTED executable, never an assumed name.
+        var fileName = _detected is { } d ? d.Executable
+            : ("bash".Equals(_shellId, StringComparison.OrdinalIgnoreCase) ? "bash" : "pwsh");
+        var prefix = _detected is { } dd ? dd.Arguments
+            : ("bash".Equals(_shellId, StringComparison.OrdinalIgnoreCase) ? new[] { "-c" } : new[] { "-NoProfile", "-Command" });
+        var wd = _detected is { IsWsl: true } ? ShellDetector.ConvertToWslPath(workingDirectory) : workingDirectory;
+        var rc = new ResolvedCommand(fileName, [.. prefix, command], wd, null);
         return ValueTask.FromResult(rc);
     }
 }
+
+
 
 
 
@@ -298,19 +334,25 @@ public sealed class ToolsPlugin : INetPiPlugin
 
     public async ValueTask LoadAsync(IPluginContext context, CancellationToken cancellationToken)
     {
-        // Platform-appropriate shells: register both but they will error on the
-        // wrong platform; keep both so a session can use whichever exists.
-        _tools = [new ReadTool(), new WriteTool(), new EditTool(), new GrepTool(), new BashTool(), new PowerShellTool()];
+        // PLAN §23/§24: probe the backends ONCE at load (re-probed on reload).
+        // Preference: config override → PATH/native → Git Bash → MSYS → WSL.
+        var bash = await ShellDetector.DetectAsync("bash", context.OwnConfig, cancellationToken);
+        var pwsh = await ShellDetector.DetectAsync("powershell", context.OwnConfig, cancellationToken);
+        context.Log.Information($"Bash: {bash.Label}");
+        context.Log.Information($"PowerShell: {pwsh.Label}");
+
+        _tools = [new ReadTool(), new WriteTool(), new EditTool(), new GrepTool(),
+            new BashTool(bash), new PowerShellTool(pwsh)];
         _registry = new ToolRegistryImpl();
         _registrations = _tools.Select(t => _registry.Register(t)).ToArray();
         context.Services.Register<IToolRegistry>("tools", _registry);
-        // Shell-command resolvers (PLAN §26) — leased by the background-tasks
-        // plugin to resolve a command to a concrete executable before it owns
-        // the process.
+        // Shell-command resolvers (PLAN §26) — owned by the tools plugin, briefly
+        // leased by the background-tasks plugin before it spawns a process. They
+        // now resolve to the DETECTED executable, not an assumed name.
         context.Services.Register<IShellCommandResolver>("resolver:bash",
-            new ShellCommandResolver("bash", ["bash", "-c"]));
+            new ShellCommandResolver("bash", bash));
         context.Services.Register<IShellCommandResolver>("resolver:powershell",
-            new ShellCommandResolver("powershell", ["pwsh", "-NoProfile", "-Command"]));
+            new ShellCommandResolver("powershell", pwsh));
         context.Log.Information($"Tools registered: {string.Join(", ", _tools.Select(t => t.Name))}");
         await ValueTask.CompletedTask;
 
