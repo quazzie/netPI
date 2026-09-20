@@ -420,6 +420,8 @@ internal sealed class WebApp : IAsyncDisposable
         if (_facade is not null)
             await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
 
+        await SendAsync(c, "ui.panels", new { panels = PanelJson() }, null, ct);
+
         if (_store is not null)
         {
             try
@@ -576,7 +578,10 @@ internal sealed class WebApp : IAsyncDisposable
             {
                 var sid = S(p, "sessionId");
                 if (sid is not null && _store is not null)
+                {
                     await _store.SetModelAsync(sid, S(p, "modelId"), S(p, "reasoning"), ct);
+                    await BroadcastSession(sid, ct);
+                }
                 await SendAckAsync(c, requestId, ct);
                 break;
             }
@@ -585,7 +590,11 @@ internal sealed class WebApp : IAsyncDisposable
             {
                 var sid = S(p, "sessionId");
                 if (sid is not null && _store is not null)
-                    await _store.SetModelAsync(sid, null, S(p, "level"), ct);
+                {
+                    var info = await _store.GetAsync(sid, ct);
+                    await _store.SetModelAsync(sid, info?.ModelId, S(p, "level"), ct);
+                    await BroadcastSession(sid, ct);
+                }
                 await SendAckAsync(c, requestId, ct);
                 break;
             }
@@ -678,6 +687,7 @@ internal sealed class WebApp : IAsyncDisposable
                     // plugin's row (e.g. mark it "failed") rather than only the list.
                     await SendAsync(c, "plugin.state", new { pluginId = pid, state = ok ? "active" : "failed" }, null, ct);
                     await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
+                    await SendAsync(c, "ui.panels", new { panels = PanelJson() }, null, ct);
                     await SendAckAsync(c, requestId, ct);
                 }
                 catch { /* connection may be gone (Web reloaded itself) */ }
@@ -701,6 +711,7 @@ internal sealed class WebApp : IAsyncDisposable
                         await SendAsync(c, "plugin.state",
                             new { pluginId = st.Id, state = MapPluginState(st.State) }, null, ct);
                     await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
+                    await SendAsync(c, "ui.panels", new { panels = PanelJson() }, null, ct);
                 }
                 await SendAckAsync(c, requestId, ct);
                 break;
@@ -715,6 +726,13 @@ internal sealed class WebApp : IAsyncDisposable
                 break;
             }
 
+            case "ui.panels.list":
+            {
+                await SendAsync(c, "ui.panels", new { panels = PanelJson() }, null, ct);
+                await SendAckAsync(c, requestId, ct);
+                break;
+            }
+
             case "workspace.files":
             {
                 // PLAN §37 @ picker: return a flat, bounded list of workspace files.
@@ -726,19 +744,30 @@ internal sealed class WebApp : IAsyncDisposable
                 {
                     if (!string.IsNullOrEmpty(wsDir) && Directory.Exists(wsDir))
                     {
-                        var all = new DirectoryInfo(wsDir).EnumerateFiles("*", SearchOption.AllDirectories)
-                            .Where(f => !f.Name.StartsWith(".")
-                                && !f.FullName.Replace('\\', '/').Contains("/node_modules/")
-                                && !f.FullName.Replace('\\', '/').Contains("/bin/")
-                                && !f.FullName.Replace('\\', '/').Contains("/obj/")
-                                && f.Extension.Length > 0)
-                            .OrderByDescending(f => f.LastWriteTimeUtc)
+                        var q = query.Trim();
+                        var filtered = new DirectoryInfo(wsDir).EnumerateFiles("*", SearchOption.AllDirectories)
+                            .Where(f =>
+                            {
+                                var norm = f.FullName.Replace('\\', '/');
+                                return !f.Name.StartsWith(".")
+                                    && !norm.Contains("/.git/", StringComparison.OrdinalIgnoreCase)
+                                    && !norm.Contains("/node_modules/", StringComparison.OrdinalIgnoreCase)
+                                    && !norm.Contains("/bin/", StringComparison.OrdinalIgnoreCase)
+                                    && !norm.Contains("/obj/", StringComparison.OrdinalIgnoreCase)
+                                    && f.Extension.Length > 0;
+                            })
+                            .Where(f => q.Length == 0
+                                || f.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
+                                || Path.GetRelativePath(wsDir, f.FullName).Contains(q, StringComparison.OrdinalIgnoreCase))
+                            .OrderBy(f =>
+                            {
+                                var rel = Path.GetRelativePath(wsDir, f.FullName);
+                                return q.Length > 0 && f.Name.StartsWith(q, StringComparison.OrdinalIgnoreCase) ? 0
+                                    : q.Length > 0 && rel.StartsWith(q, StringComparison.OrdinalIgnoreCase) ? 1 : 2;
+                            })
+                            .ThenBy(f => Path.GetRelativePath(wsDir, f.FullName), StringComparer.OrdinalIgnoreCase)
                             .Take(limit)
                             .ToList();
-                        var filtered = query.Length > 0
-                            ? all.Where(f => f.Name.ToLower().Contains(query.ToLower(), StringComparison.Ordinal)
-                                            || f.FullName.ToLower().Contains(query.ToLower(), StringComparison.Ordinal)).ToList()
-                            : all;
                         foreach (var f in filtered)
                         {
                             var rel = Path.GetRelativePath(wsDir, f.FullName);
@@ -795,9 +824,13 @@ internal sealed class WebApp : IAsyncDisposable
             await SendAsync(c, "session.created", ToSessionJson(info), sid, ct);
         }
 
-        // PLAN §18: the session record is the authoritative workspace — a follow-up
-        // chat.send need not (and usually does not) resend it.
+        // The session is authoritative for workspace and, when the client does
+        // not override them, its previously selected model/reasoning.
         var workspace = info.WorkspacePath ?? payloadWorkspace;
+        model ??= info.ModelId;
+        reasoning ??= info.ReasoningLevel;
+        if (string.IsNullOrEmpty(model) && _catalog?.Models.FirstOrDefault() is { } firstModel)
+            model = firstModel.ModelId;
 
         // PLAN §14/§31: remember the model/reasoning for the session so a later
         // open restores them into the composer.
@@ -911,6 +944,16 @@ internal sealed class WebApp : IAsyncDisposable
         }).ToArray();
     }
 
+    private object[] PanelJson() =>
+        _ctx.WebPanels.All().Select(p => new
+        {
+            id = p.Id,
+            title = p.Title,
+            icon = p.Icon,
+            entryUrl = p.EntryUrl,
+            order = p.Order,
+        }).ToArray();
+
     private object[] PluginJson()
     {
         if (_facade is null) return [];
@@ -942,8 +985,8 @@ internal sealed class WebApp : IAsyncDisposable
         id = s.Id,
         title = s.Title ?? "",
         workspace = s.WorkspacePath ?? "",
-        model = s.ModelId,
-        reasoning = s.ReasoningLevel,
+        modelId = s.ModelId,
+        reasoningLevel = s.ReasoningLevel,
         createdAt = s.CreatedAt.ToUnixTimeMilliseconds(),
         updatedAt = s.UpdatedAt.ToUnixTimeMilliseconds(),
     };
