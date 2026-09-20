@@ -20,6 +20,9 @@ public sealed record ModelEventWire
     public int? CompletionTokens { get; init; }
     public int? TotalTokens { get; init; }
     public string? Error { get; init; }
+    public string? ToolOutput { get; init; }
+    public bool? IsError { get; init; }
+
     public JsonElement? AssistantMessage { get; init; }
 }
 

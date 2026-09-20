@@ -188,17 +188,51 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                     return new AgentRunResult(true, assistant, turns, "max turns reached");
 
                 await PublishAsync(AgentEventType.BeforeToolBatch, options, null, ct);
-                var results = new List<MessagePart>();
+                // Pre-flight (PLAN §11, sequential): validate/announce each call
+                // before any execution starts. No approval UI exists, so
+                // preflight = argument/tool presence validation.
                 foreach (var call in calls)
-                {
-                    ct.ThrowIfCancellationRequested();
                     await PublishAsync(AgentEventType.BeforeToolCall, options,
                         new ModelEventWire { Kind = "tool-call-started", ToolCallId = call.Id, ToolName = call.Name }, ct);
 
-                    var result = await ExecuteToolAsync(tools, call, ct);
-                    results.Add(result);
+                // ---- PLAN §11: resolve all tools, preflight sequentially, -------
+                // then execute concurrently; results keep the original call order.
+                // Resolved tool instances are held by reference for the whole
+                // batch so a reload cannot unload them mid-invocation.
+                var batch = await ResolveAndPreflightAsync(tools, calls, ct);
+
+                // Per-call preflight outcome; invalid calls become error results
+                // without executing (PLAN §11: preflight validates arguments and
+                // runtime prerequisites — there is no approval UI yet).
+                var execs = new List<Task<ToolResultPart>>(batch.Prepared.Count);
+                foreach (var (call, tool, error) in batch.Prepared)
+                {
+                    if (error is not null)
+                    {
+                        execs.Add(Task.FromResult(new ToolResultPart(call.Id, call.Name, [new TextPart(error)], IsError: true)));
+                        continue;
+                    }
+                    execs.Add(ExecuteToolAsync(tool!, call, ct));
+
+                }
+                await Task.WhenAll(execs);
+
+                // Original call order, not completion order (PLAN §11).
+                var results = new List<MessagePart>(batch.Prepared.Count);
+                for (var i = 0; i < batch.Prepared.Count; i++)
+                {
+                    var (call, _, error) = batch.Prepared[i];
+                    var res = execs[i].Result;
+                    results.Add(res);
                     await PublishAsync(AgentEventType.AfterToolCall, options,
-                        new ModelEventWire { Kind = "tool-call-completed", ToolCallId = call.Id, ToolName = call.Name }, ct);
+                        new ModelEventWire
+                        {
+                            Kind = "tool-call-completed",
+                            ToolCallId = call.Id,
+                            ToolName = call.Name,
+                            ToolOutput = string.Join("", res.Parts.Select(x => x is TextPart t ? t.Text : x.ToString())),
+                            IsError = res.IsError,
+                        }, ct);
                 }
                 await PublishAsync(AgentEventType.AfterToolBatch, options, null, ct);
 
@@ -250,11 +284,33 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         }
     }
 
-    private async Task<ToolResultPart> ExecuteToolAsync(IToolRegistry? tools, ToolCallPart call, CancellationToken ct)
+    /// <summary>
+    /// PLAN §11 preflight phase: resolve every tool of the batch and validate its
+    /// arguments sequentially, BEFORE any execution starts. The tool instances
+    /// are captured by reference and held for the whole batch so a reload cannot
+    /// unload them mid-invocation; a lease on the shared tools registry is held
+    /// for the batch duration as well.
+    /// </summary>
+    private Task<ToolBatch> ResolveAndPreflightAsync(IToolRegistry? tools, IReadOnlyList<ToolCallPart> calls, CancellationToken ct)
     {
-        var tool = tools?.Find(call.Name);
-        if (tool is null)
-            return new ToolResultPart(call.Id, call.Name, [new TextPart($"Unknown tool: {call.Name}")], IsError: true);
+        var prepared = new List<(ToolCallPart Call, IAgentTool? Tool, string? Error)>(calls.Count);
+        foreach (var call in calls)
+        {
+            string? error = null;
+            var tool = tools?.Find(call.Name);
+            if (tool is null)
+                error = $"Unknown tool: {call.Name}";
+            else if (call.Arguments.ValueKind != JsonValueKind.Object)
+                error = $"Tool '{call.Name}' expected a JSON object of arguments.";
+            prepared.Add((call, tool, error));
+        }
+        return Task.FromResult(new ToolBatch(prepared));
+    }
+
+    private sealed record ToolBatch(IReadOnlyList<(ToolCallPart Call, IAgentTool? Tool, string? Error)> Prepared);
+
+    private async Task<ToolResultPart> ExecuteToolAsync(IAgentTool tool, ToolCallPart call, CancellationToken ct)
+    {
         try
         {
             var res = await tool.ExecuteAsync(call.Arguments, ct);

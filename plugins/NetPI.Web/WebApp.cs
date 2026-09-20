@@ -42,6 +42,8 @@ internal sealed class WebApp : IAsyncDisposable
     private ICompaction? _compaction;
 
     private readonly List<IDisposable> _subs = [];
+    // PLAN §41: tool.started → tool.output → tool.completed, with real duration.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _toolStarts = new();
 
     // ---- hub ---------------------------------------------------------------
     private readonly HashSet<Client> _clients = [];
@@ -156,20 +158,32 @@ internal sealed class WebApp : IAsyncDisposable
             case AgentEventType.BeforeToolCall when e.Payload is not null:
             {
                 var p = e.Payload.Value;
+                var id = S(p, "toolCallId");
+                if (id is not null) _toolStarts[id] = DateTime.UtcNow;
                 SendEvent("tool.started", new { id = S(p, "toolCallId"), name = S(p, "toolName") }, sid);
                 break;
             }
 
             case AgentEventType.AfterToolCall when e.Payload is not null:
             {
-                // The agent publishes tool-call-completed WITHOUT the output
-                // (it persists the tool-result entry to the store instead).
-                // Surface completion; the UI renders the result once the next
-                // session.entries refresh arrives (PLAN §41).
+                // PLAN §41: the agent publishes tool-call-completed WITH the
+                // output (toolOutput/isError on the wire). Emit tool.output so
+                // the UI's ToolCallBlock resolves live, then tool.completed
+                // with the real wall-clock duration.
                 var p = e.Payload.Value;
                 var id = S(p, "toolCallId");
+                long durMs = 0;
                 if (id is not null)
-                    SendEvent("tool.completed", new { id, durationMs = 0 }, sid);
+                {
+                    durMs = _toolStarts.TryRemove(id, out var start)
+                        ? (int)(DateTime.UtcNow - start).TotalMilliseconds
+                        : 0;
+                }
+                if (id is not null)
+                {
+                    SendEvent("tool.output", new { id, output = S(p, "toolOutput") ?? "", isError = B(p, "isError") }, sid);
+                    SendEvent("tool.completed", new { id, durationMs = durMs }, sid);
+                }
                 break;
             }
 
@@ -269,6 +283,10 @@ internal sealed class WebApp : IAsyncDisposable
     private static int I(JsonElement el, string name) =>
         el.ValueKind == JsonValueKind.Object && el.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.Number
             ? p.GetInt32() : 0;
+
+    private static bool B(JsonElement el, string name) =>
+        el.ValueKind == JsonValueKind.Object && el.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.True
+            ? true : false;
 
     // ---- websocket ---------------------------------------------------------
 
