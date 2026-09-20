@@ -7,7 +7,6 @@ using NetPI.Host.Plugins;
 
 var runtimeDir = Environment.GetEnvironmentVariable("NETPI_HOME") ?? ConfigService.DefaultRuntimeDirectory();
 var pluginDir = Environment.GetEnvironmentVariable("NETPI_PLUGINS") ?? "./plugins";
-var skipCache = Environment.GetEnvironmentVariable("NETPI_SKIP_CACHE") == "1";
 if (!Path.IsPathRooted(pluginDir))
     pluginDir = Path.GetFullPath(pluginDir);
 
@@ -15,7 +14,6 @@ var options = new PluginManagerOptions
 {
     PluginDirectory = pluginDir,
     RuntimeDirectory = runtimeDir,
-    SkipCacheCopy = skipCache,
     };
 
 
@@ -33,8 +31,8 @@ var logger = LoggerFactory.Create(b =>
 
 await using var runtime = new HostRuntime(options, logger, new ConfigService(runtimeDir));
 
-logger.LogInformation("netPI host: plugins='{Plugins}' runtime='{Home}' cacheCopy={Mode}",
-    options.PluginDirectory, runtimeDir, skipCache ? "off" : "on");
+logger.LogInformation("netPI host: plugins='{Plugins}' runtime='{Home}'",
+    options.PluginDirectory, runtimeDir);
 
 // ---- host-owned plugin surfaces (PLAN §36) ----------------------------------
 // Registered BEFORE StartAsync because the Web plugin resolves these in its

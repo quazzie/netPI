@@ -3,7 +3,6 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $hostDll = Join-Path $root 'src/NetPI.Host/bin/Debug/net10.0/netPI.Host.dll'
-$env:NETPI_SKIP_CACHE = '1'
 $env:NETPI_PLUGINS = Join-Path $root 'plugins'
 $env:NETPI_HOME = Join-Path $env:USERPROFILE '.netpi'
 

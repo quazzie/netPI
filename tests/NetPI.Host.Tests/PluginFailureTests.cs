@@ -69,7 +69,7 @@ public sealed class PluginFailureTests : IDisposable
         {
             PluginDirectory = _pluginDir,
             RuntimeDirectory = _runtimeDir,
-            SkipCacheCopy = true,
+
         };
         return new HostRuntime(options, new ConsoleErrLogger(), new ConfigService(_runtimeDir));
     }

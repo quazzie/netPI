@@ -67,14 +67,13 @@ public class HostRuntimeTests : IAsyncLifetime
         await Task.CompletedTask;
     }
 
-    /// <summary>Build a HostRuntime rooted in the temp home, bypassing the cache copy.</summary>
+    /// <summary>Build a HostRuntime rooted in the temp home.</summary>
     private HostRuntime NewRuntime()
     {
         var options = new PluginManagerOptions
         {
             PluginDirectory = _pluginDir,
             RuntimeDirectory = _home,
-            SkipCacheCopy = true,
         };
         var config = new ConfigService(_home);
         return new HostRuntime(options, new ConsoleErrLogger(), config);

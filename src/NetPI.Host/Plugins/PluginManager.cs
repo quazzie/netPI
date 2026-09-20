@@ -18,11 +18,12 @@ public sealed class PluginManagerOptions
     public string RuntimeDirectory { get; set; } = ConfigService.DefaultRuntimeDirectory();
 
     /// <summary>
-    /// When true, plugins are loaded directly from <see cref="PluginDirectory"/>
-    /// without copying into the plugin cache. Tests and the demo use this to
-    /// avoid polluting ~/.netpi (PLAN §5 copy step is bypassable by design).
+    /// How many per-generation snapshot directories are kept per plugin in the
+    /// plugin cache. Older snapshots are deleted when a newer generation of the
+    /// same plugin is staged (a snapshot whose ALC is not finalized yet is left
+    /// alone and retried on the next stage of that plugin).
     /// </summary>
-    public bool SkipCacheCopy { get; set; }
+    public int MaxCachedGenerations { get; set; } = 2;
 
     /// <summary>Reload gate for AgentIdle-policy plugins (phase 1: pluggable, agent runtime not present yet).</summary>
     public Func<Task<bool>>? AgentIdleGate { get; set; }
@@ -120,30 +121,61 @@ public sealed class PluginManager
     // ----------------------------------------------------------------------
 
     /// <summary>
-    /// Copy a plugin directory into ~/.netpi/plugin-cache/&lt;plugin&gt;/&lt;generation&gt;/
-    /// and return the cache path (the directory plugins are actually loaded
-    /// from). Skipped when <see cref="PluginManagerOptions.SkipCacheCopy"/> is
-    /// set — the source directory is returned as-is.
+    /// Copy the staged plugin folder into an immutable per-generation snapshot,
+    /// ~/.netpi/plugin-cache/&lt;plugin&gt;/&lt;generation&gt;/, and return the snapshot
+    /// path (the directory plugins are actually loaded from).
+    ///
+    /// The host ALWAYS loads from a snapshot, never from the staged folder
+    /// itself. That is what makes staging hot-swappable: while generation N is
+    /// mapped from its snapshot (on Windows the file stays locked until the ALC
+    /// is unloaded and finalized), a new build may freely overwrite the staged
+    /// folder; the next reload simply snapshots generation N+1. A generation's
+    /// snapshot is never written again after staging.
     /// </summary>
     public string StagePluginFiles(string sourceDir, int generation)
     {
-        if (_options.SkipCacheCopy) return sourceDir;
-
         var pluginName = Path.GetFileName(sourceDir.TrimEnd(Path.DirectorySeparatorChar));
-        var genDir = Path.Combine(_options.RuntimeDirectory, "plugin-cache", pluginName, generation.ToString());
+        var pluginCacheRoot = Path.Combine(_options.RuntimeDirectory, "plugin-cache", pluginName);
+        var genDir = Path.Combine(pluginCacheRoot, generation.ToString());
+
+        // A stale snapshot with this exact number may linger from a previous
+        // host run; the new snapshot fully replaces it (snapshots are only ever
+        // written during staging, never after).
+        if (Directory.Exists(genDir)) Directory.Delete(genDir, recursive: true);
         Directory.CreateDirectory(genDir);
 
         foreach (var file in Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories))
         {
-            var name = Path.GetFileName(file);
-            // Only the plugin's own assembly and direct .deps/.runtimeconfig/.pdb
-            // files are expected at the root; nested subfolders are copied as-is.
             var target = Path.Combine(genDir, Path.GetRelativePath(sourceDir, file));
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             File.Copy(file, target, overwrite: true);
         }
 
+        SweepStaleGenerations(pluginCacheRoot, generation);
         return genDir;
+    }
+
+    /// <summary>
+    /// Keep only the <c>MaxCachedGenerations</c> most recent snapshot directories
+    /// per plugin. Snapshots with a number &gt;= the just-staged generation are
+    /// never deleted (an in-flight reload may still be mapping one). Best-effort:
+    /// a directory that is still locked (its ALC has not been finalized) or that
+    /// cannot be removed for any other reason is left alone and retried on the
+    /// next staging of that plugin.
+    /// </summary>
+    private void SweepStaleGenerations(string pluginCacheRoot, int currentGeneration)
+    {
+        if (!Directory.Exists(pluginCacheRoot)) return;
+        var keep = Math.Max(1, currentGeneration - Math.Max(1, _options.MaxCachedGenerations) + 1);
+        foreach (var dir in Directory.EnumerateDirectories(pluginCacheRoot)
+                     .Where(d => int.TryParse(Path.GetFileName(d), out _))
+                     .OrderByDescending(d => int.Parse(Path.GetFileName(d))))
+        {
+            var g = int.Parse(Path.GetFileName(dir));
+            if (g >= currentGeneration || g >= keep) continue;
+            try { Directory.Delete(dir, recursive: true); }
+            catch { /* ALC still alive or IO blip: retried on the next stage */ }
+        }
     }
 
     /// <summary>Load every discovered plugin that is not already loaded. Startup path.</summary>

@@ -223,7 +223,6 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
-            psi.Environment["NETPI_SKIP_CACHE"] = "1";
             Trace(trace, "stage=process.start");
             _host = Process.Start(psi) ?? throw new InvalidOperationException("host did not start");
             Trace(trace, $"stage=started pid={_host.Id}");

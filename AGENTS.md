@@ -33,18 +33,19 @@ plugins/                  One folder per plugin; each contains a DLL staged by
                             NetPI.AutoCompact   context compaction (§31-33)
                             NetPI.Retry         model-retry policy (§34)
                             NetPI.BackgroundTasks  background jobs + 4 tools (§27-28)
-                            NetPI.Web           Kestrel Web surface, /ws, /api/file (§36, §41)
+                            NetPI.Web           Kestrel Web surface, /ws, /api/file (§36, §41).
+                                                              Self-registers the "plugins" and "diagnostics"
+                                                              panels (docs/web-panels.md); shell has no hardcoded tabs.
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
-tests/NetPI.Host.Tests/   92 xunit tests; the integration surface.
+tests/NetPI.Host.Tests/   95 xunit tests; the integration surface.
 tools/publish-plugins.ps1 Stages plugin DLLs into plugins/<name>/ for ALC loading.
 tools/keep-alive-host.ps1 Runs the host with stdin held open (background job).
 ```
 
 Runtime home: `~/.netpi/` — `config.json`, `netpi.db` (SQLite), `logs/`,
-`plugin-cache/`. Env overrides: `NETPI_HOME`, `NETPI_PLUGINS`, `NETPI_SKIP_CACHE=1`
-(loads plugins from source dirs instead of the cache; used by the keep-alive script
-and tests).
+`plugin-cache/` (immutable per-generation snapshots — the host loads from these,
+never from `plugins/` directly). Env overrides: `NETPI_HOME`, `NETPI_PLUGINS`.
 
 ## Build & run (verified on this machine)
 
@@ -206,7 +207,7 @@ repo, it feeds every run in this workspace.
 ## Tests & verification
 
 ```bash
-dotnet test NetPI.sln        # 86 tests (agent runtime scenarios, session
+dotnet test NetPI.sln        # 95 tests (agent runtime scenarios, session
                              # store, plugin manager, shell detection, …)
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json
 ```
@@ -227,6 +228,10 @@ exist on master and are unrelated to UI work.
 - Stale plugin generations: a failed load keeps the previous gen Active, so
   "loaded" in the log may mean your code change isn't actually running —
   check the log's generation/timestamps.
-- `~/.netpi/plugin-cache` is only used when `NETPI_SKIP_CACHE` is unset; the
-  keep-alive script and desktop always set it, so source-dir staging is what
-  matters for local dev.
+- `~/.netpi/plugin-cache/<plugin>/<gen>/` is the snapshot every generation is
+  loaded from (immutable once staged) — the host never loads from `plugins/<name>/`
+  directly. The staged folder is therefore free to be overwritten at any time,
+  even while the host is running with the live generation's DLLs file-locked;
+  a `plugin.reload` snapshots the new bytes as the next generation. Stale
+  snapshot dirs are pruned to the newest 2 per plugin once their ALCs are
+  finalized. (`NETPI_SKIP_CACHE` is gone — the copy is the hot-swap mechanism.)
