@@ -77,28 +77,17 @@
     return () => { alive = false; };
   });
 
-  let sessionMatches = $derived(
-    store.sessions.filter((s) => {
-      const q = (atQuery ?? "").toLowerCase();
-      return !q || (s.title || s.id).toLowerCase().includes(q);
-    }).slice(0, 12),
+  let atItems = $derived.by(() =>
+    atFiles.map((f) => ({ kind: "file" as const, label: f.path, value: f.path })),
   );
-
-  let atItems = $derived.by(() => {
-    const out: { kind: "file" | "session"; label: string; value: string }[] = [];
-    for (const f of atFiles) out.push({ kind: "file", label: f.path, value: f.path });
-    for (const s of sessionMatches)
-      out.push({ kind: "session", label: s.title || s.id, value: "session:" + s.id });
-    return out;
-  });
 
   function quoteMention(value: string): string {
     return /\s/.test(value) ? `@"${value}"` : "@" + value;
   }
 
-  function insertAt(item: { kind: "file" | "session"; value: string }) {
+  function insertAt(item: { kind: "file"; value: string }) {
     const i = text.lastIndexOf("@");
-    const mention = item.kind === "file" ? quoteMention(item.value) : "@" + item.value;
+    const mention = quoteMention(item.value);
     if (i >= 0) text = text.slice(0, i) + mention + " ";
     else text += (text && !text.endsWith(" ") ? " " : "") + mention + " ";
     menu = null;
@@ -391,7 +380,7 @@
 
   {#if menu === "at"}
     <div class="menu-pop composer-left-menu resource-menu">
-      <div class="title">files & sessions</div>
+      <div class="title">workspace files</div>
       {#if !store.session?.workspace}
         <div class="cap">Create/open a session with a workspace to browse files.</div>
       {:else if atItems.length}
@@ -402,13 +391,13 @@
             onclick={() => insertAt(it)}
             onmouseover={() => (atCursor = i)}
           >
-            <span class="check">{it.kind === "session" ? "↗" : "@"}</span>
+            <span class="check">@</span>
             <span class="resource-label">{it.label}</span>
-            <span class="dim">{it.kind}</span>
+            <span class="dim">file</span>
           </button>
         {/each}
       {:else}
-        <div class="cap">No matching files or sessions.</div>
+        <div class="cap">No matching workspace files.</div>
       {/if}
     </div>
   {/if}
