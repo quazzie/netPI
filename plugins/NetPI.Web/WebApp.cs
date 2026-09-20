@@ -688,14 +688,17 @@ internal sealed class WebApp : IAsyncDisposable
     private object[] ModelJson()
     {
         if (_catalog is null) return [];
+        // PLAN §13: fully data-driven — window, max output, modalities and
+        // reasoning levels all come from the provider's parsed metadata
+        // (no netPI capability table, no hard-coded lists).
         return _catalog.Models.Select(m => new
         {
             id = m.ModelId,
             contextWindow = m.ContextWindowTokens,
             maxOutputTokens = m.MaxOutputTokens,
-            inputModalities = new[] { "text" },
-            reasoning = m.SupportsThinking
-                ? new { levels = new[] { "off", "low", "medium", "high" } }
+            inputModalities = m.InputModalities,
+            reasoning = m.ReasoningLevels is { } levels && levels.Count > 0
+                ? new { levels = levels.ToArray() }
                 : (object?)null,
         }).ToArray();
     }

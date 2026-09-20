@@ -10,8 +10,12 @@ public sealed record ModelInfo(
     bool SupportsTools,
     bool SupportsThinking,
     int? ContextWindowTokens = null,
-    int? MaxOutputTokens = null)
+    int? MaxOutputTokens = null,
+    IReadOnlyList<string>? ReasoningLevels = null)
 {
+    /// <summary>Input modalities the model accepts (PLAN §13). Defaults to text-only.</summary>
+    public IReadOnlyList<string> InputModalities { get; init; } = ["text"];
+
     public override string ToString() => $"{ModelId} ({DisplayName})";
 }
 
@@ -24,6 +28,8 @@ public sealed record ModelRequest
     public IReadOnlyList<ToolDefinition> Tools { get; init; } = [];
     public JsonElement? Thinking { get; init; }
     public string? Seed { get; init; }
+    public string? ReasoningLevel { get; init; }
+
     public int? MaxTokens { get; init; }
     public float? Temperature { get; init; }
 }

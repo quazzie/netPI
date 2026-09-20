@@ -115,6 +115,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                     Messages = transcript,
                     Tools = tools?.All().Select(t => new ToolDefinition(t.Name, t.Description, t.Parameters)).ToList() ?? [],
                     Temperature = options.Temperature,
+                    ReasoningLevel = options.ReasoningLevel,
                 };
 
                 AgentMessage? assistant = null;

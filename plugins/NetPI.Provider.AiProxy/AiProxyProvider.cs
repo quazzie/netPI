@@ -47,10 +47,51 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             {
                 if (!m.TryGetProperty("id", out var id)) continue;
                 var modelId = id.GetString() ?? "";
+
+                // PLAN §13: parse AiProxy's actual metadata (no model-name
+                // heuristics); unknown/extra fields are simply ignored, so
+                // AiProxy can evolve without breaking netPI.
+                int? ctx = m.TryGetProperty("max_model_len", out var mml) && mml.ValueKind == JsonValueKind.Number
+                    ? mml.GetInt32() : null;
+                if (ctx is null && m.TryGetProperty("meta", out var meta) && meta.ValueKind == JsonValueKind.Object
+                    && meta.TryGetProperty("n_ctx", out var nc) && nc.ValueKind == JsonValueKind.Number)
+                    ctx = nc.GetInt32();
+                var maxOut = GetIntProp(m, "max_tokens") ?? GetIntProp(m, "max_output_tokens");
+
+                var modalities = new List<string>();
+                if (m.TryGetProperty("input_modalities", out var im) && im.ValueKind == JsonValueKind.Array)
+                    foreach (var it in im.EnumerateArray())
+                        if (it.ValueKind == JsonValueKind.String) modalities.Add(it.GetString()!);
+                if (modalities.Count == 0) modalities.Add("text");
+
+                // Data-driven reasoning profile: honor a `reasoning` object or
+                // supported-efforts list when AiProxy advertises one; otherwise
+                // the model has no reasoning levels and the UI hides the picker.
+                IReadOnlyList<string>? levels = null;
+                JsonElement? arr = null;
+                if (m.TryGetProperty("reasoning", out var rj) && rj.ValueKind == JsonValueKind.Object
+                    && rj.TryGetProperty("levels", out var rlv) && rlv.ValueKind == JsonValueKind.Array)
+                    arr = rlv;
+                else if (m.TryGetProperty("supported_reasoning_efforts", out var sre) && sre.ValueKind == JsonValueKind.Array)
+                    arr = sre;
+                if (arr is not null)
+                {
+                    var ls = new List<string>();
+                    foreach (var it in arr.Value.EnumerateArray())
+                        if (it.ValueKind == JsonValueKind.String) ls.Add(it.GetString()!);
+                    if (ls.Count > 0) levels = ls;
+                }
+
                 list.Add(new ModelInfo(
                     modelId, "aiProxy", modelId,
                     SupportsTools: true,
-                    SupportsThinking: modelId.Contains("reason") || modelId.Contains("think") || modelId.Contains("r1")));
+                    SupportsThinking: levels is not null,
+                    ContextWindowTokens: ctx,
+                    MaxOutputTokens: maxOut,
+                    ReasoningLevels: levels)
+                {
+                    InputModalities = [.. modalities],
+                });
             }
         }
         _models = list;
@@ -215,6 +256,9 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     private static int GetInt(JsonElement e, string prop)
         => e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : 0;
 
+    private static int? GetIntProp(JsonElement e, string prop)
+        => e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : null;
+
     private sealed class ToolState { public string Id; public string Name; public StringBuilder Args = new(); public StringBuilder FullArgs = new(); public bool Started; public ToolState(string id, string name) { Id = id; Name = name; } }
 
 
@@ -252,6 +296,12 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         if (request.Temperature is { } t) payload["temperature"] = t;
         if (request.MaxTokens is { } mt) payload["max_tokens"] = mt;
         if (request.Seed is { } s && !string.IsNullOrEmpty(s) && int.TryParse(s, out var n)) payload["seed"] = n;
+        // PLAN §13: data-driven reasoning passthrough — the level the user picked
+        // in the composer (low/medium/high; "off"/null means no reasoning) is
+        // forwarded to the provider.
+        var rl = request.ReasoningLevel;
+        if (!string.IsNullOrEmpty(rl) && !string.Equals(rl, "off", StringComparison.OrdinalIgnoreCase))
+            payload["reasoning_effort"] = rl;
         return payload;
     }
 
