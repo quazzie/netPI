@@ -47,6 +47,8 @@ export class NetPIStore {
 
   // ---- transcript -------------------------------------------------------
   blocks = $state<Block[]>([]);
+  /** Count of head blocks in `blocks` that are not rendered ("load earlier"). */
+  hidden = $state(0);
   activeAssistantId = $state<string | null>(null);
   olderSeq = $state(0);
   moreAvailable = $state(false);
@@ -397,6 +399,7 @@ export class NetPIStore {
 
   resetTranscript(): void {
     this.blocks = [];
+    this.hidden = 0;
     this.activeAssistantId = null;
     this.queuedSteer = [];
     this.stats = { turns: 0, toolSteps: 0 };
@@ -407,10 +410,31 @@ export class NetPIStore {
     this.activity = null;
   }
 
-  noteOlderLoaded(): void {
+  noteOlderLoaded(fetched: number): void {
+    this.hidden += fetched;
     this.prependVersion++;
     this.olderLoading = false;
   }
+
+  /** Blocks currently rendered (tail of `blocks`, head hidden). */
+  get revealed(): Block[] {
+    return this.hidden > 0 ? this.blocks.slice(this.hidden) : this.blocks;
+  }
+
+  /** After (re)loading a session: show only the newest `count` blocks. */
+  revealTail(count: number): void {
+    this.hidden = Math.max(0, this.blocks.length - count);
+  }
+
+  /** Reveal up to `count` hidden head blocks (the "load earlier" action). */
+  revealMore(count: number): void {
+    this.hidden = Math.max(0, this.hidden - count);
+  }
 }
+
+/** How many tail blocks are shown right after a session (re)load. */
+export const REVEAL_INITIAL = 40;
+/** How many hidden blocks "load earlier" reveals per click. */
+export const REVEAL_STEP = 40;
 
 export const store = new NetPIStore();

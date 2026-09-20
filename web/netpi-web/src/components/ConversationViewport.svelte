@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { store } from "../store.svelte";
+  import { store, REVEAL_STEP } from "../store.svelte";
   import BlockRenderer from "./conversation/BlockRenderer.svelte";
   import AgentActivity from "./AgentActivity.svelte";
   import { ws } from "../ws";
@@ -99,6 +99,11 @@
     });
   });
 
+  function loadMore() {
+    if (store.hidden > 0) store.revealMore(REVEAL_STEP);
+    else if (store.moreAvailable && !store.olderLoading) ws.loadOlder();
+  }
+
   function jumpToLatest() {
     stick = true;
     scheduleBottom(true);
@@ -114,7 +119,12 @@
     </div>
   {:else}
     <div class="msg-list" bind:this={list}>
-      {#each store.blocks as b (b.id)}
+      {#if store.hidden > 0 || (store.blocks.length > 0 && store.moreAvailable)}
+        <button class="load-earlier" onclick={loadMore} disabled={store.olderLoading && store.hidden === 0}>
+          {store.hidden > 0 ? `↑ Load earlier (${store.hidden} hidden)` : "↑ Load older history"}
+        </button>
+      {/if}
+      {#each store.revealed as b (b.id)}
         <BlockRenderer block={b} />
       {/each}
       <AgentActivity />

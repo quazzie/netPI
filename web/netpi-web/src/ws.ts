@@ -1,4 +1,4 @@
-import { store } from "./store.svelte";
+import { store, REVEAL_INITIAL, REVEAL_STEP } from "./store.svelte";
 import type {
   AgentState,
   ModelInfo,
@@ -145,13 +145,16 @@ class NetPIWebSocket {
 
       case "session.entries":
         this.ingestEntries(p, true);
+        if (p.replace) store.revealTail(REVEAL_INITIAL);
         break;
 
       case "session.older":
         store.olderSeq = p.beforeSequence ?? 0;
         store.moreAvailable = !!p.hasMore;
+        const before = store.blocks.length;
         this.ingestEntries(p, false, true);
-        store.noteOlderLoaded();
+        store.noteOlderLoaded(store.blocks.length - before);
+        store.revealMore(REVEAL_STEP);
         break;
 
       case "assistant.started":

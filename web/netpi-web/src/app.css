@@ -134,6 +134,19 @@ a { color: var(--accent); }
   margin: 0 auto;
   padding: 30px 0 6px;
 }
+.load-earlier {
+  display: block;
+  margin: 0 auto 16px;
+  padding: 6px 14px;
+  border: 1px dashed #2a303b;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+  cursor: pointer;
+}
+.load-earlier:hover:not(:disabled) { color: var(--text-dim); border-color: var(--border); background: var(--bg-hover); }
+.load-earlier:disabled { opacity: .6; cursor: default; }
 .vrow { padding: 0; }
 
 .msg-user {

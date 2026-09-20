@@ -175,17 +175,20 @@ the Svelte shell has zero hardcoded tabs:
   `location.reload()` after 2 s, self-healing across plugin reloads and host
   restarts.
 
-**Deploying a new NetPI.Web build (Windows gotcha):** the running host holds
-`plugins/NetPI.Web/netPI.Web.dll` open, so `tools/publish-plugins.ps1` cannot
-overwrite it while the current generation is loaded. Sequence: reload
-NetPI.Web in the UI (unloads the generation, releases the DLL) → run
-`tools/publish-plugins.ps1 -Configuration Debug` → reload NetPI.Web again to
-load the new build.
+**Deploying a new NetPI.Web build:** `dotnet build` the plugin →
+`pwsh tools/publish-plugins.ps1 -Configuration Debug` → `plugin.reload` in the
+UI. No ordering constraint: every generation loads from an immutable
+snapshot (`~/.netpi/plugin-cache/<plugin>/<gen>/`, see AGENTS.md "Gotchas"),
+so the staged folder is free to be overwritten while a generation is live —
+the reload snapshots the new bytes as generation N+1.
 
 ## Testing & verification
 
 - `dotnet test NetPI.sln` — `WebPanelRegistryTests` covers scoped-unload and
   same-id replacement (the two core invariants).
+- `PluginHotSwapTests` (same suite) prove the snapshot hot-swap: load from
+  snapshot, staged folder rewritable while a generation is live (reload picks
+  up new bytes), prune-to-two with ALC collectibility.
 - Not covered: `ui.panels` broadcast behavior in `WebApp` (would be an
   integration test), and end-to-end iframe rendering.
 - The reference implementation is NetPI.Web's self-panels (above).

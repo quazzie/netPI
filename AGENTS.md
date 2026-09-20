@@ -39,7 +39,9 @@ plugins/                  One folder per plugin; each contains a DLL staged by
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
 tests/NetPI.Host.Tests/   95 xunit tests; the integration surface.
-tools/publish-plugins.ps1 Stages plugin DLLs into plugins/<name>/ for ALC loading.
+tools/publish-plugins.ps1 Stages plugin DLLs into plugins/<name>/; the host
+                              snapshots that folder into per-generation
+                              plugin-cache dirs (what the ALCs actually load).
 tools/keep-alive-host.ps1 Runs the host with stdin held open (background job).
 ```
 
@@ -176,7 +178,10 @@ Invariants worth knowing (see commit history for the fixes behind these):
 
 Svelte 5 runes, no framework. `src/store.svelte.ts` is the single store;
 `ws.ts` is the socket client; `components/conversation/*` renders transcript
-blocks. Markdown goes through `marked` + `DOMPurify` (throttled re-parse while
+blocks. Transcript rendering is capped: after (re)load only the last
+`REVEAL_INITIAL` (40) blocks render; the hidden head reveals `REVEAL_STEP` (40)
+at a time via the "Load earlier" button (`store.hidden` / `store.revealed`),
+which also drives the scroll-to-top fetch of further `session.older` pages. Markdown goes through `marked` + `DOMPurify` (throttled re-parse while
 streaming). File-like paths in assistant text/tool args become links to
 `/api/file?path=...&sessionId=...`. `dist/` is git-ignored: after frontend
 changes run `npx vite build` and **reload the Web plugin** (Web UI → reload, or
