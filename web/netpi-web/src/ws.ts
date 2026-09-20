@@ -8,9 +8,9 @@ import type {
 } from "./types";
 
 /**
- * WebSocket client for the netPI Web plugin (PLAN §36, §41).
+ * WebSocket client for the netPI Web plugin.
  *
- * Envelope: every message is `{ type, requestId?, sessionId?, payload }`.
+ * Envelope: every message is { type, requestId?, sessionId?, payload }.
  * Reconnects with backoff; the server re-sends bootstrap state on open.
  */
 class NetPIWebSocket {
@@ -73,7 +73,7 @@ class NetPIWebSocket {
     this.sendRaw({ type, requestId, payload });
   }
 
-  /** Command that expects a `{ ok | error }` ack for its requestId. */
+  /** Command that expects a { ok | error } ack for its requestId. */
   request(
     type: string,
     payload?: Record<string, unknown>,
@@ -104,10 +104,6 @@ class NetPIWebSocket {
     this.pending.clear();
   }
 
-  // ------------------------------------------------------------------
-  // Server → client events (§41).
-  // ------------------------------------------------------------------
-
   private onMessage(ev: MessageEvent): void {
     let msg: {
       type: string;
@@ -121,10 +117,10 @@ class NetPIWebSocket {
     }
 
     if (msg.requestId && this.pending.has(msg.requestId)) {
-      const p = this.pending.get(msg.requestId)!;
+      const pending = this.pending.get(msg.requestId)!;
       this.pending.delete(msg.requestId);
-      if (msg.type === "error") p.reject(new Error(JSON.stringify(msg.payload)));
-      else p.resolve(msg.payload);
+      if (msg.type === "error") pending.reject(new Error(JSON.stringify(msg.payload)));
+      else pending.resolve(msg.payload);
       return;
     }
 
@@ -152,7 +148,6 @@ class NetPIWebSocket {
         break;
 
       case "session.older":
-        // PLAN §38: a page of older entries, prepended in front of the transcript.
         store.olderSeq = p.beforeSequence ?? 0;
         store.moreAvailable = !!p.hasMore;
         this.ingestEntries(p, false, true);
@@ -177,43 +172,42 @@ class NetPIWebSocket {
       case "text.delta":
         store.appendTextDelta(p.text ?? "");
         break;
-
       case "text.completed":
-        // PLAN §41: terminal text marker. The streaming text.delta events have
-        // already built the block; this just resolves any partial state so the
-        // message is marked final even on a client that skips the deltas.
+        // The streamed deltas are authoritative. This event is only a boundary.
         break;
 
       case "tool.started":
         store.startToolCall(p.id, p.name);
         store.applyAgentState("ExecutingTools");
         break;
+      case "tool.args":
+        store.appendToolArgsDelta(p.id, p.args ?? "");
+        break;
       case "tool.output":
-        // PLAN §25: progressive chunks carry append:true (grow the block
-        // live); the final result (no append flag) replaces it.
-        store.setToolResult(p.id, p.output ?? "", p.isError ?? false, p.append === true);
+        store.setToolResult(
+          p.id,
+          p.output ?? "",
+          p.isError ?? false,
+          p.append === true,
+        );
         break;
       case "tool.completed":
         store.completeToolCall(p.id, p.durationMs ?? 0);
         break;
 
       case "model.retrying":
-        // PLAN §34: a failed attempt is being retried — drop any partial the
-        // failed attempt streamed so it is not duplicated on the retry.
         store.resetAssistantForRetry();
         store.applyAgentState("Retrying");
         break;
 
       case "model.requestFailed":
-        // A model attempt failed (final or pre-retry). If a retry is coming the
-        // next model.retrying resets the block; if this was terminal, mark the
-        // in-progress block as failed so the UI resolves instead of hanging.
         store.failAssistant(p.message ?? "model request failed");
         break;
 
       case "assistant.completed":
+        // Do not force Idle here. A completed model turn may be followed by a
+        // tool batch and another model turn. agent.state is the source of truth.
         store.completeAssistant(p.usage as Usage | undefined);
-        store.applyAgentState("Idle");
         break;
 
       case "usage.updated":
@@ -254,8 +248,9 @@ class NetPIWebSocket {
   }
 
   /** Apply persisted transcript entries.
-   * @param reset  payload carries a replace flag from session.entries
-   * @param prepend  insert in front of the current transcript (session.older) */
+   * @param reset payload carries a replace flag from session.entries
+   * @param prepend insert in front of the current transcript (session.older)
+   */
   private ingestEntries(p: any, reset: boolean, prepend = false): void {
     const entries = p.entries ?? (p.entry ? [p.entry] : null);
     if (!entries) return;
@@ -264,20 +259,19 @@ class NetPIWebSocket {
       store.olderSeq = p.beforeSequence ?? 0;
       store.moreAvailable = !!p.hasMore;
     }
+
     for (const e of entries) {
       switch (e.type) {
         case "user_message": {
-          // PLAN §41: chat.send echoes the persisted user entry as a session.entry.
-          // The composer already appended it optimistically (store.submit) — drop
-          // the echo when the last block is a user block with identical text,
-          // otherwise the message renders twice.
           if (prepend) {
             store.prependUser(e.text ?? "");
             break;
           }
           const last = store.blocks[store.blocks.length - 1];
-          const isEcho = !p.replace &&
-            last?.kind === "user" && (last.text ?? "") === (e.text ?? "");
+          const isEcho =
+            !p.replace &&
+            last?.kind === "user" &&
+            (last.text ?? "") === (e.text ?? "");
           if (!isEcho) store.appendUser(e.text ?? "");
           break;
         }
@@ -296,38 +290,42 @@ class NetPIWebSocket {
 
   private applyAssistantEntry(e: any, prepend = false): void {
     store[prepend ? "prependAssistantShell" : "startAssistant"]();
-    const a = store.activeAssistantId;
-    // Rebuild the block from the persisted message parts.
+    const assistantId = store.activeAssistantId;
     const parts = e.parts ?? [];
+
     for (const part of parts) {
-      if (part.type === "thinking" && a) {
+      if (part.type === "thinking" && assistantId) {
         store.startThinking();
         store.appendThinkingDelta(part.text ?? "");
         store.completeThinking();
-      } else if (part.type === "text" && a) {
+      } else if (part.type === "text" && assistantId) {
         store.appendTextDelta(part.text ?? "");
-      } else if (part.type === "tool_call" && a) {
+      } else if (part.type === "tool_call" && assistantId) {
         store.startToolCall(part.id, part.name);
         store.appendToolArgsDelta(part.id, part.argumentsJson ?? "");
       }
     }
+
     for (const tr of e.toolResults ?? []) {
       store.setToolResult(tr.id, tr.output ?? "", tr.isError ?? false);
     }
     store.completeAssistant(e.usage as Usage | undefined);
   }
-  /** PLAN §38: request the next page of older transcript entries (scroll-up).
-   * The server responds with a session.older event; the ack resolves on receipt. */
+
+  /** Request the next page of older transcript entries. */
   loadOlder(): void {
     const seq = store.olderSeq;
     if (seq <= 0 || store.olderLoading || !store.moreAvailable) return;
     store.olderLoading = true;
-    this.request("session.older", { beforeSequence: seq, count: 100 }).catch(() => {
+    this.request("session.older", {
+      beforeSequence: seq,
+      count: 100,
+      sessionId: store.session?.id,
+    }).catch(() => {
       store.olderLoading = false;
     });
   }
 }
+
 export const ws = new NetPIWebSocket();
 ws.connect();
-
-
