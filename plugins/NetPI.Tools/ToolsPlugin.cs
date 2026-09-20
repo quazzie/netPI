@@ -37,7 +37,7 @@ internal static class Args
 public sealed class ReadTool : IAgentTool
 {
     public string Name => "read";
-    public string Description => "Read the contents of a text file at the given path.";
+    public string Description => "Read a text file (line-numbered, bounded). Relative paths resolve against the workspace. Use offset/limit to page large files; binary files return an error.";
     public JsonElement Parameters => Args.Schema(
         ("path", "string", "File path to read."),
         ("offset", "number", "Line number to start reading from (1-indexed). Optional."),
@@ -45,22 +45,53 @@ public sealed class ReadTool : IAgentTool
 
     public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
+        // PLAN §19: relative -> workspace, absolute unchanged, text-only with
+        // line numbers, bounded output + continuation marker, binary -> useful
+        // error (no garbage).
         var path = ctx.ResolvePath(Args.Str(ctx.Arguments, "path"));
         if (string.IsNullOrEmpty(path) || !File.Exists(path))
             return Error($"File not found: {path}");
         try
         {
-            var offset = Args.Int(ctx.Arguments, "offset", 1);
-            var limit = Args.Int(ctx.Arguments, "limit", int.MaxValue);
-            var lines = await File.ReadAllLinesAsync(path, ct);
-            var slice = lines.Skip(Math.Max(0, offset - 1)).Take(limit).ToList();
-            var text = string.Join("\n", slice);
-            return Ok(Args.Truncate(text));
+            var bytes = await File.ReadAllBytesAsync(path, ct);
+            if (IsBinary(bytes))
+                return Error($"Refusing to read binary file {path} ({bytes.Length} bytes). Convert it to text first or use the bash tool.");
+            var offset = Math.Max(1, Args.Int(ctx.Arguments, "offset", 1));
+            var limit = Math.Clamp(Args.Int(ctx.Arguments, "limit", 200), 1, 2000);
+            var lines = Encoding.UTF8.GetString(bytes).Split('\r', '\n');
+            var total = lines.Length;
+            if (offset > total)
+                return Ok($"No lines at offset {offset} (file has {total} lines).");
+            var slice = lines.Skip(offset - 1).Take(limit).ToList();
+            var sb = new System.Text.StringBuilder();
+            for (var i = 0; i < slice.Count; i++)
+                sb.AppendLine($"{offset + i,6}│{slice[i]}");
+            var from = offset;
+            var to = offset + slice.Count - 1;
+            var header = $"Showing lines {from}-{to} of {total}.";
+            if (to < total)
+                header += "\nUse offset=" + (to + 1) + " to continue.";
+            return Ok(Args.Truncate(sb.ToString()) + "\n" + header);
         }
         catch (Exception ex)
         {
             return Error($"Read failed: {ex.Message}");
         }
+    }
+
+    /// <summary>Binary sniff: NUL byte or high control-char density (PLAN §19).</summary>
+    private static bool IsBinary(byte[] bytes, int sample = 4096)
+    {
+        var n = Math.Min(bytes.Length, sample);
+        if (n == 0) return false;
+        var suspicious = 0;
+        for (var i = 0; i < n; i++)
+        {
+            var b = bytes[i];
+            if (b == 0) return true;
+            if (b < 32 && b is not (10 or 13 or 9 or 11)) suspicious++;
+        }
+        return suspicious > n / 16;
     }
 
     private static ToolResult Ok(string text) => new("tool", "read", [new TextPart(text)], false);
@@ -103,25 +134,29 @@ public sealed class WriteTool : IAgentTool
 public sealed class EditTool : IAgentTool
 {
     public string Name => "edit";
-    public string Description => "Replace a unique exact text span in a file. old must occur exactly once.";
+    public string Description => "Replace a unique exact text span in a file. oldText must occur exactly once (0 or >1 matches both fail; no fuzzy matching).";
     public JsonElement Parameters => Args.Schema(
         ("path", "string", "File path to edit."),
-        ("old", "string", "Exact text to find (must occur exactly once)."),
-        ("new", "string", "Replacement text."));
+        ("oldText", "string", "Exact text to find (must occur exactly once)."),
+        ("newText", "string", "Replacement text."));
 
     public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
+        // PLAN §21: exact replacement, 0 or >1 matches both fail, no fuzzy
+        // matching, rest of the file preserved byte-for-byte.
         var path = ctx.ResolvePath(Args.Str(ctx.Arguments, "path"));
-        var old = Args.Str(ctx.Arguments, "old");
-        var newText = Args.Str(ctx.Arguments, "new");
+        var old = Args.Str(ctx.Arguments, "oldText");
+        var newText = Args.Str(ctx.Arguments, "newText");
         if (string.IsNullOrEmpty(path) || !File.Exists(path))
             return new ToolResult("tool", "edit", [new TextPart($"File not found: {path}")], IsError: true);
         try
         {
             var content = await File.ReadAllTextAsync(path, ct);
-            var count = content.Split(old, StringSplitOptions.None).Length - 1;
-            if (count != 1)
-                return new ToolResult("tool", "edit", [new TextPart($"Expected exactly 1 occurrence of 'old', found {count}.")], IsError: true);
+            var count = CountOccurrences(content, old);
+            if (count == 0)
+                return new ToolResult("tool", "edit", [new TextPart("0 matches for oldText: nothing to edit (oldText must match exactly, once).")], IsError: true);
+            if (count > 1)
+                return new ToolResult("tool", "edit", [new TextPart($"Ambiguous: oldText matches {count} times - add surrounding context so it is unique.")], IsError: true);
             var idx = content.IndexOf(old, StringComparison.Ordinal);
             var updated = idx < 0 ? content : content.Substring(0, idx) + newText + content.Substring(idx + old.Length);
             await File.WriteAllTextAsync(path, updated, ct);
@@ -132,51 +167,133 @@ public sealed class EditTool : IAgentTool
             return new ToolResult("tool", "edit", [new TextPart($"Edit failed: {ex.Message}")], IsError: true);
         }
     }
+
+    private static int CountOccurrences(string content, string find)
+    {
+        if (string.IsNullOrEmpty(find)) return 0;
+        var count = 0;
+        var idx = 0;
+        while ((idx = content.IndexOf(find, idx, StringComparison.Ordinal)) >= 0)
+        { count++; idx += find.Length; }
+        return count;
+    }
 }
 
 /// <summary>A grep/search tool: find files whose contents match a regex.</summary>
 public sealed class GrepTool : IAgentTool
 {
     public string Name => "grep";
-    public string Description => "Search file contents for a regex pattern within a directory (recursive).";
+    public string Description => "Search file contents with a regular expression (ripgrep when available, managed fallback otherwise). Results are file:line: text; relative paths resolve against the workspace.";
     public JsonElement Parameters => Args.Schema(
         ("pattern", "string", "Regular expression to search for."),
-        ("path", "string", "Directory to search (defaults to current dir)."),
-        ("include", "string", "Optional glob filter, e.g. \"*.ts\". Optional."));
-
+        ("path", "string", "File or directory to search (defaults to the workspace). Optional."),
+        ("glob", "string", "File filter, e.g. \"*.cs\". Optional."));
     public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
+        // PLAN §22: regex + result limits; ripgrep if it exists, else a managed
+        // fallback; both normalize to 'file:line: text'.
+        const int max = 250;
         var pattern = Args.Str(ctx.Arguments, "pattern");
-        var dir = ctx.ResolvePath(Args.Str(ctx.Arguments, "path", ""));
-        var include = Args.OptStr(ctx.Arguments, "include");
+        var target = ctx.ResolvePath(Args.Str(ctx.Arguments, "path", ""));
+        var glob = Args.OptStr(ctx.Arguments, "glob");
         if (string.IsNullOrEmpty(pattern))
             return new ToolResult("tool", "grep", [new TextPart("pattern is required")], IsError: true);
-        if (!Directory.Exists(dir))
-            return new ToolResult("tool", "grep", [new TextPart($"Directory not found: {dir}")], IsError: true);
+        if (string.IsNullOrEmpty(target) || (!File.Exists(target) && !Directory.Exists(target)))
+            return new ToolResult("tool", "grep", [new TextPart($"Path not found: {target}")], IsError: true);
+        var isDir = Directory.Exists(target);
         try
         {
-            var rx = new System.Text.RegularExpressions.Regex(pattern);
-            var matches = new List<string>();
-            var allFiles = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
-                .Where(f => include is null || System.IO.Path.GetFileName(f).EndsWith(include.Replace("*", ""), StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            foreach (var file in allFiles)
-            {
-                try
-                {
-                    var text = await File.ReadAllTextAsync(file, ct);
-                    foreach (var line in text.Split('\n'))
-                        if (rx.IsMatch(line)) matches.Add($"{file}: {line.Trim()}");
-                }
-                catch { /* skip unreadable/binary */ }
-            }
-            return new ToolResult("tool", "grep",
-                [new TextPart(matches.Count == 0 ? "No matches." : Args.Truncate(string.Join("\n", matches)))], false);
+            var engine = FindRipgrep() is { } rg
+                ? RunRipgrep(rg, pattern, target, glob, isDir, ctx.Workspace)
+                : await RunManagedAsync(pattern, target, glob, isDir, ctx.Workspace, ct);
+            if (engine.Count == 0)
+                return new ToolResult("tool", "grep", [new TextPart("No matches.")], false);
+            var more = engine.Count >= max ? "\n[showing first " + max + " matches - narrow the pattern or add a glob]" : "";
+            return new ToolResult("tool", "grep", [new TextPart(string.Join("\n", engine) + more)], false);
         }
         catch (Exception ex)
         {
             return new ToolResult("tool", "grep", [new TextPart($"Grep failed: {ex.Message}")], IsError: true);
         }
+    }
+
+    /// <summary>PLAN §22: prefer ripgrep for speed on developer machines.</summary>
+    private static string? FindRipgrep()
+    {
+        var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
+        foreach (var dir in pathEnv.Split(Path.PathSeparator))
+            foreach (var cand in new[] { Path.Combine(dir, "rg.exe"), Path.Combine(dir, "rg") })
+                if (File.Exists(cand)) return cand;
+        return null;
+    }
+
+    private static List<string> RunRipgrep(string rg, string pattern, string target, string? glob, bool isDir, string workspace)
+    {
+        var psi = new ProcessStartInfo(rg) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+        foreach (var a in new[] { "--no-heading", "--line-number", "-m", "5000", "-e", pattern,
+                   isDir && glob is not null ? "--glob" : null, isDir && glob is not null ? glob : null, "--", target })
+            if (a is not null) psi.ArgumentList.Add(a);
+        var proc = Process.Start(psi)!;
+        var stdout = proc.StandardOutput.ReadToEnd();
+        proc.WaitForExit();
+        // PLAN §22: normalize to the same 'file:line: text' shape as the managed
+        // path, workspace-relative.
+        return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l =>
+            {
+                var c2 = l.LastIndexOf(':');
+                var c1 = c2 < 0 ? -1 : l.LastIndexOf(':', c2 - 1);
+                if (c1 < 0) return l;
+                var file = l[..c1];
+                var line = l[(c1 + 1)..c2];
+                var text = l[(c2 + 1)..];
+                file = file.Replace('\\', '/');
+                if (file.StartsWith(workspace, StringComparison.OrdinalIgnoreCase))
+                    file = file[workspace.Length..].TrimStart('/');
+                return file + ":" + line + ": " + text;
+            })
+            .Where(l => l.Contains(':'))
+            .ToList();
+    }
+
+    private static async Task<List<string>> RunManagedAsync(
+        string pattern, string target, string? glob, bool isDir, string workspace, CancellationToken ct)
+    {
+        var rx = new System.Text.RegularExpressions.Regex(pattern);
+        var files = isDir
+            ? Directory.EnumerateFiles(target, "*", SearchOption.AllDirectories)
+                .Where(f => glob is null || MatchGlob(glob, Path.GetFileName(f)))
+            : new[] { target };
+        var matches = new List<string>();
+        foreach (var file in files)
+        {
+            if (ct.IsCancellationRequested) break;
+            try
+            {
+                var bytes = await File.ReadAllBytesAsync(file, ct);
+                if (bytes.Length > 0 && bytes[0] < 32 && bytes[0] is not (9 or 10 or 13) && bytes[0] != 0) continue; // binary
+                var lines = Encoding.UTF8.GetString(bytes).Split('\n');
+                for (var i = 0; i < lines.Length; i++)
+                    if (rx.IsMatch(lines[i]))
+                    {
+                        matches.Add(ToDisplay(file, workspace) + ":" + (i + 1) + ": " + lines[i].Trim());
+                        if (matches.Count >= 250) return matches;
+                    }
+            }
+            catch { /* skip unreadable */ }
+        }
+        return matches;
+    }
+
+    private static string ToDisplay(string file, string workspace)
+        => file.StartsWith(workspace, StringComparison.OrdinalIgnoreCase)
+            ? file.Substring(workspace.Length).TrimStart('\\', '/')
+            : file;
+
+    private static bool MatchGlob(string glob, string name)
+    {
+        var rx = "^" + System.Text.RegularExpressions.Regex.Escape(glob).Replace("\\*", ".*") + "$";
+        return System.Text.RegularExpressions.Regex.IsMatch(name, rx);
     }
 
     private static bool TryRead(string f, out bool _)
