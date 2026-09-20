@@ -262,7 +262,11 @@ export class NetPIStore {
   }
 
   requestAccepted(): void {
-    this.requestPending = false;
+    // Keep the optimistic running indicator alive until the first authoritative
+    // agent.state arrives. The WS ack can beat AgentStarting/Preparing by a few
+    // milliseconds; clearing here caused the exact "did it send?" dead-air the
+    // chat UI must avoid.
+    this.requestPending = this.agentState === "Idle";
     if (this.activity === "Sending to agent…") this.activity = "Accepted · preparing…";
     if (this.activity === "Queueing steering message…") this.activity = "Steering queued";
   }
