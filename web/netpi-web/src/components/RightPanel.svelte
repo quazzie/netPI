@@ -21,17 +21,16 @@
     // valid and refresh the catalog whenever the panel is opened.
     if (ui.rightOpen) {
       ws.request("ui.panels.list", {}).catch(() => {});
-      if (!allTabs.some((t) => t.id === ui.rightTab)) ui.rightTab = "plugins";
+      if (!allTabs.some((t) => t.id === ui.rightTab)) ui.setRightTab("plugins", true);
     }
   });
 
   function select(id: string) {
     if (ui.rightTab === id && ui.rightOpen) {
-      ui.rightOpen = false;
+      ui.toggleRight();
       return;
     }
-    ui.rightTab = id;
-    ui.rightOpen = true;
+    ui.setRightTab(id, true);
     if (id === "plugins") ws.request("plugins.list", {}).catch(() => {});
   }
 
