@@ -29,11 +29,4 @@
   {/if}
 
   <span class={connClass}>{store.connection}</span>
-
-  <button
-    class="right-toggle"
-    class:active={ui.rightOpen}
-    title={ui.rightOpen ? "Collapse right panel" : "Open right panel"}
-    onclick={() => ui.toggleRight()}
-  >◫</button>
 </div>
