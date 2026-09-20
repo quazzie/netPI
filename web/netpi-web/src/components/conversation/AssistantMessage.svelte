@@ -143,10 +143,6 @@
 </script>
 
 <article class="msg-assistant">
-  <div class="assistant-gutter">
-    <div class="assistant-mark" title="netPI">π</div>
-  </div>
-
   <div class="assistant-content">
     {#if block.thinking && block.thinking.text}
       <ThinkingBlock thinking={block.thinking} />

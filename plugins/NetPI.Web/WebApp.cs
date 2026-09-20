@@ -116,6 +116,20 @@ internal sealed class WebApp : IAsyncDisposable
             _log.Warning("staticRoot not found; serving /ws only");
         }
         app.MapGet("/bootstrap", Bootstrap);
+        // Self-registered panel pages (docs/web-panels.md). HTML is embedded in
+        // the plugin assembly, so no extra staging files are needed. Statement-
+        // bodied handlers, per the /api/file ALC gotcha comment below.
+        app.MapGet("/panel/plugins", async (HttpContext c) =>
+        {
+            c.Response.ContentType = "text/html; charset=utf-8";
+            await c.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(PanelHtml("plugins")));
+        });
+        app.MapGet("/panel/diagnostics", async (HttpContext c) =>
+        {
+            c.Response.ContentType = "text/html; charset=utf-8";
+            await c.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(PanelHtml("diagnostics")));
+        });
+
         app.Map("/ws", HandleWsAsync);
         // Localhost-only file view for workspace/absolute references in chat.
         // Registered as a statement-bodied async lambda. A sync delegate that merely
@@ -954,6 +968,17 @@ internal sealed class WebApp : IAsyncDisposable
                 ? new { levels = levels.ToArray(), defaultLevel = m.DefaultReasoningLevel }
                 : (object?)null,
         }).ToArray();
+    }
+
+    /// <summary>Panel page HTML embedded in the plugin assembly (docs/web-panels.md).</summary>
+    private static string PanelHtml(string name)
+    {
+        var asm = typeof(WebApp).Assembly;
+        var resName = asm.GetManifestResourceNames()
+            .Single(n => n.EndsWith($".panels.{name}.html", StringComparison.OrdinalIgnoreCase));
+        using var stream = asm.GetManifestResourceStream(resName)!;
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
     }
 
     private object[] PanelJson() =>

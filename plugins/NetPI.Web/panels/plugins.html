@@ -1,0 +1,122 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Plugins</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 12.5px/1.45 Inter, ui-sans-serif, "Segoe UI", system-ui, sans-serif; color: #e5e7eb; }
+  .toolbar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+  .btn { border: 1px solid #2a303b; background: #171b22; color: #a1a8b5; border-radius: 7px; padding: 4px 10px; font-size: 11.5px; cursor: pointer; }
+  .btn:hover { background: #1d222b; color: #e5e7eb; }
+  .list { display: flex; flex-direction: column; gap: 5px; }
+  .item { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 9px; border: 1px solid #222934; border-radius: 8px; background: #12161c; }
+  .main { min-width: 0; flex: 1; }
+  .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 11px; color: #cbd2dd; }
+  .meta { margin-top: 2px; color: #687181; font-size: 9px; }
+  .err { margin-top: 5px; color: #ef7b84; font-size: 9.5px; line-height: 1.35; word-break: break-word; }
+  .actions { display: flex; align-items: center; gap: 5px; flex: none; }
+  .badge { width: max-content; padding: 2px 7px; border-radius: 999px; font-size: 10.5px; color: #687181; background: #11151a; }
+  .badge.active { color: #69c58f; background: rgba(105, 197, 143, .10); }
+  .badge.draining, .badge.unloading, .badge.loading { color: #e1b35b; background: rgba(225, 179, 91, .10); }
+  .badge.failed { color: #ef7b84; background: rgba(239, 123, 132, .10); }
+  .mini { width: 25px; height: 25px; display: grid; place-items: center; border: 1px solid #2d3541; border-radius: 6px; background: transparent; color: #a1a8b5; font-size: 13px; cursor: pointer; }
+  .mini:hover:not(:disabled) { background: #1d222b; }
+  .mini:disabled { opacity: .4; cursor: default; }
+  .empty { color: #687181; font-size: 10.5px; }
+</style>
+</head>
+<body>
+  <div class="toolbar"><button class="btn" id="all">Reload all</button></div>
+  <div class="list" id="list"><div class="empty">Waiting for plugin catalog…</div></div>
+  <script>
+    // Self-hosted panel: data + commands via the host's /ws (docs/web-panels.md).
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    const list = document.getElementById("list");
+    const state = new Map();
+
+    function render() {
+      list.innerHTML = "";
+      if (!state.size) {
+        const d = document.createElement("div");
+        d.className = "empty";
+        d.textContent = "No plugins.";
+        list.appendChild(d);
+        return;
+      }
+      for (const p of state.values()) {
+        const item = document.createElement("div");
+        item.className = "item";
+        const main = document.createElement("div");
+        main.className = "main";
+        const title = document.createElement("div");
+        title.className = "title";
+        title.textContent = p.name || p.id;
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${p.id} · gen ${p.generation}`;
+        main.appendChild(title);
+        main.appendChild(meta);
+        if (p.lastError) {
+          const err = document.createElement("div");
+          err.className = "err";
+          err.textContent = p.lastError;
+          main.appendChild(err);
+        }
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const badge = document.createElement("span");
+        const cls = p.state === "active" || p.state === "draining" || p.state === "unloading" || p.state === "failed" || p.state === "loading" ? p.state : "";
+        badge.className = cls ? `badge ${cls}` : "badge";
+        badge.textContent = p.state;
+        const btn = document.createElement("button");
+        btn.className = "mini";
+        btn.textContent = "↻";
+        btn.title = "Reload";
+        btn.disabled = p.state === "draining" || p.state === "unloading";
+        btn.onclick = () => reloadPlugin(p.id);
+        actions.appendChild(badge);
+        actions.appendChild(btn);
+        item.appendChild(main);
+        item.appendChild(actions);
+        list.appendChild(item);
+      }
+    }
+
+    function send(type, payload) {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type, payload, requestId: type + "_" + Date.now() + "_" + Math.random().toString(36).slice(2) }));
+    }
+
+    function reloadPlugin(id) {
+      const p = state.get(id);
+      if (p) { p.state = "draining"; render(); }
+      send("plugin.reload", { pluginId: id });
+    }
+
+    ws.onopen = () => { state.clear(); render(); };
+    ws.onclose = () => { setTimeout(() => location.reload(), 2000); };
+    ws.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      const p = m.payload || {};
+      switch (m.type) {
+        case "plugins.state":
+          state.clear();
+          for (const pl of p.plugins || []) state.set(pl.id, pl);
+          render();
+          break;
+        case "plugin.state":
+          if (state.has(p.pluginId)) { state.get(p.pluginId).state = p.state; render(); }
+          break;
+        case "plugin.reloaded":
+          if (state.has(p.pluginId)) { state.get(p.pluginId).state = "active"; render(); }
+          break;
+        case "plugin.reloadFailed":
+          if (state.has(p.pluginId)) { state.get(p.pluginId).state = "failed"; render(); }
+          break;
+      }
+    };
+    document.getElementById("all").onclick = () => send("plugin.reloadAll", {});
+  </script>
+</body>
+</html>

@@ -4,16 +4,11 @@ Plugin-contributed tabs in the Web UI's right panel. The shell (Svelte app) owns
 layout/chrome; each panel's content is isolated behind an `<iframe>` so hot-reloading
 a plugin can never destabilize the chat app (`src/NetPI.Abstractions/WebUi.cs`).
 
-> PLAN-v1.md does not cover this feature — this doc is the reference. No plugin
-> registers a panel yet (the `ui.panels` catalog is `[]` in practice); the
-> architecture is fully scaffolded, wired, and registry-tested.
->
-> **Not to be confused with the two always-present tabs** ("Plugins",
-> "Diagnostics"): those are *built-in tabs* hardcoded in
-> `RightPanel.svelte` and rendered by the Svelte shell directly (no iframe,
-> no registry) from store data. They are not `WebPanelDefinition`s and do not
-> appear in `store.webPanels`. "No panel exists yet" means: the
-> plugin-contributed (iframe) catalog is empty.
+> PLAN-v1.md does not cover this feature — this doc is the reference. The
+> shell contains **no hardcoded tabs**: every right-panel tab is a
+> `WebPanelDefinition` from the `ui.panels` catalog. NetPI.Web self-registers
+> two panels ("plugins", "diagnostics") — see "Reference implementation"
+> below.
 
 ## Data flow
 
@@ -44,6 +39,7 @@ web/netpi-web: ws.ts "ui.panels" → store.webPanels → RightPanel.svelte tab l
 | `src/NetPI.Host/Services/WebPanelRegistry.cs` | Global lock-guarded registry + `ScopedWebPanels` (generation-scoped view) |
 | `src/NetPI.Host/Plugins/PluginManager.cs` | Creates `ScopedWebPanels` per instance (:218); calls `Unload()` on every unload path (:437, :549, :699) |
 | `plugins/NetPI.Web/WebApp.cs` | `PanelJson()` (~:959); `ui.panels` broadcasts (:423 bootstrap, :691 after `plugin.reload`, :715 after `plugin.reloadAll`, :732 for `ui.panels.list`) |
+| `plugins/NetPI.Web/WebPlugin.cs` | Self-registers the "plugins"/"diagnostics" panels (see Reference implementation) |
 | `web/netpi-web/src/types.ts` | `WebPanelInfo` wire type |
 | `web/netpi-web/src/store.svelte.ts` | `webPanels` state |
 | `web/netpi-web/src/ws.ts` | `case "ui.panels"` → store |
@@ -113,18 +109,19 @@ next `plugin.reload*` command, or a manual `ui.panels.list`.
 
 ## Frontend rendering (`web/netpi-web`)
 
-- `RightPanel.svelte`: `allTabs = [plugins, diagnostics] + store.webPanels`.
-  The first two are the hardcoded `builtins` (shell features); the rest are
-  plugin-contributed panels. Tab labels render the title in
+- `RightPanel.svelte`: tabs are rendered **entirely** from `store.webPanels`
+  (the `ui.panels` catalog) — the shell has no hardcoded tabs and no
+  per-tab-id content branches; every tab renders through the same
+  `<iframe src={panel.entryUrl}>` path (NetPI.Web self-registers its
+  "plugins"/"diagnostics" panels, see below). Tab labels render the title in
   `writing-mode: vertical-rl` (see `.vertical-tab*` in `app.css`; rail width is
   `--right-rail-width: 26px` in `:root` — the `26` in `App.svelte`'s
   `shellStyle` must stay in sync).
 - Clicking a tab: `ui.setRightTab(id, true)`; clicking the active tab toggles
-  the panel. Content area: `{#if ui.rightTab === "plugins"} … {:else if
-  "diagnostics"} … {:else if selectedPlugin} <iframe src=…> {:else} "This panel
-  is no longer available."`
-- **Guard**: an `$effect` resets `rightTab` to `"plugins"` if the active tab
-  disappears from the catalog (e.g. a reload dropped the panel).
+  the panel. Content area: shell title row + `<iframe>` when the selected id
+  is in the catalog, else "No panels available."
+- **Guard**: an `$effect` falls back to the first catalog panel if the active
+  tab disappears (e.g. a reload dropped it).
 - **Iframe semantics**: no `key` on the `<iframe>` — a catalog refresh that
   leaves `entryUrl` unchanged does **not** reload the visible panel; switching
   tabs away and back remounts (fresh load).
@@ -154,23 +151,55 @@ Gotchas:
   — keep panel content cross-origin to preserve the isolation the design
   intends.
 
+## Reference implementation: NetPI.Web self-panels
+
+The "Plugins" and "Diagnostics" tabs are registered by the Web plugin itself —
+the Svelte shell has zero hardcoded tabs:
+
+- `plugins/NetPI.Web/WebPlugin.cs` — `LoadAsync` registers
+  `("plugins", "Plugins", "◇", "/panel/plugins", 0)` and
+  `("diagnostics", "Diagnostics", "◌", "/panel/diagnostics", 10)` **before**
+  the Kestrel app starts (so the first bootstrap already includes them);
+  `StopAsync` disposes the handles (the scoped registry would also clean up
+  on unload).
+- `plugins/NetPI.Web/WebApp.cs` — `MapGet("/panel/plugins")` /
+  `MapGet("/panel/diagnostics")` serve the pages; `PanelHtml(name)` loads them
+  from **embedded resources** in the plugin assembly
+  (csproj `<EmbeddedResource>`), so no extra staging files are needed.
+- `plugins/NetPI.Web/panels/plugins.html` / `diagnostics.html` — self-contained
+  vanilla-JS pages. Each opens its **own `/ws` connection** to the host,
+  renders from broadcast events (`plugins.state`, `plugin.state`,
+  `agent.state`, `session.updated`, `usage.updated`, …) and sends commands
+  (`plugin.reload`, `plugin.reloadAll`). They render **content only** — the
+  shell's iframe wrapper supplies the title row. On `/ws` close they
+  `location.reload()` after 2 s, self-healing across plugin reloads and host
+  restarts.
+
+**Deploying a new NetPI.Web build (Windows gotcha):** the running host holds
+`plugins/NetPI.Web/netPI.Web.dll` open, so `tools/publish-plugins.ps1` cannot
+overwrite it while the current generation is loaded. Sequence: reload
+NetPI.Web in the UI (unloads the generation, releases the DLL) → run
+`tools/publish-plugins.ps1 -Configuration Debug` → reload NetPI.Web again to
+load the new build.
+
 ## Testing & verification
 
 - `dotnet test NetPI.sln` — `WebPanelRegistryTests` covers scoped-unload and
   same-id replacement (the two core invariants).
 - Not covered: `ui.panels` broadcast behavior in `WebApp` (would be an
   integration test), and end-to-end iframe rendering.
-- Natural first reference implementation: `plugins/NetPI.TestPlugin` (the
-  existing reload/lease fixture) — register a panel in `LoadAsync` serving a
-  trivial page, then smoke-test via the running host (`/ws` → `ui.panels`).
+- The reference implementation is NetPI.Web's self-panels (above).
+  `plugins/NetPI.TestPlugin` (the reload/lease fixture) is the place to add a
+  *second*-plugin panel test if cross-plugin catalog behavior ever changes.
 - After any frontend change: `npx vite build` + reload the Web plugin or
   refresh the browser (hashed assets) — see AGENTS.md.
 
 ## Known gaps (TODO for future agents)
 
-1. No reference *plugin panel* exists yet — `ui.panels` is `[]` (the visible
-   "Plugins"/"Diagnostics" tabs are built-ins, see above).
-2. No iframe reload on plugin reload (stale content if `entryUrl` is unchanged;
-   could key the iframe on the plugin's generation).
-3. `ui.panels` is not pushed on non-Web-UI plugin lifecycle events.
-4. No shell↔panel `postMessage` bridge protocol.
+1. No iframe reload on plugin reload (stale content if `entryUrl` is unchanged;
+   the self-panels mitigate this by reloading themselves when their `/ws`
+   drops, but the shell iframe is not keyed on plugin generation).
+2. `ui.panels` is not pushed on non-Web-UI plugin lifecycle events.
+3. No shell↔panel `postMessage` bridge protocol (panels open their own `/ws`).
+4. No integration-level test for the NetPI.Web self-panel routes
+   (`/panel/*`, `ui.panels` broadcasts) — registry mechanics are unit-tested.
