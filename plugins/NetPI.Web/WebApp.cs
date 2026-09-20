@@ -447,6 +447,10 @@ internal sealed class WebApp : IAsyncDisposable
                 await SessionOpenAsync(c, requestId, p, ct);
                 break;
 
+            case "session.older":
+                await SessionOlderAsync(c, requestId, p, ct);
+                break;
+
             case "session.rename":
             {
                 var sid = S(p, "sessionId");
@@ -674,9 +678,35 @@ internal sealed class WebApp : IAsyncDisposable
         var info = await _store.GetAsync(sid, ct);
         if (info is null) { await SendErrorAsync(c, requestId, "session not found", ct); return; }
         await SendAsync(c, "session.updated", ToSessionJson(info), sid, ct);
-        var entries = await _store.ReadAsync(sid, 0, 500, ct);
+        // PLAN §38: don't load/render an entire giant session — load the LATEST
+        // ~200 entries; older ones are fetched on scroll-up via session.older.
+        const int pageSize = 200;
+        var total = info.EntryCount;
+        var offset = Math.Max(0, total - pageSize);
+        var entries = await _store.ReadAsync(sid, offset, pageSize, ct);
         await SendAsync(c, "session.entries",
-            new { entries = EntriesToJson(entries), replace = true }, sid, ct);
+            new { entries = EntriesToJson(entries), replace = true, total = total, hasMore = offset > 0 }, sid, ct);
+        await SendAckAsync(c, requestId, ct);
+    }
+
+    /// <summary>PLAN §38: scroll-up pagination — entries older than a sequence.</summary>
+    private async Task SessionOlderAsync(Client c, string? requestId, JsonElement p, CancellationToken ct)
+    {
+        if (_store is null) { await SendErrorAsync(c, requestId, "no session store", ct); return; }
+        var sid = S(p, "sessionId");
+        if (sid is null) { await SendAckAsync(c, requestId, ct); return; }
+        var beforeSequence = I(p, "beforeSequence");
+        var count = I(p, "count");
+        if (count <= 0) count = 200;
+        if (beforeSequence <= 0)
+        {
+            await SendAsync(c, "session.older", new { entries = new List<object>(), beforeSequence = 0, hasMore = false }, sid, ct);
+            await SendAckAsync(c, requestId, ct);
+            return;
+        }
+        var entries = await _store.ReadBeforeAsync(sid, beforeSequence, count, ct);
+        await SendAsync(c, "session.older",
+            new { entries = EntriesToJson(entries), beforeSequence, hasMore = entries.Count == count }, sid, ct);
         await SendAckAsync(c, requestId, ct);
     }
 

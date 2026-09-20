@@ -224,6 +224,27 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         return list;
     }
 
+    /// <summary>PLAN §38: entries older than a sequence, for scroll-up pagination.</summary>
+    public async ValueTask<IReadOnlyList<SessionEntry>> ReadBeforeAsync(
+        string sessionId, int beforeSequence, int count, CancellationToken ct = default)
+    {
+        var list = new List<SessionEntry>();
+        await using var cmd = _connection.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, entry_type, created_at, seq, payload_json FROM session_entries
+            WHERE session_id = $s AND seq < $b
+            ORDER BY seq DESC LIMIT $cnt;
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$b", beforeSequence);
+        cmd.Parameters.AddWithValue("$cnt", count);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            list.Add(Rehydrate(sessionId, reader));
+        list.Reverse(); // append order, oldest first
+        return list;
+    }
+
     // ---- helpers ----------------------------------------------------------
 
     private static DateTimeOffset FromTicks(long ms) => DateTimeOffset.FromUnixTimeMilliseconds(ms);

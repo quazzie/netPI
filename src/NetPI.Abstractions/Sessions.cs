@@ -66,4 +66,14 @@ public interface ISessionStore
         int offset,
         int count,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// PLAN §38: entries OLDER than sequence <paramref name="beforeSequence"/>
+    /// (scrolling upward), returned in append order (oldest first).
+    /// </summary>
+    ValueTask<IReadOnlyList<SessionEntry>> ReadBeforeAsync(
+        string sessionId,
+        int beforeSequence,
+        int count,
+        CancellationToken cancellationToken = default);
 }
