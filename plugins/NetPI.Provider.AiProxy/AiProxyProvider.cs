@@ -196,10 +196,15 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         static bool IsEffortContainer(string name)
         {
             var n = name.Replace('-', '_').ToLowerInvariant();
-            return n.Contains("reasoning", StringComparison.Ordinal)
-                || n.Contains("effort", StringComparison.Ordinal)
+            return n.Contains("effort", StringComparison.Ordinal)
                 || n.Contains("level", StringComparison.Ordinal)
                 || n is "allowed" or "values" or "options" or "profiles" or "profile";
+        }
+
+        static bool IsReasoningField(string name)
+        {
+            var n = name.Replace('-', '_').ToLowerInvariant();
+            return n.Contains("reasoning", StringComparison.Ordinal) || IsEffortContainer(name);
         }
 
         void Add(string? raw, bool allowArbitrary)
@@ -249,8 +254,12 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         // profile forms instead of coupling netPI to one AiProxy JSON shape.
         foreach (var prop in model.EnumerateObject())
         {
-            if (prop.NameEquals("reasoning") || IsEffortContainer(prop.Name))
-                Collect(prop.Value, IsEffortContainer(prop.Name), 0);
+            if (!IsReasoningField(prop.Name)) continue;
+            // The top-level "reasoning" object is a metadata namespace, not a
+            // list: only nested level/effort containers may contribute arbitrary
+            // string values. This avoids mistaking fields like type:"observed"
+            // for an effort name.
+            Collect(prop.Value, !prop.NameEquals("reasoning") && IsEffortContainer(prop.Name), 0);
         }
 
         return values.Count > 0 ? values : null;
