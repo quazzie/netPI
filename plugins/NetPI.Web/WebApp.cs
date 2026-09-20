@@ -54,6 +54,11 @@ internal sealed class WebApp : IAsyncDisposable
     }
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DeltaBatcher> _batchers = new();
 
+    /// <summary>Per-session accumulated assistant text since the last
+    /// model-completed (PLAN §41: text.completed must carry the full final text,
+    /// but the deltas were already flushed by the 120 ms timer).</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _completedText = new();
+
     // ---- hub ---------------------------------------------------------------
     private readonly HashSet<Client> _clients = [];
     private readonly object _clientsLock = new();
@@ -271,8 +276,12 @@ internal sealed class WebApp : IAsyncDisposable
                 }, sid);
                 break;
             case "model-completed":
-
+            {
                 FlushDeltas(sid);
+                // PLAN §41: text.completed closes out the streamed text so a
+                // client that only persists (does not stream) has the final form.
+                var finalText = _completedText.TryRemove(sid ?? "", out var t) ? t : string.Empty;
+                SendEvent("text.completed", new { text = finalText }, sid);
                 SendEvent("assistant.completed", new
                 {
                     usage = _totalTokens > 0 ? new
@@ -284,6 +293,7 @@ internal sealed class WebApp : IAsyncDisposable
                 }, sid);
                 _promptTokens = _completionTokens = _totalTokens = 0;
                 break;
+            }
         }
     }
 
@@ -583,6 +593,9 @@ internal sealed class WebApp : IAsyncDisposable
                 try
                 {
                     await SendAsync(c, ok ? "plugin.reloaded" : "plugin.reloadFailed", new { pluginId = pid }, null, ct);
+                    // PLAN §41: a per-plugin state event so the UI can update just this
+                    // plugin's row (e.g. mark it "failed") rather than only the list.
+                    await SendAsync(c, "plugin.state", new { pluginId = pid, state = ok ? "active" : "failed" }, null, ct);
                     await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
                     await SendAckAsync(c, requestId, ct);
                 }
@@ -602,6 +615,10 @@ internal sealed class WebApp : IAsyncDisposable
                 if (_facade is not null)
                 {
                     await _facade.ReloadAllAsync(ct);
+                    // PLAN §41: per-plugin state events for each reloaded plugin.
+                    foreach (var st in _facade.GetStatus())
+                        await SendAsync(c, "plugin.state",
+                            new { pluginId = st.Id, state = MapPluginState(st.State) }, null, ct);
                     await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
                 }
                 await SendAckAsync(c, requestId, ct);
@@ -659,6 +676,12 @@ internal sealed class WebApp : IAsyncDisposable
         // open restores them into the composer.
         if (!string.IsNullOrEmpty(model))
             await _store.SetModelAsync(sid, model, string.IsNullOrEmpty(reasoning) ? null : reasoning, ct);
+
+        // PLAN §41: the runner persists the user entry before starting the run;
+        // emit it as a single session.entry so the transcript has the persisted
+        // user message (streaming events only carry the assistant side).
+        await SendAsync(c, "session.entry",
+            new { entry = new { type = "user_message", text } as object }, sid, ct);
 
         await _runner.StartRunAsync(new AgentRunRequest(sid, workspace, model, text,
             string.IsNullOrEmpty(reasoning) ? null : reasoning, null, null), ct);
@@ -934,38 +957,45 @@ internal sealed class WebApp : IAsyncDisposable
 
     /// <summary>PLAN §39: drain all buffered lanes for a session now
     /// (window elapsed, or a boundary event forced the flush).</summary>
-    private void FlushDeltas(string? sid)
+    /// <summary>Synchronous drain: emit every buffered lane now (no 120 ms delay),
+    /// returning the drained "text" lane (the completed assistant text), or null.
+    /// Boundary events (thinking.completed, model-completed, ...) force this so the
+    /// wire order is deltas-then-completed.</summary>
+    private string? FlushDeltas(string? sid)
     {
+        if (sid is null) return null;
         var key = sid ?? "";
-        if (!_batchers.TryGetValue(key, out var b)) return;
+        if (!_batchers.TryGetValue(key, out var b)) return null;
         List<(string lane, string text)> drained;
         lock (b.Gate)
         {
+            b.Pending = null; // cancel the delayed flush — we are draining now
             if (b.Buffers.Count == 0)
-            {
-                b.Pending = null;
-                return;
-            }
+                return null;
             drained = b.Buffers
                 .Select(kv => (kv.Key, kv.Value.ToString()))
                 .Where(x => x.Item2.Length > 0)
                 .ToList();
             b.Buffers.Clear();
-            b.Pending = null;
         }
         foreach (var (lane, text) in drained)
         {
             if (lane == "thinking")
                 SendEvent("thinking.delta", new { text }, sid);
             else if (lane == "text")
+            {
                 SendEvent("text.delta", new { text }, sid);
+                _completedText.AddOrUpdate(sid ?? "", text, (_, old) => old + text);
+            }
             else if (lane.StartsWith("args:"))
                 SendEvent("tool.args", new { id = lane[5..], args = text }, sid);
         }
-        if (drained.Count == 0 && b.Buffers.Count == 0)
-            _batchers.TryRemove(key, out _);
+        _batchers.TryRemove(key, out _);
+        return drained.FirstOrDefault(x => x.lane == "text").text.Length > 0
+            ? drained.Single(x => x.lane == "text").text : null;
     }
 
+    
     private void SendEvent(string type, object payload, string? sid) =>
         _ = Task.Run(async () =>
         {

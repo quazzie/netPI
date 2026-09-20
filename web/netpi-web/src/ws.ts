@@ -167,6 +167,12 @@ class NetPIWebSocket {
         store.appendTextDelta(p.text ?? "");
         break;
 
+      case "text.completed":
+        // PLAN §41: terminal text marker. The streaming text.delta events have
+        // already built the block; this just resolves any partial state so the
+        // message is marked final even on a client that skips the deltas.
+        break;
+
       case "tool.started":
         store.startToolCall(p.id, p.name);
         store.applyAgentState("ExecutingTools");
@@ -241,9 +247,17 @@ class NetPIWebSocket {
     if (p.replace) store.resetTranscript();
     for (const e of entries) {
       switch (e.type) {
-        case "user_message":
-          store.appendUser(e.text ?? "");
+        case "user_message": {
+          // PLAN §41: chat.send echoes the persisted user entry as a session.entry.
+          // The composer already appended it optimistically (store.submit) — drop
+          // the echo when the last block is a user block with identical text,
+          // otherwise the message renders twice.
+          const last = store.blocks[store.blocks.length - 1];
+          const isEcho = !p.replace &&
+            last?.kind === "user" && (last.text ?? "") === (e.text ?? "");
+          if (!isEcho) store.appendUser(e.text ?? "");
           break;
+        }
         case "assistant_message":
           this.applyAssistantEntry(e);
           break;

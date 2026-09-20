@@ -160,9 +160,12 @@ public sealed class ServiceRegistry : IServiceRegistry
 
     public T Resolve<T>(string id) where T : notnull
     {
-        // Keep the lease alive for the caller's scope (PLAN §11): disposing it
-        // here would not prevent a mid-call unload of the owning plugin.
-        return Acquire<T>(id).Value;
+        // PLAN §11: transient access — the lease tracks that this call touched
+        // the owning plugin, then releases. Callers that need the unload
+        // guarantee across a whole operation hold an explicit lease via
+        // Acquire/AcquireLease (e.g. the agent's tool-execution batch).
+        using var lease = Acquire<T>(id);
+        return lease.Value;
     }
 
     /// <summary>
