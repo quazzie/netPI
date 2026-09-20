@@ -10,4 +10,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-start "netPI" dotnet src\NetPI.Desktop\bin\Debug\net10.0-windows\netPI.Desktop.dll
+rem Launch the apphost exe (WinExe — no console window). Running the DLL
+rem through "dotnet <dll>" is what created the blank cmd window.
+start "netPI" src\NetPI.Desktop\bin\Debug\net10.0-windows\netPI.Desktop.exe
