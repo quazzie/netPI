@@ -106,7 +106,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
     {
         await using var cmd = _connection.CreateCommand();
         cmd.CommandText = """
-            SELECT s.id, s.title, s.workspace, s.created_at, s.updated_at,
+            SELECT s.id, s.title, s.workspace, s.created_at, s.updated_at, s.model_id, s.reasoning_level,
                    COALESCE((SELECT COUNT(*) FROM session_entries e WHERE e.session_id = s.id), 0)
             FROM sessions s WHERE s.id = $id;
             """;
@@ -118,8 +118,12 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
             reader.IsDBNull(2) ? null : reader.GetString(2),
             FromTicks(reader.GetInt64(3)),
             FromTicks(reader.GetInt64(4)),
-            (int)reader.GetInt64(5),
-            reader.IsDBNull(1) ? null : reader.GetString(1));
+            (int)reader.GetInt64(7),
+            reader.IsDBNull(1) ? null : reader.GetString(1))
+        {
+            ModelId = reader.IsDBNull(5) ? null : reader.GetString(5),
+            ReasoningLevel = reader.IsDBNull(6) ? null : reader.GetString(6),
+        };
     }
 
     public async ValueTask<IReadOnlyList<SessionInfo>> ListAsync(int count = 50, CancellationToken ct = default)

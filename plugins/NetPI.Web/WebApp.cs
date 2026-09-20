@@ -655,6 +655,11 @@ internal sealed class WebApp : IAsyncDisposable
         // chat.send need not (and usually does not) resend it.
         var workspace = info.WorkspacePath ?? payloadWorkspace;
 
+        // PLAN §14/§31: remember the model/reasoning for the session so a later
+        // open restores them into the composer.
+        if (!string.IsNullOrEmpty(model))
+            await _store.SetModelAsync(sid, model, string.IsNullOrEmpty(reasoning) ? null : reasoning, ct);
+
         await _runner.StartRunAsync(new AgentRunRequest(sid, workspace, model, text,
             string.IsNullOrEmpty(reasoning) ? null : reasoning, null, null), ct);
         await SendAckAsync(c, requestId, ct);
@@ -779,6 +784,8 @@ internal sealed class WebApp : IAsyncDisposable
         id = s.Id,
         title = s.Title ?? "",
         workspace = s.WorkspacePath ?? "",
+        model = s.ModelId,
+        reasoning = s.ReasoningLevel,
         createdAt = s.CreatedAt.ToUnixTimeMilliseconds(),
         updatedAt = s.UpdatedAt.ToUnixTimeMilliseconds(),
     };

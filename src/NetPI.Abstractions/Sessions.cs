@@ -11,6 +11,11 @@ public sealed record SessionInfo(
     int EntryCount,
     string? Title)
 {
+    /// <summary>Model last selected for this session (PLAN §14/§31, restored on open).</summary>
+    public string? ModelId { get; init; }
+    /// <summary>Reasoning level last selected for this session.</summary>
+    public string? ReasoningLevel { get; init; }
+
     public override string ToString() => $"{Id} ({EntryCount} entries)";
 }
 
