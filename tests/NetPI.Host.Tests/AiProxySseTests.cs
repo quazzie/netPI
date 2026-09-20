@@ -213,7 +213,7 @@ public class AiProxySseTests
         var model = Assert.Single(models);
 
         Assert.Equal(262144, model.ContextWindowTokens);
-        Assert.Equal(["low", "medium", "high"], model.ReasoningLevels);
+        Assert.Equal(new[] { "low", "medium", "high" }, model.ReasoningLevels);
         Assert.Equal("medium", model.DefaultReasoningLevel);
         Assert.True(model.SupportsThinking);
     }
@@ -239,7 +239,7 @@ public class AiProxySseTests
 
         var model = Assert.Single(await p.RefreshAsync(CancellationToken.None));
 
-        Assert.Equal(["minimal", "low", "medium", "high"], model.ReasoningLevels);
+        Assert.Equal(new[] { "minimal", "low", "medium", "high" }, model.ReasoningLevels);
     }
 
     // ---- fakes ---------------------------------------------------------
