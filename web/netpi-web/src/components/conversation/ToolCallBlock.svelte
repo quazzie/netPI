@@ -30,6 +30,30 @@
     open = !open;
   }
 
+  function displayName(): string {
+    switch (call.name.toLowerCase()) {
+      case "bash": return "Bash";
+      case "powershell": return "PowerShell";
+      case "read": return "Read";
+      case "write": return "Write";
+      case "edit": return "Edit";
+      case "grep": return "Grep";
+      default: return call.name.replace(/(^|[_-])(\w)/g, (_, __, c) => c.toUpperCase());
+    }
+  }
+
+  function glyph(): string {
+    switch (call.name.toLowerCase()) {
+      case "bash":
+      case "powershell": return ">_";
+      case "read": return "▤";
+      case "write":
+      case "edit": return "✎";
+      case "grep": return "⌕";
+      default: return "◇";
+    }
+  }
+
   function filePath(): string | null {
     const value = args.path;
     return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -40,15 +64,14 @@
     if (path) {
       if (call.name === "grep") {
         const pattern = typeof args.pattern === "string" ? args.pattern : "";
-        return pattern ? `${pattern}  ·  ${path}` : path;
+        return pattern ? `${pattern} · ${path}` : path;
       }
       return path;
     }
 
     const command = args.command;
-    if (typeof command === "string" && command.trim()) {
+    if (typeof command === "string" && command.trim())
       return command.replace(/\s+/g, " ").trim();
-    }
 
     const pattern = args.pattern;
     if (typeof pattern === "string" && pattern.trim()) return pattern.trim();
@@ -81,11 +104,12 @@
   }
 </script>
 
-<section class:running class:error={!!call.isError} class="tool-card">
+<section class:running class:error={!!call.isError} class:open class="tool-card">
   <div
     class="tool-head"
     role="button"
     tabindex="0"
+    aria-expanded={open}
     onclick={toggle}
     onkeydown={(e) => {
       if (e.key === "Enter" || e.key === " ") {
@@ -94,8 +118,13 @@
       }
     }}
   >
-    <span class="tool-chevron">{open ? "⌄" : "›"}</span>
-    <span class="tool-name">{call.name}</span>
+    <span class="tool-leading" aria-hidden="true">
+      <span class="tool-glyph">{glyph()}</span>
+      <span class="tool-chevron">{open ? "⌄" : "⌄"}</span>
+    </span>
+
+    <span class="tool-name">{displayName()}</span>
+    <span class="tool-sep" aria-hidden="true"></span>
 
     {#if linkedFile}
       <a
@@ -113,14 +142,10 @@
     <span class="tool-spacer"></span>
 
     {#if running}
-      <span class="tool-running-dot" aria-label="running"></span>
+      <span class="tool-running-label">running</span>
     {:else if call.isError}
-      <span class="tool-state bad">Failed</span>
-    {:else}
-      <span class="tool-state good">Done</span>
-    {/if}
-
-    {#if call.durationMs}
+      <span class="tool-state bad">failed</span>
+    {:else if call.durationMs}
       <span class="tool-duration">{fmt(call.durationMs)}</span>
     {/if}
   </div>
@@ -128,7 +153,7 @@
   {#if open}
     <div class="tool-detail">
       {#if call.argsJson}
-        <div class="tool-section-label">Arguments</div>
+        <div class="tool-section-label">Input</div>
         <pre class="tool-args">{prettyArgs()}</pre>
       {/if}
 
@@ -136,10 +161,7 @@
       {#if call.result !== undefined}
         <pre class:error={!!call.isError} class="tool-output">{call.result || "(no output)"}</pre>
       {:else}
-        <div class="tool-live">
-          <span class="tool-running-dot"></span>
-          Running…
-        </div>
+        <div class="tool-live">Running…</div>
       {/if}
     </div>
   {/if}
