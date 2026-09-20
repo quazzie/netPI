@@ -118,7 +118,17 @@ internal sealed class WebApp : IAsyncDisposable
         app.MapGet("/bootstrap", Bootstrap);
         app.Map("/ws", HandleWsAsync);
         // Localhost-only file view for workspace/absolute references in chat.
-        app.MapGet("/api/file", OpenFileAsync);
+        // Registered as a statement-bodied async lambda. A sync delegate that merely
+        // returns OpenFileAsync's Task<IResult> (method group, or pass-through /
+        // expression-bodied async lambda) silently degrades to HTTP 200 with an empty
+        // body when the handler lives in a collectible plugin ALC; the statement-bodied
+        // form (await into a local, return the value) serves the IResult correctly.
+        // Verified empirically against the framework's RequestDelegateFactory, 2026-09-20.
+        app.MapGet("/api/file", async (HttpContext c) =>
+        {
+            var result = await OpenFileAsync(c);
+            return result;
+        });
         // SPA routing: any request that matched no file and no explicit route
         // (including the bare "/") serves index.html from the frontend build.
         if (RootsTheFrontend())
@@ -141,7 +151,7 @@ internal sealed class WebApp : IAsyncDisposable
         _app = null;
         if (app is null) return;
         try { await app.StopAsync(ct); } catch { }
-        await app.DisposeAsync();
+        try { await app.DisposeAsync(); } catch { }
     }
 
     public async ValueTask DisposeAsync()
@@ -150,10 +160,13 @@ internal sealed class WebApp : IAsyncDisposable
         _subs.Clear();
         if (_app is not null)
         {
-            await _app.DisposeAsync();
+            var app = _app;
             _app = null;
+            try { await app.StopAsync(CancellationToken.None); } catch { }
+            try { await app.DisposeAsync(); } catch { }
         }
     }
+
 
     private bool RootsTheFrontend() =>
         !string.IsNullOrEmpty(_staticRoot) && Directory.Exists(Path.GetFullPath(_staticRoot));
