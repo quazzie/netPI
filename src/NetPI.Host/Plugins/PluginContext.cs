@@ -22,19 +22,37 @@ internal sealed class PluginContext : IPluginContext
         PluginContextServices services,
         PluginContextEvents events,
         JsonElement ownConfig,
-        IPluginLogger log)
+        IPluginLogger log,
+        ICommandRegistry? commands = null)
     {
         _instance = instance;
         _services = services;
         _events = events;
+        _commands = commands;
         Info = instance.Info!;
         OwnConfig = ownConfig.ValueKind == JsonValueKind.Null ? JsonDocument.Parse("null").RootElement.Clone() : ownConfig;
         Log = log;
     }
 
+    private readonly ICommandRegistry? _commands;
     public PluginInfo Info { get; }
     public IServiceRegistry Services => _services;
     public IEventBus Events => _events;
+    public ICommandRegistry Commands => _commands ?? Noop.Instance;
+
+    private sealed class Noop : ICommandRegistry
+    {
+        public static readonly Noop Instance = new();
+        public IDisposable Register(CommandDefinition command) => NoopDisposable.Instance;
+        public IReadOnlyList<CommandDefinition> All() => [];
+        public CommandDefinition? Find(string name) => null;
+    }
+
+    private sealed class NoopDisposable : IDisposable
+    {
+        public static readonly NoopDisposable Instance = new();
+        public void Dispose() { }
+    }
     public JsonElement OwnConfig { get; }
     public IPluginLogger Log { get; }
 

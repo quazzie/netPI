@@ -24,6 +24,9 @@ public sealed class PluginInstance
     /// <summary>Registration handles owned by this generation (removed on unload even if the plugin forgot).</summary>
     public ConcurrentDictionary<string, IDisposable> Registrations { get; } = new();
 
+    /// <summary>Command registrations owned by this generation (PLAN §37); removed on unload.</summary>
+    public NetPI.Host.Services.ScopedCommands? Commands { get; set; }
+
     /// <summary>Event subscription handles owned by this generation.</summary>
     public ConcurrentDictionary<string, IDisposable> Subscriptions { get; } = new();
 

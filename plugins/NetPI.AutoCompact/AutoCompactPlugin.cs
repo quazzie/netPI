@@ -372,6 +372,9 @@ public sealed class AutoCompactPlugin : INetPiPlugin
     {
         _service = new AutoCompactService(context, AutoCompactConfig.FromJson(context.OwnConfig));
         context.Services.Register<ICompaction>("compaction", _service);
+        // PLAN §37: register the /compact slash command — it belongs to this
+        // plugin (AutoCompact), not the Web surface.
+        context.Commands.Register(new CommandDefinition("/compact", "Compact context now"));
         context.Log.Information("AutoCompact ready");
         await ValueTask.CompletedTask;
     }

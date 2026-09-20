@@ -23,6 +23,7 @@ public sealed class HostRuntime : IAsyncDisposable
     public EventBus Events { get; }
     public ServiceRegistry Services { get; }
     public PluginManager Plugins { get; }
+    public CommandRegistry Commands { get; }
     public IConfigService ConfigService => Config;
 
     public CancellationToken Lifetime { get; private set; }
@@ -36,7 +37,11 @@ public sealed class HostRuntime : IAsyncDisposable
         Config = config ?? new ConfigService(Options.RuntimeDirectory);
         Events = new EventBus();
         Services = new ServiceRegistry();
-        Plugins = new PluginManager(Options, Events, Services, Config, _logger);
+        Commands = new CommandRegistry();
+        // PLAN §37: expose the command registry to plugins (the Web plugin
+        // resolves it under id "commands" to answer commands.list).
+        Services.Register<ICommandRegistry>("commands", Commands);
+        Plugins = new PluginManager(Options, Events, Services, Commands, Config, _logger);
     }
 
     /// <summary>

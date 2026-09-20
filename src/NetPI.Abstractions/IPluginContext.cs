@@ -14,6 +14,12 @@ public interface IPluginContext
     /// <summary>Host-side service registry. Registrations are owned by this plugin generation.</summary>
     IServiceRegistry Services { get; }
 
+    /// <summary>
+    /// Command registry (PLAN §37). Plugins register slash commands here; they
+    /// are removed automatically when this plugin generation is unloaded, so
+    /// commands are hot-reloadable.
+    /// </summary>
+    ICommandRegistry Commands { get; }
     /// <summary>Host event bus. Subscriptions are owned by this plugin generation.</summary>
     IEventBus Events { get; }
 

@@ -94,3 +94,30 @@ public interface ICompaction
         CancellationToken cancellationToken = default);
 }
 
+
+/// <summary>
+/// A slash command the user can invoke from the composer (PLAN §37).
+/// Registered by plugins via <see cref="ICommandRegistry"/>.
+/// </summary>
+public sealed record CommandDefinition(
+    string Name,          // e.g. "/compact" (with leading slash)
+    string Description,    // e.g. "Compact context now"
+    string? Requires = null) // optional required argument name, e.g. "pluginId"
+{ }
+
+/// <summary>
+/// Global registry for slash commands (PLAN §37). Plugins register commands
+/// at load time; commands are hot-reloadable because they live in the
+/// plugin generation's service scope.
+/// </summary>
+public interface ICommandRegistry
+{
+    /// <summary>Register a command. Returns a disposer that unregisters on release.</summary>
+    IDisposable Register(CommandDefinition command);
+
+    /// <summary>Snapshot of all currently registered commands.</summary>
+    IReadOnlyList<CommandDefinition> All();
+
+    /// <summary>Find by name (case-insensitive), or null.</summary>
+    CommandDefinition? Find(string name);
+}

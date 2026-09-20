@@ -40,6 +40,7 @@ internal sealed class WebApp : IAsyncDisposable
     private IHostConfigUpdate? _config;
     private ISteeringQueue? _steering;
     private ICompaction? _compaction;
+    private NetPI.Abstractions.ICommandRegistry? _commands;
 
     private readonly List<IDisposable> _subs = [];
     // PLAN §41: tool.started → tool.output → tool.completed, with real duration.
@@ -83,6 +84,7 @@ internal sealed class WebApp : IAsyncDisposable
         _config = Resolve<IHostConfigUpdate>("host-config");
         _steering = Resolve<ISteeringQueue>("steering");
         _compaction = Resolve<ICompaction>("compaction");
+        _commands = Resolve<NetPI.Abstractions.ICommandRegistry>("commands");
 
         _subs.Add(_ctx.Events.Subscribe<AgentEvent>(OnAgentEvent));
 
@@ -628,6 +630,52 @@ internal sealed class WebApp : IAsyncDisposable
                 }
                 await SendAckAsync(c, requestId, ct);
                 break;
+
+            case "commands.list":
+            {
+                var cmds = (_commands?.All() ?? [])
+                    .Select(c => new { name = c.Name, description = c.Description, requires = c.Requires })
+                    .OrderBy(c => c.name)
+                    .ToList();
+                await c.SendSafeAsync(Envelope("ack", requestId, null, new { commands = cmds }), ct);
+                break;
+            }
+
+            case "workspace.files":
+            {
+                // PLAN §37 @ picker: return a flat, bounded list of workspace files.
+                var wsDir = S(p, "path");
+                var query = S(p, "query") ?? "";
+                var limit = Math.Min(I(p, "limit") == 0 ? 50 : I(p, "limit"), 200);
+                var files = new List<object>();
+                try
+                {
+                    if (!string.IsNullOrEmpty(wsDir) && Directory.Exists(wsDir))
+                    {
+                        var all = new DirectoryInfo(wsDir).EnumerateFiles("*", SearchOption.AllDirectories)
+                            .Where(f => !f.Name.StartsWith(".")
+                                && !f.FullName.Replace('\\', '/').Contains("/node_modules/")
+                                && !f.FullName.Replace('\\', '/').Contains("/bin/")
+                                && !f.FullName.Replace('\\', '/').Contains("/obj/")
+                                && f.Extension.Length > 0)
+                            .OrderByDescending(f => f.LastWriteTimeUtc)
+                            .Take(limit)
+                            .ToList();
+                        var filtered = query.Length > 0
+                            ? all.Where(f => f.Name.ToLower().Contains(query.ToLower(), StringComparison.Ordinal)
+                                            || f.FullName.ToLower().Contains(query.ToLower(), StringComparison.Ordinal)).ToList()
+                            : all;
+                        foreach (var f in filtered)
+                        {
+                            var rel = Path.GetRelativePath(wsDir, f.FullName);
+                            files.Add(new { path = rel, full = f.FullName, size = f.Length, mtime = f.LastWriteTimeUtc.ToString("O") });
+                        }
+                    }
+                }
+                catch (Exception ex) { _log.Warning($"workspace.files failed: {ex.Message}"); }
+                await c.SendSafeAsync(Envelope("ack", requestId, null, new { files }), ct);
+                break;
+            }
 
             case "config.update":
             {

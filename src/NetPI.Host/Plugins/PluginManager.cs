@@ -48,6 +48,7 @@ public sealed class PluginManager
     private readonly PluginManagerOptions _options;
     private readonly EventBus _bus;
     private readonly ServiceRegistry _registry;
+    private readonly CommandRegistry _commands;
     private readonly IConfigService _config;
     private readonly ILogger _logger;
 
@@ -59,12 +60,14 @@ public sealed class PluginManager
         PluginManagerOptions options,
         EventBus bus,
         ServiceRegistry registry,
+        CommandRegistry commands,
         IConfigService config,
         ILogger logger)
     {
         _options = options;
         _bus = bus;
         _registry = registry;
+        _commands = commands;
         _config = config;
         _logger = logger;
     }
@@ -197,12 +200,14 @@ public sealed class PluginManager
             ServiceRegistry.ServiceOwner.Current = instance;
             try
             {
+                instance.Commands = new ScopedCommands(_commands);
                 var context = new PluginContext(
                     instance,
                     new PluginContextServices(_registry, instance),
                     new PluginContextEvents(_bus, instance),
                     _config.GetRaw(pluginId),
-                    new PluginLogger(pluginId, _logger));
+                    new PluginLogger(pluginId, _logger),
+                    instance.Commands);
                 await plugin.LoadAsync(context, ct);
             }
             finally
@@ -659,6 +664,8 @@ public sealed class PluginManager
             instance.LiveLeases.Clear();
             instance.Registrations.Clear();
             instance.Subscriptions.Clear();
+            instance.Commands?.Unload();
+            instance.Commands = null;
         }
     }
 
