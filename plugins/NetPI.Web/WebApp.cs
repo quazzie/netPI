@@ -44,7 +44,10 @@ internal sealed class WebApp : IAsyncDisposable
 
     private readonly List<IDisposable> _subs = [];
     // PLAN §41: tool.started → tool.output → tool.completed, with real duration.
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _toolStarts = new();\n    // A model turn stays open through its tool batch so live tool calls/results\n    // render inside the same assistant message instead of losing their parent.\n    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _assistantOpen = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _toolStarts = new();
+    // A model turn stays open through its tool batch so live tool calls/results
+    // render inside the same assistant message instead of losing their parent.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _assistantOpen = new();
 
     // PLAN §39: per-session delta batcher (coalesce ~20ms windows).
     private sealed class DeltaBatcher
@@ -114,6 +117,8 @@ internal sealed class WebApp : IAsyncDisposable
         }
         app.MapGet("/bootstrap", Bootstrap);
         app.Map("/ws", HandleWsAsync);
+        // Localhost-only file view for workspace/absolute references in chat.
+        app.MapGet("/api/file", OpenFileAsync);
         // SPA routing: any request that matched no file and no explicit route
         // (including the bare "/") serves index.html from the frontend build.
         if (RootsTheFrontend())
@@ -1240,8 +1245,8 @@ internal sealed class WebApp : IAsyncDisposable
         if (!File.Exists(fullPath))
             return Results.NotFound("file not found");
 
-        if (!ContentTypes.TryGetContentType(fullPath, out var contentType))
-            contentType = IsTextLike(fullPath) ? "text/plain; charset=utf-8" : "application/octet-stream";
+        if (!TryGetContentType(fullPath, out var contentType))
+            contentType = "application/octet-stream";
 
         var download = context.Request.Query["download"] == "1";
         return Results.File(
@@ -1251,15 +1256,23 @@ internal sealed class WebApp : IAsyncDisposable
             enableRangeProcessing: true);
     }
 
-    private static bool IsTextLike(string path)
+    private static bool TryGetContentType(string path, out string? contentType)
     {
         var ext = Path.GetExtension(path).ToLowerInvariant();
-        return ext is ".txt" or ".md" or ".cs" or ".fs" or ".vb" or ".json" or ".jsonl"
-            or ".yaml" or ".yml" or ".xml" or ".html" or ".htm" or ".css" or ".scss"
-            or ".js" or ".jsx" or ".ts" or ".tsx" or ".svelte" or ".vue" or ".py"
-            or ".ps1" or ".sh" or ".bash" or ".cmd" or ".bat" or ".sql" or ".toml"
-            or ".ini" or ".cfg" or ".props" or ".targets" or ".csproj" or ".sln";
+        contentType = ext switch
+        {
+            ".cs" or ".fs" or ".vb" or ".js" or ".jsx" or ".ts" or ".tsx" => "text/javascript; charset=utf-8",
+            ".json" or ".jsonl" or ".yaml" or ".yml" or ".xml" => "text/plain; charset=utf-8",
+            ".html" or ".htm" => "text/html; charset=utf-8",
+            ".css" or ".scss" => "text/css; charset=utf-8",
+            ".svelte" or ".vue" or ".py" or ".ps1" or ".sh" or ".bash" or ".cmd" or ".bat"
+                or ".sql" or ".toml" or ".ini" or ".cfg" or ".props" or ".targets"
+                or ".csproj" or ".sln" or ".md" or ".txt" => "text/plain; charset=utf-8",
+            _ => null,
+        };
+        return contentType is not null;
     }
+
 
     private object Bootstrap()
     {
