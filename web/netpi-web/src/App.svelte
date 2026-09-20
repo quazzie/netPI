@@ -9,7 +9,7 @@
   import Composer from "./components/Composer.svelte";
 
   let shellStyle = $derived(
-    `--left-panel-width:${ui.leftOpen ? ui.leftWidth : 0}px;--right-panel-width:${ui.rightOpen ? ui.rightWidth : 42}px`,
+    `--left-panel-width:${ui.leftOpen ? ui.leftWidth : 0}px;--right-panel-width:${ui.rightOpen ? ui.rightWidth : 26}px`, /* 26 must match --right-rail-width in app.css */
   );
 
   function beginPanelResize(side: "left" | "right", e: PointerEvent) {

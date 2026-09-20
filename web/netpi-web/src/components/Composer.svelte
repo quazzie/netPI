@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { store } from "../store.svelte";
   import { ui } from "../ui.svelte";
   import { ws } from "../ws";
@@ -9,6 +10,11 @@
   let atCursor = $state(0);
   let atFiles = $state<{ path: string; full: string; size: number }[]>([]);
   let serverCommands = $state<{ cmd: string; desc: string }[]>([]);
+
+  onMount(() => {
+    // After a (re)load, put the caret back in the prompt so typing works immediately.
+    el?.focus({ preventScroll: true });
+  });
 
   const baselineCommands = [
     { cmd: "/model", desc: "Select model" },

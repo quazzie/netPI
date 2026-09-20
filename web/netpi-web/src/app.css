@@ -17,6 +17,8 @@
   --amber: #e1b35b;
   --radius: 10px;
   --content: 980px;
+  /* width of the right panel's vertical tab rail (App.svelte must stay in sync) */
+  --right-rail-width: 26px;
   font-family: Inter, ui-sans-serif, "Segoe UI", system-ui, -apple-system, sans-serif;
   color-scheme: dark;
 }
@@ -915,16 +917,17 @@ body.panel-resizing .app-shell { transition: none; }
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
+  grid-template-columns: var(--right-rail-width) minmax(0, 1fr);
   overflow: hidden;
   background: #101319;
 }
-.right-panel:not(.open) { grid-template-columns: 42px 0; }
+.right-panel:not(.open) { grid-template-columns: var(--right-rail-width) 0; }
 .right-tab-rail {
   min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  overflow-y: auto;
   border-right: 1px solid var(--border-soft);
   background: #0e1116;
 }
@@ -938,10 +941,9 @@ body.panel-resizing .app-shell { transition: none; }
 .right-collapse:hover { background: var(--bg-hover); color: var(--text); }
 .vertical-tab {
   flex: none;
-  height: 118px;
   display: grid;
   place-items: center;
-  padding: 0;
+  padding: 12px 0;
   border-bottom: 1px solid #1b2028;
   color: #687181;
   overflow: hidden;
@@ -952,14 +954,15 @@ body.panel-resizing .app-shell { transition: none; }
   background: #181e27;
   box-shadow: inset 2px 0 0 var(--accent);
 }
+/* The label flows vertically (writing-mode) so the tab box sizes to the
+   text instead of a fixed height. The 180° flip keeps the bottom-to-top
+   reading orientation the rotate(-90deg) hack used to produce. */
 .vertical-tab-content {
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
   gap: 7px;
   width: max-content;
-  white-space: nowrap;
-  transform: rotate(-90deg);
-  transform-origin: center;
 }
 .vertical-tab-icon {
   flex: none;
@@ -971,6 +974,9 @@ body.panel-resizing .app-shell { transition: none; }
   line-height: 1;
   letter-spacing: .05em;
   text-transform: uppercase;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  transform-origin: center;
 }
 .rail-spacer { flex: 1; }
 
