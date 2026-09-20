@@ -746,7 +746,12 @@ internal sealed class WebApp : IAsyncDisposable
                     if (!string.IsNullOrEmpty(wsDir) && Directory.Exists(wsDir))
                     {
                         var q = query.Trim();
-                        var filtered = new DirectoryInfo(wsDir).EnumerateFiles("*", SearchOption.AllDirectories)
+                        var filtered = new DirectoryInfo(wsDir).EnumerateFiles("*", new EnumerationOptions
+                        {
+                            RecurseSubdirectories = true,
+                            IgnoreInaccessible = true,
+                            AttributesToSkip = FileAttributes.ReparsePoint,
+                        })
                             .Where(f =>
                             {
                                 var norm = f.FullName.Replace('\\', '/');
