@@ -49,6 +49,7 @@ public sealed class PluginManager
     private readonly EventBus _bus;
     private readonly ServiceRegistry _registry;
     private readonly CommandRegistry _commands;
+    private readonly WebPanelRegistry _webPanels;
     private readonly IConfigService _config;
     private readonly ILogger _logger;
 
@@ -61,6 +62,7 @@ public sealed class PluginManager
         EventBus bus,
         ServiceRegistry registry,
         CommandRegistry commands,
+        WebPanelRegistry webPanels,
         IConfigService config,
         ILogger logger)
     {
@@ -68,6 +70,7 @@ public sealed class PluginManager
         _bus = bus;
         _registry = registry;
         _commands = commands;
+        _webPanels = webPanels;
         _config = config;
         _logger = logger;
     }
@@ -201,13 +204,15 @@ public sealed class PluginManager
             try
             {
                 instance.Commands = new ScopedCommands(_commands);
+                instance.WebPanels = new ScopedWebPanels(_webPanels);
                 var context = new PluginContext(
                     instance,
                     new PluginContextServices(_registry, instance),
                     new PluginContextEvents(_bus, instance),
                     _config.GetRaw(pluginId),
                     new PluginLogger(pluginId, _logger),
-                    instance.Commands);
+                    instance.Commands,
+                    instance.WebPanels);
                 await plugin.LoadAsync(context, ct);
             }
             finally
@@ -416,6 +421,10 @@ public sealed class PluginManager
         // --- host removes registrations + subscriptions (PLAN §7) ---
         _registry.RemoveAllFor(old);
         _bus.RemoveAllFor(old);
+        old.Commands?.Unload();
+        old.Commands = null;
+        old.WebPanels?.Unload();
+        old.WebPanels = null;
 
         // --- UnloadAsync ---
         try
@@ -524,6 +533,10 @@ public sealed class PluginManager
 
             _registry.RemoveAllFor(p);
             _bus.RemoveAllFor(p);
+            p.Commands?.Unload();
+            p.Commands = null;
+            p.WebPanels?.Unload();
+            p.WebPanels = null;
 
             try
             {
@@ -672,6 +685,8 @@ public sealed class PluginManager
             instance.Subscriptions.Clear();
             instance.Commands?.Unload();
             instance.Commands = null;
+            instance.WebPanels?.Unload();
+            instance.WebPanels = null;
         }
     }
 
