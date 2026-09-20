@@ -8,11 +8,22 @@ import type {
   SessionInfo,
   RunStats,
   Usage,
+  WebPanelInfo,
 } from "./types";
 
 let counter = 0;
 export function uid(prefix = "b"): string {
   return `${prefix}_${Date.now().toString(36)}_${(counter++).toString(36)}`;
+}
+
+function saved(key: string): string {
+  try { return localStorage.getItem(key) ?? ""; } catch { return ""; }
+}
+function save(key: string, value: string): void {
+  try {
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  } catch {}
 }
 
 /** A single steering message queued for the next turn boundary. */
@@ -26,6 +37,8 @@ export class NetPIStore {
   connection = $state<"connecting" | "open" | "closed">("connecting");
   agentState = $state<AgentState>("Idle");
   busy = $derived(this.agentState !== "Idle" && this.agentState !== "Cancelling");
+  activity = $state<string | null>(null);
+  requestPending = $state(false);
 
   // ---- session ----------------------------------------------------------
   session = $state<SessionInfo | null>(null);
@@ -34,10 +47,7 @@ export class NetPIStore {
 
   // ---- transcript -------------------------------------------------------
   blocks = $state<Block[]>([]);
-  // The id of the block that is currently streaming, or null when idle.
   activeAssistantId = $state<string | null>(null);
-  // PLAN §38: scroll-up pagination — sequence of the oldest loaded entry,
-  // whether older entries remain, and a version bump (for scroll preservation).
   olderSeq = $state(0);
   moreAvailable = $state(false);
   olderLoading = $state(false);
@@ -45,31 +55,27 @@ export class NetPIStore {
 
   // ---- model / reasoning ------------------------------------------------
   models = $state<ModelInfo[]>([]);
-  currentModel = $state<string>("");
-  reasoningLevel = $state<string>("");
+  currentModel = $state<string>(saved("netpi.lastModel"));
+  reasoningLevel = $state<string>(saved("netpi.lastReasoning"));
   modelsRefreshing = $state(false);
   modelRefreshError = $state<string | null>(null);
 
-  // ---- plugins ----------------------------------------------------------
+  // ---- plugins / extension UI ------------------------------------------
   plugins = $state<PluginStatus[]>([]);
+  webPanels = $state<WebPanelInfo[]>([]);
 
-  // ---- run stats --------------------------------------------------------
-  stats = $state<RunStats>({
-    turns: 0,
-    toolSteps: 0,
-  });
+  // ---- run stats (kept for diagnostics, not rendered as a status bar) ---
+  stats = $state<RunStats>({ turns: 0, toolSteps: 0 });
   lastUsage = $state<Usage | null>(null);
 
   // ---- UI state ----------------------------------------------------------
-  drawerOpen = $state(false);
-  overlay = $state<null | "plugins" | "settings" | "diagnostics">(null);
+  overlay = $state<null | "settings"> (null);
   errorBanner = $state<string | null>(null);
-  /** Search text for the model picker (transient UI state). */
   _modelQuery = $state("");
-  // ------------------------------------------------------------------------
-  // Transcript mutation helpers. Only the *active* block mutates; completed
-  // blocks are left untouched so they can be rendered immutably (PLAN §38).
-  // ------------------------------------------------------------------------
+
+  // ----------------------------------------------------------------------
+  // Transcript mutation helpers. Only the active block mutates.
+  // ----------------------------------------------------------------------
 
   appendUser(text: string): string {
     const id = uid("u");
@@ -78,6 +84,12 @@ export class NetPIStore {
   }
 
   startAssistant(): string {
+    // The model may emit duplicate start markers during a transparent wire
+    // fallback. Re-use an empty active shell rather than creating blank rows.
+    const existing = this.active();
+    if (existing && !existing.done && !existing.text && !existing.thinking && existing.toolCalls.length === 0)
+      return existing.id;
+
     const id = uid("a");
     const block: AssistantBlock = {
       kind: "assistant",
@@ -89,21 +101,22 @@ export class NetPIStore {
     };
     this.blocks.push(block);
     this.activeAssistantId = id;
+    this.activity = "Model connected · waiting for output…";
     return id;
   }
 
-  /** PLAN §38: prepend helpers — insert older transcript blocks in front of
-   * everything currently loaded. */
   prependUser(text: string): string {
     const id = uid("u");
     this.blocks.unshift({ kind: "user", id, text, createdAt: Date.now() });
     return id;
   }
+
   prependSystem(text: string): string {
     const id = uid("s");
     this.blocks.unshift({ kind: "system", id, text, createdAt: Date.now() });
     return id;
   }
+
   prependAssistantShell(): string {
     const id = uid("a");
     const block: AssistantBlock = {
@@ -125,7 +138,6 @@ export class NetPIStore {
     return b && b.kind === "assistant" ? b : null;
   }
 
-  /** Returns true when a block was actually mutated (caller can bail early). */
   startThinking(): void {
     const a = this.active();
     if (!a) return;
@@ -135,26 +147,33 @@ export class NetPIStore {
         id: uid("t"),
         text: "",
         done: false,
+        startedAt: Date.now(),
       };
     }
+    this.activity = "Thinking…";
   }
 
   appendThinkingDelta(text: string): void {
     const a = this.active();
     if (!a?.thinking) return;
     a.thinking.text += text;
+    this.activity = "Thinking…";
   }
 
   completeThinking(): void {
     const a = this.active();
     if (!a?.thinking) return;
     a.thinking.done = true;
+    if (a.thinking.startedAt)
+      a.thinking.durationMs = Math.max(0, Date.now() - a.thinking.startedAt);
+    this.activity = a.text ? "Responding…" : "Preparing response…";
   }
 
   appendTextDelta(text: string): void {
     const a = this.active();
     if (!a) return;
     a.text += text;
+    this.activity = "Responding…";
   }
 
   startToolCall(id: string, name: string): void {
@@ -164,6 +183,7 @@ export class NetPIStore {
     const call: ToolCall = { id, name, argsJson: "" };
     a.toolCalls.push(call);
     this.stats.toolSteps += 1;
+    this.activity = `Running ${name}…`;
   }
 
   appendToolArgsDelta(id: string, delta: string): void {
@@ -181,11 +201,22 @@ export class NetPIStore {
     }
   }
 
+  completeToolCall(id: string, durationMs: number): void {
+    const a = this.active();
+    const c = a?.toolCalls.find((t) => t.id === id);
+    if (c) c.durationMs = durationMs;
+    this.activity = "Continuing…";
+  }
+
   completeAssistant(usage?: Usage): void {
     const a = this.active();
     if (!a) return;
     a.done = true;
-    if (a.thinking) a.thinking.done = true;
+    if (a.thinking) {
+      a.thinking.done = true;
+      if (!a.thinking.durationMs && a.thinking.startedAt)
+        a.thinking.durationMs = Math.max(0, Date.now() - a.thinking.startedAt);
+    }
     if (usage) {
       a.usage = usage;
       this.lastUsage = usage;
@@ -193,50 +224,56 @@ export class NetPIStore {
     this.stats.turns += 1;
     this.activeAssistantId = null;
     this.drainSteering();
+    if (this.agentState !== "Idle") this.activity = "Continuing…";
   }
 
-  // PLAN §34: a model attempt failed and a retry is starting. If that attempt
-  // streamed partial content, discard the in-progress assistant block so the
-  // retry restarts cleanly instead of duplicating the partial. (The partial is
-  // not persisted server-side, so this only affects the live UI.)
   resetAssistantForRetry(): void {
     if (!this.activeAssistantId) return;
     const i = this.blocks.findIndex((x) => x.id === this.activeAssistantId);
     if (i >= 0) this.blocks.splice(i, 1);
     this.activeAssistantId = null;
+    this.activity = "Retrying model request…";
   }
 
-  // PLAN §34: mark the in-progress assistant block as failed (terminal model
-  // error) so the UI resolves instead of hanging on a partial.
   failAssistant(message: string): void {
     const a = this.active();
-    if (!a) return; // nothing in progress to resolve
-        a.text = a.text + (a.text ? String.fromCharCode(10) : "") + " " + message;
-    a.done = true;
-    if (a.thinking) a.thinking.done = true;
-    this.activeAssistantId = null;
-  }
-
-  completeToolCall(id: string, durationMs: number): void {
-    const a = this.active();
-    const c = a?.toolCalls.find((t) => t.id === id);
-    if (c) c.durationMs = durationMs;
+    if (a) {
+      a.text = a.text + (a.text ? "\n" : "") + message;
+      a.done = true;
+      if (a.thinking) a.thinking.done = true;
+      this.activeAssistantId = null;
+    }
+    this.activity = null;
   }
 
   private drainSteering(): void {
-    // Steering messages queued while busy become user turns at the boundary.
     if (this.queuedSteer.length === 0) return;
-    for (const q of this.queuedSteer) {
-      this.appendUser(q.text);
-    }
+    for (const q of this.queuedSteer) this.appendUser(q.text);
     this.queuedSteer = [];
   }
 
-  // ------------------------------------------------------------------------
+  // ----------------------------------------------------------------------
   // Composer / control surface.
-  // ------------------------------------------------------------------------
+  // ----------------------------------------------------------------------
 
-  /** Send when idle, steer when busy (PLAN §Send/Steer behavior). */
+  beginSubmit(): void {
+    this.requestPending = true;
+    this.activity = this.busy ? "Queueing steering message…" : "Sending to agent…";
+  }
+
+  requestAccepted(): void {
+    this.requestPending = false;
+    if (this.activity === "Sending to agent…") this.activity = "Accepted · preparing…";
+    if (this.activity === "Queueing steering message…") this.activity = "Steering queued";
+  }
+
+  requestFailed(message: string): void {
+    this.requestPending = false;
+    this.activity = null;
+    this.setError(message);
+  }
+
+  /** Send when idle, steer when busy. */
   submit(message: string): "sent" | "steered" {
     const text = message.trim();
     if (!text) return "sent";
@@ -250,37 +287,78 @@ export class NetPIStore {
 
   cancel(): void {
     this.agentState = "Cancelling";
+    this.activity = "Stopping…";
   }
 
-  // ------------------------------------------------------------------------
+  // ----------------------------------------------------------------------
   // Server-driven state.
-  // ------------------------------------------------------------------------
+  // ----------------------------------------------------------------------
 
   applyAgentState(state: AgentState): void {
     this.agentState = state;
+    this.requestPending = false;
+    switch (state) {
+      case "Idle": this.activity = null; break;
+      case "Preparing": this.activity = "Preparing context…"; break;
+      case "CallingModel": this.activity = "Waiting for model…"; break;
+      case "ExecutingTools":
+        if (!this.activity?.startsWith("Running ")) this.activity = "Running tools…";
+        break;
+      case "Compacting": this.activity = "Compacting context…"; break;
+      case "Retrying": this.activity = "Retrying model request…"; break;
+      case "Cancelling": this.activity = "Stopping…"; break;
+    }
+  }
+
+  applySession(info: SessionInfo): void {
+    this.session = info;
+    if (info.modelId) this.setModel(info.modelId, false);
+    if (info.reasoningLevel) this.setReasoning(info.reasoningLevel, false);
+    else if (info.modelId) this.syncReasoning();
   }
 
   loadModels(models: ModelInfo[]): void {
     this.models = models;
     this.modelsRefreshing = false;
-    if (!this.currentModel && models.length) this.currentModel = models[0].id;
+
+    if (!this.currentModel || !models.some((m) => m.id === this.currentModel)) {
+      const sessionModel = this.session?.modelId;
+      this.currentModel =
+        (sessionModel && models.some((m) => m.id === sessionModel) ? sessionModel : "") ||
+        models[0]?.id ||
+        "";
+    }
+    save("netpi.lastModel", this.currentModel);
     this.syncReasoning();
   }
 
-  setModel(id: string): void {
+  setModel(id: string, persist = true): void {
     this.currentModel = id;
+    if (persist) save("netpi.lastModel", id);
     this.syncReasoning();
   }
 
-  setReasoning(level: string): void {
+  setReasoning(level: string, persist = true): void {
     this.reasoningLevel = level;
+    if (persist) save("netpi.lastReasoning", level);
   }
 
   private syncReasoning(): void {
-    const m = this.models.find((x) => x.id === this.currentModel);
-    if (!m?.reasoning?.levels?.length) {
+    const levels = this.models.find((x) => x.id === this.currentModel)?.reasoning?.levels ?? [];
+    if (!levels.length) {
       this.reasoningLevel = "";
+      return;
     }
+    if (this.reasoningLevel && levels.includes(this.reasoningLevel)) return;
+
+    const sessionLevel = this.session?.reasoningLevel;
+    if (sessionLevel && levels.includes(sessionLevel)) {
+      this.reasoningLevel = sessionLevel;
+      return;
+    }
+
+    // Do not invent a reasoning level. Leave it unset until the user picks one.
+    this.reasoningLevel = "";
   }
 
   get currentModelInfo(): ModelInfo | undefined {
@@ -296,6 +374,7 @@ export class NetPIStore {
     this.errorBanner = msg;
     if (msg) this.modelRefreshError = msg;
   }
+
   appendSystem(text: string): void {
     this.blocks.push({
       kind: "system",
@@ -314,9 +393,9 @@ export class NetPIStore {
     this.olderSeq = 0;
     this.moreAvailable = false;
     this.olderLoading = false;
+    this.activity = null;
   }
 
-  /** Called when a session.older page is ingested (scroll-up, PLAN §38). */
   noteOlderLoaded(): void {
     this.prependVersion++;
     this.olderLoading = false;
