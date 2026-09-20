@@ -26,7 +26,9 @@ internal sealed class PluginManagerFacade : IPluginManagerFacade
                 s.Version,
                 s.State.ToString(),
                 s.Generation,
-                null));
+                null,
+                s.ActiveLeases,
+                s.LastError));
         return list;
     }
 

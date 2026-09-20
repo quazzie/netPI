@@ -156,6 +156,7 @@ public sealed class PluginManager
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Plugin {Plugin} StartAsync failed (gen {Gen})", p.PluginId, p.Generation);
+                p.LastError = ex.Message;
                 p.State = PluginState.Failed;
             }
         }
@@ -166,7 +167,7 @@ public sealed class PluginManager
     /// (a previous generation remains Active when there is one, otherwise the
     /// plugin is marked Failed).
     /// </summary>
-    public async Task<PluginInstance?> LoadGenerationAsync(string pluginId, string sourceDir, CancellationToken ct = default)
+    public async Task<PluginInstance?> LoadGenerationAsync(string pluginId, string sourceDir, CancellationToken ct = default, Action<string>? errorSink = null)
     {
         var generation = NextGeneration(pluginId);
         var loadFrom = StagePluginFiles(sourceDir, generation);
@@ -220,6 +221,19 @@ public sealed class PluginManager
             _logger.LogError(ex, "Loading {Plugin} gen {Gen} failed — previous generation (if any) remains active", pluginId, generation);
             DisposeUnloadedGeneration(instance);
             instance.State = PluginState.Failed;
+            errorSink?.Invoke(ex.Message);
+            // Only record the error when this generation owns the plugin's
+            // slot in the table (a failed reload of a live plugin leaves the
+            // old generation active — its status must not be polluted).
+            if (ReferenceEquals(Get(pluginId), instance))
+                instance.LastError = ex.Message;
+            else if (Get(pluginId) is null)
+            {
+                // Startup failure: nothing to keep running — surface the
+                // failed generation in the status table (PLAN §46).
+                instance.LastError = ex.Message;
+                lock (_gate) _current[pluginId] = instance;
+            }
             // best-effort: nothing to preserve (previous generation, if any, remains Active)
             return null;
         }
@@ -413,7 +427,14 @@ public sealed class PluginManager
         UnloadAloc(old);
 
         // --- load new generation ---
-        var fresh = await LoadGenerationAsync(pluginId, sourceDir, ct);
+        var fresh = await LoadGenerationAsync(pluginId, sourceDir, ct,
+            errorSink: ex =>
+            {
+                // The old generation was already unloaded, so this plugin has
+                // no running copy — surface the failure in the status table.
+                var cur = Get(pluginId);
+                if (cur is not null) cur.LastError = ex;
+            });
         if (fresh is null)
         {
             // Old generation was already unloaded; mark the plugin Failed.
@@ -425,10 +446,12 @@ public sealed class PluginManager
         try
         {
             await fresh.Plugin!.StartAsync(CancellationToken.None);
+            fresh.ClearLastError();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "{Plugin} StartAsync failed after reload", pluginId);
+            fresh.LastError = ex.Message;
             fresh.State = PluginState.Failed;
         }
 
@@ -538,7 +561,8 @@ public sealed class PluginManager
         int ActiveLeases,
         int RegistrationCount,
         int SubscriptionCount,
-        bool UnloadPending);
+        bool UnloadPending,
+        string? LastError);
 
     /// <summary>
     /// Status table for the CLI <c>plugins</c> command: one row per plugin with
@@ -560,7 +584,8 @@ public sealed class PluginManager
                     p.LeasesHeld,
                     p.Registrations.Count,
                     p.Subscriptions.Count,
-                    UnloadPending(p)));
+                    UnloadPending(p),
+                    p.LastError));
             }
         }
         return rows;

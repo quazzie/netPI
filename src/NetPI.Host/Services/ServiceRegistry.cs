@@ -121,7 +121,9 @@ public sealed class ServiceRegistry : IServiceRegistry
                 throw new ServiceUnavailableException(id, $"registered as {e.ServiceType.Name}, not {expectedType.Name}");
             instance = e.Instance;
             serviceType = e.ServiceType;
-            ownerRef = e.Owner;
+            // Host-owned entries have a null Owner; keep ownerRef non-null so
+            // Lease.Release never sees a null reference (PLAN §46 host surfaces).
+            ownerRef = e.Owner ?? new WeakReference<PluginInstance>(null!);
         }
         return new LeaseCore(instance, serviceType, ownerRef);
     }

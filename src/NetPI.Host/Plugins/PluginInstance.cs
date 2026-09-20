@@ -30,13 +30,28 @@ public sealed class PluginInstance
     /// <summary>Lease handles currently held on this plugin's services (drained before unload).</summary>
     public ConcurrentDictionary<Guid, IDisposable> LiveLeases { get; } = new();
 
+    private string? _lastError;
+    private readonly object _errorGate = new();
     private PluginState _state = PluginState.Unloaded;
+
+    /// <summary>Current live lease count (drain target: zero).</summary>
+    public int LeasesHeld => LiveLeases.Count;
 
     public PluginState State
     {
         get { lock (_stateGate) { return _state; } }
         set { lock (_stateGate) { _state = value; } }
     }
+
+    /// <summary>Most recent load/start/reload failure (PLAN §46 plugin-management surface); null when healthy.</summary>
+    public string? LastError
+    {
+        get { lock (_errorGate) return _lastError; }
+        set { lock (_errorGate) _lastError = value; }
+    }
+
+    /// <summary>Clears the recorded error (after a successful reload/fix).</summary>
+    public void ClearLastError() => LastError = null;
 
     public PluginInstance(string pluginId, int generation)
     {
@@ -52,6 +67,6 @@ public sealed class PluginInstance
         LiveLeases.TryRemove(leaseId, out lease);
     }
 
-    /// <summary>Current live lease count (drain target: zero).</summary>
-    public int LeasesHeld => LiveLeases.Count;
+
+
 }

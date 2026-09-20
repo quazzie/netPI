@@ -36,11 +36,9 @@ await using var runtime = new HostRuntime(options, logger, new ConfigService(run
 logger.LogInformation("netPI host: plugins='{Plugins}' runtime='{Home}' cacheCopy={Mode}",
     options.PluginDirectory, runtimeDir, skipCache ? "off" : "on");
 
-await runtime.StartAsync();
-
 // ---- host-owned plugin surfaces (PLAN §36) ----------------------------------
-// The Web plugin resolves these cross-ALC; the host registers them with a null
-// owner so they live for the whole process.
+// Registered BEFORE StartAsync because the Web plugin resolves these in its
+// LoadAsync (it builds its WebApp + Kestrel there), which runs during startup.
 {
     var facade = new NetPI.Host.Services.PluginManagerFacade(runtime.Plugins);
     runtime.Services.Register("plugins", facade);
@@ -61,6 +59,7 @@ await runtime.StartAsync();
     };
 }
 
+await runtime.StartAsync();
 
 Console.WriteLine();
 Console.WriteLine("netPI host is running. Commands: plugins | reload <id> | reloadall | gc | exit");

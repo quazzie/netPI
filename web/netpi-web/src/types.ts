@@ -118,6 +118,8 @@ export interface Model {
 export interface PluginStatus {
   id: string;
   name: string;
+  version?: string;
+
   generation: number;
   state: "active" | "draining" | "failed" | "unloading" | "collected";
   activeLeases: number;

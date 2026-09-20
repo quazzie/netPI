@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { store } from "../../store.svelte";
+
   import { ws } from "../../ws";
 
   let busy = $state<string | null>(null);
+  let refreshing = $state(false);
 
   function reload(id: string) {
     busy = id;
@@ -21,9 +24,14 @@
       if (p.state === "active") reload(p.id);
     }
   }
+
+  onMount(() => {
+    ws.request("plugins.list").catch(() => {});
+  });
 </script>
 
 <div class="overlay" onclick={() => (store.overlay = null)}>
+
   <div class="panel" onclick={(e) => e.stopPropagation()}>
     <h2>
       <span>Plugins</span>
@@ -31,12 +39,15 @@
     </h2>
 
     <div class="plugin-row head">
-      <span>plugin</span><span>gen</span><span>state</span><span>leases</span><span>error</span><span></span>
+      <span>plugin</span><span>version</span><span>gen</span><span>state</span><span>leases</span><span>error</span><span></span>
+
     </div>
 
     {#each store.plugins as p (p.id)}
       <div class="plugin-row">
         <span>{p.name}</span>
+        <span class="dim" style="color:var(--text-faint);font-size:11px">{p.version || ""}</span>
+
         <span>{p.generation}</span>
         <span class="badge {p.state}">{p.state}</span>
         <span>{p.activeLeases}</span>
@@ -54,7 +65,9 @@
     {/if}
 
     <div style="margin-top:14px;display:flex;justify-content:flex-end">
+      <button class="btn" onclick={async () => { refreshing = true; try { await ws.request("plugins.list"); } finally { refreshing = false; } }}>{refreshing ? "…" : "Refresh"}</button>
       <button class="btn primary" onclick={reloadAll}>Reload All</button>
+
     </div>
   </div>
 </div>

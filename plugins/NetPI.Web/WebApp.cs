@@ -532,7 +532,16 @@ internal sealed class WebApp : IAsyncDisposable
                 }
                 var ok = await _facade.ReloadAsync(pid, ct);
                 await SendAsync(c, ok ? "plugin.reloaded" : "plugin.reloadFailed", new { pluginId = pid }, null, ct);
-                if (ok)
+                // Broadcast in both outcomes: a deferred reload (leases held /
+                // agent not idle) leaves the plugin Draining — the UI should see it.
+                await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
+                await SendAckAsync(c, requestId, ct);
+                break;
+            }
+
+            case "plugins.list":
+            {
+                if (_facade is not null)
                     await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
                 await SendAckAsync(c, requestId, ct);
                 break;
@@ -662,9 +671,11 @@ internal sealed class WebApp : IAsyncDisposable
         {
             s.Id,
             s.Name,
+            version = s.Version ?? "",
             generation = s.Generation,
             state = MapPluginState(s.State),
-            activeLeases = 0,
+            activeLeases = s.ActiveLeases,
+            lastError = s.LastError,
         }).ToArray();
     }
 

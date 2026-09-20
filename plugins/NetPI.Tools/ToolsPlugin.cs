@@ -208,11 +208,12 @@ public abstract class ShellToolBase : IAgentTool
         try
         {
             var timeoutMs = Args.Int(arguments, "timeout_ms", 120_000);
-            var psi = new ProcessStartInfo(CommandPrefix[0]) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            var psi = new ProcessStartInfo(CommandPrefix[0]) { RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true, UseShellExecute = false, CreateNoWindow = true };
             foreach (var a in CommandPrefix.Skip(1)) psi.ArgumentList.Add(a);
             psi.ArgumentList.Add(command);
             var workdir = Args.OptStr(arguments, "workdir");
             if (workdir is not null) psi.WorkingDirectory = workdir;
+
 
             using var proc = new Process { StartInfo = psi };
             var stdout = new StringBuilder();
@@ -220,7 +221,11 @@ public abstract class ShellToolBase : IAgentTool
             proc.OutputDataReceived += (_, e) => { if (e.Data is not null) { lock (stdout) stdout.AppendLine(e.Data); } };
             proc.ErrorDataReceived += (_, e) => { if (e.Data is not null) { lock (stderr) stderr.AppendLine(e.Data); } };
             proc.Start();
+            // Close stdin (EOF) so the shell does not wait for interactive input
+            // when the host's own stdin is a long-open pipe.
+            try { proc.StandardInput.Close(); } catch { }
             proc.BeginOutputReadLine();
+
             proc.BeginErrorReadLine();
 
             var exitTask = proc.WaitForExitAsync();
