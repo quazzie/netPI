@@ -181,8 +181,52 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                     bool failed = false;
                     try
                     {
+                        // PLAN §45: the hot path must not be one bus event per
+                        // provider chunk. Text/thinking deltas are coalesced in a
+                        // per-lane buffer and published at most every
+                        // DeltaCoalesceMs (≈25 updates/s) or when the lane/boundary
+                        // changes — still progressive for the UI, but the bus
+                        // traffic drops from "per chunk" to a bounded rate.
+                        const int DeltaCoalesceMs = 40;
+                        string? deltaLane = null;
+                        var deltaBuf = new System.Text.StringBuilder();
+                        var lastDeltaFlush = DateTime.UtcNow;
                         await foreach (var ev in provider.RunAsync(request, ct))
                         {
+                            if (ev is TextDelta td)
+                            {
+                                if (deltaLane is not "text")
+                                {
+                                    await FlushDeltaBufAsync(deltaLane, deltaBuf, options, ct);
+                                    deltaLane = "text";
+                                    lastDeltaFlush = DateTime.UtcNow;
+                                }
+                                deltaBuf.Append(td.Text);
+                                if ((DateTime.UtcNow - lastDeltaFlush).TotalMilliseconds >= DeltaCoalesceMs)
+                                {
+                                    await FlushDeltaBufAsync(deltaLane, deltaBuf, options, ct);
+                                    lastDeltaFlush = DateTime.UtcNow;
+                                }
+                                continue;
+                            }
+                            if (ev is ThinkingDelta th)
+                            {
+                                if (deltaLane is not "thinking")
+                                {
+                                    await FlushDeltaBufAsync(deltaLane, deltaBuf, options, ct);
+                                    deltaLane = "thinking";
+                                    lastDeltaFlush = DateTime.UtcNow;
+                                }
+                                deltaBuf.Append(th.Text);
+                                if ((DateTime.UtcNow - lastDeltaFlush).TotalMilliseconds >= DeltaCoalesceMs)
+                                {
+                                    await FlushDeltaBufAsync(deltaLane, deltaBuf, options, ct);
+                                    lastDeltaFlush = DateTime.UtcNow;
+                                }
+                                continue;
+                            }
+                            await FlushDeltaBufAsync(deltaLane, deltaBuf, options, ct);
+                            deltaLane = null;
                             await PublishAsync(AgentEventType.ModelStreamEvent, options, ModelEventWireMapper.ToWire(ev), ct);
                             if (ev is UsageUpdated uu) _lastUsagePromptTokens = uu.PromptTokens;
                             if (ev is ModelCompleted mc) assistant = mc.Message;
@@ -194,6 +238,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                                 break; // stop consuming the failed stream
                             }
                         }
+                        await FlushDeltaBufAsync(deltaLane, deltaBuf, options, ct);
+                        deltaLane = null;
                     }
                     catch (OperationCanceledException) { throw; } // cancellation is not retryable
                     catch (Exception ex)
@@ -406,6 +452,20 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         {
             return new ToolResultPart(call.Id, call.Name, [new TextPart($"Tool error: {ex.Message}")], IsError: true);
         }
+    }
+
+    /// <summary>
+    /// PLAN §45: publish the buffered delta run, if any. <paramref name="lane"/>
+    /// is null (fresh buffer), "text", or "thinking" — it selects the wire kind.
+    /// </summary>
+    private async ValueTask FlushDeltaBufAsync(string? lane, System.Text.StringBuilder buf, AgentRunOptions options, CancellationToken ct)
+    {
+        var text = buf.ToString();
+        buf.Length = 0;
+        if (lane is null || text.Length == 0) return;
+        var kind = lane == "text" ? "text-delta" : "thinking-delta";
+        await PublishAsync(AgentEventType.ModelStreamEvent, options,
+            new ModelEventWire { Kind = kind, Text = text }, ct);
     }
 
     private T? Acquire<T>(string id) where T : notnull
