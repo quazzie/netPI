@@ -20,7 +20,8 @@ function load(): PersistedUi {
   }
 }
 
-const initial = typeof localStorage === "undefined" ? {} : load();
+const initial: PersistedUi =
+  typeof localStorage === "undefined" ? {} : load();
 
 class UiSettings {
   leftOpen = $state(initial.leftOpen ?? true);
@@ -33,25 +34,51 @@ class UiSettings {
   font = $state<FontChoice>(initial.font ?? "system");
 
   constructor() {
-    $effect.root(() => {
-      $effect(() => {
-        const snapshot: PersistedUi = {
-          leftOpen: this.leftOpen,
-          rightOpen: this.rightOpen,
-          leftWidth: this.leftWidth,
-          rightWidth: this.rightWidth,
-          rightTab: this.rightTab,
-          keepThinkingOpen: this.keepThinkingOpen,
-          font: this.font,
-        };
-        try { localStorage.setItem(KEY, JSON.stringify(snapshot)); } catch {}
-        document.documentElement.dataset.font = this.font;
-      });
-    });
+    if (typeof document !== "undefined")
+      document.documentElement.dataset.font = this.font;
   }
 
-  toggleLeft() { this.leftOpen = !this.leftOpen; }
-  toggleRight() { this.rightOpen = !this.rightOpen; }
+  private persist() {
+    if (typeof localStorage === "undefined") return;
+    const snapshot: PersistedUi = {
+      leftOpen: this.leftOpen,
+      rightOpen: this.rightOpen,
+      leftWidth: this.leftWidth,
+      rightWidth: this.rightWidth,
+      rightTab: this.rightTab,
+      keepThinkingOpen: this.keepThinkingOpen,
+      font: this.font,
+    };
+    try { localStorage.setItem(KEY, JSON.stringify(snapshot)); } catch {}
+  }
+
+  toggleLeft() {
+    this.leftOpen = !this.leftOpen;
+    this.persist();
+  }
+
+  toggleRight() {
+    this.rightOpen = !this.rightOpen;
+    this.persist();
+  }
+
+  setRightTab(id: string, open = true) {
+    this.rightTab = id;
+    if (open) this.rightOpen = true;
+    this.persist();
+  }
+
+  setFont(value: FontChoice) {
+    this.font = value;
+    if (typeof document !== "undefined")
+      document.documentElement.dataset.font = value;
+    this.persist();
+  }
+
+  setKeepThinkingOpen(value: boolean) {
+    this.keepThinkingOpen = value;
+    this.persist();
+  }
 }
 
 export const ui = new UiSettings();
