@@ -144,14 +144,26 @@ already consume `ModelEvent`.
 
 ## 7. Future phase (out of scope for this implementation)
 
-- `previous_response_id` chaining (per-session response-id map in
-  `AgentRuntime`; clear on steering/compaction/failure). Verified to work
-  locally; deferred because it conflicts with mid-run transcript mutation.
 - `prompt_cache_breakpoint` explicit breakpoints (if nInfer ever implements
   them).
 - `cached_tokens` surfaced in the status line / session stats.
 - `previous_response_id` + `conversation` objects if nInfer grows stateful
   support.
+
+**`previous_response_id` chaining is now IMPLEMENTED (PLAN §14c, commit
+b02935d).** nInfer keys its KV-cache session on `previous_response_id`
+(LiveSession retention for a chained responses run vs RecentPrivate for chat
+completions), so the provider keeps a per-`sessionId|modelId` chain head and
+continuation runs send `previous_response_id` plus only the transcript DELTA
+beyond the covered prefix (the server appends the stored chain on top of the
+input, so resending covered items would duplicate tokens). `store:true` on
+every run. Transcript fingerprints detect edits/compaction (prefix mismatch
+→ reset to full input, fresh head); a failed run never advances the head
+(the transcript was not mutated). Instructions (system) are always resent;
+assistant items keep the server-required reasoning → message → function
+calls order. One `function_call_output` item per `ToolResultPart` (and one
+tool message per `tool_call_id` on the chat wire). No `AgentRuntime`
+changes: the provider owns the head, keyed off the request `SessionId`.
 
 ## 8. Risks & mitigations
 
