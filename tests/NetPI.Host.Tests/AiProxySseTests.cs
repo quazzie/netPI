@@ -185,6 +185,63 @@ public class AiProxySseTests
         Assert.DoesNotContain(ev, e => e is ModelCompleted);
     }
 
+    [Fact]
+    public async Task Catalog_ParsesNestedReasoningProfilesAndContext()
+    {
+        const string catalog = """
+            {
+              "data": [{
+                "id": "qwen3.8-27b",
+                "context_window": 262144,
+                "reasoning": {
+                  "supported": true,
+                  "profiles": {
+                    "low": { "budget": 2048 },
+                    "medium": { "budget": 8192 },
+                    "high": { "budget": 16384 }
+                  },
+                  "default_effort": "medium"
+                }
+              }]
+            }
+            """;
+        var handler = new SseHandler(catalog, new());
+        var http = new HttpClient(handler) { BaseAddress = new Uri("http://test") };
+        var p = new AiProxyProvider(http, "http://test", new NullLogger(), wire: "chat");
+
+        var models = await p.RefreshAsync(CancellationToken.None);
+        var model = Assert.Single(models);
+
+        Assert.Equal(262144, model.ContextWindowTokens);
+        Assert.Equal(new[] { "low", "medium", "high" }, model.ReasoningLevels!);
+        Assert.Equal("medium", model.DefaultReasoningLevel);
+        Assert.True(model.SupportsThinking);
+    }
+
+    [Fact]
+    public async Task Catalog_ParsesReasoningEffortArrayFromUnknownWrapperName()
+    {
+        const string catalog = """
+            {
+              "data": [{
+                "id": "reasoner",
+                "reasoning": {
+                  "capabilities": {
+                    "effort_levels": ["minimal", "low", "medium", "high"]
+                  }
+                }
+              }]
+            }
+            """;
+        var handler = new SseHandler(catalog, new());
+        var http = new HttpClient(handler) { BaseAddress = new Uri("http://test") };
+        var p = new AiProxyProvider(http, "http://test", new NullLogger(), wire: "chat");
+
+        var model = Assert.Single(await p.RefreshAsync(CancellationToken.None));
+
+        Assert.Equal(new[] { "minimal", "low", "medium", "high" }, model.ReasoningLevels!);
+    }
+
     // ---- fakes ---------------------------------------------------------
 
     private sealed record HttpMessage(string url, string body);

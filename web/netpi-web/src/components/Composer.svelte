@@ -225,10 +225,18 @@
   }
 
   $effect(() => {
-    if (el) {
-      el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 220) + "px";
-    }
+    // Track the draft explicitly. Measuring only when the textarea element was
+    // bound let a bad first-layout width leave a huge inline height behind.
+    text;
+    if (!el) return;
+
+    queueMicrotask(() => {
+      if (!el) return;
+      el.style.height = "0px";
+      const next = Math.min(160, Math.max(38, el.scrollHeight));
+      el.style.height = next + "px";
+      el.style.overflowY = el.scrollHeight > 160 ? "auto" : "hidden";
+    });
   });
 
   // ---- model/reasoning ---------------------------------------------------

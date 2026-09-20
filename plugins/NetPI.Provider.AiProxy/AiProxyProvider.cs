@@ -183,69 +183,116 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
 
     private static IReadOnlyList<string>? ParseReasoningLevels(JsonElement model)
     {
-        static List<string> ReadArray(JsonElement arr)
+        var values = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        static bool IsEffortToken(string value)
         {
-            var values = new List<string>();
-            if (arr.ValueKind != JsonValueKind.Array) return values;
-            foreach (var item in arr.EnumerateArray())
-            {
-                string? value = item.ValueKind switch
-                {
-                    JsonValueKind.String => item.GetString(),
-                    JsonValueKind.Object => FirstString(item, "id", "value", "level", "effort", "name"),
-                    _ => null,
-                };
-                if (!string.IsNullOrWhiteSpace(value)
-                    && !values.Contains(value, StringComparer.OrdinalIgnoreCase))
-                    values.Add(value);
-            }
-            return values;
+            var v = value.Trim().Replace('-', '_').ToLowerInvariant();
+            return v is "none" or "off" or "minimal" or "low" or "medium"
+                or "high" or "xhigh" or "extra_high" or "max" or "auto";
         }
 
-        // Top-level compatibility fields.
-        foreach (var name in new[] { "supported_reasoning_efforts", "reasoning_levels", "reasoning_efforts" })
-            if (model.TryGetProperty(name, out var top))
-            {
-                var values = ReadArray(top);
-                if (values.Count > 0) return values;
-            }
-
-        if (!model.TryGetProperty("reasoning", out var reasoning)) return null;
-        if (reasoning.ValueKind == JsonValueKind.Array)
+        static bool IsEffortContainer(string name)
         {
-            var values = ReadArray(reasoning);
-            return values.Count > 0 ? values : null;
+            var n = name.Replace('-', '_').ToLowerInvariant();
+            return n.Contains("effort", StringComparison.Ordinal)
+                || n.Contains("level", StringComparison.Ordinal)
+                || n is "allowed" or "values" or "options" or "profiles" or "profile";
         }
-        if (reasoning.ValueKind != JsonValueKind.Object) return null;
 
-        foreach (var name in new[] { "levels", "efforts", "supported_efforts", "supported_reasoning_efforts", "values", "allowed" })
-            if (reasoning.TryGetProperty(name, out var arr))
+        static bool IsReasoningField(string name)
+        {
+            var n = name.Replace('-', '_').ToLowerInvariant();
+            return n.Contains("reasoning", StringComparison.Ordinal) || IsEffortContainer(name);
+        }
+
+        void Add(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            foreach (var piece in raw.Split([',', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                var values = ReadArray(arr);
-                if (values.Count > 0) return values;
+                if (!IsEffortToken(piece)) continue;
+                if (seen.Add(piece)) values.Add(piece);
             }
+        }
 
-        // Some catalogs expose effort names as boolean properties.
-        var boolLevels = new List<string>();
-        foreach (var name in new[] { "off", "minimal", "low", "medium", "high", "xhigh", "extra_high" })
-            if (reasoning.TryGetProperty(name, out var enabled) && enabled.ValueKind == JsonValueKind.True)
-                boolLevels.Add(name);
-        return boolLevels.Count > 0 ? boolLevels : null;
+        void Collect(JsonElement node, int depth)
+        {
+            if (depth > 8) return;
+
+            switch (node.ValueKind)
+            {
+                case JsonValueKind.String:
+                    Add(node.GetString());
+                    return;
+
+                case JsonValueKind.Array:
+                    foreach (var item in node.EnumerateArray())
+                        Collect(item, depth + 1);
+                    return;
+
+                case JsonValueKind.Object:
+                    foreach (var prop in node.EnumerateObject())
+                    {
+                        // AiProxy versions have represented effort profiles both
+                        // as arrays and as keyed objects, e.g.
+                        // { efforts:[...] } and { profiles:{ low:{...}, high:{...} } }.
+                        if (IsEffortToken(prop.Name)
+                            && prop.Value.ValueKind is not JsonValueKind.False and not JsonValueKind.Null)
+                            Add(prop.Name);
+
+                        Collect(prop.Value, depth + 1);
+                    }
+                    return;
+            }
+        }
+
+        // Scan only reasoning/effort-related top-level metadata. Once inside
+        // that subtree, accept only recognized effort tokens; metadata strings
+        // such as type:"observed" can therefore never become UI options.
+        foreach (var prop in model.EnumerateObject())
+        {
+            if (IsReasoningField(prop.Name))
+                Collect(prop.Value, 0);
+        }
+
+        return values.Count > 0 ? values : null;
     }
 
     private static string? ParseReasoningDefault(JsonElement model)
     {
-        static string? ReadDefault(JsonElement obj)
-            => FirstString(obj, "default", "default_effort", "defaultEffort",
-                "default_level", "defaultLevel");
+        static bool LooksLikeDefault(string name)
+        {
+            var n = name.Replace('-', '_').ToLowerInvariant();
+            return n is "default" or "default_effort" or "defaulteffort"
+                or "default_level" or "defaultlevel"
+                || (n.Contains("default", StringComparison.Ordinal)
+                    && (n.Contains("reason", StringComparison.Ordinal)
+                        || n.Contains("effort", StringComparison.Ordinal)
+                        || n.Contains("level", StringComparison.Ordinal)));
+        }
 
-        var top = ReadDefault(model);
-        if (!string.IsNullOrWhiteSpace(top)) return top;
+        static string? Find(JsonElement node, int depth)
+        {
+            if (depth > 8 || node.ValueKind != JsonValueKind.Object) return null;
 
-        return model.TryGetProperty("reasoning", out var reasoning)
-            && reasoning.ValueKind == JsonValueKind.Object
-            ? ReadDefault(reasoning)
-            : null;
+            foreach (var prop in node.EnumerateObject())
+                if (LooksLikeDefault(prop.Name) && prop.Value.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(prop.Value.GetString()))
+                    return prop.Value.GetString();
+
+            foreach (var prop in node.EnumerateObject())
+                if (prop.Value.ValueKind == JsonValueKind.Object)
+                {
+                    var nested = Find(prop.Value, depth + 1);
+                    if (!string.IsNullOrWhiteSpace(nested)) return nested;
+                }
+
+            return null;
+        }
+
+        return Find(model, 0);
     }
 
     private static string? FirstString(JsonElement obj, params string[] names)

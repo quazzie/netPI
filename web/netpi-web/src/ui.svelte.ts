@@ -62,6 +62,20 @@ class UiSettings {
     this.persist();
   }
 
+  setLeftWidth(value: number, persist = true) {
+    this.leftWidth = Math.round(Math.max(190, Math.min(560, value)));
+    if (persist) this.persist();
+  }
+
+  setRightWidth(value: number, persist = true) {
+    this.rightWidth = Math.round(Math.max(260, Math.min(760, value)));
+    if (persist) this.persist();
+  }
+
+  persistLayout() {
+    this.persist();
+  }
+
   setRightTab(id: string, open = true) {
     this.rightTab = id;
     if (open) this.rightOpen = true;
