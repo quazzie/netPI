@@ -123,7 +123,8 @@ select {
   overflow-x: hidden;
   scroll-behavior: smooth;
 }
-.virtual-list {
+.virtual-list,
+.msg-list {
   min-height: 100%;
 }
 .vrow {

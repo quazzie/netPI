@@ -124,20 +124,48 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                 });
             }
         }
+        // Publish the catalog IMMEDIATELY. The model list is complete here and is
+        // all the UI needs to show models. The /v1/responses capability probe is slow
+        // on a cold nInfer (each probe forces the model to load, ~7-10 s each) and only
+        // decides which wire each run uses, so it must never block RefreshAsync.
+        // Runs default to chat completions until a probe refines the flag.
         _models = list;
         _refreshedAt = DateTimeOffset.UtcNow;
         _log.Information($"AiProxy catalog: {list.Count} model(s)");
 
-        // PLAN §14b: capability probe — when the wire allows /v1/responses, verify
-        // each model serves it with one tiny request. Failures are non-fatal:
-        // the flag simply stays false and the model runs on chat completions.
         if (_wire is "auto" or "responses")
         {
-            for (var i = 0; i < list.Count; i++)
-                list[i] = await ProbeResponsesSupportAsync(list[i], cancellationToken);
+            var gen = ++_catalogGeneration;
+            _probeTask = Task.Run(() => RunResponsesProbeInBackground(list, gen, cancellationToken));
         }
-
         return _models;
+    }
+
+    /// <summary>Await the in-flight background responses-capability probe (no-op when
+    /// none is running). Callers that depend on <c>SupportsResponses</c> being current
+    /// (tests, diagnostics) await this; the host's UI path never does.</summary>
+    public async Task WaitForProbeAsync()
+    {
+        var t = _probeTask;
+        if (t is not null) await t;
+    }
+
+    private async Task RunResponsesProbeInBackground(List<ModelInfo> snapshot, int generation, CancellationToken externalToken)
+    {
+        try
+        {
+            var probed = new List<ModelInfo>(snapshot.Count);
+            probed.AddRange(snapshot.Select(_ => (ModelInfo)null!));
+            await Task.WhenAll(Enumerable.Range(0, snapshot.Count).Select(async i =>
+                probed[i] = await ProbeResponsesSupportAsync(snapshot[i], externalToken)));
+            if (generation == _catalogGeneration)
+            {
+                _models = probed;
+                foreach (var m in probed)
+                    _log.Debug($"responses wire: {m.ModelId} supports={m.SupportsResponses}");
+            }
+        }
+        catch { /* best-effort: on failure the pre-probe catalog stays as-is */ }
     }
 
     /// <summary>One-shot non-streaming probe of <c>/v1/responses</c> for a model.</summary>
@@ -149,7 +177,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                 JsonSerializer.Serialize(new { model = model.ModelId, input = "hi", stream = false, store = false }),
                 Encoding.UTF8, "application/json");
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(30));
             using var resp = await _http.PostAsync($"{_baseUrl}/v1/responses", body, timeoutCts.Token);
             if (resp.IsSuccessStatusCode)
             {
@@ -158,7 +186,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             }
             _log.Debug($"responses probe failed ({(int)resp.StatusCode}): {model.ModelId}");
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) // non-fatal by design: timeout, network blip or shutdown all keep SupportsResponses=false
         {
             _log.Debug($"responses probe error for {model.ModelId}: {ex.Message}");
         }
@@ -215,6 +243,9 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
 
     private bool UseResponsesWire(ModelInfo? model) =>
         _wire != "chat" && model is { SupportsResponses: true };
+
+    private int _catalogGeneration;
+    private Task? _probeTask;
 
     private ModelInfo? ModelById(string id) => _models.FirstOrDefault(m => m.ModelId == id);
 

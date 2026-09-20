@@ -109,12 +109,19 @@ internal sealed class WebApp : IAsyncDisposable
         }
         else
         {
+            app.MapGet("/", () => "netPI is running. WebSocket at /ws");
             _log.Warning("staticRoot not found; serving /ws only");
         }
-
-        app.MapGet("/", () => "netPI is running. WebSocket at /ws");
         app.MapGet("/bootstrap", Bootstrap);
         app.Map("/ws", HandleWsAsync);
+        // SPA routing: any request that matched no file and no explicit route
+        // (including the bare "/") serves index.html from the frontend build.
+        if (RootsTheFrontend())
+            app.MapFallback(async context =>
+            {
+                context.Response.ContentType = "text/html";
+                await context.Response.SendFileAsync(Path.Combine(Path.GetFullPath(_staticRoot), "index.html"));
+            });
 
         await app.StartAsync(ct);
         _app = app;
@@ -390,6 +397,44 @@ internal sealed class WebApp : IAsyncDisposable
             {
                 var sessions = await _store.ListAsync(50, ct);
                 await SendAsync(c, "session.list", new { sessions = sessions.Select(ToSessionJson).ToList() }, null, ct);
+
+                // PLAN §41: replay the active session's transcript so a client
+                // (re)connecting after a host restart is not left with a blank
+                // viewport. Mirrors SessionOpenAsync: latest 200 entries, more on
+                // scroll-up.
+                if (_agent?.State.ActiveSessionId is { } asid)
+                {
+                    var info = await _store.GetAsync(asid, ct);
+                    if (info is not null)
+                    {
+                        const int pageSize = 200;
+                        var total = info.EntryCount;
+                        var offset = Math.Max(0, total - pageSize);
+                        var entries = await _store.ReadAsync(asid, offset, pageSize, ct);
+                        var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
+                        await SendAsync(c, "session.entries",
+                            new { entries = EntriesToJson(entries), replace = true, total = total,
+                                  hasMore = total > entries.Count, beforeSequence = beforeSeq }, asid, ct);
+                    }
+                }
+                // else: agent restarted without a session — restore the most
+                // recently used one (sessions is sorted newest-first).
+                else if (sessions.FirstOrDefault() is { } last)
+                {
+                    var info = await _store.GetAsync(last.Id, ct);
+                    if (info is not null)
+                    {
+                        const int pageSize = 200;
+                        var total = info.EntryCount;
+                        var offset = Math.Max(0, total - pageSize);
+                        var entries = await _store.ReadAsync(last.Id, offset, pageSize, ct);
+                        var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
+                        await SendAsync(c, "session.updated", ToSessionJson(info), last.Id, ct);
+                        await SendAsync(c, "session.entries",
+                            new { entries = EntriesToJson(entries), replace = true, total = total,
+                                  hasMore = total > entries.Count, beforeSequence = beforeSeq }, last.Id, ct);
+                    }
+                }
             }
             catch (Exception ex)
             {

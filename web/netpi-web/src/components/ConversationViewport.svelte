@@ -1,36 +1,13 @@
 <script lang="ts">
-  import { createVirtualizer } from "@tanstack/svelte-virtual";
   import { store } from "../store.svelte";
   import BlockRenderer from "./conversation/BlockRenderer.svelte";
   import { ws } from "../ws";
 
   let viewport: HTMLElement | null = $state(null);
 
-  // TanStack virtualizer as a Svelte store ($ auto-subscribes).
-  const virtualizer = createVirtualizer<HTMLElement, HTMLElement>({
-    count: 0,
-    getScrollElement: () => viewport,
-    estimateSize: () => 88,
-    overscan: 6,
-    getItemKey: (i) => store.blocks[i]?.id ?? i,
-    initialRect: { height: 600, width: 800 },
-  });
-
-  let v = $derived($virtualizer);
-  let rows = $derived(v ? v.getVirtualItems() : []);
-  let total = $derived(v ? v.getTotalSize() : 0);
-
-  // Keep the virtualizer in sync with the block list and the viewport element.
-  $effect(() => {
-    const cur = $virtualizer;
-    if (cur) cur.setOptions({ count: store.blocks.length });
-  });
-  $effect(() => {
-    if (viewport) {
-      const cur = $virtualizer;
-      if (cur) cur.setOptions({ getScrollElement: () => viewport });
-    }
-  });
+  // NOTE: the TanStack virtualizer was removed — it desynced (count stuck at 0)
+  // and its store-driven options caused Svelte effect loops. A chat transcript
+  // is short enough that a plain list renders instantly and never desyncs.
 
   // Auto-scroll to bottom when new content appears, unless the user scrolled up.
   let stick = $state(true);
@@ -47,18 +24,17 @@
   });
 
   // PLAN §38: when an older page is prepended the list grows at the top —
-  // compensate the scroll so the block the user was looking at stays in place.
+  // compensate the scroll so the block the user was looking at stays put.
   let lastVersion = store.prependVersion;
-  let totalAtVersion = total;
+  let prevH = 0;
   $effect(() => {
-    if (store.prependVersion !== lastVersion) {
-      const delta = total - totalAtVersion;
-      if (viewport && delta > 0) viewport.scrollTop += delta;
-      lastVersion = store.prependVersion;
-      totalAtVersion = total;
-    } else {
-      totalAtVersion = total;
+    const v = store.prependVersion;
+    const h = viewport ? viewport.scrollHeight : 0;
+    if (v !== lastVersion && viewport) {
+      viewport.scrollTop += h - prevH;
+      lastVersion = v;
     }
+    prevH = h;
   });
 </script>
 
@@ -66,17 +42,9 @@
   {#if store.blocks.length === 0}
     <div class="empty">netPI — send a message to start</div>
   {:else}
-    <div
-      class="virtual-list"
-      style="height: {total}px; position: relative"
-    >
-      {#each rows as row (row.key)}
-        <div
-          class="vrow"
-          style="position: absolute; left: 0; right: 0; top: 0; transform: translateY({row.start}px)"
-        >
-          <BlockRenderer block={store.blocks[row.index]} />
-        </div>
+    <div class="msg-list">
+      {#each store.blocks as b (b.id)}
+        <BlockRenderer block={b} />
       {/each}
     </div>
   {/if}

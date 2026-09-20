@@ -151,7 +151,7 @@ public class ResponsesSseTests
     public async Task Auto_Wire_ProbeOk_UsesResponsesEndpoint()
     {
         var (p, h) = MakeWire("auto", CatalogRoute(RespText, "probe", ChatText));
-        await p.RefreshAsync(CancellationToken.None);
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
 
         var ev = await Collect(p, Req());
 
@@ -168,7 +168,7 @@ public class ResponsesSseTests
     {
         // Probe returns a non-2xx → SupportsResponses stays false → chat wire.
         var (p, h) = MakeWire("auto", CatalogRoute(RespText, "probe", ChatText, respProbeStatus: HttpStatusCode.BadGateway));
-        await p.RefreshAsync(CancellationToken.None);
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
 
         var ev = await Collect(p, Req());
 
@@ -183,7 +183,7 @@ public class ResponsesSseTests
     {
         // wire=chat never probes and never uses /v1/responses.
         var (p, h) = MakeWire("chat", CatalogRoute(RespText, "probe", ChatText));
-        await p.RefreshAsync(CancellationToken.None);
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
 
         var ev = await Collect(p, Req());
 
@@ -198,11 +198,11 @@ public class ResponsesSseTests
     public async Task ResponsesAndChat_EmitIdenticalEventKindsAndOrder()
     {
         var (pChat, _) = MakeWire("chat", CatalogRoute(RespText, "probe", ChatText));
-        await pChat.RefreshAsync(CancellationToken.None);
+        await pChat.RefreshAsync(CancellationToken.None); await pChat.WaitForProbeAsync();
         var chatEv = await Collect(pChat, Req());
 
         var (pResp, _) = MakeWire("responses", CatalogRoute(RespText, "probe", ChatText));
-        await pResp.RefreshAsync(CancellationToken.None);
+        await pResp.RefreshAsync(CancellationToken.None); await pResp.WaitForProbeAsync();
         var respEv = await Collect(pResp, Req());
 
         Assert.Equal(Kinds(chatEv), Kinds(respEv));
@@ -218,7 +218,7 @@ public class ResponsesSseTests
     public async Task Responses_TextAndReasoning_ParsesLanesAndUsage()
     {
         var (p, h) = MakeWire("responses", CatalogRoute(RespText, "probe", ChatText));
-        await p.RefreshAsync(CancellationToken.None);
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
         var ev = await Collect(p, Req());
 
         Assert.Equal("think", string.Concat(ev.OfType<ThinkingDelta>().Select(t => t.Text)));
@@ -236,7 +236,7 @@ public class ResponsesSseTests
     public async Task Responses_ToolCall_FragmentsArgsAndReassembles()
     {
         var (p, _) = MakeWire("responses", CatalogRoute(RespTool, "probe", ChatText));
-        await p.RefreshAsync(CancellationToken.None);
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
         var ev = await Collect(p, Req());
 
         var started = Assert.Single(ev.OfType<ToolCallStarted>());
@@ -263,7 +263,7 @@ public class ResponsesSseTests
     public async Task Responses_EofWithoutCompleted_ClosesLanesAndDefaultsUsage()
     {
         var (p, _) = MakeWire("responses", CatalogRoute(RespNoCompleted, "probe", ChatText));
-        await p.RefreshAsync(CancellationToken.None);
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
         var ev = await Collect(p, Req());
 
         Assert.Equal("partial text", string.Concat(ev.OfType<TextDelta>().Select(t => t.Text)));
@@ -279,7 +279,7 @@ public class ResponsesSseTests
         // /v1/responses run returns 502 → ModelFailed before any content →
         // the dispatcher transparently retries via /v1/chat/completions.
         var (p, h) = MakeWire("responses", CatalogRoute(RespText, "probe", ChatText, respRunStatus: HttpStatusCode.BadGateway));
-        await p.RefreshAsync(CancellationToken.None);
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
         var ev = await Collect(p, Req());
 
         // Both endpoints were hit: the failed responses run and the chat retry.
@@ -316,7 +316,7 @@ public class ResponsesSseTests
     public async Task Chain_SecondTurn_ChainsPreviousIdWithDeltaOnly()
     {
         var (p, h) = MakeWire("responses", CatalogRoute(RespText, "probe", ChatText));
-        await p.RefreshAsync(CancellationToken.None);
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
 
         var u1 = User("u1", "hi");
         var done = (await Collect(p, Sreq("s1", u1))).OfType<ModelCompleted>().Single();
@@ -344,7 +344,7 @@ public class ResponsesSseTests
     public async Task Chain_FailedRun_DoesNotAdvanceHead()
     {
         var (p, h) = MakeWire("responses", CatalogRoute(RespFailed, "probe", ChatText));
-        await p.RefreshAsync(CancellationToken.None);
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
 
         var u1 = User("u1", "hi");
         var ev = await Collect(p, Sreq("s1", u1));
@@ -364,7 +364,7 @@ public class ResponsesSseTests
     public async Task Chain_TranscriptChanged_ResetsToFullInput()
     {
         var (p, h) = MakeWire("responses", CatalogRoute(RespText, "probe", ChatText));
-        await p.RefreshAsync(CancellationToken.None);
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
         var sys = new AgentMessage("s", MessageRole.System, [new TextPart("be brief")], DateTimeOffset.UtcNow);
         var done = (await Collect(p, Sreq("s1", sys, User("u1", "hi")))).OfType<ModelCompleted>().Single();
 
@@ -395,7 +395,7 @@ public class ResponsesSseTests
         // Responses wire: one function_call_output item per result (not just the
         // first one).
         var (pR, hR) = MakeWire("responses", CatalogRoute(RespText, "probe", ChatText));
-        await pR.RefreshAsync(CancellationToken.None);
+        await pR.RefreshAsync(CancellationToken.None); await pR.WaitForProbeAsync();
         await Collect(pR, Sreq("s1", asst, tool, User("u1", "again")));
         var items = Body(ResponsesRun(hR)).GetProperty("input").EnumerateArray().ToList();
         var fco = items.Where(it => it.GetProperty("type").GetString() == "function_call_output").ToList();
@@ -405,7 +405,7 @@ public class ResponsesSseTests
 
         // Chat wire: one tool message per tool_call_id.
         var (pC, hC) = MakeWire("chat", CatalogRoute(RespText, "probe", ChatText));
-        await pC.RefreshAsync(CancellationToken.None);
+        await pC.RefreshAsync(CancellationToken.None); await pC.WaitForProbeAsync();
         await Collect(pC, Sreq("s1", asst, tool, User("u1", "again")));
         var msgs = Body(hC.Sent.Single(s => s.Url.EndsWith("/v1/chat/completions", StringComparison.Ordinal)))
             .GetProperty("messages").EnumerateArray().ToList();

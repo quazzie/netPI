@@ -97,12 +97,60 @@ public static class ShellDetector
             using var proc = Process.Start(psi);
             if (proc is null) return (false, "");
             proc.StandardInput.Close();
-            var stdout = await proc.StandardOutput.ReadToEndAsync();
-            var stderr = await proc.StandardError.ReadToEndAsync();
-            await Task.WhenAny(proc.WaitForExitAsync(), Task.Delay(5_000));
+            var sbOut = new System.Text.StringBuilder();
+            var sbErr = new System.Text.StringBuilder();
+            var readOutTask = ReadLinesUntilExitAsync(proc, proc.StandardOutput, sbOut);
+            var readErrTask = ReadLinesUntilExitAsync(proc, proc.StandardError, sbErr);
+            var exitWait = proc.WaitForExitAsync();
+            // Hard budget: a real shell answers --version in well under a
+            // second; anything slower (e.g. a WindowsApps WSL app alias, which
+            // boots a whole VM) is not a usable shell candidate — kill it and
+            // report unusable so detection can fall through to the next one.
+            var fast = Task.WhenAll(readOutTask, readErrTask, exitWait);
+            var completed = await Task.WhenAny(fast, Task.Delay(2_000));
+            if (!ReferenceEquals(completed, fast))
+            {
+                try { proc.Kill(true); } catch { /* already gone */ }
+                return (false, "");
+            }
+            // Everything settled. Close the readers (unblocks any in-flight
+            // reads) and reap the tasks.
+            proc.StandardOutput.Close();
+            proc.StandardError.Close();
+            try { await readOutTask; } catch { /* stream closed early */ }
+            try { await readErrTask; } catch { /* stream closed early */ }
+            string stdout = sbOut.ToString(), stderr = sbErr.ToString();
             return (!string.IsNullOrWhiteSpace(stdout) || !string.IsNullOrWhiteSpace(stderr), stdout + stderr);
         }
         catch { return (false, ""); }
+    }
+
+    /// <summary>Drains a redirected stream line by line (no pipe-EOF wait),
+    /// appending to <paramref name="sb"/> until the stream closes. Reading by
+    /// line avoids the seconds-long EOF block that ReadToEndAsync can hit on
+    /// Windows after the child process has already exited.</summary>
+    private static async Task ReadLinesUntilExitAsync(Process proc, System.IO.StreamReader reader, System.Text.StringBuilder sb)
+    {
+        try
+        {
+            while (!proc.HasExited)
+            {
+                var line = await reader.ReadLineAsync().ConfigureAwait(false);
+                if (line is null) break;
+                sb.AppendLine(line);
+            }
+            // Grace: pick up any final line already in the pipe buffer; a plain
+            // ReadLineAsync (with a timeout) — never ReadToEnd, which would wait
+            // on the lagging pipe EOF.
+            try
+            {
+                using var graceCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+                var rest = await reader.ReadLineAsync(graceCts.Token).ConfigureAwait(false);
+                if (rest is not null) sb.AppendLine(rest);
+            }
+            catch { /* timeout or stream closed — fine */ }
+        }
+        catch { /* stream closed early */ }
     }
 
 
@@ -231,6 +279,11 @@ public static class ShellDetector
             var candidates = OperatingSystem.IsWindows() ? new[] { name + ".exe", name } : new[] { name };
             foreach (var candidate in candidates)
             {
+                // Skip the WindowsApps app-alias stubs: they are Store app
+                // launchers (e.g. bash.exe boots the whole WSL VM in ~5 s),
+                // not usable shell candidates. WSL is reached explicitly as
+                // the last-resort bash backend (wsl.exe), never via these.
+                if (dir.EndsWith("Microsoft\\WindowsApps", StringComparison.OrdinalIgnoreCase)) continue;
                 try
                 {
                     var full = Path.Combine(dir, candidate);
