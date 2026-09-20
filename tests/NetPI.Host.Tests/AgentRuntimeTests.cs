@@ -276,6 +276,7 @@ internal sealed class EchoTool : IAgentTool
     private readonly List<string> _calls = [];
     public string Name => "echo";
     public string Description => "echo";
+    public IReadOnlyList<string> Guidelines => [];
     public JsonElement Parameters => JsonSerializer.SerializeToElement(
         new { type = "object", properties = new { msg = new { type = "string" } } });
 
@@ -302,6 +303,7 @@ internal sealed class CountingLeaseTool(NoopPluginContext ctx) : IAgentTool
 {
     public string Name => "counting";
     public string Description => "observes the agent's self-lease while executing";
+    public IReadOnlyList<string> Guidelines => [];
     public JsonElement Parameters => JsonSerializer.SerializeToElement(new { type = "object" });
     public int TurnsSeen;
     public bool LeaseSeenDuringToolExecution;

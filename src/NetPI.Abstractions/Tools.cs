@@ -17,6 +17,15 @@ public interface IAgentTool
     JsonElement Parameters { get; }
 
     /// <summary>
+    /// PLAN §15: concise behavioral guidance the prompt should give the model
+    /// about this tool (e.g. "use offset to page large files"). Collected by
+    /// the agent runner into the system prompt. Tools with no guidance return
+    /// an empty list. (Declared abstract so every tool spells out its guidance
+    /// explicitly; there is no implicit default.)
+    /// </summary>
+    IReadOnlyList<string> Guidelines { get; }
+
+    /// <summary>
     /// Execute the tool (PLAN §11/§18/§25). The context carries the parsed
     /// arguments plus the session/workspace scope: relative paths resolve
     /// against <see cref="ToolContext.Workspace"/> and foreground shells start

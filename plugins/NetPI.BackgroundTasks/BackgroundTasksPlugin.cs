@@ -244,6 +244,7 @@ public sealed class BackgroundStartTool : IAgentTool
 
     public string Name => "background_start";
     public string Description => "Start a long-running command as a background job (e.g. a dev server). Returns a job id; the job keeps running independently of the shell.";
+    public IReadOnlyList<string> Guidelines => ["Use for long-running processes (servers, watchers); read output later with background_output."];
     public JsonElement Parameters => PluginArgs.Schema(
         ("shell", "string", "Shell to use: 'bash' or 'powershell'."),
         ("command", "string", "The command to run in the background."),
@@ -279,6 +280,7 @@ public sealed class BackgroundOutputTool : IAgentTool
 
     public string Name => "background_output";
     public string Description => "Read the output of a background job from a cursor offset (0 = from the start). Returns the new text and the offset to pass next time.";
+    public IReadOnlyList<string> Guidelines => ["Pass the cursor returned last time to read only new output; 0 = from the start."];
     public JsonElement Parameters => PluginArgs.Schema(
         ("jobId", "string", "The background job id from background_start."),
         ("offset", "number", "Cursor offset in characters. Optional (default 0)."));
@@ -309,6 +311,7 @@ public sealed class BackgroundListTool : IAgentTool
 
     public string Name => "background_list";
     public string Description => "List all background jobs with their ids, state, and exit code.";
+    public IReadOnlyList<string> Guidelines => [];
     public JsonElement Parameters => PluginArgs.Schema();
 
     public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
@@ -330,6 +333,7 @@ public sealed class BackgroundKillTool : IAgentTool
 
     public string Name => "background_kill";
     public string Description => "Kill a background job and its entire process tree. Returns true if a matching job was found.";
+    public IReadOnlyList<string> Guidelines => [];
     public JsonElement Parameters => PluginArgs.Schema(
         ("jobId", "string", "The background job id to kill."));
 

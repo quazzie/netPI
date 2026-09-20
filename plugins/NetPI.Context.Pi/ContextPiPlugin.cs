@@ -155,7 +155,7 @@ public sealed class ContextDiscovery
             ContextFiles = contextFiles,
             AppendPrompt = string.Join("\n\n", appendPrompt),
             Environment = new SystemPromptSection("environment",
-                $"OS: {Environment.OSVersion}\nCWD: {Path.GetFullPath(workspace)}\nShell: bash/powershell (detected per invocation)"),
+                $"OS: {Environment.OSVersion}\nCWD: {Path.GetFullPath(workspace)}\nShell: bash/powershell (detected per invocation)\nDate: {DateTime.Now:yyyy-MM-dd} ({DateTime.Now:dddd})"),
         };
     }
 }

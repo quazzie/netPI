@@ -38,6 +38,10 @@ public sealed class ReadTool : IAgentTool
 {
     public string Name => "read";
     public string Description => "Read a text file (line-numbered, bounded). Relative paths resolve against the workspace. Use offset/limit to page large files; binary files return an error.";
+    public IReadOnlyList<string> Guidelines => [
+        "Default is 200 lines, capped at 2000; 'Showing lines X-Y of Z' tells you when a file continues — pass offset=N to page.",
+        "The file must exist; glob for the name first when unsure.",
+    ];
     public JsonElement Parameters => Args.Schema(
         ("path", "string", "File path to read."),
         ("offset", "number", "Line number to start reading from (1-indexed). Optional."),
@@ -107,6 +111,9 @@ public sealed class WriteTool : IAgentTool
 {
     public string Name => "write";
     public string Description => "Write text content to a file, creating it (and parent dirs) if needed and overwriting if it exists.";
+    public IReadOnlyList<string> Guidelines => [
+        "Overwrites the whole file — read it first when the file already exists and you only want to change part of it; use edit for partial changes.",
+    ];
     public JsonElement Parameters => Args.Schema(
         ("path", "string", "File path to write."),
         ("content", "string", "Full file content to write."));
@@ -139,6 +146,10 @@ public sealed class EditTool : IAgentTool
 {
     public string Name => "edit";
     public string Description => "Replace a unique exact text span in a file. oldText must occur exactly once (0 or >1 matches both fail; no fuzzy matching).";
+    public IReadOnlyList<string> Guidelines => [
+        "View the file first and copy the exact text (including whitespace) — fuzzy or partial matches fail.",
+        "Widen oldText (more surrounding context) when a match is ambiguous.",
+    ];
     public JsonElement Parameters => Args.Schema(
         ("path", "string", "File path to edit."),
         ("oldText", "string", "Exact text to find (must occur exactly once)."),
@@ -188,6 +199,10 @@ public sealed class GrepTool : IAgentTool
 {
     public string Name => "grep";
     public string Description => "Search file contents with a regular expression (ripgrep when available, managed fallback otherwise). Results are file:line: text; relative paths resolve against the workspace.";
+    public IReadOnlyList<string> Guidelines => [
+        "Up to 250 matches are shown; narrow the pattern or add a file glob when the result is capped.",
+        "Use the returned file:line to read only the relevant ranges.",
+    ];
     public JsonElement Parameters => Args.Schema(
         ("pattern", "string", "Regular expression to search for."),
         ("path", "string", "File or directory to search (defaults to the workspace). Optional."),
@@ -325,7 +340,12 @@ public abstract class ShellToolBase : IAgentTool
 
     public string Name => ShellId;
     public string Description => $"Run a {ShellId} command and return its output." +
+        " Working directory is the session workspace; a non-zero exit is reported as [exit code: N]." +
         (_detected is { } d ? $" Backend: {d.Label}." : "");
+    public IReadOnlyList<string> Guidelines => [
+        "Runs non-interactively — no prompts, no TTY; pipe input with here-strings instead.",
+        "Long commands may time out; split large work into smaller steps.",
+    ];
     public JsonElement Parameters => Args.Schema(
         ("command", "string", "The command to run."),
         ("workdir", "string", "Working directory. Optional."),

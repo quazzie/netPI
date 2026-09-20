@@ -133,8 +133,12 @@ public sealed class AgentRunner : IAgentRunner
             if (builder is null || provider is null) return string.Empty;
             var inputs = await builder.BuildAsync(workspace, CancellationToken.None);
             var tools = Resolve<IToolRegistry>("tools");
-            var toolDefs = tools?.All().Select(t => new ToolDefinition(t.Name, t.Description, t.Parameters)).ToList() ?? [];
-            inputs = inputs with { Tools = toolDefs };
+            var allTools = tools?.All() ?? [];
+            var toolDefs = allTools.Select(t => new ToolDefinition(t.Name, t.Description, t.Parameters)).ToList();
+            // PLAN §15: per-tool behavioral guidance (IAgentTool.Guidelines) joins
+            // the prompt as a "Tool Guidelines" section.
+            var guidelines = allTools.SelectMany(t => t.Guidelines ?? []).Distinct().ToList();
+            inputs = inputs with { Tools = toolDefs, ToolGuidelines = guidelines };
             return await provider.BuildAsync(inputs, CancellationToken.None);
         }
         catch (Exception ex)

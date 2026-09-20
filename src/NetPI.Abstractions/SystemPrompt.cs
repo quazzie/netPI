@@ -30,6 +30,7 @@ public sealed record SystemPromptInputs
 /// <summary>A named section of the system prompt.</summary>
 public sealed record SystemPromptSection(string Title, string Content = "");
 
+
 /// <summary>Flattens structured inputs into the final system prompt text (PLAN §46).</summary>
 public interface ISystemPromptProvider
 {
