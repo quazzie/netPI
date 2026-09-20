@@ -838,14 +838,20 @@ internal sealed class WebApp : IAsyncDisposable
         if (!string.IsNullOrEmpty(model))
             await _store.SetModelAsync(sid, model, string.IsNullOrEmpty(reasoning) ? null : reasoning, ct);
 
-        // PLAN §41: the runner persists the user entry before starting the run;
-        // emit it as a single session.entry so the transcript has the persisted
-        // user message (streaming events only carry the assistant side).
+        var started = await _runner.StartRunAsync(new AgentRunRequest(sid, workspace, model, text,
+            string.IsNullOrEmpty(reasoning) ? null : reasoning, null, null), ct);
+        if (!string.IsNullOrEmpty(started.Error))
+        {
+            await SendErrorAsync(c, requestId, started.Error, ct);
+            return;
+        }
+
+        // The client already shows an optimistic user row. This authoritative
+        // echo arrives only after the runner accepted the turn, so a rejected
+        // submission cannot look like work that silently vanished.
         await SendAsync(c, "session.entry",
             new { entry = new { type = "user_message", text } as object }, sid, ct);
-
-        await _runner.StartRunAsync(new AgentRunRequest(sid, workspace, model, text,
-            string.IsNullOrEmpty(reasoning) ? null : reasoning, null, null), ct);
+        await SendAsync(c, "agent.state", new { state = "Preparing" }, sid, ct);
         await SendAckAsync(c, requestId, ct);
     }
 
