@@ -27,7 +27,8 @@ public sealed class AiProxyPlugin : INetPiPlugin
         if (!string.IsNullOrEmpty(apiKey))
             _http.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
 
-        _provider = new AiProxyProvider(_http, baseUrl, context.Log);
+        var wire = Str(context.OwnConfig, "wire");
+        _provider = new AiProxyProvider(_http, baseUrl, context.Log, string.IsNullOrEmpty(wire) ? "auto" : wire);
         context.Services.Register<IModelProvider>("provider", _provider);
         context.Services.Register<IModelCatalog>("catalog", _provider);
         context.Log.Information($"AiProxy provider configured (baseUrl={baseUrl})");

@@ -11,7 +11,8 @@ public sealed record ModelInfo(
     bool SupportsThinking,
     int? ContextWindowTokens = null,
     int? MaxOutputTokens = null,
-    IReadOnlyList<string>? ReasoningLevels = null)
+    IReadOnlyList<string>? ReasoningLevels = null,
+    bool SupportsResponses = false)
 {
     /// <summary>Input modalities the model accepts (PLAN §13). Defaults to text-only.</summary>
     public IReadOnlyList<string> InputModalities { get; init; } = ["text"];

@@ -19,6 +19,7 @@ public sealed record ModelEventWire
     public int? PromptTokens { get; init; }
     public int? CompletionTokens { get; init; }
     public int? TotalTokens { get; init; }
+    public int? CachedTokens { get; init; }
     public string? Error { get; init; }
     public string? ToolOutput { get; init; }
     public bool? IsError { get; init; }
@@ -41,7 +42,7 @@ public static class ModelEventWireMapper
         ToolCallStarted t => new() { Kind = ev.Kind, ToolCallId = t.Id, ToolName = t.Name },
         ToolCallArgumentsDelta d => new() { Kind = ev.Kind, ToolCallId = d.Id, Text = d.Delta },
         ToolCallCompleted t => new() { Kind = ev.Kind, ToolCallId = t.Id, ToolName = t.Name },
-        UsageUpdated u => new() { Kind = ev.Kind, PromptTokens = u.PromptTokens, CompletionTokens = u.CompletionTokens, TotalTokens = u.TotalTokens },
+        UsageUpdated u => new() { Kind = ev.Kind, PromptTokens = u.PromptTokens, CompletionTokens = u.CompletionTokens, TotalTokens = u.TotalTokens, CachedTokens = u.CachedTokens > 0 ? u.CachedTokens : null },
         ModelCompleted c => new() { Kind = ev.Kind, AssistantMessage = AgentMessageJson.Serialize(c.Message) },
         ModelFailed f => new() { Kind = ev.Kind, ModelId = f.ModelId, Error = f.Error },
         _ => new() { Kind = ev.Kind },

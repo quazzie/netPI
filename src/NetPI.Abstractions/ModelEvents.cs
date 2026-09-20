@@ -72,7 +72,7 @@ public sealed record ToolCallCompleted(string Id, string Name) : ModelEvent
 }
 
 /// <summary>Token usage update (cumulative or per-step; provider-defined).</summary>
-public sealed record UsageUpdated(int PromptTokens, int CompletionTokens, int TotalTokens) : ModelEvent
+public sealed record UsageUpdated(int PromptTokens, int CompletionTokens, int TotalTokens, int CachedTokens = 0) : ModelEvent
 {
     public override string Kind => "usage-updated";
 }

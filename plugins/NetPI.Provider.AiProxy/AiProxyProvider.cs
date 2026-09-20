@@ -19,14 +19,16 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     private readonly HttpClient _http;
     private readonly string _baseUrl;
     private readonly IPluginLogger _log;
+    private readonly string _wire; // "auto" (default) | "chat" | "responses" — PLAN §14b
     private IReadOnlyList<ModelInfo> _models = [];
     private DateTimeOffset? _refreshedAt;
 
-    public AiProxyProvider(HttpClient http, string baseUrl, IPluginLogger log)
+    public AiProxyProvider(HttpClient http, string baseUrl, IPluginLogger log, string wire = "auto")
     {
         _http = http;
         _baseUrl = baseUrl.TrimEnd('/');
         _log = log;
+        _wire = string.IsNullOrWhiteSpace(wire) ? "auto" : wire.Trim();
     }
 
     // ---- catalog ---------------------------------------------------------
@@ -97,11 +99,99 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         _models = list;
         _refreshedAt = DateTimeOffset.UtcNow;
         _log.Information($"AiProxy catalog: {list.Count} model(s)");
+
+        // PLAN §14b: capability probe — when the wire allows /v1/responses, verify
+        // each model serves it with one tiny request. Failures are non-fatal:
+        // the flag simply stays false and the model runs on chat completions.
+        if (_wire is "auto" or "responses")
+        {
+            for (var i = 0; i < list.Count; i++)
+                list[i] = await ProbeResponsesSupportAsync(list[i], cancellationToken);
+        }
+
         return _models;
     }
 
-    // ---- run (streaming) -------------------------------------------------
+    /// <summary>One-shot non-streaming probe of <c>/v1/responses</c> for a model.</summary>
+    private async Task<ModelInfo> ProbeResponsesSupportAsync(ModelInfo model, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var body = new StringContent(
+                JsonSerializer.Serialize(new { model = model.ModelId, input = "hi", stream = false, store = false }),
+                Encoding.UTF8, "application/json");
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+            using var resp = await _http.PostAsync($"{_baseUrl}/v1/responses", body, timeoutCts.Token);
+            if (resp.IsSuccessStatusCode)
+            {
+                _log.Debug($"responses probe ok: {model.ModelId}");
+                return model with { SupportsResponses = true };
+            }
+            _log.Debug($"responses probe failed ({(int)resp.StatusCode}): {model.ModelId}");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Debug($"responses probe error for {model.ModelId}: {ex.Message}");
+        }
+        return model with { SupportsResponses = false };
+    }
+
+    // ---- run (dispatch — PLAN §14b) ------------------------------------------
     public async IAsyncEnumerable<ModelEvent> RunAsync(ModelRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (UseResponsesWire(ModelById(request.ModelId)))
+        {
+            bool contentSeen = false;
+            bool hardFailed = false;
+            var pending = new List<ModelEvent>();
+
+            await foreach (var ev in RunResponsesAsync(request, cancellationToken))
+            {
+                if (ev is ModelFailed)
+                {
+                    // A hard failure before any content (HTTP error, response.failed)
+                    // is retried transparently via chat completions; after content it
+                    // is surfaced and left to the retry plugin.
+                    if (!contentSeen) { hardFailed = true; break; }
+                    foreach (var p in pending) yield return p;
+                    pending.Clear();
+                    yield return ev;
+                    yield break;
+                }
+
+                if (!contentSeen)
+                {
+                    if (ev is TextDelta or ThinkingDelta or ToolCallStarted)
+                    {
+                        contentSeen = true;
+                        foreach (var p in pending) yield return p;
+                        pending.Clear();
+                        yield return ev;
+                    }
+                    else pending.Add(ev);
+                    continue;
+                }
+
+                yield return ev;
+            }
+
+            if (!hardFailed) yield break;
+            _log.Warning($"responses wire failed before content for {request.ModelId}; retrying via chat completions");
+        }
+
+        await foreach (var ev in RunChatCompletionsAsync(request, cancellationToken))
+            yield return ev;
+        yield break;
+    }
+
+    private bool UseResponsesWire(ModelInfo? model) =>
+        _wire != "chat" && model is { SupportsResponses: true };
+
+    private ModelInfo? ModelById(string id) => _models.FirstOrDefault(m => m.ModelId == id);
+
+    // ---- run (chat completions, PLAN §14) ------------------------------------
+    private async IAsyncEnumerable<ModelEvent> RunChatCompletionsAsync(ModelRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var payload = BuildPayload(request);
         using var content = new StringContent(JsonSerializer.Serialize(payload, WireOpts), System.Text.Encoding.UTF8, "application/json");
@@ -259,7 +349,270 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     private static int? GetIntProp(JsonElement e, string prop)
         => e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : null;
 
-    private sealed class ToolState { public string Id; public string Name; public StringBuilder Args = new(); public StringBuilder FullArgs = new(); public bool Started; public ToolState(string id, string name) { Id = id; Name = name; } }
+    private sealed class ToolState { public string Id; public string ItemId = ""; public string Name; public StringBuilder Args = new(); public StringBuilder FullArgs = new(); public bool Started; public ToolState(string id, string name) { Id = id; Name = name; } }
+
+    // ---- run (responses wire, PLAN §14b) -------------------------------------
+    /// <summary>State accumulated across the /v1/responses SSE stream.</summary>
+    private sealed class ResponseWireState
+    {
+        public bool TextStarted;
+        public bool ThinkingStarted;
+        public bool UsageSeen;
+        public string ModelId = "";
+        public Dictionary<string, ToolState> Tools = new();
+        public List<MessagePart> Parts = new();
+        public StringBuilder Text = new();
+        public StringBuilder Think = new();
+    }
+
+    private async IAsyncEnumerable<ModelEvent> RunResponsesAsync(ModelRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var payload = BuildResponsesPayload(request);
+        using var content = new StringContent(JsonSerializer.Serialize(payload, WireOpts), System.Text.Encoding.UTF8, "application/json");
+
+        using var resp = await _http.PostAsync($"{_baseUrl}/v1/responses", content, cancellationToken);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var err = await resp.Content.ReadAsStringAsync(cancellationToken);
+            yield return new ModelFailed(request.ModelId, $"HTTP {(int)resp.StatusCode}: {Truncate(err, 500)}");
+            yield break;
+        }
+
+        var state = new ResponseWireState { ModelId = request.ModelId };
+        yield return new ModelStarted(request.ModelId);
+
+        await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream);
+
+        while (!reader.EndOfStream)
+        {
+            string? line = await reader.ReadLineAsync(cancellationToken);
+            if (line is null) break;
+            if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
+            var data = line["data:".Length..].Trim();
+            if (data.Length == 0 || data == "[DONE]") continue;
+
+            IEnumerable<ModelEvent> evs;
+            try { evs = ParseResponseEvent(data, state); }
+            catch (JsonException) { continue; } // tolerate a torn/malformed chunk
+            foreach (var ev in evs)
+            {
+                if (ev is UsageUpdated) state.UsageSeen = true;
+                if (ev is TextDelta td) state.Text.Append(td.Text);
+                else if (ev is ThinkingDelta tdt) state.Think.Append(tdt.Text);
+                yield return ev;
+            }
+        }
+
+        // ---- close out lanes (mirrors chat path) ----
+        if (state.TextStarted) yield return new TextCompleted(TextBlockId);
+        if (state.ThinkingStarted) yield return new ThinkingCompleted(ThinkingBlockId);
+        if (!state.UsageSeen) yield return new UsageUpdated(0, 0, 0);
+
+        // ---- assemble the completed assistant message ----
+        if (state.Think.Length > 0) state.Parts.Add(new ThinkingPart(state.Think.ToString()));
+        if (state.Text.Length > 0) state.Parts.Add(new TextPart(state.Text.ToString()));
+        foreach (var tc in state.Tools.Values)
+            if (tc.Started)
+            {
+                var argsJson = tc.FullArgs.Length > 0 ? tc.FullArgs.ToString().Trim() : string.Empty;
+                JsonElement argsEl;
+                try { argsEl = JsonDocument.Parse(argsJson).RootElement.Clone(); }
+                catch { argsEl = JsonDocument.Parse("{}").RootElement.Clone(); }
+                state.Parts.Add(new ToolCallPart(tc.Id, tc.Name, argsEl));
+            }
+
+        var message = new AgentMessage(Guid.NewGuid().ToString("n"), MessageRole.Assistant, state.Parts, DateTimeOffset.UtcNow);
+        yield return new ModelCompleted(message);
+        yield break;
+    }
+
+    /// <summary>Parse one SSE <c>data:</c> event of the Responses wire into normalized events.</summary>
+    private static IEnumerable<ModelEvent> ParseResponseEvent(string data, ResponseWireState s)
+    {
+        using var doc = JsonDocument.Parse(data);
+        var root = doc.RootElement;
+        var events = new List<ModelEvent>();
+        if (!root.TryGetProperty("type", out var typeEl) || typeEl.ValueKind != JsonValueKind.String) return events;
+        var type = typeEl.GetString()!;
+
+        switch (type)
+        {
+            case "response.created" or "response.in_progress":
+                // ModelStarted is emitted once by RunResponsesAsync; nothing to do.
+                break;
+
+            case "response.output_item.added":
+                if (root.TryGetProperty("item", out var it) && it.ValueKind == JsonValueKind.Object
+                    && it.TryGetProperty("type", out var itType) && itType.ValueKind == JsonValueKind.String)
+                {
+                    var itK = itType.GetString()!;
+                    if (itK == "function_call")
+                    {
+                        var cid = it.TryGetProperty("call_id", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString()! : "";
+                        var name = it.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() ?? "" : "";
+                        var itemId = it.TryGetProperty("id", out var fi) && fi.ValueKind == JsonValueKind.String ? fi.GetString()! : "";
+                        var ts = new ToolState(string.IsNullOrEmpty(cid) ? $"call_{s.Tools.Count}" : cid, name) { ItemId = itemId, Started = true };
+                        s.Tools[ts.ItemId.Length > 0 ? ts.ItemId : ts.Id] = ts;
+                        events.Add(new ToolCallStarted(ts.Id, name));
+                    }
+                    // reasoning / message items: their lanes open on the first
+                    // *_text.delta (handled below); item.added itself is a marker.
+                }
+                break;
+
+            case "response.reasoning_text.delta":
+                if (root.TryGetProperty("delta", out var d) && d.ValueKind == JsonValueKind.String)
+                {
+                    var t = d.GetString() ?? "";
+                    if (t.Length > 0)
+                    {
+                        if (!s.ThinkingStarted) { s.ThinkingStarted = true; events.Add(new ThinkingStarted(ThinkingBlockId)); }
+                        events.Add(new ThinkingDelta(t));
+                    }
+                }
+                break;
+
+            case "response.output_text.delta":
+                if (root.TryGetProperty("delta", out var d2) && d2.ValueKind == JsonValueKind.String)
+                {
+                    var t = d2.GetString() ?? "";
+                    if (t.Length > 0)
+                    {
+                        if (!s.TextStarted) { s.TextStarted = true; events.Add(new TextStarted(TextBlockId)); }
+                        events.Add(new TextDelta(t));
+                    }
+                }
+                break;
+
+            case "response.function_call_arguments.delta":
+                if (root.TryGetProperty("delta", out var fd) && fd.ValueKind == JsonValueKind.String
+                    && root.TryGetProperty("item_id", out var iid) && iid.ValueKind == JsonValueKind.String)
+                {
+                    // item_id is the fc_... item id (not the call_id) — our Tools map
+                    // is keyed by that item id (see output_item.added above).
+                    var piece = fd.GetString() ?? "";
+                    if (piece.Length > 0 && s.Tools.TryGetValue(iid.GetString()!, out var tc))
+                    {
+                        tc.Args.Append(piece);
+                        tc.FullArgs.Append(piece);
+                        events.Add(new ToolCallArgumentsDelta(tc.Id, DrainArgs(tc)));
+                    }
+                }
+                break;
+
+            case "response.completed":
+                if (root.TryGetProperty("response", out var r) && r.ValueKind == JsonValueKind.Object
+                    && r.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+                {
+                    int p = GetInt(usage, "input_tokens");
+                    int c = GetInt(usage, "output_tokens");
+                    int total = GetInt(usage, "total_tokens");
+                    if (total == 0) total = p + c;
+                    int cached = 0;
+                    if (usage.TryGetProperty("input_tokens_details", out var details) && details.ValueKind == JsonValueKind.Object)
+                        cached = GetInt(details, "cached_tokens");
+                    events.Add(new UsageUpdated(p, c, total, cached));
+                }
+                break;
+
+            case "response.failed":
+                var msg = "";
+                if (root.TryGetProperty("response", out var rf) && rf.ValueKind == JsonValueKind.Object
+                    && rf.TryGetProperty("error", out var e2) && e2.ValueKind == JsonValueKind.Object
+                    && e2.TryGetProperty("message", out var em) && em.ValueKind == JsonValueKind.String) msg = em.GetString() ?? "";
+                events.Add(new ModelFailed(s.ModelId, Truncate(string.IsNullOrEmpty(msg) ? "response.failed" : msg, 500)));
+                break;
+
+            default:
+                // unknown / part-closure events (content_part.*, *_done, output_item.done) are ignored
+                break;
+        }
+        return events;
+    }
+
+    /// <summary>Build the /v1/responses request body (PLAN §14b).</summary>
+    private static object BuildResponsesPayload(ModelRequest request)
+    {
+        var input = new List<object>();
+        string? instructions = null;
+
+        foreach (var m in request.Messages)
+        {
+            var text = string.Join("\n", m.Parts.OfType<TextPart>().Select(p => p.Text));
+            var thinking = m.Parts.OfType<ThinkingPart>().FirstOrDefault();
+
+            switch (m.Role)
+            {
+                case MessageRole.System:
+                    if (instructions is null && text.Length > 0) instructions = text;
+                    break;
+
+                case MessageRole.User:
+                    if (text.Length > 0)
+                        input.Add(new Dictionary<string, object>
+                        {
+                            ["type"] = "message", ["role"] = "user",
+                            ["content"] = new[] { new Dictionary<string, object> { ["type"] = "input_text", ["text"] = text } },
+                        });
+                    break;
+
+                case MessageRole.Assistant:
+                    if (thinking is not null && thinking.Text.Length > 0)
+                        input.Add(new Dictionary<string, object>
+                        {
+                            ["type"] = "reasoning",
+                            ["content"] = new[] { new Dictionary<string, object> { ["type"] = "reasoning_text", ["text"] = thinking.Text } },
+                        });
+                    if (text.Length > 0)
+                        input.Add(new Dictionary<string, object>
+                        {
+                            ["type"] = "message", ["role"] = "assistant",
+                            ["content"] = new[] { new Dictionary<string, object> { ["type"] = "output_text", ["text"] = text } },
+                        });
+                    foreach (var c in m.Parts.OfType<ToolCallPart>())
+                        input.Add(new Dictionary<string, object>
+                        {
+                            ["type"] = "function_call", ["call_id"] = c.Id,
+                            ["name"] = c.Name, ["arguments"] = c.Arguments.GetRawText(),
+                        });
+                    break;
+
+                case MessageRole.Tool:
+                    var res = m.Parts.OfType<ToolResultPart>().FirstOrDefault();
+                    if (res is not null)
+                        input.Add(new Dictionary<string, object>
+                        {
+                            ["type"] = "function_call_output", ["call_id"] = res.ToolCallId,
+                            ["output"] = string.Join("\n", res.Parts.OfType<TextPart>().Select(p => p.Text)),
+                        });
+                    break;
+            }
+        }
+
+        var tools = request.Tools.Count > 0
+            ? request.Tools.Select(t => new Dictionary<string, object>
+              {
+                  ["type"] = "function", ["name"] = t.Name, ["description"] = t.Description, ["parameters"] = t.Parameters,
+              }).ToList()
+            : null;
+
+        var payload = new Dictionary<string, object>
+        {
+            ["model"] = request.ModelId,
+            ["stream"] = true,
+            ["store"] = false,
+            ["input"] = input,
+        };
+        if (instructions is not null) payload["instructions"] = instructions;
+        if (tools is not null) payload["tools"] = tools;
+        if (request.Temperature is { } t) payload["temperature"] = t;
+        if (request.MaxTokens is { } mt) payload["max_output_tokens"] = mt;
+        var rl = request.ReasoningLevel;
+        if (!string.IsNullOrEmpty(rl) && !string.Equals(rl, "off", StringComparison.OrdinalIgnoreCase))
+            payload["reasoning"] = new Dictionary<string, object> { ["effort"] = rl };
+        return payload;
+    }
 
 
     // ---- payload building -------------------------------------------------

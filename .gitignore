@@ -9,6 +9,9 @@ build/
 # dependencies
 node_modules/
 
+# probe/scratch captures
+scratch/
+*.scratch
 # local runtime state
 *.log
 .DS_Store
