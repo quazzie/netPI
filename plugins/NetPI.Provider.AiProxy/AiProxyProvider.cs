@@ -97,6 +97,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                 // shapes used by current/older AiProxy builds without falling back
                 // to model-name heuristics.
                 var levels = ParseReasoningLevels(m);
+                var defaultReasoning = ParseReasoningDefault(m);
 
                 list.Add(new ModelInfo(
                     modelId, "aiProxy", modelId,
@@ -107,6 +108,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                     ReasoningLevels: levels)
                 {
                     InputModalities = [.. modalities],
+                    DefaultReasoningLevel = defaultReasoning,
                 });
             }
         }
@@ -186,9 +188,17 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             var values = new List<string>();
             if (arr.ValueKind != JsonValueKind.Array) return values;
             foreach (var item in arr.EnumerateArray())
-                if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } v
-                    && !values.Contains(v, StringComparer.OrdinalIgnoreCase))
-                    values.Add(v);
+            {
+                string? value = item.ValueKind switch
+                {
+                    JsonValueKind.String => item.GetString(),
+                    JsonValueKind.Object => FirstString(item, "id", "value", "level", "effort", "name"),
+                    _ => null,
+                };
+                if (!string.IsNullOrWhiteSpace(value)
+                    && !values.Contains(value, StringComparer.OrdinalIgnoreCase))
+                    values.Add(value);
+            }
             return values;
         }
 
@@ -221,6 +231,31 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             if (reasoning.TryGetProperty(name, out var enabled) && enabled.ValueKind == JsonValueKind.True)
                 boolLevels.Add(name);
         return boolLevels.Count > 0 ? boolLevels : null;
+    }
+
+    private static string? ParseReasoningDefault(JsonElement model)
+    {
+        static string? ReadDefault(JsonElement obj)
+            => FirstString(obj, "default", "default_effort", "defaultEffort",
+                "default_level", "defaultLevel");
+
+        var top = ReadDefault(model);
+        if (!string.IsNullOrWhiteSpace(top)) return top;
+
+        return model.TryGetProperty("reasoning", out var reasoning)
+            && reasoning.ValueKind == JsonValueKind.Object
+            ? ReadDefault(reasoning)
+            : null;
+    }
+
+    private static string? FirstString(JsonElement obj, params string[] names)
+    {
+        if (obj.ValueKind != JsonValueKind.Object) return null;
+        foreach (var name in names)
+            if (obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(value.GetString()))
+                return value.GetString();
+        return null;
     }
 
     // ---- run (dispatch — PLAN §14b) ------------------------------------------
