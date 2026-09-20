@@ -44,7 +44,7 @@ internal sealed class WebApp : IAsyncDisposable
 
     private readonly List<IDisposable> _subs = [];
     // PLAN §41: tool.started → tool.output → tool.completed, with real duration.
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _toolStarts = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _toolStarts = new();\n    // A model turn stays open through its tool batch so live tool calls/results\n    // render inside the same assistant message instead of losing their parent.\n    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _assistantOpen = new();
 
     // PLAN §39: per-session delta batcher (coalesce ~20ms windows).
     private sealed class DeltaBatcher
@@ -178,6 +178,12 @@ internal sealed class WebApp : IAsyncDisposable
                 SendEvent("agent.state", new { state = "ExecutingTools" }, sid);
                 break;
 
+            case AgentEventType.AfterToolBatch:
+                // The assistant turn that requested these tools is only complete
+                // after all tool results have been delivered to the UI.
+                CompleteAssistantTurn(sid);
+                break;
+
             case AgentEventType.BeforeToolCall when e.Payload is not null:
             {
                 var p = e.Payload.Value;
@@ -242,7 +248,8 @@ internal sealed class WebApp : IAsyncDisposable
 
             case AgentEventType.AgentCompleted:
             case AgentEventType.AgentCancelled:
-
+                // Final turns have no tool batch, so close them here.
+                CompleteAssistantTurn(sid);
                 SendEvent("agent.state", new { state = "Idle" }, sid);
                 break;
         }
@@ -255,8 +262,16 @@ internal sealed class WebApp : IAsyncDisposable
         switch (kind)
         {
             case "model-started":
+            {
+                var key = sid ?? "";
+                // Defensive close in case a provider starts a new turn without a
+                // normal tool/final boundary.
+                if (_assistantOpen.ContainsKey(key))
+                    CompleteAssistantTurn(sid);
+                _assistantOpen[key] = 1;
                 SendEvent("assistant.started", new { model = S(w, "modelId") }, sid);
                 break;
+            }
             case "thinking-started":
                 SendEvent("thinking.started", new { }, sid);
                 break;
@@ -269,6 +284,12 @@ internal sealed class WebApp : IAsyncDisposable
                 break;
             case "text-delta":
                 EnqueueDelta(sid, "text", S(w, "text") ?? "");
+                break;
+            case "tool-call-started":
+                // Surface the call as soon as the model emits it; arguments stream
+                // into the block while the model is still responding.
+                FlushDeltas(sid);
+                SendEvent("tool.started", new { id = S(w, "toolCallId") ?? "", name = S(w, "toolName") ?? "tool" }, sid);
                 break;
             case "tool-output-chunk":
                 // PLAN §25: progressive shell stdout/stderr. Forward as a WS
@@ -292,20 +313,10 @@ internal sealed class WebApp : IAsyncDisposable
             case "model-completed":
             {
                 FlushDeltas(sid);
-                // PLAN §41: text.completed closes out the streamed text so a
-                // client that only persists (does not stream) has the final form.
+                // This closes the model stream, not necessarily the assistant UI
+                // turn: tool calls/results still belong to this same turn.
                 var finalText = _completedText.TryRemove(sid ?? "", out var t) ? t : string.Empty;
                 SendEvent("text.completed", new { text = finalText }, sid);
-                SendEvent("assistant.completed", new
-                {
-                    usage = _totalTokens > 0 ? new
-                    {
-                        promptTokens = _promptTokens,
-                        completionTokens = _completionTokens,
-                        totalTokens = _totalTokens,
-                    } : (object?)null,
-                }, sid);
-                _promptTokens = _completionTokens = _totalTokens = 0;
                 break;
             }
         }
@@ -1097,11 +1108,28 @@ internal sealed class WebApp : IAsyncDisposable
                 SendEvent("tool.args", new { id = lane[5..], args = text }, sid);
         }
         _batchers.TryRemove(key, out _);
-        return drained.FirstOrDefault(x => x.lane == "text").text.Length > 0
-            ? drained.Single(x => x.lane == "text").text : null;
+        var textLane = drained.FirstOrDefault(x => x.lane == "text");
+        return string.IsNullOrEmpty(textLane.text) ? null : textLane.text;
     }
 
     
+    private void CompleteAssistantTurn(string? sid)
+    {
+        var key = sid ?? "";
+        if (!_assistantOpen.TryRemove(key, out _)) return;
+
+        SendEvent("assistant.completed", new
+        {
+            usage = _totalTokens > 0 ? new
+            {
+                promptTokens = _promptTokens,
+                completionTokens = _completionTokens,
+                totalTokens = _totalTokens,
+            } : (object?)null,
+        }, sid);
+        _promptTokens = _completionTokens = _totalTokens = 0;
+    }
+
     private void SendEvent(string type, object payload, string? sid) =>
         _ = Task.Run(async () =>
         {
@@ -1183,6 +1211,54 @@ internal sealed class WebApp : IAsyncDisposable
             catch (OperationCanceledException) { }
             catch { /* client gone */ }
         }
+    }
+
+    private async Task<IResult> OpenFileAsync(HttpContext context)
+    {
+        var rawPath = context.Request.Query["path"].ToString();
+        if (string.IsNullOrWhiteSpace(rawPath))
+            return Results.BadRequest("path is required");
+
+        string fullPath;
+        if (Path.IsPathRooted(rawPath))
+        {
+            fullPath = Path.GetFullPath(rawPath);
+        }
+        else
+        {
+            var sid = context.Request.Query["sessionId"].ToString();
+            if (string.IsNullOrWhiteSpace(sid) || _store is null)
+                return Results.BadRequest("sessionId is required for relative paths");
+
+            var session = await _store.GetAsync(sid, context.RequestAborted);
+            if (session?.WorkspacePath is null)
+                return Results.NotFound("session/workspace not found");
+
+            fullPath = Path.GetFullPath(Path.Combine(session.WorkspacePath, rawPath));
+        }
+
+        if (!File.Exists(fullPath))
+            return Results.NotFound("file not found");
+
+        if (!ContentTypes.TryGetContentType(fullPath, out var contentType))
+            contentType = IsTextLike(fullPath) ? "text/plain; charset=utf-8" : "application/octet-stream";
+
+        var download = context.Request.Query["download"] == "1";
+        return Results.File(
+            fullPath,
+            contentType,
+            fileDownloadName: download ? Path.GetFileName(fullPath) : null,
+            enableRangeProcessing: true);
+    }
+
+    private static bool IsTextLike(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".txt" or ".md" or ".cs" or ".fs" or ".vb" or ".json" or ".jsonl"
+            or ".yaml" or ".yml" or ".xml" or ".html" or ".htm" or ".css" or ".scss"
+            or ".js" or ".jsx" or ".ts" or ".tsx" or ".svelte" or ".vue" or ".py"
+            or ".ps1" or ".sh" or ".bash" or ".cmd" or ".bat" or ".sql" or ".toml"
+            or ".ini" or ".cfg" or ".props" or ".targets" or ".csproj" or ".sln";
     }
 
     private object Bootstrap()
