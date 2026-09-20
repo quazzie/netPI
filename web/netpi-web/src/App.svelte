@@ -1,33 +1,33 @@
 <script lang="ts">
   import { store } from "./store.svelte";
+  import { ui } from "./ui.svelte";
   import "./ws";
+  import LeftPanel from "./components/LeftPanel.svelte";
+  import RightPanel from "./components/RightPanel.svelte";
   import HarnessHeader from "./components/HarnessHeader.svelte";
   import ConversationViewport from "./components/ConversationViewport.svelte";
   import Composer from "./components/Composer.svelte";
-  import SessionDrawer from "./components/overlays/SessionDrawer.svelte";
-  import PluginManager from "./components/overlays/PluginManager.svelte";
-  import Settings from "./components/overlays/Settings.svelte";
-  import Diagnostics from "./components/overlays/Diagnostics.svelte";
+
+  let shellStyle = $derived(
+    `--left-panel-width:${ui.leftOpen ? ui.leftWidth : 0}px;--right-panel-width:${ui.rightOpen ? ui.rightWidth : 42}px`,
+  );
 </script>
 
-{#if store.errorBanner}
-  <div class="error-banner">
-    <span>{store.errorBanner}</span>
-    <button aria-label="Dismiss error" onclick={() => store.setError(null)}>×</button>
-  </div>
-{/if}
+<div class="app-shell" style={shellStyle}>
+  <LeftPanel />
 
-<SessionDrawer />
-<HarnessHeader />
-<ConversationViewport />
-<Composer />
+  <main class="chat-shell">
+    {#if store.errorBanner}
+      <div class="error-banner">
+        <span>{store.errorBanner}</span>
+        <button aria-label="Dismiss error" onclick={() => store.setError(null)}>×</button>
+      </div>
+    {/if}
 
-{#if store.overlay === "plugins"}
-  <PluginManager />
-{/if}
-{#if store.overlay === "settings"}
-  <Settings />
-{/if}
-{#if store.overlay === "diagnostics"}
-  <Diagnostics />
-{/if}
+    <HarnessHeader />
+    <ConversationViewport />
+    <Composer />
+  </main>
+
+  <RightPanel />
+</div>
