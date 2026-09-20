@@ -36,7 +36,9 @@ public sealed class FileLoggerProvider(string logDirectory) : ILoggerProvider
                 Directory.CreateDirectory(logDirectory);
                 if (_writer is null)
                 {
-                    _writer = new StreamWriter(_currentFile, append: true, new UTF8Encoding(false))
+                    // FileShare.Read lets the diagnostics plugin (and external readers)
+                    // tail the live log while the host writes (PLAN §47).
+                    _writer = new StreamWriter(new FileStream(_currentFile, FileMode.Append, FileAccess.Write, FileShare.Read), new UTF8Encoding(false))
                     {
                         AutoFlush = true
                     };

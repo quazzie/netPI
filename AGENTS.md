@@ -38,7 +38,7 @@ plugins/                  One folder per plugin; each contains a DLL staged by
                                                               panels (docs/web-panels.md); shell has no hardcoded tabs.
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
-tests/NetPI.Host.Tests/   95 xunit tests; the integration surface.
+tests/NetPI.Host.Tests/   98 xunit tests; the integration surface.
 tools/publish-plugins.ps1 Stages plugin DLLs into plugins/<name>/; the host
                               snapshots that folder into per-generation
                               plugin-cache dirs (what the ALCs actually load).
@@ -197,6 +197,7 @@ changes run `npx vite build` and **reload the Web plugin** (Web UI → reload, o
 | `netpi.autocompact` | `enabled`, `reserveTokens` (16384), `keepRecentTokens` (20000), `defaultContextWindow` (131072), `maxContextMessages` (4096) |
 | `netpi.retry` | `enabled`, `maxAttempts` (3), `baseDelayMs` (500), `maxDelayMs` (5000) |
 | `netpi.tools` | `bash.executable`, `powershell.executable` (auto-detected otherwise) |
+| `netpi.diagnostics` | `port` (5274) |
 | `netpi.testplugin` | `loadFail`, `generation`, `register` |
 | `netpi.agent`, `netpi.context.pi`, `netpi.backgroundtasks` | (none) |
 
@@ -212,7 +213,7 @@ repo, it feeds every run in this workspace.
 ## Tests & verification
 
 ```bash
-dotnet test NetPI.sln        # 95 tests (agent runtime scenarios, session
+dotnet test NetPI.sln        # 98 tests (agent runtime scenarios, session
                              # store, plugin manager, shell detection, …)
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json
 ```

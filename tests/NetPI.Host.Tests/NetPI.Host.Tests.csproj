@@ -18,5 +18,6 @@
     <ProjectReference Include="..\..\plugins\NetPI.AutoCompact\NetPI.AutoCompact.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Storage.Sqlite\NetPI.Storage.Sqlite.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Provider.AiProxy\NetPI.Provider.AiProxy.csproj" />
+    <ProjectReference Include="..\..\plugins\NetPI.Diagnostics\NetPI.Diagnostics.csproj" />
   </ItemGroup>
 </Project>

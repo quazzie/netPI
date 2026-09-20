@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Diagnostics</RootNamespace>
+    <AssemblyName>netPI.Diagnostics</AssemblyName>
+    <Description>First-class diagnostics surface (PLAN §47): read-only /api/diag endpoints on its own Kestrel port plus a live /panel/diagnostics page. Reloadable netPI plugin.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Panel page served from the plugin assembly (mirrors NetPI.Web's pattern). -->
+    <EmbeddedResource Include="panels\diagnostics.html" />
+  </ItemGroup>
+</Project>

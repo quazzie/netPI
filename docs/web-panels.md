@@ -7,8 +7,9 @@ a plugin can never destabilize the chat app (`src/NetPI.Abstractions/WebUi.cs`).
 > PLAN-v1.md does not cover this feature — this doc is the reference. The
 > shell contains **no hardcoded tabs**: every right-panel tab is a
 > `WebPanelDefinition` from the `ui.panels` catalog. NetPI.Web self-registers
-> two panels ("plugins", "diagnostics") — see "Reference implementation"
-> below.
+> two panels ("plugins", and historically "diagnostics"); since the
+> NetPI.Diagnostics plugin (PLAN §47) the "diagnostics" tab is registered by
+> that plugin on its own Kestrel port — see "Reference implementation" below.
 
 ## Data flow
 
@@ -39,7 +40,8 @@ web/netpi-web: ws.ts "ui.panels" → store.webPanels → RightPanel.svelte tab l
 | `src/NetPI.Host/Services/WebPanelRegistry.cs` | Global lock-guarded registry + `ScopedWebPanels` (generation-scoped view) |
 | `src/NetPI.Host/Plugins/PluginManager.cs` | Creates `ScopedWebPanels` per instance (:218); calls `Unload()` on every unload path (:437, :549, :699) |
 | `plugins/NetPI.Web/WebApp.cs` | `PanelJson()` (~:959); `ui.panels` broadcasts (:423 bootstrap, :691 after `plugin.reload`, :715 after `plugin.reloadAll`, :732 for `ui.panels.list`) |
-| `plugins/NetPI.Web/WebPlugin.cs` | Self-registers the "plugins"/"diagnostics" panels (see Reference implementation) |
+| `plugins/NetPI.Web/WebPlugin.cs` | Self-registers the "plugins" panel (see Reference implementation) |
+| `plugins/NetPI.Diagnostics/` | Registers the "diagnostics" panel with an **absolute** `EntryUrl` (`http://127.0.0.1:5274/panel/diagnostics`) — the page + API live on the Diagnostics plugin's own Kestrel port; the panel tab appears/disappears with the plugin generation |
 | `web/netpi-web/src/types.ts` | `WebPanelInfo` wire type |
 | `web/netpi-web/src/store.svelte.ts` | `webPanels` state |
 | `web/netpi-web/src/ws.ts` | `case "ui.panels"` → store |
@@ -151,29 +153,36 @@ Gotchas:
   — keep panel content cross-origin to preserve the isolation the design
   intends.
 
-## Reference implementation: NetPI.Web self-panels
+## Reference implementation: self-panels
 
-The "Plugins" and "Diagnostics" tabs are registered by the Web plugin itself —
-the Svelte shell has zero hardcoded tabs:
+The "Plugins" tab is registered by the Web plugin; the "Diagnostics" tab by
+the Diagnostics plugin — the Svelte shell has zero hardcoded tabs:
 
 - `plugins/NetPI.Web/WebPlugin.cs` — `LoadAsync` registers
-  `("plugins", "Plugins", "◇", "/panel/plugins", 0)` and
-  `("diagnostics", "Diagnostics", "◌", "/panel/diagnostics", 10)` **before**
-  the Kestrel app starts (so the first bootstrap already includes them);
-  `StopAsync` disposes the handles (the scoped registry would also clean up
-  on unload).
-- `plugins/NetPI.Web/WebApp.cs` — `MapGet("/panel/plugins")` /
-  `MapGet("/panel/diagnostics")` serve the pages; `PanelHtml(name)` loads them
-  from **embedded resources** in the plugin assembly
-  (csproj `<EmbeddedResource>`), so no extra staging files are needed.
-- `plugins/NetPI.Web/panels/plugins.html` / `diagnostics.html` — self-contained
-  vanilla-JS pages. Each opens its **own `/ws` connection** to the host,
-  renders from broadcast events (`plugins.state`, `plugin.state`,
-  `agent.state`, `session.updated`, `usage.updated`, …) and sends commands
-  (`plugin.reload`, `plugin.reloadAll`). They render **content only** — the
-  shell's iframe wrapper supplies the title row. On `/ws` close they
+  `("plugins", "Plugins", "◇", "/panel/plugins", 0)` **before** the Kestrel
+  app starts (so the first bootstrap already includes it); `StopAsync`
+  disposes the handles (the scoped registry would also clean up on unload).
+- `plugins/NetPI.Diagnostics/DiagnosticsPlugin.cs` — `LoadAsync` registers
+  `("diagnostics", "Diagnostics", "◌", "http://127.0.0.1:{port}/panel/diagnostics", 10)`
+  with an **absolute** entry URL because the page is served by the Diagnostics
+  plugin's own Kestrel instance (default port 5274, `plugins.netpi.diagnostics.port`),
+  not by NetPI.Web. The tab appears/disappears with the plugin generation.
+- `plugins/NetPI.Web/WebApp.cs` — `MapGet("/panel/plugins")` serves the page;
+  `PanelHtml(name)` loads it from an **embedded resource** in the plugin
+  assembly (csproj `<EmbeddedResource>`), so no extra staging files are needed.
+- `plugins/NetPI.Web/panels/plugins.html` — self-contained vanilla-JS page.
+  Opens its **own `/ws` connection** to the host, renders from broadcast
+  events (`plugins.state`, `plugin.state`, …) and sends commands
+  (`plugin.reload`, `plugin.reloadAll`). Renders **content only** — the
+  shell's iframe wrapper supplies the title row. On `/ws` close it
   `location.reload()` after 2 s, self-healing across plugin reloads and host
   restarts.
+- `plugins/NetPI.Diagnostics/panels/diagnostics.html` — live panel served by
+  the Diagnostics plugin's own Kestrel (`/panel/diagnostics` on :5274).
+  Self-contained, polls its own same-origin `/api/diag/*` endpoints (overview,
+  model-wire decisions, agent events, log tail with level/plugin filters,
+  sessions) every 4 s — no `/ws` connection, no cross-origin needed (page
+  and API share the 5274 origin).
 
 **Deploying a new NetPI.Web build:** `dotnet build` the plugin →
 `pwsh tools/publish-plugins.ps1 -Configuration Debug` → `plugin.reload` in the

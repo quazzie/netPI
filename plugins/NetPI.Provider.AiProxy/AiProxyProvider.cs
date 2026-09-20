@@ -20,6 +20,8 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     private readonly string _baseUrl;
     private readonly IPluginLogger _log;
     private readonly string _wire; // "auto" (default) | "chat" | "responses" — PLAN §14b
+    /// <summary>Optional host event bus for publishing <see cref="ModelRequestDiagnostics"/> (PLAN §47).</summary>
+    private readonly IEventBus? _bus;
     private IReadOnlyList<ModelInfo> _models = [];
     /// <summary>
     /// PLAN §14c: per-session Responses-wire chain head, keyed
@@ -51,12 +53,13 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     }
     private DateTimeOffset? _refreshedAt;
 
-    public AiProxyProvider(HttpClient http, string baseUrl, IPluginLogger log, string wire = "auto")
+    public AiProxyProvider(HttpClient http, string baseUrl, IPluginLogger log, string wire = "auto", IEventBus? bus = null)
     {
         _http = http;
         _baseUrl = baseUrl.TrimEnd('/');
         _log = log;
         _wire = string.IsNullOrWhiteSpace(wire) ? "auto" : wire.Trim();
+        _bus = bus;
     }
 
     // ---- catalog ---------------------------------------------------------
@@ -308,12 +311,18 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     // ---- run (dispatch — PLAN §14b) ------------------------------------------
     public async IAsyncEnumerable<ModelEvent> RunAsync(ModelRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        if (UseResponsesWire(ModelById(request.ModelId)))
+        bool wantedResponses = UseResponsesWire(ModelById(request.ModelId));
+        bool chained = false;
+        string failReason = "";
+
+        if (wantedResponses)
         {
             bool contentSeen = false;
             bool hardFailed = false;
-            string failReason = "";
             var pending = new List<ModelEvent>();
+            // PLAN §47: the chain (previous_response_id) is available for this
+            // run iff a clean completion for this session/model advanced it.
+            chained = request.SessionId is not null && GetChainHead(request.SessionId, request.ModelId) is not null;
 
             await foreach (var ev in RunResponsesAsync(request, cancellationToken))
             {
@@ -345,13 +354,32 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                 yield return ev;
             }
 
-            if (!hardFailed) yield break;
+            if (!hardFailed)
+            {
+                await PublishDiagnosticsAsync(request, "responses", true, chained, false, null, cancellationToken);
+                yield break;
+            }
+
             _log.Warning($"responses wire failed before content for {request.ModelId} ({failReason}); retrying via chat completions — session chain disabled, full transcript re-sent every request");
         }
+
+        // Wire decision: chat completions serves (either directly, or as the
+        // transparent fallback after a responses-wire failure — PLAN §47).
+        await PublishDiagnosticsAsync(request, "chat", wantedResponses, false, wantedResponses, wantedResponses ? failReason : null, cancellationToken);
 
         await foreach (var ev in RunChatCompletionsAsync(request, cancellationToken))
             yield return ev;
         yield break;
+    }
+
+    /// <summary>PLAN §47: publish the wire-decision record; diagnostics must never break a run.</summary>
+    private async ValueTask PublishDiagnosticsAsync(ModelRequest request, string served, bool wanted, bool chained, bool fallback, string? failure, CancellationToken cancellationToken)
+    {
+        if (_bus is null) return;
+        var ev = new ModelRequestDiagnostics(
+            request.SessionId, request.ModelId, _wire, wanted ? "responses" : "chat", served, chained, fallback, failure);
+        try { await _bus.PublishAsync(ev, CancellationToken.None); }
+        catch { /* publish is best-effort */ }
     }
 
     private bool UseResponsesWire(ModelInfo? model) =>

@@ -124,11 +124,6 @@ internal sealed class WebApp : IAsyncDisposable
             c.Response.ContentType = "text/html; charset=utf-8";
             await c.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(PanelHtml("plugins")));
         });
-        app.MapGet("/panel/diagnostics", async (HttpContext c) =>
-        {
-            c.Response.ContentType = "text/html; charset=utf-8";
-            await c.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(PanelHtml("diagnostics")));
-        });
 
         app.Map("/ws", HandleWsAsync);
         // Localhost-only file view for workspace/absolute references in chat.

@@ -7,7 +7,7 @@ namespace NetPI.Web;
 /// The reloadable web plugin (PLAN §36, §41). Runs a Kestrel app on a port from
 /// config, serves the compiled Svelte build, exposes /ws, and bridges agent
 /// bus events → §41 WebSocket events plus handles client commands.
-/// It also self-registers the "plugins" and "diagnostics" panels
+/// It also self-registers the "plugins" panel
 /// (docs/web-panels.md) so the Svelte shell contains no hardcoded tabs.
 /// </summary>
 public sealed class WebPlugin : INetPiPlugin
@@ -30,10 +30,11 @@ public sealed class WebPlugin : INetPiPlugin
         // Self-registration: the shell renders only what the panel catalog
         // (ui.panels) contains. Panel ids are stable so persisted
         // ui.rightTab values keep working across the migration.
+        // The "diagnostics" tab is registered by the NetPI.Diagnostics plugin
+        // itself (first-class, PLAN §47) — it is absent until that plugin loads.
         _panels =
         [
             context.WebPanels.Register(new WebPanelDefinition("plugins", "Plugins", "◇", "/panel/plugins", 0)),
-            context.WebPanels.Register(new WebPanelDefinition("diagnostics", "Diagnostics", "◌", "/panel/diagnostics", 10)),
         ];
 
         _app = new WebApp(context, port, staticRoot, context.Log);

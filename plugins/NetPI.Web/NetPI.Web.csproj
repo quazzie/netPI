@@ -11,6 +11,5 @@
   <ItemGroup>
     <!-- Panel pages served from the plugin assembly (see WebApp.PanelHtml). -->
     <EmbeddedResource Include="panels\plugins.html" />
-    <EmbeddedResource Include="panels\diagnostics.html" />
   </ItemGroup>
 </Project>

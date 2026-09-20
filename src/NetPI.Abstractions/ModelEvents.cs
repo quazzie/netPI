@@ -88,3 +88,27 @@ public sealed record ModelFailed(string ModelId, string Error, Exception? Except
 {
     public override string Kind => "model-failed";
 }
+
+/// <summary>
+/// Host-level diagnostic published by a model provider around one model request
+/// (PLAN §47): which wire was configured, which was requested, which actually
+/// served the run, whether it chained from a previous response, and any
+/// failure/retry reason. Consumed by diagnostic plugins (e.g. netpi.diagnostics)
+/// through the event bus — the provider's own decision record, never invented by
+/// the agent layer.
+/// </summary>
+public sealed record ModelRequestDiagnostics(
+    string? SessionId,
+    string ModelId,
+    string WireConfig,
+    string WireRequested,
+    string WireServed,
+    bool Chained,
+    bool Fallback,
+    string? FailureReason)
+{
+    /// <summary>Single-line human-readable summary for logs and dashboards.</summary>
+    public string Summary =>
+        $"{ModelId} wire={WireServed}{(Chained ? " chained" : "")}" +
+        (Fallback ? $" (fallback from {WireRequested}: {FailureReason ?? "unknown"})" : "");
+}

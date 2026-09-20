@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>netPI — Diagnostics</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --fg: #e6edf3;
+    --dim: #8b949e; --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 13px/1.45 ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+           background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
+  header .dot.up { background: var(--ok); }
+  header .dim { margin-left: auto; color: var(--dim); font-size: 11px; }
+  main { display: grid; grid-template-columns: 280px 1fr; gap: 0; height: calc(100vh - 45px); }
+  nav { background: var(--panel); border-right: 1px solid var(--border); padding: 10px; overflow-y: auto; }
+  nav button { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent;
+               color: var(--fg); padding: 7px 10px; margin-bottom: 4px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  nav button:hover { background: rgba(255,255,255,.04); }
+  nav button.active { background: rgba(88,166,255,.12); border-color: rgba(88,166,255,.35); color: var(--accent); }
+  section { display: none; padding: 12px 14px; overflow-y: auto; }
+  section.active { display: block; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 14px 0 6px; }
+  h2:first-child { margin-top: 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+          padding: 10px 12px; margin-bottom: 10px; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+  .row .k { color: var(--dim); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  td { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; }
+  .tag.ok { background: rgba(63,185,80,.15); color: var(--ok); }
+  .tag.warn { background: rgba(210,153,34,.15); color: var(--warn); }
+  .tag.err { background: rgba(248,81,73,.15); color: var(--err); }
+  .tag.dim { background: rgba(139,148,158,.15); color: var(--dim); }
+  pre.log { background: #0a0e14; border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+            overflow-x: auto; font: 11.5px/1.6 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
+  .filter { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+  .filter input, .filter select { background: #0a0e14; color: var(--fg); border: 1px solid var(--border);
+                                  border-radius: 6px; padding: 5px 8px; font-size: 12px; }
+  .filter input[type=text] { flex: 1; min-width: 120px; }
+  .auto { color: var(--dim); font-size: 11px; margin: 6px 0; }
+  .err-line { color: var(--err); }
+  .empty { color: var(--dim); font-style: italic; padding: 12px 0; }
+  #sessionPick { margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>netPI — Diagnostics</h1>
+  <span class="dim" id="hostLine"></span>
+  <span class="dim" id="refreshInfo">auto-refresh 4 s</span>
+</header>
+<main>
+  <nav id="tabs">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="model">Model Wire</button>
+    <button data-tab="events">Agent Events</button>
+    <button data-tab="logs">Logs</button>
+    <button data-tab="sessions">Sessions</button>
+  </nav>
+  <div>
+    <section id="tab-overview" class="active">
+      <div class="card" id="ovHost"></div>
+      <div class="card" id="ovAgent"></div>
+      <h2>Plugins</h2>
+      <div class="card" style="padding:0"><table id="ovPlugins"></table></div>
+      <h2>Models</h2>
+      <div class="card" style="padding:0"><table id="ovModels"></table></div>
+    </section>
+    <section id="tab-model">
+      <p class="auto">Provider wire decisions (responses vs chat, chain state, fallbacks). Latest 500.</p>
+      <div class="card" style="padding:0"><table id="modelTable"></table></div>
+    </section>
+    <section id="tab-events">
+      <div class="filter">
+        <input type="text" id="evFilter" placeholder="filter type / session…">
+        <button onclick="loadEvents()">Reload</button>
+      </div>
+      <div class="card" style="padding:0"><table id="eventsTable"></table></div>
+    </section>
+    <section id="tab-logs">
+      <div class="filter">
+        <input type="text" id="logLevel" placeholder="level (e.g. Warning)">
+        <input type="text" id="logPlugin" placeholder="plugin (e.g. netPI.Web)">
+        <input type="text" id="logLines" value="200" style="max-width:70px" title="lines">
+        <button onclick="loadLogs()">Tail</button>
+      </div>
+      <h2>Host file log <span id="logFile" style="text-transform:none"></span></h2>
+      <pre class="log" id="logBody"></pre>
+      <h2>Bus event stream (live)</h2>
+      <div class="card" style="padding:0"><table id="logEvents"></table></div>
+    </section>
+    <section id="tab-sessions">
+      <div class="filter">
+        <select id="sessionPick"><option value="">— pick a session —</option></select>
+        <button onclick="loadSession()">Load</button>
+      </div>
+      <div id="sessionDetail"></div>
+    </section>
+  </div>
+</main>
+<script>
+const j = async (url) => (await fetch(url)).json();
+let currentTab = "overview";
+
+// ---- tabs ------------------------------------------------------------------
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+  document.querySelectorAll("section").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  document.getElementById("tab-" + b.dataset.tab).classList.add("active");
+  currentTab = b.dataset.tab;
+  refresh();
+});
+
+// ---- helpers ---------------------------------------------------------------
+function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; }
+function clear(e) { e.innerHTML = ""; }
+function row(table, cells) {
+  const tr = el("tr");
+  cells.forEach((c, i) => tr.appendChild(el(i === 0 ? "th" : "td", "", typeof c === "string" ? c : c.html || ""));
+  table.appendChild(tr);
+}
+function tag(kind, text) { return `<span class="tag ${kind}">${text}</span>`; }
+
+// ---- overview ----------------------------------------------------------------
+async function loadOverview() {
+  try {
+    const d = await j("/api/diag/overview");
+    const h = document.getElementById("hostLine");
+    if (d.host) h.textContent = `pid ${d.host.pid} · up ${Math.floor(d.host.uptimeSeconds/60)}m`;
+    const host = document.getElementById("ovHost");
+    clear(host);
+    host.append(el("div", "row", `<span class="k">runtime</span><span>${esc(d.host.runtimeDir)}</span>`));
+    host.append(el("div", "row", `<span class="k">pid</span><span>${d.host.pid}</span>`));
+    host.append(el("div", "row", `<span class="k">uptime</span><span>${d.host.uptimeSeconds}s</span>`));
+
+    const agent = document.getElementById("ovAgent");
+    clear(agent);
+    if (d.agent) {
+      agent.append(el("div", "row", `<span class="k">state</span>${d.agent.running ? tag("warn", d.agent.state) : tag("ok", d.agent.state)}`));
+      if (d.agent.activeSessionId)
+        agent.append(el("div", "row", `<span class="k">session</span><span>${esc(d.agent.activeSessionId)}</span>`));
+    } else agent.append(el("div", "empty", "agent not registered"));
+
+    const p = document.getElementById("ovPlugins");
+    clear(p);
+    row(p, ["Plugin", "Gen", "State", "Leases"]);
+    (d.plugins || []).forEach(x => row(p, [esc(x.id), x.generation,
+      x.state === "Active" ? tag("ok", x.state) : tag(x.state === "Failed" ? "err" : "warn", x.state), x.activeLeases]));
+
+    const m = document.getElementById("ovModels");
+    clear(m);
+    if (d.models && d.models.models) {
+      row(m, ["Model", "Provider", "Tools", "Responses"]);
+      d.models.models.forEach(x => row(m, [esc(x.id), esc(x.provider), x.supportsTools ? "✓" : "—", x.supportsResponses ? "✓" : "—"]));
+      if (d.models.stale) m.append(el("tr", "", `<td colspan="4" style="color:var(--warn)">catalog stale (never refreshed)</td>`));
+    } else row(m, ["model catalog not registered"]);
+    document.getElementById("dot").classList.add("up");
+  } catch (e) { document.getElementById("dot").classList.remove("up"); }
+}
+
+// ---- model wire ----------------------------------------------------------------
+async function loadModel() {
+  const d = await j("/api/diag/model?limit=500");
+  const t = document.getElementById("modelTable");
+  clear(t);
+  row(t, ["Time", "Model", "Config", "Requested", "Served", "Chain", "Fallback", "Reason"]);
+  (d.requests || []).slice().reverse().forEach(r => {
+    const fb = r.fallback ? tag("warn", "yes") : tag("dim", "—");
+    const chain = r.chained ? tag("ok", "chained") : tag("dim", "new");
+    row(t, [
+      new Date(r.at).toLocaleTimeString(),
+      esc(r.modelId), r.wireConfig, r.wireRequested,
+      tag(r.wireServed === "responses" ? "ok" : "dim", r.wireServed),
+      chain, fb,
+      r.failureReason ? `<span class="err-line">${esc(r.failureReason)}</span>` : "—",
+    ]);
+  });
+  if (!d.requests || !d.requests.length) t.append(el("tr", "", `<td colspan="8" class="empty">no model requests recorded yet</td>`));
+}
+
+// ---- events ------------------------------------------------------------------
+async function loadEvents() {
+  const f = document.getElementById("evFilter").value.toLowerCase();
+  const d = await j("/api/diag/events?limit=500");
+  const t = document.getElementById("eventsTable");
+  clear(t);
+  row(t, ["Time", "Type", "Session", "Summary"]);
+  const list = (d.events || []).slice().reverse().filter(r =>
+    !f || (r.type || "").toLowerCase().includes(f) || (r.sessionId || "").toLowerCase().includes(f));
+  list.forEach(r => row(t, [
+    new Date(r.at).toLocaleTimeString(),
+    tag((r.type || "").includes("Failed") ? "err" : (r.type === "ModelStreamEvent" ? "dim" : "ok"), r.type),
+    r.sessionId ? esc(r.sessionId.slice(0, 8) + "…") : "—",
+    r.summary ? esc(r.summary) : "—",
+  ]));
+  if (!list.length) t.append(el("tr", "", `<td colspan="4" class="empty">no events yet</td>`));
+}
+
+// ---- logs --------------------------------------------------------------------
+async function loadLogs() {
+  const level = document.getElementById("logLevel").value;
+  const plugin = document.getElementById("logPlugin").value;
+  const lines = document.getElementById("logLines").value || "200";
+  const d = await j(`/api/diag/logs?lines=${encodeURIComponent(lines)}&level=${encodeURIComponent(level)}&plugin=${encodeURIComponent(plugin)}`);
+  document.getElementById("logFile").textContent = d.file ? `(${d.file}, showing ${d.totalLines})` : "(no log file)";
+  const body = document.getElementById("logBody");
+  clear(body);
+  if (d.lines && d.lines.length) {
+    const frag = document.createDocumentFragment();
+    d.lines.forEach(l => {
+      const isErr = /error|failed|exception/i.test(l);
+      frag.appendChild(el("span", isErr ? "err-line" : "", esc(l) + "\n"));
+    });
+    body.appendChild(frag);
+  } else body.textContent = "(empty)";
+  // live bus stream under the file log
+  const d2 = await j("/api/diag/events?limit=50");
+  const t = document.getElementById("logEvents");
+  clear(t);
+  row(t, ["Time", "Type", "Summary"]);
+  (d2.events || []).slice().reverse().forEach(r => row(t, [
+    new Date(r.at).toLocaleTimeString(), tag("dim", r.type), r.summary || "—",
+  ]));
+}
+
+// ---- sessions ----------------------------------------------------------------
+async function loadSessionList() {
+  const d = await j("/api/diag/sessions?limit=50");
+  const sel = document.getElementById("sessionPick");
+  clear(sel);
+  sel.append(el("option", "", "— pick a session —"));
+  (d.sessions || []).forEach(s => {
+    const o = el("option", "", `${s.title || s.id.slice(0, 8)} (${s.entryCount})`);
+    o.value = s.id;
+    sel.append(o);
+  });
+}
+async function loadSession() {
+  const id = document.getElementById("sessionPick").value;
+  if (!id) return;
+  const d = await j(`/api/diag/sessions/${id}?count=200`);
+  const box = document.getElementById("sessionDetail");
+  clear(box);
+  const card = el("div", "card");
+  card.append(el("div", "row", `<span class="k">title</span><span>${esc(d.session.title || "(untitled)")}</span>`));
+  card.append(el("div", "row", `<span class="k">model</span><span>${esc(d.session.modelId || "—")}</span>`));
+  card.append(el("div", "row", `<span class="k">workspace</span><span>${esc(d.session.workspace || "—")}</span>`));
+  card.append(el("div", "row", `<span class="k">entries</span><span>${d.session.entryCount}</span>`));
+  box.append(card);
+  const t = el("table");
+  row(t, ["Seq", "Kind", "Role", "Text"]);
+  (d.entries || []).forEach(e => row(t, [e.sequence, e.kind, e.role || "—", e.text ? esc(e.text) : "—"]));
+  box.append(t);
+}
+
+// ---- loop -------------------------------------------------------------------
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+async function refresh() {
+  const fns = {
+    overview: loadOverview, model: loadModel, events: loadEvents, logs: loadLogs,
+    sessions: loadSessionList,
+  };
+  try { await fns[currentTab](); } catch (e) { /* dot stays red */ }
+}
+setInterval(refresh, 4000);
+refresh();
+</script>
+</body>
+</html>
