@@ -344,20 +344,28 @@ export class NetPIStore {
   }
 
   private syncReasoning(): void {
-    const levels = this.models.find((x) => x.id === this.currentModel)?.reasoning?.levels ?? [];
+    const profile = this.models.find((x) => x.id === this.currentModel)?.reasoning;
+    const levels = profile?.levels ?? [];
     if (!levels.length) {
       this.reasoningLevel = "";
       return;
     }
-    if (this.reasoningLevel && levels.includes(this.reasoningLevel)) return;
+    if (this.reasoningLevel && (this.reasoningLevel === "off" || levels.includes(this.reasoningLevel))) return;
 
     const sessionLevel = this.session?.reasoningLevel;
-    if (sessionLevel && levels.includes(sessionLevel)) {
+    if (sessionLevel && (sessionLevel === "off" || levels.includes(sessionLevel))) {
       this.reasoningLevel = sessionLevel;
       return;
     }
 
-    // Do not invent a reasoning level. Leave it unset until the user picks one.
+    const advertisedDefault = profile?.defaultLevel;
+    if (advertisedDefault && levels.includes(advertisedDefault)) {
+      this.reasoningLevel = advertisedDefault;
+      return;
+    }
+
+    // Do not invent a reasoning level. The composer shows "off" until one is
+    // explicitly selected or the provider advertises a default.
     this.reasoningLevel = "";
   }
 
