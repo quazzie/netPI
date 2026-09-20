@@ -34,6 +34,13 @@ public sealed class TestPlugin : INetPiPlugin
 
     public async ValueTask LoadAsync(IPluginContext context, CancellationToken cancellationToken)
     {
+        // PLAN §50 host test hook: a config-driven failure so tests can
+        // exercise the "plugin throws during Load" path deterministically.
+        if (context.OwnConfig.ValueKind == JsonValueKind.Object
+            && context.OwnConfig.TryGetProperty("loadFail", out var lf)
+            && lf.ValueKind == JsonValueKind.True)
+            throw new InvalidOperationException("TestPlugin refuses to load (loadFail=true)");
+
         var generation = context.OwnConfig.ValueKind == JsonValueKind.Object
             ? context.OwnConfig.TryGetProperty("generation", out var g) && g.ValueKind == JsonValueKind.String
                 ? g.GetString()!
@@ -42,7 +49,16 @@ public sealed class TestPlugin : INetPiPlugin
 
         var service = new TestService { Generation = generation };
         _service = service;
-        context.Services.Register<TestService>("test.service", service);
+        // Opt out of the service registration when a second copy of this
+        // plugin is staged under another directory (the registry IDs would
+        // collide); tests do this to exercise host failure paths.
+        var register = true;
+        if (context.OwnConfig.ValueKind == JsonValueKind.Object
+            && context.OwnConfig.TryGetProperty("register", out var reg)
+            && reg.ValueKind == JsonValueKind.False)
+            register = false;
+        if (register)
+            context.Services.Register<TestService>("test.service", service);
         context.Events.Subscribe<TestPluginEvent>(e =>
         {
             context.Log.Information($"TestPlugin[{generation}] saw event: {e}");

@@ -160,6 +160,46 @@ public class HostRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ReloadRepeatedly_EachOldGenerationBecomesCollectible()
+    {
+        // PLAN §50 (Host): "reload repeatedly / verify old ALC collectible".
+        await using var runtime = NewRuntime();
+        await runtime.StartAsync();
+
+        const int rounds = 3;
+        var gen = runtime.Plugins.GetStatus().Single().Generation;
+        for (var i = 0; i < rounds; i++)
+        {
+            var fresh = await runtime.Plugins.ReloadAsync("NetPI.TestPlugin");
+            Assert.NotNull(fresh);
+            gen++;
+            Assert.Equal(gen, fresh!.Generation);
+        }
+
+        // Give the GC a chance, then every unloaded generation must be
+        // collectible (no ALC leak across repeated reloads).
+        for (int i = 0; i < 60 && runtime.Plugins.UnloadedAlocs().Any(a => !a.Collected); i++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            await Task.Delay(50);
+        }
+        var unloaded = runtime.Plugins.UnloadedAlocs();
+        Assert.True(unloaded.Count >= rounds,
+            "expected at least " + rounds + " unloaded generations, got " + unloaded.Count);
+        Assert.All(unloaded, a => Assert.True(a.Collected, "old ALC '" + a.Label + "' should be collectible"));
+
+        // The current generation must still be fully functional after the churn.
+        var current = runtime.Plugins.GetStatus().Single();
+        Assert.Equal(PluginState.Active, current.State);
+        Assert.Equal(gen, current.Generation);
+        using var lease = AcquireTestService(runtime.Services);
+        Assert.NotNull(lease.Value);
+    }
+
+
+    [Fact]
     public async Task UnloadRemovesHostTrackedSubscriptions()
     {
         await using var runtime = NewRuntime();

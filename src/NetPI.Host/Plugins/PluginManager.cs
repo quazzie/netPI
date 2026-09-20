@@ -436,9 +436,15 @@ public sealed class PluginManager
             errorSink: ex =>
             {
                 // The old generation was already unloaded, so this plugin has
-                // no running copy — surface the failure in the status table.
+                // no running copy — surface a clear Failed state in the status
+                // table (PLAN §50: "old version remains usable OR clear Failed
+                // state"; here there is no usable version left).
                 var cur = Get(pluginId);
-                if (cur is not null) cur.LastError = ex;
+                if (cur is not null)
+                {
+                    cur.LastError = ex;
+                    cur.State = PluginState.Failed;
+                }
             });
         if (fresh is null)
         {

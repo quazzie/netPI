@@ -28,16 +28,47 @@ public sealed record ShellDetection(
 /// </summary>
 public static class ShellDetector
 {
-    public static async ValueTask<ShellDetection> DetectAsync(
+    public static ValueTask<ShellDetection> DetectAsync(
         string shellId,
         string? configOverride,
         Func<string, Task<(bool ok, string output)>> probe,
         CancellationToken ct = default)
-    {
+        => DetectAsync(shellId, configOverride, probe, DefaultWslProbe, null, ct);
 
+    /// <summary>
+    /// Full-control overload: <paramref name="wslProbe"/> is invoked with the
+    /// <c>wsl.exe</c> path when the WSL fallback (the last-resort bash backend,
+    /// PLAN §23) is reached. Tests inject a fake to cover the branch
+    /// deterministically; production passes <see cref="DefaultWslProbe"/>.
+    /// </summary>
+    public static async ValueTask<ShellDetection> DetectAsync(
+        string shellId,
+        string? configOverride,
+        Func<string, Task<(bool ok, string output)>> probe,
+        Func<string, Task<(bool ok, string output)>> wslProbe,
+        Func<string, bool>? wslAvailable,
+        CancellationToken ct = default)
+    {
         if (shellId.Equals("bash", StringComparison.OrdinalIgnoreCase))
-            return await DetectBashAsync(configOverride, probe, ct);
+            return await DetectBashAsync(configOverride, probe, wslProbe, wslAvailable, ct);
         return await DetectPowerShellAsync(configOverride, probe, ct);
+    }
+
+    /// <summary>Default WSL probe: run <c>wsl.exe bash --version</c> and capture the banner.</summary>
+    public static async Task<(bool ok, string output)> DefaultWslProbe(string wslExecutable)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(wslExecutable) { RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true, UseShellExecute = false, CreateNoWindow = true };
+            psi.ArgumentList.Add("bash"); psi.ArgumentList.Add("--version");
+            using var proc = Process.Start(psi);
+            if (proc is null) return (false, "");
+            proc.StandardInput.Close();
+            var stdout = await proc.StandardOutput.ReadToEndAsync();
+            await Task.WhenAny(proc.WaitForExitAsync(), Task.Delay(5_000));
+            return (!string.IsNullOrWhiteSpace(stdout), stdout);
+        }
+        catch { return (false, ""); }
     }
 
     /// <summary>
@@ -76,7 +107,9 @@ public static class ShellDetector
 
 
     private static async ValueTask<ShellDetection> DetectBashAsync(
-        string? configOverride, Func<string, Task<(bool, string)>> probe, CancellationToken ct)
+        string? configOverride, Func<string, Task<(bool, string)>> probe,
+        Func<string, Task<(bool, string)>> wslProbe, Func<string, bool>? wslAvailable,
+        CancellationToken ct)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -111,25 +144,16 @@ public static class ShellDetector
         // WSL is last resort — native Windows-accessible bash is preferred.
         // Probe with `wsl bash --version`; when selected, the invocation is
         // `wsl bash -c <cmd>` (PLAN §23: the resolver owns WSL conversion).
-        if (WslAvailable())
+        if (wslAvailable is { } over ? over(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "wsl.exe")) : WslAvailable())
         {
             var wsl = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "wsl.exe");
-            try
+            var (wslOk, outp) = await wslProbe(wsl);
+            if (wslOk)
             {
-                var psi = new ProcessStartInfo(wsl) { RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true, UseShellExecute = false, CreateNoWindow = true };
-                psi.ArgumentList.Add("bash"); psi.ArgumentList.Add("--version");
-                using var proc = Process.Start(psi);
-                if (proc is not null)
-                {
-                    proc.StandardInput.Close();
-                    var outp = await proc.StandardOutput.ReadToEndAsync();
-                    await Task.WhenAny(proc.WaitForExitAsync(), Task.Delay(5_000));
-                    var ver = ParseBashVersion(outp);
-                    if (ver is not null || !string.IsNullOrWhiteSpace(outp))
-                        return new ShellDetection("bash", wsl, ["bash", "-c"], "WSL bash", ver, IsWsl: true);
-                }
+                var ver = ParseBashVersion(outp);
+                if (ver is not null || !string.IsNullOrWhiteSpace(outp))
+                    return new ShellDetection("bash", wsl, ["bash", "-c"], "WSL bash", ver, IsWsl: true);
             }
-            catch { /* WSL not functional — skip */ }
         }
 
         return new ShellDetection("bash", "bash", ["-c"], "bash (not found)", null, IsWsl: false);
