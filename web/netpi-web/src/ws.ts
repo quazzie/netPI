@@ -189,7 +189,9 @@ class NetPIWebSocket {
         store.applyAgentState("ExecutingTools");
         break;
       case "tool.output":
-        store.setToolResult(p.id, p.output ?? "", p.isError ?? false);
+        // PLAN §25: progressive chunks carry append:true (grow the block
+        // live); the final result (no append flag) replaces it.
+        store.setToolResult(p.id, p.output ?? "", p.isError ?? false, p.append === true);
         break;
       case "tool.completed":
         store.completeToolCall(p.id, p.durationMs ?? 0);

@@ -261,6 +261,11 @@ internal sealed class WebApp : IAsyncDisposable
             case "text-delta":
                 EnqueueDelta(sid, "text", S(w, "text") ?? "");
                 break;
+            case "tool-output-chunk":
+                // PLAN §25: progressive shell stdout/stderr. Forward as a WS
+                // tool.output with append:true; the client grows the block live.
+                SendEvent("tool.output", new { id = S(w, "toolCallId") ?? "", output = S(w, "toolOutput") ?? "", append = true }, sid);
+                break;
             case "tool-call-arguments-delta":
                 EnqueueDelta(sid, "args:" + (S(w, "toolCallId") ?? ""), S(w, "text") ?? "");
                 break;

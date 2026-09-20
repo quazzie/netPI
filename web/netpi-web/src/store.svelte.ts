@@ -172,12 +172,12 @@ export class NetPIStore {
     if (c) c.argsJson += delta;
   }
 
-  setToolResult(id: string, output: string, isError: boolean): void {
+  setToolResult(id: string, output: string, isError: boolean, append = false): void {
     const a = this.active();
     const c = a?.toolCalls.find((t) => t.id === id);
     if (c) {
-      c.result = output;
-      c.isError = isError;
+      c.result = append ? (c.result ?? "") + output : output;
+      if (!append) c.isError = isError;
     }
   }
 

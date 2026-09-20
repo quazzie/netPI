@@ -48,14 +48,28 @@ public interface IToolRegistry
 }
 
 /// <summary>
+/// Progress channel for a tool that streams output while it runs (PLAN §25:
+/// foreground shells stream stdout/stderr). The runtime supplies an
+/// <see cref="IToolStream"/> via <see cref="ToolContext.Stream"/>; a tool that does
+/// not stream simply leaves it unused and still returns its final result.
+/// </summary>
+public interface IToolStream
+{
+    /// <summary>Emit one progressive output chunk for the running tool.</summary>
+    void Emit(string text);
+}
+
+/// <summary>
 /// Execution context handed to every tool (PLAN §18/§25). Relative file
 /// paths resolve against <see cref="Workspace"/>; absolute paths and <c>..</c>
-/// are allowed (no permission prompt).
+/// are allowed (no permission prompt). The optional <see cref="Stream"/> reports
+/// progressive output to the runtime/UI while the tool runs.
 /// </summary>
 public sealed record ToolContext(
     JsonElement Arguments,
     string Workspace,
-    string? SessionId)
+    string? SessionId,
+    IToolStream? Stream)
 {
     /// <summary>Resolve a path against the session workspace; absolute paths pass through.</summary>
     public string ResolvePath(string? p) =>

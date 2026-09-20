@@ -389,8 +389,23 @@ public abstract class ShellToolBase : IAgentTool
             using var proc = new Process { StartInfo = psi };
             var stdout = new StringBuilder();
             var stderr = new StringBuilder();
-            proc.OutputDataReceived += (_, e) => { if (e.Data is not null) { lock (stdout) stdout.AppendLine(e.Data); } };
-            proc.ErrorDataReceived += (_, e) => { if (e.Data is not null) { lock (stderr) stderr.AppendLine(e.Data); } };
+            // PLAN §25: stream stdout/stderr live to the UI via ctx.Stream.
+            // Every line the shell emits is pushed as a progressive tool.output
+            // chunk so long commands (builds, tests, downloads) are watchable
+            // before they finish. The same line is still accumulated into the
+            // local builder so the final ToolResult carries the full output.
+            proc.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data is null) return;
+                lock (stdout) stdout.AppendLine(e.Data);
+                ctx.Stream?.Emit(e.Data + "\n");
+            };
+            proc.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data is null) return;
+                lock (stderr) stderr.AppendLine(e.Data);
+                ctx.Stream?.Emit("[stderr] " + e.Data + "\n");
+            };
             proc.Start();
             // Close stdin (EOF) so the shell does not wait for interactive input
             // when the host's own stdin is a long-open pipe.

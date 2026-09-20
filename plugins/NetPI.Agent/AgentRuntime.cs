@@ -392,7 +392,11 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         // PLAN §18/§25: every tool sees the session workspace — relative paths
         // resolve against it and foreground shells start there.
         var workspace = string.IsNullOrEmpty(options.Workspace) ? Environment.CurrentDirectory : options.Workspace!;
-        var toolCtx = new ToolContext(call.Arguments, workspace, options.SessionId);
+        // PLAN §25: progressive tool output — the stream publishes
+        // ModelStreamEvent kind "tool-output-chunk" for each chunk; WebApp
+        // forwards them as WS tool.output { append: true }.
+        var toolStream = new ProgressiveToolStream(this, options, call);
+        var toolCtx = new ToolContext(call.Arguments, workspace, options.SessionId, toolStream);
         try
         {
             var res = await tool.ExecuteAsync(toolCtx, ct);
@@ -459,5 +463,40 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         public bool IsRunning => owner.RawRunning;
         public string? ActiveSessionId => owner.RawSession;
         public bool IsIdle => owner.RawIdle;
+    }
+
+    /// <summary>
+    /// PLAN §25: IToolStream implementation for the agent runtime. Each Emit
+    /// publishes a ModelStreamEvent (kind "tool-output-chunk") that the Web
+    /// plugin forwards as a WS <c>tool.output</c> event with <c>append: true</c>,
+    /// so the UI's tool block grows live while the command runs.
+    /// </summary>
+    private sealed class ProgressiveToolStream :
+        IToolStream
+    {
+        private readonly AgentRuntime _owner;
+        private readonly AgentRunOptions _options;
+        private readonly ToolCallPart _call;
+        public ProgressiveToolStream(AgentRuntime owner, AgentRunOptions options, ToolCallPart call)
+        {
+            _owner = owner;
+            _options = options;
+            _call = call;
+        }
+
+        public void Emit(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            var wire = new ModelEventWire
+            {
+                Kind = "tool-output-chunk",
+                ToolCallId = _call.Id,
+                ToolName = _call.Name,
+                ToolOutput = text,
+            };
+            // Fire-and-forget: the chunk is best-effort progressive output; a
+            // publish failure must never break the running command.
+            _ = _owner.PublishAsync(AgentEventType.ModelStreamEvent, _options, wire, default);
+        }
     }
 }

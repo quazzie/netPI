@@ -34,7 +34,7 @@ public class ToolTests
         try
         {
             File.WriteAllLines(Path.Combine(ws, "f.txt"), Enumerable.Range(1, 10).Select(i => $"line{i}"));
-            var ctx = new ToolContext(Args("""{"path":"f.txt"}"""), ws, "s");
+            var ctx = new ToolContext(Args("""{"path":"f.txt"}"""), ws, "s", null);
             var r = await new ReadTool().ExecuteAsync(ctx, CancellationToken.None);
 
             Assert.False(r.IsError);
@@ -59,7 +59,7 @@ public class ToolTests
         var ws = MakeWorkspace();
         try
         {
-            var ctx = new ToolContext(Args("""{"path":"nope.txt"}"""), ws, "s");
+            var ctx = new ToolContext(Args("""{"path":"nope.txt"}"""), ws, "s", null);
             var r = await new ReadTool().ExecuteAsync(ctx, CancellationToken.None);
             Assert.True(r.IsError);
             Assert.Contains("File not found", TextOf(r));
@@ -74,7 +74,7 @@ public class ToolTests
         try
         {
             File.WriteAllBytes(Path.Combine(ws, "bin.dat"), new byte[] { 1, 2, 0, 3, 4, 0, 5, 6 });
-            var ctx = new ToolContext(Args("""{"path":"bin.dat"}"""), ws, "s");
+            var ctx = new ToolContext(Args("""{"path":"bin.dat"}"""), ws, "s", null);
             var r = await new ReadTool().ExecuteAsync(ctx, CancellationToken.None);
             Assert.True(r.IsError);
             Assert.Contains("binary", TextOf(r), StringComparison.OrdinalIgnoreCase);
@@ -90,7 +90,7 @@ public class ToolTests
         var ws = MakeWorkspace();
         try
         {
-            var ctx = new ToolContext(Args("""{"path":"a/b.txt","content":"hello"}"""), ws, "s");
+            var ctx = new ToolContext(Args("""{"path":"a/b.txt","content":"hello"}"""), ws, "s", null);
             var r = await new WriteTool().ExecuteAsync(ctx, CancellationToken.None);
             Assert.False(r.IsError);
             Assert.Equal("hello", File.ReadAllText(Path.Combine(ws, "a", "b.txt")));
@@ -108,7 +108,7 @@ public class ToolTests
         {
             var path = Path.Combine(ws, "e.txt");
             File.WriteAllText(path, "alpha\ngamma\ndelta");
-            var ctx = new ToolContext(Args("""{"path":"e.txt","oldText":"gamma","newText":"GAMMA"}"""), ws, "s");
+            var ctx = new ToolContext(Args("""{"path":"e.txt","oldText":"gamma","newText":"GAMMA"}"""), ws, "s", null);
             var r = await new EditTool().ExecuteAsync(ctx, CancellationToken.None);
             Assert.False(r.IsError);
             Assert.Equal("alpha\nGAMMA\ndelta", File.ReadAllText(path));
@@ -124,7 +124,7 @@ public class ToolTests
         {
             var path = Path.Combine(ws, "e.txt");
             File.WriteAllText(path, "alpha\ngamma\ndelta");
-            var ctx = new ToolContext(Args("""{"path":"e.txt","oldText":"nope","newText":"x"}"""), ws, "s");
+            var ctx = new ToolContext(Args("""{"path":"e.txt","oldText":"nope","newText":"x"}"""), ws, "s", null);
             var r = await new EditTool().ExecuteAsync(ctx, CancellationToken.None);
             Assert.True(r.IsError);
             Assert.Contains("0 matches", TextOf(r));
@@ -140,7 +140,7 @@ public class ToolTests
         {
             var path = Path.Combine(ws, "dup.txt");
             File.WriteAllText(path, "same\nsame\n");
-            var ctx = new ToolContext(Args("""{"path":"dup.txt","oldText":"same","newText":"x"}"""), ws, "s");
+            var ctx = new ToolContext(Args("""{"path":"dup.txt","oldText":"same","newText":"x"}"""), ws, "s", null);
             var r = await new EditTool().ExecuteAsync(ctx, CancellationToken.None);
             Assert.True(r.IsError);
             Assert.Contains("matches 2 times", TextOf(r));
@@ -160,7 +160,7 @@ public class ToolTests
             Directory.CreateDirectory(Path.Combine(ws, "sub"));
             File.WriteAllLines(Path.Combine(ws, "sub", "b.txt"), new[] { "also needle" });
 
-            var ctx = new ToolContext(Args("""{"pattern":"needle","path":""}"""), ws, "s");
+            var ctx = new ToolContext(Args("""{"pattern":"needle","path":""}"""), ws, "s", null);
             var r = await new GrepTool().ExecuteAsync(ctx, CancellationToken.None);
             Assert.False(r.IsError);
             var text = TextOf(r);
