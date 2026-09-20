@@ -23,29 +23,40 @@ internal sealed class PluginContext : IPluginContext
         PluginContextEvents events,
         JsonElement ownConfig,
         IPluginLogger log,
-        ICommandRegistry? commands = null)
+        ICommandRegistry? commands = null,
+        IWebPanelRegistry? webPanels = null)
     {
         _instance = instance;
         _services = services;
         _events = events;
         _commands = commands;
+        _webPanels = webPanels;
         Info = instance.Info!;
         OwnConfig = ownConfig.ValueKind == JsonValueKind.Null ? JsonDocument.Parse("null").RootElement.Clone() : ownConfig;
         Log = log;
     }
 
     private readonly ICommandRegistry? _commands;
+    private readonly IWebPanelRegistry? _webPanels;
     public PluginInfo Info { get; }
     public IServiceRegistry Services => _services;
     public IEventBus Events => _events;
-    public ICommandRegistry Commands => _commands ?? Noop.Instance;
+    public ICommandRegistry Commands => _commands ?? NoopCommands.Instance;
+    public IWebPanelRegistry WebPanels => _webPanels ?? NoopPanels.Instance;
 
-    private sealed class Noop : ICommandRegistry
+    private sealed class NoopCommands : ICommandRegistry
     {
-        public static readonly Noop Instance = new();
+        public static readonly NoopCommands Instance = new();
         public IDisposable Register(CommandDefinition command) => NoopDisposable.Instance;
         public IReadOnlyList<CommandDefinition> All() => [];
         public CommandDefinition? Find(string name) => null;
+    }
+
+    private sealed class NoopPanels : IWebPanelRegistry
+    {
+        public static readonly NoopPanels Instance = new();
+        public IDisposable Register(WebPanelDefinition panel) => NoopDisposable.Instance;
+        public IReadOnlyList<WebPanelDefinition> All() => [];
     }
 
     private sealed class NoopDisposable : IDisposable
