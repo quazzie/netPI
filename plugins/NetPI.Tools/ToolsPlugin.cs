@@ -40,7 +40,7 @@ public sealed class ReadTool : IAgentTool
     public string Description => "Read a text file (line-numbered, bounded). Relative paths resolve against the workspace. Use offset/limit to page large files; binary files return an error.";
     public IReadOnlyList<string> Guidelines => [
         "Default is 200 lines, capped at 2000; 'Showing lines X-Y of Z' tells you when a file continues — pass offset=N to page.",
-        "The file must exist; glob for the name first when unsure.",
+        "The file must exist; use grep or a shell command to locate it when the exact path is unknown.",
     ];
     public JsonElement Parameters => Args.Schema(
         ("path", "string", "File path to read."),
