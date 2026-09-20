@@ -1,6 +1,6 @@
 // Shared domain types for the netPI web client.
-// Mirrors the normalized event model in PLAN.md §9 and the WebSocket
-// protocol in §41. No OpenAI wire objects ever reach the browser.
+// Mirrors the normalized event model in docs/archive/PLAN-v1.md §9 and the
+// WebSocket protocol in §41. No OpenAI wire objects ever reach the browser.
 
 export type MessageRole = "user" | "assistant" | "tool" | "system";
 
