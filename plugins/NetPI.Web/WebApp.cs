@@ -940,7 +940,7 @@ internal sealed class WebApp : IAsyncDisposable
             maxOutputTokens = m.MaxOutputTokens,
             inputModalities = m.InputModalities,
             reasoning = m.ReasoningLevels is { } levels && levels.Count > 0
-                ? new { levels = levels.ToArray() }
+                ? new { levels = levels.ToArray(), defaultLevel = m.DefaultReasoningLevel }
                 : (object?)null,
         }).ToArray();
     }
