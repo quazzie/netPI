@@ -186,6 +186,23 @@ public class HostRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public void SelfLease_CountsTowardLeaseDrain()
+    {
+        // PLAN §44: a plugin's self-lease (held by the agent for the run's
+        // duration) must count toward LeasesHeld, which is what a reload's
+        // drain waits on.
+        var inst = new PluginInstance("netPI.Agent", 1);
+        Assert.Equal(0, inst.LeasesHeld);
+
+        var lease = inst.AcquireSelfLease();
+        Assert.Equal(1, inst.LeasesHeld);
+        Assert.NotNull(lease.Value); // the owning generation
+
+        lease.Dispose();
+        Assert.Equal(0, inst.LeasesHeld);
+    }
+
+    [Fact]
     public async Task NewLeaseDeniedWhileDraining()
     {
         await using var runtime = NewRuntime();

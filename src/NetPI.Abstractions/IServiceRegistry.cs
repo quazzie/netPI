@@ -28,9 +28,16 @@ public interface IServiceRegistry
     /// generic type argument — the type is defined in the plugin's own
     /// assembly (host tooling, tests referencing the plugin). The instance is
     /// returned as <see cref="object"/> and checked against <paramref name="expectedType"/>.
-    /// </summary>
     IValueLease<object> Acquire(string id, Type expectedType);
 
+    /// <summary>
+    /// PLAN §11/§44: a lease on the owning plugin itself. Held for the duration
+    /// of work (an agent run, a tool batch) so a reload cannot unload the plugin
+    /// mid-work. The host implementation returns a handle that counts toward
+    /// the owning generation's live lease count; the generic parameter is
+    /// chosen by the caller so the lease type stays inside the caller's ALC.
+    /// </summary>
+    IValueLease<T> AcquireSelfLease<T>() where T : notnull;
 
     /// <summary>Convenience overload: acquire and immediately resolve the instance.</summary>
     T Resolve<T>(string id) where T : notnull;

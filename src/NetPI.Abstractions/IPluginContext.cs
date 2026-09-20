@@ -26,6 +26,14 @@ public interface IPluginContext
 
     /// <summary>Logger scoped to this plugin (writes to host console + file).</summary>
     IPluginLogger Log { get; }
+
+    /// <summary>
+    /// PLAN §44: a lease on this plugin generation itself. Hold it for the
+    /// duration of long-running work (an agent run) so the host's reload
+    /// cannot unload the plugin mid-work; its lease drain blocks until
+    /// released. Disposing releases the generation for reload.
+    /// </summary>
+    IValueLease<object> LeaseSelf();
 }
 
 /// <summary>Minimal logging surface handed to plugins.</summary>

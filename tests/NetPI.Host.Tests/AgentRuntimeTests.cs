@@ -47,6 +47,9 @@ internal sealed class FixedServiceRegistry : IServiceRegistry
     public IValueLease<object> Acquire(string id, Type expectedType)
         => new Lease<object>(Require(id, expectedType));
 
+    public IValueLease<T> AcquireSelfLease<T>() where T : notnull
+        => new Lease<T>(default!);
+
     public T Resolve<T>(string id) where T : notnull => Require<T>(id);
 
     private object Require(string id, Type type) =>
@@ -77,11 +80,30 @@ internal sealed class NoopEventBus : IEventBus
 internal sealed class NoopPluginContext : IPluginContext
 {
     private readonly FixedServiceRegistry _services = new();
+    /// <summary>PLAN §44 test hook: number of live self-leases held by the agent.</summary>
+    public int LeaseDepth => _leaseDepth;
+    private int _leaseDepth;
     public PluginInfo Info => new("test", "test", "1.0.0");
     public IServiceRegistry Services => _services;
     public IEventBus Events => new NoopEventBus();
     public JsonElement OwnConfig => JsonDocument.Parse("{}").RootElement;
     public IPluginLogger Log => new NoopLogger();
+    public IValueLease<object> LeaseSelf()
+    {
+        Interlocked.Increment(ref _leaseDepth);
+        return new NoopLease(() => Interlocked.Decrement(ref _leaseDepth));
+    }
+    private sealed class NoopLease(Action onRelease) : IValueLease<object>
+    {
+        private int _disposed;
+        public object Value => this;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            onRelease();
+        }
+        public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
+    }
     public void Add(string id, object service) => _services.Put(id, service);
     private sealed class NoopLogger : IPluginLogger
     {
@@ -171,6 +193,34 @@ public class AgentRuntimeTests
     }
 
     [Fact]
+    public async Task SelfLease_IsHeldWhileToolsExecuteAndReleasedAfterRun()
+    {
+        // PLAN §44: the agent holds its own plugin lease from run start to run end —
+        // observable while a tool executes — and releases it when the run completes.
+        var ctx = new NoopPluginContext();
+        var tool = new CountingLeaseTool(ctx);
+        var registry = new TestRegistry(tool);
+        var provider = new FakeProvider([
+            [new ModelStarted("model"), new ModelCompleted(Assistant(
+                new ToolCallPart("t1", "counting",
+                    JsonSerializer.SerializeToElement(new { }))))],
+            [new ModelCompleted(Assistant(new TextPart("ok")))],
+        ]);
+        ctx.Add("provider", provider);
+        ctx.Add("tools", registry);
+        var rt = new AgentRuntime(ctx);
+
+        Assert.Equal(0, ctx.LeaseDepth); // idle: no self-lease
+        var result = await rt.RunAsync(Options("x"), CancellationToken.None);
+
+        Assert.True(result.Ok);
+        Assert.Equal(1, tool.TurnsSeen); // the tool actually executed
+        Assert.True(tool.LeaseSeenDuringToolExecution,
+            "agent self-lease must be held while tools execute");
+        Assert.Equal(0, ctx.LeaseDepth); // released once the run completes
+    }
+
+    [Fact]
     public async Task Cancellation_ReturnsNotOkWithCancelledNote()
     {
         // A provider that never completes; cancellation must unwind cleanly.
@@ -210,6 +260,21 @@ internal sealed class TestRegistry(params IAgentTool[] tools) : IToolRegistry
     public IReadOnlyList<IAgentTool> All() => _all;
     public IAgentTool? Find(string name) => _all.FirstOrDefault(t => t.Name == name);
     private sealed class Noop : IDisposable { public void Dispose() { } }
+}
+
+internal sealed class CountingLeaseTool(NoopPluginContext ctx) : IAgentTool
+{
+    public string Name => "counting";
+    public string Description => "observes the agent's self-lease while executing";
+    public JsonElement Parameters => JsonSerializer.SerializeToElement(new { type = "object" });
+    public int TurnsSeen;
+    public bool LeaseSeenDuringToolExecution;
+    public ValueTask<ToolResult> ExecuteAsync(ToolContext context, CancellationToken ct)
+    {
+        TurnsSeen++;
+        LeaseSeenDuringToolExecution = ctx.LeaseDepth > 0; // 1 iff the run is active
+        return ValueTask.FromResult(new ToolResult("t1", "counting", [new TextPart("ok")], false));
+    }
 }
 
 internal sealed class HangProvider : IModelProvider

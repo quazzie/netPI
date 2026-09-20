@@ -1,13 +1,24 @@
 namespace NetPI.Abstractions;
 
-/// <summary>State of the agent (PLAN §44). Minimal stub for Phase 1; the agent plugin owns the full state machine.</summary>
+/// <summary>
+/// State of the agent (PLAN §44). Small machine for UI status, reload gating,
+/// shutdown, and diagnostics — not a workflow engine.
+/// </summary>
 public enum AgentState
 {
     Idle = 0,
-    /// <summary>A run is in progress (model call, tool execution, or between them).</summary>
-    Running = 1,
-    /// <summary>Cancellation was requested; run is winding down.</summary>
-    Cancelling = 2,
+    /// <summary>Run starting: context built, first model request pending.</summary>
+    Preparing = 1,
+    /// <summary>A model request is in flight (streaming).</summary>
+    CallingModel = 2,
+    /// <summary>Tool calls from the latest assistant message are executing.</summary>
+    ExecutingTools = 3,
+    /// <summary>Context compaction is in progress.</summary>
+    Compacting = 4,
+    /// <summary>Model request failed; backing off before the retry.</summary>
+    Retrying = 5,
+    /// <summary>Cancellation was requested; the run is winding down.</summary>
+    Cancelling = 6,
 }
 
 /// <summary>Read-only view of the agent's current state (PLAN §44).</summary>

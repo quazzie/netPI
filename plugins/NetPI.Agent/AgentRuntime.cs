@@ -31,7 +31,11 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     private readonly IPluginContext _ctx;
     private readonly IEventBus _bus;
     private readonly IServiceRegistry _services;
-
+    /// <summary>
+    /// PLAN §44: this plugin generation's own lease, held for the whole run so a
+    /// reload cannot unload the agent plugin mid-run.
+    /// </summary>
+    private IValueLease<object>? _selfLease;
     private volatile AgentState _state = AgentState.Idle;
     private string? _activeSession;
     private bool _everRan;
@@ -47,7 +51,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     // ---- IAgentState -------------------------------------------------------
     public IAgentState State => new StateView(this);
     internal AgentState RawState => _state;
-    internal bool RawRunning => _state == AgentState.Running;
+    internal bool RawRunning => _state != AgentState.Idle;
     internal string? RawSession => _activeSession;
     internal bool RawIdle => _everRan && _state == AgentState.Idle;
 
@@ -66,8 +70,11 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     {
         if (RawRunning)
             throw new InvalidOperationException("An agent run is already in progress.");
-
-        _state = AgentState.Running;
+        // PLAN §44: hold the agent's own plugin lease for the whole run — a reload
+        // cannot unload the agent plugin mid-run; the host's lease drain blocks
+        // until this is released in the finally below.
+        _selfLease = _ctx.LeaseSelf();
+        _state = ct.IsCancellationRequested ? AgentState.Cancelling : AgentState.Preparing;
         _activeSession = options.SessionId;
         await PublishAsync(AgentEventType.AgentStarting, options, null, ct);
 
@@ -108,6 +115,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 }
 
                 // ---- build + run the model ----------------------------------
+                _state = AgentState.CallingModel;
                 await PublishAsync(AgentEventType.BeforeModelRequest, options, null, ct);
 
                 var request = new ModelRequest
@@ -166,7 +174,10 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                         ? retryPolicy.Decide(attempt, modelError ?? string.Empty)
                         : RetryDecision.Abort;
                     if (!decision.ShouldRetry)
+                    {
+                        _state = AgentState.Idle;
                         throw new Exception(modelError ?? "model request failed");
+                    }
 
                     // PLAN §34: mark the failed attempt. If it streamed partial
                     // content, the Web client resets its in-progress assistant
@@ -179,6 +190,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                         new ModelEventWire { Kind = "model-retrying", ModelId = failedModelId ?? options.ModelId, Error = modelError,
                                              PromptTokens = decision.Attempt, CompletionTokens = decision.MaxAttempts, TotalTokens = decision.DelayMs }, ct);
 
+                    // PLAN §34: failed attempt marked, then backoff wait.
+                    _state = AgentState.Retrying;
                     if (decision.DelayMs > 0) await Task.Delay(decision.DelayMs, ct);
                     attempt++;
                 }
@@ -192,11 +205,20 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 // ---- tool calls? -------------------------------------------
                 var calls = assistant.Parts.OfType<ToolCallPart>().ToList();
                 if (calls.Count == 0)
+                {
+                    _state = AgentState.Idle;
                     return new AgentRunResult(true, assistant, turns, null);
+                }
 
                 if (turns >= maxTurns)
                     return new AgentRunResult(true, assistant, turns, "max turns reached");
 
+                // ---- PLAN §11: hold the tools-plugin service lease from resolution
+                // through execution completion — a reload of the tools plugin cannot
+                // unload mid-batch (its lease drain blocks until released below).
+                _state = AgentState.ExecutingTools;
+                using var toolsLease = AcquireLease<IToolRegistry>("tools")
+                    ?? throw new ServiceUnavailableException("tools", "Tools registry is not loaded.");
                 await PublishAsync(AgentEventType.BeforeToolBatch, options, null, ct);
                 // Pre-flight (PLAN §11, sequential): validate/announce each call
                 // before any execution starts. No approval UI exists, so
@@ -255,6 +277,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 var compaction = TryResolveCompaction();
                 if (compaction is not null && compaction.IsAvailable && store is not null)
                 {
+                    _state = AgentState.Compacting;
                     try
                     {
                         var comp = await compaction.CompactAsync(new CompactionRequest
@@ -291,6 +314,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         {
             _state = AgentState.Idle;
             _everRan = true;
+            try { _selfLease?.Dispose(); } catch { }
+            _selfLease = null;
         }
     }
 
@@ -342,23 +367,12 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         catch (ServiceUnavailableException) { return default!; }
     }
 
-    /// <summary>Resolve the AutoCompact service if present (id "compaction").</summary>
-    private ICompaction? TryResolveCompaction()
+    /// <summary>PLAN §11: acquire a lease (not just the value) so the caller can hold it.</summary>
+    private IValueLease<T>? AcquireLease<T>(string id) where T : notnull
     {
-
-        try { return _services.Resolve<ICompaction>("compaction"); }
+        try { return _services.Acquire<T>(id); }
         catch (ServiceUnavailableException) { return null; }
     }
-
-    /// <summary>Resolve the Retry plugin's policy if present (id "retry").</summary>
-    private IModelRetryPolicy? TryResolveRetryPolicy()
-    {
-        try { return _services.Resolve<IModelRetryPolicy>("retry"); }
-        catch (ServiceUnavailableException) { return null; }
-    }
-
-
-
 
     private async ValueTask AppendAsync(ISessionStore? store, AgentMessage msg, CancellationToken ct)
     {
@@ -368,6 +382,20 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
             await store.AppendAsync(new SessionEntry(NewId(), _activeSession, EntryKind.Message, msg, null, DateTimeOffset.UtcNow), ct);
         }
         catch (Exception ex) { _ctx.Log.Warning($"Failed to persist entry: {ex.Message}"); }
+    }
+
+    /// <summary>Resolve the AutoCompact service if present (id "compaction").</summary>
+    private ICompaction? TryResolveCompaction()
+    {
+        try { return _services.Resolve<ICompaction>("compaction"); }
+        catch (ServiceUnavailableException) { return null; }
+    }
+
+    /// <summary>Resolve the Retry plugin's policy if present (id "retry").</summary>
+    private IModelRetryPolicy? TryResolveRetryPolicy()
+    {
+        try { return _services.Resolve<IModelRetryPolicy>("retry"); }
+        catch (ServiceUnavailableException) { return null; }
     }
 
     private async ValueTask PublishAsync(AgentEventType type, AgentRunOptions options, ModelEventWire? wire, CancellationToken ct)

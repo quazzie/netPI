@@ -108,6 +108,36 @@ public sealed class ServiceRegistry : IServiceRegistry
         return lease;
     }
 
+    /// <summary>
+    /// PLAN §11/§44: a lease on the owning plugin itself, held for the duration
+    /// of work. Counts toward the owning generation's live lease count so a
+    /// reload's lease drain blocks until it is released.
+    /// </summary>
+    public IValueLease<T> AcquireSelfLease<T>() where T : notnull
+    {
+        var owner = ServiceOwner.Current;
+        if (owner is null)
+            return new SelfLease<T>(); // host-side / test: no owning generation
+        var lease = new SelfLease<T>(owner);
+        owner.AddLease(lease.Id, lease);
+        return lease;
+    }
+
+    private sealed class SelfLease<T>(PluginInstance? owner = null) : IValueLease<T> where T : notnull
+    {
+        private int _released;
+        public Guid Id { get; } = Guid.NewGuid();
+        private readonly T _value = default!;
+        public T Value => _value;
+        private void Release()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0) return;
+            owner?.RemoveLease(Id, out _);
+        }
+        void IDisposable.Dispose() => Release();
+        public ValueTask DisposeAsync() { Release(); return ValueTask.CompletedTask; }
+    }
+
     private LeaseCore AcquireCore(string id, Type expectedType)
     {
         object instance;
@@ -130,8 +160,9 @@ public sealed class ServiceRegistry : IServiceRegistry
 
     public T Resolve<T>(string id) where T : notnull
     {
-        using var lease = Acquire<T>(id);
-        return lease.Value;
+        // Keep the lease alive for the caller's scope (PLAN §11): disposing it
+        // here would not prevent a mid-call unload of the owning plugin.
+        return Acquire<T>(id).Value;
     }
 
     /// <summary>

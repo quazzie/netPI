@@ -13,6 +13,7 @@ namespace NetPI.Host.Plugins;
 /// </summary>
 internal sealed class PluginContext : IPluginContext
 {
+    private readonly PluginInstance _instance;
     private readonly PluginContextServices _services;
     private readonly PluginContextEvents _events;
 
@@ -23,6 +24,7 @@ internal sealed class PluginContext : IPluginContext
         JsonElement ownConfig,
         IPluginLogger log)
     {
+        _instance = instance;
         _services = services;
         _events = events;
         Info = instance.Info!;
@@ -35,6 +37,8 @@ internal sealed class PluginContext : IPluginContext
     public IEventBus Events => _events;
     public JsonElement OwnConfig { get; }
     public IPluginLogger Log { get; }
+
+    public IValueLease<object> LeaseSelf() => _instance.AcquireSelfLease();
 }
 
 /// <summary>
@@ -63,6 +67,8 @@ internal sealed class PluginContextServices(
 
     public IValueLease<T> Acquire<T>(string id) where T : notnull => inner.Acquire<T>(id);
     public IValueLease<object> Acquire(string id, Type expectedType) => inner.Acquire(id, expectedType);
+
+    public IValueLease<T> AcquireSelfLease<T>() where T : notnull => inner.AcquireSelfLease<T>();
 
     public T Resolve<T>(string id) where T : notnull => inner.Resolve<T>(id);
 }

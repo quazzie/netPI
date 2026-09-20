@@ -153,7 +153,7 @@ internal sealed class WebApp : IAsyncDisposable
         switch (e.Type)
         {
             case AgentEventType.AgentStarting:
-                SendEvent("agent.state", new { state = "Running" }, sid);
+                SendEvent("agent.state", new { state = "Preparing" }, sid);
                 break;
 
             case AgentEventType.BeforeModelRequest:
@@ -384,9 +384,8 @@ internal sealed class WebApp : IAsyncDisposable
     private static string MapAgentState(AgentState s) => s switch
     {
         AgentState.Idle => "Idle",
-        AgentState.Running => "Running",
-        AgentState.Cancelling => "Cancelling",
-        _ => "Idle",
+        _ => s.ToString(), // Preparing/CallingModel/ExecutingTools/Compacting/Retrying/Cancelling
+
     };
 
     private async Task HandleCommandAsync(Client c, string raw, CancellationToken ct)

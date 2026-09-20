@@ -59,6 +59,32 @@ public sealed class PluginInstance
         Generation = generation;
     }
 
+    /// <summary>
+    /// PLAN §44: a lease on this plugin generation itself (not on one of its
+    /// services). Counts toward <see cref="LeasesHeld"/> so a reload's drain
+    /// waits for it to be released.
+    /// </summary>
+    public IValueLease<object> AcquireSelfLease()
+    {
+        var lease = new PluginSelfLease(this);
+        LiveLeases[lease.Id] = lease;
+        return lease;
+    }
+
+    private sealed class PluginSelfLease(PluginInstance owner) : IValueLease<object>
+    {
+        private int _released;
+        public Guid Id { get; } = Guid.NewGuid();
+        public object Value => owner;
+        private void Release()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0) return;
+            owner.LiveLeases.TryRemove(Id, out _);
+        }
+        void IDisposable.Dispose() => Release();
+        public ValueTask DisposeAsync() { Release(); return ValueTask.CompletedTask; }
+    }
+
     public void AddLease(Guid leaseId, IDisposable lease) => LiveLeases[leaseId] = lease;
 
     public void RemoveLease(Guid leaseId, out IDisposable? lease)
