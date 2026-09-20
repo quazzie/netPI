@@ -312,6 +312,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         {
             bool contentSeen = false;
             bool hardFailed = false;
+            string failReason = "";
             var pending = new List<ModelEvent>();
 
             await foreach (var ev in RunResponsesAsync(request, cancellationToken))
@@ -321,7 +322,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                     // A hard failure before any content (HTTP error, response.failed)
                     // is retried transparently via chat completions; after content it
                     // is surfaced and left to the retry plugin.
-                    if (!contentSeen) { hardFailed = true; break; }
+                    if (!contentSeen) { hardFailed = true; failReason = ((ModelFailed)ev).Error; break; }
                     foreach (var p in pending) yield return p;
                     pending.Clear();
                     yield return ev;
@@ -345,7 +346,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             }
 
             if (!hardFailed) yield break;
-            _log.Warning($"responses wire failed before content for {request.ModelId}; retrying via chat completions");
+            _log.Warning($"responses wire failed before content for {request.ModelId} ({failReason}); retrying via chat completions — session chain disabled, full transcript re-sent every request");
         }
 
         await foreach (var ev in RunChatCompletionsAsync(request, cancellationToken))
