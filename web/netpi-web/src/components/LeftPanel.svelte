@@ -77,7 +77,7 @@
           <select
             id="font-choice"
             value={font}
-            onchange={(e) => (ui.font = (e.currentTarget as HTMLSelectElement).value as any)}
+            onchange={(e) => ui.setFont((e.currentTarget as HTMLSelectElement).value as any)}
           >
             <option value="system">System</option>
             <option value="inter">Inter / UI sans</option>
@@ -87,7 +87,11 @@
         </div>
 
         <label class="setting-check">
-          <input type="checkbox" bind:checked={ui.keepThinkingOpen} />
+          <input
+            type="checkbox"
+            checked={ui.keepThinkingOpen}
+            onchange={(e) => ui.setKeepThinkingOpen((e.currentTarget as HTMLInputElement).checked)}
+          />
           <span>
             <strong>Keep thinking open</strong>
             <small>Completed reasoning stays expanded instead of collapsing to a pill.</small>
