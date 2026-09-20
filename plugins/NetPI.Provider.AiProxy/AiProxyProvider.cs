@@ -81,8 +81,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                 // PLAN §13: parse AiProxy's actual metadata (no model-name
                 // heuristics); unknown/extra fields are simply ignored, so
                 // AiProxy can evolve without breaking netPI.
-                int? ctx = m.TryGetProperty("max_model_len", out var mml) && mml.ValueKind == JsonValueKind.Number
-                    ? mml.GetInt32() : null;
+                int? ctx = GetIntProp(m, "context_window") ?? GetIntProp(m, "max_model_len");
                 if (ctx is null && m.TryGetProperty("meta", out var meta) && meta.ValueKind == JsonValueKind.Object
                     && meta.TryGetProperty("n_ctx", out var nc) && nc.ValueKind == JsonValueKind.Number)
                     ctx = nc.GetInt32();
@@ -94,23 +93,10 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                         if (it.ValueKind == JsonValueKind.String) modalities.Add(it.GetString()!);
                 if (modalities.Count == 0) modalities.Add("text");
 
-                // Data-driven reasoning profile: honor a `reasoning` object or
-                // supported-efforts list when AiProxy advertises one; otherwise
-                // the model has no reasoning levels and the UI hides the picker.
-                IReadOnlyList<string>? levels = null;
-                JsonElement? arr = null;
-                if (m.TryGetProperty("reasoning", out var rj) && rj.ValueKind == JsonValueKind.Object
-                    && rj.TryGetProperty("levels", out var rlv) && rlv.ValueKind == JsonValueKind.Array)
-                    arr = rlv;
-                else if (m.TryGetProperty("supported_reasoning_efforts", out var sre) && sre.ValueKind == JsonValueKind.Array)
-                    arr = sre;
-                if (arr is not null)
-                {
-                    var ls = new List<string>();
-                    foreach (var it in arr.Value.EnumerateArray())
-                        if (it.ValueKind == JsonValueKind.String) ls.Add(it.GetString()!);
-                    if (ls.Count > 0) levels = ls;
-                }
+                // AiProxy's richer catalog is authoritative. Accept the metadata
+                // shapes used by current/older AiProxy builds without falling back
+                // to model-name heuristics.
+                var levels = ParseReasoningLevels(m);
 
                 list.Add(new ModelInfo(
                     modelId, "aiProxy", modelId,
@@ -191,6 +177,50 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             _log.Debug($"responses probe error for {model.ModelId}: {ex.Message}");
         }
         return model with { SupportsResponses = false };
+    }
+
+    private static IReadOnlyList<string>? ParseReasoningLevels(JsonElement model)
+    {
+        static List<string> ReadArray(JsonElement arr)
+        {
+            var values = new List<string>();
+            if (arr.ValueKind != JsonValueKind.Array) return values;
+            foreach (var item in arr.EnumerateArray())
+                if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } v
+                    && !values.Contains(v, StringComparer.OrdinalIgnoreCase))
+                    values.Add(v);
+            return values;
+        }
+
+        // Top-level compatibility fields.
+        foreach (var name in new[] { "supported_reasoning_efforts", "reasoning_levels", "reasoning_efforts" })
+            if (model.TryGetProperty(name, out var top))
+            {
+                var values = ReadArray(top);
+                if (values.Count > 0) return values;
+            }
+
+        if (!model.TryGetProperty("reasoning", out var reasoning)) return null;
+        if (reasoning.ValueKind == JsonValueKind.Array)
+        {
+            var values = ReadArray(reasoning);
+            return values.Count > 0 ? values : null;
+        }
+        if (reasoning.ValueKind != JsonValueKind.Object) return null;
+
+        foreach (var name in new[] { "levels", "efforts", "supported_efforts", "supported_reasoning_efforts", "values", "allowed" })
+            if (reasoning.TryGetProperty(name, out var arr))
+            {
+                var values = ReadArray(arr);
+                if (values.Count > 0) return values;
+            }
+
+        // Some catalogs expose effort names as boolean properties.
+        var boolLevels = new List<string>();
+        foreach (var name in new[] { "off", "minimal", "low", "medium", "high", "xhigh", "extra_high" })
+            if (reasoning.TryGetProperty(name, out var enabled) && enabled.ValueKind == JsonValueKind.True)
+                boolLevels.Add(name);
+        return boolLevels.Count > 0 ? boolLevels : null;
     }
 
     // ---- run (dispatch — PLAN §14b) ------------------------------------------
