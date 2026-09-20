@@ -118,17 +118,61 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 };
 
                 AgentMessage? assistant = null;
-                await foreach (var ev in provider.RunAsync(request, ct))
+                string? modelError = null;
+                string? failedModelId = null;
+                int attempt = 1;
+                var retryPolicy = TryResolveRetryPolicy();
+                while (true)
                 {
-                    await PublishAsync(AgentEventType.ModelStreamEvent, options, ModelEventWireMapper.ToWire(ev), ct);
-                    if (ev is ModelCompleted mc) assistant = mc.Message;
-                    if (ev is ModelFailed mf)
+                    assistant = null;
+                    modelError = null;
+                    failedModelId = null;
+                    bool failed = false;
+                    try
                     {
-                        await PublishAsync(AgentEventType.ModelRequestFailed, options,
-                            new ModelEventWire { Kind = "model-failed", ModelId = mf.ModelId, Error = mf.Error }, ct);
-                        throw new Exception(mf.Error);
+                        await foreach (var ev in provider.RunAsync(request, ct))
+                        {
+                            await PublishAsync(AgentEventType.ModelStreamEvent, options, ModelEventWireMapper.ToWire(ev), ct);
+                            if (ev is ModelCompleted mc) assistant = mc.Message;
+                            else if (ev is ModelFailed mf)
+                            {
+                                modelError = mf.Error;
+                                failedModelId = mf.ModelId;
+                                failed = true;
+                                break; // stop consuming the failed stream
+                            }
+                        }
                     }
+                    catch (OperationCanceledException) { throw; } // cancellation is not retryable
+                    catch (Exception ex)
+                    {
+                        // Providers may throw (e.g. connection refused) instead of
+                        // yielding ModelFailed; treat it as one failed attempt.
+                        modelError = ex.Message;
+                        failedModelId = request.ModelId;
+                        failed = true;
+                    }
+                    if (!failed) break; // success
+
+
+                    await PublishAsync(AgentEventType.ModelRequestFailed, options,
+                        new ModelEventWire { Kind = "model-failed", ModelId = failedModelId ?? options.ModelId ?? string.Empty, Error = modelError ?? string.Empty }, ct);
+
+                    // Retry decision (PLAN §34): the policy plugin owns the rule.
+                    var decision = retryPolicy is { IsEnabled: true }
+                        ? retryPolicy.Decide(attempt, modelError ?? string.Empty)
+                        : RetryDecision.Abort;
+                    if (!decision.ShouldRetry)
+                        throw new Exception(modelError ?? "model request failed");
+
+                    await PublishAsync(AgentEventType.ModelRetrying, options,
+                        new ModelEventWire { Kind = "model-retrying", ModelId = failedModelId ?? options.ModelId, Error = modelError,
+                                             PromptTokens = decision.Attempt, CompletionTokens = decision.MaxAttempts, TotalTokens = decision.DelayMs }, ct);
+
+                    if (decision.DelayMs > 0) await Task.Delay(decision.DelayMs, ct);
+                    attempt++;
                 }
+
 
                 assistant ??= new AgentMessage(NewId(), MessageRole.Assistant, [], DateTimeOffset.UtcNow);
                 transcript.Add(assistant);
@@ -231,9 +275,18 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     /// <summary>Resolve the AutoCompact service if present (id "compaction").</summary>
     private ICompaction? TryResolveCompaction()
     {
+
         try { return _services.Resolve<ICompaction>("compaction"); }
         catch (ServiceUnavailableException) { return null; }
     }
+
+    /// <summary>Resolve the Retry plugin's policy if present (id "retry").</summary>
+    private IModelRetryPolicy? TryResolveRetryPolicy()
+    {
+        try { return _services.Resolve<IModelRetryPolicy>("retry"); }
+        catch (ServiceUnavailableException) { return null; }
+    }
+
 
 
 

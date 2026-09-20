@@ -180,13 +180,32 @@ internal sealed class WebApp : IAsyncDisposable
             case AgentEventType.ModelRequestFailed when e.Payload is not null:
             {
                 var p = e.Payload.Value;
-                SendEvent("error", new { message = S(p, "error") ?? "model request failed" }, sid);
-                SendEvent("agent.state", new { state = "Idle" }, sid);
+                SendEvent("model.requestFailed", new { message = S(p, "error") ?? "model request failed" }, sid);
+                // Do NOT force Idle here: a retry may follow (ModelRetrying will
+                // flip to "Retrying"). Terminal Idle is emitted by
+                // AgentCompleted/AgentCancelled in the agent runtime.
+                break;
+
+            }
+
+            case AgentEventType.ModelRetrying when e.Payload is not null:
+            {
+                var p = e.Payload.Value;
+                SendEvent("model.retrying", new
+                {
+                    attempt = S(p, "promptTokens") != null ? int.Parse(S(p, "promptTokens")!) : 0,
+                    maxAttempts = S(p, "completionTokens") != null ? int.Parse(S(p, "completionTokens")!) : 0,
+                    delayMs = S(p, "totalTokens") != null ? int.Parse(S(p, "totalTokens")!) : 0,
+                    error = S(p, "error"),
+                }, sid);
+                SendEvent("agent.state", new { state = "Retrying" }, sid);
                 break;
             }
 
+
             case AgentEventType.AgentCompleted:
             case AgentEventType.AgentCancelled:
+
                 SendEvent("agent.state", new { state = "Idle" }, sid);
                 break;
         }

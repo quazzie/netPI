@@ -31,4 +31,6 @@ public enum AgentEventType
     ModelRequestFailed = 12,
     AgentCompleted = 13,
     AgentCancelled = 14,
+    ModelRetrying = 15,
 }
+

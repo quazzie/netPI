@@ -72,7 +72,9 @@ internal sealed class HostConfigUpdater : IHostConfigUpdate
         ["tools"] = "netpi.tools",
         ["autocompact"] = "netpi.autoCompact",
         ["auto-compact"] = "netpi.autoCompact",
+        ["retry"] = "netpi.retry",
     };
+
 
 
     public HostConfigUpdater(ConfigService config) => _config = config;

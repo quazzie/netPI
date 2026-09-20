@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Retry</RootNamespace>
+    <AssemblyName>netPI.Retry</AssemblyName>
+    <Description>Model-request retry policy: classification, backoff, and decision (PLAN §34). Reloadable netPI plugin.</Description>
+
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+</Project>
