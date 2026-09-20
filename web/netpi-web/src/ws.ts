@@ -178,6 +178,20 @@ class NetPIWebSocket {
         store.completeToolCall(p.id, p.durationMs ?? 0);
         break;
 
+      case "model.retrying":
+        // PLAN §34: a failed attempt is being retried — drop any partial the
+        // failed attempt streamed so it is not duplicated on the retry.
+        store.resetAssistantForRetry();
+        store.applyAgentState("Retrying");
+        break;
+
+      case "model.requestFailed":
+        // A model attempt failed (final or pre-retry). If a retry is coming the
+        // next model.retrying resets the block; if this was terminal, mark the
+        // in-progress block as failed so the UI resolves instead of hanging.
+        store.failAssistant(p.message ?? "model request failed");
+        break;
+
       case "assistant.completed":
         store.completeAssistant(p.usage as Usage | undefined);
         store.applyAgentState("Idle");

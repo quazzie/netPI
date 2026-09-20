@@ -168,6 +168,13 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                     if (!decision.ShouldRetry)
                         throw new Exception(modelError ?? "model request failed");
 
+                    // PLAN §34: mark the failed attempt. If it streamed partial
+                    // content, the Web client resets its in-progress assistant
+                    // block on model.retrying so the retry restarts cleanly
+                    // (no duplication of the partial). Persisted content is
+                    // unaffected because the partial is only appended after a
+                    // successful completion.
+                    assistant = null;
                     await PublishAsync(AgentEventType.ModelRetrying, options,
                         new ModelEventWire { Kind = "model-retrying", ModelId = failedModelId ?? options.ModelId, Error = modelError,
                                              PromptTokens = decision.Attempt, CompletionTokens = decision.MaxAttempts, TotalTokens = decision.DelayMs }, ct);

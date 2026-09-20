@@ -162,6 +162,28 @@ export class NetPIStore {
     this.drainSteering();
   }
 
+  // PLAN §34: a model attempt failed and a retry is starting. If that attempt
+  // streamed partial content, discard the in-progress assistant block so the
+  // retry restarts cleanly instead of duplicating the partial. (The partial is
+  // not persisted server-side, so this only affects the live UI.)
+  resetAssistantForRetry(): void {
+    if (!this.activeAssistantId) return;
+    const i = this.blocks.findIndex((x) => x.id === this.activeAssistantId);
+    if (i >= 0) this.blocks.splice(i, 1);
+    this.activeAssistantId = null;
+  }
+
+  // PLAN §34: mark the in-progress assistant block as failed (terminal model
+  // error) so the UI resolves instead of hanging on a partial.
+  failAssistant(message: string): void {
+    const a = this.active();
+    if (!a) return; // nothing in progress to resolve
+        a.text = a.text + (a.text ? String.fromCharCode(10) : "") + " " + message;
+    a.done = true;
+    if (a.thinking) a.thinking.done = true;
+    this.activeAssistantId = null;
+  }
+
   completeToolCall(id: string, durationMs: number): void {
     const a = this.active();
     const c = a?.toolCalls.find((t) => t.id === id);
