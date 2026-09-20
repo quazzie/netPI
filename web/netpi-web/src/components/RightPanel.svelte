@@ -17,12 +17,10 @@
   let selectedPlugin = $derived(store.webPanels.find((p) => p.id === ui.rightTab));
 
   $effect(() => {
-    // Panel registrations change when plugins hot-reload. Keep the selected tab
-    // valid and refresh the catalog whenever the panel is opened.
-    if (ui.rightOpen) {
-      ws.request("ui.panels.list", {}).catch(() => {});
-      if (!allTabs.some((t) => t.id === ui.rightTab)) ui.setRightTab("plugins", true);
-    }
+    // Bootstrap/plugin reload events keep the panel catalog current. This
+    // effect only guards against a tab disappearing during hot reload.
+    if (ui.rightOpen && !allTabs.some((t) => t.id === ui.rightTab))
+      ui.setRightTab("plugins", true);
   });
 
   function select(id: string) {
