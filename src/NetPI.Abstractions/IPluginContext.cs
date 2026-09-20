@@ -20,6 +20,13 @@ public interface IPluginContext
     /// commands are hot-reloadable.
     /// </summary>
     ICommandRegistry Commands { get; }
+
+    /// <summary>
+    /// Right-panel Web UI registry. Plugins may contribute isolated tabs; each
+    /// registration is removed automatically with the plugin generation.
+    /// </summary>
+    IWebPanelRegistry WebPanels { get; }
+
     /// <summary>Host event bus. Subscriptions are owned by this plugin generation.</summary>
     IEventBus Events { get; }
 
