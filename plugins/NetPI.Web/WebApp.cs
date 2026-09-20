@@ -530,12 +530,30 @@ internal sealed class WebApp : IAsyncDisposable
                     await SendErrorAsync(c, requestId, "plugin manager unavailable", ct);
                     break;
                 }
-                var ok = await _facade.ReloadAsync(pid, ct);
-                await SendAsync(c, ok ? "plugin.reloaded" : "plugin.reloadFailed", new { pluginId = pid }, null, ct);
-                // Broadcast in both outcomes: a deferred reload (leases held /
-                // agent not idle) leaves the plugin Draining — the UI should see it.
-                await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
-                await SendAckAsync(c, requestId, ct);
+                // Reload is host-owned work, NOT connection work: a reload of the
+                // Web plugin itself stops the old generation, which closes this very
+                // WS connection and would cancel the connection token mid-LoadAsync.
+                // So run it on a bounded host token and swallow sends that race the
+                // connection teardown (the browser reconnects and re-lists plugins).
+                bool ok;
+                using (var reloadCts = new CancellationTokenSource())
+                {
+                    reloadCts.CancelAfter(90_000); // generous bound; host owns its own reload
+                    try { ok = await _facade.ReloadAsync(pid, reloadCts.Token); }
+                    catch (Exception ex)
+                    {
+                        _log.Error($"plugin.reload {pid} threw: {ex.Message}", ex);
+
+                        ok = false;
+                    }
+                }
+                try
+                {
+                    await SendAsync(c, ok ? "plugin.reloaded" : "plugin.reloadFailed", new { pluginId = pid }, null, ct);
+                    await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
+                    await SendAckAsync(c, requestId, ct);
+                }
+                catch { /* connection may be gone (Web reloaded itself) */ }
                 break;
             }
 
