@@ -1,9 +1,38 @@
 using System.Text.Json;
+
 namespace NetPI.Abstractions;
 
 
 /// <summary>Immutable snapshot of a plugin's load/reload state (PLAN §36, §45).</summary>
-public sealed record PluginStatusSnapshot(string Id, string Name, string? Version, string State, int Generation, string? BuildId, string? Policy, int ActiveLeases, string? LastError);
+public sealed record PluginStatusSnapshot(
+    string Id,
+    string Name,
+    string? Version,
+    string State,
+    int Generation,
+    string? BuildId,
+    string? Policy,
+    int ActiveLeases,
+    string? LastError,
+    // astra-1 P5: the update picture (discovery pointer vs. active snapshot) and
+    // the last lifecycle operation (with the RestartRequired flag).
+    PluginStatusUpdate? Update = null,
+    PluginOperationRecord? LastOperation = null);
+
+/// <summary>
+/// astra-1 P5: the plugin update picture as seen by the diagnostics view — what
+/// the discovery pointer currently names (AvailableBuildId, "legacy" for legacy
+/// folders, null when there is no valid source) vs. the snapshot dir the active
+/// generation loaded from (LoadedPath), the blocking-lease count, and whether the
+/// previous generation's ALC has been collected yet (null when none exists).
+/// "Active new build" vs. "old ALC still awaiting collection" reads off
+/// AvailableBuildId != BuildId + PrevAlocCollected.
+/// </summary>
+public sealed record PluginStatusUpdate(
+    string? AvailableBuildId,
+    string? LoadedPath,
+    int BlockingLeases,
+    bool? PrevAlocCollected);
 
 /// <summary>
 /// Reload control surface (PLAN §36). Implemented by the host and registered into
@@ -41,6 +70,15 @@ public interface IPluginManagerFacade
     /// <summary>astra-1 P2: reload every known plugin; one structured outcome per plugin.</summary>
     ValueTask<IReadOnlyList<PluginOperationOutcome>> ReloadAllOutcomeAsync(CancellationToken cancellationToken = default)
         => ValueTask.FromResult<IReadOnlyList<PluginOperationOutcome>>([]);
+
+    /// <summary>
+    /// astra-1 P5: retired-ALC collection state ("gc" view) — one entry per
+    /// unloaded generation, newest last. The default returns an empty list
+    /// (host-less builds never load collectible ALCs).
+    /// </summary>
+    IReadOnlyList<UnloadedAlocInfo> UnloadedAlocs()
+        => Array.Empty<UnloadedAlocInfo>();
+
 }
 
 /// <summary>Minimal config surface the Web plugin needs for config.update (PLAN §36).</summary>

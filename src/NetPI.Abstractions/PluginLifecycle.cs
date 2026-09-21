@@ -79,3 +79,26 @@ public sealed record PluginOperationOutcome(
         new(Guid.NewGuid().ToString("n"), pluginId, activeBuildId, activeBuildId,
             PluginLifecyclePhase.Pinning, PluginLifecycleOutcome.Unchanged, null, false);
 }
+
+/// <summary>
+/// astra-1 P5: mirror of the host's per-plugin lifecycle-operation record
+/// (what the last reload/scan left behind: requested vs. active build, phase,
+/// outcome, error, and the RestartRequired flag). Carried on the
+/// <see cref="PluginStatusSnapshot"/> for the diagnostics view.
+/// </summary>
+public sealed record PluginOperationRecord(
+    string OperationId,
+    string? RequestedBuildId,
+    string? ActiveBuildId,
+    PluginLifecyclePhase Phase,
+    PluginLifecycleOutcome Outcome,
+    string? Error,
+    bool RestartRequired);
+
+/// <summary>
+/// astra-1 P5: retired-ALC collection state ("gc" view): whether a previously
+/// loaded generation's ALC has been collected yet. The label is
+/// "&lt;pluginId&gt;-gen&lt;n&gt;" or "superseded-&lt;pluginId&gt;-gen&lt;n&gt;".
+/// </summary>
+public sealed record UnloadedAlocInfo(string Label, bool Collected, string? PluginId);
+

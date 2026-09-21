@@ -75,9 +75,17 @@ public sealed class PluginManager
     /// <summary>true once ShutdownAsync has been queued (new operations are rejected).</summary>
     public bool ShuttingDown => Volatile.Read(ref _shutdownStarted) == 1;
 
+    // astra-1 P5: the most recent lifecycle outcome per plugin (diagnostics only;
+    // never read by lifecycle logic). Small on purpose — one row per known plugin
+    // plus a few unknown-id reload attempts that get evicted.
+    private const int RecentOutcomesCap = 16;
+    private readonly Dictionary<string, NetPI.Abstractions.PluginOperationRecord> _recentOutcomes = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly Dictionary<string, PluginInstance> _current = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _generation = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly List<(string Label, WeakReference ALC)> _unloadedAlocs = [];
+
 
     /// <summary>
     /// astra-1 P1: the per-host-instance snapshot root
@@ -694,7 +702,23 @@ public sealed class PluginManager
         int RegistrationCount,
         int SubscriptionCount,
         bool UnloadPending,
-        string? LastError);
+        string? LastError,
+        PluginUpdateInfo? Update,
+        NetPI.Abstractions.PluginOperationRecord? LastOperation);
+
+    /// <summary>
+    /// astra-1 P5: the update picture for one plugin — what the discovery pointer
+    /// currently names (AvailableBuildId) vs. what the active generation actually
+    /// loaded from (LoadedPath, the per-attempt snapshot dir), the blocking-lease
+    /// count, and whether the previous generation's ALC has been collected yet
+    /// (null when there is no retired ALC for this plugin). "Active new build"
+    /// vs "old ALC still awaiting collection" reads off Update + UnloadPending.
+    /// </summary>
+    public sealed record PluginUpdateInfo(
+        string? AvailableBuildId,
+        string? LoadedPath,
+        int BlockingLeases,
+        bool? PrevAlocCollected);
 
     /// <summary>
     /// Status table for the CLI <c>plugins</c> command: one row per plugin with
@@ -702,6 +726,9 @@ public sealed class PluginManager
     /// </summary>
     public IReadOnlyList<PluginStatus> GetStatus()
     {
+        // astra-1 P5: the discovery snapshot is read OUTSIDE _gate (a read-only
+        // directory walk) so a slow plugins/ enumeration never blocks lifecycle ops.
+        var sources = DiscoverPluginSources().ToDictionary(s => s.Id, s => s, StringComparer.OrdinalIgnoreCase);
         var rows = new List<PluginStatus>();
         lock (_gate)
         {
@@ -718,10 +745,48 @@ public sealed class PluginManager
                     p.Registrations.Count,
                     p.Subscriptions.Count,
                     UnloadPending(p),
-                    p.LastError));
+                    p.LastError,
+                    UpdateInfo(p, sources),
+                    LastOperation(p.PluginId)));
             }
         }
         return rows;
+    }
+
+    /// <summary>
+    /// astra-1 P5: the update picture for one live generation — what the discovery
+    /// pointer names now (AvailableBuildId) vs. the snapshot dir the active
+    /// generation loaded from (LoadedPath = <see cref="PluginInstance.CacheDirectory"/>),
+    /// the blocking-lease count, and the retired-ALC collection flag (null when
+    /// the plugin has no retired ALC yet).
+    /// </summary>
+    private PluginUpdateInfo UpdateInfo(PluginInstance p, IReadOnlyDictionary<string, PluginSource> sources)
+    {
+        string? available = sources.TryGetValue(p.PluginId, out var src) ?
+            (src.Kind == SourceKind.Published ? src.BuildId : src.Kind == SourceKind.Legacy ? "legacy" : null) : null;
+        return new PluginUpdateInfo(available, p.CacheDirectory, p.LeasesHeld, UnloadedAlocState(p.PluginId));
+    }
+
+    // astra-1 P5: snapshot the per-plugin recent-outcome record (diagnostics only).
+    private PluginOperationRecord? LastOperation(string pluginId)
+    {
+        lock (_opGate) return _recentOutcomes.TryGetValue(pluginId, out var rec) ? rec : null;
+    }
+
+    /// <summary>astra-1 P5: record one completed lifecycle op (queue runner only); bounded.</summary>
+    private void RecordOutcome(PluginOperationOutcome o)
+    {
+        if (o.PluginId is null) return;
+        var rec = new PluginOperationRecord(o.OperationId, o.RequestedBuildId, o.ActiveBuildId,
+            o.Phase, o.Outcome, o.Error, o.RestartRequired);
+        lock (_opGate)
+        {
+            // Evict the oldest row only when adding a NEW plugin would exceed the
+            // cap — an already-tracked plugin always refreshes in place.
+            if (!_recentOutcomes.ContainsKey(o.PluginId) && _recentOutcomes.Count >= RecentOutcomesCap)
+                _recentOutcomes.Remove(_recentOutcomes.Keys.First());
+            _recentOutcomes[o.PluginId] = rec;
+        }
     }
 
     /// <summary>
@@ -736,6 +801,30 @@ public sealed class PluginManager
             foreach (var (label, wr) in _unloadedAlocs)
                 list.Add((label, wr.Target is null));
             return list;
+        }
+    }
+
+    /// <summary>
+    /// astra-1 P5: the retired-ALC collection state for one plugin — the NEWEST
+    /// matching label ("&lt;pluginId&gt;-gen&lt;n&gt;" or "superseded-&lt;pluginId&gt;-gen&lt;n&gt;")
+    /// wins; null when the plugin has no retired ALC yet. Read-only; a viewer
+    /// tells "active new build" from "old ALC still awaiting collection" off
+    /// UnloadPending + this flag.
+    /// </summary>
+    public bool? UnloadedAlocState(string pluginId)
+    {
+        var prefix = pluginId + "-gen";
+        var superseded = "superseded-" + pluginId + "-gen";
+        lock (_gate)
+        {
+            for (var i = _unloadedAlocs.Count - 1; i >= 0; i--)
+            {
+                var (label, wr) = _unloadedAlocs[i];
+                if (label.StartsWith(prefix, StringComparison.Ordinal) ||
+                    label.StartsWith(superseded, StringComparison.Ordinal))
+                    return wr.Target is null;
+            }
+            return null;
         }
     }
 
@@ -896,6 +985,8 @@ public sealed class PluginManager
                             case LifecycleOpKind.Reload:
                             {
                                 var r = await ReloadCoreAsync(op.PluginId!, op.Ct);
+                                // astra-1 P5: surface the outcome in the status table (diagnostics only).
+                                RecordOutcome(r.Outcome);
                                 op.Tcs.TrySetResult(r.Outcome);
                                 break;
                             }
@@ -912,7 +1003,12 @@ public sealed class PluginManager
                                     .OrderBy(x => x, StringComparer.Ordinal).ToList();
                                 // plugins already in a Failed state are still reloadable (retry path)
                                 foreach (var id in ids)
-                                    list.Add((await ReloadCoreAsync(id, op.Ct)).Outcome);
+                                {
+                                    var o = (await ReloadCoreAsync(id, op.Ct)).Outcome;
+                                    // astra-1 P5: per-plugin outcome into the status table (diagnostics only).
+                                    RecordOutcome(o);
+                                    list.Add(o);
+                                }
                                 op.ListTcs.TrySetResult(list);
                                 var overall = list.Count == 0
                                     ? new PluginOperationOutcome(Guid.NewGuid().ToString("n"), null, null, null,
@@ -936,6 +1032,11 @@ public sealed class PluginManager
                     }
                     catch (OperationCanceledException)
                     {
+                        // astra-1 P5: a cancelled op is still an outcome (Deferred).
+                        RecordOutcome(new PluginOperationOutcome(
+                            Guid.NewGuid().ToString("n"), op.PluginId, null, null,
+                            PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred,
+                            "cancelled", false));
                         op.Tcs.TrySetResult(new PluginOperationOutcome(
                             Guid.NewGuid().ToString("n"), op.PluginId, null, null,
                             PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred,
@@ -945,9 +1046,12 @@ public sealed class PluginManager
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "lifecycle operation {Kind} failed", op.Kind);
-                        op.Tcs.TrySetResult(new PluginOperationOutcome(
+                        // astra-1 P5: a runner exception is still an outcome (Failed).
+                        var failed = new PluginOperationOutcome(
                             Guid.NewGuid().ToString("n"), op.PluginId, null, null,
-                            PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Failed, ex.Message, false));
+                            PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Failed, ex.Message, false);
+                        RecordOutcome(failed);
+                        op.Tcs.TrySetResult(failed);
                         op.ListTcs.TrySetException(ex);
                     }
                     finally

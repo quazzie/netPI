@@ -242,6 +242,8 @@ public sealed class DiagApp
             },
             agent = AgentStateJson(),
             plugins = PluginsJson(),
+            // astra-1 P5: retired-ALC collection state (separate from the per-plugin rows).
+            unloadedAlocs = UnloadedAlocsJson(),
             models = ModelsJson(),
             sessions = await SessionsJsonAsync(ct),
             backgroundJobs = await JobsJsonAsync(ct),
@@ -271,8 +273,35 @@ public sealed class DiagApp
             id = p.Id, name = p.Name, version = p.Version, state = p.State,
             generation = p.Generation, policy = p.Policy,
             activeLeases = p.ActiveLeases, lastError = p.LastError,
+            // astra-1 P5: the update picture + last lifecycle operation + old-ALC state.
+            availableBuildId = p.Update?.AvailableBuildId,
+            loadedPath = p.Update?.LoadedPath,
+            blockingLeases = p.Update?.BlockingLeases,
+            prevAlocCollected = p.Update?.PrevAlocCollected,
+            lastOperation = p.LastOperation is { } o ? new
+            {
+                operationId = o.OperationId,
+                requestedBuildId = o.RequestedBuildId,
+                activeBuildId = o.ActiveBuildId,
+                phase = o.Phase.ToString(),
+                outcome = o.Outcome.ToString(),
+                restartRequired = o.RestartRequired,
+                error = o.Error,
+            } : null,
         }).ToArray();
     }
+
+    // astra-1 P5: retired-ALC collection state ("gc" view) as a separate payload.
+    private object UnloadedAlocsJson()
+    {
+        var facade = TryResolve<IPluginManagerFacade>("plugins");
+        if (facade is null) return new object[0];
+        return facade.UnloadedAlocs().Select(a => new
+        {
+            label = a.Label, collected = a.Collected, pluginId = a.PluginId,
+        }).ToArray();
+    }
+
 
     private object? ModelsJson()
     {

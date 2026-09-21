@@ -20,6 +20,7 @@ internal sealed class PluginManagerFacade : IPluginManagerFacade
     {
         var list = new List<PluginStatusSnapshot>(_manager.GetStatus().Count);
         foreach (var s in _manager.GetStatus())
+        {
             list.Add(new PluginStatusSnapshot(
                 s.PluginId,
                 s.Name ?? s.PluginId,
@@ -29,7 +30,29 @@ internal sealed class PluginManagerFacade : IPluginManagerFacade
                 s.BuildId,
                 null,
                 s.ActiveLeases,
-                s.LastError));
+                s.LastError,
+                s.Update is null ? null : new PluginStatusUpdate(
+                    s.Update.AvailableBuildId,
+                    s.Update.LoadedPath,
+                    s.Update.BlockingLeases,
+                    s.Update.PrevAlocCollected),
+                s.LastOperation));
+        }
+        return list;
+    }
+
+    // astra-1 P5: retired-ALC collection state for the diagnostics view.
+    public IReadOnlyList<UnloadedAlocInfo> UnloadedAlocs()
+    {
+        var list = new List<UnloadedAlocInfo>();
+        foreach (var (label, collected) in _manager.UnloadedAlocs())
+        {
+            // Labels are "<pluginId>-gen<n>" or "superseded-<pluginId>-gen<n>" —
+            // the plugin id is the label up to the "-gen" suffix.
+            var genIdx = label.LastIndexOf("-gen", StringComparison.Ordinal);
+            var pluginId = genIdx > 0 ? label[..genIdx].Replace("superseded-", "", StringComparison.Ordinal) : null;
+            list.Add(new UnloadedAlocInfo(label, collected, pluginId));
+        }
         return list;
     }
 

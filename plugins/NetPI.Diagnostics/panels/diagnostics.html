@@ -221,8 +221,24 @@ function renderPlugins(list) {
     const meta = [];
     if (p.version) meta.push("v" + esc(p.version));
     meta.push(`gen ${p.generation}`);
+    // astra-1 P5: the update picture (discovery pointer vs. active snapshot)
+    if (p.availableBuildId) meta.push(`avail ${esc(p.availableBuildId)}`);
+    if (p.loadedPath) meta.push(`from ${esc(p.loadedPath)}`);
+    if (p.prevAlocCollected === false) meta.push("<span class='warn'>old ALC not collected</span>");
+    else if (p.prevAlocCollected === true) meta.push("old ALC collected");
     if (p.activeLeases) meta.push(`${p.activeLeases} lease${p.activeLeases > 1 ? "s" : ""}`);
+    if (p.blockingLeases && p.blockingLeases !== p.activeLeases) meta.push(`${p.blockingLeases} blocking`);
     main.append(el("div", "pmeta", meta.join(" · ")));
+    // astra-1 P5: last lifecycle operation (outcome + phase + restartRequired + error).
+    if (p.lastOperation) {
+      const lo = p.lastOperation;
+      const bits = ["last:", esc(lo.outcome), "@", esc(lo.phase)];
+      if (lo.requestedBuildId) bits.push(`req=${esc(lo.requestedBuildId)}`);
+      if (lo.activeBuildId) bits.push(`act=${esc(lo.activeBuildId)}`);
+      if (lo.restartRequired) bits.push("<span class='err-line'>RESTART REQUIRED</span>");
+      main.append(el("div", "pmeta", bits.join(" ")));
+      if (lo.error) main.append(el("div", "perr", esc(lo.error)));
+    }
     if (p.lastError) main.append(el("div", "perr", esc(p.lastError)));
     const actions = el("div", "actions");
     actions.append(el("span", "badge " + esc(state), esc(state)));

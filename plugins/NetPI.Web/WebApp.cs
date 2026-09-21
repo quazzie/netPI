@@ -1279,8 +1279,25 @@ internal sealed class WebApp : IAsyncDisposable
             state = MapPluginState(s.State),
             activeLeases = s.ActiveLeases,
             lastError = s.LastError,
+            // astra-1 P5: the update picture + last lifecycle operation (so the
+            // diagnostics plugin's WS refresh carries the same fields as its seed).
+            availableBuildId = s.Update?.AvailableBuildId,
+            loadedPath = s.Update?.LoadedPath,
+            blockingLeases = s.Update?.BlockingLeases,
+            prevAlocCollected = s.Update?.PrevAlocCollected,
+            lastOperation = s.LastOperation is { } o ? new
+            {
+                operationId = o.OperationId,
+                requestedBuildId = o.RequestedBuildId,
+                activeBuildId = o.ActiveBuildId,
+                phase = o.Phase.ToString(),
+                outcome = o.Outcome.ToString(),
+                restartRequired = o.RestartRequired,
+                error = o.Error,
+            } : null,
         }).ToArray();
     }
+
 
     private static string MapPluginState(string state) => state.ToLowerInvariant() switch
     {
