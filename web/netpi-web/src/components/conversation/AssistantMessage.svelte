@@ -283,7 +283,9 @@
       </div>
     {/if}
 
-    {#if artifacts.length}
+    {#if block.done && artifacts.length}
+      <!-- astra-1 G3: artifact pills are a done-state surface — during a run
+           the write/edit results may still be empty or changing. -->
       <div class="artifacts" aria-label="Artifacts">
         {#each artifacts as artifact (artifact.path)}
           <a
@@ -293,6 +295,9 @@
             rel="noopener"
             title={`Open ${artifact.path} in its default application`}
             onclick={(e) => {
+              // astra-1 G3: plain click shell-opens; ctrl/meta/middle keeps
+              // the /api/file viewer (the anchor's href) — matches mdClick.
+              if (e.ctrlKey || e.metaKey || e.button !== 0) return;
               e.preventDefault();
               e.stopPropagation();
               openInShell(artifact.path);

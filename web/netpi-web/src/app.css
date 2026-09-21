@@ -265,7 +265,7 @@ a { color: var(--accent); }
   border: 1px solid #252b35;
   color: #d9dfeb;
 }
-.md table { border-collapse: collapse; margin: .8em 0; }
+.md table { border-collapse: collapse; margin: .8em 0;  display: block; max-width: 100%; overflow-x: auto; }
 .md th, .md td { border: 1px solid var(--border); padding: 6px 9px; }
 .md a { text-decoration: none; }
 .md a:hover { text-decoration: underline; }
