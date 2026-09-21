@@ -174,6 +174,28 @@
     return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
   }
 
+  // astra-1 G3: very large outputs render a bounded window with an explicit
+  // load-more — never silently lose results (the full text stays in the
+  // session history; only the DOM is bounded).
+  const MAX_RENDERED = 200_000; // chars (~200 KB of monospace text)
+  let outAll = $state(false);
+  let outLong = $derived(
+    call.result !== undefined && call.result.length > MAX_RENDERED,
+  );
+  let outShown = $derived(
+    !outLong || outAll
+      ? (call.result ?? "")
+      : (call.result ?? "").slice(0, MAX_RENDERED),
+  );
+
+  function k(n: number): string {
+    return n >= 1_000_000
+      ? (n / 1_000_000).toFixed(1) + " M"
+      : n >= 1000
+        ? Math.round(n / 1000) + "k"
+        : String(n);
+  }
+
   let prettyArgsCache: { key: string; text: string } | null = null;
   /** astra-1 G3: large inputs are formatted once per args revision, and only
    *  while the detail pane is actually expanded (no per-render JSON.parse). */
@@ -261,7 +283,17 @@
           bind:this={outEl}
           onscroll={onOutScroll}
           class:error={status === "failed"}
-          class="tool-output">{call.result || "(no output)"}</pre>
+          class="tool-output">{outShown || "(no output)"}</pre>
+        {#if outLong}
+          <div class="tool-output-more">
+            <button class="tool-more-btn" onclick={() => (outAll = !outAll)}>
+              {outAll ? "Show truncated window" : `Show all (${k(call.result.length)} chars)`}
+            </button>
+            {#if !outAll}
+              <span>rendered first {k(MAX_RENDERED)} — full output stays in the session history</span>
+            {/if}
+          </div>
+        {/if}
       {:else}
         <div class="tool-live">Running…</div>
       {/if}
