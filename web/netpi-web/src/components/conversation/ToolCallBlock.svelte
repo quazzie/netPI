@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { store } from "../../store.svelte";
   import { ui } from "../../ui.svelte";
   import type { ToolCall } from "../../types";
@@ -39,6 +40,46 @@
             : "done"),
   );
   let running = $derived(status === "running");
+
+  // astra-1 G3: the output scroller owns its own follow (G0 pattern) — a
+  // streaming tool follows its tail UNLESS the user scrolls up to read;
+  // completed output is never force-scrolled.
+  let outEl: HTMLElement | null = $state(null);
+  let outFollow = $state(true);
+  let outPin = { top: 0, at: 0 };
+  let wasExpanded = false;
+
+  function pinOut() {
+    if (!outEl || !outEl.isConnected || !outFollow) return;
+    outEl.scrollTop = outEl.scrollHeight - outEl.clientHeight;
+    outPin.top = outEl.scrollTop;
+    outPin.at = performance.now();
+  }
+
+  function onOutScroll() {
+    if (!outEl) return;
+    if (performance.now() - outPin.at < 300 && Math.abs(outEl.scrollTop - outPin.top) < 1)
+      return; // our own programmatic pin
+    const gap = outEl.scrollHeight - outEl.scrollTop - outEl.clientHeight;
+    outFollow = gap < 24;
+  }
+
+  // Only auto-follow live output; never drag a reader on finished output.
+  $effect(() => {
+    if (!(expanded && running && call.result !== undefined)) return;
+    void tick().then(() => pinOut());
+  });
+
+  // Position on first-open: a still-streaming output starts at the tail
+  // (follow on); finished output starts at the top (follow off, reading).
+  $effect(() => {
+    const open = expanded && running && call.result !== undefined;
+    if (open && !wasExpanded) {
+      outFollow = true;
+      void tick().then(() => pinOut());
+    }
+    wasExpanded = open;
+  });
 
   // Collapsed by default, all tools alike -- including running shell calls
   // (the header still shows "running"). The "keep tool calls open" setting
@@ -212,7 +253,11 @@
 
       <div class="tool-section-label">Output</div>
       {#if call.result !== undefined}
-        <pre class:error={!!call.isError} class="tool-output">{call.result || "(no output)"}</pre>
+        <pre
+          bind:this={outEl}
+          onscroll={onOutScroll}
+          class:error={status === "failed"}
+          class="tool-output">{call.result || "(no output)"}</pre>
       {:else}
         <div class="tool-live">Running…</div>
       {/if}
