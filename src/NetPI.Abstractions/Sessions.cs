@@ -104,6 +104,16 @@ public interface ISessionStore
         => ValueTask.FromResult<SessionEntry?>(null);
 
     /// <summary>
+    /// astra-1 D: the ACTIVE project-context entry for a session — the most
+    /// recent <see cref="EntryKind.ProjectContext"/> entry by sequence, or null
+    /// when the session has never attached a project. Used to reconstruct the
+    /// exact snapshot (survives compaction/reconnect/restart) and to order a
+    /// fresh session's first model-facing project message.
+    /// </summary>
+    ValueTask<SessionEntry?> ActiveProjectContextAsync(string sessionId, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult<SessionEntry?>(null);
+
+    /// <summary>
     /// astra-1 A (Package A): entries with sequence &gt; <paramref name="afterSequence"/>
     /// in append order (oldest first), up to <paramref name="count"/> — explicit
     /// forward paging from a checkpoint, instead of a fixed oldest-first window.

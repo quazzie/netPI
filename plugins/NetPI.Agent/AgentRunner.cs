@@ -362,6 +362,16 @@ public sealed class AgentRunner : IAgentRunner
                 // the history with synthetic interrupted results before it is sent.
                 context = TranscriptSanitizer.Sanitize(context).ToList();
                 transcript.AddRange(context);
+                // astra-1 D: the ACTIVE project snapshot is a ProjectContext entry,
+                // which the compaction tail never carries (it filters
+                // EntryKind.Message only) — reconstruct it EXACTLY from its
+                // persisted snapshot and place it after the history but before
+                // this run's user message. Fresh session → between the system
+                // prompt and the first user message; existing session → after
+                // the whole conversation. Deterministic id (derived from the
+                // entry id) keeps provider fingerprints stable and never stores
+                // a duplicate message.
+                await AppendActiveProjectContextAsync(transcript, request.SessionId, ct);
             }
         }
         catch (OperationCanceledException) { throw; }
@@ -380,6 +390,27 @@ public sealed class AgentRunner : IAgentRunner
         return transcript;
     }
 
+
+    /// <summary>
+    /// astra-1 D: append the session's ACTIVE project snapshot to the transcript
+    /// (reconstructed EXACTLY from its persisted <see cref="EntryKind.ProjectContext"/>
+    /// entry — it survives compaction, reconnect and restart because it is read
+    /// from the store, not carried in the compaction tail). No-op when the
+    /// session has no attached project. The projected message id is derived
+    /// from the entry id, so re-building the transcript across runs is stable
+    /// and never produces a duplicate.
+    /// </summary>
+    private async Task AppendActiveProjectContextAsync(
+        List<AgentMessage> transcript, string sessionId, CancellationToken ct)
+    {
+        var store = Resolve<ISessionStore>("sessions");
+        if (store is null) return;
+        var active = await store.ActiveProjectContextAsync(sessionId, ct);
+        if (active is null) return;
+        var message = ProjectContextProjection.Project(active);
+        if (message is not null)
+            transcript.Add(message);
+    }
 
     private T? Resolve<T>(string id) where T : notnull
     {

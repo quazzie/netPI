@@ -1402,6 +1402,27 @@ internal sealed class WebApp : IAsyncDisposable
                         break;
                 }
             }
+            else if (e.Kind == EntryKind.ProjectContext)
+            {
+                // astra-1 D: project-context events project into ONE model-facing
+                // user message; the UI renders them as a DISTINCT block (their
+                // provenance is the application, not the model) carrying the
+                // exact project name / workspace / instructions.
+                lastAssistant = null;
+                var proj = ProjectContextProjection.Project(e);
+                if (proj is not null)
+                {
+                    var snap = ProjectContextProjection.Snapshot(e);
+                    outEntries.Add(new
+                    {
+                        type = "project_context",
+                        projectName = snap?.ProjectName ?? string.Empty,
+                        workspace = snap?.WorkspacePath ?? string.Empty,
+                        contentHash = snap?.ContentHash ?? string.Empty,
+                        text = ((TextPart?)proj.Parts[0])?.Text ?? string.Empty,
+                    } as object);
+                }
+            }
             else if (e.Kind == EntryKind.Compaction && e.Payload is { } pl)
             {
                 lastAssistant = null;
