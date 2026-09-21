@@ -49,6 +49,8 @@ public sealed class TestPlugin : INetPiPlugin
 
         var service = new TestService { Generation = generation };
         _service = service;
+        _ownConfig = context.OwnConfig; // astra-1 P6: hooks below read config
+        _bus = context.Events;
         // Opt out of the service registration when a second copy of this
         // plugin is staged under another directory (the registry IDs would
         // collide); tests do this to exercise host failure paths.
@@ -59,13 +61,19 @@ public sealed class TestPlugin : INetPiPlugin
             register = false;
         if (register)
             context.Services.Register<TestService>("test.service", service);
+        // astra-1 P6 test hook: fail AFTER service registration (partial
+        // registration — the registered service must be rolled back).
+        if (context_OwnConfigHas("registerFail"))
+            throw new InvalidOperationException("TestPlugin fails after registration (registerFail=true)");
         context.Events.Subscribe<TestPluginEvent>(e =>
         {
             context.Log.Information($"TestPlugin[{generation}] saw event: {e}");
         });
+        // astra-1 P6 test hook: fail AFTER the event subscription.
+        if (context_OwnConfigHas("subscribeFail"))
+            throw new InvalidOperationException("TestPlugin fails after subscription (subscribeFail=true)");
         context.Log.Information($"TestPlugin loaded (generation '{generation}')");
-        // astra-1 P2 test hooks: retain the config for Start/Stop decisions.
-        _ownConfig = context.OwnConfig;
+        // astra-1 P2 test hook: retain the stop duration for Stop decisions.
         if (context.OwnConfig.ValueKind == JsonValueKind.Object
             && context.OwnConfig.TryGetProperty("stopMs", out var ms)
             && ms.ValueKind == JsonValueKind.Number)
@@ -79,7 +87,15 @@ public sealed class TestPlugin : INetPiPlugin
         // exercise "candidate starts fail" deterministically.
         if (context_OwnConfigHas("startFail"))
             throw new InvalidOperationException("TestPlugin refuses to start (startFail=true)");
+        // astra-1 P6 test hook: PARTIAL start — real start work (a start
+        // event is published) completes BEFORE the failure, so the host
+        // must stop/clean up a partially started generation.
+        _startPartial = context_OwnConfigHas("startPartialFail");
+        if (_startPartial && _bus is not null)
+            await _bus.PublishAsync(new TestPluginEvent(generationOf(), "start-partial"), cancellationToken).ConfigureAwait(false);
         _service?.Bump();
+        if (_startPartial)
+            throw new InvalidOperationException("TestPlugin fails during partial start (startPartialFail=true)");
         await ValueTask.CompletedTask;
     }
 
@@ -92,13 +108,23 @@ public sealed class TestPlugin : INetPiPlugin
         return;
     }
 
+    private string generationOf() =>
+        _ownConfig.ValueKind == JsonValueKind.Object
+        && _ownConfig.TryGetProperty("generation", out var g)
+        && g.ValueKind == JsonValueKind.String ? g.GetString()! : "gen";
+
+    /// <summary>astra-1 P6: set while a start-partial generation is in flight (Stop must observe it).</summary>
+    public bool StartPartialActive => _startPartial;
+
     private bool context_OwnConfigHas(string key) =>
         _ownConfig.ValueKind == JsonValueKind.Object
         && _ownConfig.TryGetProperty(key, out var v)
         && v.ValueKind == JsonValueKind.True;
 
-    private JsonElement _ownConfig;
+    private JsonElement _ownConfig = default;
     private int _stopMs;
+    private bool _startPartial;
+    private IEventBus? _bus; // astra-1 P6: retained for partial-start work in StartAsync
 
     public ValueTask UnloadAsync(CancellationToken cancellationToken)
     {
