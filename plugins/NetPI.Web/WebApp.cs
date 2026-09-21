@@ -155,6 +155,7 @@ internal sealed class WebApp : IAsyncDisposable
 
         _subs.Add(_ctx.Events.Subscribe<AgentEvent>(OnAgentEvent));
         _subs.Add(_ctx.Events.Subscribe<ModelRequestDiagnostics>(OnModelDiagnostics));
+        _subs.Add(_ctx.Events.Subscribe<PluginUpdateCompletedEvent>(OnPluginUpdateCompleted));
 
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -302,6 +303,61 @@ internal sealed class WebApp : IAsyncDisposable
             fallback = d.Fallback,
             reason = d.FailureReason,
         }, d.SessionId);
+    }
+
+    /// <summary>
+    /// astra-1 P5: the host lifecycle queue finished a queued update operation.
+    /// Emit the §41 events to EVERY live connection from here — the runner is
+    /// the only completion path (the request already ack'd with the operation
+    /// id). Every event carries operationId so clients can match, and reconcile
+    /// after a reconnect via the facade's GetOperation.
+    /// </summary>
+    private void OnPluginUpdateCompleted(PluginUpdateCompletedEvent ev)
+    {
+        switch (ev.Kind)
+        {
+            case PluginOperationKind.Reload:
+                foreach (var r in ev.Results)
+                {
+                    if (r.PluginId is null) continue;
+                    if (r.Outcome is PluginLifecycleOutcome.Applied or PluginLifecycleOutcome.RolledBack)
+                    {
+                        // a start failure must NEVER announce a swap.
+                        SendEvent("plugin.reloaded", new { operationId = ev.OperationId, pluginId = r.PluginId, buildId = r.BuildId }, null);
+                    }
+                    else if (r.Outcome is PluginLifecycleOutcome.Failed or PluginLifecycleOutcome.RestartRequired)
+                    {
+                        SendEvent("plugin.reloadFailed", new { operationId = ev.OperationId, pluginId = r.PluginId, error = r.Error }, null);
+                    }
+                    // Deferred / Unchanged left the old build active — not a failure.
+                }
+                if (ev.PluginId is { } opPluginId)
+                    SendEvent("plugin.state", new { operationId = ev.OperationId, pluginId = opPluginId, state = PluginStateNow(opPluginId) }, null);
+                break;
+            case PluginOperationKind.ReloadAll:
+                foreach (var r in ev.Results)
+                {
+                    if (r.PluginId is null) continue;
+                    SendEvent("plugin.state", new { operationId = ev.OperationId, pluginId = r.PluginId, state = PluginStateNow(r.PluginId) }, null);
+                    if (r.Outcome is PluginLifecycleOutcome.Failed or PluginLifecycleOutcome.RestartRequired)
+                        SendEvent("plugin.reloadFailed", new { operationId = ev.OperationId, pluginId = r.PluginId, error = r.Error }, null);
+                }
+                break;
+            case PluginOperationKind.Scan:
+                foreach (var scanId in ev.ScannedIds)
+                    SendEvent("plugin.state", new { operationId = ev.OperationId, pluginId = scanId, state = PluginStateNow(scanId) }, null);
+                SendEvent("plugin.scanned", new { operationId = ev.OperationId, loaded = ev.ScannedIds }, null);
+                break;
+        }
+        SendEvent("plugins.state", new { operationId = ev.OperationId, plugins = PluginJson() }, null);
+        SendEvent("ui.panels", new { panels = PanelJson() }, null);
+    }
+
+    /// <summary>astra-1 P5: the ACTUAL host state of one plugin ("failed" when unknown).</summary>
+    private string PluginStateNow(string pluginId)
+    {
+        var st = _facade?.GetStatus().FirstOrDefault(x => string.Equals(x.Id, pluginId, StringComparison.OrdinalIgnoreCase));
+        return st is null ? "failed" : MapPluginState(st.State);
     }
 
     private void OnAgentEvent(AgentEvent e)
@@ -886,48 +942,17 @@ internal sealed class WebApp : IAsyncDisposable
                     await SendErrorAsync(c, requestId, "plugin manager unavailable", ct);
                     break;
                 }
-                // Reload is host-owned work, NOT connection work: a reload of the
-                // Web plugin itself stops the old generation, which closes this very
-                // WS connection and would cancel the connection token mid-LoadAsync.
-                // So run it on a bounded host token and swallow sends that race the
-                // connection teardown (the browser reconnects and re-lists plugins).
-                NetPI.Abstractions.PluginOperationOutcome outcome;
-                using (var reloadCts = new CancellationTokenSource())
-                {
-                    reloadCts.CancelAfter(90_000); // generous bound; host owns its own reload
-                    try { outcome = await _facade.ReloadPluginOutcomeAsync(pid, reloadCts.Token); }
-                    catch (Exception ex)
-                    {
-                        _log.Error($"plugin.reload {pid} threw: {ex.Message}", ex);
-                        outcome = new NetPI.Abstractions.PluginOperationOutcome(
-                            Guid.NewGuid().ToString("n"), pid, null, null,
-                            NetPI.Abstractions.PluginLifecyclePhase.Admission,
-                            NetPI.Abstractions.PluginLifecycleOutcome.Failed, ex.Message, false);
-                    }
-                }
-                try
-                {
-                    // astra-1 P2: a start failure must NEVER announce a swap.
-                    // plugin.reloaded fires only on Applied/RolledBack; the real
-                    // per-plugin state comes from the host, and failures carry
-                    // the host's error text (a Deferred reload left the old
-                    // build active — that is NOT a failure).
-                    var oc = outcome.Outcome;
-                    var applied = oc is NetPI.Abstractions.PluginLifecycleOutcome.Applied
-                        or NetPI.Abstractions.PluginLifecycleOutcome.RolledBack;
-                    if (applied)
-                        await SendAsync(c, "plugin.reloaded", new { pluginId = pid }, null, ct);
-                    else if (oc is not (NetPI.Abstractions.PluginLifecycleOutcome.Deferred
-                            or NetPI.Abstractions.PluginLifecycleOutcome.Unchanged))
-                        await SendAsync(c, "plugin.reloadFailed", new { pluginId = pid, error = outcome.Error }, null, ct);
-                    // PLAN §41: a per-plugin state event from the ACTUAL host state.
-                    var st = _facade.GetStatus().FirstOrDefault(x => string.Equals(x.Id, pid, StringComparison.OrdinalIgnoreCase));
-                    await SendAsync(c, "plugin.state", new { pluginId = pid, state = st is null ? "failed" : MapPluginState(st.State) }, null, ct);
-                    await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
-                    await SendAsync(c, "ui.panels", new { panels = PanelJson() }, null, ct);
-                    await SendAckAsync(c, requestId, ct);
-                }
-                catch { /* connection may be gone (Web reloaded itself) */ }
+                // astra-1 P5: the reload must NOT block the client on the host
+                // queue. Ack IMMEDIATELY with an operation id; the work runs on
+                // the host lifecycle queue (a reload of netpi.web itself would
+                // otherwise kill this connection before the ack ever lands). The
+                // outcome is announced later by the RUNNER (OnPluginUpdateCompleted)
+                // to EVERY live connection, and stays queryable (facade
+                // GetOperation) after a reconnect.
+                var reloadOpId = _facade.EnqueueReload(pid, S(p, "buildId"), CancellationToken.None);
+                await c.SendSafeAsync(
+                    Envelope("ack", requestId, null,
+                        new { operationId = reloadOpId, kind = "reload", pluginId = pid }), ct);
                 break;
             }
 
@@ -939,32 +964,26 @@ internal sealed class WebApp : IAsyncDisposable
                 break;
             }
 
+            // astra-1 P5: ack with an operation id immediately; per-plugin
+            // state/failed events arrive from the runner (OnPluginUpdateCompleted)
+            // to every live connection.
             case "plugin.reloadAll":
                 if (_facade is not null)
                 {
-                    var outcomes = await _facade.ReloadAllOutcomeAsync(ct);
-                    // astra-1 P2: per-plugin state events carry the ACTUAL host
-                    // state for every plugin; failures carry their error text.
-                    foreach (var o in outcomes)
-                    {
-                        if (o.PluginId is null) continue;
-                        var st = _facade.GetStatus().FirstOrDefault(x => string.Equals(x.Id, o.PluginId, StringComparison.OrdinalIgnoreCase));
-                        await SendAsync(c, "plugin.state",
-                            new { pluginId = o.PluginId, state = st is null ? "failed" : MapPluginState(st.State) }, null, ct);
-                        if (o.Outcome is NetPI.Abstractions.PluginLifecycleOutcome.Failed or NetPI.Abstractions.PluginLifecycleOutcome.RestartRequired)
-                            await SendAsync(c, "plugin.reloadFailed", new { pluginId = o.PluginId, error = o.Error }, null, ct);
-                    }
-                    await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
-                    await SendAsync(c, "ui.panels", new { panels = PanelJson() }, null, ct);
+                    var allOpId = _facade.EnqueueReloadAll(CancellationToken.None);
+                    await c.SendSafeAsync(
+                        Envelope("ack", requestId, null,
+                            new { operationId = allOpId, kind = "reloadAll" }), ct);
                 }
-                await SendAckAsync(c, requestId, ct);
+                else
+                    await SendAckAsync(c, requestId, ct);
                 break;
 
             // PLAN §50: re-scan the plugin directory for folders staged after
             // startup and load+start any the host has never seen. Existing
-            // plugins are untouched (reload swaps their bytes). Like reload,
-            // this is host-owned work — run it on a bounded token and swallow
-            // sends that race the connection teardown.
+            // plugins are untouched (reload swaps their bytes). astra-1 P5:
+            // ack with an operation id immediately — the loaded list arrives
+            // from the runner (OnPluginUpdateCompleted) to every live client.
             case "plugin.scan":
             {
                 if (_facade is null)
@@ -972,23 +991,10 @@ internal sealed class WebApp : IAsyncDisposable
                     await SendErrorAsync(c, requestId, "plugin manager unavailable", ct);
                     break;
                 }
-                IReadOnlyList<string> scanned = [];
-                using (var scanCts = new CancellationTokenSource())
-                {
-                    scanCts.CancelAfter(120_000); // a load + Start of several plugins
-                    try { scanned = await _facade.ScanAsync(scanCts.Token); }
-                    catch (Exception ex) { _log.Error($"plugin.scan threw: {ex.Message}", ex); }
-                }
-                try
-                {
-                    foreach (var pid in scanned)
-                        await SendAsync(c, "plugin.state", new { pluginId = pid, state = "active" }, null, ct);
-                    await SendAsync(c, "plugin.scanned", new { loaded = scanned }, null, ct);
-                    await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
-                    await SendAsync(c, "ui.panels", new { panels = PanelJson() }, null, ct);
-                    await SendAckAsync(c, requestId, ct);
-                }
-                catch { /* connection may be gone */ }
+                var scanOpId = _facade.EnqueueScan(CancellationToken.None);
+                await c.SendSafeAsync(
+                    Envelope("ack", requestId, null,
+                        new { operationId = scanOpId, kind = "scan" }), ct);
                 break;
             }
 
