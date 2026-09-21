@@ -2,10 +2,15 @@
   <PropertyGroup>
     <RootNamespace>NetPI.BackgroundTasks</RootNamespace>
     <AssemblyName>netPI.BackgroundTasks</AssemblyName>
-    <Description>Background process management: start/output/list/kill with process-tree cleanup (PLAN §27-§28). Reloadable netPI plugin.</Description>
+    <Description>Background process management: start/output/list/kill with process-tree cleanup (PLAN §27-§28), plus a "background" right-panel tab served on its own Kestrel port. Reloadable netPI plugin.</Description>
 
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Panel page served from the plugin assembly (mirrors NetPI.Web's pattern). -->
+    <EmbeddedResource Include="panels\background.html" />
   </ItemGroup>
 </Project>

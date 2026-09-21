@@ -32,7 +32,9 @@ plugins/                  One folder per plugin; each contains a DLL staged by
                             NetPI.Tools         read/write/edit/grep + bash/powershell (§18-26)
                             NetPI.AutoCompact   context compaction (§31-33)
                             NetPI.Retry         model-retry policy (§34)
-                            NetPI.BackgroundTasks  background jobs + 4 tools (§27-28)
+                            NetPI.BackgroundTasks  background jobs + 4 tools (§27-28); "background"
+                                                              panel on its own :5275 Kestrel
+                                                              (docs/web-panels.md)
                             NetPI.Web           Kestrel Web surface, /ws, /api/file (§36, §41).
                                                               Registers no panel (its former
                                                               "plugins" panel was folded into
@@ -44,7 +46,7 @@ plugins/                  One folder per plugin; each contains a DLL staged by
                                                               sessions).
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
-tests/NetPI.Host.Tests/   101 xunit tests; the integration surface.
+tests/NetPI.Host.Tests/   108 xunit tests; the integration surface.
 tools/publish-plugins.ps1 Stages plugin DLLs into plugins/<name>/; the host
                               snapshots that folder into per-generation
                               plugin-cache dirs (what the ALCs actually load).
@@ -211,7 +213,8 @@ changes run `npx vite build` and **reload the Web plugin** (Web UI → reload, o
 | `netpi.tools` | `bash.executable`, `powershell.executable` (auto-detected otherwise) |
 | `netpi.diagnostics` | `port` (5274) |
 | `netpi.testplugin` | `loadFail`, `generation`, `register` |
-| `netpi.agent`, `netpi.context.pi`, `netpi.backgroundtasks` | (none) |
+| `netpi.backgroundtasks` | `port` (5275) |
+| `netpi.agent`, `netpi.context.pi` | (none) |
 
 ## System-prompt layering (NetPI.Context.Pi, PLAN §16-17)
 
@@ -225,7 +228,7 @@ repo, it feeds every run in this workspace.
 ## Tests & verification
 
 ```bash
-dotnet test NetPI.sln        # 101 tests (agent runtime scenarios, session
+dotnet test NetPI.sln        # 108 tests (agent runtime scenarios, session
                              # store, plugin manager, shell detection, …)
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json
 ```

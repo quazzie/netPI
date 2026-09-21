@@ -6,10 +6,10 @@ a plugin can never destabilize the chat app (`src/NetPI.Abstractions/WebUi.cs`).
 
 > PLAN-v1.md does not cover this feature — this doc is the reference. The
 > shell contains **no hardcoded tabs**: every right-panel tab is a
-> `WebPanelDefinition` from the `ui.panels` catalog. NetPI.Web self-registers
-> two panels ("plugins", and historically "diagnostics"); since the
-> NetPI.Diagnostics plugin (PLAN §47) the "diagnostics" tab is registered by
-> that plugin on its own Kestrel port — see "Reference implementation" below.
+> `WebPanelDefinition` from the `ui.panels` catalog. The "diagnostics" tab
+> (with the former "plugins" view folded in) is registered by the
+> NetPI.Diagnostics plugin (PLAN §47) on its own Kestrel port, and the "background" tab by the
+> NetPI.BackgroundTasks plugin — see "Reference implementation" below.
 
 ## Data flow
 
@@ -42,6 +42,7 @@ web/netpi-web: ws.ts "ui.panels" → store.webPanels → RightPanel.svelte tab l
 | `plugins/NetPI.Web/WebApp.cs` | `PanelJson()` (~:959); `ui.panels` broadcasts (:423 bootstrap, :691 after `plugin.reload`, :715 after `plugin.reloadAll`, :732 for `ui.panels.list`) |
 | `plugins/NetPI.Web/WebPlugin.cs` | Self-registers the "plugins" panel (see Reference implementation) |
 | `plugins/NetPI.Diagnostics/` | Registers the "diagnostics" panel with an **absolute** `EntryUrl` (`http://127.0.0.1:5274/panel/diagnostics`) — the page + API live on the Diagnostics plugin's own Kestrel port; the panel tab appears/disappears with the plugin generation |
+| `plugins/NetPI.BackgroundTasks/` | Registers the "background" panel (`http://127.0.0.1:5275/panel/background`); the page lists background jobs and stops them via same-origin `/api/bg/*` endpoints (BgWebApp.cs) |
 | `web/netpi-web/src/types.ts` | `WebPanelInfo` wire type |
 | `web/netpi-web/src/store.svelte.ts` | `webPanels` state |
 | `web/netpi-web/src/ws.ts` | `case "ui.panels"` → store |
@@ -183,6 +184,15 @@ the Diagnostics plugin — the Svelte shell has zero hardcoded tabs:
   model-wire decisions, agent events, log tail with level/plugin filters,
   sessions) every 4 s — no `/ws` connection, no cross-origin needed (page
   and API share the 5274 origin).
+- `plugins/NetPI.BackgroundTasks/` — `LoadAsync` registers
+  `("background", "Background", "▶", "http://127.0.0.1:{port}/panel/background", 5)`
+  (absolute URL; default port 5275, `plugins.netpi.backgroundtasks.port`).
+  `BgWebApp.cs` serves the embedded `panels/background.html` plus
+  `GET /api/bg/jobs`, `GET /api/bg/{id}/output?chars=` (tail of the bounded
+  output ring) and `POST /api/bg/{id}/kill`. The page polls `/api/bg/jobs`
+  every 2 s, re-points the registration at the real bound URL when port 0 is
+  used, and `location.reload()`s itself if the surface stays unreachable
+  (plugin reload / host restart) so it self-heals across generations.
 
 **Deploying a new NetPI.Web build:** `dotnet build` the plugin →
 `pwsh tools/publish-plugins.ps1 -Configuration Debug` → `plugin.reload` in the

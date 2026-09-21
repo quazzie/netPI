@@ -189,6 +189,26 @@ public sealed class BackgroundJobManager : IBackgroundJobManager
         }
     }
 
+    /// <summary>
+    /// The last <paramref name="chars"/> characters of a job's captured output —
+    /// the live tail the right-panel page renders. The bounded ring may have
+    /// already dropped older chars; the returned text is always ≤ chars.
+    /// </summary>
+    internal ValueTask<BackgroundJobOutput> GetTailAsync(string jobId, int chars, CancellationToken cancellationToken = default)
+    {
+        lock (_gate)
+        {
+            var job = _jobs.GetValueOrDefault(jobId);
+            if (job is null)
+                return ValueTask.FromResult(new BackgroundJobOutput(jobId, BackgroundJobState.Failed, null, "no such job", 0, false));
+            var (_, total, _) = job.Slice(0);
+            var (text, next, truncated) = job.Slice(Math.Max(0, total - chars));
+            if (text.Length > chars) text = text.Substring(text.Length - chars);
+            return ValueTask.FromResult(new BackgroundJobOutput(
+                jobId, job.State, job.ExitCode, text, next, truncated || total > chars));
+        }
+    }
+
     /// <summary>On plugin stop/shutdown: kill all remaining jobs (PLAN §28).</summary>
     internal void StopAll()
     {
@@ -353,7 +373,8 @@ public sealed class BackgroundKillTool : IAgentTool
 /// <summary>
 /// The reloadable BackgroundTasks plugin (PLAN §27/§28). Registers the
 /// <see cref="IBackgroundJobManager"/> service and the background_* tools into
-/// the shared tool registry.
+/// the shared tool registry, and registers the "background" right-panel tab
+/// (docs/web-panels.md) served by its own Kestrel port (default 5275).
 /// </summary>
 public sealed class BackgroundTasksPlugin : INetPiPlugin
 {
@@ -361,18 +382,34 @@ public sealed class BackgroundTasksPlugin : INetPiPlugin
     private IAgentTool[] _tools = [];
     private IDisposable[] _registrations = [];
     private BackgroundJobManager? _mgr;
+    private BgWebApp? _app;
+    private IDisposable? _panel;
+    private int _port;
 
-    public PluginInfo Info { get; } = new("netPI.BackgroundTasks", "Background Tasks", "0.1.0");
+    public PluginInfo Info { get; } = new("netPI.BackgroundTasks", "Background Tasks", "0.2.0");
 
-    public async ValueTask LoadAsync(IPluginContext context, CancellationToken cancellationToken)
+    public ValueTask LoadAsync(IPluginContext context, CancellationToken cancellationToken)
     {
         _ctx = context;
         _mgr = new BackgroundJobManager(context);
         context.Services.Register<IBackgroundJobManager>("background", _mgr);
-        await ValueTask.CompletedTask;
+
+        // First-class panel registration (like Diagnostics, PLAN §47): the page
+        // and the /api/bg endpoints live on this plugin's own Kestrel port.
+        // The registration is generation-scoped, so the tab disappears with
+        // the generation even if we never dispose the handle.
+        var cfg = context.OwnConfig;
+        int port = cfg.ValueKind == System.Text.Json.JsonValueKind.Object
+                   && cfg.TryGetProperty("port", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.Number
+            ? p.GetInt32() : 5275;
+        _port = port;
+        _app = new BgWebApp(_mgr, context.Log, port);
+        _panel = context.WebPanels.Register(new WebPanelDefinition(
+            "background", "Background", "▶", $"http://127.0.0.1:{port}/panel/background", 5));
+        return ValueTask.CompletedTask;
     }
 
-    public ValueTask StartAsync(CancellationToken cancellationToken)
+    public async ValueTask StartAsync(CancellationToken cancellationToken)
     {
         // All plugins have been loaded by the time any plugin starts, so the
         // tools registry (owned by the Tools plugin) is available now.
@@ -389,11 +426,26 @@ public sealed class BackgroundTasksPlugin : INetPiPlugin
         _tools = tools;
         _registrations = tools.Select(t => registry.Register(t)).ToArray();
         ctx.Log.Information($"BackgroundTasks ready: {string.Join(", ", tools.Select(t => t.Name))}");
-        return ValueTask.CompletedTask;
+
+        var app = _app ?? throw new InvalidOperationException("Web app not initialised.");
+        await app.StartAsync(cancellationToken);
+        // Port 0 (tests): re-register over our own entry with the real bound URL.
+        if (_port == 0 && app.BoundUrl is { } url)
+        {
+            _panel?.Dispose();
+            _panel = ctx.WebPanels.Register(new WebPanelDefinition(
+                "background", "Background", "▶", url + "/panel/background", 5));
+        }
+        await ValueTask.CompletedTask;
     }
 
     public async ValueTask StopAsync(CancellationToken cancellationToken)
     {
+        if (_app is { } webApp)
+        {
+            _app = null;
+            try { await webApp.StopAsync(cancellationToken); } catch { /* best-effort */ }
+        }
         _mgr?.StopAll();
         _mgr = null;
         foreach (var r in _registrations) r.Dispose();
@@ -402,7 +454,12 @@ public sealed class BackgroundTasksPlugin : INetPiPlugin
         await ValueTask.CompletedTask;
     }
 
-    public ValueTask UnloadAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    public async ValueTask UnloadAsync(CancellationToken cancellationToken)
+    {
+        _panel?.Dispose();
+        _panel = null;
+        await ValueTask.CompletedTask;
+    }
 }
 
 /// <summary>Minimal JSON-schema/argument helpers (self-contained copy).</summary>
