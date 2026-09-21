@@ -50,6 +50,9 @@ internal sealed class PluginManagerFacade : IPluginManagerFacade
         await _manager.ReloadAllAsync(cancellationToken);
         return _manager.CurrentSnapshots().Count;
     }
+
+    public async ValueTask<IReadOnlyList<string>> ScanAsync(CancellationToken cancellationToken = default)
+        => await _manager.ScanAsync(cancellationToken);
 }
 
 /// <summary>

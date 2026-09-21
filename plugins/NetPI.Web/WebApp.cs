@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -137,6 +138,14 @@ internal sealed class WebApp : IAsyncDisposable
             var result = await OpenFileAsync(c);
             return result;
         });
+        // Localhost-only "open with the OS default application" (Windows:
+        // Explorer / shell). Same path resolution as /api/file; the request
+        // never leaves the machine, so the spawned process is safe.
+        app.MapGet("/api/open", async (HttpContext c) =>
+        {
+            var result = await OpenInShellAsync(c);
+            return result;
+        });
         // SPA routing: any request that matched no file and no explicit route
         // (including the bare "/") serves index.html from the frontend build.
         if (RootsTheFrontend())
@@ -149,6 +158,9 @@ internal sealed class WebApp : IAsyncDisposable
         await app.StartAsync(ct);
         _app = app;
         _ = Task.Run(BootstrapCatalogAsync);
+        // One-shot backfill: existing untitled sessions get their title from
+        // the first user message (new sessions are auto-titled in ChatSendAsync).
+        _ = Task.Run(() => BackfillSessionTitlesAsync(CancellationToken.None));
     }
 
     public async ValueTask StopAsync(CancellationToken ct)
@@ -814,6 +826,38 @@ internal sealed class WebApp : IAsyncDisposable
                 await SendAckAsync(c, requestId, ct);
                 break;
 
+            // PLAN §50: re-scan the plugin directory for folders staged after
+            // startup and load+start any the host has never seen. Existing
+            // plugins are untouched (reload swaps their bytes). Like reload,
+            // this is host-owned work — run it on a bounded token and swallow
+            // sends that race the connection teardown.
+            case "plugin.scan":
+            {
+                if (_facade is null)
+                {
+                    await SendErrorAsync(c, requestId, "plugin manager unavailable", ct);
+                    break;
+                }
+                IReadOnlyList<string> scanned = [];
+                using (var scanCts = new CancellationTokenSource())
+                {
+                    scanCts.CancelAfter(120_000); // a load + Start of several plugins
+                    try { scanned = await _facade.ScanAsync(scanCts.Token); }
+                    catch (Exception ex) { _log.Error($"plugin.scan threw: {ex.Message}", ex); }
+                }
+                try
+                {
+                    foreach (var pid in scanned)
+                        await SendAsync(c, "plugin.state", new { pluginId = pid, state = "active" }, null, ct);
+                    await SendAsync(c, "plugin.scanned", new { loaded = scanned }, null, ct);
+                    await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
+                    await SendAsync(c, "ui.panels", new { panels = PanelJson() }, null, ct);
+                    await SendAckAsync(c, requestId, ct);
+                }
+                catch { /* connection may be gone */ }
+                break;
+            }
+
             case "commands.list":
             {
                 var cmds = (_commands?.All() ?? [])
@@ -925,6 +969,19 @@ internal sealed class WebApp : IAsyncDisposable
             info = await Store.CreateAsync(payloadWorkspace, ct);
             sid = info.Id;
             await SendAsync(c, "session.created", ToSessionJson(info), sid, ct);
+        }
+
+        // First send on a session with no title: name it after the message
+        // (drawer "untitled" -> first few words of what the user asked).
+        if (string.IsNullOrEmpty(info.Title) && !string.IsNullOrWhiteSpace(text))
+        {
+            var autoTitle = DeriveSessionTitle(text);
+            if (autoTitle is not null)
+            {
+                await Store.RenameAsync(sid!, autoTitle, ct);
+                info = (await Store.GetAsync(sid!, ct)) ?? info with { Title = autoTitle };
+                await BroadcastSession(sid!, ct);
+            }
         }
 
         // The session is authoritative for workspace and, when the client does
@@ -1109,6 +1166,16 @@ internal sealed class WebApp : IAsyncDisposable
     /// </summary>
     private List<object> EntriesToJson(IReadOnlyList<SessionEntry> entries)
     {
+        // PLAN §46: a run that died mid-batch (host restart/crash) leaves an
+        // assistant tool call with no stored result; the frontend would render
+        // that replayed call as "running" forever. Precompute which call ids
+        // actually have a result and flag the orphans as interrupted.
+        var resolvedCallIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in entries)
+            if (e.Kind == EntryKind.Message && e.Message is { } tm && tm.Role == MessageRole.Tool)
+                foreach (var part in tm.Parts.OfType<ToolResultPart>())
+                    if (!string.IsNullOrEmpty(part.ToolCallId)) resolvedCallIds.Add(part.ToolCallId);
+
         var outEntries = new List<object>();
         WireAssistant? lastAssistant = null;
         foreach (var e in entries)
@@ -1123,7 +1190,7 @@ internal sealed class WebApp : IAsyncDisposable
                         break;
 
                     case MessageRole.Assistant:
-                        var (parts, toolResults) = SplitAssistant(m);
+                        var (parts, toolResults) = SplitAssistant(m, resolvedCallIds);
                         lastAssistant = new WireAssistant { Parts = parts, ToolResults = toolResults };
                         outEntries.Add(lastAssistant);
                         break;
@@ -1164,7 +1231,8 @@ internal sealed class WebApp : IAsyncDisposable
     private static string TextOf(AgentMessage m) =>
         string.Join("\n", m.Parts.OfType<TextPart>().Select(t => t.Text));
 
-    private static (List<object> Parts, List<object> ToolResults) SplitAssistant(AgentMessage m)
+    private static (List<object> Parts, List<object> ToolResults) SplitAssistant(
+        AgentMessage m, HashSet<string> resolvedCallIds)
     {
         var parts = new List<object>();
         var toolResults = new List<object>();
@@ -1185,6 +1253,7 @@ internal sealed class WebApp : IAsyncDisposable
                         id = tc.Id,
                         name = tc.Name,
                         argumentsJson = tc.Arguments.GetRawText(),
+                        interrupted = !resolvedCallIds.Contains(tc.Id),
                     });
                     break;
                 case ToolResultPart tr:
@@ -1393,27 +1462,9 @@ internal sealed class WebApp : IAsyncDisposable
 
     private async Task<IResult> OpenFileAsync(HttpContext context)
     {
-        var rawPath = context.Request.Query["path"].ToString();
-        if (string.IsNullOrWhiteSpace(rawPath))
-            return Results.BadRequest("path is required");
-
-        string fullPath;
-        if (Path.IsPathRooted(rawPath))
-        {
-            fullPath = Path.GetFullPath(rawPath);
-        }
-        else
-        {
-            var sid = context.Request.Query["sessionId"].ToString();
-            if (string.IsNullOrWhiteSpace(sid) || Store is null)
-                return Results.BadRequest("sessionId is required for relative paths");
-
-            var session = await Store.GetAsync(sid, context.RequestAborted);
-            if (session?.WorkspacePath is null)
-                return Results.NotFound("session/workspace not found");
-
-            fullPath = Path.GetFullPath(Path.Combine(session.WorkspacePath, rawPath));
-        }
+        var (fullPath, error) = await ResolvePathAsync(context);
+        if (error is not null)
+            return error;
 
         if (!File.Exists(fullPath))
             return Results.NotFound("file not found");
@@ -1427,6 +1478,74 @@ internal sealed class WebApp : IAsyncDisposable
             contentType,
             fileDownloadName: download ? Path.GetFileName(fullPath) : null,
             enableRangeProcessing: true);
+    }
+
+    /// <summary>
+    /// Shared path resolution for /api/file and /api/open: an absolute path is
+    /// used as-is; a relative path is resolved against the workspace of the
+    /// session named by <c>sessionId</c>. Returns a pre-built error
+    /// <see cref="IResult"/> in the Error slot when the request cannot be
+    /// resolved (Path is then empty).
+    /// </summary>
+    private async Task<(string Path, IResult? Error)> ResolvePathAsync(HttpContext context)
+    {
+        var rawPath = context.Request.Query["path"].ToString();
+        if (string.IsNullOrWhiteSpace(rawPath))
+            return ("", Results.BadRequest("path is required"));
+
+        if (Path.IsPathRooted(rawPath))
+            return (Path.GetFullPath(rawPath), null);
+
+        var sid = context.Request.Query["sessionId"].ToString();
+        if (!string.IsNullOrWhiteSpace(sid) && Store is not null)
+        {
+            var session = await Store.GetAsync(sid, context.RequestAborted);
+            if (session?.WorkspacePath is { Length: > 0 })
+                return (Path.GetFullPath(Path.Combine(session.WorkspacePath!, rawPath)), null);
+        }
+
+        // No usable workspace (workspace-less session, missing session id, or
+        // unknown session id): fall back to the host process working directory.
+        // The desktop shell starts the host with the project root as CWD, as
+        // does tools/keep-alive-host.ps1, so repo-relative paths resolve there.
+        var cwd = Environment.CurrentDirectory;
+        if (!string.IsNullOrEmpty(cwd))
+            return (Path.GetFullPath(Path.Combine(cwd, rawPath)), null);
+
+        return ("", Results.BadRequest("path is relative and no workspace is available"));
+    }
+
+    /// <summary>
+    /// Opens the resolved path with the OS default application (Windows: the
+    /// Explorer shell — files launch their registered handler, folders open in
+    /// Explorer). Localhost-only like /api/file; the host spawns a short-lived
+    /// shell process on behalf of the web UI.
+    /// </summary>
+    private async Task<IResult> OpenInShellAsync(HttpContext context)
+    {
+        var (fullPath, error) = await ResolvePathAsync(context);
+        if (error is not null)
+            return error;
+
+        if (!File.Exists(fullPath) && !Directory.Exists(fullPath))
+            return Results.NotFound("file not found");
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = fullPath,
+                UseShellExecute = true, // required: hands the path to the shell
+                WindowStyle = ProcessWindowStyle.Hidden,
+            });
+        }
+        catch (Exception ex)
+        {
+            _log.Warning($"failed to open '{fullPath}' in shell: {ex.Message}");
+            return Results.Problem(detail: $"could not open in shell: {ex.Message}", statusCode: 500);
+        }
+
+        return Results.NoContent();
     }
 
     private static bool TryGetContentType(string path, out string? contentType)
@@ -1446,6 +1565,68 @@ internal sealed class WebApp : IAsyncDisposable
         return contentType is not null;
     }
 
+
+    /// <summary>
+    /// Drawer title from a message: first line, markdown stripped, folded
+    /// whitespace, capped at ~a couple of words (48 chars + ellipsis).
+    /// </summary>
+    private static string? DeriveSessionTitle(string text)
+    {
+        var line = text.Split((char)10)[0].Trim().TrimEnd((char)13);
+        foreach (var m in new[] { "*", "`", "_", "#", "> ", "- ", "• " })
+            line = line.Replace(m, "");
+        line = System.Text.RegularExpressions.Regex.Replace(line, "\\s+", " ").Trim();
+        if (line.Length == 0) return null;
+        return line.Length <= 48 ? line : line[..47].TrimEnd() + "…";
+    }
+
+
+    /// <summary>
+    /// One-shot: rename untitled sessions after their first user message so
+    /// pre-existing transcripts show meaningful drawer titles. Runs on a
+    /// background thread at Web surface start.
+    /// </summary>
+    private async Task BackfillSessionTitlesAsync(CancellationToken ct)
+    {
+        if (Store is null) return;
+        try
+        {
+            var total = await Store.CountAsync(ct);
+            for (var offset = 0; offset < total; offset += 50)
+            {
+                if (ct.IsCancellationRequested) return;
+                var page = await Store.ListAsync(50, offset, ct);
+                foreach (var sess in page)
+                {
+                    if (ct.IsCancellationRequested) return;
+                    if (!string.IsNullOrEmpty(sess.Title)) continue;
+
+                    string? firstUser = null;
+                    for (var e = 0; e < 200; e += 50)
+                    {
+                        var entries = await Store.ReadAsync(sess.Id, e, 50, ct);
+                                                var msg = entries
+                            .Where(x => x.Kind == EntryKind.Message && x.Message?.Role == MessageRole.User)
+                            .Select(x => x.Message!.Parts.OfType<TextPart>()
+                                .Select(p => p.Text).Aggregate((a, b) => a + b))
+                            .FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
+                        if (msg is not null) { firstUser = msg; break; }
+                        if (firstUser is not null || entries.Count < 50) break;
+                    }
+                    var title = firstUser is null ? null : DeriveSessionTitle(firstUser);
+                    if (title is null) continue;
+
+                    await Store.RenameAsync(sess.Id, title, ct);
+                    await BroadcastSession(sess.Id, ct);
+                    _log.Information($"Backfilled session title: {sess.Id} -> {title}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warning($"session title backfill failed: {ex.Message}");
+        }
+    }
 
     private object Bootstrap()
     {

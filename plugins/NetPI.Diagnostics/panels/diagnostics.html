@@ -102,7 +102,11 @@
       <div class="card" id="ovAgent"></div>
     </section>
     <section id="tab-plugins">
-      <div class="toolbar"><button class="btn" id="reloadAll">Reload all</button></div>
+      <div class="toolbar">
+        <button class="btn" id="reloadAll">Reload all</button>
+        <button class="btn" id="scanPlugins" title="Rescan the plugin directory and load any new plugins staged after startup (no host restart)">Scan for new</button>
+      </div>
+      <p class="auto" id="scanStatus" style="display:none"></p>
       <div class="plist" id="pluginList"></div>
     </section>
     <section id="tab-models">
@@ -253,6 +257,11 @@ function connectHostWs() {
         if (pluginState.has(p.pluginId)) pluginState.get(p.pluginId).state = "Active";
         renderPlugins([...pluginState.values()]);
         break;
+      case "plugin.scanned": {
+        const loaded = p.loaded || [];
+        setScanStatus(loaded.length ? "scanned in: " + loaded.join(", ") : "nothing new on disk");
+        break;
+      }
       case "plugin.reloadFailed":
         if (pluginState.has(p.pluginId)) pluginState.get(p.pluginId).state = "Failed";
         renderPlugins([...pluginState.values()]);
@@ -271,6 +280,17 @@ document.getElementById("reloadAll").onclick = () => {
   if (hostWs && hostWs.readyState === WebSocket.OPEN)
     hostWs.send(JSON.stringify({ type: "plugin.reloadAll", payload: {} }));
 };
+document.getElementById("scanPlugins").onclick = () => {
+  setScanStatus("scanning…");
+  if (hostWs && hostWs.readyState === WebSocket.OPEN)
+    hostWs.send(JSON.stringify({ type: "plugin.scan", payload: {} }));
+  else setScanStatus("host not connected");
+};
+function setScanStatus(msg) {
+  const b = document.getElementById("scanStatus");
+  if (msg) { b.textContent = msg; b.style.display = ""; }
+  else { b.style.display = "none"; b.textContent = ""; }
+}
 
 // ---- models -------------------------------------------------------------------
 async function loadModels() {

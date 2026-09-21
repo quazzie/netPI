@@ -191,6 +191,43 @@ public sealed class PluginManager
         }
     }
 
+    /// <summary>
+    /// PLAN §50: discover plugins staged on disk after startup (a new folder
+    /// dropped into plugins/). Existing ids are left alone — they keep their
+    /// live generation (reload a specific id to swap its bytes); only ids the
+    /// host has never seen are loaded, so a scan can never unload anything a
+    /// connection is talking to (including the web surface itself). Returns the
+    /// ids of the plugins that were newly loaded and started.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ScanAsync(CancellationToken ct = default)
+    {
+        var loaded = new List<string>();
+        foreach (var dir in DiscoverPluginDirectories())
+        {
+            ct.ThrowIfCancellationRequested();
+            var id = Path.GetFileName(dir);
+            var existing = Get(id);
+            if (existing is { State: PluginState.Active or PluginState.Draining or PluginState.Loading or PluginState.Failed })
+                continue;
+            var inst = await LoadGenerationAsync(id, dir, ct);
+            if (inst is null) continue;
+            try
+            {
+                await inst.Plugin!.StartAsync(ct);
+                _logger.LogInformation("Plugin {Plugin} started (gen {Gen})", inst.PluginId, inst.Generation);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Plugin {Plugin} StartAsync failed (gen {Gen})", inst.PluginId, inst.Generation);
+                inst.LastError = ex.Message;
+                inst.State = PluginState.Failed;
+            }
+            loaded.Add(id);
+            _logger.LogInformation("Plugin {Plugin} scanned in from {Dir} (gen {Gen})", id, inst.CacheDirectory, inst.Generation);
+        }
+        return loaded;
+    }
+
     /// <summary>Start every plugin that loaded successfully.</summary>
     public async Task StartAllAsync(CancellationToken ct = default)
     {
@@ -402,7 +439,7 @@ public sealed class PluginManager
         var old = Get(pluginId);
         if (old is null)
             throw new ArgumentException($"plugin '{pluginId}' is not loaded", nameof(pluginId));
-        if (old.State is not PluginState.Active)
+        if (old.State is not PluginState.Active and not PluginState.Failed)
         {
             _logger.LogWarning("Reload of {Plugin} ignored: state is {State}", pluginId, old.State);
             return null;

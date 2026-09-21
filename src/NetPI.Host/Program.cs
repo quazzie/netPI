@@ -104,6 +104,17 @@ while (true)
                 await RunReload(runtime, id);
             break;
 
+        case "scan":
+        {
+            // PLAN §50: rescan the plugin directory for new folders and load
+            // them — no host restart required.
+            var loaded = await runtime.Plugins.ScanAsync();
+            Console.WriteLine(loaded.Count == 0
+                ? "scan: nothing new on disk"
+                : $"scan: loaded and started {string.Join(", ", loaded)}");
+            break;
+        }
+
         case "gc":
             GC.Collect();
             GC.WaitForPendingFinalizers();
@@ -111,7 +122,7 @@ while (true)
             break;
 
         default:
-            Console.WriteLine($"unknown command: {parts[0]} (plugins | reload <id> | reloadall | gc | exit)");
+            Console.WriteLine($"unknown command: {parts[0]} (plugins | reload <id> | reloadall | scan | gc | exit)");
             break;
     }
     if (done) break;

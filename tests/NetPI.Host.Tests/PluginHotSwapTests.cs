@@ -167,6 +167,43 @@ public sealed class PluginHotSwapTests : IAsyncLifetime
         Assert.DoesNotContain(3, present);
         Assert.DoesNotContain(4, present);
 
+    }
 
+    [Fact]
+    public async Task Scan_LoadsNewlyStagedPlugins_AndLeavesLoadedOnesAlone()
+    {
+        // PLAN §50: a plugin folder staged after startup (a fresh folder
+        // dropped into plugins/) must be discoverable by ScanAsync without a
+        // host restart — and a scan must never touch the plugins already loaded.
+        await using var runtime = NewRuntime();
+        await runtime.StartAsync();
+        var before = runtime.Plugins.Get("NetPI.TestPlugin")!;
+        Assert.Equal(1, before.Generation);
+
+        // Stage a second copy of the test plugin under a NEW directory name —
+        // the directory name is the plugin id the host discovers.
+        var staged2 = Path.Combine(_pluginDir, "NetPI.TestPlugin2");
+        Directory.CreateDirectory(staged2);
+        foreach (var f in Directory.EnumerateFiles(Path.GetDirectoryName(_stagedDll)!))
+            File.Copy(f, Path.Combine(staged2, Path.GetFileName(f)), overwrite: true);
+
+        // Give the second copy its own config section: register=false so its
+        // service id does not collide with the first plugin's registration.
+        File.WriteAllText(Path.Combine(_home, "config.json"),
+            @"{""plugins"": { ""netpi.testplugin"": { ""generation"": ""gen"" },
+              ""netpi.testplugin2"": { ""register"": false } }}");
+
+        var scanned = await runtime.Plugins.ScanAsync();
+
+        Assert.Equal(new[] { "NetPI.TestPlugin2" }, scanned);
+        var fresh = runtime.Plugins.Get("NetPI.TestPlugin2")!;
+        Assert.Equal(PluginState.Active, fresh.State);
+        Assert.Equal(1, fresh.Generation);
+        // the pre-existing plugin was not reloaded or unloaded
+        Assert.Same(before, runtime.Plugins.Get("NetPI.TestPlugin"));
+        Assert.Equal(PluginState.Active, before.State);
+
+        // A second scan finds nothing new.
+        Assert.Empty(await runtime.Plugins.ScanAsync());
     }
 }
