@@ -16,6 +16,13 @@ public sealed class PluginInstance
     public int Generation { get; }
     public string? SourceDirectory { get; init; }
     public string? CacheDirectory { get; init; }
+
+    /// <summary>
+    /// astra-1 P1: the build this generation was loaded from — the build id
+    /// pinned by the <c>current.json</c> pointer for published builds, or
+    /// "legacy" when the generation was migrated from a legacy staged folder.
+    /// </summary>
+    public string? BuildId { get; init; }
     public PluginInfo? Info { get; set; }
     public PluginLoadContext? LoadContext { get; set; }
     public INetPiPlugin? Plugin { get; set; }

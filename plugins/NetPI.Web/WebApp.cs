@@ -1169,6 +1169,7 @@ internal sealed class WebApp : IAsyncDisposable
             s.Name,
             version = s.Version ?? "",
             generation = s.Generation,
+            buildId = s.BuildId,
             state = MapPluginState(s.State),
             activeLeases = s.ActiveLeases,
             lastError = s.LastError,

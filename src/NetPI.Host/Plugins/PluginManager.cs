@@ -58,6 +58,19 @@ public sealed class PluginManager
     private readonly Dictionary<string, int> _generation = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<(string Label, WeakReference ALC)> _unloadedAlocs = [];
 
+    /// <summary>
+    /// astra-1 P1: the per-host-instance snapshot root
+    /// (<c>&lt;runtimeDir&gt;/plugin-cache/&lt;instanceId&gt;/</c>) this host loads from and
+    /// owns. Claimed at construction; only the owner may prune inside it.
+    /// </summary>
+    private readonly string _instanceRoot;
+
+    /// <summary>astra-1 P1: per-process host-instance id (stable build prefix + unique guid suffix).</summary>
+    private readonly string _instanceId;
+
+    /// <summary>astra-1 P1: true when this process owns <see cref="_instanceRoot"/> (may prune it).</summary>
+    private readonly bool _ownsInstanceRoot;
+
     public PluginManager(
         PluginManagerOptions options,
         EventBus bus,
@@ -85,6 +98,10 @@ public sealed class PluginManager
         _webPanels = webPanels;
         _config = config;
         _logger = logger;
+        _instanceId = PluginRuntimeLayout.GetHostInstanceId();
+        _instanceRoot = PluginRuntimeLayout.InstanceRoot(options.RuntimeDirectory, _instanceId);
+        _ownsInstanceRoot = string.Equals(
+            PluginRuntimeLayout.ClaimOwnership(_instanceRoot, _instanceId), _instanceId, StringComparison.Ordinal);
     }
 
     public IEventBus Events => _bus;
@@ -102,18 +119,90 @@ public sealed class PluginManager
     // ----------------------------------------------------------------------
 
     /// <summary>
-    /// Discover plugin directories: each subfolder of <c>pluginDirectory</c>
-    /// that contains at least one <c>*.dll</c> is a plugin candidate.
+    /// astra-1 P1: a discovered plugin and how it should be loaded. A directory
+    /// with a <c>current.json</c> pointer is a <c>Published</c> build (its artifact
+    /// is validated + snapshotted); a directory with a top-level DLL and no
+    /// pointer is a <c>Legacy</c> staged folder (migrated through an allowlist);
+    /// a directory with no DLL at all is <c>Invalid</c> (skipped, not an error).
     /// </summary>
-    public IReadOnlyList<string> DiscoverPluginDirectories()
+    public sealed record PluginSource
+    {
+        public required string Id { get; init; }
+        public required string Directory { get; init; }
+        public required SourceKind Kind { get; init; }
+
+        /// <summary>For <see cref="Published"/>: the artifact dir the pointer names.</summary>
+        public string? ArtifactDir { get; init; }
+
+        /// <summary>For <see cref="Published"/>: the build id pinned by the pointer.</summary>
+        public string? BuildId { get; init; }
+
+        /// <summary>Reason <see cref="Kind"/> is not a loadable source (diagnostics only).</summary>
+        public string? Note { get; init; }
+    }
+
+    public enum SourceKind { Published, Legacy, Invalid }
+
+    /// <summary>
+    /// astra-1 P1 discovery: each subfolder of <c>pluginDirectory</c> that is a
+    /// plugin. A folder with <c>current.json</c> is a published plugin; a folder
+    /// with a top-level DLL (and no pointer) is a legacy staged folder (still
+    /// loadable through the migration path); a folder with no DLL is not a
+    /// plugin (skipped) — dependency folders no longer masquerade as candidates
+    /// just because they contain a DLL.
+    /// </summary>
+    public IReadOnlyList<PluginSource> DiscoverPluginSources()
     {
         var dir = _options.PluginDirectory;
         if (!Directory.Exists(dir)) return [];
-        return Directory
-            .EnumerateDirectories(dir)
-            .Where(d => Directory.EnumerateFiles(d, "*.dll", SearchOption.TopDirectoryOnly).Any())
-            .OrderBy(d => Path.GetFileName(d), StringComparer.Ordinal)
-            .ToList();
+        var sources = new List<PluginSource>();
+        foreach (var sub in Directory.EnumerateDirectories(dir)
+                     .OrderBy(d => Path.GetFileName(d), StringComparer.Ordinal))
+        {
+            var id = Path.GetFileName(sub);
+
+            var (pointer, perr) = PluginPublication.LoadPointer(sub);
+            if (pointer is not null)
+            {
+                var artifact = pointer.ArtifactDir;
+                var (manifest, merr) = PluginPublication.LoadManifest(artifact);
+                if (manifest is null)
+                {
+                    sources.Add(new PluginSource { Id = id, Directory = sub, Kind = SourceKind.Invalid, Note = merr ?? "missing manifest" });
+                    continue;
+                }
+                var verr = PluginPublication.ValidateArtifact(artifact, manifest);
+                if (verr is not null)
+                {
+                    _logger.LogWarning("Plugin {Id} points to an invalid artifact: {Err}", id, verr);
+                    sources.Add(new PluginSource { Id = id, Directory = sub, Kind = SourceKind.Invalid, BuildId = manifest.BuildId, Note = verr });
+                    continue;
+                }
+                sources.Add(new PluginSource { Id = id, Directory = sub, Kind = SourceKind.Published, ArtifactDir = artifact, BuildId = manifest.BuildId });
+                continue;
+            }
+
+            // No pointer: legacy staged folder (a top-level DLL, not a pointer) or
+            // not a plugin at all. A stray current.json that failed to parse is
+            // NOT treated as legacy — surfacing it as invalid is safer.
+            if (perr is not null && !perr.Contains("legacy"))
+            {
+                sources.Add(new PluginSource { Id = id, Directory = sub, Kind = SourceKind.Invalid, Note = perr });
+                continue;
+            }
+
+            var hasDll = Directory.EnumerateFiles(sub, "*.dll", SearchOption.TopDirectoryOnly)
+                .Any(f => !string.Equals(Path.GetFileNameWithoutExtension(f),
+                    PluginLoadContext.AbstractionsAssemblyName, StringComparison.OrdinalIgnoreCase));
+            sources.Add(new PluginSource
+            {
+                Id = id,
+                Directory = sub,
+                Kind = hasDll ? SourceKind.Legacy : SourceKind.Invalid,
+                Note = hasDll ? null : "no entry assembly (no top-level DLL)"
+            });
+        }
+        return sources;
     }
 
     // ----------------------------------------------------------------------
@@ -121,73 +210,53 @@ public sealed class PluginManager
     // ----------------------------------------------------------------------
 
     /// <summary>
-    /// Copy the staged plugin folder into an immutable per-generation snapshot,
-    /// ~/.netpi/plugin-cache/&lt;plugin&gt;/&lt;generation&gt;/, and return the snapshot
-    /// path (the directory plugins are actually loaded from).
-    ///
-    /// The host ALWAYS loads from a snapshot, never from the staged folder
-    /// itself. That is what makes staging hot-swappable: while generation N is
-    /// mapped from its snapshot (on Windows the file stays locked until the ALC
-    /// is unloaded and finalized), a new build may freely overwrite the staged
-    /// folder; the next reload simply snapshots generation N+1. A generation's
-    /// snapshot is never written again after staging.
+    /// astra-1 P1: resolve a discovered plugin source to the directory a
+    /// generation loads from, snapshotting the source's bytes into this
+    /// host-instance's per-attempt cache dir. A <c>Published</c> source copies its
+    /// (already manifest-validated) artifact; a <c>Legacy</c> source copies its
+    /// staged folder through the runtime allowlist (excluding bin/obj/source).
+    /// Returns null when there is nothing loadable (an invalid source, or a
+    /// legacy folder with no payload). The attempt id is reserved even when the
+    /// copy later fails and is never reused.
     /// </summary>
-    public string StagePluginFiles(string sourceDir, int generation)
+    public string? ResolveLoadDir(PluginSource source, string attemptId)
     {
-        var pluginName = Path.GetFileName(sourceDir.TrimEnd(Path.DirectorySeparatorChar));
-        var pluginCacheRoot = Path.Combine(_options.RuntimeDirectory, "plugin-cache", pluginName);
-        var genDir = Path.Combine(pluginCacheRoot, generation.ToString());
-
-        // A stale snapshot with this exact number may linger from a previous
-        // host run; the new snapshot fully replaces it (snapshots are only ever
-        // written during staging, never after).
-        if (Directory.Exists(genDir)) Directory.Delete(genDir, recursive: true);
-        Directory.CreateDirectory(genDir);
-
-        foreach (var file in Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories))
+        return source.Kind switch
         {
-            var target = Path.Combine(genDir, Path.GetRelativePath(sourceDir, file));
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.Copy(file, target, overwrite: true);
-        }
-
-        SweepStaleGenerations(pluginCacheRoot, generation);
-        return genDir;
+            SourceKind.Published => PluginRuntimeLayout.SnapshotArtifact(
+                _instanceRoot, source.Id, attemptId, source.ArtifactDir!),
+            SourceKind.Legacy => PluginRuntimeLayout.SnapshotLegacy(
+                _instanceRoot, source.Id, attemptId, source.Directory),
+            _ => null,
+        };
     }
 
     /// <summary>
-    /// Keep only the <c>MaxCachedGenerations</c> most recent snapshot directories
-    /// per plugin. Snapshots with a number &gt;= the just-staged generation are
-    /// never deleted (an in-flight reload may still be mapping one). Best-effort:
-    /// a directory that is still locked (its ALC has not been finalized) or that
-    /// cannot be removed for any other reason is left alone and retried on the
-    /// next staging of that plugin.
+    /// astra-1 P1: ownership-aware snapshot pruning. Keeps the newest
+    /// <c>MaxCachedGenerations</c> per-plugin snapshot dirs under this host
+    /// instance. Only runs when this process owns the instance root; a snapshot
+    /// that is still locked (its ALC is not finalized) is left for the next
+    /// prune — never an error.
     /// </summary>
-    private void SweepStaleGenerations(string pluginCacheRoot, int currentGeneration)
+    private void PruneStaleSnapshots(string pluginId)
     {
-        if (!Directory.Exists(pluginCacheRoot)) return;
-        var keep = Math.Max(1, currentGeneration - Math.Max(1, _options.MaxCachedGenerations) + 1);
-        foreach (var dir in Directory.EnumerateDirectories(pluginCacheRoot)
-                     .Where(d => int.TryParse(Path.GetFileName(d), out _))
-                     .OrderByDescending(d => int.Parse(Path.GetFileName(d))))
-        {
-            var g = int.Parse(Path.GetFileName(dir));
-            if (g >= currentGeneration || g >= keep) continue;
-            try { Directory.Delete(dir, recursive: true); }
-            catch { /* ALC still alive or IO blip: retried on the next stage */ }
-        }
+        if (!_ownsInstanceRoot) return;
+        var pluginRoot = Path.Combine(_instanceRoot, pluginId);
+        var removed = PluginRuntimeLayout.PruneSnapshots(pluginRoot, Math.Max(1, _options.MaxCachedGenerations));
+        if (removed > 0)
+            _logger.LogDebug("Pruned {Count} stale snapshot(s) for {Plugin}", removed, pluginId);
     }
 
     /// <summary>Load every discovered plugin that is not already loaded. Startup path.</summary>
     public async Task LoadAllAsync(CancellationToken ct = default)
     {
-        foreach (var dir in DiscoverPluginDirectories())
+        foreach (var src in DiscoverPluginSources())
         {
-            var id = Path.GetFileName(dir);
-            var existing = Get(id);
+            if (src.Kind == SourceKind.Invalid) continue;
+            var existing = Get(src.Id);
             if (existing is { State: PluginState.Active or PluginState.Draining or PluginState.Loading or PluginState.Failed })
                 continue;
-            await LoadGenerationAsync(id, dir, ct: ct);
+            await LoadGenerationAsync(src, ct: ct);
         }
     }
 
@@ -202,14 +271,14 @@ public sealed class PluginManager
     public async Task<IReadOnlyList<string>> ScanAsync(CancellationToken ct = default)
     {
         var loaded = new List<string>();
-        foreach (var dir in DiscoverPluginDirectories())
+        foreach (var src in DiscoverPluginSources())
         {
             ct.ThrowIfCancellationRequested();
-            var id = Path.GetFileName(dir);
-            var existing = Get(id);
+            if (src.Kind == SourceKind.Invalid) continue;
+            var existing = Get(src.Id);
             if (existing is { State: PluginState.Active or PluginState.Draining or PluginState.Loading or PluginState.Failed })
                 continue;
-            var inst = await LoadGenerationAsync(id, dir, ct);
+            var inst = await LoadGenerationAsync(src, ct);
             if (inst is null) continue;
             try
             {
@@ -222,8 +291,8 @@ public sealed class PluginManager
                 inst.LastError = ex.Message;
                 inst.State = PluginState.Failed;
             }
-            loaded.Add(id);
-            _logger.LogInformation("Plugin {Plugin} scanned in from {Dir} (gen {Gen})", id, inst.CacheDirectory, inst.Generation);
+            loaded.Add(src.Id);
+            _logger.LogInformation("Plugin {Plugin} scanned in from {Dir} (gen {Gen})", src.Id, inst.CacheDirectory, inst.Generation);
         }
         return loaded;
     }
@@ -253,15 +322,25 @@ public sealed class PluginManager
     /// (a previous generation remains Active when there is one, otherwise the
     /// plugin is marked Failed).
     /// </summary>
-    public async Task<PluginInstance?> LoadGenerationAsync(string pluginId, string sourceDir, CancellationToken ct = default, Action<string>? errorSink = null)
+    public async Task<PluginInstance?> LoadGenerationAsync(PluginSource source, CancellationToken ct = default, Action<string>? errorSink = null)
     {
+        var pluginId = source.Id;
         var generation = NextGeneration(pluginId);
-        var loadFrom = StagePluginFiles(sourceDir, generation);
+        var attemptId = $"netpi-{generation}-{Guid.NewGuid().ToString("n")[..12]}";
+        var loadFrom = ResolveLoadDir(source, attemptId);
+        if (loadFrom is null)
+        {
+            var msg = $"no loadable source for '{pluginId}' ({source.Note ?? "nothing to snapshot"})";
+            _logger.LogWarning(msg);
+            errorSink?.Invoke(msg);
+            return null;
+        }
         var alc = new PluginLoadContext($"{pluginId}-gen{generation}", loadFrom);
         var instance = new PluginInstance(pluginId, generation)
         {
-            SourceDirectory = sourceDir,
+            SourceDirectory = source.Directory,
             CacheDirectory = loadFrom,
+            BuildId = source.Kind == SourceKind.Published ? source.BuildId : "legacy",
             LoadContext = alc,
             Policy = _options.AgentIdlePlugins.Contains(pluginId) ? ReloadPolicy.AgentIdle : ReloadPolicy.PluginIdle
         };
@@ -278,7 +357,7 @@ public sealed class PluginManager
 
             instance.Info = plugin.Info;
             if (plugin.Info.Id != pluginId)
-                _logger.LogWarning("Plugin directory '{Dir}' declares id '{InfoId}' (host uses '{DirId}')", Path.GetFileName(sourceDir), plugin.Info.Id, pluginId);
+                _logger.LogWarning("Plugin directory '{Dir}' declares id '{InfoId}' (host uses '{DirId}')", source.Directory, plugin.Info.Id, pluginId);
 
             ServiceRegistry.ServiceOwner.Current = instance;
             try
@@ -303,7 +382,8 @@ public sealed class PluginManager
 
             RegisterInTables(instance);
             instance.State = PluginState.Active;
-            _logger.LogInformation("Plugin {Plugin} gen {Gen} active", pluginId, generation);
+            PruneStaleSnapshots(pluginId);
+            _logger.LogInformation("Plugin {Plugin} gen {Gen} active (build {Build})", pluginId, generation, instance.BuildId);
             return instance;
         }
         catch (Exception ex)
@@ -445,11 +525,17 @@ public sealed class PluginManager
             return null;
         }
 
-        var sourceDir = old.SourceDirectory
-            ?? Path.Combine(_options.PluginDirectory, pluginId);
-        if (!Directory.Exists(sourceDir))
+        // astra-1 P1: reload re-resolves the CURRENT source (a new pointer may
+        // have been published since the previous load) and snapshots it.
+        var src = DiscoverPluginSources().FirstOrDefault(s => s.Id == pluginId);
+        if (src is null)
         {
-            _logger.LogError("Reload of {Plugin} failed: source directory '{Dir}' not found", pluginId, sourceDir);
+            _logger.LogError("Reload of {Plugin} failed: no plugin source found under '{Dir}'", pluginId, _options.PluginDirectory);
+            return null;
+        }
+        if (src.Kind == SourceKind.Invalid)
+        {
+            _logger.LogError("Reload of {Plugin} failed: source is invalid — {Note}", pluginId, src.Note);
             return null;
         }
 
@@ -521,7 +607,7 @@ public sealed class PluginManager
         UnloadAloc(old);
 
         // --- load new generation ---
-        var fresh = await LoadGenerationAsync(pluginId, sourceDir, ct,
+        var fresh = await LoadGenerationAsync(src, ct,
             errorSink: ex =>
             {
                 // The old generation was already unloaded, so this plugin has
@@ -661,6 +747,7 @@ public sealed class PluginManager
         string? Name,
         string? Version,
         int Generation,
+        string? BuildId,
         PluginState State,
         int ActiveLeases,
         int RegistrationCount,
@@ -684,6 +771,7 @@ public sealed class PluginManager
                     p.Info?.Name,
                     p.Info?.Version,
                     p.Generation,
+                    p.BuildId,
                     p.State,
                     p.LeasesHeld,
                     p.Registrations.Count,

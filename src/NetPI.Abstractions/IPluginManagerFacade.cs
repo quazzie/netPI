@@ -3,7 +3,7 @@ namespace NetPI.Abstractions;
 
 
 /// <summary>Immutable snapshot of a plugin's load/reload state (PLAN §36, §45).</summary>
-public sealed record PluginStatusSnapshot(string Id, string Name, string? Version, string State, int Generation, string? Policy, int ActiveLeases, string? LastError);
+public sealed record PluginStatusSnapshot(string Id, string Name, string? Version, string State, int Generation, string? BuildId, string? Policy, int ActiveLeases, string? LastError);
 
 /// <summary>
 /// Reload control surface (PLAN §36). Implemented by the host and registered into

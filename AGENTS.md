@@ -23,8 +23,10 @@ src/NetPI.Host/           netPI.Host.dll — the only always-loaded runtime.
                           Entry: src/NetPI.Host/Program.cs
 src/NetPI.Desktop/        WinForms + WebView2 window that spawns the host and
                           points WebView2 at :5173. (The "app" users see.)
-plugins/                  One folder per plugin; each contains a DLL staged by
-                          tools/publish-plugins.ps1 plus its private deps:
+plugins/                  One folder per plugin; each now holds only a `current.json`
+                          build POINTER (astral-1 P1) naming an immutable artifact
+                          under `.artifacts/plugins/<id>/<buildId>/`. `NetPI.TestPlugin`
+                          is not published (test fixture, loads legacy). Per-plugin payloads:
                             NetPI.Agent          agent runtime, runner, event loop (§10-12)
                             NetPI.Context.Pi    system-prompt + workspace-context layering (§15-17)
                             NetPI.Provider.AiProxy  provider + model catalog (§13-14, §14b/§14c)
@@ -46,16 +48,26 @@ plugins/                  One folder per plugin; each contains a DLL staged by
                                                               sessions).
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
-tests/NetPI.Host.Tests/   116 xunit tests; the integration surface.
-tools/publish-plugins.ps1 Stages plugin DLLs into plugins/<name>/; the host
-                              snapshots that folder into per-generation
-                              plugin-cache dirs (what the ALCs actually load).
+tests/NetPI.Host.Tests/   150 xunit tests; the integration surface.
+tools/publish-plugins.ps1 Publishes each plugin as an IMMUTABLE build (astra-1 P1):
+                              marker-discovers `plugins/*/ *.csproj` (no hardcoded list;
+                              TestPlugin excluded unless -IncludeTestPlugin), `dotnet publish`
+                              → `.artifacts/plugins/<id>/<buildId>/` + `artifact.json`
+                              manifest (every file pinned by sha256+size) → validate →
+                              atomically flip `plugins/<id>/current.json`. Idempotent (same
+                              bytes → same buildId → no rewrite). `-Reload` asks a running
+                              host to swap the build and confirms the new buildId; `-NoBuild`
+                              re-consumes a prior artifact; `-Plugins` selects a subset. The
+                              host resolves the pointer, snapshots into per-instance
+                              plugin-cache dirs (what the ALCs actually load), never from
+                              `.artifacts/` or `plugins/` directly.
 tools/keep-alive-host.ps1 Runs the host with stdin held open (background job).
 ```
 
 Runtime home: `~/.netpi/` — `config.json`, `netpi.db` (SQLite), `logs/`,
-`plugin-cache/` (immutable per-generation snapshots — the host loads from these,
-never from `plugins/` directly). Env overrides: `NETPI_HOME`, `NETPI_PLUGINS`.
+`plugin-cache/` (immutable per-host-instance snapshots: `plugin-cache/<host-instance>/<plugin>/<attempt>-<buildId>/`
+— the host loads from these, never from `.artifacts/` or `plugins/` directly), and
+`app-cache/` (host launch snapshots, P0). Env overrides: `NETPI_HOME`, `NETPI_PLUGINS`.
 
 ## Build & run (verified on this machine)
 
@@ -67,8 +79,8 @@ dotnet build NetPI.sln
 #    staticRoot is configured in ~/.netpi/config.json → plugins.netpi.web.staticRoot)
 cd web/netpi-web && npx vite build && cd ../..
 
-# 3. Stage plugin binaries (copies freshly built DLLs into plugins/<name>/)
-pwsh tools/publish-plugins.ps1 -Configuration Debug
+# 3. Publish plugins (immutable artifacts + build pointers; see publish-plugins.ps1)
+pwsh tools/publish-plugins.ps1 -Configuration Debug [-Reload]
 
 # 4a. Headless host in background (used in agent sessions)
 pwsh tools/keep-alive-host.ps1          # via a background job; serves :5173
@@ -261,7 +273,7 @@ repo, it feeds every run in this workspace.
 ## Tests & verification
 
 ```bash
-dotnet test NetPI.sln        # 116 tests (agent runtime scenarios, session
+dotnet test NetPI.sln        # 150 tests (agent runtime scenarios, session
                              # store, plugin manager, shell detection, …)
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json
 ```
@@ -282,9 +294,9 @@ exist on master and are unrelated to UI work.
   `\n` text in source, an unregistered `/api/file` route, and a call to a
   non-existent `ContentTypes` helper).
 - The desktop shell reuses an already-running host on :5173 (it does not
-  double-spawn); `tools/publish-plugins.ps1` only re-stages into a plugin
-  folder if the staged output is stale — after changing plugin code, run it
-  and reload the plugin (or restart the host).
+  double-spawn); `tools/publish-plugins.ps1` publishes an immutable artifact and flips
+  the plugin's `current.json` pointer — after changing plugin code, run it and reload
+  the plugin (or restart the host). A failed/missing build never touches a live pointer.
 - Stale plugin generations: a failed load keeps the previous gen Active, so
   "loaded" in the log may mean your code change isn't actually running —
   check the log's generation/timestamps.
@@ -292,10 +304,11 @@ exist on master and are unrelated to UI work.
   "sessions") is safe only because stores are NOT disposed in StopAsync and
   consumers re-resolve lazily. Disposing shared state in StopAsync strands
   consumers on a dead instance until they reload too.
-- `~/.netpi/plugin-cache/<plugin>/<gen>/` is the snapshot every generation is
-  loaded from (immutable once staged) — the host never loads from `plugins/<name>/`
-  directly. The staged folder is therefore free to be overwritten at any time,
-  even while the host is running with the live generation's DLLs file-locked;
-  a `plugin.reload` snapshots the new bytes as the next generation. Stale
-  snapshot dirs are pruned to the newest 2 per plugin once their ALCs are
-  finalized. (`NETPI_SKIP_CACHE` is gone — the copy is the hot-swap mechanism.)
+- `~/.netpi/plugin-cache/<host-instance>/<plugin>/<attempt>-<buildId>/` is the snapshot every
+  generation loads from (immutable once snapshotted) — the host never loads from
+  `.artifacts/plugins/<id>/<buildId>/` or `plugins/<name>/` directly. Publishing a new
+  build only flips `plugins/<id>/current.json`; a `plugin.reload` re-resolves the pointer
+  and snapshots the new bytes as the next attempt. Stale per-plugin snapshots are pruned
+  to the newest `MaxCachedGenerations` (default 2) once their ALCs are finalized;
+  ownership-aware prune (a `.owner` token) keeps one host from deleting another's cache.
+  (`NETPI_SKIP_CACHE` is gone — the snapshot copy is the hot-swap mechanism.)

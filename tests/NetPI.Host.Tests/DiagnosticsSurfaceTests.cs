@@ -75,7 +75,7 @@ public class DiagnosticsSurfaceTests
     {
         public IReadOnlyList<PluginStatusSnapshot> GetStatus() => new List<PluginStatusSnapshot>
         {
-            new("netpi.test", "Test Plugin", "0.1.0", "Active", 2, "PluginIdle", 0, null),
+            new("netpi.test", "Test Plugin", "0.1.0", "Active", 2, null, "PluginIdle", 0, null),
         };
         public ValueTask<bool> ReloadAsync(string pluginId, CancellationToken ct = default) => ValueTask.FromResult(true);
         public ValueTask<int> ReloadAllAsync(CancellationToken ct = default) => ValueTask.FromResult(1);
