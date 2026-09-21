@@ -9,6 +9,7 @@
   import ConversationViewport from "./components/ConversationViewport.svelte";
   import Composer from "./components/Composer.svelte";
   import SettingsDialog from "./components/SettingsDialog.svelte";
+  import SessionPicker from "./components/SessionPicker.svelte";
 
   let shellStyle = $derived(
     `--left-panel-width:${ui.leftOpen ? ui.leftWidth : 0}px;--right-panel-width:${ui.rightOpen ? ui.rightWidth : 26}px`, /* 26 must match --right-rail-width in app.css */
@@ -18,6 +19,7 @@
   // (the dialog component is the permanent surface; the left panel keeps
   // working until SessionPicker lands and the panel is removed).
   let settingsOpen = $state(false);
+  let pickerOpen = $state(false);
 
   function beginPanelResize(side: "left" | "right", e: PointerEvent) {
     e.preventDefault();
@@ -61,7 +63,7 @@
       </div>
     {/if}
 
-    <HarnessHeader />
+    <HarnessHeader onSessions={() => (pickerOpen = true)} />
     <SessionTabs />
     <ConversationViewport />
     <Composer />
@@ -88,4 +90,5 @@
   {/if}
 
   <SettingsDialog open={settingsOpen} onClose={() => (settingsOpen = false)} />
+  <SessionPicker open={pickerOpen} onClose={() => (pickerOpen = false)} />
 </div>
