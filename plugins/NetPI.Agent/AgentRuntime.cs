@@ -108,26 +108,38 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         _selfLease = _ctx.LeaseSelf();
         _state = ct.IsCancellationRequested ? AgentState.Cancelling : AgentState.Preparing;
         _activeSession = options.SessionId;
-        await PublishAsync(AgentEventType.AgentStarting, options, null, ct);
-
-        // astra-1 P3: operation-scoped leases for every cross-plugin service
-        // this run depends on — a reload of any of those plugins cannot unload
-        // it mid-run (the host's lease drain blocks until the finally releases
-        // them).
-        var providerLease = AcquireLease<IModelProvider>("provider")
-            ?? throw new ServiceUnavailableException("provider", "Model provider is not loaded.");
-        var toolsLease = AcquireLease<IToolRegistry>("tools");
-        var catalogLease = AcquireLease<IModelCatalog>("catalog");
-        var storeLease = AcquireLease<ISessionStore>("sessions");
-        var provider = providerLease.Value;
-        var tools = toolsLease?.Value;
-        var catalog = catalogLease?.Value;
-        var store = storeLease?.Value;
+        IValueLease<IModelProvider>? providerLease = null;
+        IValueLease<IToolRegistry>? toolsLease = null;
+        IValueLease<IModelCatalog>? catalogLease = null;
+        IValueLease<ISessionStore>? storeLease = null;
+        IModelProvider? provider = null;
+        IToolRegistry? tools = null;
+        IModelCatalog? catalog = null;
+        ISessionStore? store = null;
         int turns = 0;
         string? note = null;
 
         try
         {
+            // astra-1 A (run cleanup): startup publication and service acquisition
+            // live INSIDE the cleanup scope — a failure there releases the leases
+            // and clears running state in the finally, instead of leaving the
+            // runtime stuck in a "running" state with a leaked self-lease.
+            await PublishAsync(AgentEventType.AgentStarting, options, null, ct);
+
+            // astra-1 P3: operation-scoped leases for every cross-plugin service
+            // this run depends on — a reload of any of those plugins cannot
+            // unload it mid-run (the host's lease drain blocks until the finally
+            // releases them).
+            providerLease = AcquireLease<IModelProvider>("provider")
+                ?? throw new ServiceUnavailableException("provider", "Model provider is not loaded.");
+            toolsLease = AcquireLease<IToolRegistry>("tools");
+            catalogLease = AcquireLease<IModelCatalog>("catalog");
+            storeLease = AcquireLease<ISessionStore>("sessions");
+            provider = providerLease.Value;
+            tools = toolsLease?.Value;
+            catalog = catalogLease?.Value;
+            store = storeLease?.Value;
             if (catalog is not null && string.IsNullOrEmpty(options.ModelId))
             {
                 var models = await catalog.RefreshAsync(ct);
@@ -425,10 +437,12 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         {
             _state = AgentState.Idle;
             _everRan = true;
+            // astra-1 A (run cleanup): release the run-scoped service leases —
+            // nullable: acquisition happens INSIDE the try, so a pre-acquisition
+            // failure must still land here and release nothing it never took.
             try { _selfLease?.Dispose(); } catch { }
             _selfLease = null;
-            // astra-1 P3: release the run-scoped service leases.
-            try { providerLease.Dispose(); } catch { }
+            try { providerLease?.Dispose(); } catch { }
             try { toolsLease?.Dispose(); } catch { }
             try { catalogLease?.Dispose(); } catch { }
             try { storeLease?.Dispose(); } catch { }

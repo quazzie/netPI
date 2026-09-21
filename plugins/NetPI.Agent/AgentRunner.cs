@@ -15,11 +15,20 @@ public sealed class AgentRunner : IAgentRunner
     private readonly IPluginContext _ctx;
     private readonly object _gate = new();
     private CancellationTokenSource? _cts;
+    /// <summary>astra-1 A (run cleanup): the owned background run — observed (not
+    /// fire-and-forgotten) so plugin stop can cancel and await it.</summary>
+    private Task? _runTask;
 
     public AgentRunner(AgentRuntime runtime, IPluginContext ctx)
     {
         _runtime = runtime;
         _ctx = ctx;
+    }
+
+    /// <summary>astra-1 A (run cleanup): the owned background run task (null when none).</summary>
+    public Task? RunTask
+    {
+        get { lock (_gate) return _runTask; }
     }
 
     public bool IsRunning
@@ -29,6 +38,11 @@ public sealed class AgentRunner : IAgentRunner
 
     public async ValueTask<AgentRunStart> StartRunAsync(AgentRunRequest request, CancellationToken cancellationToken = default)
     {
+        // astra-1 A (run cleanup): no text → the send fails (never a silent
+        // empty run), and the gate is never taken.
+        if (string.IsNullOrWhiteSpace(request.Text))
+            return new AgentRunStart(request.SessionId, "Empty message — nothing to send.");
+
         lock (_gate)
         {
             if (_cts is not null)
@@ -37,10 +51,12 @@ public sealed class AgentRunner : IAgentRunner
         }
 
         // Persist the initial user entry (the agent runtime does not persist
-        // the initial input message itself).
-        try
+        // the initial input message itself). astra-1 A: a persistence failure
+        // FAILS the send — a run whose first message was never stored would
+        // execute tools and continue turns on a lost transcript.
+        if (!string.IsNullOrEmpty(request.SessionId))
         {
-            if (!string.IsNullOrEmpty(request.SessionId))
+            try
             {
                 var store = _ctx.Services.Resolve<ISessionStore>("sessions");
                 var userMessageId = MessageIdentity.DeterministicId("user", request.Text);
@@ -49,11 +65,14 @@ public sealed class AgentRunner : IAgentRunner
                 await store.AppendAsync(new SessionEntry(userMessageId,
                     request.SessionId, EntryKind.Message, user, null, DateTimeOffset.UtcNow), cancellationToken);
             }
+            catch (Exception ex)
+            {
+                lock (_gate) _cts = null; // no run may outlive a failed send
+                return new AgentRunStart(request.SessionId, $"Failed to persist the message: {ex.Message}");
+            }
         }
-        catch (Exception ex) { _ctx.Log.Warning($"user entry persist failed: {ex.Message}"); }
-
         var cts = _cts!;
-        _ = Task.Run(() => ExecuteAsync(request, cts));
+        _runTask = Task.Run(() => ExecuteAsync(request, cts));
 
         return new AgentRunStart(request.SessionId, null);
 
@@ -70,10 +89,33 @@ public sealed class AgentRunner : IAgentRunner
         return ValueTask.CompletedTask;
     }
 
+    /// <summary>
+    /// astra-1 A (run cleanup): cancel the owned run and AWAIT it (bounded) so a
+    /// plugin stop never releases a still-executing run. The wait is bounded by
+    /// design — a run wedged inside a non-cooperative await cannot be force-
+    /// stopped in-process; it is reported, not waited on forever.
+    /// </summary>
+    public async ValueTask<bool> WaitForRunAsync(TimeSpan bound)
+    {
+        await CancelRunAsync(default);
+        Task? task;
+        lock (_gate) task = _runTask;
+        if (task is null) return true;
+        var done = await Task.WhenAny(task, Task.Delay(bound));
+        if (done != task)
+        {
+            _ctx.Log.Warning("agent run did not quiesce within the stop bound; releasing it as-is");
+            return false;
+        }
+        try { await task; } catch { /* the terminal event already reported it */ }
+        return true;
+    }
+
     private async Task ExecuteAsync(AgentRunRequest request, CancellationTokenSource cts)
     {
         string? sessionId = request.SessionId;
         bool cancelled = false;
+        bool failed = false;
         try
         {
             var workspace = string.IsNullOrEmpty(request.WorkspacePath)
@@ -89,7 +131,7 @@ public sealed class AgentRunner : IAgentRunner
         var transcript = await BuildTranscriptAsync(request, systemText, userMessageId, cts.Token);
 
 
-            await _runtime.RunAsync(new AgentRunOptions
+            var result = await _runtime.RunAsync(new AgentRunOptions
             {
                 SessionId = sessionId,
                 ModelId = request.ModelId,
@@ -98,6 +140,16 @@ public sealed class AgentRunner : IAgentRunner
                 Temperature = request.Temperature,
                 Workspace = workspace,
             }, cts.Token);
+            // astra-1 A: the RUNTIME result carries the terminal outcome —
+            // cancellation comes back as a result (note "cancelled"), not a
+            // throw. Exactly one of completed/cancelled/failed is recorded.
+            if (!result.Ok)
+            {
+                if (string.Equals(result.Note, "cancelled", StringComparison.Ordinal))
+                    cancelled = true;
+                else
+                    failed = true;
+            }
         }
         catch (OperationCanceledException)
         {
@@ -105,27 +157,36 @@ public sealed class AgentRunner : IAgentRunner
         }
         catch (Exception ex)
         {
+            failed = true;
             _ctx.Log.Error("Agent run failed", ex);
         }
         finally
         {
-            // Emit a terminal agent event so the Web plugin can flip the UI to Idle.
-            try
-            {
-                var type = cancelled ? AgentEventType.AgentCancelled : AgentEventType.AgentCompleted;
-                var evt = new AgentEvent(Guid.NewGuid().ToString("n"), type, DateTimeOffset.UtcNow, sessionId, null);
-                await _ctx.Events.PublishAsync(evt, CancellationToken.None);
-            }
-            catch { /* bus may already be gone */ }
-
+            // astra-1 A (run cleanup): clear the running state BEFORE the
+            // terminal notification — IsRunning must not report a finished
+            // run, and a new send must not be refused by a dead one.
             lock (_gate)
             {
                 if (ReferenceEquals(_cts, cts))
                 {
                     _cts?.Dispose();
                     _cts = null;
+                    _runTask = null;
                 }
             }
+
+            // astra-1 A: exactly one terminal outcome per accepted run —
+            // completed, cancelled or FAILED (a crashed loop must not be
+            // reported as a completion).
+            try
+            {
+                var type = cancelled ? AgentEventType.AgentCancelled
+                    : failed ? AgentEventType.AgentFailed
+                    : AgentEventType.AgentCompleted;
+                var evt = new AgentEvent(Guid.NewGuid().ToString("n"), type, DateTimeOffset.UtcNow, sessionId, null);
+                await _ctx.Events.PublishAsync(evt, CancellationToken.None);
+            }
+            catch { /* bus may already be gone */ }
         }
     }
 
@@ -211,9 +272,15 @@ public sealed class AgentRunner : IAgentRunner
                 transcript.AddRange(context);
             }
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            _ctx.Log.Warning($"context build failed: {ex.Message}");
+            // astra-1 A (run cleanup): a failed context build is NOT silently
+            // replaced with a user-only prompt — the run fails (the runner
+            // reports it as AgentFailed), which is louder and recoverable than
+            // quietly sending a degraded transcript to the model.
+            _ctx.Log.Error($"context build failed: {ex.Message}");
+            throw;
         }
 
         transcript.Add(new AgentMessage(userMessageId, MessageRole.User,

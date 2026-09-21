@@ -30,8 +30,15 @@ public sealed class AgentPlugin : INetPiPlugin
 
     public async ValueTask StopAsync(CancellationToken cancellationToken)
     {
-        // Wind down any in-flight run before the generation is unloaded.
-        if (_runner is not null) { try { await _runner.CancelRunAsync(cancellationToken); } catch { } }
+        // astra-1 A (run cleanup): cancel the owned run and AWAIT it (bounded)
+        // before the generation is unloaded — releasing a still-executing run
+        // would let it write to a dead context. The bound exists because a run
+        // wedged in a non-cooperative await cannot be force-stopped in-process.
+        if (_runner is not null)
+        {
+            try { await _runner.WaitForRunAsync(TimeSpan.FromSeconds(30)); }
+            catch { /* already stopped */ }
+        }
         _runtime = null;
         _runner = null;
         await ValueTask.CompletedTask;

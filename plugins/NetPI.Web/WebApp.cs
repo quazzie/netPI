@@ -454,6 +454,7 @@ internal sealed class WebApp : IAsyncDisposable
 
             case AgentEventType.AgentCompleted:
             case AgentEventType.AgentCancelled:
+            case AgentEventType.AgentFailed:
                 // Final turns have no tool batch, so close them here.
                 CompleteAssistantTurn(sid);
                 SendEvent("agent.state", new { state = "Idle" }, sid);
