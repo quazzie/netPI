@@ -37,6 +37,8 @@ public sealed class PluginUpdateReliabilityTests : IDisposable
     private readonly string _runtimeDir;
     private readonly string _pluginDir;
     private readonly string _testBin;
+    private readonly string _cfg;
+    private readonly string _tfm;
 
     public PluginUpdateReliabilityTests()
     {
@@ -46,12 +48,12 @@ public sealed class PluginUpdateReliabilityTests : IDisposable
         Directory.CreateDirectory(_pluginDir);
 
         var testAssemblyBin = Path.GetDirectoryName(typeof(NetPI.TestPlugin.TestPlugin).Assembly.Location)!;
-        var cfg = Path.GetFileName(Path.GetDirectoryName(testAssemblyBin)!);
-        var tfm = Path.GetFileName(testAssemblyBin);
+        _cfg = Path.GetFileName(Path.GetDirectoryName(testAssemblyBin)!);
+        _tfm = Path.GetFileName(testAssemblyBin);
         string? root = testAssemblyBin;
         while (root is not null && !File.Exists(Path.Combine(root, "NetPI.sln")))
             root = Path.GetDirectoryName(root);
-        _testBin = Path.Combine(root!, "plugins", "NetPI.TestPlugin", "bin", cfg, tfm);
+        _testBin = Path.Combine(root!, "plugins", "NetPI.TestPlugin", "bin", _cfg, _tfm);
         Assert.True(Directory.Exists(_testBin), $"TestPlugin build output not found: {_testBin}");
     }
 
@@ -188,51 +190,60 @@ public sealed class PluginUpdateReliabilityTests : IDisposable
     [Fact]
     public async Task SessionsConsumer_KeepsWorkingAfterStorageProviderReload()
     {
-        // Stage the real storage plugin from the repo's plugin folder: managed
-        // DLLs at the snapshot top level + the e_sqlite3 native RID assets under
-        // runtimes/ (the ALC's resolver probes both). Build/source trees, the
-        // current.json pointer and metadata are excluded (legacy staging path —
-        // a pointer here would redirect the host at a stale .artifacts build).
+        // Stage the real storage plugin from its FRESH build output (like the
+        // TestPlugin staging) + the e_sqlite3 native RID assets from the source
+        // tree's runtimes/ (the ALC's resolver probes both). The DLLs sitting at
+        // the plugin-folder root are the last *published* bytes, which lag the
+        // current Abstractions interface between republishes — staging the
+        // fresh build is exactly what a republish would produce.
         var pluginsRoot = Directory.GetParent(_testBin)!.Parent!.Parent!.Parent!; // plugins/
         var storageSrc = Path.Combine(pluginsRoot.FullName, "NetPI.Storage.Sqlite");
         Assert.True(Directory.Exists(storageSrc), $"storage plugin source not found: {storageSrc}");
+        var storageBin = Path.Combine(storageSrc, "bin", _cfg, _tfm);
+        Assert.True(Directory.Exists(storageBin), $"storage plugin build output not found: {storageBin}");
         var staged = Path.Combine(_pluginDir, "NetPI.Storage.Sqlite");
         Directory.CreateDirectory(staged);
-        foreach (var f in Directory.EnumerateFiles(storageSrc, "*", SearchOption.AllDirectories)
-                     .Where(f => !f.StartsWith(Path.Combine(storageSrc, "bin"), StringComparison.OrdinalIgnoreCase)
-                                 && !f.StartsWith(Path.Combine(storageSrc, "obj"), StringComparison.OrdinalIgnoreCase)
-                                 && !f.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)
-                                 && !f.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
-                                 && !f.EndsWith(".md", StringComparison.OrdinalIgnoreCase)
-                                 && !f.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase)
-                                 && !f.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase)))
+        foreach (var f in Directory.EnumerateFiles(storageBin, "*.dll"))
+            File.Copy(f, Path.Combine(staged, Path.GetFileName(f)), overwrite: true);
+        // Native RID assets (e_sqlite3) come from the source tree.
+        var nativeRoot = Path.Combine(storageSrc, "runtimes");
+        if (Directory.Exists(nativeRoot))
         {
-            var name = Path.GetFileName(f);
-            if (name.Equals("artifact.json", StringComparison.OrdinalIgnoreCase)
-                || name.Equals("current.json", StringComparison.OrdinalIgnoreCase))
-                continue;
-            var target = Path.Combine(staged, Path.GetRelativePath(storageSrc, f));
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.Copy(f, target, overwrite: true);
+            var nativeDest = Path.Combine(staged, "runtimes");
+            foreach (var f in Directory.EnumerateFiles(nativeRoot, "*", SearchOption.AllDirectories))
+            {
+                var target = Path.Combine(nativeDest, Path.GetRelativePath(nativeRoot, f));
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Copy(f, target, overwrite: true);
+            }
         }
 
+        // A dedicated temp DB (NOT ~/.netpi). The path must be backslash-
+        // escaped for the JSON config, otherwise Resolve() parses it as
+        // invalid, the "database" key is lost and the plugin silently falls
+        // back to the default ~/.netpi/netpi.db.
         var dbPath = Path.Combine(_home, "test-netpi.db");
-        WriteConfig("{\"plugins\":{\"netpi.storage.sqlite\":{\"database\":\"" + dbPath + "\"}}}");
+        WriteConfig("{\"plugins\":{\"netpi.storage.sqlite\":{\"database\":\"" + dbPath.Replace("\\", "\\\\") + "\"}}}");
         await using var runtime = NewRuntime();
         await runtime.StartAsync();
         Assert.Equal(PluginState.Active,
             runtime.Plugins.GetStatus().Single(s => s.PluginId == "NetPI.Storage.Sqlite").State);
 
         // A consumer (as Web/Diagnostics/the runner would): resolve the
-        // store ONCE from the registry and keep it across the provider's
-        // reload.
-        var sessionsType = runtime.Services.Snapshot().Single(r => r.Id == "sessions").ServiceType;
-        using var consumerStore = runtime.Services.Acquire("sessions", sessionsType);
-        Assert.NotNull(consumerStore.Value);
-        var created = await ((NetPI.Storage.Sqlite.SqliteSessionStore)consumerStore.Value)
-            .CreateAsync("/ws", CancellationToken.None);
+        // store ONCE, through the ISessionStore INTERFACE (in NetPI.Abstractions,
+        // shared by both ALCs) — never through the concrete SqliteSessionStore
+        // class, which exists in two ALCs and would not be castable across the
+        // boundary. Keep that reference across the provider's reload.
+        ISessionStore consumerStore;
+        {
+            var sessionsType = runtime.Services.Snapshot().Single(r => r.Id == "sessions").ServiceType;
+            using var lease = runtime.Services.Acquire("sessions", sessionsType);
+            Assert.NotNull(lease.Value);
+            consumerStore = (ISessionStore)lease.Value;
+        }
+        var created = await consumerStore.CreateAsync("/ws", CancellationToken.None);
         Assert.False(string.IsNullOrEmpty(created.Id));
-        Assert.Equal(1, await ((NetPI.Storage.Sqlite.SqliteSessionStore)consumerStore.Value).CountAsync(CancellationToken.None));
+        Assert.Equal(1, await consumerStore.CountAsync(CancellationToken.None));
 
         // Reload the PROVIDER plugin. The old generation stops (and must
         // NOT dispose its store) and a new generation registers a fresh
@@ -242,18 +253,22 @@ public sealed class PluginUpdateReliabilityTests : IDisposable
         Assert.Equal(2, runtime.Plugins.Get("NetPI.Storage.Sqlite")!.Generation);
 
         // The consumer — holding the GEN-1 store reference — still works:
-        // reads and writes round-trip against a live connection.
-        Assert.Equal(1, await ((NetPI.Storage.Sqlite.SqliteSessionStore)consumerStore.Value).CountAsync(CancellationToken.None));
-        await ((NetPI.Storage.Sqlite.SqliteSessionStore)consumerStore.Value).CreateAsync("/ws", CancellationToken.None);
-        Assert.Equal(2, await ((NetPI.Storage.Sqlite.SqliteSessionStore)consumerStore.Value).CountAsync(CancellationToken.None));
+        // reads and writes round-trip against a live connection (the store
+        // was NOT disposed in StopAsync, so the old instance is still usable
+        // for the consumers that have not yet re-resolved).
+        Assert.Equal(1, await consumerStore.CountAsync(CancellationToken.None));
+        await consumerStore.CreateAsync("/ws", CancellationToken.None);
+        Assert.Equal(2, await consumerStore.CountAsync(CancellationToken.None));
 
         // Lazy re-resolution (what consumers do after the swap): the id now
         // resolves to a DIFFERENT store instance owned by the new generation,
         // and it sees the same durable data.
-        var freshType = runtime.Services.Snapshot().Single(r => r.Id == "sessions").ServiceType;
-        using var fresh = runtime.Services.Acquire("sessions", freshType);
-        Assert.NotSame(consumerStore.Value, fresh.Value);
-        Assert.Equal(2, await ((NetPI.Storage.Sqlite.SqliteSessionStore)fresh.Value).CountAsync(CancellationToken.None));
+        {
+            var freshType = runtime.Services.Snapshot().Single(r => r.Id == "sessions").ServiceType;
+            using var fresh = runtime.Services.Acquire("sessions", freshType);
+            Assert.NotSame(consumerStore, fresh.Value);
+            Assert.Equal(2, await ((ISessionStore)fresh.Value).CountAsync(CancellationToken.None));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -321,7 +336,7 @@ public sealed class PluginUpdateReliabilityTests : IDisposable
         // (lease held) and no second generation was loaded.
         Assert.False(reload.IsCompleted, "reload should still be draining while the self-lease is held");
         var mid = runtime.Plugins.Get("NetPI.D01")!;
-        Assert.Equal(PluginState.Draining, mid.State, "drain must not finish while the self-lease is held");
+        Assert.True(mid.State == PluginState.Draining, "drain must not finish while the self-lease is held (got " + mid.State + ")");
         Assert.Equal(1, mid.Generation);
 
         // Release the lease -> drain unblocks -> the reload completes.
