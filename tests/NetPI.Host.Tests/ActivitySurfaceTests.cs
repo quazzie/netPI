@@ -56,14 +56,24 @@ public class ActivitySurfaceTests
         }
     }
 
-    private sealed class FakeContext(FakeRegistry services) : IPluginContext
+    private sealed class FakePanels : IWebPanelRegistry
     {
+        public List<WebPanelDefinition> Registered { get; } = [];
+        public IDisposable Register(WebPanelDefinition panel) { Registered.Add(panel); return new Handle(Registered, panel); }
+        private sealed class Handle(List<WebPanelDefinition> list, WebPanelDefinition panel) : IDisposable { public void Dispose() => list.Remove(panel); }
+        public IReadOnlyList<WebPanelDefinition> All() => Registered;
+    }
+
+    private sealed class FakeContext(FakeRegistry services, IWebPanelRegistry? panels = null, JsonElement? config = null) : IPluginContext
+    {
+        private readonly IWebPanelRegistry _panels = panels ?? new FakePanels();
+        private readonly JsonElement _config = config ?? JsonDocument.Parse("{}").RootElement.Clone();
         public PluginInfo Info { get; } = new("netPI.Activity", "Activity Test", "0.1.0");
         public IServiceRegistry Services => services;
         public ICommandRegistry Commands => throw new NotSupportedException();
-        public IWebPanelRegistry WebPanels => throw new NotSupportedException();
+        public IWebPanelRegistry WebPanels => _panels;
         public IEventBus Events => throw new NotSupportedException();
-        public JsonElement OwnConfig => JsonDocument.Parse("{}").RootElement.Clone();
+        public JsonElement OwnConfig => _config;
         public IPluginLogger Log => new NullLogger();
         public IValueLease<object> LeaseSelf() => throw new NotSupportedException();
     }
@@ -272,5 +282,57 @@ public class ActivitySurfaceTests
             Assert.False(cancel.GetProperty("ok").GetBoolean());
         }
         finally { await app.StopAsync(CancellationToken.None); }
+    }
+
+    /// <summary>
+    /// Acceptance: "Activity unload/reload leaves work running." The plugin is
+    /// purely presentational — its Stop/Unload close ITS OWN Kestrel and
+    /// unregister ITS OWN panel, but never touch the runner or jobs it merely
+    /// shows. After a reload a fresh generation re-serves and sees the same work.
+    /// </summary>
+    [Fact]
+    public async Task Unload_Reload_LeavesWorkRunning()
+    {
+        var reg = new FakeRegistry();
+        var panels = new FakePanels();
+        var runner = new FakeRunner();
+        var now = DateTimeOffset.UtcNow;
+        runner.Runs.Add(new RunInfo("run-1", "sess-A", "m1", AgentState.CallingModel, now.AddSeconds(-20), null, RunState.Running));
+        var jobs = new FakeJobs([new BackgroundJobInfo("bg-1", "bash", "node server", BackgroundJobState.Running, now.AddSeconds(-30), null, null, null, SessionId: "sess-A", WorkingDirectory: "/ws")]);
+        reg.Add("runner", runner);
+        reg.Add("background", jobs);
+
+        var cfg = JsonDocument.Parse("{\"port\":0}").RootElement.Clone();
+        var plugin = new ActivityPlugin();
+
+        // Generation 1: load + start; the panel re-registers with the bound URL.
+        await plugin.LoadAsync(new FakeContext(reg, panels, cfg), CancellationToken.None);
+        Assert.Equal(1, panels.Registered.Count);
+        await plugin.StartAsync(CancellationToken.None);
+
+        // Unload: Kestrel closes, panel unregisters, but the WORK is untouched.
+        await plugin.StopAsync(CancellationToken.None);
+        await plugin.UnloadAsync(CancellationToken.None);
+        Assert.Equal(0, panels.Registered.Count);
+        Assert.Empty(jobs.Killed);
+        Assert.Empty(runner.Cancelled);
+        Assert.Single(runner.Runs);
+        Assert.Equal(BackgroundJobState.Running, (await jobs.GetAsync("bg-1")).State);
+
+        // Reload: a new generation re-registers and re-serves, seeing the same work.
+        await plugin.LoadAsync(new FakeContext(reg, panels, cfg), CancellationToken.None);
+        await plugin.StartAsync(CancellationToken.None);
+        try
+        {
+            var gen2 = panels.Registered.Single();
+            var origin = gen2.EntryUrl[..gen2.EntryUrl.LastIndexOf("/panel/activity")];
+            var agents = await GetJsonAsync(origin + "/api/activity/agents");
+            Assert.True(agents.GetProperty("available").GetBoolean());
+            Assert.Equal(1, agents.GetProperty("runs").GetArrayLength());
+            Assert.Equal("sess-A", agents.GetProperty("runs")[0].GetProperty("sessionId").GetString());
+            Assert.Empty(runner.Cancelled);
+            Assert.Empty(jobs.Killed);
+        }
+        finally { await plugin.StopAsync(CancellationToken.None); await plugin.UnloadAsync(CancellationToken.None); }
     }
 }
