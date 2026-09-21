@@ -46,7 +46,7 @@ plugins/                  One folder per plugin; each contains a DLL staged by
                                                               sessions).
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
-tests/NetPI.Host.Tests/   108 xunit tests; the integration surface.
+tests/NetPI.Host.Tests/   116 xunit tests; the integration surface.
 tools/publish-plugins.ps1 Stages plugin DLLs into plugins/<name>/; the host
                               snapshots that folder into per-generation
                               plugin-cache dirs (what the ALCs actually load).
@@ -97,7 +97,10 @@ dotnet src/NetPI.Desktop/bin/Debug/net10.0-windows/netPI.Desktop.exe
   ("`<id>-gen<n>`"); a reload drains leases (poll 10 ms / 30 s), applies the
   plugin's `ReloadPolicy` (netPI.Agent and netPI.Web are `AgentIdle` — reload is
   deferred while `runner.IsRunning`), unloads, and loads a new generation.
-  A load failure keeps the previous generation Active.
+  A load failure keeps the previous generation Active. `ScanAsync` (host
+  `scan` CLI / `plugin.scan` WS) re-discovers plugins/ and loads+starts any id the
+  host has never seen (no restart); a plugin left in `Failed` state can be
+  retried with `plugin.reload` after fixing its config/bytes.
 - Plugins talk only through `IPluginContext`: `Services` (id-keyed registry),
   `Commands`, `Events` (bus), `OwnConfig` (raw JSON section), `Log`.
   Service ids: agent → `agent`, `steering`, `runner`; AutoCompact → `compaction`;
@@ -145,20 +148,22 @@ Model-level wire kinds (`ModelEvents.cs`): `model-started`,
 ## Web surface / WebSocket protocol (PLAN §36, §38, §41)
 
 Kestrel on the configured port (5173): `/ws` (the hub), `/bootstrap` (health),
-`/api/file` (localhost-only file viewer for chat-embedded path links),
+`/api/file` (localhost-only file viewer for chat-embedded path links) and `/api/open`
+(localhost-only; shell-opens a path in the OS default app / Explorer — files
+launch their registered handler, folders open in Explorer),
 static `dist/`, SPA fallback for everything else.
 
 Envelope: `{ type, payload, requestId?, sessionId? }`.
 
 Client→server commands: `chat.send`, `chat.steer`, `agent.cancel`,
 `session.create`, `session.open`, `session.older` (scroll-up pagination,
-`beforeSequence`), `session.rename` (title or workspace), `session.delete`
+`beforeSequence`), `session.rename` (title or workspace; fresh sessions are also auto-titled server-side from the first user message — `ChatSendAsync` renames + broadcasts `session.updated` when the session has no title, and a one-shot backfill at Web-surface start renames pre-existing untitled sessions from their first user message), `session.delete`
 (rejected while a run is in progress on that session), `session.list` (page of
 50; request `offset`, response carries `offset`/`total`/`hasMore` — the drawer
 "load more" button fetches continuation pages and auto-advances after a
 visible delete),
 `session.model`, `session.reasoning`, `session.compact`, `models.refresh`,
-`plugin.reload` / `plugin.reloadAll` / `plugins.list`, `commands.list`,
+`plugin.reload` / `plugin.reloadAll` / `plugin.scan` (rescan plugins/ for folders staged after startup — loads new plugins without a host restart; existing plugins are untouched) / `plugins.list`, `commands.list`,
 `workspace.files`, `config.update`.
 
 Server→client events: `agent.state` (Idle/Preparing/CallingModel/
@@ -171,7 +176,7 @@ ExecutingTools/Compacting/Retrying/Cancelling), `assistant.started` /
 `session.deleted` (client removed the session from the store; if it was the
 open session, the drawer starts a fresh one in the same workspace),
 `models.updated/refreshFailed`, `plugins.state`, `plugin.state`,
-`plugin.reloaded/Failed`, `ack`, `error`.
+`plugin.reloaded/Failed`, `plugin.scanned` (`loaded` = ids newly scanned in), `ack`, `error`.
 
 Bootstrap on WS connect: `agent.state`, `models.*`, `plugins.state`,
 `session.list`, then replay of the active session's **latest 200 entries**.
@@ -196,8 +201,36 @@ blocks. Transcript rendering is capped: after (re)load only the last
 `REVEAL_INITIAL` (40) blocks render; the hidden head reveals `REVEAL_STEP` (40)
 at a time via the "Load earlier" button (`store.hidden` / `store.revealed`),
 which also drives the scroll-to-top fetch of further `session.older` pages. Markdown goes through `marked` + `DOMPurify` (throttled re-parse while
-streaming). File-like paths in assistant text/tool args become links to
-`/api/file?path=...&sessionId=...`. `dist/` is git-ignored: after frontend
+streaming). File-like paths in assistant text/tool args become file links:
+a plain click shell-opens via `/api/open?path=...&sessionId=...` (no page
+navigation — the anchor is intercepted and the open is a fetch); ctrl/middle
+click keeps the in-app `/api/file?path=...&sessionId=...` viewer. Same for
+tool-call file names and write/edit artifact pills. Relative paths resolve
+against the session workspace; when the session has none (or the id is
+missing/unknown) they fall back to the host process CWD (the project root —
+the desktop shell and tools/keep-alive-host.ps1 both start the host from
+there). Link decoration happens only in the final (done) render, not while
+streaming, so file links never reflow the line as tokens arrive (streaming
+renders strip hrefs from file-like anchors, keeping them non-navigable).
+Streaming text uses stable-prefix incremental rendering: only the paragraph
+currently being written is re-parsed each tick; a paragraph is promoted to
+the immutable stable prefix at its blank-line boundary (never inside a code
+fence), so completed text never re-lays-out. The viewport pins to the bottom
+directly (no rAF -- it is throttled in background/hidden WebView2 windows)
+and, while a run is busy, re-pins on a 30 ms interval so open thinking
+bodies stay followed.
+Desktop shell (src/NetPI.Desktop): the WinForms host handles
+CoreWebView2.NewWindowRequested -- target=_blank / window.open intents never
+open a second window; /api/file viewer URLs are mapped to the referenced
+path (relative ones against the project root) and opened via the OS
+(default app, Explorer for folders); any other URL opens in the default
+browser.
+Thinking blocks collapse
+by default; Settings → "Keep thinking open" (left panel) expands them —
+including while streaming, replacing the one-liner. Tool calls are collapsed
+by default (a manual toggle always wins; running shell calls no longer auto-expand). Settings →
+"Keep tool calls open" keeps them expanded. Both settings persist in
+`localStorage` (`netpi.ui.v2`) via `src/ui.svelte.ts`. `dist/` is git-ignored: after frontend
 changes run `npx vite build` and **reload the Web plugin** (Web UI → reload, or
 `plugin.reload` with id `netpi.web`) — no host restart needed.
 
@@ -228,7 +261,7 @@ repo, it feeds every run in this workspace.
 ## Tests & verification
 
 ```bash
-dotnet test NetPI.sln        # 108 tests (agent runtime scenarios, session
+dotnet test NetPI.sln        # 116 tests (agent runtime scenarios, session
                              # store, plugin manager, shell detection, …)
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json
 ```
