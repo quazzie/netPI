@@ -32,10 +32,16 @@ public sealed class ServiceRegistry : IServiceRegistry
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
 
     public IDisposable Register<T>(string id, T instance) where T : notnull
+        => Register(id, instance, ServiceOwner.Current);
+
+    /// <summary>
+    /// astra-1 P3: registration with an EXPLICIT owner (the scoped wrapper
+    /// passes the actual owning generation instead of relying on the
+    /// process-global ambient <see cref="ServiceOwner"/> state).
+    /// </summary>
+    public IDisposable Register<T>(string id, T instance, PluginInstance? owner) where T : notnull
     {
         if (instance is null) throw new ArgumentNullException(nameof(instance));
-
-        var owner = ServiceOwner.Current;
         var entry = new Entry
         {
             Id = id,
@@ -111,11 +117,16 @@ public sealed class ServiceRegistry : IServiceRegistry
     /// reload's lease drain blocks until it is released.
     /// </summary>
     public IValueLease<T> AcquireSelfLease<T>() where T : notnull
+        => AcquireSelfLease<T>(ServiceOwner.Current);
+
+    /// <summary>
+    /// astra-1 P3: self-lease with an EXPLICIT owner — the scoped wrapper
+    /// binds the actual owning generation instead of ambient state left over
+    /// from loading — with atomic state-machine admission.
+    /// </summary>
+    public IValueLease<T> AcquireSelfLease<T>(PluginInstance? owner) where T : notnull
     {
-        // astra-1 P3: the self-lease binds the ACTUAL owning generation passed
-        // in by the scoped wrapper — never ambient state left over from a
-        // previous load — and admission is atomic with the state machine.
-        var owner = ServiceOwner.Current;
+        // astra-1 P3: admission is atomic with the state machine.
         if (owner is null)
             return new SelfLease<T>(); // host-side / test: no owning generation
         var lease = new SelfLease<T>(owner);

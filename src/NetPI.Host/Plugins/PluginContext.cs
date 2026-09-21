@@ -80,24 +80,18 @@ internal sealed class PluginContextServices(
 {
     public IDisposable Register<T>(string id, T instance) where T : notnull
     {
-        var previous = ServiceRegistry.ServiceOwner.Current;
-        ServiceRegistry.ServiceOwner.Current = owner;
-        try
-        {
-            var reg = inner.Register(id, instance);
-            owner.Registrations[id] = reg;
-            return reg;
-        }
-        finally
-        {
-            ServiceRegistry.ServiceOwner.Current = previous;
-        }
+        // astra-1 P3: the owner is the explicit parameter — no ambient
+        // process-global state, so concurrent callbacks can never attribute
+        // work to the wrong generation.
+        var reg = inner.Register(id, instance, owner);
+        owner.Registrations[id] = reg;
+        return reg;
     }
 
     public IValueLease<T> Acquire<T>(string id) where T : notnull => inner.Acquire<T>(id);
     public IValueLease<object> Acquire(string id, Type expectedType) => inner.Acquire(id, expectedType);
 
-    public IValueLease<T> AcquireSelfLease<T>() where T : notnull => inner.AcquireSelfLease<T>();
+    public IValueLease<T> AcquireSelfLease<T>() where T : notnull => inner.AcquireSelfLease<T>(owner);
 
     public T Resolve<T>(string id) where T : notnull => inner.Resolve<T>(id);
 }
@@ -107,25 +101,13 @@ internal sealed class PluginContextServices(
 /// subscription made through it is owned by <see cref="Owner"/>.
 /// </summary>
 internal sealed class PluginContextEvents(
-    IEventBus inner, PluginInstance owner) : IEventBus
+    NetPI.Host.Events.EventBus inner, PluginInstance owner) : IEventBus
 {
     public IDisposable Subscribe<TEvent>(NetPI.Abstractions.EventHandler<TEvent> handler, EventSubscriptionOptions? options = null)
     {
-        var previous = ServiceRegistry.ServiceOwner.Current;
-        ServiceRegistry.ServiceOwner.Current = owner;
-        try
-        {
-            var sub = inner.Subscribe(handler, options);
-            // The bus already tracks the handle on the owning plugin (it picks
-            // up the owner via ServiceRegistry.ServiceOwner.Current, set above)
-            // — do not double-track here, or per-plugin counts run high.
-            return sub;
-        }
-        finally
-
-        {
-            ServiceRegistry.ServiceOwner.Current = previous;
-        }
+        // astra-1 P3: explicit owner — the bus tracks the handle on the
+        // owning generation (no ambient state).
+        return inner.Subscribe(handler, options, owner);
     }
 
     public ValueTask PublishAsync<TEvent>(TEvent @event, CancellationToken ct = default) where TEvent : notnull =>

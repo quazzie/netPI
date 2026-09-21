@@ -380,12 +380,12 @@ public sealed class PluginManager
             if (plugin.Info.Id != pluginId)
                 _logger.LogWarning("Plugin directory '{Dir}' declares id '{InfoId}' (host uses '{DirId}')", source.Directory, plugin.Info.Id, pluginId);
 
-            ServiceRegistry.ServiceOwner.Current = instance;
-            try
-            {
-                instance.Commands = new ScopedCommands(_commands);
-                instance.WebPanels = new ScopedWebPanels(_webPanels);
-                var context = new PluginContext(
+            // astra-1 P3: no ambient owner state — the scoped context binds
+            // the actual generation explicitly, so concurrent callbacks can
+            // never attribute work to the wrong generation.
+            instance.Commands = new ScopedCommands(_commands);
+            instance.WebPanels = new ScopedWebPanels(_webPanels);
+            var context = new PluginContext(
                     instance,
                     new PluginContextServices(_registry, instance),
                     new PluginContextEvents(_bus, instance),
@@ -396,11 +396,6 @@ public sealed class PluginManager
                     instance.Commands,
                     instance.WebPanels);
                 await plugin.LoadAsync(context, ct);
-            }
-            finally
-            {
-                ServiceRegistry.ServiceOwner.Current = null;
-            }
 
 
             RegisterInTables(instance);

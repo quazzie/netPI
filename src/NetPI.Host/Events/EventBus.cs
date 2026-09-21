@@ -32,10 +32,16 @@ public sealed class EventBus : IEventBus
     private readonly Dictionary<Type, List<SubEntry>> _subs = new();
 
     public IDisposable Subscribe<TEvent>(NetPI.Abstractions.EventHandler<TEvent> handler, EventSubscriptionOptions? options = null)
+        => Subscribe(handler, options, ServiceRegistry.ServiceOwner.Current);
+
+    /// <summary>
+    /// astra-1 P3: subscription with an EXPLICIT owner (the scoped wrapper
+    /// passes the actual owning generation instead of relying on the
+    /// process-global ambient <see cref="ServiceRegistry.ServiceOwner"/>).
+    /// </summary>
+    public IDisposable Subscribe<TEvent>(NetPI.Abstractions.EventHandler<TEvent> handler, EventSubscriptionOptions? options, Plugins.PluginInstance? owner)
     {
         if (handler is null) throw new ArgumentNullException(nameof(handler));
-
-        var owner = ServiceRegistry.ServiceOwner.Current;
 
         SubEntry entry;
         IDisposable handle;
