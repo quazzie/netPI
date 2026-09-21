@@ -236,6 +236,24 @@ class NetPIWebSocket {
         break;
       }
 
+      case "session.project.pending": {
+        // astra-1 D2: a project switch was enqueued while a run is in flight.
+        // It applies at the run's safe boundary (session.project.applied).
+        const psid = sid ?? p.sessionId ?? null;
+        if (psid)
+          store.setProjectPending(psid, {
+            operationId: p.operationId ?? "",
+            project: p.projectId ?? p.project ?? "…",
+          });
+        break;
+      }
+      case "session.project.applied": {
+        // The boundary apply succeeded (or failed-cleared): drop the pending
+        // notice; the session metadata refresh arrives via session.updated.
+        const psid = sid ?? p.sessionId ?? null;
+        if (psid) store.setProjectPending(psid, null);
+        break;
+      }
       case "session.deleted": {
         const deletedId = p.sessionId as string | undefined;
         const wasVisible = !!deletedId && store.sessions.some((s) => s.id === deletedId);

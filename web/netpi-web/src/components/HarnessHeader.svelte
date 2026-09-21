@@ -13,6 +13,12 @@
   let sessionLabel = $derived(
     store.session?.title || (store.session?.workspace ? store.session.workspace : "untitled"),
   );
+  // astra-1 D2: the session's active project (F1/D2 make it first-class)
+  // shows next to the session label — switching projects updates it.
+  let projectLabel = $derived(store.session?.project?.name ?? null);
+  let projectPending = $derived(
+    store.session ? store.projectPending[store.session.id] ?? null : null,
+  );
 </script>
 
 <div class="header">
@@ -22,6 +28,14 @@
        stays after it (the left panel's session list remains until removal). -->
   <button class="header-sessions" title="All sessions" onclick={onSessions}>Sessions</button>
   <span class="session" title={store.session?.workspace ?? ""}>{sessionLabel}</span>
+  {#if projectLabel}
+    <span class="header-project" title="Active project">▣ {projectLabel}</span>
+  {/if}
+  {#if projectPending}
+    <span class="header-project-pending" title={projectPending.operationId}>
+      ⇄ {projectPending.project}…
+    </span>
+  {/if}
 
   <span class="spacer"></span>
 

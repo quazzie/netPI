@@ -180,6 +180,16 @@ export class NetPIStore {
     else this.boundedPut(this.toolDisclosure, callId, value, 500);
   }
 
+  /** astra-1 D2: project switch enqueued while a run is in flight — shown as
+   *  a pending notice until the run's safe boundary applies it (or clears it).
+   *  One per session; a later selection supersedes the earlier row. */
+  projectPending = $state<Record<string, { operationId: string; project: string }>>({});
+
+  setProjectPending(sessionId: string, op: { operationId: string; project: string } | null): void {
+    if (op === null) delete this.projectPending[sessionId];
+    else this.projectPending[sessionId] = op;
+  }
+
   // ---- transcript -------------------------------------------------------
   blocks = $state<Block[]>([]);
   /** Count of head blocks in `blocks` that are not rendered ("load earlier"). */

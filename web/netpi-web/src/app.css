@@ -392,6 +392,32 @@ a { color: var(--accent); }
   font-size:11.5px;
   text-align:center;
 }
+/* astra-1 D2: header project label + pending switch notice */
+.header-project {
+  padding:3px 8px;
+  border:1px solid #2a313c;
+  border-radius:7px;
+  background:#161b22;
+  color:var(--text-dim);
+  font-size:11px;
+  font-family:"Cascadia Code", Consolas, monospace;
+  max-width:220px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.header-project-pending {
+  padding:3px 8px;
+  border:1px solid #3a3320;
+  border-radius:7px;
+  background:#171410;
+  color:#e3b341;
+  font-size:11px;
+  max-width:220px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
 /* astra-1 G1: header Sessions button */
 .header-sessions {
   padding:4px 9px;

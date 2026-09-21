@@ -145,6 +145,13 @@ export interface SessionInfo {
   reasoningLevel?: string;
   createdAt: number;
   updatedAt: number;
+  /** astra-1 D2: the active project (F1/D2 make the project first-class). */
+  project?: {
+    id: string;
+    name?: string;
+    rootPath?: string;
+    updatedAt?: number;
+  };
 }
 
 
