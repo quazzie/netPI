@@ -22,13 +22,17 @@
     return "…" + line.slice(-219);
   }
 
-  let expanded = $derived(thinking.done && (ui.keepThinkingOpen || userOpen));
+  // With "keep thinking open" on, the block renders expanded even while
+  // streaming (no one-liner); otherwise the one-liner switches to a pill on
+  // completion and the pill only expands with the same setting or a manual toggle.
+  let expanded = $derived(ui.keepThinkingOpen || (thinking.done && userOpen));
+  let useOpen = $derived(thinking.done || ui.keepThinkingOpen);
   let finishedLabel = $derived(
     thinking.durationMs ? `Thinking · ${fmt(thinking.durationMs)}` : "Thinking",
   );
 </script>
 
-{#if !thinking.done}
+{#if !useOpen}
   <div class="thinking-stream" title={thinking.text || "Thinking…"} aria-live="polite">
     <span class="thinking-row-icon" aria-hidden="true">◉</span>
     <span class="thinking-row-title">Think</span>

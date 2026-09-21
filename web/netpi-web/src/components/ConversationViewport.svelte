@@ -11,26 +11,39 @@
   let unseen = $state(false);
   let prependAnchorHeight = 0;
   let lastPrependVersion = 0;
-  let scrollFrame = 0;
 
   const nearBottom = () => {
     if (!viewport) return true;
     return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96;
   };
 
-  function scheduleBottom(force = false) {
+  // Pin directly instead of via requestAnimationFrame: rAF callbacks are
+  // heavily throttled or paused while the window is backgrounded/hidden
+  // (WebView2 included), which made the transcript fall behind long thinking
+  // or text streams and then jump forward in chunks to catch up. A direct
+  // scrollTop write is cheap; callers already sit post-layout (store effect,
+  // ResizeObserver frame).
+  // Tracks our last programmatic pin so onScroll() can ignore the scroll
+  // event it causes. Without this, a layout that lands right after a pin
+  // (streaming deltas, session replay bursts) puts the viewport >96px from
+  // the bottom, nearBottom() reads false, and the follow died permanently.
+  let pinTarget = 0;
+  let pinAt = 0;
+
+  function pinBottom(force = false) {
     if (!viewport || (!stick && !force)) return;
-    cancelAnimationFrame(scrollFrame);
-    scrollFrame = requestAnimationFrame(() => {
-      if (!viewport) return;
-      viewport.scrollTop = viewport.scrollHeight;
-      stick = true;
-      unseen = false;
-    });
+    const target = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    viewport.scrollTop = target;
+    pinTarget = viewport.scrollTop;
+    pinAt = performance.now();
+    stick = true;
+    unseen = false;
   }
 
   function onScroll() {
     if (!viewport) return;
+    if (performance.now() - pinAt < 500 && Math.abs(viewport.scrollTop - pinTarget) < 1)
+      return; // our own pin -- keep stick
     const nowSticky = nearBottom();
     if (nowSticky) unseen = false;
     stick = nowSticky;
@@ -71,7 +84,7 @@
 
   $effect(() => {
     tailSignal;
-    if (stick) scheduleBottom();
+    if (stick) pinBottom();
     else if (store.busy) unseen = true;
   });
 
@@ -81,10 +94,37 @@
   $effect(() => {
     if (!list) return;
     const observer = new ResizeObserver(() => {
-      if (stick) scheduleBottom();
+      if (stick) pinBottom();
     });
     observer.observe(list);
     return () => observer.disconnect();
+  });
+
+  // Follow guarantee while the agent produces output. The store effect and
+  // ResizeObserver cover the fast path, but any missed frame (layout
+  // batching, WebView2 throttling) left the transcript behind the stream --
+  // worst case, "not scrolling at all" for open thinking bodies. A fixed
+  // cadence re-pin while sticky+busy keeps the viewport glued regardless.
+  let followTimer = 0;
+  $effect(() => {
+    if (!store.busy) {
+      if (followTimer) {
+        clearInterval(followTimer);
+        followTimer = 0;
+        if (stick) pinBottom(); // final settle when the stream ends
+      }
+      return;
+    }
+    if (!followTimer)
+      followTimer = window.setInterval(() => {
+        if (stick) pinBottom();
+      }, 30);
+    return () => {
+      if (followTimer) {
+        clearInterval(followTimer);
+        followTimer = 0;
+      }
+    };
   });
 
   // Preserve the user's visual anchor when older history is prepended.
@@ -106,7 +146,7 @@
 
   function jumpToLatest() {
     stick = true;
-    scheduleBottom(true);
+    pinBottom(true);
   }
 </script>
 

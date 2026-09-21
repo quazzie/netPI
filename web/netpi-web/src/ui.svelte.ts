@@ -9,6 +9,7 @@ interface PersistedUi {
   rightWidth?: number;
   rightTab?: string;
   keepThinkingOpen?: boolean;
+  keepToolsOpen?: boolean;
   font?: FontChoice;
 }
 
@@ -31,6 +32,7 @@ class UiSettings {
   rightTab = $state(initial.rightTab ?? "diagnostics");
   leftPage = $state<"sessions" | "settings">("sessions");
   keepThinkingOpen = $state(initial.keepThinkingOpen ?? false);
+  keepToolsOpen = $state(initial.keepToolsOpen ?? false);
   font = $state<FontChoice>(initial.font ?? "system");
 
   constructor() {
@@ -47,6 +49,7 @@ class UiSettings {
       rightWidth: this.rightWidth,
       rightTab: this.rightTab,
       keepThinkingOpen: this.keepThinkingOpen,
+      keepToolsOpen: this.keepToolsOpen,
       font: this.font,
     };
     try { localStorage.setItem(KEY, JSON.stringify(snapshot)); } catch {}
@@ -91,6 +94,11 @@ class UiSettings {
 
   setKeepThinkingOpen(value: boolean) {
     this.keepThinkingOpen = value;
+    this.persist();
+  }
+
+  setKeepToolsOpen(value: boolean) {
+    this.keepToolsOpen = value;
     this.persist();
   }
 }

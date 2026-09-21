@@ -8,8 +8,21 @@
 
   let { block }: { block: AssistantBlock } = $props();
 
-  let html = $state("");
-  let renderedText = "";
+  // ---- streaming markdown: stable-prefix incremental rendering -----------
+  // Re-parsing the whole message every tick re-lays-out already-complete
+  // text (mid-word wrap state, paragraph/fence re-evaluation), so the
+  // message's height flickered on every re-render and the pinned viewport
+  // bounced with it. Instead, only the paragraph currently being written is
+  // re-rendered: when a paragraph completes it is promoted into the stable
+  // prefix, whose DOM (same string -> Svelte leaves the nodes alone) is
+  // never touched again.
+  let stableHtml = $state("");
+  let tailHtml = $state("");
+  let finalHtml = $state("");
+  let stableText = "";
+  let lastCut = 0;
+  let fenceOffsets: number[] = [];
+  let fenceScanPos = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const knownFileExtensions = /\.(?:cs|fs|vb|csproj|sln|props|targets|ts|tsx|js|jsx|mjs|cjs|svelte|vue|py|rs|go|java|kt|kts|cpp|cc|c|h|hpp|json|jsonl|ya?ml|toml|xml|html?|css|scss|md|txt|sql|ps1|sh|bash|cmd|bat|ini|cfg)$/i;
@@ -31,7 +44,37 @@
     return `/api/file?${params.toString()}`;
   }
 
-  function decorateFileLinks(raw: string): string {
+  function openInShell(path: string) {
+    const params = new URLSearchParams({ path: path.trim() });
+    if (store.session?.id) params.set("sessionId", store.session.id);
+    // fetch does not reject on HTTP error statuses — check res.ok and
+    // surface the server's reason, otherwise a 404 would fail silently.
+    fetch(`/api/open?${params.toString()}`)
+      .then(async (res) => {
+        if (!res.ok)
+          store.setError(`Could not open ${path}: ${(await res.text().catch(() => "")) || res.statusText}`);
+      })
+      .catch((err) => store.setError(String(err)));
+  }
+
+  // File-like links render into {@html}, so per-node handlers are lost in the
+  // innerHTML round-trip; intercept at the container instead. Plain clicks
+  // shell-open via /api/open; ctrl/middle-click keeps the /api/file viewer.
+  function mdClick(e: MouseEvent) {
+    if (e.ctrlKey || e.metaKey || e.button !== 0) return;
+    const a = (e.target as HTMLElement | null)?.closest<HTMLAnchorElement>("a.file-link");
+    if (!a?.dataset.path) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openInShell(a.dataset.path);
+  }
+
+  // File-like links are only created in the final (done) render: recognizing
+  // a path mid-stream and turning the <code> span into a link reflows the
+  // line (font + metrics change). Streaming renders strip file-like hrefs
+  // so nothing navigates; the single re-link at completion is a one-time
+  // shift at the tail of a finished message.
+  function decorateFileLinks(raw: string, decorateFiles: boolean): string {
     const template = document.createElement("template");
     template.innerHTML = raw;
 
@@ -43,10 +86,17 @@
         !/^[a-z][a-z0-9+.-]*:/i.test(href) &&
         looksLikeFile(href)
       ) {
-        anchor.href = fileHref(href);
         anchor.target = "_blank";
         anchor.rel = "noopener";
-        anchor.classList.add("file-link");
+        if (decorateFiles) {
+          anchor.href = fileHref(href);
+          anchor.classList.add("file-link");
+          anchor.dataset.path = href;
+        } else {
+          // no href while streaming: a bare relative target would navigate
+          // the SPA away on an accidental click
+          anchor.removeAttribute("href");
+        }
       } else if (/^https?:/i.test(href)) {
         anchor.target = "_blank";
         anchor.rel = "noopener noreferrer";
@@ -54,6 +104,7 @@
     }
 
     for (const code of template.content.querySelectorAll<HTMLElement>("code")) {
+      if (!decorateFiles) break; // no code→link reflow while streaming
       if (code.parentElement?.tagName === "PRE") continue;
       const value = code.textContent?.trim() ?? "";
       if (!looksLikeFile(value) || code.closest("a")) continue;
@@ -63,6 +114,7 @@
       a.target = "_blank";
       a.rel = "noopener";
       a.className = "file-link file-code-link";
+      a.dataset.path = value;
       code.replaceWith(a);
       a.append(code);
     }
@@ -70,13 +122,81 @@
     return template.innerHTML;
   }
 
-  function renderMarkdown(text: string) {
+  // Record code-fence line-start offsets (append-only scan over the growing
+  // text) so paragraph-boundary cuts can avoid splitting inside a fence.
+  function noteFences(text: string) {
+    if (text.length < fenceScanPos) {
+      fenceOffsets = [];
+      fenceScanPos = 0;
+    }
+    let lineStart = fenceScanPos === 0 || text[fenceScanPos - 1] === "\n";
+    for (let pos = fenceScanPos; pos < text.length; pos++) {
+      if (lineStart && /^[ \t]{0,3}(`{3,}|~{3,})/.test(text.slice(pos, pos + 8)))
+        fenceOffsets.push(pos);
+      lineStart = text[pos] === "\n";
+    }
+    fenceScanPos = text.length;
+  }
+
+  function fenceCountBefore(pos: number): number {
+    let lo = 0, hi = fenceOffsets.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (fenceOffsets[mid] < pos) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  // Highest paragraph boundary ("<newline><newline>") at/after lastCut with
+  // an even fence count before it (never inside a code block). The cut only
+  // ever moves forward: streaming text is append-only, so promoted stable
+  // text is immutable.
+  function computeCut(text: string): number {
+    if (lastCut > text.length) lastCut = 0;
+    let cut = lastCut;
+    let from = cut;
+    for (;;) {
+      const idx = text.indexOf("\n\n", from);
+      if (idx < 0) break;
+      const cand = idx + 2;
+      if (fenceCountBefore(cand) % 2 === 0) cut = cand;
+      from = cand;
+    }
+    return cut;
+  }
+
+  function sanitizeHtml(raw: string): string {
+    return DOMPurify.sanitize(raw, { ADD_ATTR: ["target", "rel"] }) as string;
+  }
+
+  function renderStream(text: string) {
+    noteFences(text);
+    const cut = computeCut(text);
+    if (cut > 0) {
+      const stable = text.slice(0, cut);
+      if (stable !== stableText) {
+        stableText = stable;
+        lastCut = cut;
+        stableHtml = decorateFileLinks(
+          sanitizeHtml(marked.parse(stable, { async: false }) as string),
+          false,
+        );
+      }
+    }
+    const tail = text.slice(cut);
+    tailHtml = tail
+      ? decorateFileLinks(sanitizeHtml(marked.parse(tail, { async: false }) as string), false)
+      : "";
+  }
+
+  function renderFinal(text: string): string {
+    stableText = "";
+    lastCut = 0;
+    fenceOffsets = [];
+    fenceScanPos = 0;
     const raw = marked.parse(text, { async: false }) as string;
-    const clean = DOMPurify.sanitize(raw, {
-      ADD_ATTR: ["target", "rel"],
-    });
-    html = decorateFileLinks(clean);
-    renderedText = text;
+    return decorateFileLinks(sanitizeHtml(raw), true);
   }
 
   $effect(() => {
@@ -84,8 +204,9 @@
     const done = block.done;
 
     if (!text) {
-      html = "";
-      renderedText = "";
+      stableHtml = "";
+      tailHtml = "";
+      finalHtml = "";
       return;
     }
 
@@ -94,23 +215,16 @@
         clearTimeout(timer);
         timer = null;
       }
-      renderMarkdown(text);
+      finalHtml = renderFinal(text);
       return;
     }
 
     if (!timer) {
       timer = setTimeout(() => {
         timer = null;
-        renderMarkdown(block.text);
+        if (!block.done) renderStream(block.text);
       }, 80);
     }
-
-    return () => {
-      if (done && timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    };
   });
 
   function artifactPath(call: ToolCall): string | null {
@@ -149,13 +263,13 @@
     {/if}
 
     {#if block.text}
-      <div class="md">
-        {#if html && renderedText === block.text}
-          {@html html}
-        {:else if html}
-          {@html html}
-          <span class="stream-tail">{block.text.slice(renderedText.length)}</span>
-        {:else}
+      <div class="md" onclick={mdClick}>
+        {#if block.done && finalHtml}
+          {@html finalHtml}
+        {:else if stableHtml || tailHtml}
+          {@html stableHtml}
+          {@html tailHtml}
+        {:else if block.text}
           <div class="streaming-raw">{block.text}</div>
         {/if}
       </div>
@@ -177,7 +291,12 @@
             href={fileHref(artifact.path)}
             target="_blank"
             rel="noopener"
-            title={artifact.path}
+            title={`Open ${artifact.path} in its default application`}
+            onclick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              openInShell(artifact.path);
+            }}
           >
             <span class="artifact-icon">▱</span>
             <span class="artifact-name">{baseName(artifact.path)}</span>

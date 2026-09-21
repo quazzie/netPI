@@ -118,6 +118,18 @@
           </span>
         </label>
 
+        <label class="setting-check">
+          <input
+            type="checkbox"
+            checked={ui.keepToolsOpen}
+            onchange={(e) => ui.setKeepToolsOpen((e.currentTarget as HTMLInputElement).checked)}
+          />
+          <span>
+            <strong>Keep tool calls open</strong>
+            <small>Tool calls stay expanded by default instead of collapsing to a header row.</small>
+          </span>
+        </label>
+
         <div class="setting-group">
           <label for="workspace-setting">Session workspace</label>
           <input id="workspace-setting" bind:value={workspace} placeholder="C:\src\project" />
