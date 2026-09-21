@@ -11,7 +11,15 @@ public enum BackgroundJobState
     Killed = 3,
 }
 
+/// <summary>astra-1 H: ownership captured when a background process STARTS.
+/// A later project switch must not relabel an existing process — these are
+/// frozen at start. All optional: a tool that doesn't know a dimension leaves
+/// it null (the Activity view shows "—").</summary>
+public sealed record JobOwnership(string? SessionId, string? RunId, string? ProjectId);
+
 /// <summary>Summary of a background job. Owned by the BackgroundTasks plugin.</summary>
+/// <param name="WorkingDirectory">The ORIGINAL working directory captured at start
+/// (astra-1 H) — a later project switch never relabels an existing process.</param>
 public sealed record BackgroundJobInfo(
     string JobId,
     string? ShellId,
@@ -20,7 +28,15 @@ public sealed record BackgroundJobInfo(
     DateTimeOffset StartedAt,
     DateTimeOffset? ExitedAt,
     int? ExitCode,
-    string? OutputPath);
+    string? OutputPath,
+    /// <summary>astra-1 H: the session that started this job (ownership frozen at start).</summary>
+    string? SessionId = null,
+    /// <summary>astra-1 H: the run that started this job, if known at start.</summary>
+    string? RunId = null,
+    /// <summary>astra-1 H: the project active when this job started, if known at start.</summary>
+    string? ProjectId = null,
+    /// <summary>astra-1 H: the original working directory (frozen at start).</summary>
+    string? WorkingDirectory = null);
 
 /// <summary>One slice of a background job's captured output (PLAN §28).</summary>
 public sealed record BackgroundJobOutput(
@@ -43,6 +59,12 @@ public interface IBackgroundJobManager
         string command,
         string workingDirectory,
         JsonElement? options,
+        /// <summary>
+        /// astra-1 H: ownership captured when the process starts (session /
+        /// run / project). Optional — a caller that doesn't know a dimension
+        /// leaves it null; a later project switch never relabels the process.
+        /// </summary>
+        JobOwnership? ownership = null,
         CancellationToken cancellationToken = default);
 
     ValueTask<BackgroundJobInfo?> GetAsync(string jobId, CancellationToken cancellationToken = default);

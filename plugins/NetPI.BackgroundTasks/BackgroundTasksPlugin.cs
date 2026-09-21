@@ -18,6 +18,10 @@ internal sealed class BackgroundJob
     public required string JobId { get; init; }
     public required string ShellId { get; init; }
     public required string Command { get; init; }
+    /// <summary>astra-1 H: ownership + original workdir, FROZEN at start (a
+    /// later project switch must not relabel an existing process).</summary>
+    public JobOwnership? Ownership { get; set; }
+    public string? WorkingDirectory { get; set; }
     public Process? Process { get; set; }
     public BackgroundJobState State { get; set; } = BackgroundJobState.Running;
     public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
@@ -53,21 +57,28 @@ internal sealed class BackgroundJob
         lock (_output)
         {
             var total = _dropped + _output.Length;
+            if (offset >= total) return (string.Empty, total, false);
             if (offset <= _dropped)
             {
-                // requested region is partly gone; start from the earliest kept char
+                // requested start is (partly) lost: serve from the earliest kept char.
+                // (also the from-front path GetTailAsync uses to learn the total)
                 return (_output.ToString(), _dropped + _output.Length, offset < _dropped);
             }
-            if (offset >= total) return (string.Empty, total, false);
             int local = offset - _dropped;
             int take = Math.Min(64_000, _output.Length - local);
-            var slice = _output.ToString()[local..(local + take)];
-            return (slice, offset + take, false);
+            // astra-1 H: slice straight off the buffer (StringBuilder.ToString
+            // builds only the slice — no full ToString() copy before slicing,
+            // PLAN §10: remove that unnecessary allocation).
+            return (_output.ToString(local, take), offset + take, false);
         }
     }
 
     public BackgroundJobInfo ToInfo() => new(
-        JobId, ShellId, Command, State, StartedAt, ExitedAt, ExitCode, null);
+        JobId, ShellId, Command, State, StartedAt, ExitedAt, ExitCode, null,
+        SessionId: Ownership?.SessionId,
+        RunId: Ownership?.RunId,
+        ProjectId: Ownership?.ProjectId,
+        WorkingDirectory: WorkingDirectory);
 
     public void Kill()
     {
@@ -100,11 +111,24 @@ public sealed class BackgroundJobManager : IBackgroundJobManager
     private readonly object _gate = new();
     private int _counter;
 
-    public BackgroundJobManager(IPluginContext ctx) => _ctx = ctx;
+    /// <summary>astra-1 H: bounded RECENT-COMPLETIONS retention — keep at most this
+    /// many jobs total (running always kept); the oldest EXITED jobs are pruned first.
+    /// Opening a job beyond the window fails "no such job" (output was on the bounded
+    /// ring anyway, so nothing is retained past this without a live process).</summary>
+    private int _maxRetainedJobs;
+
+    public BackgroundJobManager(IPluginContext ctx) : this(ctx, 64) { }
+    // astra-1 H: injectable cap (tests drive pruning deterministically).
+    internal BackgroundJobManager(IPluginContext ctx, int maxRetainedJobs)
+    {
+        _ctx = ctx;
+        _maxRetainedJobs = maxRetainedJobs;
+    }
 
     public async ValueTask<BackgroundJobInfo> StartAsync(
         string shellId, string command, string workingDirectory,
-        JsonElement? options, CancellationToken cancellationToken = default)
+        JsonElement? options, JobOwnership? ownership = null,
+        CancellationToken cancellationToken = default)
     {
         // Briefly lease the shell resolver (PLAN §27), then own the process.
         // The lease is disposed at the end of the using block so that a reload
@@ -118,6 +142,11 @@ public sealed class BackgroundJobManager : IBackgroundJobManager
             JobId = NewId(),
             ShellId = shellId,
             Command = command,
+            // astra-1 H: ownership FROZEN at start (a later project switch never
+            // relabels this process); the working directory is the RESOLVED one —
+            // the authoritative original directory, not the caller's relative hint.
+            Ownership = ownership,
+            WorkingDirectory = rc.WorkingDirectory,
         };
 
         var psi = new ProcessStartInfo(rc.FileName, rc.Arguments)
@@ -247,6 +276,31 @@ public sealed class BackgroundJobManager : IBackgroundJobManager
         try { job.JobLease?.Dispose(); } catch { /* best-effort */ }
         job.JobLease = null;
         _ctx.Log.Information($"background {job.JobId} exited code={job.ExitCode}");
+        PruneRetainedJobs();
+    }
+
+    /// <summary>astra-1 H: keep the table bounded. Running jobs are never pruned;
+    /// once over the retention cap, drop the oldest EXITED jobs (by exit
+    /// time, then start time) until back under the cap. Best-effort — a reload's drain
+    /// only tracks RUNNING jobs, so pruning a completed job is always safe.</summary>
+    private void PruneRetainedJobs()
+    {
+        lock (_gate)
+        {
+            if (_jobs.Count <= _maxRetainedJobs) return;
+            var exited = _jobs.Values
+                .Where(j => j.State != BackgroundJobState.Running)
+                .OrderBy(j => j.ExitedAt ?? j.StartedAt)
+                .ThenBy(j => j.StartedAt)
+                .ToList();
+            int toRemove = _jobs.Count - _maxRetainedJobs;
+            foreach (var j in exited)
+            {
+                if (toRemove-- <= 0) break;
+                if (_jobs.Remove(j.JobId))
+                    _ctx.Log.Debug($"background pruned completed job {j.JobId} (bounded retention)");
+            }
+        }
     }
 
     private IValueLease<IShellCommandResolver> AcquireResolver(string shellId)
@@ -297,7 +351,13 @@ public sealed class BackgroundStartTool : IAgentTool
             return Error("command is required");
         try
         {
-            var info = await _mgr.StartAsync(shell, command, workdir, null, ct);
+            // astra-1 H: capture ownership at start — the session that is
+            // running (RunId/ProjectId are null: ToolContext carries only the
+            // session, and they are not yet plumbed into tool execution).
+            var info = await _mgr.StartAsync(
+                shell, command, workdir, null,
+                new JobOwnership(ctx.SessionId, null, null),
+                ct);
             return new ToolResult(Name, Name, [new TextPart($"started job {info.JobId} (shell={info.ShellId}) command={command}")], false);
         }
         catch (Exception ex)

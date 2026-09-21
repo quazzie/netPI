@@ -151,7 +151,7 @@ public class DiagnosticsSurfaceTests
 
     private sealed class FakeJobs : IBackgroundJobManager
     {
-        public ValueTask<BackgroundJobInfo> StartAsync(string shellId, string command, string workingDirectory, JsonElement? options, CancellationToken ct = default)
+        public ValueTask<BackgroundJobInfo> StartAsync(string shellId, string command, string workingDirectory, JsonElement? options, JobOwnership? ownership = null, CancellationToken ct = default)
             => throw new NotSupportedException();
         public ValueTask<BackgroundJobInfo?> GetAsync(string jobId, CancellationToken ct = default)
             => ValueTask.FromResult<BackgroundJobInfo?>(null);
