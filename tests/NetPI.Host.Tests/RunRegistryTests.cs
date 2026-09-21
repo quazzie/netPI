@@ -38,6 +38,19 @@ public class RunRegistryTests
         await t;
     }
 
+    /// <summary>Deterministic gate: waits until the run's terminal OUTCOME is recorded on the
+    /// registry (task completion alone is racy — the outcome lands in the runner's finally).</summary>
+    private static async Task WaitTerminal(AgentRunner r, string runId)
+    {
+        for (var i = 0; i < 2000; i++)
+        {
+            var info = r.GetRun(runId);
+            if (info is not null && info.Outcome != RunState.Running) return;
+            await Task.Delay(1);
+        }
+        Assert.Fail("run did not reach a terminal outcome in time");
+    }
+
     [Fact]
     public async Task StartRun_ReturnsRunId_RegistryListsIt()
     {
@@ -97,14 +110,16 @@ public class RunRegistryTests
     [Fact]
     public async Task GetSessionRun_FlipsToNull_WhenRunFinishes()
     {
-        var (runner, _, _) = New();
+        var (runner, _, _) = New(stall: true);
         var start = await runner.StartRunAsync(Req("s1"));
 
+        // The stalled run is still active when we look — the flip-off is the assertion.
         var active = runner.GetSessionRun("s1");
         Assert.NotNull(active);
         Assert.Equal(start.RunId, active!.RunId);
 
-        await WaitRun(runner);
+        Assert.True(runner.CancelRun(start.RunId!));
+        await WaitTerminal(runner, start.RunId);
         Assert.Null(runner.GetSessionRun("s1"));
     }
 
