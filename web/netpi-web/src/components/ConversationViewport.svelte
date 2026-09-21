@@ -40,6 +40,13 @@
     unseen = false;
   }
 
+  // astra-1 G1: remember follow intent per session so switching tabs back
+  // restores where the user was reading (bottom-stuck or scrolled up).
+  $effect(() => {
+    const sid = store.session?.id ?? null;
+    stick = (sid ? store.scrollStick[sid] : undefined) ?? true;
+  });
+
   function onScroll() {
     if (!viewport) return;
     if (performance.now() - pinAt < 500 && Math.abs(viewport.scrollTop - pinTarget) < 1)
@@ -47,6 +54,7 @@
     const nowSticky = nearBottom();
     if (nowSticky) unseen = false;
     stick = nowSticky;
+    store.setScrollStick(store.session?.id ?? null, nowSticky);
 
     if (
       viewport.scrollTop <= 40 &&

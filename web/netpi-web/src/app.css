@@ -1183,6 +1183,70 @@ body.panel-resizing .app-shell { transition: none; }
 .model-pick:hover,
 .reason-pick:hover { background: #20252d; }
 
+/* astra-1 G1: open-session tab strip (below the header) */
+.session-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 0 8px 4px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  border-bottom: 1px solid var(--border, #232931);
+  background: var(--bg-panel, #15181d);
+}
+.session-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  min-width: 56px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  color: #9aa3b0;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.session-tab:hover { background: #1b2027; }
+.session-tab.selected {
+  background: var(--bg-main, #101318);
+  border-color: var(--border, #232931);
+  color: var(--text, #d6dce4);
+}
+.session-tabs.multi .session-tab { max-width: 140px; }
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #39414d;
+  flex: none;
+}
+.tab-dot.running { background: #679efe; }
+.tab-dot.unread { background: #e3b341; }
+.tab-dot.running.unread { background: #e3b341; }
+.tab-close {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin-left: 2px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #7c8592;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.tab-close:hover { background: #2a313c; color: #d6dce4; }
 /* astra-1 G2: context meter beside the model/reasoning controls */
 .ctx { position: relative; display: inline-flex; align-items: center; }
 .ctx-circle {

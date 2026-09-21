@@ -7,6 +7,20 @@
 
   let text = $state("");
   let el: HTMLTextAreaElement | null = null;
+
+  // astra-1 G1: drafts are per-session and survive tab switches (bounded in
+  // the store). Load the draft whenever the visible session changes; save on
+  // every edit. A session with no draft restores as empty, not stale text.
+  // Keyed on session id (not the session object — applySession replaces it
+  // on every session.updated, which must not clobber in-progress text).
+  let draftKey = $derived(store.session?.id ?? null);
+  $effect(() => {
+    const sid = draftKey;
+    text = store.getDraft(sid);
+  });
+  function onInput() {
+    store.setDraft(store.session?.id ?? null, text);
+  }
   let menu = $state<null | "commands" | "model" | "reasoning" | "at" | "attach">(null);
   let atCursor = $state(0);
   let atFiles = $state<{ path: string; full: string; size: number }[]>([]);
@@ -145,12 +159,14 @@
     if (t.startsWith("/")) {
       handleCommand(t);
       text = "";
+      store.setDraft(store.session?.id ?? null, "");
       return;
     }
 
     store.beginSubmit();
     const kind = store.submit(t);
     text = "";
+    store.setDraft(store.session?.id ?? null, "");
 
     try {
       if (kind === "sent") {
@@ -328,7 +344,7 @@
       rows="1"
       placeholder="Message, / commands, @ files…"
       onkeydown={onKeyDown}
-    ></textarea>
+     oninput={onInput}></textarea>
 
     <div class="toolbar">
       <button class="icon-btn" title="Add context" onclick={() => (menu = menu === "attach" ? null : "attach")}>＋</button>

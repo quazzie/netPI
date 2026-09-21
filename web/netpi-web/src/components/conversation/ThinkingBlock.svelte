@@ -2,12 +2,15 @@
   import { tick } from "svelte";
   import type { ThinkingBlock as ThinkingPart } from "../../types";
   import { ui } from "../../ui.svelte";
+  import { store } from "../../store.svelte";
 
   let { thinking }: { thinking: ThinkingPart } = $props();
 
-  // Per-block disclosure override: unset (follow the "Keep thinking open"
-  // setting) | open | closed. Manual toggling always wins over the setting.
-  let userOverride = $state<"unset" | "open" | "closed">("unset");
+  // astra-1 G1: disclosure is per-block in the store (bounded) so it survives
+  // tab switches and reconnect replays; unset falls back to the setting.
+  let userOverride = $state<"unset" | "open" | "closed">(
+    (store.thinkingDisclosure[thinking.id] as "open" | "closed" | undefined) ?? "unset",
+  );
   // Inner scroll-follow, owned by this body. Kept separate from the outer
   // conversation's follow state: the outer viewport must not drive (or be
   // driven by) the inner 360px scroller.
@@ -145,7 +148,13 @@
       class="thinking-pill"
       aria-expanded={expanded}
       aria-controls={`thinking-body-${thinking.id}`}
-      onclick={() => (userOverride = userOverride === "open" ? "closed" : "open")}
+      onclick={() => {
+        userOverride = userOverride === "open" ? "closed" : "open";
+        store.setThinkingDisclosure(
+          thinking.id,
+          userOverride === "open" ? "open" : "closed",
+        );
+      }}
     >
       <span class="thinking-pill-chevron">{expanded ? "⌄" : "›"}</span>
       <span>{finishedLabel}</span>

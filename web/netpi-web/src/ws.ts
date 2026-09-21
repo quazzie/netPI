@@ -1,4 +1,4 @@
-import { store, REVEAL_INITIAL, REVEAL_STEP } from "./store.svelte";
+import { store, NetPIStore, REVEAL_INITIAL, REVEAL_STEP } from "./store.svelte";
 import type {
   AgentState,
   ModelInfo,
@@ -47,6 +47,17 @@ class NetPIWebSocket {
     return this.request("session.create", payload);
   }
 
+  /** astra-1 G1: last-selected tab to restore after the bootstrap replay lands. */
+  private restoreTab: string | null = null;
+
+  /** G1: a session became visible — register it as an open tab (ordered,
+   *  de-duped) and clear its unread marker. */
+  private navToTab(eid: string | null): void {
+    if (!eid) return;
+    store.openTab(eid);
+    store.clearUnread(eid);
+  }
+
   connect(): void {
     if (this.ws && (this.ws.readyState === 0 || this.ws.readyState === 1)) {
       return;
@@ -60,6 +71,10 @@ class NetPIWebSocket {
       this.retries = 0;
       this.reconnectNav = true;
       this.reconnectNavUntil = Date.now() + 10000;
+      // astra-1 G1: remember the last-selected tab so the post-bootstrap
+      // navigation can return to it (restored sessions are re-opened below).
+      const restored = NetPIStore.loadTabs();
+      this.restoreTab = restored.tabs.length ? restored.selected : null;
       store.connection = "open";
       store.setError(null);
     };
@@ -181,6 +196,9 @@ class NetPIWebSocket {
       case "agent.state":
         // Per-session state; during a reconnect the bootstrap state of the
         // active run may arrive before the session replay lands.
+        store.setBusySession(sid, p.state as AgentState);
+        if (!isCurrent(sid) && (p.state as AgentState) !== "Idle")
+          store.markUnread(sid);
         if (isCurrent(sid) || nav(sid))
           store.applyAgentState(p.state as AgentState);
         break;
@@ -199,8 +217,19 @@ class NetPIWebSocket {
           nav(eid);
         if (navigates) {
           store.applySession(info);
+          this.navToTab(eid);
           if (eid === this.targetSession) this.targetSession = null;
-          if (eid != null) this.reconnectNav = false;
+          if (eid != null) {
+            this.reconnectNav = false;
+            // G1: return to the last-selected tab once the bootstrap replay
+            // has landed (the server always replays the active/most-recent
+            // session first — this restores the user's tab choice on top).
+            if (this.restoreTab && this.restoreTab !== eid) {
+              const target = this.restoreTab;
+              this.restoreTab = null;
+              this.openSession(target).catch(() => {});
+            }
+          }
         } else {
           store.upsertSession(info);
         }
@@ -211,6 +240,9 @@ class NetPIWebSocket {
         const deletedId = p.sessionId as string | undefined;
         const wasVisible = !!deletedId && store.sessions.some((s) => s.id === deletedId);
         store.sessions = store.sessions.filter((s) => s.id !== deletedId);
+        // astra-1 G1: a deleted session drops its tab (the run stays in
+        // Activity; the tab is a view, not the session).
+        if (deletedId) store.closeTab(deletedId);
         if (deletedId && store.session?.id === deletedId) {
           // The open session vanished: clear the viewport and start fresh
           // in the same workspace.
@@ -330,9 +362,13 @@ class NetPIWebSocket {
 
       case "assistant.completed":
         // Do not force Idle here. A completed model turn may be followed by a
-        if (!isCurrent(sid)) break;
-        store.completeAssistant(p.usage as Usage | undefined);
         // tool batch and another model turn. agent.state is the source of truth.
+        // astra-1 G1: a finished turn in a background session marks its tab
+        // unread; the visible session just completes its transcript.
+        if (!isCurrent(sid)) {
+          store.markUnread(sid);
+          break;
+        }
         store.completeAssistant(p.usage as Usage | undefined);
         break;
 

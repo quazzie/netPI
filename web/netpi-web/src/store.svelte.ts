@@ -54,6 +54,123 @@ export class NetPIStore {
   }
   queuedSteer = $state<QueuedSteer[]>([]);
 
+  // ---- astra-1 G1: open-session tabs + per-session transient state --------
+  /** Ordered ids of open tabs; the visible session is `session.id`.
+   *  G1: seeded from the persisted list — ids for sessions that no longer
+   *  exist are trimmed against the first session list. */
+  openTabIds = $state<string[]>(
+    typeof localStorage === "undefined" ? [] : NetPIStore.loadTabs().tabs,
+  );
+  /** Per-session run state (all sessions, not just the visible one). */
+  busySessions = $state<Record<string, AgentState>>({});
+  /** Tabs that received activity while not selected. */
+  unreadTabs = $state<Record<string, boolean>>({});
+  /** Per-session composer drafts (bounded: 50 sessions, oldest dropped). */
+  drafts = $state<Record<string, string>>({});
+  /** Outer scroll follow intent per session (bounded: 50 entries). */
+  scrollStick = $state<Record<string, boolean>>({});
+  /** Per thinking-block disclosure override (block id → open/closed). */
+  thinkingDisclosure = $state<Record<string, "open" | "closed">>({});
+
+  static readonly TAB_STORAGE_KEY = "netpi.openTabs.v1";
+
+  private boundedPut<T>(
+    map: Record<string, T>,
+    id: string,
+    value: T,
+    cap = 50,
+  ): void {
+    if (Object.keys(map).length >= cap && !(id in map)) {
+      const first = Object.keys(map)[0];
+      delete map[first];
+    }
+    map[id] = value;
+  }
+
+  openTab(id: string | null | undefined): void {
+    if (!id) return;
+    if (!this.openTabIds.includes(id))
+      this.openTabIds = [...this.openTabIds, id];
+    this.persistTabs();
+  }
+
+  closeTab(id: string): void {
+    this.openTabIds = this.openTabIds.filter((x) => x !== id);
+    delete this.unreadTabs[id];
+    // Closing a tab is NOT cancelling a run or deleting the session — the run
+    // keeps going server-side and the session stays in the global list.
+    if (this.session?.id === id) {
+      this.session = null;
+      this.resetTranscript();
+    }
+    this.persistTabs();
+  }
+
+  private persistTabs(): void {
+    if (typeof localStorage === "undefined") return;
+    try {
+      localStorage.setItem(
+        NetPIStore.TAB_STORAGE_KEY,
+        JSON.stringify({
+          tabs: this.openTabIds,
+          selected: this.session?.id ?? null,
+        }),
+      );
+    } catch {}
+  }
+
+  static loadTabs(): { tabs: string[]; selected: string | null } {
+    try {
+      if (typeof localStorage === "undefined")
+        return { tabs: [], selected: null };
+      const raw = JSON.parse(
+          localStorage.getItem(NetPIStore.TAB_STORAGE_KEY) || "{}",
+        ) as { tabs?: unknown; selected?: unknown };
+      const tabs = Array.isArray(raw.tabs)
+        ? raw.tabs.filter((x): x is string => typeof x === "string")
+        : [];
+      const selected = typeof raw.selected === "string" ? raw.selected : null;
+      return { tabs, selected };
+    } catch {
+      return { tabs: [], selected: null };
+    }
+  }
+
+  /** G1: per-session run state — tab indicators (metadata, not the visible chat). */
+  setBusySession(sid: string | null, state: AgentState): void {
+    if (!sid) return;
+    if (state === "Idle") delete this.busySessions[sid];
+    else this.busySessions[sid] = state;
+  }
+
+  markUnread(sid: string | null): void {
+    if (!sid || sid === this.session?.id) return;
+    this.unreadTabs[sid] = true;
+  }
+
+  clearUnread(sid: string): void {
+    delete this.unreadTabs[sid];
+  }
+
+  getDraft(sid: string | null): string {
+    return (sid && this.drafts[sid]) || "";
+  }
+
+  setDraft(sid: string | null, text: string): void {
+    if (!sid) return;
+    this.boundedPut(this.drafts, sid, text);
+  }
+
+  setScrollStick(sid: string | null, stick: boolean): void {
+    if (!sid) return;
+    this.boundedPut(this.scrollStick, sid, stick);
+  }
+
+  setThinkingDisclosure(blockId: string, value: "open" | "closed" | null): void {
+    if (value === null) delete this.thinkingDisclosure[blockId];
+    else this.boundedPut(this.thinkingDisclosure, blockId, value, 500);
+}
+
   // ---- transcript -------------------------------------------------------
   blocks = $state<Block[]>([]);
   /** Count of head blocks in `blocks` that are not rendered ("load earlier"). */
@@ -348,6 +465,10 @@ export class NetPIStore {
 
   applySession(info: SessionInfo): void {
     this.session = info;
+    // astra-1 G1: making a session visible registers it as an open tab and
+    // clears its unread marker (a run completing must never move a tab).
+    this.openTab(info.id);
+    this.clearUnread(info.id);
     if (info.modelId) this.setModel(info.modelId, false);
     if (info.reasoningLevel) this.setReasoning(info.reasoningLevel, false);
     else if (info.modelId) this.syncReasoning();

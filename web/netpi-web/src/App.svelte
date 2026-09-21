@@ -5,6 +5,7 @@
   import LeftPanel from "./components/LeftPanel.svelte";
   import RightPanel from "./components/RightPanel.svelte";
   import HarnessHeader from "./components/HarnessHeader.svelte";
+  import SessionTabs from "./components/SessionTabs.svelte";
   import ConversationViewport from "./components/ConversationViewport.svelte";
   import Composer from "./components/Composer.svelte";
 
@@ -55,6 +56,7 @@
     {/if}
 
     <HarnessHeader />
+    <SessionTabs />
     <ConversationViewport />
     <Composer />
   </main>
