@@ -64,20 +64,41 @@ public sealed class TestPlugin : INetPiPlugin
             context.Log.Information($"TestPlugin[{generation}] saw event: {e}");
         });
         context.Log.Information($"TestPlugin loaded (generation '{generation}')");
+        // astra-1 P2 test hooks: retain the config for Start/Stop decisions.
+        _ownConfig = context.OwnConfig;
+        if (context.OwnConfig.ValueKind == JsonValueKind.Object
+            && context.OwnConfig.TryGetProperty("stopMs", out var ms)
+            && ms.ValueKind == JsonValueKind.Number)
+            _stopMs = ms.GetInt32();
         await ValueTask.CompletedTask;
     }
 
-    public ValueTask StartAsync(CancellationToken cancellationToken)
+    public async ValueTask StartAsync(CancellationToken cancellationToken)
     {
+        // astra-1 P2 test hook: a config-driven Start failure so tests can
+        // exercise "candidate starts fail" deterministically.
+        if (context_OwnConfigHas("startFail"))
+            throw new InvalidOperationException("TestPlugin refuses to start (startFail=true)");
         _service?.Bump();
-        return ValueTask.CompletedTask;
+        await ValueTask.CompletedTask;
     }
 
-    public ValueTask StopAsync(CancellationToken cancellationToken)
+    public async ValueTask StopAsync(CancellationToken cancellationToken)
     {
-        // Drain: a real plugin would stop servers here.
-        return ValueTask.CompletedTask;
+        // astra-1 P2 test hook: a config-driven slow/uncooperative stop so
+        // tests can exercise the bounded StopAsync + RestartRequired path.
+        if (_stopMs > 0)
+            await Task.Delay(_stopMs, cancellationToken);
+        return;
     }
+
+    private bool context_OwnConfigHas(string key) =>
+        _ownConfig.ValueKind == JsonValueKind.Object
+        && _ownConfig.TryGetProperty(key, out var v)
+        && v.ValueKind == JsonValueKind.True;
+
+    private JsonElement _ownConfig;
+    private int _stopMs;
 
     public ValueTask UnloadAsync(CancellationToken cancellationToken)
     {

@@ -48,7 +48,7 @@ logger.LogInformation("netPI host: plugins='{Plugins}' runtime='{Home}'",
     var configUpdater = new NetPI.Host.Services.HostConfigUpdater(runtime.Config);
     runtime.Services.Register("host-config", configUpdater);
     // AgentIdle reload gate: defer AgentIdle-policy reloads while a run is active.
-    runtime.Plugins.AgentIdleGate = async () =>
+    runtime.Plugins.AgentIdleGate = async (CancellationToken _) =>
     {
         try
         {
@@ -105,9 +105,12 @@ while (true)
             break;
 
         case "reloadall":
-            foreach (var id in runtime.Plugins.CurrentSnapshots().Select(p => p.PluginId).OrderBy(x => x, StringComparer.Ordinal))
-                await RunReload(runtime, id);
+        {
+            // astra-1 P2: one queue op, one structured outcome per plugin.
+            foreach (var o in await runtime.Plugins.ReloadAllOpAsync())
+                PrintOutcome(o);
             break;
+        }
 
         case "scan":
         {
@@ -181,20 +184,21 @@ static void PrintCollected(HostRuntime runtime)
 
 }
 
+static void PrintOutcome(NetPI.Abstractions.PluginOperationOutcome o)
+{
+    Console.WriteLine($"reload '{o.PluginId}': {o.Outcome} (phase {o.Phase})" +
+        (string.IsNullOrEmpty(o.Error) ? "" : $" — {o.Error}") +
+        (o.RestartRequired ? " — restart required" : ""));
+}
+
 static async Task RunReload(HostRuntime runtime, string pluginId)
 {
-    try
-    {
-        var gen = await runtime.Plugins.ReloadAsync(pluginId);
-        if (gen is null)
-            Console.WriteLine($"reload '{pluginId}' did not happen (plugin not loaded / busy / failed)");
-        else
-            Console.WriteLine($"reloaded '{pluginId}' -> gen {gen.Generation} ({gen.State})");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"reload '{pluginId}' failed: {ex.Message}");
-    }
+    // astra-1 P2: the structured outcome IS the report (no generic "failed").
+    var o = await runtime.Plugins.ReloadPluginAsync(pluginId);
+    PrintOutcome(o);
+    var gen = runtime.Plugins.Get(pluginId);
+    if (gen is not null)
+        Console.WriteLine($"  now: gen {gen.Generation} ({gen.State}) build={o.ActiveBuildId ?? gen.BuildId}");
     // Give the GC a chance to collect the unloaded ALC before we report.
     GC.Collect();
     GC.WaitForPendingFinalizers();

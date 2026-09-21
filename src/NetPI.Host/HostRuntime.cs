@@ -107,7 +107,9 @@ public sealed class HostRuntime : IAsyncDisposable
         _shutdown = true;
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
         cts.CancelAfter(TimeSpan.FromSeconds(30));
-        await Plugins.ShutdownAsync(cts.Token);
+        // astra-1 P2: shutdown goes through the lifecycle queue, so any
+        // in-flight reload/scan completes first and no new op can sneak in.
+        await Plugins.ShutdownOpAsync(cts.Token);
         _logger.LogInformation("netPI host stopped");
     }
 

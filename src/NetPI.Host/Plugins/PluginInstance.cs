@@ -40,6 +40,12 @@ public sealed class PluginInstance
     /// <summary>Event subscription handles owned by this generation.</summary>
     public ConcurrentDictionary<string, IDisposable> Subscriptions { get; } = new();
 
+    /// <summary>Source bytes this generation loads from (legacy staged folder or the pinned artifact); re-resolvable for rollback.</summary>
+    public string? SourceArtifactDir { get; set; }
+
+    /// <summary>astra-1 P2: config snapshot taken when this generation was loaded (rollback retains it).</summary>
+    public System.Text.Json.JsonElement SourceConfig { get; set; }
+
     /// <summary>Lease handles currently held on this plugin's services (drained before unload).</summary>
     public ConcurrentDictionary<Guid, IDisposable> LiveLeases { get; } = new();
 
@@ -54,6 +60,21 @@ public sealed class PluginInstance
     {
         get { lock (_stateGate) { return _state; } }
         set { lock (_stateGate) { _state = value; } }
+    }
+
+    /// <summary>
+    /// astra-1 P2: compare-and-set on the state machine. The reload admission
+    /// gate (Active/Failed → Draining) must be atomic with the state check so
+    /// two racing lifecycle operations cannot both believe they own the drain.
+    /// </summary>
+    public bool TrySetState(PluginState expected, PluginState next)
+    {
+        lock (_stateGate)
+        {
+            if (_state != expected) return false;
+            _state = next;
+            return true;
+        }
     }
 
     /// <summary>Most recent load/start/reload failure (PLAN §46 plugin-management surface); null when healthy.</summary>

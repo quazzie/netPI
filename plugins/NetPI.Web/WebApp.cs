@@ -817,24 +817,38 @@ internal sealed class WebApp : IAsyncDisposable
                 // WS connection and would cancel the connection token mid-LoadAsync.
                 // So run it on a bounded host token and swallow sends that race the
                 // connection teardown (the browser reconnects and re-lists plugins).
-                bool ok;
+                NetPI.Abstractions.PluginOperationOutcome outcome;
                 using (var reloadCts = new CancellationTokenSource())
                 {
                     reloadCts.CancelAfter(90_000); // generous bound; host owns its own reload
-                    try { ok = await _facade.ReloadAsync(pid, reloadCts.Token); }
+                    try { outcome = await _facade.ReloadPluginOutcomeAsync(pid, reloadCts.Token); }
                     catch (Exception ex)
                     {
                         _log.Error($"plugin.reload {pid} threw: {ex.Message}", ex);
-
-                        ok = false;
+                        outcome = new NetPI.Abstractions.PluginOperationOutcome(
+                            Guid.NewGuid().ToString("n"), pid, null, null,
+                            NetPI.Abstractions.PluginLifecyclePhase.Admission,
+                            NetPI.Abstractions.PluginLifecycleOutcome.Failed, ex.Message, false);
                     }
                 }
                 try
                 {
-                    await SendAsync(c, ok ? "plugin.reloaded" : "plugin.reloadFailed", new { pluginId = pid }, null, ct);
-                    // PLAN §41: a per-plugin state event so the UI can update just this
-                    // plugin's row (e.g. mark it "failed") rather than only the list.
-                    await SendAsync(c, "plugin.state", new { pluginId = pid, state = ok ? "active" : "failed" }, null, ct);
+                    // astra-1 P2: a start failure must NEVER announce a swap.
+                    // plugin.reloaded fires only on Applied/RolledBack; the real
+                    // per-plugin state comes from the host, and failures carry
+                    // the host's error text (a Deferred reload left the old
+                    // build active — that is NOT a failure).
+                    var oc = outcome.Outcome;
+                    var applied = oc is NetPI.Abstractions.PluginLifecycleOutcome.Applied
+                        or NetPI.Abstractions.PluginLifecycleOutcome.RolledBack;
+                    if (applied)
+                        await SendAsync(c, "plugin.reloaded", new { pluginId = pid }, null, ct);
+                    else if (oc is not (NetPI.Abstractions.PluginLifecycleOutcome.Deferred
+                            or NetPI.Abstractions.PluginLifecycleOutcome.Unchanged))
+                        await SendAsync(c, "plugin.reloadFailed", new { pluginId = pid, error = outcome.Error }, null, ct);
+                    // PLAN §41: a per-plugin state event from the ACTUAL host state.
+                    var st = _facade.GetStatus().FirstOrDefault(x => string.Equals(x.Id, pid, StringComparison.OrdinalIgnoreCase));
+                    await SendAsync(c, "plugin.state", new { pluginId = pid, state = st is null ? "failed" : MapPluginState(st.State) }, null, ct);
                     await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
                     await SendAsync(c, "ui.panels", new { panels = PanelJson() }, null, ct);
                     await SendAckAsync(c, requestId, ct);
@@ -854,11 +868,18 @@ internal sealed class WebApp : IAsyncDisposable
             case "plugin.reloadAll":
                 if (_facade is not null)
                 {
-                    await _facade.ReloadAllAsync(ct);
-                    // PLAN §41: per-plugin state events for each reloaded plugin.
-                    foreach (var st in _facade.GetStatus())
+                    var outcomes = await _facade.ReloadAllOutcomeAsync(ct);
+                    // astra-1 P2: per-plugin state events carry the ACTUAL host
+                    // state for every plugin; failures carry their error text.
+                    foreach (var o in outcomes)
+                    {
+                        if (o.PluginId is null) continue;
+                        var st = _facade.GetStatus().FirstOrDefault(x => string.Equals(x.Id, o.PluginId, StringComparison.OrdinalIgnoreCase));
                         await SendAsync(c, "plugin.state",
-                            new { pluginId = st.Id, state = MapPluginState(st.State) }, null, ct);
+                            new { pluginId = o.PluginId, state = st is null ? "failed" : MapPluginState(st.State) }, null, ct);
+                        if (o.Outcome is NetPI.Abstractions.PluginLifecycleOutcome.Failed or NetPI.Abstractions.PluginLifecycleOutcome.RestartRequired)
+                            await SendAsync(c, "plugin.reloadFailed", new { pluginId = o.PluginId, error = o.Error }, null, ct);
+                    }
                     await SendAsync(c, "plugins.state", new { plugins = PluginJson() }, null, ct);
                     await SendAsync(c, "ui.panels", new { panels = PanelJson() }, null, ct);
                 }

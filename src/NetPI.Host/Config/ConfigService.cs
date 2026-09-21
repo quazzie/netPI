@@ -146,3 +146,17 @@ public sealed class ConfigService : IConfigService, IDisposable
     {
     }
 }
+
+/// <summary>
+/// astra-1 P2: detached deep copies of config JsonElements (LKG retention).
+/// </summary>
+public static class ConfigJson
+{
+    public static JsonElement DeepClone(this JsonElement element)
+    {
+        if (element.ValueKind == System.Text.Json.JsonValueKind.Undefined)
+            return JsonDocument.Parse("null").RootElement.Clone();
+        var node = JsonNode.Parse(element.GetRawText())!;
+        return JsonDocument.Parse(node.ToJsonString()).RootElement.Clone();
+    }
+}

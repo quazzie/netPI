@@ -99,14 +99,18 @@ public sealed class PluginFailureTests : IDisposable
         Assert.Equal(PluginState.Active,
             runtime.Plugins.GetStatus().Single(s => s.PluginId == "NetPI.FailPlugin").State);
 
-        // Flip the failing flag and reload: the old generation was already
-        // drained, so the host must surface a clear Failed state — not crash.
+        // Flip the failing flag and reload. astra-1 P2: the old generation is
+        // stopped + retired BEFORE the candidate is loaded, so when the
+        // candidate fails the host recovers with a FRESH last-known-good
+        // generation (the retained config snapshot, where loadFail is still
+        // false) — the plugin stays Active and usable instead of dying.
         WriteConfig(loadFail: true);
-        var fresh = await runtime.Plugins.ReloadAsync("NetPI.FailPlugin");
-        Assert.Null(fresh);
-        var failed = runtime.Plugins.GetStatus().Single(s => s.PluginId == "NetPI.FailPlugin");
-        Assert.Equal(PluginState.Failed, failed.State);
-        Assert.Contains("refuses to load", failed.LastError);
+        var outcome = await runtime.Plugins.ReloadPluginAsync("NetPI.FailPlugin");
+        Assert.Equal(NetPI.Abstractions.PluginLifecycleOutcome.RolledBack, outcome.Outcome);
+        Assert.Contains("refuses to load", outcome.Error, StringComparison.OrdinalIgnoreCase);
+        var fresh = runtime.Plugins.GetStatus().Single(s => s.PluginId == "NetPI.FailPlugin");
+        Assert.Equal(PluginState.Active, fresh.State);
+        Assert.True(fresh.Generation > 1);
         // The host and the other plugin are still fully operational.
         Assert.Equal(PluginState.Active,
             runtime.Plugins.GetStatus().Single(s => s.PluginId == "NetPI.TestPlugin").State);

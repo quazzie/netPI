@@ -4,6 +4,7 @@ using NetPI.Abstractions;
 using NetPI.Host.Config;
 using NetPI.Host.Events;
 using NetPI.Host.Services;
+using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Host.Plugins;
@@ -26,7 +27,7 @@ public sealed class PluginManagerOptions
     public int MaxCachedGenerations { get; set; } = 2;
 
     /// <summary>Reload gate for AgentIdle-policy plugins (phase 1: pluggable, agent runtime not present yet).</summary>
-    public Func<Task<bool>>? AgentIdleGate { get; set; }
+    public Func<CancellationToken, Task<bool>>? AgentIdleGate { get; set; }
 
     /// <summary>Plugins matching these ids use the AgentIdle reload policy (PLAN §6).</summary>
     public IReadOnlySet<string> AgentIdlePlugins { get; set; } =
@@ -53,6 +54,25 @@ public sealed class PluginManager
     private readonly WebPanelRegistry _webPanels;
     private readonly IConfigService _config;
     private readonly ILogger _logger;
+
+    // ------------------------------------------------------------------
+    // astra-1 P2: lifecycle operation queue.
+    // Every state-changing plugin operation (load / scan / reload /
+    // reload-all / shutdown) is serialized through ONE host-owned queue so
+    // two lifecycle operations can never interleave. Callers await a
+    // structured outcome (PluginOperationOutcome); the runner never dies on
+    // a single bad operation. Ordinary agent/tool execution stays fully
+    // concurrent — only host-side lifecycle mutations are serialized.
+    // ------------------------------------------------------------------
+    private readonly Channel<LifecycleOp> _lifecycleQueue;
+    private readonly HashSet<LifecycleOp> _inflightOps = new();
+    private readonly Dictionary<string, string> _unavailablePlugins = new(StringComparer.OrdinalIgnoreCase);
+    private Task? _lifecycleRunner;
+    private int _shutdownStarted;
+    private readonly object _opGate = new();
+
+    /// <summary>true once ShutdownAsync has been queued (new operations are rejected).</summary>
+    public bool ShuttingDown => Volatile.Read(ref _shutdownStarted) == 1;
 
     private readonly Dictionary<string, PluginInstance> _current = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _generation = new(StringComparer.OrdinalIgnoreCase);
@@ -102,15 +122,22 @@ public sealed class PluginManager
         _instanceRoot = PluginRuntimeLayout.InstanceRoot(options.RuntimeDirectory, _instanceId);
         _ownsInstanceRoot = string.Equals(
             PluginRuntimeLayout.ClaimOwnership(_instanceRoot, _instanceId), _instanceId, StringComparison.Ordinal);
+        _lifecycleQueue = Channel.CreateUnbounded<LifecycleOp>(
+            new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+        _lifecycleRunner = Task.Run(RunLifecycleQueueAsync);
     }
 
     public IEventBus Events => _bus;
     public IServiceRegistry Services => _registry;
 
     /// <summary>Reload gate for AgentIdle plugins; overridable at runtime (tests / future agent plugin).</summary>
-    public Func<Task<bool>> AgentIdleGate
+    /// <summary>
+    /// Reload gate for AgentIdle plugins. astra-1 P2: the gate receives the
+    /// operation token so a bounded wait aborts on timeout/cancellation.
+    /// </summary>
+    public Func<CancellationToken, Task<bool>> AgentIdleGate
     {
-        get { lock (_gate) return _options.AgentIdleGate ?? (() => Task.FromResult(true)); }
+        get { lock (_gate) return _options.AgentIdleGate ?? (_ => Task.FromResult(true)); }
         set { lock (_gate) _options.AgentIdleGate = value; }
     }
 
@@ -261,51 +288,37 @@ public sealed class PluginManager
     }
 
     /// <summary>
-    /// PLAN §50: discover plugins staged on disk after startup (a new folder
-    /// dropped into plugins/). Existing ids are left alone — they keep their
-    /// live generation (reload a specific id to swap its bytes); only ids the
-    /// host has never seen are loaded, so a scan can never unload anything a
-    /// connection is talking to (including the web surface itself). Returns the
-    /// ids of the plugins that were newly loaded and started.
+    /// PLAN §50 / astra-1 P2: rescan the plugin directory for folders the host
+    /// has never seen and load+start them — queue-serialized so a scan cannot
+    /// interleave with a reload. Returns only ids that actually STARTED.
     /// </summary>
     public async Task<IReadOnlyList<string>> ScanAsync(CancellationToken ct = default)
     {
+        var op = new LifecycleOp { Kind = LifecycleOpKind.Scan, Ct = ct };
+        if (Volatile.Read(ref _shutdownStarted) == 1)
+            return Array.Empty<string>();
+        Enqueue(op);
+        var outcome = await op.Tcs.Task;
         var loaded = new List<string>();
-        foreach (var src in DiscoverPluginSources())
-        {
-            ct.ThrowIfCancellationRequested();
-            if (src.Kind == SourceKind.Invalid) continue;
-            var existing = Get(src.Id);
-            if (existing is { State: PluginState.Active or PluginState.Draining or PluginState.Loading or PluginState.Failed })
-                continue;
-            var inst = await LoadGenerationAsync(src, ct);
-            if (inst is null) continue;
-            try
-            {
-                await inst.Plugin!.StartAsync(ct);
-                _logger.LogInformation("Plugin {Plugin} started (gen {Gen})", inst.PluginId, inst.Generation);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Plugin {Plugin} StartAsync failed (gen {Gen})", inst.PluginId, inst.Generation);
-                inst.LastError = ex.Message;
-                inst.State = PluginState.Failed;
-            }
-            loaded.Add(src.Id);
-            _logger.LogInformation("Plugin {Plugin} scanned in from {Dir} (gen {Gen})", src.Id, inst.CacheDirectory, inst.Generation);
-        }
+        if (outcome.Error is not null && outcome.Error.StartsWith("loaded: ", StringComparison.Ordinal))
+            loaded.AddRange(outcome.Error["loaded: ".Length..].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
         return loaded;
     }
 
     /// <summary>Start every plugin that loaded successfully.</summary>
     public async Task StartAllAsync(CancellationToken ct = default)
     {
-        var active = CurrentSnapshots().Where(p => p.State == PluginState.Active).ToList();
+        // astra-1 P2: LoadGenerationAsync no longer marks Active (that now
+        // happens only after a successful StartAsync); the bootstrap path
+        // therefore starts instances left in Loading by LoadAllAsync.
+        var active = CurrentSnapshots().Where(p => p.State is PluginState.Loading or PluginState.Active).ToList();
         foreach (var p in active)
         {
             try
             {
                 await p.Plugin!.StartAsync(ct);
+                p.State = PluginState.Active;
+                p.ClearLastError();
                 _logger.LogInformation("Plugin {Plugin} started (gen {Gen})", p.PluginId, p.Generation);
             }
             catch (Exception ex)
@@ -322,7 +335,7 @@ public sealed class PluginManager
     /// (a previous generation remains Active when there is one, otherwise the
     /// plugin is marked Failed).
     /// </summary>
-    public async Task<PluginInstance?> LoadGenerationAsync(PluginSource source, CancellationToken ct = default, Action<string>? errorSink = null)
+    public async Task<PluginInstance?> LoadGenerationAsync(PluginSource source, CancellationToken ct = default, Action<string>? errorSink = null, JsonElement ownConfigOverride = default)
     {
         var pluginId = source.Id;
         var generation = NextGeneration(pluginId);
@@ -340,7 +353,14 @@ public sealed class PluginManager
         {
             SourceDirectory = source.Directory,
             CacheDirectory = loadFrom,
+            SourceArtifactDir = source.Kind == SourceKind.Published ? source.ArtifactDir : source.Directory,
             BuildId = source.Kind == SourceKind.Published ? source.BuildId : "legacy",
+            // astra-1 P2: a caller may pin the config the generation is loaded
+            // WITH (LKG recovery must use the retained last-known-good config,
+            // not whatever the live config has mutated into since).
+            SourceConfig = ownConfigOverride.ValueKind == System.Text.Json.JsonValueKind.Undefined
+                ? _config.GetRaw(pluginId).DeepClone()
+                : ownConfigOverride.DeepClone(),
             LoadContext = alc,
             Policy = _options.AgentIdlePlugins.Contains(pluginId) ? ReloadPolicy.AgentIdle : ReloadPolicy.PluginIdle
         };
@@ -368,7 +388,9 @@ public sealed class PluginManager
                     instance,
                     new PluginContextServices(_registry, instance),
                     new PluginContextEvents(_bus, instance),
-                    _config.GetRaw(pluginId),
+                    ownConfigOverride.ValueKind == System.Text.Json.JsonValueKind.Undefined
+                        ? _config.GetRaw(pluginId)
+                        : ownConfigOverride,
                     new PluginLogger(pluginId, _logger),
                     instance.Commands,
                     instance.WebPanels);
@@ -381,9 +403,8 @@ public sealed class PluginManager
 
 
             RegisterInTables(instance);
-            instance.State = PluginState.Active;
             PruneStaleSnapshots(pluginId);
-            _logger.LogInformation("Plugin {Plugin} gen {Gen} active (build {Build})", pluginId, generation, instance.BuildId);
+            _logger.LogInformation("Plugin {Plugin} gen {Gen} loaded (build {Build})", pluginId, generation, instance.BuildId);
             return instance;
         }
         catch (Exception ex)
@@ -501,155 +522,46 @@ public sealed class PluginManager
         return found;
     }
     // ----------------------------------------------------------------------
-    // Reload (PLAN §6)
+    // ----------------------------------------------------------------------
+    // astra-1 P2: lifecycle operation queue + structured outcomes
     // ----------------------------------------------------------------------
 
+    /// <summary>astra-1 P2: enqueue a reload of one plugin; awaits its structured outcome.</summary>
+    public Task<PluginOperationOutcome> ReloadPluginAsync(string pluginId, CancellationToken ct = default)
+    {
+        var op = new LifecycleOp { Kind = LifecycleOpKind.Reload, PluginId = pluginId, Ct = ct };
+        Enqueue(op);
+        return op.Tcs.Task;
+    }
+
+    /// <summary>astra-1 P2: reload every known plugin, serially; one outcome per plugin.</summary>
+    public Task<IReadOnlyList<PluginOperationOutcome>> ReloadAllOpAsync(CancellationToken ct = default)
+    {
+        var op = new LifecycleOp { Kind = LifecycleOpKind.ReloadAll, Ct = ct };
+        Enqueue(op);
+        return op.ListTcs.Task;
+    }
+
+    /// <summary>astra-1 P2: enqueue shutdown (queue-serialized; rejects new ops while queued).</summary>
+    public async Task ShutdownOpAsync(CancellationToken ct = default)
+    {
+        var op = new LifecycleOp { Kind = LifecycleOpKind.Shutdown, Ct = ct };
+        Enqueue(op);
+        await op.Tcs.Task;
+    }
+
     /// <summary>
-    /// Reload one plugin: Active → Draining (new leases denied) → wait for
-    /// existing leases to drain (and for the AgentIdle gate, if configured) →
-    /// StopAsync → remove registrations/subscriptions → UnloadAsync →
-    /// ALC.Unload → load new generation → Active.
-    ///
-    /// Returns the new generation, or null when the reload could not be
-    /// started (plugin not loaded / already reloading) or failed (old generation
-    /// stays Active).
+    /// Legacy reload API (PLAN §6) kept for existing call sites and tests:
+    /// returns the new generation on Applied/RolledBack, null otherwise.
     /// </summary>
     public async Task<PluginInstance?> ReloadAsync(string pluginId, CancellationToken ct = default)
     {
-        var old = Get(pluginId);
-        if (old is null)
+        if (Get(pluginId) is null)
             throw new ArgumentException($"plugin '{pluginId}' is not loaded", nameof(pluginId));
-        if (old.State is not PluginState.Active and not PluginState.Failed)
-        {
-            _logger.LogWarning("Reload of {Plugin} ignored: state is {State}", pluginId, old.State);
-            return null;
-        }
-
-        // astra-1 P1: reload re-resolves the CURRENT source (a new pointer may
-        // have been published since the previous load) and snapshots it.
-        var src = DiscoverPluginSources().FirstOrDefault(s => s.Id == pluginId);
-        if (src is null)
-        {
-            _logger.LogError("Reload of {Plugin} failed: no plugin source found under '{Dir}'", pluginId, _options.PluginDirectory);
-            return null;
-        }
-        if (src.Kind == SourceKind.Invalid)
-        {
-            _logger.LogError("Reload of {Plugin} failed: source is invalid — {Note}", pluginId, src.Note);
-            return null;
-        }
-
-        // --- Active → Draining ---
-        old.State = PluginState.Draining;
-        _logger.LogInformation("{Plugin} draining; new service acquisitions are denied", pluginId);
-
-        // --- wait for existing leases to drain ---
-        var drained = await WaitForDrainAsync(old, ct);
-        if (!drained)
-        {
-            old.State = PluginState.Active;
-            _logger.LogWarning("Reload of {Plugin} aborted: lease drain timed out, plugin is Active again", pluginId);
-            return null;
-        }
-
-        // --- AgentIdle gate (PLAN §6 special policies) ---
-        if (old.Policy == ReloadPolicy.AgentIdle)
-        {
-            var gate = AgentIdleGate;
-            var gateOk = false;
-            using (var gateCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
-            {
-                gateCts.CancelAfter(_options.UnloadTimeout);
-                try { gateOk = await gate(); }
-                catch { gateOk = false; }
-            }
-            if (!gateOk)
-            {
-                old.State = PluginState.Active;
-                _logger.LogWarning("Reload of {Plugin} deferred: agent not idle", pluginId);
-                return null;
-            }
-        }
-
-        // --- StopAsync ---
-        old.State = PluginState.Unloading;
-        try
-        {
-            using var stopCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            stopCts.CancelAfter(_options.UnloadTimeout);
-            await old.Plugin!.StopAsync(stopCts.Token);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "{Plugin} StopAsync failed; proceeding with unload anyway", pluginId);
-        }
-
-        // --- host removes registrations + subscriptions (PLAN §7) ---
-        _registry.RemoveAllFor(old);
-        _bus.RemoveAllFor(old);
-        old.Commands?.Unload();
-        old.Commands = null;
-        old.WebPanels?.Unload();
-        old.WebPanels = null;
-
-        // --- UnloadAsync ---
-        try
-        {
-            using var unloadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            unloadCts.CancelAfter(_options.UnloadTimeout);
-            await old.Plugin!.UnloadAsync(unloadCts.Token);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "{Plugin} UnloadAsync failed; proceeding with ALC unload", pluginId);
-        }
-
-        UnloadAloc(old);
-
-        // --- load new generation ---
-        var fresh = await LoadGenerationAsync(src, ct,
-            errorSink: ex =>
-            {
-                // The old generation was already unloaded, so this plugin has
-                // no running copy — surface a clear Failed state in the status
-                // table (PLAN §50: "old version remains usable OR clear Failed
-                // state"; here there is no usable version left).
-                var cur = Get(pluginId);
-                if (cur is not null)
-                {
-                    cur.LastError = ex;
-                    cur.State = PluginState.Failed;
-                }
-            });
-        if (fresh is null)
-        {
-            // Old generation was already unloaded; mark the plugin Failed.
-            _logger.LogError("Reload of {Plugin} failed: new generation could not load", pluginId);
-            return null;
-        }
-
-        // Start the new generation (old one's Start was already stopped).
-        try
-        {
-            await fresh.Plugin!.StartAsync(CancellationToken.None);
-            fresh.ClearLastError();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "{Plugin} StartAsync failed after reload", pluginId);
-            fresh.LastError = ex.Message;
-            fresh.State = PluginState.Failed;
-        }
-
-        _logger.LogInformation("{Plugin} reloaded: gen {OldGen} → gen {NewGen}", pluginId, old.Generation, fresh.Generation);
-        return fresh;
-    }
-
-    /// <summary>Reload every known plugin in dependency-agnostic order (alphabetical).</summary>
-    public async Task ReloadAllAsync(CancellationToken ct = default)
-    {
-        foreach (var id in CurrentSnapshots().Select(p => p.PluginId).OrderBy(x => x, StringComparer.Ordinal))
-            await ReloadAsync(id, ct);
+        var outcome = await ReloadPluginAsync(pluginId, ct);
+        return outcome.Outcome is PluginLifecycleOutcome.Applied or PluginLifecycleOutcome.RolledBack
+            ? Get(pluginId)
+            : null;
     }
 
     private async Task<bool> WaitForDrainAsync(PluginInstance old, CancellationToken ct)
@@ -863,5 +775,417 @@ public sealed class PluginManager
         : Exception($"plugin '{pluginId}': {message}", inner)
     {
     }
-}
+    private sealed class LifecycleOp
+    {
+        required public LifecycleOpKind Kind { get; init; }
+        public string? PluginId { get; init; }
+        public CancellationToken Ct { get; init; }
+        public TaskCompletionSource<PluginOperationOutcome> Tcs { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<IReadOnlyList<PluginOperationOutcome>> ListTcs { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
+    private enum LifecycleOpKind { Scan, Reload, ReloadAll, Shutdown }
+
+    /// <summary>
+    /// astra-1 P2: one serialized queue writer. Every state-changing plugin
+    /// operation (scan / reload / reload-all / shutdown) goes through here, so
+    /// two lifecycle operations can never interleave. Ordinary agent/tool
+    /// execution stays fully concurrent.
+    /// </summary>
+    private void Enqueue(LifecycleOp op)
+    {
+        if (Volatile.Read(ref _shutdownStarted) == 1)
+        {
+            var rej = RejectedOutcome(op);
+            op.Tcs.TrySetResult(rej);
+            op.ListTcs.TrySetResult(new List<PluginOperationOutcome>());
+            return;
+        }
+        lock (_opGate)
+        {
+            if (Volatile.Read(ref _shutdownStarted) == 1)
+            {
+                var rej = RejectedOutcome(op);
+                op.Tcs.TrySetResult(rej);
+                op.ListTcs.TrySetResult(new List<PluginOperationOutcome>());
+                return;
+            }
+            _inflightOps.Add(op);
+            if (op.Kind == LifecycleOpKind.Shutdown)
+                Volatile.Write(ref _shutdownStarted, 1);
+        }
+        _lifecycleQueue.Writer.TryWrite(op);
+    }
+
+    private static PluginOperationOutcome RejectedOutcome(LifecycleOp op) =>
+        new(PluginOperationOutcome.ShutdownRejectedId, op.PluginId, null, null,
+            PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred,
+            "host shutdown in progress", false);
+
+    private async Task RunLifecycleQueueAsync()
+    {
+        try
+        {
+            while (await _lifecycleQueue.Reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                while (_lifecycleQueue.Reader.TryRead(out var op))
+                {
+                    try
+                    {
+                        switch (op.Kind)
+                        {
+                            case LifecycleOpKind.Reload:
+                            {
+                                var r = await ReloadCoreAsync(op.PluginId!, op.Ct);
+                                op.Tcs.TrySetResult(r.Outcome);
+                                break;
+                            }
+                            case LifecycleOpKind.Scan:
+                            {
+                                var r = await ScanCoreAsync(op.Ct);
+                                op.Tcs.TrySetResult(r);
+                                break;
+                            }
+                            case LifecycleOpKind.ReloadAll:
+                            {
+                                var list = new List<PluginOperationOutcome>();
+                                var ids = CurrentSnapshots().Select(p => p.PluginId).Distinct()
+                                    .OrderBy(x => x, StringComparer.Ordinal).ToList();
+                                // plugins already in a Failed state are still reloadable (retry path)
+                                foreach (var id in ids)
+                                    list.Add((await ReloadCoreAsync(id, op.Ct)).Outcome);
+                                op.ListTcs.TrySetResult(list);
+                                var overall = list.Count == 0
+                                    ? new PluginOperationOutcome(Guid.NewGuid().ToString("n"), null, null, null,
+                                        PluginLifecyclePhase.Pinning, PluginLifecycleOutcome.Unchanged, null, false)
+                                    : list.Aggregate((a, b) =>
+                                        b.Outcome is PluginLifecycleOutcome.Applied
+                                            ? b
+                                            : a);
+                                op.Tcs.TrySetResult(overall);
+                                break;
+                            }
+                            case LifecycleOpKind.Shutdown:
+                            {
+                                await ShutdownAsync(op.Ct);
+                                op.Tcs.TrySetResult(new PluginOperationOutcome(
+                                    Guid.NewGuid().ToString("n"), null, null, null,
+                                    PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Applied, null, false));
+                                break;
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        op.Tcs.TrySetResult(new PluginOperationOutcome(
+                            Guid.NewGuid().ToString("n"), op.PluginId, null, null,
+                            PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred,
+                            "cancelled", false));
+                        op.ListTcs.TrySetResult(new List<PluginOperationOutcome>());
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "lifecycle operation {Kind} failed", op.Kind);
+                        op.Tcs.TrySetResult(new PluginOperationOutcome(
+                            Guid.NewGuid().ToString("n"), op.PluginId, null, null,
+                            PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Failed, ex.Message, false));
+                        op.ListTcs.TrySetException(ex);
+                    }
+                    finally
+                    {
+                        lock (_opGate) _inflightOps.Remove(op);
+                    }
+                }
+            }
+        }
+        catch (ChannelClosedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "lifecycle queue runner died");
+        }
+    }
+
+    /// <summary>
+    /// astra-1 P2 core reload (queue runner only) — six steps:
+    /// (1) admission + candidate pinning (old generation atomically → Draining);
+    /// (2) AgentIdle gate, token flowing in, bounded;
+    /// (3) drain — on timeout restore the ACTUAL previous state (Active or Failed);
+    /// (4) stop + retire old generation, retaining its LKG source + config — an
+    ///     uncooperative StopAsync ends the op as RestartRequired WITHOUT loading
+    ///     a second, conflicting generation;
+    /// (5) load + start the candidate — Active only after StartAsync;
+    /// (6) candidate failure → best-effort LKG recovery: a FRESH last-known-good
+    ///     generation (success = RolledBack) or Failed carrying both errors.
+    /// </summary>
+    private async Task<(PluginOperationOutcome Outcome, PluginInstance? New)> ReloadCoreAsync(string pluginId, CancellationToken ct)
+    {
+        var opId = Guid.NewGuid().ToString("n");
+        string? requested = null;
+        string? oldBuildId = null;
+
+        PluginOperationOutcome Outcome(string? error, PluginLifecyclePhase phase, PluginLifecycleOutcome outcome,
+            string? activeBuildId = null, bool restartRequired = false) =>
+            new(opId, pluginId, requested, activeBuildId ?? oldBuildId, phase, outcome, error, restartRequired);
+
+        var old = Get(pluginId);
+        if (old is null)
+            return (Outcome($"plugin '{pluginId}' is not loaded", PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred), null);
+        oldBuildId = old.BuildId;
+        if (old.State is not (PluginState.Active or PluginState.Failed))
+            return (Outcome($"reload not possible in state {old.State}", PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred), null);
+
+        // (1) admission: pin the candidate BEFORE touching the old generation.
+        var src = DiscoverPluginSources().FirstOrDefault(x => x.Id == pluginId);
+        if (src is null)
+            return (Outcome($"no plugin source found under '{_options.PluginDirectory}'",
+                PluginLifecyclePhase.Pinning, PluginLifecycleOutcome.Deferred), null);
+        if (src.Kind == SourceKind.Invalid)
+            return (Outcome($"source is invalid — {src.Note}",
+                PluginLifecyclePhase.Pinning, PluginLifecycleOutcome.Deferred), null);
+        requested = src.Kind == SourceKind.Published ? src.BuildId : "legacy";
+        if (Volatile.Read(ref _shutdownStarted) == 1)
+            return (Outcome("host shutdown in progress", PluginLifecyclePhase.Pinning, PluginLifecycleOutcome.Deferred), null);
+
+        var prev = old.State;
+        if (!old.TrySetState(prev, PluginState.Draining))
+            return (Outcome($"state moved to {old.State} during admission",
+                PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred), null);
+        _logger.LogInformation("{Plugin} draining; new service acquisitions are denied", pluginId);
+
+        // (2) AgentIdle gate (bounded; operation token flows in).
+        if (old.Policy == ReloadPolicy.AgentIdle)
+        {
+            var gate = AgentIdleGate;
+            var gateOk = false;
+            using (var gateCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                gateCts.CancelAfter(_options.UnloadTimeout);
+                try { gateOk = await gate(gateCts.Token).ConfigureAwait(false); }
+                catch { gateOk = false; }
+            }
+            if (!gateOk)
+            {
+                RestoreDrain(old, prev, pluginId, "agent not idle");
+                return (Outcome("agent not idle", PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred), null);
+            }
+        }
+
+        // (3) drain (bounded) — on timeout restore the actual previous state.
+        if (!await WaitForDrainAsync(old, ct).ConfigureAwait(false))
+        {
+            RestoreDrain(old, prev, pluginId, "lease drain timed out");
+            return (Outcome($"lease drain timed out after {_options.UnloadTimeout.TotalSeconds:0}s",
+                PluginLifecyclePhase.Draining, PluginLifecycleOutcome.Deferred), null);
+        }
+
+        // (4) stop + retire the old generation (retain LKG source + config).
+        old.TrySetState(PluginState.Draining, PluginState.Unloading);
+        try
+        {
+            using var stopCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            stopCts.CancelAfter(_options.UnloadTimeout);
+            await old.Plugin!.StopAsync(stopCts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Uncooperative stop: quarantine the old generation and DO NOT load
+            // a second, conflicting generation — a host restart is the only
+            // safe path (PLAN §P2 step 4 / "hot rollback only for compatible
+            // state").
+            _logger.LogError(ex, "{Plugin} StopAsync did not complete; quarantining (restart required)", pluginId);
+            return (Outcome($"stop failed: {ex.Message}", PluginLifecyclePhase.Stopping,
+                PluginLifecycleOutcome.RestartRequired, oldBuildId, restartRequired: true), old);
+        }
+
+        var lkgDir = old.SourceArtifactDir;
+        var lkgConfig = old.SourceConfig;
+        RetireGeneration(old);
+        UnloadAloc(old);
+        lock (_gate) _current.Remove(pluginId);
+        lock (_opGate) _unavailablePlugins[pluginId] = requested;
+
+        // (5) load + start the candidate.
+        var candidateError = await LoadAndStartCandidateAsync(src, pluginId, ct);
+        if (candidateError is not null)
+        {
+            _logger.LogError("Reload of {Plugin} failed: {Err}", pluginId, candidateError);
+
+            // (6) LKG recovery: the old generation is already stopped + unloaded,
+            // so the only honest recovery is a FRESH generation from the retained
+            // last-known-good source ("previous build active" must mean a running
+            // build, never a phantom).
+            var recovery = await TryRecoverAsync(pluginId, lkgDir, lkgConfig, requested, candidateError, ct);
+            return recovery is null
+                ? (Outcome($"{candidateError} (rollback unavailable: {LkgUnavailableReason(lkgDir)})",
+                    PluginLifecyclePhase.RollingBack, PluginLifecycleOutcome.Failed), null)
+                : (recovery.Value.Outcome, recovery.Value.New);
+        }
+
+        var fresh = Get(pluginId)!;
+        fresh.State = PluginState.Active;
+        fresh.ClearLastError();
+        lock (_opGate) _unavailablePlugins.Remove(pluginId);
+        _logger.LogInformation("{Plugin} reloaded: gen {OldGen} → gen {NewGen} (build {Build})",
+            pluginId, old.Generation, fresh.Generation, fresh.BuildId);
+        return (Outcome(null, PluginLifecyclePhase.Starting, PluginLifecycleOutcome.Applied, fresh.BuildId), fresh);
+    }
+
+    private void RestoreDrain(PluginInstance old, PluginState prev, string pluginId, string reason)
+    {
+        if (old.TrySetState(PluginState.Draining, prev))
+            _logger.LogWarning("reload of {Plugin} deferred — state restored to {Prev} ({Reason})", pluginId, prev, reason);
+        else
+            _logger.LogWarning("reload of {Plugin} deferred; state is {Now}, requested restore to {Prev} ({Reason})",
+                pluginId, old.State, prev, reason);
+    }
+
+    /// <summary>Host-side teardown of a generation's registrations/subscriptions.</summary>
+    private void RetireGeneration(PluginInstance instance)
+    {
+        _registry.RemoveAllFor(instance);
+        _bus.RemoveAllFor(instance);
+        instance.Commands?.Unload();
+        instance.Commands = null;
+        instance.WebPanels?.Unload();
+        instance.WebPanels = null;
+    }
+
+    /// <summary>(5) Load + start the candidate generation. Returns null on success.</summary>
+    private async Task<string?> LoadAndStartCandidateAsync(PluginSource src, string pluginId, CancellationToken ct)
+    {
+        string? loadError = null;
+        PluginInstance? fresh;
+        try
+        {
+            fresh = await LoadGenerationAsync(src, ct, errorSink: m => loadError = m).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+        if (fresh is null)
+            return loadError ?? "candidate generation could not load";
+
+        try
+        {
+            await fresh.Plugin!.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // A failed start never becomes Active: retire the half-started
+            // candidate and let the LKG recovery decide the plugin's fate.
+            fresh.LastError = ex.Message;
+            fresh.State = PluginState.Failed;
+            _logger.LogError(ex, "{Plugin} StartAsync failed after reload", pluginId);
+            RetireGeneration(fresh);
+            UnloadAloc(fresh);
+            lock (_gate)
+            {
+                if (ReferenceEquals(Get(pluginId), fresh))
+                    _current.Remove(pluginId);
+            }
+            return $"candidate start failed: {ex.Message}";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// (6) Re-instantiate the retained LKG source as a FRESH generation and start
+    /// it. Returns null when the LKG cannot be recovered.
+    /// </summary>
+    private async Task<(PluginOperationOutcome Outcome, PluginInstance? New)?> TryRecoverAsync(
+        string pluginId, string? lkgDir, System.Text.Json.JsonElement lkgConfig,
+        string requestedBuildId, string candidateError, CancellationToken ct)
+    {
+        if (lkgDir is null || !Directory.Exists(lkgDir))
+            return null;
+
+        var lkgSource = new PluginSource
+        {
+            Id = pluginId,
+            Directory = lkgDir,
+            Kind = SourceKind.Legacy,
+            Note = "LKG recovery source",
+        };
+        PluginInstance? lkg = null;
+        try
+        {
+            lkg = await LoadGenerationAsync(lkgSource, CancellationToken.None, ownConfigOverride: lkgConfig).ConfigureAwait(false);
+            if (lkg is null)
+                return null;
+            await lkg.Plugin!.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            if (lkg is not null)
+            {
+                lkg.LastError = ex.Message;
+                lkg.State = PluginState.Failed;
+                RetireGeneration(lkg);
+                UnloadAloc(lkg);
+                lock (_gate) { if (ReferenceEquals(Get(pluginId), lkg)) _current.Remove(pluginId); }
+            }
+            return null;
+        }
+        lkg.State = PluginState.Active;
+        lkg.ClearLastError();
+        lock (_opGate) _unavailablePlugins.Remove(pluginId);
+        _logger.LogWarning("{Plugin} rolled back to last-known-good as gen {Gen} (candidate error: {Err})",
+            pluginId, lkg.Generation, candidateError);
+        return (new PluginOperationOutcome(
+            Guid.NewGuid().ToString("n"), pluginId, requestedBuildId, lkg.BuildId,
+            PluginLifecyclePhase.RollingBack, PluginLifecycleOutcome.RolledBack,
+            candidateError, false), lkg);
+    }
+
+    private static string LkgUnavailableReason(string? lkgDir) =>
+        lkgDir is null
+            ? "no retained last-known-good source"
+            : !Directory.Exists(lkgDir)
+                ? "last-known-good source directory no longer exists"
+                : "last-known-good start failed";
+
+    /// <summary>
+    /// astra-1 P2: rescan the plugin directory (queue runner only). Loads+starts
+    /// plugins the host has never seen; already-known plugins are untouched.
+    /// </summary>
+    private async Task<PluginOperationOutcome> ScanCoreAsync(CancellationToken ct)
+    {
+        var opId = Guid.NewGuid().ToString("n");
+        var loaded = new List<string>();
+        foreach (var src in DiscoverPluginSources())
+        {
+            ct.ThrowIfCancellationRequested();
+            if (src.Kind == SourceKind.Invalid) continue;
+            var existing = Get(src.Id);
+            if (existing is { State: PluginState.Active or PluginState.Draining or PluginState.Loading or PluginState.Unloading or PluginState.Failed })
+                continue;
+            var inst = await LoadGenerationAsync(src, ct).ConfigureAwait(false);
+            if (inst is null) continue;
+            try
+            {
+                await inst.Plugin!.StartAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // a start failure is NOT a successful scan: the plugin is left
+                // Failed (retryable via reload), and its id is NOT reported.
+                _logger.LogError(ex, "Plugin {Plugin} StartAsync failed (gen {Gen})", inst.PluginId, inst.Generation);
+                inst.LastError = ex.Message;
+                inst.State = PluginState.Failed;
+                continue;
+            }
+            inst.State = PluginState.Active;
+            inst.ClearLastError();
+            loaded.Add(src.Id);
+            _logger.LogInformation("Plugin {Plugin} scanned in from {Dir} (gen {Gen})", src.Id, inst.CacheDirectory, inst.Generation);
+        }
+        return new PluginOperationOutcome(opId, null, null, null,
+            PluginLifecyclePhase.Starting, PluginLifecycleOutcome.Applied,
+            loaded.Count == 0 ? null : $"loaded: {string.Join(", ", loaded)}", false);
+    }
+}

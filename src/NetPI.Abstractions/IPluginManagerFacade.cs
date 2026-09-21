@@ -26,6 +26,21 @@ public interface IPluginManagerFacade
     /// </summary>
     ValueTask<IReadOnlyList<string>> ScanAsync(CancellationToken cancellationToken = default)
         => ValueTask.FromResult<IReadOnlyList<string>>([]);
+
+    /// <summary>
+    /// astra-1 P2: structured reload outcome (host-owned lifecycle queue). The
+    /// default returns Deferred — the legacy bool API stays authoritative for
+    /// host-less builds.
+    /// </summary>
+    ValueTask<PluginOperationOutcome> ReloadPluginOutcomeAsync(string pluginId, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(new PluginOperationOutcome(
+            Guid.NewGuid().ToString("n"), pluginId, null, null,
+            PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred,
+            "plugin manager unavailable", false));
+
+    /// <summary>astra-1 P2: reload every known plugin; one structured outcome per plugin.</summary>
+    ValueTask<IReadOnlyList<PluginOperationOutcome>> ReloadAllOutcomeAsync(CancellationToken cancellationToken = default)
+        => ValueTask.FromResult<IReadOnlyList<PluginOperationOutcome>>([]);
 }
 
 /// <summary>Minimal config surface the Web plugin needs for config.update (PLAN §36).</summary>
