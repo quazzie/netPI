@@ -100,6 +100,16 @@ public sealed class EventBus : IEventBus
             }
             if (s.Handler is not NetPI.Abstractions.EventHandler<TEvent> handler)
                 continue;
+            // astra-1 P3: in-flight guard — a plugin-owned handler runs under a
+            // self-lease so the host's lease drain cannot unload the owning
+            // generation mid-execution. A handler whose owner already left
+            // (draining, unloading, unloaded, failed) is skipped: it no longer
+            // owns the subscription it would execute on. Host-side
+            // subscriptions (no owning plugin) always run.
+            if (target is not null &&
+                target.State is not (Plugins.PluginState.Loading or Plugins.PluginState.Active))
+                continue;
+            using var guard = target?.AcquireSelfLease();
             handler(@event);
         }
 

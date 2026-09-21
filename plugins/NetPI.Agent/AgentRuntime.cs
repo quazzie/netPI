@@ -110,11 +110,19 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         _activeSession = options.SessionId;
         await PublishAsync(AgentEventType.AgentStarting, options, null, ct);
 
-        var provider = Acquire<IModelProvider>("provider")
+        // astra-1 P3: operation-scoped leases for every cross-plugin service
+        // this run depends on — a reload of any of those plugins cannot unload
+        // it mid-run (the host's lease drain blocks until the finally releases
+        // them).
+        var providerLease = AcquireLease<IModelProvider>("provider")
             ?? throw new ServiceUnavailableException("provider", "Model provider is not loaded.");
-        var tools = Acquire<IToolRegistry>("tools");
-        var catalog = Acquire<IModelCatalog>("catalog");
-        var store = Acquire<ISessionStore>("sessions");
+        var toolsLease = AcquireLease<IToolRegistry>("tools");
+        var catalogLease = AcquireLease<IModelCatalog>("catalog");
+        var storeLease = AcquireLease<ISessionStore>("sessions");
+        var provider = providerLease.Value;
+        var tools = toolsLease?.Value;
+        var catalog = catalogLease?.Value;
+        var store = storeLease?.Value;
         int turns = 0;
         string? note = null;
 
@@ -318,7 +326,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 // through execution completion — a reload of the tools plugin cannot
                 // unload mid-batch (its lease drain blocks until released below).
                 _state = AgentState.ExecutingTools;
-                using var toolsLease = AcquireLease<IToolRegistry>("tools")
+                using var batchToolsLease = AcquireLease<IToolRegistry>("tools")
                     ?? throw new ServiceUnavailableException("tools", "Tools registry is not loaded.");
                 await PublishAsync(AgentEventType.BeforeToolBatch, options, null, ct);
                 // Pre-flight (PLAN §11, sequential): validate/announce each call
@@ -419,6 +427,11 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
             _everRan = true;
             try { _selfLease?.Dispose(); } catch { }
             _selfLease = null;
+            // astra-1 P3: release the run-scoped service leases.
+            try { providerLease.Dispose(); } catch { }
+            try { toolsLease?.Dispose(); } catch { }
+            try { catalogLease?.Dispose(); } catch { }
+            try { storeLease?.Dispose(); } catch { }
         }
     }
 
