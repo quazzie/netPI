@@ -74,6 +74,12 @@ export class NetPIStore {
   // ---- plugins / extension UI ------------------------------------------
   plugins = $state<PluginStatus[]>([]);
   webPanels = $state<WebPanelInfo[]>([]);
+  /** astra-1 P5: in-flight plugin-update operations (operationId → kind).
+   *  Set on the `ack` of plugin.reload/reloadAll/scan; cleared when the
+   *  matching completion event arrives (runner-driven). Survives a reconnect
+   *  so a UI busy indicator is never stranded, and lets a reconnecting client
+   *  reconcile via the facade's GetOperation. */
+  pendingPluginOps = $state<Record<string, string>>({});
 
   // ---- run stats (kept for diagnostics, not rendered as a status bar) ---
   stats = $state<RunStats>({ turns: 0, toolSteps: 0 });
@@ -415,6 +421,23 @@ export class NetPIStore {
   setPluginReloadState(id: string, state: PluginStatus["state"]): void {
     const p = this.plugins.find((x) => x.id === id);
     if (p) p.state = state;
+  }
+
+  /** astra-1 P5: mark an in-flight plugin-update op complete (clears the
+   *  pending id; a no-op if it was never registered, e.g. the ack was missed). */
+  notePluginOpDone(operationId: string | undefined): void {
+    if (!operationId) return;
+    delete this.pendingPluginOps[operationId];
+  }
+
+  /** astra-1 P5: register an in-flight plugin-update op (operationId → kind). */
+  notePluginOpPending(operationId: string, kind: string): void {
+    this.pendingPluginOps[operationId] = kind;
+  }
+
+  /** astra-1 P5: is any plugin-update operation still in flight? */
+  get pluginOpPending(): boolean {
+    return Object.keys(this.pendingPluginOps).length > 0;
   }
 
   setError(msg: string | null): void {

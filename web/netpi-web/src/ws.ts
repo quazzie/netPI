@@ -119,12 +119,26 @@ class NetPIWebSocket {
     if (msg.requestId && this.pending.has(msg.requestId)) {
       const pending = this.pending.get(msg.requestId)!;
       this.pending.delete(msg.requestId);
+      // astra-1 P5: the plugin.reload/reloadAll/scan ack carries an
+      // operationId (work runs on the host queue); register it as in-flight
+      // so a UI busy indicator survives a reconnect until the matching
+      // completion event (plugin.reloaded / reloadFailed / scanned / state).
+      if (msg.type === "ack" && (msg.payload as Record<string, unknown> | null)?.operationId)
+        store.notePluginOpPending(
+          String((msg.payload as Record<string, unknown>).operationId),
+          String((msg.payload as Record<string, unknown>).kind ?? ""));
       if (msg.type === "error") pending.reject(new Error(JSON.stringify(msg.payload)));
       else pending.resolve(msg.payload);
       return;
     }
 
     const p = msg.payload ?? {};
+    // astra-1 P5: the plugin.reload/reloadAll/scan ack carries an operationId
+    // (the work runs on the host queue); register it as in-flight so a UI busy
+    // indicator survives a reconnect until the matching completion event.
+    if (msg.type === "ack" && p.operationId && p.kind)
+      store.notePluginOpPending(String(p.operationId), String(p.kind));
+
     switch (msg.type) {
       case "agent.state":
         store.applyAgentState(p.state as AgentState);
@@ -263,6 +277,11 @@ class NetPIWebSocket {
 
       case "plugins.state":
         store.plugins = (p.plugins as PluginStatus[]) ?? [];
+        // astra-1 P5: the runner broadcasts plugins.state on EVERY completed
+        // update op (reload / reloadAll / scan), carrying the operationId — the
+        // authoritative completion for all kinds. Clear the in-flight op; the
+        // bootstrap plugins.state (no operationId) is skipped (no-op clear).
+        store.notePluginOpDone(p.operationId as string | undefined);
         break;
 
       case "ui.panels":
@@ -270,12 +289,23 @@ class NetPIWebSocket {
         break;
 
       case "plugin.state":
+        // astra-1 P5: per-plugin state update (ReloadAll/Scan) — not a completion.
         store.setPluginReloadState(p.pluginId, p.state);
         break;
       case "plugin.reloaded":
+        // astra-1 P5: the runner announces a completed single-plugin swap; clear
+        // the in-flight op (reconnects reconcile via the facade's GetOperation).
+        store.notePluginOpDone(p.operationId as string | undefined);
+        break;
+      case "plugin.scanned":
+        // astra-1 P5: scan finished — clear the in-flight op.
+        store.notePluginOpDone(p.operationId as string | undefined);
         break;
       case "plugin.reloadFailed":
         store.setPluginReloadState(p.pluginId, "failed");
+        // astra-1 P5: clear the in-flight op — idempotent, plugins.state is
+        // the authoritative completion (this is the single-reload failure path).
+        store.notePluginOpDone(p.operationId as string | undefined);
         break;
 
       case "error":

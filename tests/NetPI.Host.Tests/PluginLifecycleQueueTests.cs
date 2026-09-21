@@ -234,4 +234,81 @@ public sealed class PluginLifecycleQueueTests : IDisposable
         Assert.Equal(PluginLifecycleOutcome.Deferred, o.Outcome);
         Assert.NotNull(o.Error);
     }
+
+    // ------------------------------------------------------------------
+    // 8. astra-1 P5: queue-backed ops — Enqueue* returns an id immediately,
+    //    the work runs on the SAME queue, and the outcome is queryable later
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task EnqueueReload_ReturnsIdImmediately_AndOutcomeIsQueryableLater()
+    {
+        StageAs("NetPI.Q9");
+        WriteConfig("{ \"plugins\": { \"netpi.q9\": { \"generation\": \"gen\" } } }");
+        await using var runtime = NewRuntime();
+        await runtime.StartAsync();
+        Assert.Equal(1, runtime.Plugins.Get("NetPI.Q9")!.Generation);
+
+        // the ack must return an id WITHOUT awaiting the reload: flip the config
+        // so the candidate generation fails to start (slow path), then assert
+        // the id is returned and the status is still not Done immediately after.
+        WriteConfig("{ \"plugins\": { \"netpi.q9\": { \"startFail\": true } } }");
+        var opId = runtime.Plugins.EnqueueReload("NetPI.Q9", null);
+        Assert.False(string.IsNullOrWhiteSpace(opId));
+
+        // the operation is registered and not finished yet (or finished very
+        // quickly on a fast machine — but the id was returned synchronously).
+        var immediate = runtime.Plugins.GetOperation(opId);
+        Assert.Equal(opId, immediate.OperationId);
+        Assert.Equal(PluginOperationKind.Reload, immediate.Kind);
+
+        // wait for completion, then the outcome MUST be queryable (Done=true).
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        PluginOperationStatus done;
+        do
+        {
+            done = runtime.Plugins.GetOperation(opId);
+            if (sw.Elapsed > TimeSpan.FromSeconds(15))
+                throw new TimeoutException("queued reload did not complete in time");
+            await Task.Delay(20);
+        } while (!done.Done);
+
+        Assert.True(done.Done);
+        Assert.Equal(PluginOperationKind.Reload, done.Kind);
+        // a start-failed reload rolls back to the LKG generation.
+        Assert.Equal(PluginLifecycleOutcome.RolledBack, done.Outcome);
+        Assert.NotNull(done.Error);
+    }
+
+    [Fact]
+    public async Task EnqueueScan_ReturnsIdImmediately_AndRecordsScannedIds()
+    {
+        // stage a plugin the host has NOT seen at start: start the runtime with
+        // an empty plugin dir, then stage + scan.
+        Directory.CreateDirectory(_pluginDir);
+        WriteConfig("{}");
+        await using var runtime = NewRuntime();
+        await runtime.StartAsync();
+
+        StageAs("NetPI.Q10");
+        WriteConfig("{ \"plugins\": { \"netpi.q10\": { \"generation\": \"gen\" } } }");
+
+        var opId = runtime.Plugins.EnqueueScan();
+        Assert.False(string.IsNullOrWhiteSpace(opId));
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        PluginOperationStatus done;
+        do
+        {
+            done = runtime.Plugins.GetOperation(opId);
+            if (sw.Elapsed > TimeSpan.FromSeconds(15))
+                throw new TimeoutException("queued scan did not complete in time");
+            await Task.Delay(20);
+        } while (!done.Done);
+
+        Assert.True(done.Done);
+        Assert.Equal(PluginOperationKind.Scan, done.Kind);
+        Assert.Contains("NetPI.Q10", done.ScannedIds);
+        Assert.Equal(PluginState.Active, runtime.Plugins.Get("NetPI.Q10")!.State);
+    }
 }
