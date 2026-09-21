@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Linq;
 using System.Threading.Channels;
 using System.Text.Json;
 using NetPI.Abstractions;
@@ -34,26 +36,55 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     private readonly IEventBus _bus;
     private readonly IServiceRegistry _services;
     /// <summary>
-    /// PLAN §44: this plugin generation's own lease, held for the whole run so a
-    /// reload cannot unload the agent plugin mid-run.
+    /// astra-1 E (slice 2): the CURRENT run's scope, carried per task context.
+    /// RunAsync sets it once at entry; every await in the run loop (and every
+    /// helper it calls) sees that run's scope, and a concurrent run on another
+    /// task sees ITS OWN — no shared instance state, so two sessions can run
+    /// simultaneously without clobbering each other. The flow scope ends with
+    /// the run task, so no manual reset is needed.
     /// </summary>
-    private IValueLease<object>? _selfLease;
-    private volatile AgentState _state = AgentState.Idle;
-    private string? _activeSession;
-    private bool _everRan;
+    private static readonly System.Threading.AsyncLocal<RunScope> _runScope = new();
+
     /// <summary>
     /// PLAN §12: per-session steering queues. Each active session owns its own
     /// Channel&lt;QueuedUserMessage&gt;; a steer never cancels the running batch —
     /// it is drained at the turn boundary, after tool results are appended.
     /// </summary>
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Channel<QueuedUserMessage>> _steer = new();
+    private readonly ConcurrentDictionary<string, Channel<QueuedUserMessage>> _steer = new();
+    /// <summary>The calling task's active run scope (null outside a run loop).</summary>
+    private RunScope Current => _runScope.Value!;
 
-    /// <summary>PLAN §32: prompt tokens reported by the provider on the LAST model
-    /// request — the authoritative base for the context estimate.</summary>
-    private volatile int _lastUsagePromptTokens;
-    /// <summary>PLAN §32: transcript length (message count) of the LAST model
-    /// request — messages after this index were "added since" the provider usage.</summary>
-    private volatile int _lastUsageMessageCount;
+    /// <summary>astra-1 E (slice 2): in-flight run scopes — the aggregate IAgentState
+    /// (StateView) reads this to report "some run is active" and to pick a
+    /// representative state/session. A run adds its scope at start and removes
+    /// it in its finally; each scope's self-lease is disposed by the run's own
+    /// finally, and the host's lease drain observes the disposal directly.</summary>
+    private readonly List<RunScope> _activeScopes = new();
+    private readonly object _activeLock = new();
+
+    /// <summary>
+    /// astra-1 E (slice 2): per-run mutable state — a run's AgentState, session id,
+    /// usage counters and self-lease all live here so concurrent runs (different
+    /// sessions) cannot clobber each other. Before this each of those was an
+    /// instance field; two simultaneous runs would share one session id and one
+    /// usage-counter pair. Only the per-session steering map and the in-flight
+    /// scope registry remain instance-wide.
+    /// </summary>
+    private sealed class RunScope(string? sessionId)
+    {
+        /// <summary>The session id this run belongs to. Assigned at scope creation —
+        /// primary-constructor parameters are NOT auto-assigned to members, so this
+        /// initializer is the only binding.</summary>
+        public readonly string? SessionId = sessionId;
+        public AgentState State = AgentState.Idle;
+        public IValueLease<object>? SelfLease;
+        /// <summary>PLAN §32: prompt tokens reported by the provider on this run's LAST
+        /// model request — the authoritative base for the context estimate.</summary>
+        public int LastPromptTokens;
+        /// <summary>PLAN §32: transcript length (message count) of this run's LAST model
+        /// request — messages after this index were "added since" the provider usage.</summary>
+        public int LastUsageMessageCount;
+    }
 
     public AgentRuntime(IPluginContext context)
     {
@@ -61,14 +92,32 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         _bus = context.Events;
         _services = context.Services;
     }
+    private RunScope? ActiveBusiest()
+    {
+        lock (_activeLock)
+            return _activeScopes.Count == 0 ? null : _activeScopes.MaxBy(s => (int)s.State);
+    }
+
+    private RunScope? ActiveFirst()
+    {
+        lock (_activeLock)
+            return _activeScopes.Count == 0 ? null : _activeScopes[0];
+    }
+
+    /// <summary>Aggregate: some run is in flight right now.</summary>
+    private bool AnyActive()
+    {
+        lock (_activeLock) return _activeScopes.Count > 0;
+    }
 
     // ---- IAgentState -------------------------------------------------------
     public IAgentState State => new StateView(this);
-    internal AgentState RawState => _state;
-    internal bool RawRunning => _state != AgentState.Idle;
-    internal string? RawSession => _activeSession;
-    internal bool RawIdle => _everRan && _state == AgentState.Idle;
 
+    /// <summary>Aggregate view over in-flight runs (slice 2): State is the busiest
+    /// active scope's state (Idle when none), IsRunning is "any run active",
+    /// ActiveSessionId is a representative active session (the first, for stability).
+    /// RawRunning/RawSession/RawIdle are removed — nothing outside the run loop
+    /// consumed them; IsIdle is the last run's outcome and no run is active now.</summary>
     // ---- ISteeringQueue (PLAN §12, per-session) -----------------------------
     public int PendingCount(string? sessionId = null)
     {
@@ -93,7 +142,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     /// </summary>
     private ValueTask<QueuedUserMessage?> TryDequeueAsync(CancellationToken ct)
     {
-        var ch = _steer.TryGetValue(_activeSession ?? "_global", out var c) ? c : null;
+        var ch = _steer.TryGetValue(Current.SessionId ?? "_global", out var c) ? c : null;
         if (ch is null || !ch.Reader.TryRead(out var msg))
             return ValueTask.FromResult<QueuedUserMessage?>(null);
         return ValueTask.FromResult<QueuedUserMessage?>(msg);
@@ -102,14 +151,18 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     // ---- run ---------------------------------------------------------------
     public async ValueTask<AgentRunResult> RunAsync(AgentRunOptions options, CancellationToken ct)
     {
-        if (RawRunning)
-            throw new InvalidOperationException("An agent run is already in progress.");
+        // astra-1 E (slice 2): no shared running guard — capacity is enforced by
+        // the runner (per-session + max-concurrent checks in its registry). Each
+        // RunAsync call now owns a RunScope and never touches another run's state.
+        var run = new RunScope(options.SessionId);
+        var scope = run;
+        _runScope.Value = run;
+        lock (_activeLock) _activeScopes.Add(scope);
         // PLAN §44: hold the agent's own plugin lease for the whole run — a reload
         // cannot unload the agent plugin mid-run; the host's lease drain blocks
         // until this is released in the finally below.
-        _selfLease = _ctx.LeaseSelf();
-        _state = ct.IsCancellationRequested ? AgentState.Cancelling : AgentState.Preparing;
-        _activeSession = options.SessionId;
+        run.SelfLease = _ctx.LeaseSelf();
+        run.State = ct.IsCancellationRequested ? AgentState.Cancelling : AgentState.Preparing;
         IValueLease<IModelProvider>? providerLease = null;
         IValueLease<IToolRegistry>? toolsLease = null;
         IValueLease<IModelCatalog>? catalogLease = null;
@@ -171,13 +224,13 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 }
 
                 // ---- build + run the model ----------------------------------
-                _state = AgentState.CallingModel;
+                Current.State = AgentState.CallingModel;
                 await PublishAsync(AgentEventType.BeforeModelRequest, options, null, ct);
 
                 // PLAN §32: remember this request's transcript size so the
                 // compaction estimate covers only the messages added since.
-                _lastUsageMessageCount = transcript.Count;
-                _lastUsagePromptTokens = 0; // reset; set from the usage event below
+                Current.LastUsageMessageCount = transcript.Count;
+                Current.LastPromptTokens = 0; // reset; set from the usage event below
                 var request = new ModelRequest
                 {
                     ModelId = options.ModelId,
@@ -248,7 +301,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                             await FlushDeltaBufAsync(deltaLane, deltaBuf, options, ct);
                             deltaLane = null;
                             await PublishAsync(AgentEventType.ModelStreamEvent, options, ModelEventWireMapper.ToWire(ev), ct);
-                            if (ev is UsageUpdated uu) _lastUsagePromptTokens = uu.PromptTokens;
+                            if (ev is UsageUpdated uu) Current.LastPromptTokens = uu.PromptTokens;
                             if (ev is ModelCompleted mc) assistant = mc.Message;
                             else if (ev is ModelFailed mf)
                             {
@@ -282,7 +335,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                         : RetryDecision.Abort;
                     if (!decision.ShouldRetry)
                     {
-                        _state = AgentState.Idle;
+                        Current.State = AgentState.Idle;
                         throw new Exception(modelError ?? "model request failed");
                     }
 
@@ -298,7 +351,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                                              PromptTokens = decision.Attempt, CompletionTokens = decision.MaxAttempts, TotalTokens = decision.DelayMs }, ct);
 
                     // PLAN §34: failed attempt marked, then backoff wait.
-                    _state = AgentState.Retrying;
+                    Current.State = AgentState.Retrying;
                     if (decision.DelayMs > 0) await Task.Delay(decision.DelayMs, ct);
                     attempt++;
                 }
@@ -322,24 +375,24 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                         // can notice the cut-off; if a nudge queued a steering
                         // message, the loop-top drain injects it as a fresh user
                         // message and we continue instead of ending on nothing.
-                        _state = AgentState.Idle;
+                        Current.State = AgentState.Idle;
                         await PublishAsync(AgentEventType.TurnEmpty, options,
                             new ModelEventWire { Kind = "turn-empty", ModelId = options.ModelId }, ct);
-                        if (PendingCount(_activeSession) > 0)
+                        if (PendingCount(Current.SessionId) > 0)
                         {
                             await PublishAsync(AgentEventType.TurnBoundary, options, null, ct);
                             continue;
                         }
                         return new AgentRunResult(true, assistant, turns, null);
                     }
-                    _state = AgentState.Idle;
+                    Current.State = AgentState.Idle;
                     return new AgentRunResult(true, assistant, turns, null);
                 }
 
                 // ---- PLAN §11: hold the tools-plugin service lease from resolution
                 // through execution completion — a reload of the tools plugin cannot
                 // unload mid-batch (its lease drain blocks until released below).
-                _state = AgentState.ExecutingTools;
+                Current.State = AgentState.ExecutingTools;
                 using var batchToolsLease = AcquireLease<IToolRegistry>("tools")
                     ?? throw new ServiceUnavailableException("tools", "Tools registry is not loaded.");
                 await PublishAsync(AgentEventType.BeforeToolBatch, options, null, ct);
@@ -400,16 +453,16 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 var compaction = TryResolveCompaction();
                 if (compaction is not null && compaction.IsAvailable && store is not null)
                 {
-                    _state = AgentState.Compacting;
+                    Current.State = AgentState.Compacting;
                     try
                     {
                         var comp = await compaction.CompactAsync(new CompactionRequest
                         {
-                            SessionId = options.SessionId ?? _activeSession ?? string.Empty,
+                            SessionId = options.SessionId ?? Current.SessionId ?? string.Empty,
                             ModelId = options.ModelId ?? string.Empty,
                             ReasoningLevel = options.ReasoningLevel,
-                            LastPromptTokens = _lastUsagePromptTokens,
-                            LastUsageMessageCount = _lastUsageMessageCount,
+                            LastPromptTokens = Current.LastPromptTokens,
+                            LastUsageMessageCount = Current.LastUsageMessageCount,
                         }, ct);
                         if (comp is { Performed: true } && comp.ActiveContext is { } active)
                         {
@@ -437,13 +490,13 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         }
         finally
         {
-            _state = AgentState.Idle;
-            _everRan = true;
+            run.State = AgentState.Idle;
+            lock (_activeLock) _activeScopes.Remove(scope);
             // astra-1 A (run cleanup): release the run-scoped service leases —
             // nullable: acquisition happens INSIDE the try, so a pre-acquisition
             // failure must still land here and release nothing it never took.
-            try { _selfLease?.Dispose(); } catch { }
-            _selfLease = null;
+            try { run.SelfLease?.Dispose(); } catch { }
+            run.SelfLease = null;
             try { providerLease?.Dispose(); } catch { }
             try { toolsLease?.Dispose(); } catch { }
             try { catalogLease?.Dispose(); } catch { }
@@ -526,10 +579,10 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
 
     private async ValueTask AppendAsync(ISessionStore? store, AgentMessage msg, CancellationToken ct)
     {
-        if (store is null || string.IsNullOrEmpty(_activeSession)) return;
+        if (store is null || string.IsNullOrEmpty(Current.SessionId)) return;
         try
         {
-            await store.AppendAsync(new SessionEntry(NewId(), _activeSession, EntryKind.Message, msg, null, DateTimeOffset.UtcNow), ct);
+            await store.AppendAsync(new SessionEntry(NewId(), Current.SessionId, EntryKind.Message, msg, null, DateTimeOffset.UtcNow), ct);
         }
         catch (Exception ex) { _ctx.Log.Warning($"Failed to persist entry: {ex.Message}"); }
     }
@@ -553,7 +606,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         JsonElement? payload = null;
         if (wire is not null)
             payload = JsonSerializer.SerializeToElement(wire, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-        var evt = new AgentEvent(Guid.NewGuid().ToString("n"), type, DateTimeOffset.UtcNow, _activeSession, payload, options.RunId);
+        var evt = new AgentEvent(Guid.NewGuid().ToString("n"), type, DateTimeOffset.UtcNow, Current.SessionId, payload, options.RunId);
         try { await _bus.PublishAsync(evt, ct); }
         catch (Exception ex) { _ctx.Log.Warning($"Event publish failed ({type}): {ex.Message}"); }
     }
@@ -562,10 +615,10 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
 
     private sealed class StateView(AgentRuntime owner) : IAgentState
     {
-        public AgentState State => owner.RawState;
-        public bool IsRunning => owner.RawRunning;
-        public string? ActiveSessionId => owner.RawSession;
-        public bool IsIdle => owner.RawIdle;
+        public AgentState State => owner.ActiveBusiest()?.State ?? AgentState.Idle;
+        public bool IsRunning => owner.AnyActive();
+        public string? ActiveSessionId => owner.ActiveFirst()?.SessionId;
+        public bool IsIdle => !IsRunning;
     }
 
     /// <summary>
