@@ -1216,8 +1216,19 @@ internal sealed class WebApp : IAsyncDisposable
                     await SendErrorAsync(c, requestId, "config update unavailable", ct);
                     break;
                 }
-                foreach (var (key, value) in EnumerateObject(plugins))
-                    await _config.MergePluginAsync(key, value, ct);
+                try
+                {
+                    foreach (var (key, value) in EnumerateObject(plugins))
+                        await _config.MergePluginAsync(key, value, ct);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // astra-1 §11a (P/B): a malformed config or a failed atomic write
+                    // rejects the update (original bytes retained). Surface the
+                    // credential-free reason rather than an empty ack.
+                    await SendErrorAsync(c, requestId, ex.Message, ct);
+                    break;
+                }
                 await SendAckAsync(c, requestId, ct);
                 break;
             }

@@ -1,3 +1,4 @@
+using System;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -97,8 +98,15 @@ public sealed class ConfigService : IConfigService, IDisposable
 
     /// <summary>
     /// Deep-merge <paramref name="properties"/> into <c>plugins:&lt;pluginId&gt;</c>
-    /// in config.json and persist the file (PLAN §36). The file is re-read on
-    /// every access, so the change takes effect at the next plugin reload.
+    /// in config.json and persist the file (PLAN §36).
+    ///
+    /// astra-1 §11a (P/B): a parse failure is REJECTED, never silently turned into
+    /// a missing plugin section — the original bytes are retained and an
+    /// <see cref="InvalidConfigException"/> is thrown with a useful error. The new
+    /// config is validated as a complete object, written to a sibling temp file,
+    /// then atomically replaced over the original, keeping a last-known-good
+    /// copy. A revision check (write time + length) detects a concurrent writer
+    /// between read and write and retries from a fresh read.
     /// </summary>
     public void MergePluginSection(string pluginId, JsonElement properties)
     {
@@ -106,31 +114,94 @@ public sealed class ConfigService : IConfigService, IDisposable
         {
             if (properties.ValueKind != JsonValueKind.Object) return;
 
-            JsonNode? root;
-            try
+            // Validate the incoming section up front so a bad payload never
+            // touches the file.
+            JsonNode.Parse(properties.ToString());
+
+            for (int attempt = 0; ; attempt++)
             {
-                var json = File.Exists(_configPath) ? File.ReadAllText(_configPath) : null;
-                root = string.IsNullOrWhiteSpace(json) ? null : JsonNode.Parse(json);
+                // 1. Read + parse. A malformed file is a hard reject (retain bytes).
+                JsonNode root;
+                if (!File.Exists(_configPath))
+                    root = new JsonObject();
+                else
+                {
+                    var json = File.ReadAllText(_configPath);
+                    if (string.IsNullOrWhiteSpace(json)) root = new JsonObject();
+                    else
+                    {
+                        try { root = JsonNode.Parse(json)!; }
+                        catch (JsonException ex)
+                        {
+                            throw new InvalidConfigException(
+                                $"config.json at '{_configPath}' is not valid JSON; the original " +
+                                $"bytes were retained and the update was not applied: {ex.Message}");
+                        }
+                    }
+                    if (root is not JsonObject) root = new JsonObject();
+                }
+                var info = new FileInfo(_configPath);
+                var writeTime = info.Exists ? info.LastWriteTimeUtc : DateTime.MinValue;
+                var length = info.Exists ? info.Length : 0;
+
+                // 2. Build the proposed complete config.
+                if (root["plugins"] is not JsonObject plugins) root["plugins"] = plugins = new JsonObject();
+                var key = pluginId.ToLowerInvariant();
+                var target = plugins[key] as JsonObject ?? new JsonObject();
+                DeepMergeInto(target, JsonNode.Parse(properties.ToString())!.AsObject());
+                plugins[key] = target;
+                var proposed = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+
+                // 3. Re-check the revision: a concurrent writer that touched the
+                //    file between read and write invalidates this merge — retry.
+                var rev = File.Exists(_configPath) ? new FileInfo(_configPath) : null;
+                if (rev is { } ri && (ri.LastWriteTimeUtc != writeTime || ri.Length != length) && attempt < 3)
+                {
+                    continue; // re-read and merge again
+                }
+
+                // 4. Atomic replace: write a sibling temp, keep a last-known-good
+                //    copy, then move the temp over the original.
+                try
+                {
+                    AtomicWriteJson(proposed);
+                }
+                catch (Exception ex) when (ex is not InvalidConfigException)
+                {
+                    throw new InvalidConfigException(
+                        $"could not persist config.json (the original bytes are unchanged): {ex.Message}", ex);
+                }
+                return;
             }
-            catch (JsonException)
-            {
-                root = null; // corrupt file: rebuild from the plugin section
-            }
-            root ??= new JsonObject();
-            if (root is not JsonObject rootObj) return;
-
-            if (rootObj["plugins"] is not JsonObject plugins)
-                rootObj["plugins"] = plugins = new JsonObject();
-
-            var key = pluginId.ToLowerInvariant();
-            var target = plugins[key] as JsonObject ?? new JsonObject();
-            DeepMergeInto(target, JsonNode.Parse(properties.ToString())!.AsObject());
-            plugins[key] = target;
-
-            File.WriteAllText(_configPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         }
     }
 
+    /// <summary>Writes <paramref name="json"/> atomically: sibling temp file, then a
+    /// last-known-good copy, then an atomic move over <see cref="_configPath"/>, so an
+    /// interrupted write never leaves a partial config and a failure can restore the
+    /// last known good bytes.</summary>
+    private void AtomicWriteJson(string json)
+    {
+        var dir = Path.GetDirectoryName(_configPath)!;
+        var tmp = Path.Combine(dir, $".config.json.{Guid.NewGuid():n}.tmp");
+        var lkg = Path.Combine(dir, ".config.json.last-known-good");
+        File.WriteAllText(tmp, json);
+        // Keep a recoverable last-known-good copy of the previous file (if any).
+        if (File.Exists(_configPath))
+        {
+            try { File.Copy(_configPath, lkg, overwrite: true); }
+            catch { /* LKG is best-effort; the atomic move below is what matters */ }
+        }
+        try
+        {
+            File.Move(tmp, _configPath, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch { /* ignore */ }
+            throw;
+        }
+    }
     private static void DeepMergeInto(JsonObject target, JsonObject source)
     {
         foreach (var (k, v) in source)
@@ -161,3 +232,12 @@ public static class ConfigJson
         return JsonDocument.Parse(node.ToJsonString()).RootElement.Clone();
     }
 }
+
+/// <summary>
+/// astra-1 §11a (P/B): a config update was REJECTED because the existing
+/// config.json was malformed (or could not be written). The original bytes are
+/// retained. The message is safe to surface to a client — it names no
+/// credential values, only the path and the parse/write reason.
+/// </summary>
+public sealed class InvalidConfigException(string message, Exception? inner = null)
+    : InvalidOperationException(message, inner);
