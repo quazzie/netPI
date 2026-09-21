@@ -120,7 +120,19 @@ public sealed class AutoCompactService : ICompaction
         var provider = ResolveProvider();
         if (store is null || provider is null) return new CompactionResult(null, null);
 
-        var entries = await store.ReadAsync(request.SessionId, 0, _config.MaxContextMessages, cancellationToken);
+        // astra-1 A: measure/retain over the ACTIVE context — from the latest
+        // checkpoint's RETAINED tail on (the tail starts BEFORE the checkpoint
+        // entry's own sequence), or the bounded recent tail when there is no
+        // checkpoint. Never the oldest-first window, and never history that an
+        // earlier checkpoint already folded into a summary.
+        SessionEntry? latest = await store.LatestCompactionAsync(request.SessionId, cancellationToken);
+        var oldPayload = latest?.Payload is { } el2
+            ? JsonSerializer.Deserialize<CompactionEntryPayload>(el2.GetRawText(), WireOpts)
+            : null;
+        int oldRetainedFrom = oldPayload?.RetainedFromSequence ?? 0;
+        var entries = oldPayload is not null && oldRetainedFrom > 0
+            ? await store.ReadAfterAsync(request.SessionId, oldRetainedFrom - 1, _config.MaxContextMessages, cancellationToken)
+            : await store.ReadRecentAsync(request.SessionId, _config.MaxContextMessages, cancellationToken);
 
         var messages = entries
             .Where(e => e.Kind == EntryKind.Message && e.Message is not null)
@@ -147,9 +159,12 @@ public sealed class AutoCompactService : ICompaction
         int retainedFrom = ChooseRetainedFrom(entries, request.KeepRecentTokens > 0 ? request.KeepRecentTokens : _config.KeepRecentTokens);
         var retained = RetainedMessages(entries, retainedFrom);
 
+        // Only messages NEWER than the previous checkpoint's retained tail are
+        // summarized — anything older is already inside the existing summary.
+        int summarizeFrom = Math.Max(oldRetainedFrom, 1);
         var toSummarize = entries
             .Where(e => e.Kind == EntryKind.Message && e.Message is not null
-                        && e.Sequence > 0 && e.Sequence < retainedFrom)
+                        && e.Sequence >= summarizeFrom && e.Sequence < retainedFrom)
             .OrderBy(e => e.Sequence)
             .Select(e => e.Message!)
             .ToList();
@@ -158,7 +173,12 @@ public sealed class AutoCompactService : ICompaction
         int summarizedThrough = FirstMessageSeqBefore(entries, retainedFrom);
 
         // ---- summarize (tools disabled, PLAN §33) -------------------------
-        string summary = await SummarizeAsync(provider, request.ModelId, toSummarize, cancellationToken);
+        var freshSummary = await SummarizeAsync(provider, request.ModelId, toSummarize, cancellationToken);
+        // Carry the previous summary forward so a second checkpoint does not
+        // lose the first compaction's text.
+        string summary = oldPayload is not null && !string.IsNullOrWhiteSpace(oldPayload.Summary)
+            ? oldPayload.Summary + "\n\n" + freshSummary
+            : freshSummary;
 
         // ---- reconstruct active context (PLAN §31/§33) ---------------------
         var activeContext = BuildActiveContext(retained, summary);
@@ -192,12 +212,37 @@ public sealed class AutoCompactService : ICompaction
     {
         var store = ResolveStore();
         if (store is null) return [];
-        var entries = await store.ReadAsync(sessionId, 0, _config.MaxContextMessages, cancellationToken);
 
-        SessionEntry? latestCompaction = null;
-        int latestSeq = 0;
-        foreach (var e in entries)
-            if (e.Kind == EntryKind.Compaction && e.Sequence > latestSeq) { latestSeq = e.Sequence; latestCompaction = e; }
+        // astra-1 A: the latest compaction checkpoint is found by sequence ALONE
+        // (LatestCompactionAsync), independent of any history window — a bounded
+        // ReadAsync window must never substitute old history for the current one
+        // (a checkpoint beyond the old 200/MaxContextMessages read limit was
+        // invisible before; a session longer than the window lost its newest
+        // messages to the oldest-first window).
+
+        SessionEntry? latestCompaction = await store.LatestCompactionAsync(sessionId, cancellationToken);
+
+        var payload = latestCompaction?.Payload is { } el
+            ? JsonSerializer.Deserialize<CompactionEntryPayload>(el.GetRawText(), WireOpts)
+            : null;
+
+        IReadOnlyList<SessionEntry> entries;
+        if (payload is not null && payload.RetainedFromSequence > 0)
+        {
+            // Active context = summary + everything from the retained tail on.
+            // The tail starts at RetainedFromSequence — BEFORE the checkpoint
+            // entry's own sequence — and the read also covers everything appended
+            // after the checkpoint. Reading from the checkpoint's own sequence
+            // would silently drop the retained tail.
+            entries = await store.ReadAfterAsync(
+                sessionId, payload.RetainedFromSequence - 1, _config.MaxContextMessages, cancellationToken);
+        }
+        else
+        {
+            // No checkpoint (or a corrupt one): the bounded RECENT tail — never an
+            // oldest-first window.
+            entries = await store.ReadRecentAsync(sessionId, _config.MaxContextMessages, cancellationToken);
+        }
 
         var messages = entries
             .Where(e => e.Kind == EntryKind.Message && e.Message is not null)
@@ -211,17 +256,12 @@ public sealed class AutoCompactService : ICompaction
         // non-empty call_id"). Repair it before it is ever sent to a model.
         messages = TranscriptSanitizer.Sanitize(messages).ToList();
 
-        if (latestCompaction?.Payload is not { } payload)
-            return messages; // no compaction yet → full history
+        if (payload is null)
+            return messages; // no compaction yet → recent history
 
-        var pl = JsonSerializer.Deserialize<CompactionEntryPayload>(payload.GetRawText(), WireOpts)
-            ?? new CompactionEntryPayload();
-
-        if (pl.RetainedFromSequence <= 0)
-            return messages;
-
-        var retained = RetainedMessages(entries, pl.RetainedFromSequence);
-        return BuildActiveContext(retained, pl.Summary);
+        // The read was already scoped to the retained tail (seq >=
+        // RetainedFromSequence), so the repaired messages ARE the tail.
+        return BuildActiveContext(messages, payload.Summary);
     }
 
 

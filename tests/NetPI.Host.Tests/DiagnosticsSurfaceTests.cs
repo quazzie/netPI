@@ -123,6 +123,15 @@ public class DiagnosticsSurfaceTests
             => ValueTask.FromResult<IReadOnlyList<SessionEntry>>(_entries.Skip(offset).Take(count).ToList());
         public ValueTask<IReadOnlyList<SessionEntry>> ReadBeforeAsync(string sessionId, int beforeSequence, int count, CancellationToken ct = default)
             => ValueTask.FromResult<IReadOnlyList<SessionEntry>>([]);
+        public ValueTask<SessionEntry?> LatestCompactionAsync(string sessionId, CancellationToken ct = default)
+            => ValueTask.FromResult(_entries.Where(e => e.Kind == EntryKind.Compaction)
+                .OrderByDescending(e => e.Sequence).FirstOrDefault());
+        public ValueTask<IReadOnlyList<SessionEntry>> ReadAfterAsync(string sessionId, int afterSequence, int count, CancellationToken ct = default)
+            => ValueTask.FromResult<IReadOnlyList<SessionEntry>>(
+                _entries.Where(e => e.Sequence > afterSequence).OrderBy(e => e.Sequence).Take(count).ToList());
+        public ValueTask<IReadOnlyList<SessionEntry>> ReadRecentAsync(string sessionId, int count, CancellationToken ct = default)
+            => ValueTask.FromResult<IReadOnlyList<SessionEntry>>(
+                _entries.OrderByDescending(e => e.Sequence).Take(count).OrderBy(e => e.Sequence).ToList());
     }
 
     private sealed class FakeAgent : IAgentRuntime

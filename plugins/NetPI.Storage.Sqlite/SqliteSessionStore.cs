@@ -267,6 +267,60 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         return list;
     }
 
+    /// <summary>astra-1 A: latest compaction checkpoint by sequence alone (independent of history windows).</summary>
+    public async ValueTask<SessionEntry?> LatestCompactionAsync(
+        string sessionId, CancellationToken ct = default)
+    {
+        await using var cmd = _connection.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, entry_type, created_at, seq, payload_json FROM session_entries
+            WHERE session_id = $s AND entry_type = 'Compaction'
+            ORDER BY seq DESC LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? Rehydrate(sessionId, reader) : null;
+    }
+
+    /// <summary>astra-1 A: entries after a sequence in append order (forward paging from a checkpoint).</summary>
+    public async ValueTask<IReadOnlyList<SessionEntry>> ReadAfterAsync(
+        string sessionId, int afterSequence, int count, CancellationToken ct = default)
+    {
+        var list = new List<SessionEntry>();
+        await using var cmd = _connection.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, entry_type, created_at, seq, payload_json FROM session_entries
+            WHERE session_id = $s AND seq > $b
+            ORDER BY seq LIMIT $cnt;
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$b", afterSequence);
+        cmd.Parameters.AddWithValue("$cnt", count);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            list.Add(Rehydrate(sessionId, reader));
+        return list;
+    }
+
+    /// <summary>astra-1 A: the newest entries in append order (bounded recent-tail fallback).</summary>
+    public async ValueTask<IReadOnlyList<SessionEntry>> ReadRecentAsync(
+        string sessionId, int count, CancellationToken ct = default)
+    {
+        var list = new List<SessionEntry>();
+        await using var cmd = _connection.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, entry_type, created_at, seq, payload_json FROM session_entries
+            WHERE session_id = $s ORDER BY seq DESC LIMIT $cnt;
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$cnt", count);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            list.Add(Rehydrate(sessionId, reader));
+        list.Reverse(); // append order, oldest first
+        return list;
+    }
+
     // ---- helpers ----------------------------------------------------------
 
     private static DateTimeOffset FromTicks(long ms) => DateTimeOffset.FromUnixTimeMilliseconds(ms);

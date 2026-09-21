@@ -177,9 +177,13 @@ public sealed class AgentRunner : IAgentRunner
 
                 if (context.Count == 0)
                 {
+                    // astra-1 A: bounded RECENT tail (newest first in the store,
+                    // returned oldest first) — never an oldest-first window, which
+                    // silently substituted old history for current history on a
+                    // session longer than the window.
                     var store = Resolve<ISessionStore>("sessions");
                     if (store is not null)
-                        context = (await store.ReadAsync(request.SessionId, 0, 200, ct))
+                        context = (await store.ReadRecentAsync(request.SessionId, 200, ct))
                             .Where(e => e.Kind == EntryKind.Message && e.Message is not null)
                             .Select(e => e.Message!)
                             .ToList();
