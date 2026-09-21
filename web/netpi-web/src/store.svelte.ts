@@ -186,14 +186,14 @@ export class NetPIStore {
     this.activity = "Responding…";
   }
 
-  startToolCall(id: string, name: string): void {
+  startToolCall(id: string, name: string, interrupted = false): void {
     const a = this.active();
     if (!a) return;
     if (a.toolCalls.some((t) => t.id === id)) return;
-    const call: ToolCall = { id, name, argsJson: "" };
+    const call: ToolCall = { id, name, argsJson: "", interrupted };
     a.toolCalls.push(call);
     this.stats.toolSteps += 1;
-    this.activity = `Running ${name}…`;
+    if (!interrupted) this.activity = `Running ${name}…`;
   }
 
   appendToolArgsDelta(id: string, delta: string): void {

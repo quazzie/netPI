@@ -1,11 +1,11 @@
 <script lang="ts">
   import { store } from "../../store.svelte";
+  import { ui } from "../../ui.svelte";
   import type { ToolCall } from "../../types";
 
   let { call }: { call: ToolCall } = $props();
 
-  let open = $state(false);
-  let userToggled = $state(false);
+  let userOpen = $state(false);
 
   function parsedArgs(): Record<string, unknown> {
     try {
@@ -17,17 +17,33 @@
   }
 
   let args = $derived(parsedArgs());
-  let running = $derived(call.result === undefined);
-  let shellLike = $derived(call.name === "bash" || call.name === "powershell");
+  let running = $derived(call.result === undefined && !call.interrupted);
+  let interrupted = $derived(!!call.interrupted && call.result === undefined);
   let linkedFile = $derived(filePath());
 
-  $effect(() => {
-    if (!userToggled && running && shellLike) open = true;
-  });
+  // Collapsed by default, all tools alike -- including running shell calls
+  // (the header still shows "running"). The "keep tool calls open" setting
+  // (same pattern as thinking blocks) keeps every call expanded by default;
+  // a manual toggle always wins.
+  let expanded = $derived(userOpen || ui.keepToolsOpen);
 
   function toggle() {
-    userToggled = true;
-    open = !open;
+    userOpen = !expanded;
+  }
+
+  function openInShell(e: MouseEvent, path: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    const params = new URLSearchParams({ path });
+    if (store.session?.id) params.set("sessionId", store.session.id);
+    // fetch does not reject on HTTP error statuses — check res.ok and
+    // surface the server's reason, otherwise a 404 would fail silently.
+    fetch(`/api/open?${params.toString()}`)
+      .then(async (res) => {
+        if (!res.ok)
+          store.setError(`Could not open ${path}: ${(await res.text().catch(() => "")) || res.statusText}`);
+      })
+      .catch((err) => store.setError(String(err)));
   }
 
   function displayName(): string {
@@ -99,17 +115,14 @@
     }
   }
 
-  function stopLink(e: MouseEvent) {
-    e.stopPropagation();
-  }
 </script>
 
-<section class:running class:error={!!call.isError} class:open class="tool-card">
+<section class:running class:error={!!call.isError} class:interrupted class:open={expanded} class="tool-card">
   <div
     class="tool-head"
     role="button"
     tabindex="0"
-    aria-expanded={open}
+    aria-expanded={expanded}
     onclick={toggle}
     onkeydown={(e) => {
       if (e.key === "Enter" || e.key === " ") {
@@ -120,7 +133,7 @@
   >
     <span class="tool-leading" aria-hidden="true">
       <span class="tool-glyph">{glyph()}</span>
-      <span class="tool-chevron">{open ? "⌄" : "⌄"}</span>
+      <span class="tool-chevron">{expanded ? "⌄" : "›"}</span>
     </span>
 
     <span class="tool-name">{displayName()}</span>
@@ -132,8 +145,8 @@
         href={fileHref(linkedFile)}
         target="_blank"
         rel="noopener"
-        title={linkedFile}
-        onclick={stopLink}
+        title={`Open ${linkedFile} in its default application`}
+        onclick={(e) => openInShell(e, linkedFile)}
       >{linkedFile}</a>
     {:else}
       <span class="tool-summary" title={summary()}>{summary()}</span>
@@ -143,6 +156,8 @@
 
     {#if running}
       <span class="tool-running-label">running</span>
+    {:else if interrupted}
+      <span class="tool-state interrupted">interrupted</span>
     {:else if call.isError}
       <span class="tool-state bad">failed</span>
     {:else if call.durationMs}
@@ -150,7 +165,7 @@
     {/if}
   </div>
 
-  {#if open}
+  {#if expanded}
     <div class="tool-detail">
       {#if call.argsJson}
         <div class="tool-section-label">Input</div>

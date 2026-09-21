@@ -60,6 +60,8 @@ export interface ToolCall {
   result?: string;
   isError?: boolean;
   durationMs?: number;
+  /** PLAN §46: the call never received a result (host died mid-batch). */
+  interrupted?: boolean;
 }
 
 export interface AssistantBlock {

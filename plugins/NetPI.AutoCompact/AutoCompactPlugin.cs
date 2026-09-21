@@ -206,6 +206,11 @@ public sealed class AutoCompactService : ICompaction
             .ToList();
         if (messages.Count == 0) return [];
 
+        // PLAN §46: a run that died mid-batch leaves tool calls without results;
+        // the provider rejects such history ("function_call_output must contain a
+        // non-empty call_id"). Repair it before it is ever sent to a model.
+        messages = TranscriptSanitizer.Sanitize(messages).ToList();
+
         if (latestCompaction?.Payload is not { } payload)
             return messages; // no compaction yet → full history
 

@@ -345,7 +345,9 @@ class NetPIWebSocket {
       } else if (part.type === "text" && assistantId) {
         store.appendTextDelta(part.text ?? "");
       } else if (part.type === "tool_call" && assistantId) {
-        store.startToolCall(part.id, part.name);
+        // PLAN §46: replayed tool calls that never received a result were a run
+        // that died mid-batch — render them "interrupted", not "running".
+        store.startToolCall(part.id, part.name, part.interrupted === true);
         store.appendToolArgsDelta(part.id, part.argumentsJson ?? "");
       }
     }

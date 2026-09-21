@@ -14,7 +14,6 @@ public sealed record AgentRunOptions
     /// <summary>Session workspace (PLAN §18/§25): tool paths + shell cwd.</summary>
     public string? Workspace { get; init; }
     public float? Temperature { get; init; }
-    public int? MaxTurns { get; init; } = 32;
 }
 
 /// <summary>Outcome of an agent run.</summary>
@@ -23,7 +22,7 @@ public sealed record AgentRunResult(bool Ok, AgentMessage? FinalAssistant, int T
 /// <summary>
 /// The agent runtime (PLAN §10-§12). Runs the model loop: request → stream →
 /// tool execution → feed results, until the model stops issuing tool calls or a
-/// turn cap is hit. Publishes lifecycle events on the bus and streams model
+/// tool execution → feed results, until the model stops issuing tool calls.
 /// events as <see cref="AgentEventType.ModelStreamEvent"/> payloads. Resolves
 /// its services at run time so plugin reloads defer until the run drains.
 /// </summary>
@@ -130,7 +129,6 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 throw new InvalidOperationException("No model selected and catalog empty.");
 
             var transcript = options.Messages.ToList();
-            var maxTurns = options.MaxTurns ?? 32;
 
             while (true)
             {
@@ -315,9 +313,6 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                     _state = AgentState.Idle;
                     return new AgentRunResult(true, assistant, turns, null);
                 }
-
-                if (turns >= maxTurns)
-                    return new AgentRunResult(true, assistant, turns, "max turns reached");
 
                 // ---- PLAN §11: hold the tools-plugin service lease from resolution
                 // through execution completion — a reload of the tools plugin cannot

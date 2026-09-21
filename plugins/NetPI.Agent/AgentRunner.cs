@@ -190,8 +190,12 @@ public sealed class AgentRunner : IAgentRunner
                 if (context.Count > 0 && context[^1].Role == MessageRole.User &&
                     string.Equals(TextOf(context[^1]), request.Text, StringComparison.Ordinal))
                     context.RemoveAt(context.Count - 1);
+                // PLAN §46: a run that died mid-batch (crash/restart) leaves tool
+                // calls without results — the provider rejects the transcript
+                // ("function_call_output must contain a non-empty call_id"). Repair
+                // the history with synthetic interrupted results before it is sent.
+                context = TranscriptSanitizer.Sanitize(context).ToList();
                 transcript.AddRange(context);
-
             }
         }
         catch (Exception ex)
