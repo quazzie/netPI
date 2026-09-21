@@ -3,6 +3,9 @@
   import { ui } from "../ui.svelte";
   import { ws } from "../ws";
 
+  // astra-1 G1: opened by the header or the left panel switcher.
+  let { onOpenSettings }: { onOpenSettings: () => void } = $props();
+
    let workspace = $state("");
   let font = $derived(ui.font);
 
@@ -51,7 +54,15 @@
 
     <div class="left-switcher">
       <button class:active={ui.leftPage === "sessions"} onclick={() => (ui.leftPage = "sessions")}>Sessions</button>
-      <button class:active={ui.leftPage === "settings"} onclick={() => (ui.leftPage = "settings")}>Settings</button>
+      <button
+        title="Open settings dialog"
+        onclick={() => {
+          // astra-1 G1: the settings surface is now the dialog; this button
+          // is a transition hook until the left panel is removed.
+          ui.leftPage = "sessions";
+          onOpenSettings();
+        }}
+      >Settings</button>
     </div>
 
     {#if ui.leftPage === "sessions"}

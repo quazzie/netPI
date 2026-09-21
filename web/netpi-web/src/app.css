@@ -394,6 +394,45 @@ a { color: var(--accent); }
   font-size:11.5px;
   text-align:center;
 }
+/* astra-1 G1: settings dialog */
+.settings-backdrop {
+  position:fixed;
+  inset:0;
+  z-index:100;
+  background:rgba(8,10,14,.55);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.settings-dialog {
+  width:min(430px, calc(100vw - 48px));
+  max-height:82vh;
+  overflow-y:auto;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+  padding:16px 18px;
+  border:1px solid #333b46;
+  border-radius:12px;
+  background:#161a20;
+  box-shadow:0 18px 48px rgba(0,0,0,.55);
+  outline:none;
+}
+.settings-head {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+}
+.settings-title { color:var(--text); font-size:13px; font-weight:650; }
+.settings-close {
+  width:24px; height:24px;
+  border:none; border-radius:6px;
+  background:none;
+  color:var(--text-faint);
+  font-size:14px;
+  cursor:pointer;
+}
+.settings-close:hover { background:#1d232c; color:var(--text); }
 /* astra-1 G1: overflow tab list */
 .tab-overflow { position:relative; flex:none; }
 .tab-overflow-btn {

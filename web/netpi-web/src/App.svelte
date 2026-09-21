@@ -8,10 +8,16 @@
   import SessionTabs from "./components/SessionTabs.svelte";
   import ConversationViewport from "./components/ConversationViewport.svelte";
   import Composer from "./components/Composer.svelte";
+  import SettingsDialog from "./components/SettingsDialog.svelte";
 
   let shellStyle = $derived(
     `--left-panel-width:${ui.leftOpen ? ui.leftWidth : 0}px;--right-panel-width:${ui.rightOpen ? ui.rightWidth : 26}px`, /* 26 must match --right-rail-width in app.css */
   );
+
+  // astra-1 G1: settings move from the left-panel page into a proper dialog
+  // (the dialog component is the permanent surface; the left panel keeps
+  // working until SessionPicker lands and the panel is removed).
+  let settingsOpen = $state(false);
 
   function beginPanelResize(side: "left" | "right", e: PointerEvent) {
     e.preventDefault();
@@ -44,7 +50,7 @@
 
 <div class="app-shell" style={shellStyle}>
   <div class="left-slot">
-    <LeftPanel />
+    <LeftPanel onOpenSettings={() => (settingsOpen = true)} />
   </div>
 
   <main class="chat-shell">
@@ -80,4 +86,6 @@
       onpointerdown={(e) => beginPanelResize("right", e)}
     ></div>
   {/if}
+
+  <SettingsDialog open={settingsOpen} onClose={() => (settingsOpen = false)} />
 </div>
