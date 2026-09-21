@@ -39,6 +39,16 @@
   const currentInput = $derived((usage?.promptTokens ?? 0) + est);
   const pct = $derived(window_ > 0 ? Math.min(1, currentInput / window_) : null);
   const unknown = $derived(!usage || !window_);
+  // astra-1 G2: auto-compaction threshold (simple policy: window − reserve) and
+  // the room left before it fires. Null when the policy or window is unknown —
+  // the popup then says "not reported" / "disabled", never a fabricated zero.
+  const policy = $derived(store.compactionPolicy);
+  const threshold = $derived(
+    policy?.available && window_ > 0 ? window_ - policy.reserveTokens : null,
+  );
+  const roomBefore = $derived(
+    threshold !== null ? Math.max(0, threshold - currentInput) : null,
+  );
 
   let lastCompaction = $derived.by(() => {
     for (let i = store.blocks.length - 1; i >= 0; i--) {
@@ -112,7 +122,13 @@
         {/if}
       {/if}
       <div class="ctx-row">
-        <span>auto-compact</span><span>threshold not reported</span>
+        {#if threshold !== null}
+          <span>auto-compact</span>
+          <span>threshold {fmt(threshold)} · {roomBefore === 0 ? "at limit" : roomBefore + " left"}</span>
+        {:else}
+          <span>auto-compact</span>
+          <span>{policy?.available ? "threshold not reported" : "disabled"}</span>
+        {/if}
       </div>
       {#if lastCompaction}
         <div class="ctx-row">

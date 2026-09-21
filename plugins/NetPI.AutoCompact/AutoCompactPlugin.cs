@@ -108,6 +108,14 @@ public sealed class AutoCompactService : ICompaction
 
     public bool IsAvailable => _config.Enabled;
 
+    /// <summary>
+    /// astra-1 G2 (F contract): publish the policy the context meter surfaces —
+    /// availability (enabled) + the configured reserve (the trigger for a
+    /// window <c>W</c> is <c>W − ReserveTokens</c>). Reflects the LIVE config
+    /// (config updates re-read this).
+    /// </summary>
+    public CompactionPolicy? ContextPolicy => new(IsAvailable, _config.ReserveTokens);
+
     internal void UpdateConfig(AutoCompactConfig config) => _config = config;
 
     public async ValueTask<CompactionResult> CompactAsync(

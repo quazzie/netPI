@@ -223,6 +223,12 @@ export class NetPIStore {
   /** astra-1 F/G2: the session `lastUsage` belongs to — the context meter must
    *  not read another session's usage. */
   lastUsageSession = $state<string | null>(null);
+  /** astra-1 G2 (F contract): the compaction policy (a GLOBAL, static snapshot
+   *  carried on the visible session's session.updated — availability + reserve;
+   *  the meter derives the trigger from the selected model's window). Null until
+   *  a visible session with a compaction policy arrives (no AutoCompact plugin →
+   *  the popup shows "threshold not reported", never a fabricated zero). */
+  compactionPolicy = $state<{ available: boolean; reserveTokens: number } | null>(null);
 
   // ---- UI state ----------------------------------------------------------
   errorBanner = $state<string | null>(null);
@@ -511,6 +517,7 @@ export class NetPIStore {
 
   applySession(info: SessionInfo): void {
     this.session = info;
+    if (info.compaction !== undefined) this.compactionPolicy = info.compaction;
     // astra-1 G1: making a session visible registers it as an open tab and
     // clears its unread marker (a run completing must never move a tab).
     this.openTab(info.id);

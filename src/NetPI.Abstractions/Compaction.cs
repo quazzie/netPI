@@ -63,6 +63,17 @@ public sealed record CompactionResult(
 }
 
 /// <summary>
+/// astra-1 G2 (F contract): the compaction policy the context meter surfaces.
+/// <c>ReserveTokens</c> is the headroom the service keeps (the trigger for a
+/// model with window <c>W</c> is <c>W − ReserveTokens</c>). <c>Available</c>
+/// mirrors <see cref="IsAvailable"/> (the plugin is enabled). <c>null</c> from an
+/// <see cref="ICompaction"/> implementation that does not publish a policy —
+/// the Web surface then shows the threshold as "not reported" (honest,
+/// never a fabricated zero).
+/// </summary>
+public sealed record CompactionPolicy(bool Available, int ReserveTokens);
+
+/// <summary>
 /// The compaction service (PLAN §32/§33). Registered by the AutoCompact
 /// plugin under id "compaction"; the agent runtime and Web surface resolve it
 /// at run time so a missing plugin simply disables compaction (the run
@@ -72,6 +83,13 @@ public interface ICompaction
 {
     /// <summary>True when the plugin is enabled and a summarization can run.</summary>
     bool IsAvailable { get; }
+    /// <summary>
+    /// astra-1 G2 (F contract): the compaction policy the context meter surfaces
+    /// (availability + the reserve the trigger is computed from). The default is
+    /// null — a pre-G2 implementation that never published a policy — so adding
+    /// this breaks no existing implementor.
+    /// </summary>
+    CompactionPolicy? ContextPolicy => null;
 
     /// <summary>
     /// Run one compaction pass for the session: estimate context usage, and

@@ -152,6 +152,9 @@ export interface SessionInfo {
     rootPath?: string;
     updatedAt?: number;
   };
+  /** astra-1 G2 (F contract): the compaction policy (a global, static snapshot
+   *  carried on the visible session's session.updated — not per-session state). */
+  compaction?: { available: boolean; reserveTokens: number } | null;
 }
 
 

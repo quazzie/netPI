@@ -1389,7 +1389,23 @@ internal sealed class WebApp : IAsyncDisposable
         createdAt = s.CreatedAt.ToUnixTimeMilliseconds(),
         updatedAt = s.UpdatedAt.ToUnixTimeMilliseconds(),
         project = await ProjectJsonAsync(s.ProjectId, ct),
+        // astra-1 G2 (F contract): the compaction policy the context meter
+        // surfaces. It is a STATIC snapshot (enabled + configured reserve —
+        // neither varies per session or per live event), so the
+        // context-revision/late-event guard does not apply; the client caches
+        // it and re-derives the threshold from the selected model's window.
+        compaction = CompactionPolicyJson(),
     };
+
+    /// <summary>astra-1 G2 (F contract): the compaction policy as the client shape,
+    /// or null when no compaction plugin is loaded / it publishes none (the UI
+    /// then shows the threshold as "not reported", never a fabricated zero).</summary>
+    private object? CompactionPolicyJson()
+    {
+        var policy = _compaction?.ContextPolicy;
+        if (policy is null) return null;
+        return new { available = policy.Available, reserveTokens = policy.ReserveTokens };
+    }
 
     /// <summary>astra-1 D2: the session's active project as the client <c>project</c>
     /// shape, or null when the session has no project / the store is gone.</summary>
