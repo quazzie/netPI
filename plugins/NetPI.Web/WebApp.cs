@@ -194,7 +194,19 @@ internal sealed class WebApp : IAsyncDisposable
                 await context.Response.SendFileAsync(Path.Combine(Path.GetFullPath(_staticRoot), "index.html"));
             });
 
-        await app.StartAsync(ct);
+        try
+        {
+            await app.StartAsync(ct);
+        }
+        catch
+        {
+            // astra-1 P3: a partial start must release what it acquired —
+            // Kestrel listener (if bound) plus every subscription.
+            foreach (var sub in _subs) { try { sub.Dispose(); } catch { } }
+            _subs.Clear();
+            try { await app.DisposeAsync(); } catch { }
+            throw;
+        }
         _app = app;
         _ = Task.Run(BootstrapCatalogAsync);
         // One-shot backfill: existing untitled sessions get their title from
