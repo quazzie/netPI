@@ -167,6 +167,14 @@
     const kind = store.submit(t);
     text = "";
     store.setDraft(store.session?.id ?? null, "");
+    // astra-1 G3: if the send is REJECTED, the optimistic user block must not
+    // look accepted — put the text back in the draft and retract it.
+    const onSendError = (e: unknown) => {
+      store.retractLastUser(t);
+      store.setDraft(store.session?.id ?? null, t);
+      text = t;
+      store.setError(e instanceof Error ? e.message : String(e));
+    };
 
     try {
       if (kind === "sent") {
@@ -176,12 +184,12 @@
           workspace: store.session?.workspace || undefined,
           model: store.currentModel || undefined,
           reasoning: store.reasoningLevel || undefined,
-        });
+        }).catch(onSendError);
       } else {
         await ws.request("chat.steer", {
           text: t,
           sessionId: store.session?.id,
-        });
+        }).catch(onSendError);
       }
       store.requestAccepted();
     } catch (e) {

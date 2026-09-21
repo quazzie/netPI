@@ -5,7 +5,13 @@
 
   let { call }: { call: ToolCall } = $props();
 
-  let userOpen = $state(false);
+  // astra-1 G3: disclosure is a 3-state override (unset → the global "keep
+  // tool calls open" default; a manual toggle always wins) — the old
+  // userOpen || keepToolsOpen could NOT collapse a call while the setting was
+  // on. Bounded per-block in the store so the choice survives replays.
+  let userOpen = $state<"unset" | "open" | "closed">(
+    (store.toolDisclosure[call.id] as "open" | "closed" | undefined) ?? "unset",
+  );
 
   function parsedArgs(): Record<string, unknown> {
     try {
@@ -17,23 +23,43 @@
   }
 
   let args = $derived(parsedArgs());
-  let running = $derived(call.result === undefined && !call.interrupted);
-  let interrupted = $derived(!!call.interrupted && call.result === undefined);
   let linkedFile = $derived(filePath());
+
+  /** astra-1 G3: explicit lifecycle — tool.completed/failed/interruption are
+   *  the only signals; streamed output does not complete a call. Legacy
+   *  replayed entries without `status` keep the old result-based mapping. */
+  let status = $derived(
+    call.status ??
+      (call.interrupted && call.result === undefined
+        ? "interrupted"
+        : call.result === undefined
+          ? "running"
+          : call.isError
+            ? "failed"
+            : "done"),
+  );
+  let running = $derived(status === "running");
 
   // Collapsed by default, all tools alike -- including running shell calls
   // (the header still shows "running"). The "keep tool calls open" setting
   // (same pattern as thinking blocks) keeps every call expanded by default;
   // a manual toggle always wins.
-  let expanded = $derived(userOpen || ui.keepToolsOpen);
+  let expanded = $derived(
+    userOpen === "unset" ? ui.keepToolsOpen : userOpen === "open",
+  );
 
   function toggle() {
-    userOpen = !expanded;
+    userOpen = expanded ? "closed" : "open";
+    store.setToolDisclosure(call.id, userOpen);
   }
 
   function openInShell(e: MouseEvent, path: string) {
-    e.preventDefault();
+    // astra-1 G3: always stop the enclosing disclosure toggle; plain click
+    // shell-opens, ctrl/meta/middle keeps the in-app /api/file viewer.
     e.stopPropagation();
+    const modified = e.ctrlKey || e.metaKey || e.button !== 0;
+    if (modified) return; // let the anchor's href (the viewer) take over
+    e.preventDefault();
     const params = new URLSearchParams({ path });
     if (store.session?.id) params.set("sessionId", store.session.id);
     // fetch does not reject on HTTP error statuses — check res.ok and
@@ -107,17 +133,29 @@
     return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
   }
 
+  let prettyArgsCache: { key: string; text: string } | null = null;
+  /** astra-1 G3: large inputs are formatted once per args revision, and only
+   *  while the detail pane is actually expanded (no per-render JSON.parse). */
   function prettyArgs(): string {
+    if (prettyArgsCache?.key === call.argsJson) return prettyArgsCache.text;
+    let text: string;
     try {
-      return JSON.stringify(JSON.parse(call.argsJson || "{}"), null, 2);
+      text = JSON.stringify(JSON.parse(call.argsJson || "{}"), null, 2);
     } catch {
-      return call.argsJson;
+      text = call.argsJson;
     }
+    prettyArgsCache = { key: call.argsJson, text };
+    return text;
   }
 
 </script>
 
-<section class:running class:error={!!call.isError} class:interrupted class:open={expanded} class="tool-card">
+<section
+  class:running={running}
+  class:error={status === "failed"}
+  class:interrupted={status === "interrupted"}
+  class:open={expanded}
+  class="tool-card">
   <div
     class="tool-head"
     role="button"
@@ -156,9 +194,9 @@
 
     {#if running}
       <span class="tool-running-label">running</span>
-    {:else if interrupted}
+    {:else if status === "interrupted"}
       <span class="tool-state interrupted">interrupted</span>
-    {:else if call.isError}
+    {:else if status === "failed"}
       <span class="tool-state bad">failed</span>
     {:else if call.durationMs}
       <span class="tool-duration">{fmt(call.durationMs)}</span>

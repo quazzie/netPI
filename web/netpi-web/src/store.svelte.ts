@@ -169,7 +169,16 @@ export class NetPIStore {
   setThinkingDisclosure(blockId: string, value: "open" | "closed" | null): void {
     if (value === null) delete this.thinkingDisclosure[blockId];
     else this.boundedPut(this.thinkingDisclosure, blockId, value, 500);
-}
+  }
+
+  /** astra-1 G3: per tool-call disclosure override (call id → open/closed);
+   *  bounded like thinking — manual choices survive replays/switches. */
+  toolDisclosure = $state<Record<string, "open" | "closed">>({});
+
+  setToolDisclosure(callId: string, value: "open" | "closed" | null): void {
+    if (value === null) delete this.toolDisclosure[callId];
+    else this.boundedPut(this.toolDisclosure, callId, value, 500);
+  }
 
   // ---- transcript -------------------------------------------------------
   blocks = $state<Block[]>([]);
@@ -316,7 +325,14 @@ export class NetPIStore {
     const a = this.active();
     if (!a) return;
     if (a.toolCalls.some((t) => t.id === id)) return;
-    const call: ToolCall = { id, name, argsJson: "", interrupted };
+    const call: ToolCall = {
+      id,
+      name,
+      argsJson: "",
+      interrupted,
+      // astra-1 G3: lifecycle starts explicitly; output does not complete.
+      status: interrupted ? "interrupted" : "running",
+    };
     a.toolCalls.push(call);
     this.stats.toolSteps += 1;
     if (!interrupted) this.activity = `Running ${name}…`;
@@ -333,14 +349,24 @@ export class NetPIStore {
     const c = a?.toolCalls.find((t) => t.id === id);
     if (c) {
       c.result = append ? (c.result ?? "") + output : output;
-      if (!append) c.isError = isError;
+      if (!append) {
+        c.isError = isError;
+        // astra-1 G3: a terminal failure flagged by the (non-append) result
+        // event ends "running" early; output chunks alone never do.
+        if (isError && c.status === "running") c.status = "failed";
+      }
     }
   }
 
   completeToolCall(id: string, durationMs: number): void {
     const a = this.active();
     const c = a?.toolCalls.find((t) => t.id === id);
-    if (c) c.durationMs = durationMs;
+    if (c) {
+      c.durationMs = durationMs;
+      // astra-1 G3: completion is the only terminal event that ends "running"
+      // (output presence was never a completion signal).
+      c.status = c.isError ? "failed" : "done";
+    }
     this.activity = "Continuing…";
   }
 
@@ -412,6 +438,16 @@ export class NetPIStore {
     this.requestPending = false;
     this.activity = null;
     this.setError(message);
+  }
+
+  /** astra-1 G3: the send request was REJECTED — drop the optimistic user
+   *  block (the message was never persisted server-side) so a failed send
+   *  does not look accepted. Text-only match on the last block; safe no-op
+   *  if the transcript moved on (steer/queue/replay already overwrote it). */
+  retractLastUser(text: string): void {
+    const last = this.blocks[this.blocks.length - 1];
+    if (last && last.kind === "user" && last.text === text)
+      this.blocks.splice(this.blocks.length - 1, 1);
   }
 
   /** Send when idle, steer when busy. */

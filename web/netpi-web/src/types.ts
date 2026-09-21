@@ -62,6 +62,13 @@ export interface ToolCall {
   durationMs?: number;
   /** PLAN §46: the call never received a result (host died mid-batch). */
   interrupted?: boolean;
+  /**
+   * astra-1 G3: explicit lifecycle, driven ONLY by start/completed/failure
+   * events — output presence is NOT a completion signal (a running shell can
+   * stream output for minutes). "running" is the terminal state of a live
+   * call until tool.completed/failed lands.
+   */
+  status?: "running" | "done" | "failed" | "interrupted";
 }
 
 export interface AssistantBlock {
