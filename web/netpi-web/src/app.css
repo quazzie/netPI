@@ -394,6 +394,68 @@ a { color: var(--accent); }
   font-size:11.5px;
   text-align:center;
 }
+/* astra-1 G1: overflow tab list */
+.tab-overflow { position:relative; flex:none; }
+.tab-overflow-btn {
+  height:24px; min-width:28px;
+  padding:0 7px;
+  border:1px solid #2a313c;
+  border-radius:7px;
+  background:#161b22;
+  color:var(--text-dim);
+  font-size:11px;
+  cursor:pointer;
+}
+.tab-overflow-btn:hover { color:var(--text); border-color:#3a4250; }
+.tab-overflow-btn.active { background:#1d232c; color:var(--text); }
+.tab-overflow-btn.busy::after {
+  content:"";
+  display:inline-block;
+  width:5px; height:5px;
+  margin-left:4px;
+  border-radius:50%;
+  background:#e3b341;
+  vertical-align:middle;
+}
+.tab-overflow-list {
+  position:absolute;
+  top:28px;
+  right:0;
+  z-index:70;
+  min-width:210px;
+  max-height:300px;
+  overflow-y:auto;
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  padding:5px;
+  border:1px solid #333b46;
+  border-radius:10px;
+  background:#161a20;
+  box-shadow:0 12px 34px rgba(0,0,0,.5);
+}
+.tab-overflow-item {
+  display:flex;
+  align-items:center;
+  gap:7px;
+  padding:6px 9px;
+  border:none;
+  border-radius:7px;
+  background:none;
+  color:var(--text-dim);
+  font-size:12px;
+  text-align:left;
+  cursor:pointer;
+}
+.tab-overflow-item:hover { background:#1b2027; color:var(--text); }
+.tab-overflow-item.selected { background:#1d2430; color:var(--text); }
+.tab-overflow-item .tab-title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tab-overflow-item .tab-close {
+  margin:0;
+  width:18px;
+  height:18px;
+  font-size:11px;
+}
 /* astra-1 G3: bounded very-large tool output */
 .tool-output-more {
   display:flex;
