@@ -336,8 +336,12 @@ public abstract class ShellToolBase : IAgentTool
     protected abstract IReadOnlyList<string> CommandPrefix { get; }
 
     private readonly ShellDetection? _detected;
+    // astra-1 H: optional lightweight lifecycle tracker (registered by the
+    // Tools plugin; null in standalone/test use — all calls are guarded).
+    private readonly IForegroundProcessTracker? _tracker;
 
-    protected ShellToolBase(ShellDetection? detected = null) => _detected = detected;
+    protected ShellToolBase(ShellDetection? detected = null, IForegroundProcessTracker? tracker = null)
+        => (_detected, _tracker) = (detected, tracker);
 
     public string Name => ShellId;
     public string Description => $"Run a {ShellId} command and return its output." +
@@ -408,6 +412,9 @@ public abstract class ShellToolBase : IAgentTool
                 ctx.Stream?.Emit("[stderr] " + e.Data + "\n");
             };
             proc.Start();
+            // astra-1 H: expose the lightweight lifecycle to the Activity plugin
+            // (only processes the Tools plugin started — never unrelated OS procs).
+            _tracker?.Started(Name, command, effectiveWorkdir, ctx.SessionId, proc.Id);
             // Close stdin (EOF) so the shell does not wait for interactive input
             // when the host's own stdin is a long-open pipe.
             try { proc.StandardInput.Close(); } catch { }
@@ -420,11 +427,13 @@ public abstract class ShellToolBase : IAgentTool
             if (!completed)
             {
                 try { proc.Kill(entireProcessTree: true); } catch { }
+                _tracker?.Finished(proc.Id, null); // killed on timeout — no exit code
                 return new ToolResult(Name, Name, [new TextPart($"Timed out after {timeoutMs}ms.\n{Args.Truncate(stdout.ToString())}")], IsError: true);
             }
             await exitTask;
 
             var code = proc.ExitCode;
+            _tracker?.Finished(proc.Id, code);
             var outp = Args.Truncate(stdout.ToString());
             var err = Args.Truncate(stderr.ToString());
             var text = $"[exit code: {code}]\n{outp}{(err.Trim().Length > 0 ? "\n[stderr]\n" + err : "")}";
@@ -438,14 +447,14 @@ public abstract class ShellToolBase : IAgentTool
 }
 
 /// <summary>Run a bash/sh command (POSIX shells).</summary>
-public sealed class BashTool(ShellDetection? detected = null) : ShellToolBase(detected)
+public sealed class BashTool(ShellDetection? detected = null, IForegroundProcessTracker? tracker = null) : ShellToolBase(detected, tracker)
 {
     protected override string ShellId => "bash";
     protected override IReadOnlyList<string> CommandPrefix => ["bash", "-c"];
 }
 
 /// <summary>Run a PowerShell command (Windows).</summary>
-public sealed class PowerShellTool(ShellDetection? detected = null) : ShellToolBase(detected)
+public sealed class PowerShellTool(ShellDetection? detected = null, IForegroundProcessTracker? tracker = null) : ShellToolBase(detected, tracker)
 {
     protected override string ShellId => "powershell";
     protected override IReadOnlyList<string> CommandPrefix => ["pwsh", "-NoProfile", "-Command"];
@@ -490,6 +499,9 @@ public sealed class ToolsPlugin : INetPiPlugin
     private ToolRegistryImpl? _registry;
     private IAgentTool[] _tools = [];
     private IDisposable[] _registrations = [];
+    // astra-1 H: the lightweight foreground-process lifecycle the shell tools
+    // record; exposed to the Activity plugin under id "foreground-processes".
+    private ForegroundProcessTracker _tracker = new();
 
     public PluginInfo Info { get; } = new("netPI.Tools", "Tools", "0.1.0");
 
@@ -503,10 +515,12 @@ public sealed class ToolsPlugin : INetPiPlugin
         context.Log.Information($"PowerShell: {pwsh.Label}");
 
         _tools = [new ReadTool(), new WriteTool(), new EditTool(), new GrepTool(),
-            new BashTool(bash), new PowerShellTool(pwsh)];
+            new BashTool(bash, _tracker), new PowerShellTool(pwsh, _tracker)];
         _registry = new ToolRegistryImpl();
         _registrations = _tools.Select(t => _registry.Register(t)).ToArray();
         context.Services.Register<IToolRegistry>("tools", _registry);
+        // astra-1 H: expose the foreground-process lifecycle to the Activity plugin.
+        context.Services.Register<IForegroundProcessTracker>("foreground-processes", _tracker);
         // Shell-command resolvers (PLAN §26) — owned by the tools plugin, briefly
         // leased by the background-tasks plugin before it spawns a process. They
         // now resolve to the DETECTED executable, not an assumed name.
@@ -561,5 +575,64 @@ internal sealed class ToolRegistryImpl : IToolRegistry
     private sealed class Unregister(ToolRegistryImpl owner, IAgentTool tool) : IDisposable
     {
         public void Dispose() => owner.Remove(tool);
+    }
+}
+
+
+/// <summary>
+/// astra-1 H: thread-safe, bounded implementation of
+/// <see cref="IForegroundProcessTracker"/>. The Tools plugin registers one; the
+/// Activity plugin reads it. Only processes the Tools plugin started are tracked.
+/// </summary>
+public sealed class ForegroundProcessTracker : IForegroundProcessTracker
+{
+    /// <summary>The most recently finished processes (bounded tail).</summary>
+    private const int MaxRecent = 256;
+
+    private readonly object _gate = new();
+    private readonly List<ForegroundProcessInfo> _running = [];
+    private readonly List<ForegroundProcessInfo> _recent = [];
+
+    public void Started(string toolShellId, string command, string? workingDirectory, string? sessionId, int processId)
+    {
+        var info = new ForegroundProcessInfo(toolShellId, command, workingDirectory, sessionId, processId, DateTimeOffset.UtcNow, null, null);
+        lock (_gate) _running.Add(info);
+    }
+
+    public void Finished(int processId, int? exitCode)
+    {
+        lock (_gate)
+        {
+            for (int i = _running.Count - 1; i >= 0; i--)
+            {
+                if (_running[i].ProcessId != processId) continue;
+                var done = _running[i] with
+                {
+                    ExitCode = exitCode,
+                    ExitedAt = DateTimeOffset.UtcNow,
+                };
+                _running.RemoveAt(i);
+                _recent.Insert(0, done); // newest first
+                if (_recent.Count > MaxRecent) _recent.RemoveAt(_recent.Count - 1);
+                return;
+            }
+            // no matching running process — a duplicate/late finish; ignore.
+        }
+    }
+
+    public IReadOnlyList<ForegroundProcessInfo> Running()
+    {
+        lock (_gate) return _running.ToList(); // already oldest first (FIFO add)
+    }
+
+    public IReadOnlyList<ForegroundProcessInfo> Recent(int max = 50)
+    {
+        lock (_gate)
+        {
+            var take = Math.Min(max, _recent.Count);
+            var outp = new ForegroundProcessInfo[take];
+            for (int i = 0; i < take; i++) outp[i] = _recent[i];
+            return outp;
+        }
     }
 }
