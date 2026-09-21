@@ -26,6 +26,8 @@ public sealed class SqlitePlugin : INetPiPlugin
 
         _store = new SqliteSessionStore(path);
         context.Services.Register<ISessionStore>("sessions", _store);
+        var projects = new SqliteProjectStore(path);
+        context.Services.Register<IProjectStore>("projects", projects);
         context.Log.Information($"Storage ready at {path}");
         await ValueTask.CompletedTask;
     }

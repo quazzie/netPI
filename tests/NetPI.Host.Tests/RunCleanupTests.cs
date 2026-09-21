@@ -231,5 +231,7 @@ public class RunCleanupTests
             if (failContext) throw new InvalidOperationException("context read failed (simulated)");
             return ValueTask.FromResult<IReadOnlyList<SessionEntry>>([]);
         }
+        public ValueTask<ProjectChangeResult> SetProjectAsync(ProjectChangeRequest change, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
     }
 }

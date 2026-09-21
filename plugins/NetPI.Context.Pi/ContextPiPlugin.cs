@@ -26,6 +26,8 @@ public sealed class ContextPlugin : INetPiPlugin
         context.Services.Register<ISystemPromptProvider>("system-prompt", _provider);
         context.Services.Register<IWorkspaceContextBuilder>("workspace-context",
             new WorkspaceContextBuilder(_discovery));
+        context.Services.Register<IInstructionContextResolver>("instruction-context",
+            new InstructionContextResolver(_discovery));
         context.Log.Information("Context plugin ready (AGENTS layering + SYSTEM/APPEND_SYSTEM)");
         await ValueTask.CompletedTask;
     }
@@ -44,16 +46,29 @@ public sealed class ContextPlugin : INetPiPlugin
 /// <summary>
 /// Discovers and caches workspace context files (PLAN §16/§17).
 /// </summary>
-public sealed class ContextDiscovery
+public class ContextDiscovery
 {
     /// <summary>Path → (mtime, length, text) cache; re-read only on change.</summary>
     private sealed record Entry(DateTime mtime, long length, string text);
+
+    /// <summary>
+    /// The raw file read — overridable so tests can simulate a file that
+    /// EXISTS but cannot be read (an actionable failure, astra-1 C).
+    /// </summary>
+    protected virtual string ReadFileRaw(string path) => File.ReadAllText(path);
 
     /// <summary>netPI's built-in base prompt; REPLACED by SYSTEM.md (PLAN §17).</summary>
     private const string BuiltInBasePrompt = "You are netPI, a local AI agent. You work in a workspace directory using tools (read, write, edit, grep, bash, powershell, background tasks). Be direct, act with the tools when asked, and keep answers concise.";
     private readonly Dictionary<string, Entry> _cache = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Read a file if it exists (cached by path/mtime/length), else null.</summary>
+    /// <summary>
+    /// Read a file (cached by path/mtime/length) or return null when it is
+    /// MISSING — a valid empty layer. A file that EXISTS but cannot be read
+    /// (permissions, locked, decode) is an actionable failure: it throws
+    /// <see cref="ProjectContextChangeException"/> (astra-1 C) rather than
+    /// being silently skipped. A delete-between-check race surfaces as
+    /// <see cref="FileNotFoundException"/> and is treated as missing.
+    /// </summary>
     public string? ReadCached(string path)
     {
         try
@@ -63,51 +78,143 @@ public sealed class ContextDiscovery
             var len = new FileInfo(path).Length;
             if (_cache.TryGetValue(path, out var hit) && hit.mtime == info && hit.length == len)
                 return hit.text;
-            var text = File.ReadAllText(path);
+            var text = ReadFileRaw(path);
             _cache[path] = new Entry(info, len, text);
             return text;
         }
-        catch { return null; }
+        catch (FileNotFoundException) { return null; }
+        catch (Exception ex)
+        {
+            throw new ProjectContextChangeException(
+                $"Instruction file {path} exists but could not be read ({ex.Message}); " +
+                "fix the file's permissions or contents.");
+        }
     }
 
     /// <summary>
-    /// §16 discovery order, broad → specific: the user home layer, the drive
-    /// root, then every directory from the drive root down to the workspace
-    /// itself. Each layer is the directory's <c>.netpi/AGENTS.override.md</c>
-    /// (replacing the ordinary file) or <c>.netpi/AGENTS.md</c>.
+    /// astra-1 C precedence, ONE file per directory, then directories layered
+    /// broad → specific:
+    ///   1. <c>.netpi/AGENTS.override.md</c>
+    ///   2. <c>AGENTS.override.md</c>
+    ///   3. <c>AGENTS.md</c>
+    ///   4. <c>.netpi/AGENTS.md</c>
+    /// The user home (<c>~/.netpi</c>) is the GLOBAL layer, separated from the
+    /// project layers so it is never added twice. Missing files are valid
+    /// (empty layer); an existing-but-unreadable file is an actionable
+    /// <see cref="ProjectContextChangeException"/>.
     /// </summary>
     public List<(string Label, string Content)> DiscoverAgentsLayers(string workspace)
+    {
+        var global = DiscoverGlobalLayer();
+        var project = DiscoverProjectLayers(workspace);
+        var layers = new List<(string, string)>(project.Count + (global is null ? 0 : 1));
+        if (global is not null) layers.Add(global.Value);
+        layers.AddRange(project);
+        return layers;
+    }
+
+    /// <summary>
+    /// astra-1 C: split discovery — the home layer (global) plus the
+    /// directory chain broad → specific. Used so global instructions can be
+    /// separated from project-specific layers.
+    /// </summary>
+    public ((string Label, string Content)? Global, List<(string Label, string Content)> Project)
+        DiscoverSplit(string workspace)
+    {
+        var global = DiscoverGlobalLayer();
+        return (global, DiscoverProjectLayers(workspace));
+    }
+
+    /// <summary>
+    /// astra-1 C: resolve the project's effective instruction context —
+    /// the global home layer plus every project layer broad → specific —
+    /// captured at selection (never per token/tool call). A missing file is
+    /// a valid empty layer; an existing unreadable file throws
+    /// <see cref="ProjectContextChangeException"/>.
+    /// </summary>
+    public ProjectContextSnapshot ResolveInstructions(string projectId, string projectName, string workspace)
+    {
+        var (global, project) = DiscoverSplit(workspace);
+        var sources = new List<string>();
+        var sb = new System.Text.StringBuilder();
+        if (global is not null)
+        {
+            sb.Append(global.Value.Content.TrimEnd()).Append('\n');
+            sources.Add(global.Value.Label);
+        }
+        foreach (var (path, content) in project)
+        {
+            sb.Append(content.TrimEnd()).Append('\n');
+            sources.Add(path);
+        }
+        var text = sb.ToString().Trim('\n');
+        var hash = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)))[0..16];
+        return new ProjectContextSnapshot(projectId, projectName, Path.GetFullPath(workspace),
+            sources, text, hash, DateTimeOffset.UtcNow);
+    }
+
+    private (string Label, string Content)? DiscoverGlobalLayer()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (home is not { Length: > 0 }) return null;
+        var picked = PickLayerFile(home);
+        if (picked is not null && picked.Value.Content is { Length: > 0 })
+            return (Label: home, picked.Value.Content);
+        return null;
+    }
+
+    private List<(string Label, string Content)> DiscoverProjectLayers(string workspace)
     {
         var layers = new List<(string, string)>();
         var dirs = new List<string>();
 
-        // 1. Global: ~/.netpi/AGENTS.md
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (home is { Length: > 0 })
-            dirs.Add(home);
-        // 2..n. Drive root → … → workspace (broad → specific)
         try
         {
+            // Drive root → … → workspace, broad → specific. The home layer is
+            // NOT in this list: it is handled separately so it is never
+            // doubled when the workspace sits under the user profile.
             var dir = new DirectoryInfo(Path.GetFullPath(workspace));
             var chain = new List<DirectoryInfo>();
             while (dir is not null) { chain.Add(dir); dir = dir.Parent; }
-            chain.Reverse(); // drive root first
-            foreach (var d in chain) dirs.Add(d.FullName);
+            chain.Reverse();
+            foreach (var d in chain)
+                dirs.Add(d.FullName);
         }
-        catch { }
+        catch { return layers; }
 
         foreach (var raw in dirs.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            var netpi = Path.Combine(raw, ".netpi");
-            // A directory with .netpi/AGENTS.override.md uses THAT instead of
-            // its ordinary AGENTS.md (PLAN §16).
-            var text = ReadCached(Path.Combine(netpi, "AGENTS.override.md"))
-                ?? ReadCached(Path.Combine(netpi, "AGENTS.md"));
-            if (text is { Length: > 0 })
-                layers.Add(($"{raw}\\.netpi\\AGENTS.md", text));
+            var picked = PickLayerFile(raw);
+            if (picked is not null && picked.Value.Content is { Length: > 0 })
+                layers.Add((picked.Value.Path, picked.Value.Content));
         }
         return layers;
     }
+
+    /// <summary>
+    /// astra-1 C: one file per directory, in precedence order (see
+    /// <see cref="DiscoverAgentsLayers"/>).
+    /// </summary>
+    private (string Path, string Content)? PickLayerFile(string dir)
+    {
+        var netpi = Path.Combine(dir, ".netpi");
+        foreach (var path in new[]
+        {
+            Path.Combine(netpi, "AGENTS.override.md"),
+            Path.Combine(dir, "AGENTS.override.md"),
+            Path.Combine(dir, "AGENTS.md"),
+            Path.Combine(netpi, "AGENTS.md"),
+        })
+        {
+            if (!File.Exists(path)) continue;  // missing files are valid
+            var text = ReadCached(path);       // existing-but-unreadable -> throws
+            if (text is not null)
+                return (path, text);
+        }
+        return null;
+    }
+
 
     /// <summary>
     /// §17: the effective SYSTEM.md (project level overrides global) replaces
@@ -226,4 +333,20 @@ public sealed class WorkspaceContextBuilder : IWorkspaceContextBuilder
     /// <summary>Context refreshes at the beginning of a new user turn (PLAN §16), not per token.</summary>
     public ValueTask<SystemPromptInputs> BuildAsync(string workspace, CancellationToken cancellationToken = default)
         => ValueTask.FromResult(_discovery.BuildForWorkspace(workspace));
+}
+
+/// <summary>
+/// Wraps <see cref="ContextDiscovery"/> as the cross-ALC
+/// <see cref="IInstructionContextResolver"/> contract (astra-1 C). Resolves a
+/// project's exact effective instruction context at SELECTION — the agent
+/// surface calls it once per project change, never per token or tool call.
+/// </summary>
+public sealed class InstructionContextResolver : IInstructionContextResolver
+{
+    private readonly ContextDiscovery _discovery;
+    public InstructionContextResolver(ContextDiscovery discovery) => _discovery = discovery;
+
+    public ValueTask<ProjectContextSnapshot> ResolveAsync(
+        string projectId, string projectName, string workspace, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(_discovery.ResolveInstructions(projectId, projectName, workspace));
 }

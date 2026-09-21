@@ -16,6 +16,9 @@ public sealed record SessionInfo(
     /// <summary>Reasoning level last selected for this session.</summary>
     public string? ReasoningLevel { get; init; }
 
+    /// <summary>astra-1 C: the project attached to this session (its instructions snapshot lives in the latest ProjectContext entry).</summary>
+    public string? ProjectId { get; init; }
+
     public override string ToString() => $"{Id} ({EntryCount} entries)";
 }
 
@@ -42,6 +45,8 @@ public enum EntryKind
     Compaction = 1,
     /// <summary>Generic metadata (config snapshot, model change, ...).</summary>
     Metadata = 2,
+    /// <summary>astra-1 C: a project attach / context-snapshot change (payload = ProjectChangeRequest).</summary>
+    ProjectContext = 3,
 }
 
 /// <summary>Append-only session store. Owned by a storage plugin (later phase).</summary>
@@ -116,4 +121,14 @@ public interface ISessionStore
     /// </summary>
     ValueTask<IReadOnlyList<SessionEntry>> ReadRecentAsync(
         string sessionId, int count, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// astra-1 C: atomically attach <paramref name="projectId"/> to a session and
+    /// persist the context-snapshot change as an <see cref="EntryKind.ProjectContext"/>
+    /// entry. The operation is IDEMPOTENT on <c>OperationId</c>: a repeated request
+    /// with the same operation id returns the ORIGINAL entry and does not bump the
+    /// session's context_revision or append a second entry.
+    /// Returns the resulting session plus the persisted entry.
+    /// </summary>
+    ValueTask<ProjectChangeResult> SetProjectAsync(ProjectChangeRequest change, CancellationToken cancellationToken = default);
 }

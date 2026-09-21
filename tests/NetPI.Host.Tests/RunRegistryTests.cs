@@ -288,6 +288,9 @@ public class RunRegistryTests
             => ValueTask.FromResult<IReadOnlyList<SessionEntry>>([]);
         public ValueTask<IReadOnlyList<SessionEntry>> ReadRecentAsync(string sessionId, int count, CancellationToken cancellationToken = default)
             => ValueTask.FromResult<IReadOnlyList<SessionEntry>>([]);
+    public ValueTask<ProjectChangeResult> SetProjectAsync(ProjectChangeRequest change, CancellationToken cancellationToken = default)
+        => throw new System.NotSupportedException();
+
     }
 
     /// <summary>Emits ModelStarted then blocks until cancelled — keeps a run "active" so

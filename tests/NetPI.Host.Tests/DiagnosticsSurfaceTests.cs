@@ -132,6 +132,9 @@ public class DiagnosticsSurfaceTests
         public ValueTask<IReadOnlyList<SessionEntry>> ReadRecentAsync(string sessionId, int count, CancellationToken ct = default)
             => ValueTask.FromResult<IReadOnlyList<SessionEntry>>(
                 _entries.OrderByDescending(e => e.Sequence).Take(count).OrderBy(e => e.Sequence).ToList());
+    public ValueTask<ProjectChangeResult> SetProjectAsync(ProjectChangeRequest change, CancellationToken cancellationToken = default)
+        => throw new System.NotSupportedException();
+
     }
 
     private sealed class FakeAgent : IAgentRuntime

@@ -74,13 +74,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         // Pooled short-lived connections. A generous busy timeout lets
         // concurrent writers (e.g. old + new store instance during a plugin
         // reload) wait for the WAL write lock instead of failing immediately.
-        _connStr = new SqliteConnectionStringBuilder
-        {
-            DataSource = dbPath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Pooling = true,
-            DefaultTimeout = 30,
-        }.ToString();
+        _connStr = BuildConnectionString(dbPath);
 
         // One short-lived connection performs schema init + migrations.
         using (var init = OpenConnection())
@@ -92,6 +86,22 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
             RunMigrations(init);
         }
     }
+
+
+    /// <summary>
+    /// Pooled short-lived connection string — a generous busy timeout lets
+    /// concurrent writers (e.g. old + new store instance during a plugin
+    /// reload) wait for the WAL write lock instead of failing immediately.
+    /// Shared with <see cref="SqliteProjectStore"/> (same file, same pragmas).
+    /// </summary>
+    public static string BuildConnectionString(string dbPath)
+        => new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = true,
+            DefaultTimeout = 30,
+        }.ToString();
 
     // ---- migrations ----------------------------------------------------
 
@@ -297,7 +307,8 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT s.id, s.title, s.workspace, s.created_at, s.updated_at, s.model_id, s.reasoning_level,
-                   COALESCE((SELECT COUNT(*) FROM session_entries e WHERE e.session_id = s.id), 0)
+                   COALESCE((SELECT COUNT(*) FROM session_entries e WHERE e.session_id = s.id), 0),
+                   s.project_id
             FROM sessions s WHERE s.id = $id;
             """;
         cmd.Parameters.AddWithValue("$id", id);
@@ -313,6 +324,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         {
             ModelId = reader.IsDBNull(5) ? null : reader.GetString(5),
             ReasoningLevel = reader.IsDBNull(6) ? null : reader.GetString(6),
+            ProjectId = reader.IsDBNull(8) ? null : reader.GetString(8),
         };
     }
 
@@ -322,7 +334,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         await using var conn = OpenConnection();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, title, workspace, created_at, updated_at
+            SELECT id, title, workspace, created_at, updated_at, project_id
             FROM sessions ORDER BY updated_at DESC LIMIT $count OFFSET $offset;
             """;
         cmd.Parameters.AddWithValue("$count", count);
@@ -335,7 +347,10 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
                 FromTicks(reader.GetInt64(3)),
                 FromTicks(reader.GetInt64(4)),
                 0,
-                reader.IsDBNull(1) ? null : reader.GetString(1)));
+                reader.IsDBNull(1) ? null : reader.GetString(1))
+            {
+                ProjectId = reader.IsDBNull(5) ? null : reader.GetString(5),
+            });
         return list;
     }
 
@@ -570,6 +585,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
             MessageSerializer.Serialize(e.Message!).ToString(),
         { Kind: EntryKind.Compaction, Payload: not null } => e.Payload.Value.ToString(),
         { Kind: EntryKind.Metadata, Payload: not null } => e.Payload.Value.ToString(),
+        { Kind: EntryKind.ProjectContext, Payload: not null } => e.Payload.Value.ToString(),
         _ => "{}"
     };
 
@@ -588,6 +604,121 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
             DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(2)),
             Sequence: r.GetInt32(3));
     }
+
+    // ---- astra-1 C: projects -------------------------------------------
+
+    /// <summary>
+    /// astra-1 C: atomic session-project change. The entry id IS the stable
+    /// OperationId, so a retried operation hits the UNIQUE(id) constraint,
+    /// rolls back, and returns the ORIGINAL entry — no duplicate transcript
+    /// entries, no double context_revision bump.
+    /// </summary>
+    public async ValueTask<ProjectChangeResult> SetProjectAsync(ProjectChangeRequest change, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(change.OperationId))
+            throw new ArgumentException("OperationId is required", nameof(change));
+        await using var conn = OpenConnection();
+        await using var tx = conn.BeginTransaction();
+        try
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+
+            // Load the session row for the optimistic-concurrency guard.
+            cmd.CommandText = "SELECT context_revision FROM sessions WHERE id = $s;";
+            cmd.Parameters.Clear();
+            cmd.Parameters.AddWithValue("$s", change.SessionId);
+            var revRaw = await cmd.ExecuteScalarAsync(ct);
+            if (revRaw is null)
+                throw new InvalidOperationException($"Unknown session: {change.SessionId}");
+            var currentRevision = Convert.ToInt32(revRaw);
+
+            // astra-1 C: a non-(-1) ExpectedContextRevision that no longer
+            // matches the session REJECTS the change (stale caller) instead of
+            // clobbering a newer project change.
+            if (change.ExpectedContextRevision >= 0
+                && currentRevision != change.ExpectedContextRevision)
+                throw new ProjectContextChangeException(
+                    $"Session {change.SessionId} is at context revision {currentRevision}, " +
+                    $"expected {change.ExpectedContextRevision} — refresh the project context and retry.");
+
+            cmd.CommandText = "SELECT 1 FROM projects WHERE id = $p;";
+            cmd.Parameters.Clear();
+            cmd.Parameters.AddWithValue("$p", change.ProjectId);
+            if (await cmd.ExecuteScalarAsync(ct) is null)
+                throw new InvalidOperationException($"Unknown project: {change.ProjectId}");
+
+            var seq = await NextSeqAsync(cmd, change.SessionId);
+            cmd.CommandText = """
+                INSERT INTO session_entries (id, session_id, seq, entry_type, created_at, payload_json)
+                VALUES ($id, $s, $seq, $type, $now, $payload);
+                """;
+            cmd.Parameters.Clear();
+            cmd.Parameters.AddWithValue("$id", change.OperationId);
+            cmd.Parameters.AddWithValue("$s", change.SessionId);
+            cmd.Parameters.AddWithValue("$seq", seq);
+            cmd.Parameters.AddWithValue("$type", EntryKind.ProjectContext.ToString());
+            cmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            cmd.Parameters.AddWithValue("$payload", PayloadOf(change));
+            await cmd.ExecuteNonQueryAsync(ct);
+
+            cmd.CommandText = """
+                UPDATE sessions SET project_id = $p, workspace = $w,
+                    context_revision = context_revision + 1,
+                    updated_at = $now, last_sequence = $seq
+                WHERE id = $s;
+                """;
+            cmd.Parameters.Clear();
+            cmd.Parameters.AddWithValue("$s", change.SessionId);
+            cmd.Parameters.AddWithValue("$p", change.ProjectId);
+            cmd.Parameters.AddWithValue("$w", change.Snapshot.WorkspacePath);
+            cmd.Parameters.AddWithValue("$seq", seq);
+            cmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            await cmd.ExecuteNonQueryAsync(ct);
+
+            tx.Commit();
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException ex) when (ex.SqliteErrorCode is 19)
+        {
+            // UNIQUE(id) on session_entries: an idempotent retry — the original
+            // entry already exists; return it below.
+        }
+        catch
+        {
+            tx.Rollback();
+            throw;
+        }
+
+        var session = await GetAsync(change.SessionId, ct)
+            ?? throw new InvalidOperationException($"Session vanished: {change.SessionId}");
+        var entry = await EntryByIdAsync(change.SessionId, change.OperationId, ct)
+            ?? throw new InvalidOperationException($"No project-change entry for {change.OperationId}");
+        return new ProjectChangeResult(session, entry);
+    }
+
+    /// <summary>The persisted entry for an operation (entry id == OperationId), null when absent.</summary>
+    private async ValueTask<SessionEntry?> EntryByIdAsync(string sessionId, string entryId, CancellationToken ct)
+    {
+        await using var conn = OpenConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, entry_type, created_at, payload_json, seq FROM session_entries
+            WHERE session_id = $s AND id = $id;
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$id", entryId);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct)) return null;
+        var kind = Enum.Parse<EntryKind>(reader.GetString(1), ignoreCase: true);
+        var payload = JsonDocument.Parse(reader.GetString(3)).RootElement.Clone();
+        return new SessionEntry(
+            reader.GetString(0), sessionId, kind, null, payload,
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
+            Sequence: reader.GetInt32(4));
+    }
+
+    private static string PayloadOf(ProjectChangeRequest change)
+        => JsonSerializer.Serialize(change.Snapshot);
 
     /// <summary>
     /// No long-lived connection to release; pooled connections return to the
