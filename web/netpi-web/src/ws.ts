@@ -243,7 +243,7 @@ class NetPIWebSocket {
         if (psid)
           store.setProjectPending(psid, {
             operationId: p.operationId ?? "",
-            project: p.projectId ?? p.project ?? "…",
+            project: p.projectName ?? p.projectId ?? "…",
           });
         break;
       }

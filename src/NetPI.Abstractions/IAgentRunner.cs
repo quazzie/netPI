@@ -47,6 +47,16 @@ public interface IAgentRunner
 
     /// <summary>astra-1 E: cancel one specific run. True when a live run was signalled.</summary>
     bool CancelRun(string runId);
+
+    /// <summary>
+    /// astra-1 D2 (slice 2): the per-session gate that serializes the send
+    /// critical section with the run's safe-boundary project apply. Held by the
+    /// runner across StartRunAsync's critical section and its boundary apply;
+    /// the Web surface's session.project command acquires it for an idle apply
+    /// so the three (send / project-change / compaction) never race per session.
+    /// The default no-op keeps pre-D2 implementations compatible.
+    /// </summary>
+    System.Threading.SemaphoreSlim SessionGate(string sessionId);
 }
 
 /// <summary>Terminal / in-flight state of a single run (Package E).</summary>

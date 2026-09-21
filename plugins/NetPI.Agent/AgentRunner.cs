@@ -22,11 +22,32 @@ public sealed class AgentRunner : IAgentRunner
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, RunRecord> _runs = new();
     /// <summary>astra-1 E: concurrent-run capacity (default 1; simultaneous runs only after isolation tests pass).</summary>
     private readonly int _maxConcurrentRuns;
+    /// <summary>astra-1 D2 (slice 2): the run's safe-boundary side — applies a
+    /// pending project change AFTER the run unwinds (its in-flight tool batch
+    /// keeps its original workspace), serialized per session with the send
+    /// path (shared gates).</summary>
+    private readonly RunnerSafeBoundary _boundary;
     public AgentRunner(AgentRuntime runtime, IPluginContext ctx, int maxConcurrentRuns = 1)
     {
         _runtime = runtime;
         _ctx = ctx;
         _maxConcurrentRuns = Math.Max(1, maxConcurrentRuns);
+        _boundary = new RunnerSafeBoundary(ctx);
+    }
+
+    /// <summary>astra-1 D2 (slice 2): the per-session gate the send path
+    /// (StartRunAsync) and the boundary apply serialize on — exposed for the
+    /// Web surface's session.project command (an idle apply takes it too).</summary>
+    public System.Threading.SemaphoreSlim SessionGate(string sessionId) => _boundary.Gate(sessionId);
+
+    /// <summary>astra-1 D2 (slice 2): a project change requested on an IDLE
+    /// session applies immediately (same gate the send path uses — a start
+    /// that races in waits on it). Returns the applied operation id, or null
+    /// (no pending row / stores unavailable / a run took the session first).</summary>
+    public async ValueTask<string?> ApplyPendingProjectChangeAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        var applied = await _boundary.ApplyPendingAsync(sessionId, cancellationToken);
+        return applied?.OperationId;
     }
 
     /// <summary>astra-1 A (run cleanup): the owned background run task (null when none).</summary>
@@ -117,9 +138,19 @@ public sealed class AgentRunner : IAgentRunner
         if (string.IsNullOrWhiteSpace(request.Text))
             return new AgentRunStart(request.SessionId, "Empty message — nothing to send.");
 
+        // astra-1 D2 (slice 2): per-session gate — the send's critical
+        // section (accept + persist the user entry) is serialized with the
+        // boundary apply, so a send that lands the instant a run unwinds
+        // sees the post-switch state (the apply holds the gate until commit).
+        var sessionGate = (System.Threading.SemaphoreSlim?)(!string.IsNullOrEmpty(request.SessionId) ? _boundary.Gate(request.SessionId) : null);
+        if (sessionGate is not null && !sessionGate.Wait(System.TimeSpan.FromMilliseconds(2000)))
+            return new AgentRunStart(request.SessionId, "This session is switching projects — try again in a moment.");
+
         RunRecord rec = null!;
-        lock (_gate)
+        try
         {
+            lock (_gate)
+            {
             if (!string.IsNullOrEmpty(request.SessionId) &&
                 _runs.Values.Any(r => r.SessionId == request.SessionId && r.Outcome == RunState.Running))
                 return new AgentRunStart(request.SessionId, "This session already has an active run.");
@@ -129,7 +160,7 @@ public sealed class AgentRunner : IAgentRunner
             var runId = Guid.NewGuid().ToString("n");
             rec = new RunRecord(runId, request.SessionId, request.ModelId, DateTimeOffset.UtcNow, new CancellationTokenSource());
             _runs[runId] = rec;
-        }
+            }
 
         // Persist the initial user entry (the agent runtime does not persist
         // the initial input message itself). astra-1 A: a persistence failure
@@ -158,10 +189,14 @@ public sealed class AgentRunner : IAgentRunner
                 return new AgentRunStart(request.SessionId, $"Failed to persist the message: {ex.Message}");
             }
         }
-        _runTask = Task.Run(() => ExecuteAsync(request, rec));
 
-        return new AgentRunStart(request.SessionId, null, rec.RunId);
-
+            _runTask = Task.Run(() => ExecuteAsync(request, rec));
+            return new AgentRunStart(request.SessionId, null, rec.RunId);
+        }
+        finally
+        {
+            sessionGate?.Release();
+        }
     }
 
     public ValueTask CancelRunAsync(CancellationToken cancellationToken = default)
@@ -279,6 +314,38 @@ public sealed class AgentRunner : IAgentRunner
                 await _ctx.Events.PublishAsync(evt, CancellationToken.None);
             }
             catch { /* bus may already be gone */ }
+
+            // astra-1 D2 (slice 2): the SAFE BOUNDARY — the run has unwound
+            // (its in-flight tool batch keeps its original workspace, so a
+            // pending project change can only be applied NOW: after unwind,
+            // before the session is usable for the next send). The resulting
+            // ProjectApplied event is bridged by the Web surface to
+            // session.project.applied + session.updated.
+            if (!string.IsNullOrEmpty(sessionId))
+            {
+                try
+                {
+                    var applied = await _boundary.ApplyPendingAsync(sessionId, CancellationToken.None);
+                    if (applied is not null)
+                    {
+                        var appliedEvt = new AgentEvent(
+                            Guid.NewGuid().ToString("n"), AgentEventType.ProjectApplied,
+                            DateTimeOffset.UtcNow, sessionId,
+                            System.Text.Json.JsonSerializer.SerializeToElement(new
+                            {
+                                operationId = applied.OperationId,
+                                projectId = applied.ProjectId,
+                                projectName = applied.ProjectName,
+                            }),
+                            run.RunId);
+                        await _ctx.Events.PublishAsync(appliedEvt, CancellationToken.None);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _ctx.Log.Warning($"boundary apply of pending project change failed: {ex.Message}");
+                }
+            }
         }
     }
 

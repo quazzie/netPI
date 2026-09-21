@@ -53,5 +53,12 @@ public enum AgentEventType
     /// (the payload carries the nudge text). Published by the nudge plugin.
     /// </summary>
     Nudged = 17,
+    /// <summary>
+    /// astra-1 D2 (slice 2): the run's safe boundary applied a pending project
+    /// change (payload: operationId, projectId, projectName). Published by the
+    /// agent runner AFTER the run unwound and the change committed — the Web
+    /// surface uses it to broadcast session.project.applied + session.updated.
+    /// </summary>
+    ProjectApplied = 19,
 }
 

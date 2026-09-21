@@ -105,6 +105,11 @@ internal sealed class WebApp : IAsyncDisposable
     private IHostConfigUpdate? _config;
     private ISteeringQueue? _steering;
     private ICompaction? _compaction;
+    /// <summary>astra-1 D2 (slice 2): the last operation id applied per
+    /// session — a repeated <c>session.project.applied</c> for the SAME operation
+    /// id is a no-op (duplicate boundary/idle events never re-broadcast).</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _lastProjectApplied =
+        new(System.StringComparer.Ordinal);
     private NetPI.Abstractions.ICommandRegistry? _commands;
 
     private readonly List<IDisposable> _subs = [];
@@ -452,6 +457,20 @@ internal sealed class WebApp : IAsyncDisposable
                 _ = EmitTurnEmptyNoticeAsync(sid);
                 break;
 
+            case AgentEventType.ProjectApplied when e.Payload is not null:
+            {
+                // astra-1 D2: the run's safe boundary applied a pending project
+                // change (the runner held the session gate through the commit).
+                // Bridge it to the client: refresh session metadata + clear the
+                // "pending" indicator. Fire-and-forget (event path must not block).
+                var p = e.Payload.Value;
+                var opId = S(p, "operationId") ?? "";
+                var pid = S(p, "projectId") ?? "";
+                var pname = S(p, "projectName") ?? "";
+                _ = ProjectAppliedBridgeAsync(sid, opId, pid, pname);
+                break;
+            }
+
             case AgentEventType.AgentCompleted:
             case AgentEventType.AgentCancelled:
             case AgentEventType.AgentFailed:
@@ -459,6 +478,7 @@ internal sealed class WebApp : IAsyncDisposable
                 CompleteAssistantTurn(sid);
                 SendEvent("agent.state", new { state = "Idle" }, sid);
                 break;
+
         }
     }
 
@@ -676,7 +696,7 @@ internal sealed class WebApp : IAsyncDisposable
                         var offset = Math.Max(0, total - pageSize);
                         var entries = await bootStore.Store.ReadAsync(asid, offset, pageSize, ct);
                         var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
-                        await SendAsync(c, "session.updated", ToSessionJson(info), asid, ct);
+                        await SendAsync(c, "session.updated", await ToVisibleSessionJsonAsync(info, ct), asid, ct);
                         await SendAsync(c, "session.entries",
                             new { entries = EntriesToJson(entries), replace = true, total = total,
                                   hasMore = total > entries.Count, beforeSequence = beforeSeq }, asid, ct);
@@ -694,7 +714,7 @@ internal sealed class WebApp : IAsyncDisposable
                         var offset = Math.Max(0, total - pageSize);
                         var entries = await bootStore.Store.ReadAsync(last.Id, offset, pageSize, ct);
                         var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
-                        await SendAsync(c, "session.updated", ToSessionJson(info), last.Id, ct);
+                        await SendAsync(c, "session.updated", await ToVisibleSessionJsonAsync(info, ct), last.Id, ct);
                         await SendAsync(c, "session.entries",
                             new { entries = EntriesToJson(entries), replace = true, total = total,
                                   hasMore = total > entries.Count, beforeSequence = beforeSeq }, last.Id, ct);
@@ -920,6 +940,96 @@ internal sealed class WebApp : IAsyncDisposable
                 break;
             }
 
+            case "session.project":
+            {
+                // astra-1 D2: switch a session's active project. Idle → apply
+                // immediately (same gate the run path takes) and broadcast
+                // session.updated + session.project.applied. Running → ENQUEUE
+                // as pending (the run's in-flight batch keeps its workspace)
+                // and the runner applies it at the safe boundary, bridging
+                // ProjectApplied back to session.project.applied + session.updated.
+                var sid = S(p, "sessionId");
+                var projectId = S(p, "projectId");
+                if (sid is null || projectId is null)
+                {
+                    await SendErrorAsync(c, requestId, "sessionId and projectId are required", ct); break;
+                }
+                var projectStore = Resolve<IProjectStore>("projects");
+                var sessionStore = Resolve<ISessionStore>("sessions");
+                if (projectStore is null || sessionStore is null)
+                {
+                    await SendErrorAsync(c, requestId, "project or session store unavailable", ct); break;
+                }
+                var proj = await projectStore.GetAsync(projectId, ct);
+                if (proj is null)
+                {
+                    await SendErrorAsync(c, requestId, "unknown project", ct); break;
+                }
+                var opId = S(p, "operationId") ?? Guid.NewGuid().ToString("n");
+                // Resolve the EXACT instruction snapshot now (the authoritative
+                // context for the change); the boundary apply never re-resolves.
+                var resolver = Resolve<IInstructionContextResolver>("instruction-context");
+                var snapshot = resolver is null
+                    ? new ProjectContextSnapshot(projectId, proj.Name, proj.WorkspacePath,
+                        Array.Empty<string>(), string.Empty, string.Empty, DateTimeOffset.UtcNow)
+                    : await resolver.ResolveAsync(projectId, proj.Name, proj.WorkspacePath, ct);
+
+                // astra-1 D2 (slice 2): RUNNING if THIS session has an active run
+                // (the per-session discriminator — not the aggregate IsRunning).
+                var running = _runner?.GetSessionRun(sid) is not null;
+                if (!running)
+                {
+                    // IDLE: apply directly, under the SAME per-session gate the runner's
+                    // send path and safe-boundary apply use (send / project-change /
+                    // compaction serialized per session). If a send owns the boundary
+                    // right now, go PENDING instead — the run's boundary applies it.
+                    var gate = _runner?.SessionGate(sid);
+                    var hold = gate is null || gate.Wait(TimeSpan.FromSeconds(5), ct);
+                    if (!hold)
+                    {
+                        var busyPending = Resolve<IPendingProjectChangeStore>("pending-projects");
+                        if (busyPending is not null)
+                        {
+                            await busyPending.EnqueueAsync(new ProjectChangeRequest(opId, sid, projectId, snapshot), ct);
+                            await SendAckAsync(c, requestId, ct);
+                            await BroadcastAsync("session.project.pending",
+                                new { sessionId = sid, operationId = opId, projectId, projectName = proj.Name }, sid, ct);
+                            break;
+                        }
+                    }
+                    try
+                    {
+                        await sessionStore.SetProjectAsync(new ProjectChangeRequest(opId, sid, projectId, snapshot), ct);
+                        await BroadcastSession(sid, ct);
+                        await SendAckAsync(c, requestId, ct);
+                        await BroadcastAsync("session.project.applied",
+                            new { sessionId = sid, operationId = opId, projectId, projectName = proj.Name }, sid, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warning($"session.project apply failed: {ex.Message}");
+                        await SendErrorAsync(c, requestId, ex.Message, ct);
+                    }
+                    finally
+                    {
+                        if (hold && gate is not null) { try { gate.Release(); } catch { } }
+                    }
+                    break;
+                }
+
+                // RUNNING: enqueue as pending; the runner applies it at the safe
+                // boundary (a later selection supersedes an earlier unapplied one).
+                var pending = Resolve<IPendingProjectChangeStore>("pending-projects");
+                if (pending is null)
+                {
+                    await SendErrorAsync(c, requestId, "pending project store unavailable", ct); break;
+                }
+                await pending.EnqueueAsync(new ProjectChangeRequest(opId, sid, projectId, snapshot), ct);
+                await SendAckAsync(c, requestId, ct);
+                await BroadcastAsync("session.project.pending",
+                    new { sessionId = sid, operationId = opId, projectId, projectName = proj.Name }, sid, ct);
+                break;
+            }
 
             case "models.refresh":
                 if (_catalog is null) { await SendErrorAsync(c, requestId, "no catalog", ct); break; }
@@ -1259,7 +1369,81 @@ internal sealed class WebApp : IAsyncDisposable
         if (Store is null) return;
         var info = await Store.GetAsync(sid, ct);
         if (info is not null)
-            await BroadcastAsync("session.updated", ToSessionJson(info), sid, ct);
+            await BroadcastAsync("session.updated", await ToVisibleSessionJsonAsync(info, ct), sid, ct);
+    }
+    /// <summary>
+    /// astra-1 D2: the visible session's metadata INCLUDING its active project
+    /// (id/name/rootPath) so the header project chip renders. Only the
+    /// single-session <c>session.updated</c> path uses this — the paginated
+    /// <c>session.list</c> keeps the lean <see cref="ToSessionJson"/> (no per-row
+    /// project lookup = no N+1). <c>project</c> is null when the session has
+    /// no project.
+    /// </summary>
+    private async Task<object> ToVisibleSessionJsonAsync(SessionInfo s, CancellationToken ct) => new
+    {
+        id = s.Id,
+        title = s.Title ?? "",
+        workspace = s.WorkspacePath ?? "",
+        modelId = s.ModelId,
+        reasoningLevel = s.ReasoningLevel,
+        createdAt = s.CreatedAt.ToUnixTimeMilliseconds(),
+        updatedAt = s.UpdatedAt.ToUnixTimeMilliseconds(),
+        project = await ProjectJsonAsync(s.ProjectId, ct),
+    };
+
+    /// <summary>astra-1 D2: the session's active project as the client <c>project</c>
+    /// shape, or null when the session has no project / the store is gone.</summary>
+    private async Task<object?> ProjectJsonAsync(string? projectId, CancellationToken ct)
+    {
+        if (projectId is null) return null;
+        var projStore = Resolve<IProjectStore>("projects");
+        if (projStore is null) return null;
+        var proj = await projStore.GetAsync(projectId, ct);
+        return proj is null ? null : new
+        {
+            id = proj.Id,
+            name = proj.Name,
+            rootPath = proj.WorkspacePath,
+            updatedAt = proj.UpdatedAt.ToUnixTimeMilliseconds(),
+        };
+    }
+
+    // ---- shape helpers ------------------------------------------------------
+    /// <summary>
+    /// astra-1 D2: bridge the runner's ProjectApplied boundary event to the
+    /// client. Refreshes session metadata (session.updated) and clears the
+    /// pending indicator (session.project.applied). Fire-and-forget — the event
+    /// path must not block; failures are logged.
+    /// </summary>
+    private async Task ProjectAppliedBridgeAsync(string? sid, string operationId, string projectId, string projectName)
+    {
+        if (sid is null) return;
+        await EmitProjectAppliedAsync(sid, operationId, projectId, projectName);
+    }
+
+    /// <summary>
+    /// astra-1 D2 (slice 2): broadcast <c>session.project.applied</c> (payload
+    /// operationId + projectId, the client contract) + <c>session.updated</c>
+    /// (the metadata refresh). Deduped per session+operation id — a repeated
+    /// event for the same operation is a no-op.
+    /// </summary>
+    private async Task EmitProjectAppliedAsync(string sid, string operationId, string? projectId, string? projectName)
+    {
+        if (string.IsNullOrEmpty(operationId)) return;
+        // last-applied op id per session: a duplicate (same op id) is skipped.
+        var last = _lastProjectApplied;
+        if (last.TryGetValue(sid, out var prev) && prev == operationId) return;
+        last[sid] = operationId;
+        try
+        {
+            await BroadcastSession(sid, CancellationToken.None);
+            await BroadcastAsync("session.project.applied",
+                new { sessionId = sid, operationId, projectId, projectName }, sid, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _log.Warning($"session.project.applied bridge failed: {ex.Message}");
+        }
     }
 
     // ---- shape helpers ------------------------------------------------------
