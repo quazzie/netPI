@@ -46,6 +46,12 @@ public sealed class PluginInstance
     /// <summary>astra-1 P2: config snapshot taken when this generation was loaded (rollback retains it).</summary>
     public System.Text.Json.JsonElement SourceConfig { get; set; }
 
+    /// <summary>astra-1 P3: true once StartAsync succeeded (Stop is only safe after it).</summary>
+    public bool StartRan { get; set; }
+
+    /// <summary>astra-1 P3: idempotency guard for the unified generation cleanup.</summary>
+    public bool CleanupStarted { get; set; }
+
     /// <summary>Lease handles currently held on this plugin's services (drained before unload).</summary>
     public ConcurrentDictionary<Guid, IDisposable> LiveLeases { get; } = new();
 

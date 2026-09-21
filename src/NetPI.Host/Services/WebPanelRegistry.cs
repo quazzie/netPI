@@ -30,9 +30,10 @@ public sealed class WebPanelRegistry : IWebPanelRegistry
     {
         lock (_gate)
         {
-            var i = _panels.FindIndex(p =>
-                string.Equals(p.Id, panel.Id, StringComparison.OrdinalIgnoreCase)
-                && p.EntryUrl == panel.EntryUrl);
+            // astra-1 P3: removal by REGISTRATION IDENTITY, not by (id, url)
+            // value match — an old handle could otherwise delete a newer
+            // replacement that happens to carry the same values.
+            var i = _panels.FindIndex(p => ReferenceEquals(p, panel));
             if (i >= 0) _panels.RemoveAt(i);
         }
     }

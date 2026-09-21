@@ -317,6 +317,7 @@ public sealed class PluginManager
             try
             {
                 await p.Plugin!.StartAsync(ct);
+                p.StartRan = true;
                 p.State = PluginState.Active;
                 p.ClearLastError();
                 _logger.LogInformation("Plugin {Plugin} started (gen {Gen})", p.PluginId, p.Generation);
@@ -410,7 +411,8 @@ public sealed class PluginManager
         catch (Exception ex)
         {
             _logger.LogError(ex, "Loading {Plugin} gen {Gen} failed — previous generation (if any) remains active", pluginId, generation);
-            DisposeUnloadedGeneration(instance);
+            // astra-1 P3: unified idempotent cleanup (partial Load).
+            await CleanupGeneration(instance, "partial load", ct, stop: false);
             instance.State = PluginState.Failed;
             errorSink?.Invoke(ex.Message);
             // Only record the error when this generation owns the plugin's
@@ -599,33 +601,10 @@ public sealed class PluginManager
 
         foreach (var p in byGen)
         {
-            try
-            {
-                if (p.State == PluginState.Active)
-                    await p.Plugin!.StopAsync(ct);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "{Plugin} StopAsync failed during shutdown", p.PluginId);
-            }
-
-            _registry.RemoveAllFor(p);
-            _bus.RemoveAllFor(p);
-            p.Commands?.Unload();
-            p.Commands = null;
-            p.WebPanels?.Unload();
-            p.WebPanels = null;
-
-            try
-            {
-                await p.Plugin!.UnloadAsync(ct);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "{Plugin} UnloadAsync failed during shutdown", p.PluginId);
-            }
-
-            UnloadAloc(p);
+            // astra-1 P3: the SAME idempotent cleanup path as the failure
+            // paths — the unified stop decides on StartRan (a plugin whose
+            // Start never ran is not Stop'd again).
+            await CleanupGeneration(p, "shutdown", ct, stop: true);
             p.State = PluginState.Unloaded;
             _current.Remove(p.PluginId);
         }
@@ -753,21 +732,49 @@ public sealed class PluginManager
         lock (_gate) return _current.Values.Where(p => p.State is not PluginState.Unloaded).ToList();
     }
 
-    private static void DisposeUnloadedGeneration(PluginInstance instance)
+/// <summary>
+    /// astra-1 P3: ONE idempotent cleanup path, used for partial Load,
+    /// partial Start, and shutdown — remove this generation's owned
+    /// registrations/subscriptions/commands/panels from the host, stop and
+    /// dispose the resources that were initialized, drop references, and
+    /// initiate the ALC unload. Retries are no-ops (the idempotency guard),
+    /// so a partially started generation can be cleaned up exactly once no
+    /// matter which failure path reaches it.
+    /// </summary>
+    private async Task CleanupGeneration(PluginInstance p, string reason, CancellationToken ct, bool stop)
     {
-        // Failure path: nothing started; just drop the ALC so it can be GC'd.
-        if (instance.LoadContext is not null)
+        if (p.CleanupStarted) return;
+        p.CleanupStarted = true;
+
+        // 1. host-side teardown of owned registrations (all idempotent).
+        _registry.RemoveAllFor(p);
+        _bus.RemoveAllFor(p);
+        p.Commands?.Unload();
+        p.Commands = null;
+        p.WebPanels?.Unload();
+        p.WebPanels = null;
+
+        // 2. stop + dispose the resources that were initialized.
+        if (p.Plugin is not null)
         {
-            instance.Plugin = null;
-            instance.LoadContext = null;
-            instance.LiveLeases.Clear();
-            instance.Registrations.Clear();
-            instance.Subscriptions.Clear();
-            instance.Commands?.Unload();
-            instance.Commands = null;
-            instance.WebPanels?.Unload();
-            instance.WebPanels = null;
+            if (stop && p.StartRan)
+            {
+                try { await p.Plugin.StopAsync(ct); }
+                catch (Exception ex) { _logger.LogWarning(ex, "{Plugin} StopAsync failed during {Reason} cleanup", p.PluginId, reason); }
+            }
+            try { await p.Plugin.UnloadAsync(ct); }
+            catch (Exception ex) { _logger.LogWarning(ex, "{Plugin} UnloadAsync failed during {Reason} cleanup", p.PluginId, reason); }
         }
+
+        // 3. surface retained leases instead of clearing the table to conceal
+        //    work that is still running: a generation retired with live leases
+        //    keeps its ALC pinned (bounded diagnostics, not hidden state).
+        if (p.LeasesHeld > 0)
+            _logger.LogWarning("{Plugin} gen {Gen} retired with {N} live lease(s) during {Reason} — its ALC stays pinned until they release",
+                p.PluginId, p.Generation, p.LeasesHeld, reason);
+
+        // 4. drop references and initiate ALC unload (quiescence = steps 1-2 done).
+        UnloadAloc(p);
     }
 
     /// <summary>Thrown when a plugin fails to load.</summary>
@@ -1028,6 +1035,7 @@ public sealed class PluginManager
         }
 
         var fresh = Get(pluginId)!;
+        fresh.StartRan = true;
         fresh.State = PluginState.Active;
         fresh.ClearLastError();
         lock (_opGate) _unavailablePlugins.Remove(pluginId);
@@ -1083,8 +1091,8 @@ public sealed class PluginManager
             fresh.LastError = ex.Message;
             fresh.State = PluginState.Failed;
             _logger.LogError(ex, "{Plugin} StartAsync failed after reload", pluginId);
-            RetireGeneration(fresh);
-            UnloadAloc(fresh);
+            // astra-1 P3: unified idempotent cleanup (partial Start).
+            await CleanupGeneration(fresh, "partial start", ct, stop: true);
             lock (_gate)
             {
                 if (ReferenceEquals(Get(pluginId), fresh))
@@ -1127,12 +1135,12 @@ public sealed class PluginManager
             {
                 lkg.LastError = ex.Message;
                 lkg.State = PluginState.Failed;
-                RetireGeneration(lkg);
-                UnloadAloc(lkg);
+                await CleanupGeneration(lkg, "LKG recovery failure", ct, stop: lkg.StartRan);
                 lock (_gate) { if (ReferenceEquals(Get(pluginId), lkg)) _current.Remove(pluginId); }
             }
             return null;
         }
+        lkg.StartRan = true;
         lkg.State = PluginState.Active;
         lkg.ClearLastError();
         lock (_opGate) _unavailablePlugins.Remove(pluginId);
@@ -1181,6 +1189,7 @@ public sealed class PluginManager
                 inst.State = PluginState.Failed;
                 continue;
             }
+            inst.StartRan = true;
             inst.State = PluginState.Active;
             inst.ClearLastError();
             loaded.Add(src.Id);

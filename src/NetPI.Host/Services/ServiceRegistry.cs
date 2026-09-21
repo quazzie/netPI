@@ -220,8 +220,16 @@ public sealed class ServiceRegistry : IServiceRegistry
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
             lock (gate)
             {
+                // astra-1 P3: physically remove the entry so the old
+                // generation's instance and service type become collectible
+                // (a dead entry keeping a live reference would pin the ALC).
+                // A newer replacement under the same id is a DIFFERENT entry
+                // — the reference check guarantees we never delete it.
                 if (entries.TryGetValue(id, out var e) && ReferenceEquals(e, entry) && !e.Removed)
+                {
                     e.Removed = true;
+                    entries.Remove(id);
+                }
             }
             owner?.Registrations.TryRemove(id, out _);
         }

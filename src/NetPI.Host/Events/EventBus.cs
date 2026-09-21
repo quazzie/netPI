@@ -143,7 +143,14 @@ public sealed class EventBus : IEventBus
             {
                 entry.Removed = true;
                 if (subs.TryGetValue(entry.EventType, out var list))
+                {
                     list.Remove(entry);
+                    // astra-1 P3: drop the per-type bucket when it goes empty
+                    // — a plugin-owned event type must not leave an empty
+                    // (unreachable, but retained) entry behind.
+                    if (list.Count == 0)
+                        subs.Remove(entry.EventType);
+                }
             }
             owner?.Subscriptions.TryRemove(entry.Id.ToString(), out _);
         }

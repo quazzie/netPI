@@ -51,12 +51,16 @@ public sealed class CommandRegistry : ICommandRegistry
 /// </summary>
 public sealed class PluginScopedCommands(ICommandRegistry inner) : ICommandRegistry
 {
+    // astra-1 P3: registration, removal and unload share one lock (consistent
+    // with the web-panel scoped view) so Unload never races a concurrent
+    // Register or disposes a handle twice.
+    private readonly object _gate = new();
     private readonly List<IDisposable> _disposables = [];
     public IDisposable Register(CommandDefinition command)
     {
         var d = inner.Register(command);
-        _disposables.Add(d);
-        return new Aggregate(_disposables, d);
+        lock (_gate) _disposables.Add(d);
+        return new Aggregate(_gate, _disposables, d);
     }
     public IReadOnlyList<CommandDefinition> All() => inner.All();
     public CommandDefinition? Find(string name) => inner.Find(name);
@@ -64,17 +68,26 @@ public sealed class PluginScopedCommands(ICommandRegistry inner) : ICommandRegis
     /// <summary>Called by the host on plugin unload; removes all commands.</summary>
     public void Unload()
     {
-        foreach (var d in _disposables) d.Dispose();
-        _disposables.Clear();
+        List<IDisposable> toDispose;
+        lock (_gate)
+        {
+            toDispose = [.. _disposables];
+            _disposables.Clear();
+        }
+        foreach (var d in toDispose) d.Dispose();
     }
 
-    private sealed class Aggregate(List<IDisposable> all, IDisposable one) : IDisposable
+    private sealed class Aggregate(object gate, List<IDisposable> all, IDisposable one) : IDisposable
     {
         private int _disposed;
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-            lock (all) { all.Remove(one); one.Dispose(); }
+            lock (gate)
+            {
+                if (all.Remove(one))
+                    one.Dispose();
+            }
         }
     }
 }
@@ -87,6 +100,8 @@ public sealed class PluginScopedCommands(ICommandRegistry inner) : ICommandRegis
 /// </summary>
 public sealed class ScopedCommands : ICommandRegistry
 {
+    // astra-1 P3: consistent lock for registration and removal.
+    private readonly object _gate = new();
     private readonly CommandRegistry _global;
     private readonly List<IDisposable> _handles = [];
     public ScopedCommands(CommandRegistry global) => _global = global;
@@ -94,14 +109,19 @@ public sealed class ScopedCommands : ICommandRegistry
     public IDisposable Register(CommandDefinition command)
     {
         var h = _global.Register(command);
-        _handles.Add(h);
+        lock (_gate) _handles.Add(h);
         return h;
     }
     public IReadOnlyList<CommandDefinition> All() => _global.All();
     public CommandDefinition? Find(string name) => _global.Find(name);
     public void Unload()
     {
-        foreach (var h in _handles) h.Dispose();
-        _handles.Clear();
+        List<IDisposable> toDispose;
+        lock (_gate)
+        {
+            toDispose = [.. _handles];
+            _handles.Clear();
+        }
+        foreach (var h in toDispose) h.Dispose();
     }
 }
