@@ -11,6 +11,8 @@ public sealed record AgentRunOptions
     public string? ModelId { get; init; }
     public IReadOnlyList<AgentMessage> Messages { get; init; } = [];
     public string? ReasoningLevel { get; init; }
+    /// <summary>astra-1 E: the run's id — stamped onto this run's events.</summary>
+    public string? RunId { get; init; }
     /// <summary>Session workspace (PLAN §18/§25): tool paths + shell cwd.</summary>
     public string? Workspace { get; init; }
     public float? Temperature { get; init; }
@@ -551,7 +553,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         JsonElement? payload = null;
         if (wire is not null)
             payload = JsonSerializer.SerializeToElement(wire, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-        var evt = new AgentEvent(Guid.NewGuid().ToString("n"), type, DateTimeOffset.UtcNow, _activeSession, payload);
+        var evt = new AgentEvent(Guid.NewGuid().ToString("n"), type, DateTimeOffset.UtcNow, _activeSession, payload, options.RunId);
         try { await _bus.PublishAsync(evt, ct); }
         catch (Exception ex) { _ctx.Log.Warning($"Event publish failed ({type}): {ex.Message}"); }
     }

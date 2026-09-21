@@ -11,7 +11,10 @@ public sealed record AgentEvent(
     AgentEventType Type,
     DateTimeOffset At,
     string? SessionId,
-    JsonElement? Payload);
+    JsonElement? Payload,
+    /// <summary>astra-1 E: the run that emitted this event (null for run-less events).
+    /// Appended after <c>Payload</c> so no existing event is renumbered.</summary>
+    string? RunId = null);
 
 /// <summary>Known agent event kinds (extensible via plugin payloads).</summary>
 public enum AgentEventType

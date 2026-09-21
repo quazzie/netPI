@@ -14,15 +14,19 @@ public sealed class AgentRunner : IAgentRunner
     private readonly AgentRuntime _runtime;
     private readonly IPluginContext _ctx;
     private readonly object _gate = new();
-    private CancellationTokenSource? _cts;
     /// <summary>astra-1 A (run cleanup): the owned background run — observed (not
     /// fire-and-forgotten) so plugin stop can cancel and await it.</summary>
     private Task? _runTask;
-
-    public AgentRunner(AgentRuntime runtime, IPluginContext ctx)
+    /// <summary>astra-1 E: the run registry (RunId → owned run, active + finished).
+    /// The runner — not the runtime — owns run identity (PLAN §10, Package E).</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, RunRecord> _runs = new();
+    /// <summary>astra-1 E: concurrent-run capacity (default 1; simultaneous runs only after isolation tests pass).</summary>
+    private readonly int _maxConcurrentRuns;
+    public AgentRunner(AgentRuntime runtime, IPluginContext ctx, int maxConcurrentRuns = 1)
     {
         _runtime = runtime;
         _ctx = ctx;
+        _maxConcurrentRuns = Math.Max(1, maxConcurrentRuns);
     }
 
     /// <summary>astra-1 A (run cleanup): the owned background run task (null when none).</summary>
@@ -33,9 +37,79 @@ public sealed class AgentRunner : IAgentRunner
 
     public bool IsRunning
     {
-        get { lock (_gate) return _cts is not null; }
+        get { lock (_gate) return _runs.Values.Any(r => r.Outcome == RunState.Running); }
     }
 
+    /// <summary>astra-1 E: all owned runs (active + finished), newest first.</summary>
+    public IReadOnlyList<RunInfo> ListRuns()
+    {
+        lock (_gate)
+        {
+            return _runs.Values
+                .OrderByDescending(r => r.StartTime)
+                .Select(r => r.Info)
+                .ToList();
+        }
+    }
+
+    /// <summary>astra-1 E: a specific run by id (null when unknown).</summary>
+    public RunInfo? GetRun(string runId)
+    {
+        if (string.IsNullOrEmpty(runId)) return null;
+        lock (_gate) return _runs.TryGetValue(runId, out var r) ? r.Info : null;
+    }
+
+    /// <summary>astra-1 E: the ACTIVE run for a session (null when none).</summary>
+    public RunInfo? GetSessionRun(string sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return null;
+        lock (_gate)
+        {
+            var rec = _runs.Values.FirstOrDefault(r =>
+                r.SessionId == sessionId && r.Outcome == RunState.Running);
+            return rec?.Info;
+        }
+    }
+
+    /// <summary>astra-1 E: cancel one specific run. True when a live run was signalled.</summary>
+    public bool CancelRun(string runId)
+    {
+        if (string.IsNullOrEmpty(runId)) return false;
+        lock (_gate)
+        {
+            if (_runs.TryGetValue(runId, out var rec) && rec.Outcome == RunState.Running)
+            {
+                rec.Cts?.Cancel();
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>astra-1 E: one owned run — identity + cancellation + terminal outcome.
+    /// The runner (not the runtime) is the owner of run state.</summary>
+    private sealed class RunRecord(
+        string runId, string? sessionId, string? modelId, DateTimeOffset startTime, CancellationTokenSource cts)
+    {
+        public CancellationTokenSource Cts { get; } = cts;
+        /// <summary>astra-1 E: when the run started (registry ordering — newest first).</summary>
+        public DateTimeOffset StartTime => _start;
+        /// <summary>astra-1 E: the run's id (registry key).</summary>
+        public string RunId => _runId;
+        /// <summary>astra-1 E: the session this run belongs to (null for ad-hoc runs).</summary>
+        public string? SessionId => _sessionId;
+        private readonly string _runId = runId;
+        private readonly string? _sessionId = sessionId;
+        private readonly string? _modelId = modelId;
+        private readonly DateTimeOffset _start = startTime;
+        /// <summary>Mutable — flips to a terminal outcome exactly once.</summary>
+        public RunState Outcome { get; set; } = RunState.Running;
+        public DateTimeOffset? EndTime { get; set; }
+        /// <summary>The runtime state a completed/cancelled/failed run reflects.</summary>
+        public AgentState State { get; set; } = AgentState.Preparing;
+
+        public RunInfo Info => new(_runId, _sessionId, _modelId, State, _start, EndTime, Outcome);
+    }
     public async ValueTask<AgentRunStart> StartRunAsync(AgentRunRequest request, CancellationToken cancellationToken = default)
     {
         // astra-1 A (run cleanup): no text → the send fails (never a silent
@@ -43,11 +117,18 @@ public sealed class AgentRunner : IAgentRunner
         if (string.IsNullOrWhiteSpace(request.Text))
             return new AgentRunStart(request.SessionId, "Empty message — nothing to send.");
 
+        RunRecord rec = null!;
         lock (_gate)
         {
-            if (_cts is not null)
-                return new AgentRunStart(null, "A run is already in progress.");
-            _cts = new CancellationTokenSource();
+            if (!string.IsNullOrEmpty(request.SessionId) &&
+                _runs.Values.Any(r => r.SessionId == request.SessionId && r.Outcome == RunState.Running))
+                return new AgentRunStart(request.SessionId, "This session already has an active run.");
+            var active = _runs.Values.Count(r => r.Outcome == RunState.Running);
+            if (active >= _maxConcurrentRuns)
+                return new AgentRunStart(request.SessionId, "All concurrent runs are busy.");
+            var runId = Guid.NewGuid().ToString("n");
+            rec = new RunRecord(runId, request.SessionId, request.ModelId, DateTimeOffset.UtcNow, new CancellationTokenSource());
+            _runs[runId] = rec;
         }
 
         // Persist the initial user entry (the agent runtime does not persist
@@ -67,25 +148,32 @@ public sealed class AgentRunner : IAgentRunner
             }
             catch (Exception ex)
             {
-                lock (_gate) _cts = null; // no run may outlive a failed send
+                lock (_gate)
+                {
+                    rec.Outcome = RunState.Failed;
+                    rec.EndTime = DateTimeOffset.UtcNow;
+                    rec.Cts.Dispose();
+                    ((System.Collections.Generic.IDictionary<string, RunRecord>)_runs).Remove(rec.RunId);
+                }
                 return new AgentRunStart(request.SessionId, $"Failed to persist the message: {ex.Message}");
             }
         }
-        var cts = _cts!;
-        _runTask = Task.Run(() => ExecuteAsync(request, cts));
+        _runTask = Task.Run(() => ExecuteAsync(request, rec));
 
-        return new AgentRunStart(request.SessionId, null);
+        return new AgentRunStart(request.SessionId, null, rec.RunId);
 
     }
 
     public ValueTask CancelRunAsync(CancellationToken cancellationToken = default)
     {
-        CancellationTokenSource? cts;
+        var live = new List<CancellationTokenSource>();
         lock (_gate)
         {
-            cts = _cts;
+            foreach (var r in _runs.Values)
+                if (r.Outcome == RunState.Running)
+                    live.Add(r.Cts);
         }
-        cts?.Cancel();
+        foreach (var c in live) c.Cancel();
         return ValueTask.CompletedTask;
     }
 
@@ -111,8 +199,9 @@ public sealed class AgentRunner : IAgentRunner
         return true;
     }
 
-    private async Task ExecuteAsync(AgentRunRequest request, CancellationTokenSource cts)
+    private async Task ExecuteAsync(AgentRunRequest request, RunRecord run)
     {
+        var cts = run.Cts;
         string? sessionId = request.SessionId;
         bool cancelled = false;
         bool failed = false;
@@ -134,6 +223,7 @@ public sealed class AgentRunner : IAgentRunner
             var result = await _runtime.RunAsync(new AgentRunOptions
             {
                 SessionId = sessionId,
+                RunId = run.RunId,
                 ModelId = request.ModelId,
                 Messages = transcript,
                 ReasoningLevel = request.ReasoningLevel,
@@ -167,12 +257,14 @@ public sealed class AgentRunner : IAgentRunner
             // run, and a new send must not be refused by a dead one.
             lock (_gate)
             {
-                if (ReferenceEquals(_cts, cts))
-                {
-                    _cts?.Dispose();
-                    _cts = null;
-                    _runTask = null;
-                }
+                // astra-1 E: record the terminal outcome on the owned run EXACTLY ONCE.
+                // IsRunning / GetSessionRun flip off the instant this lands, so a new
+                // send is never refused by a dead run.
+                run.Outcome = cancelled ? RunState.Cancelled : failed ? RunState.Failed : RunState.Completed;
+                run.EndTime = DateTimeOffset.UtcNow;
+                run.State = AgentState.Idle;
+                cts.Dispose();
+                _runTask = null;
             }
 
             // astra-1 A: exactly one terminal outcome per accepted run —
@@ -183,7 +275,7 @@ public sealed class AgentRunner : IAgentRunner
                 var type = cancelled ? AgentEventType.AgentCancelled
                     : failed ? AgentEventType.AgentFailed
                     : AgentEventType.AgentCompleted;
-                var evt = new AgentEvent(Guid.NewGuid().ToString("n"), type, DateTimeOffset.UtcNow, sessionId, null);
+                var evt = new AgentEvent(Guid.NewGuid().ToString("n"), type, DateTimeOffset.UtcNow, sessionId, null, run.RunId);
                 await _ctx.Events.PublishAsync(evt, CancellationToken.None);
             }
             catch { /* bus may already be gone */ }
