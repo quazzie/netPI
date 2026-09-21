@@ -312,6 +312,18 @@ public class ResponsesSseTests
         "event: response.created\ndata: {\"response\":{\"id\":\"rf1\"},\"type\":\"response.created\"}\n" +
         "event: response.failed\ndata: {\"response\":{\"id\":\"rf1\",\"error\":{\"message\":\"boom\"}},\"type\":\"response.failed\"}\n";
 
+    // Same shape as RespText but a fresh response id: a re-anchored (reset)
+    // run must mint a NEW stored response, so the healed head advances.
+    private const string RespText2 =
+        "event: response.created\ndata: {\"response\":{\"id\":\"r2\"},\"type\":\"response.created\"}\n" +
+        "event: response.in_progress\ndata: {\"response\":{\"id\":\"r2\"},\"type\":\"response.in_progress\"}\n" +
+        "event: response.output_item.added\ndata: {\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\"},\"type\":\"response.output_item.added\"}\n" +
+        "event: response.reasoning_text.delta\ndata: {\"delta\":\"think\",\"item_id\":\"rs_1\",\"type\":\"response.reasoning_text.delta\"}\n" +
+        "event: response.output_item.added\ndata: {\"item\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"type\":\"message\"},\"type\":\"response.output_item.added\"}\n" +
+        "event: response.output_text.delta\ndata: {\"delta\":\"Hello\",\"item_id\":\"msg_1\",\"type\":\"response.output_text.delta\"}\n" +
+        "event: response.output_text.delta\ndata: {\"delta\":\" world\",\"item_id\":\"msg_1\",\"type\":\"response.output_text.delta\"}\n" +
+        "event: response.completed\ndata: {\"response\":{\"id\":\"r2\",\"usage\":{\"input_tokens\":5,\"output_tokens\":3,\"total_tokens\":8,\"input_tokens_details\":{\"cached_tokens\":2}}},\"type\":\"response.completed\"}\n";
+
     [Fact]
     public async Task Chain_SecondTurn_ChainsPreviousIdWithDeltaOnly()
     {
@@ -361,21 +373,115 @@ public class ResponsesSseTests
     }
 
     [Fact]
-    public async Task Chain_TranscriptChanged_ResetsToFullInput()
+    public async Task Chain_StaleHead_404ResponseNotFound_HealsWithResetOnSameWire()
     {
-        var (p, h) = MakeWire("responses", CatalogRoute(RespText, "probe", ChatText));
+        // The server's response store lost the stored chain (nInfer restart,
+        // workload swap, LRU eviction): the pre-heal head (r1) is dead and
+        // 404s with response_not_found; reset runs mint fresh stored ids
+        // (r1 on turn 1, r2 on the healed reset), and chains on live ids
+        // succeed.
+        var mint = 0;
+        var (p, h) = MakeWire("responses", (req, b) =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.EndsWith("/v1/models", StringComparison.Ordinal)) return (HttpStatusCode.OK, Catalog);
+            if (url.EndsWith("/v1/responses", StringComparison.Ordinal))
+            {
+                if (IsResponsesProbe(b)) return (HttpStatusCode.OK, "{\"response\":{\"id\":\"probe\"}}");
+                if (b.Contains("\"previous_response_id\"", StringComparison.Ordinal))
+                {
+                    if (b.Contains("\"previous_response_id\":\"r1\""))
+                        return (HttpStatusCode.NotFound,
+                            "{\"error\":{\"code\":\"response_not_found\",\"message\":\"response 'r1' not found\",\"param\":\"previous_response_id\",\"type\":\"invalid_request_error\"}}");
+                    return (HttpStatusCode.OK, RespText2); // r2 is stored
+                }
+                return (HttpStatusCode.OK, mint++ == 0 ? RespText : RespText2); // mint r1, then r2
+            }
+            if (url.EndsWith("/v1/chat/completions", StringComparison.Ordinal)) return (HttpStatusCode.OK, ChatText);
+            return (HttpStatusCode.NotFound, "{}");
+        });
         await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
-        var sys = new AgentMessage("s", MessageRole.System, [new TextPart("be brief")], DateTimeOffset.UtcNow);
-        var done = (await Collect(p, Sreq("s1", sys, User("u1", "hi")))).OfType<ModelCompleted>().Single();
 
-        // The first user message was edited after the run → the fingerprint
-        // prefix no longer matches → reset, full input (3 items; system goes
-        // to instructions), no previous id.
-        await Collect(p, Sreq("s1", sys, User("u1", "edited"), done.Message, User("u2", "next")));
-        var body = Body(ResponsesRun(h));
-        Assert.False(body.TryGetProperty("previous_response_id", out _));
-        Assert.Equal("be brief", body.GetProperty("instructions").GetString());
-        Assert.Equal(4, body.GetProperty("input").GetArrayLength());
+        var u1 = User("u1", "hi");
+        var done = (await Collect(p, Sreq("s1", u1))).OfType<ModelCompleted>().Single();
+
+        // Turn 2 references the now-dead head r1. The provider must heal on
+        // the SAME wire: drop the stale head, retry as a reset (full input, no
+        // previous_response_id) and complete — no chat fallback, no ModelFailed.
+        var u2 = User("u2", "next");
+        var ev = await Collect(p, Sreq("s1", u1, done.Message, u2));
+
+        Assert.DoesNotContain(ev, e => e is ModelFailed);
+        var healed = Assert.Single(ev.OfType<ModelCompleted>());
+        Assert.Equal("Hello world", healed.Message.Parts.OfType<TextPart>().Single().Text);
+
+        var runs = h.Sent
+            .Where(s => s.Method == "POST" && s.Url.EndsWith("/v1/responses", StringComparison.Ordinal) && IsResponsesRun(s.Body))
+            .ToList();
+        // Turn 1 (reset, mint r1) + turn 2 stale attempt (id r1) + turn 2 healed reset (mints r2).
+        Assert.Equal(3, runs.Count);
+        Assert.False(Body(runs[0]).TryGetProperty("previous_response_id", out _));
+        Assert.Equal("r1", Body(runs[1]).GetProperty("previous_response_id").GetString());
+        var healedBody = Body(runs[2]);
+        Assert.False(healedBody.TryGetProperty("previous_response_id", out _));
+        Assert.True(healedBody.GetProperty("store").GetBoolean());
+        // u1 (user) + the assistant turn's two items (reasoning + message) + u2 (user).
+        Assert.Equal(4, healedBody.GetProperty("input").GetArrayLength());
+
+        // The chat wire was never needed.
+        Assert.DoesNotContain(h.Sent, s => s.Url.EndsWith("/v1/chat/completions", StringComparison.Ordinal));
+
+        // Turn 3 chains on the re-anchored head (r2) with delta only.
+        var u3 = User("u3", "again");
+        await Collect(p, Sreq("s1", u1, done.Message, u2, healed.Message, u3));
+        var third = Body(ResponsesRun(h));
+        Assert.Equal("r2", third.GetProperty("previous_response_id").GetString());
+        Assert.Equal(1, third.GetProperty("input").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Chain_OtherPreContentFailure_StillFallsBackToChat()
+    {
+        // A NON-404 pre-content failure (502 on the first chained run only)
+        // must keep the existing behavior: transparent chat fallback, and the
+        // (still-valid) head is NOT dropped — the next turn chains again.
+        var mint2 = 0; var chainedFails = 0;
+        var (p, h) = MakeWire("responses", (req, b) =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.EndsWith("/v1/models", StringComparison.Ordinal)) return (HttpStatusCode.OK, Catalog);
+            if (url.EndsWith("/v1/responses", StringComparison.Ordinal))
+            {
+                if (IsResponsesProbe(b)) return (HttpStatusCode.OK, "{\"response\":{\"id\":\"probe\"}}");
+                if (b.Contains("\"previous_response_id\"", StringComparison.Ordinal))
+                    return chainedFails++ == 0
+                        ? (HttpStatusCode.BadGateway, "{\"error\":\"upstream 502\"}")
+                        : (HttpStatusCode.OK, RespText2);
+                return (HttpStatusCode.OK, mint2++ == 0 ? RespText : RespText2);
+            }
+            if (url.EndsWith("/v1/chat/completions", StringComparison.Ordinal)) return (HttpStatusCode.OK, ChatText);
+            return (HttpStatusCode.NotFound, "{}");
+        });
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
+
+        var u1 = User("u1", "hi");
+        var done = (await Collect(p, Sreq("s1", u1))).OfType<ModelCompleted>().Single();
+
+        // 502 on the chained turn → chat fallback serves it; head r1 survives.
+        var u2 = User("u2", "next");
+        var ev = await Collect(p, Sreq("s1", u1, done.Message, u2));
+        Assert.DoesNotContain(ev, e => e is ModelFailed);
+        var chatDone = Assert.Single(ev.OfType<ModelCompleted>());
+        Assert.Contains(h.Sent, s => s.Url.EndsWith("/v1/chat/completions", StringComparison.Ordinal));
+
+        // Head survived: the next turn chains again on r1 with the delta
+        // since the stored head: u2 (1) + the chat-completed assistant turn
+        // (reasoning + message = 2) + u3 (1).
+        var u3 = User("u3", "again");
+        await Collect(p, Sreq("s1", u1, done.Message, u2, chatDone.Message, u3));
+        var third = Body(ResponsesRun(h));
+        Assert.Equal("r1", third.GetProperty("previous_response_id").GetString());
+        Assert.Equal(4, third.GetProperty("input").GetArrayLength());
     }
 
     [Fact]

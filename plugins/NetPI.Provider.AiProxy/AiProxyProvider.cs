@@ -312,52 +312,80 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     public async IAsyncEnumerable<ModelEvent> RunAsync(ModelRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         bool wantedResponses = UseResponsesWire(ModelById(request.ModelId));
-        bool chained = false;
         string failReason = "";
 
         if (wantedResponses)
         {
-            bool contentSeen = false;
-            bool hardFailed = false;
-            var pending = new List<ModelEvent>();
-            // PLAN §47: the chain (previous_response_id) is available for this
-            // run iff a clean completion for this session/model advanced it.
-            chained = request.SessionId is not null && GetChainHead(request.SessionId, request.ModelId) is not null;
+            var chainKey = string.IsNullOrEmpty(request.SessionId) ? null : ChainKey(request.SessionId, request.ModelId);
 
-            await foreach (var ev in RunResponsesAsync(request, cancellationToken))
+            // At most two attempts on the responses wire (PLAN §14d). A
+            // pre-content failure carrying ninfer's 404 code
+            // response_not_found means the server no longer stores the
+            // referenced previous_response_id (nInfer restart, workload swap,
+            // response-store LRU eviction): this session's chain head is
+            // stale. We do NOT degrade to the chat wire for that — the head
+            // would keep referencing the dead id and every later turn would
+            // 404 again, re-sending the full transcript each time. Instead
+            // the stale head is dropped and the run is retried ONCE on the
+            // same wire as a reset (no previous_response_id, full input,
+            // store:true): a clean completion re-anchors the chain so every
+            // later turn chains on the new head again. Any OTHER pre-content
+            // failure still falls through to the transparent chat-completions
+            // fallback below (PLAN §47).
+            for (var attempt = 0; ; attempt++)
             {
-                if (ev is ModelFailed)
-                {
-                    // A hard failure before any content (HTTP error, response.failed)
-                    // is retried transparently via chat completions; after content it
-                    // is surfaced and left to the retry plugin.
-                    if (!contentSeen) { hardFailed = true; failReason = ((ModelFailed)ev).Error; break; }
-                    foreach (var p in pending) yield return p;
-                    pending.Clear();
-                    yield return ev;
-                    yield break;
-                }
+                bool contentSeen = false;
+                bool hardFailed = false;
+                var pending = new List<ModelEvent>();
+                var chained = request.SessionId is not null && GetChainHead(request.SessionId, request.ModelId) is not null;
 
-                if (!contentSeen)
+                await foreach (var ev in RunResponsesAsync(request, cancellationToken))
                 {
-                    if (ev is TextDelta or ThinkingDelta or ToolCallStarted)
+                    if (ev is ModelFailed)
                     {
-                        contentSeen = true;
+                        // A hard failure before any content (HTTP error,
+                        // response.failed) is either healed as a stale chain
+                        // head (below) or falls through to the chat fallback;
+                        // after content it is surfaced and left to the retry
+                        // plugin.
+                        if (!contentSeen) { hardFailed = true; failReason = ((ModelFailed)ev).Error; break; }
                         foreach (var p in pending) yield return p;
                         pending.Clear();
                         yield return ev;
+                        yield break;
                     }
-                    else pending.Add(ev);
-                    continue;
+
+                    if (!contentSeen)
+                    {
+                        if (ev is TextDelta or ThinkingDelta or ToolCallStarted)
+                        {
+                            contentSeen = true;
+                            foreach (var p in pending) yield return p;
+                            pending.Clear();
+                            yield return ev;
+                        }
+                        else pending.Add(ev);
+                        continue;
+                    }
+
+                    yield return ev;
                 }
 
-                yield return ev;
-            }
+                if (!hardFailed)
+                {
+                    await PublishDiagnosticsAsync(request, "responses", true, chained, false, null, cancellationToken);
+                    yield break;
+                }
 
-            if (!hardFailed)
-            {
-                await PublishDiagnosticsAsync(request, "responses", true, chained, false, null, cancellationToken);
-                yield break;
+                if (attempt == 0 && chainKey is not null && IsStaleChainFailure(failReason)
+                    && _chainHeads.TryRemove(chainKey, out _))
+                {
+                    _log.Information(
+                        $"{request.ModelId}: session {request.SessionId} chain head is stale ({Truncate(failReason, 200)}); " +
+                        "dropped, re-anchoring via reset on the responses wire");
+                    continue; // same wire, reset shape: no previous_response_id
+                }
+                break;
             }
 
             _log.Warning($"responses wire failed before content for {request.ModelId} ({failReason}); retrying via chat completions — session chain disabled, full transcript re-sent every request");
@@ -1027,6 +1055,14 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             yield return msg;
         }
     }
+
+    /// <summary>
+    /// True when a responses-wire pre-content failure means the referenced
+    /// previous_response_id is no longer stored by the server — ninfer's 404
+    /// code <c>response_not_found</c>, forwarded verbatim by AiProxy.
+    /// </summary>
+    private static bool IsStaleChainFailure(string reason) =>
+        reason.Contains("response_not_found", StringComparison.Ordinal);
 
     private static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "…";
 }
