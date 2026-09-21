@@ -161,7 +161,7 @@ public sealed class StorageTransactionTests : IDisposable
 
         // schema_version recorded for both applied versions.
         var versions = MigrationVersions(dbPath);
-        Assert.Equal(new[] { 1, 2 }, versions.OrderBy(v => v).ToArray());
+        Assert.Equal(new[] { 1, 2, 3 }, versions.OrderBy(v => v).ToArray());
         Assert.Equal(SqliteSessionStore.CurrentSchemaVersion, versions.Max());
 
         // Every row from the old shape survives: title, model, workspace, entries.
@@ -199,7 +199,7 @@ public sealed class StorageTransactionTests : IDisposable
             await first.AppendAsync(Msg("legacy-1", "extra", "extra"), CancellationToken.None);
         }
         var versionsAfterFirst = MigrationVersions(dbPath);
-        Assert.Equal(2, versionsAfterFirst.Count);
+        Assert.Equal(3, versionsAfterFirst.Count);
         Assert.Equal(Enumerable.Range(1, SqliteSessionStore.CurrentSchemaVersion),
             versionsAfterFirst.OrderBy(v => v));
 
@@ -217,8 +217,8 @@ public sealed class StorageTransactionTests : IDisposable
 
         // No duplicate migration rows after the second open.
         var versionsAfterSecond = MigrationVersions(dbPath);
-        Assert.Equal(2, versionsAfterSecond.Count);
-        Assert.Equal(new[] { 1, 2 }, versionsAfterSecond.OrderBy(v => v).ToArray());
+        Assert.Equal(3, versionsAfterSecond.Count);
+        Assert.Equal(new[] { 1, 2, 3 }, versionsAfterSecond.OrderBy(v => v).ToArray());
     }
 
     // ---- 4. old sessions migrate cleanly (Package C base) ----------------

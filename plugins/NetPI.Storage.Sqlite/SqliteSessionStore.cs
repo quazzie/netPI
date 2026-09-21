@@ -29,7 +29,7 @@ namespace NetPI.Storage.Sqlite;
 /// existence-checked ALTER), so re-opening the store re-runs the runner but
 /// applies nothing that was already applied.
 ///
-/// Schema (v2):
+/// Schema (v3):
 /// <code>
 ///   migrations(version INTEGER PK, applied_at TEXT)
 ///   sessions(id TEXT PK, title, workspace, provider_id, model_id,
@@ -42,13 +42,15 @@ namespace NetPI.Storage.Sqlite;
 ///   projects(id TEXT PK, name, workspace_path,
 ///            normalized_path_key TEXT UNIQUE NOT NULL, created_at, updated_at)
 ///   settings(key TEXT PK, value_json)
+///   pending_project_changes(session_id TEXT PK, operation_id, project_id,
+///                        payload_json, enqueued_at)          -- astra-1 D2
 /// </code>
 /// The <c>sessions.workspace</c> column is preserved for compatibility.
 /// </summary>
 public sealed class SqliteSessionStore : ISessionStore, IDisposable
 {
     /// <summary>Highest migration version applied by this store.</summary>
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     /// <summary>
     /// astra-1 B: canonical key for deduplicating project workspace paths —
@@ -124,7 +126,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
                 );
                 """);
 
-            foreach (var version in new[] { 1, 2 })
+            foreach (var version in new[] { 1, 2, 3 })
             {
                 if (IsMigrationApplied(conn, version)) continue;
 
@@ -226,6 +228,23 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
                 if (!HasColumn(conn, tx, "sessions", "context_revision"))
                     ExecuteSql(conn,
                         "ALTER TABLE sessions ADD COLUMN context_revision INTEGER NOT NULL DEFAULT 0;", null, tx);
+                break;
+
+            case 3:
+                // astra-1 D2: pending project changes — one row per session
+                // (a selection made while the session's run is in flight).
+                // The table is read/written by PendingProjectChangeStore
+                // (same file, same pooled-connection pattern); the session
+                // store only owns the DDL.
+                ExecuteSql(conn, """
+                    CREATE TABLE IF NOT EXISTS pending_project_changes (
+                        session_id   TEXT PRIMARY KEY,
+                        operation_id TEXT NOT NULL,
+                        project_id   TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        enqueued_at  INTEGER NOT NULL
+                    );
+                    """, null, tx);
                 break;
 
             default:

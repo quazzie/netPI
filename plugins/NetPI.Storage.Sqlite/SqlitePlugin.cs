@@ -28,6 +28,11 @@ public sealed class SqlitePlugin : INetPiPlugin
         context.Services.Register<ISessionStore>("sessions", _store);
         var projects = new SqliteProjectStore(path);
         context.Services.Register<IProjectStore>("projects", projects);
+        // astra-1 D2: pending project changes (a selection made while a session’s
+        // run is in flight). The table is DDL-owned by SqliteSessionStore (v3);
+        // like the other stores it is NOT disposed on Stop — the registry holds it.
+        context.Services.Register<IPendingProjectChangeStore>("pending-projects",
+            new PendingProjectChangeStore(path));
         context.Log.Information($"Storage ready at {path}");
         await ValueTask.CompletedTask;
     }
