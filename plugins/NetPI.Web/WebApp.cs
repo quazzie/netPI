@@ -956,6 +956,36 @@ internal sealed class WebApp : IAsyncDisposable
                 break;
             }
 
+            // astra-1 P5: query an Enqueue* operation's status by id (the
+            // typed outcome after the connection that issued it has died —
+            // used by tools/publish-plugins.ps1 and by the frontend on
+            // reconnect).
+            case "plugin.operation":
+            {
+                if (_facade is not null && S(p, "operationId") is { } opId)
+                {
+                    var st = _facade.GetOperation(opId);
+                    await c.SendSafeAsync(
+                        Envelope("plugin.operation", requestId, null, new
+                        {
+                            operationId = st.OperationId,
+                            kind = st.Kind.ToString(),
+                            done = st.Done,
+                            outcome = st.Outcome.ToString(),
+                            phase = st.Phase.ToString(),
+                            error = st.Error,
+                            appliedBuildId = st.AppliedBuildId,
+                            scannedIds = st.ScannedIds,
+                        }), ct);
+                }
+                else
+                {
+                    await SendErrorAsync(c, requestId, "operationId required", ct);
+                }
+                await SendAckAsync(c, requestId, ct);
+                break;
+            }
+
             case "plugins.list":
             {
                 if (_facade is not null)

@@ -30,19 +30,27 @@
 #   reloaded <id> <old> -> <new>        running host confirmed the new buildId
 #   failed <id> <reason>                nothing was changed for this plugin
 #
-# Usage:
-#   pwsh tools/publish-plugins.ps1 [-Configuration Debug] [-Plugins id,id]
-#                                  [-IncludeTestPlugin] [-NoBuild] [-Reload]
+# Usage (astra-1 P5: one developer command; each step separately callable):
+#   pwsh tools/publish-plugins.ps1 -Configuration Debug -Reload
+#     = solution build (when -Solution) + per-plugin publish + request the
+#       update on a running host + wait for the TYPED outcome (operation id
+#       + result, polled from the host's operation table — queryable after a
+#       disconnect; a Deferred outcome names the precise blocking work, e.g.
+#       a running background job or a busy agent).
+#   -Plugins id,id selects a subset; -IncludeTestPlugin stages the fixture.
 param(
   [string]$Configuration = "Debug",
   [string[]]$Plugins = @(),
   [switch]$IncludeTestPlugin,
   [switch]$NoBuild,
-  [switch]$Reload
+  [switch]$Reload,
+  [switch]$Solution,
+  [int]$Port = 5173
 )
 $ErrorActionPreference = 'Stop'
 
 $root       = Split-Path $PSScriptRoot -Parent
+
 $pluginsDir = Join-Path $root 'plugins'
 $artifacts  = Join-Path $root '.artifacts'
 
@@ -62,6 +70,11 @@ function Run-DotNet([string[]]$DotNetArgs) {
   if ($LASTEXITCODE -ne 0) {
     throw "dotnet $($DotNetArgs[0]) $($DotNetArgs[1..($DotNetArgs.Count-1)] -join ' ') failed (exit $LASTEXITCODE)"
   }
+}
+
+# astra-1 P5: -Solution makes this one command: build -> publish -> update.
+if ($Solution) {
+  Run-DotNet @('build', (Join-Path $root 'NetPI.sln'), '-c', $Configuration, '--nologo', '-v', 'q')
 }
 
 function Get-FileSha256([string]$path) {
@@ -134,48 +147,70 @@ function Test-HostUp([int]$port) {
 # reports the requested buildId (or a plugin failure). Returns an outcome
 # line: "reloaded <id> <old> -> <new>" / "failed <id> <reason>" /
 # "timeout <id> <reason>". Never throws for a rejected/deferred reload.
-function Invoke-PluginReload([string]$id, [string]$newBuildId, [int]$port) {
+function Ws-Receive([System.Net.WebSockets.ClientWebSocket]$ws, [byte[]]$buf) {
+  $done = $false
+  $sb = New-Object System.Text.StringBuilder
+  do {
+    $res = $ws.ReceiveAsync([System.ArraySegment[byte]]::new($buf, 0, $buf.Length), [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+    [void]$sb.Append([System.Text.Encoding]::UTF8.GetString($buf, 0, $res.Count))
+    $done = $res.EndOfMessage
+  } while (-not $done)
+  return $sb.ToString()
+}
+
+# astra-1 P5: request a reload via the operationId flow. Sends plugin.reload,
+# takes the operation id from the ack, then polls the host's operation table
+# (plugin.operation — the SAME surface a reconnecting client uses) until the
+# operation is Done, reporting the TYPED outcome. A Deferred outcome names
+# the precise blocking work (e.g. "draining: 1 background job lease(s)").
+function Invoke-PluginReload([string]$id, [string]$newBuildId, [int]$port, [int]$timeoutSec = 60) {
   $ws = [System.Net.WebSockets.ClientWebSocket]::new()
   $ws.Options.KeepAliveInterval = [TimeSpan]::FromSeconds(15)   # must be set before ConnectAsync
   try {
     $null = $ws.ConnectAsync("ws://127.0.0.1:$port/ws", [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
     $buf = New-Object byte[] 65536
 
-    $send = [System.Text.Encoding]::UTF8.GetBytes('{"type":"plugin.reload","payload":{"pluginId":"$id"}}')
+    # 1) request the update (the host acks IMMEDIATELY with an operation id;
+    #    the work runs on the host lifecycle queue, not this connection).
+    $send = [System.Text.Encoding]::UTF8.GetBytes("{""type"":""plugin.reload"",""requestId"":""pub1"",""payload"":{""pluginId"":""$id""}}")
     $ws.SendAsync([System.ArraySegment[byte]]::new($send, 0, $send.Length),
                   [System.Net.WebSockets.WebSocketMessageType]::Text, $true,
                   [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
 
-    $deadline = (Get-Date).AddSeconds(60)
-    $seen = $null
+    $opId = $null
+    $deadline = (Get-Date).AddSeconds($timeoutSec)
+    while ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open -and (Get-Date) -lt $deadline -and $null -eq $opId) {
+      try { $j = (Ws-Receive $ws $buf) | ConvertFrom-Json } catch { continue }
+      if ($j.type -eq 'ack' -and $j.requestId -eq 'pub1') { $opId = $j.payload.operationId }
+    }
+    if ($null -eq $opId) { return "failed $id no ack with operationId from host on $port" }
+
+    # 2) wait for the typed outcome: poll the host's operation table (survives
+    #    this connection; a reconnect could start here too).
     while ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open -and (Get-Date) -lt $deadline) {
-      $msg = $null
-      $done = $false
-      $sb = New-Object System.Text.StringBuilder
-      do {
-        $res = $ws.ReceiveAsync([System.ArraySegment[byte]]::new($buf), [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
-        [void]$sb.Append([System.Text.Encoding]::UTF8.GetString($buf, 0, $res.Count))
-        $done = $res.EndOfMessage
-      } while (-not $done)
-      $msg = $sb.ToString()
-      try { $j = $msg | ConvertFrom-Json } catch { continue }
-      if ($j.type -eq 'plugins.state' -and $j.payload.plugins) {
-        $p = @($j.payload.plugins) | Where-Object { $_.Id -ieq $id } | Select-Object -First 1
-        if ($p) {
-          if ($null -eq $seen) { $seen = $p }
-          if ($p.buildId -eq $newBuildId) {
-            return "reloaded $id $($seen.buildId) -> $newBuildId"
-          }
-          if ($p.state -eq 'failed') {
-            return "failed $id reload: $($p.lastError)"
-          }
+      $q = [System.Text.Encoding]::UTF8.GetBytes("{`"type`":`"plugin.operation`",`"requestId`":`"q$($ws.GetHashCode())`",`"payload`":{`"operationId`":`"$opId`"}}")
+      $ws.SendAsync([System.ArraySegment[byte]]::new($q, 0, $q.Length),
+                    [System.Net.WebSockets.WebSocketMessageType]::Text, $true,
+                    [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
+      # the handler sends plugin.operation AND an ack (plus possible broadcast
+      # events) — read until the operation status arrives (a few frames at most)
+      $st = $null
+      for ($i = 0; $i -lt 4 -and $null -eq $st; $i++) {
+        try { $m = (Ws-Receive $ws $buf) | ConvertFrom-Json } catch { break }
+        if ($m.type -eq 'plugin.operation') { $st = $m }
+      }
+      if ($st -and $st.payload.done) {
+        switch ($st.payload.outcome) {
+          'Applied'    { return "reloaded $id -> $newBuildId (op $opId, applied $($st.payload.appliedBuildId))" }
+          'Unchanged'  { return "up-to-date $id (op $opId, build $newBuildId already active)" }
+          'RolledBack' { return "rolledback $id op ${opId}: $($st.payload.error) — previous build remains active" }
+          'Deferred'   { return "deferred $id op ${opId}: $($st.payload.error)" }
+          default      { return "failed $id op ${opId} outcome $($st.payload.outcome): $($st.payload.error)" }
         }
       }
-      elseif ($j.type -eq 'plugin.reloadFailed') {
-        return "failed $id reload rejected by host"
-      }
+      Start-Sleep -Milliseconds 500
     }
-    return "timeout $id host on $port never reported buildId $newBuildId"
+    return "timeout $id op $opId host on $port did not finish within ${timeoutSec}s"
   }
   finally {
     try { $ws.Dispose() } catch { }
@@ -327,10 +362,10 @@ foreach ($id in $discovered) {
       Write-Output "published $id $buildId"
     }
     if ($Reload) {
-      if (Test-HostUp 5173) {
-        Write-Output (Invoke-PluginReload -id $id -newBuildId $buildId -port 5173)
+      if (Test-HostUp $Port) {
+        Write-Output (Invoke-PluginReload -id $id -newBuildId $buildId -port $Port)
       } else {
-        Write-Output "no host running — reload skipped"
+        Write-Output "no host running on port $Port — reload skipped"
       }
     }
   }

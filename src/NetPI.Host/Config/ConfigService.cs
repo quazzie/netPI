@@ -154,7 +154,8 @@ public static class ConfigJson
 {
     public static JsonElement DeepClone(this JsonElement element)
     {
-        if (element.ValueKind == System.Text.Json.JsonValueKind.Undefined)
+        if (element.ValueKind is System.Text.Json.JsonValueKind.Undefined
+            or System.Text.Json.JsonValueKind.Null)
             return JsonDocument.Parse("null").RootElement.Clone();
         var node = JsonNode.Parse(element.GetRawText())!;
         return JsonDocument.Parse(node.ToJsonString()).RootElement.Clone();
