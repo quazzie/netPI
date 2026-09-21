@@ -482,6 +482,7 @@ class NetPIWebSocket {
     const assistantId = store.activeAssistantId;
     const parts = e.parts ?? [];
 
+    const resultIds = new Set((e.toolResults ?? []).map((tr: any) => tr.id));
     for (const part of parts) {
       if (part.type === "thinking" && assistantId) {
         store.startThinking();
@@ -490,15 +491,23 @@ class NetPIWebSocket {
       } else if (part.type === "text" && assistantId) {
         store.appendTextDelta(part.text ?? "");
       } else if (part.type === "tool_call" && assistantId) {
-        // PLAN §46: replayed tool calls that never received a result were a run
-        // that died mid-batch — render them "interrupted", not "running".
-        store.startToolCall(part.id, part.name, part.interrupted === true);
+        // astra-1 G3 (same live/replay model): replayed calls with no result
+        // are NOT still running — the run ended. Interrupted-flagged ones
+        // were a run that died mid-batch (PLAN §46); unflagged legacy entries
+        // are marked interrupted for the same reason (compat mapping).
+        const interrupted =
+          part.interrupted === true || !resultIds.has(part.id);
+        store.startToolCall(part.id, part.name, interrupted);
         store.appendToolArgsDelta(part.id, part.argumentsJson ?? "");
       }
     }
 
     for (const tr of e.toolResults ?? []) {
       store.setToolResult(tr.id, tr.output ?? "", tr.isError ?? false);
+      // astra-1 G3: replayed results are TERMINAL — the same live/replay
+      // model means a persisted result implies completion. (Live output
+      // chunks are append=true and never complete.)
+      store.completeToolCall(tr.id, 0);
     }
     store.completeAssistant(e.usage as Usage | undefined);
   }
