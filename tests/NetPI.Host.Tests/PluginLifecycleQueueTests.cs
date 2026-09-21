@@ -213,7 +213,10 @@ public sealed class PluginLifecycleQueueTests : IDisposable
         var outcomes = await runtime.Plugins.ReloadAllOpAsync();
         Assert.Equal(2, outcomes.Count);
         Assert.All(outcomes, o => Assert.Equal(PluginLifecycleOutcome.Applied, o.Outcome));
-        Assert.Equal(new[] { "NetPI.Q6", "NetPI.Q7" },
+        // astra-1 P5: ReloadAll reloads in RECORDED START order (consumers
+        // before providers) — Q6 is discovered+started first, so it is
+        // reloaded LAST (after its provider Q7).
+        Assert.Equal(new[] { "NetPI.Q7", "NetPI.Q6" },
             outcomes.Select(o => o.PluginId).ToArray());
     }
 

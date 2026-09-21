@@ -70,6 +70,7 @@ public sealed class PluginManager
     private readonly Dictionary<string, string> _unavailablePlugins = new(StringComparer.OrdinalIgnoreCase);
     private Task? _lifecycleRunner;
     private int _shutdownStarted;
+    private long _startSeq; // astra-1 P5: process-wide start-order counter (shutdown/stop ordering)
     private readonly object _opGate = new();
 
     /// <summary>true once ShutdownAsync has been queued (new operations are rejected).</summary>
@@ -344,6 +345,7 @@ public sealed class PluginManager
             {
                 await p.Plugin!.StartAsync(ct);
                 p.StartRan = true;
+                p.StartSequence = NextStartSequence(); // astra-1 P5: shutdown/stop ordering
                 p.State = PluginState.Active;
                 p.ClearLastError();
                 _logger.LogInformation("Plugin {Plugin} started (gen {Gen})", p.PluginId, p.Generation);
@@ -736,22 +738,36 @@ public sealed class PluginManager
     /// </summary>
     public async Task ShutdownAsync(CancellationToken ct = default)
     {
-        var byGen = CurrentSnapshots()
-            .Where(p => p.State is PluginState.Active or PluginState.Draining or PluginState.Failed)
-            .OrderByDescending(p => p.Generation)
-            .ThenByDescending(p => p.PluginId, StringComparer.Ordinal)
+        // astra-1 P5: stop order = RECORDED START order (consumers before
+        // providers), never the per-plugin generation number (unrelated across
+        // plugins). A plugin whose start never succeeded (Failed / partial
+        // load) is cleaned up FIRST — it started last or never, and may still
+        // hold half-built state.
+        var partial = CurrentSnapshots()
+            .Where(p => p.State is PluginState.Failed or PluginState.Loading or PluginState.Unloading)
+            .ToList();
+        var running = CurrentSnapshots()
+            .Where(p => p.State is PluginState.Active or PluginState.Draining)
+            .OrderBy(p => p.StartSequence)
+            .ThenBy(p => p.PluginId, StringComparer.Ordinal)
             .ToList();
 
-        foreach (var p in byGen)
+        foreach (var p in partial)
         {
-            // astra-1 P3: the SAME idempotent cleanup path as the failure
-            // paths — the unified stop decides on StartRan (a plugin whose
-            // Start never ran is not Stop'd again).
-            await CleanupGeneration(p, "shutdown", ct, stop: true);
+            await CleanupGeneration(p, "shutdown (partial start)", ct, stop: p.StartRan);
             p.State = PluginState.Unloaded;
             _current.Remove(p.PluginId);
         }
+        for (int i = running.Count - 1; i >= 0; i--)
+        {
+            await CleanupGeneration(running[i], "shutdown", ct, stop: true);
+            running[i].State = PluginState.Unloaded;
+            _current.Remove(running[i].PluginId);
+        }
     }
+
+    /// <summary>astra-1 P5: next process-wide start order (consumers get larger values than providers that started first).</summary>
+    private long NextStartSequence() => Interlocked.Increment(ref _startSeq);
 
     private void UnloadAloc(PluginInstance instance)
     {
@@ -983,8 +999,15 @@ public sealed class PluginManager
         {
             if (stop && p.StartRan)
             {
-                try { await p.Plugin.StopAsync(ct); }
-                catch (Exception ex) { _logger.LogWarning(ex, "{Plugin} StopAsync failed during {Reason} cleanup", p.PluginId, reason); }
+                // astra-1 P5: bounded stop — shutdown must never hang on one
+                // uncooperative plugin; the generation is retired either way.
+                using var stopCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                stopCts.CancelAfter(_options.UnloadTimeout);
+                try { await p.Plugin.StopAsync(stopCts.Token); }
+                catch (Exception ex) { _logger.LogWarning(ex, "{Plugin} StopAsync failed or timed out during {Reason} cleanup", p.PluginId, reason); }
+                // astra-1 P5: observable stop marker (Debug in production,
+                // captured by test loggers to assert stop ordering).
+                _logger.LogDebug("{Plugin} generation stop fired ({Reason})", p.PluginId, reason);
             }
             try { await p.Plugin.UnloadAsync(ct); }
             catch (Exception ex) { _logger.LogWarning(ex, "{Plugin} UnloadAsync failed during {Reason} cleanup", p.PluginId, reason); }
@@ -1112,8 +1135,22 @@ public sealed class PluginManager
                             case LifecycleOpKind.ReloadAll:
                             {
                                 var list = new List<PluginOperationOutcome>();
-                                var ids = CurrentSnapshots().Select(p => p.PluginId).Distinct()
-                                    .OrderBy(x => x, StringComparer.Ordinal).ToList();
+                                // astra-1 P5: reload consumers BEFORE the providers they
+                                // depend on (reverse recorded start order) — alphabetical
+                                // was coincidence. Failed (retryable) plugins — no start
+                                // order — go first.
+                                var running = CurrentSnapshots()
+                                    .Where(p => p.State is PluginState.Active or PluginState.Draining)
+                                    .GroupBy(p => p.PluginId)
+                                    .Select(g => g.First())
+                                    .OrderByDescending(p => p.StartSequence)
+                                    .ThenBy(p => p.PluginId, StringComparer.Ordinal);
+                                var failed = CurrentSnapshots()
+                                    .Where(p => p.State is PluginState.Failed)
+                                    .GroupBy(p => p.PluginId)
+                                    .Select(g => g.First())
+                                    .OrderBy(p => p.PluginId, StringComparer.Ordinal);
+                                var ids = failed.Concat(running).Select(p => p.PluginId).ToList();
                                 // plugins already in a Failed state are still reloadable (retry path)
                                 foreach (var id in ids)
                                 {
@@ -1327,6 +1364,7 @@ public sealed class PluginManager
 
         var fresh = Get(pluginId)!;
         fresh.StartRan = true;
+        fresh.StartSequence = NextStartSequence(); // astra-1 P5: a reloaded plugin is the NEWEST stop order
         fresh.State = PluginState.Active;
         fresh.ClearLastError();
         lock (_opGate) _unavailablePlugins.Remove(pluginId);
@@ -1432,6 +1470,7 @@ public sealed class PluginManager
             return null;
         }
         lkg.StartRan = true;
+        lkg.StartSequence = NextStartSequence(); // astra-1 P5: recovered generation participates in shutdown order
         lkg.State = PluginState.Active;
         lkg.ClearLastError();
         lock (_opGate) _unavailablePlugins.Remove(pluginId);
@@ -1481,6 +1520,7 @@ public sealed class PluginManager
                 continue;
             }
             inst.StartRan = true;
+            inst.StartSequence = NextStartSequence(); // astra-1 P5: startup order recorded for shutdown
             inst.State = PluginState.Active;
             inst.ClearLastError();
             loaded.Add(src.Id);
