@@ -133,10 +133,39 @@ class NetPIWebSocket {
       case "session.created":
       case "session.updated":
         store.applySession(p as SessionInfo);
+        store.upsertSession(p as SessionInfo);
         break;
 
+      case "session.deleted": {
+        const deletedId = p.sessionId as string | undefined;
+        const wasVisible = !!deletedId && store.sessions.some((s) => s.id === deletedId);
+        store.sessions = store.sessions.filter((s) => s.id !== deletedId);
+        if (deletedId && store.session?.id === deletedId) {
+          // The open session vanished: clear the viewport and start fresh
+          // in the same workspace.
+          const workspace = store.session.workspace;
+          store.session = null;
+          store.resetTranscript();
+          this.request("session.create", workspace ? { workspace } : {}).catch(() => {});
+        }
+        // A visible row shrank the loaded page — pull the next page so older
+        // sessions surface instead of the list silently staying short.
+        if (wasVisible && store.sessionRemaining > 0) this.loadMoreSessions();
+        break;
+      }
+
       case "session.list":
-        store.sessions = (p.sessions as SessionInfo[]) ?? [];
+        {
+          const list = (p.sessions as SessionInfo[]) ?? [];
+          if ((p.offset ?? 0) > 0) {
+            // Continuation page ("load more"): append unseen sessions in server order.
+            const known = new Set(store.sessions.map((s) => s.id));
+            for (const s of list) if (!known.has(s.id)) store.sessions.push(s);
+          } else {
+            store.sessions = list;
+          }
+          store.sessionTotal = p.total ?? store.sessions.length;
+        }
         break;
 
       case "session.entry":
@@ -201,6 +230,10 @@ class NetPIWebSocket {
       case "model.retrying":
         store.resetAssistantForRetry();
         store.applyAgentState("Retrying");
+        break;
+
+      case "model.wire":
+        store.noteModelWire(p.wire ?? "", p.fallback === true, p.reason ?? null);
         break;
 
       case "model.requestFailed":
@@ -320,6 +353,15 @@ class NetPIWebSocket {
   }
 
   /** Request the next page of older transcript entries. */
+  /** Fetch the next drawer page (server responds with a `session.list` event). */
+  loadMoreSessions(): void {
+    if (store.sessionMoreLoading || store.sessionRemaining <= 0) return;
+    store.sessionMoreLoading = true;
+    this.request("session.list", { offset: store.sessions.length })
+      .catch(() => store.setError("failed to load older sessions"))
+      .finally(() => (store.sessionMoreLoading = false));
+  }
+
   loadOlder(): void {
     const seq = store.olderSeq;
     if (seq <= 0 || store.olderLoading || !store.moreAvailable) return;

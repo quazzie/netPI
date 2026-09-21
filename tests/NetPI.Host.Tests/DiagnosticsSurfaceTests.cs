@@ -107,9 +107,13 @@ public class DiagnosticsSurfaceTests
             => ValueTask.FromResult<SessionInfo?>(id == _info.Id ? _info : null);
         public ValueTask AppendAsync(SessionEntry entry, CancellationToken ct = default)
             => ValueTask.CompletedTask;
-        public ValueTask<IReadOnlyList<SessionInfo>> ListAsync(int count = 50, CancellationToken ct = default)
-            => ValueTask.FromResult<IReadOnlyList<SessionInfo>>([_info]);
+        public ValueTask<IReadOnlyList<SessionInfo>> ListAsync(int count = 50, int offset = 0, CancellationToken ct = default)
+            => ValueTask.FromResult<IReadOnlyList<SessionInfo>>(new List<SessionInfo> { _info }.Skip(offset).Take(count).ToList());
+        public ValueTask<int> CountAsync(CancellationToken ct = default)
+            => ValueTask.FromResult(1);
         public ValueTask RenameAsync(string id, string title, CancellationToken ct = default)
+            => ValueTask.CompletedTask;
+        public ValueTask DeleteAsync(string id, CancellationToken ct = default)
             => ValueTask.CompletedTask;
         public ValueTask SetModelAsync(string sessionId, string? modelId, string? reasoningLevel, CancellationToken ct = default)
             => ValueTask.CompletedTask;

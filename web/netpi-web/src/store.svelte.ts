@@ -38,11 +38,20 @@ export class NetPIStore {
   agentState = $state<AgentState>("Idle");
   busy = $derived(this.agentState !== "Idle" && this.agentState !== "Cancelling");
   activity = $state<string | null>(null);
+  /** Last model.wire notice for the in-flight run, e.g. "responses → chat (function_call_output …)". */
+  wireNote = $state<string | null>(null);
   requestPending = $state(false);
 
   // ---- session ----------------------------------------------------------
   session = $state<SessionInfo | null>(null);
+  /** Sessions loaded so far (paginated); `sessionTotal` is the full server count. */
   sessions = $state<SessionInfo[]>([]);
+  sessionTotal = $state(0);
+  sessionMoreLoading = $state(false);
+  /** Older sessions still hidden beyond the loaded page. */
+  get sessionRemaining(): number {
+    return Math.max(0, this.sessionTotal - this.sessions.length);
+  }
   queuedSteer = $state<QueuedSteer[]>([]);
 
   // ---- transcript -------------------------------------------------------
@@ -299,9 +308,21 @@ export class NetPIStore {
   // Server-driven state.
   // ----------------------------------------------------------------------
 
+  /** Record the wire decision for the current run (model.wire event, PLAN §47). */
+  noteModelWire(wire: string, fallback: boolean, reason: string | null): void {
+    if (!fallback) {
+      this.wireNote = null;
+      return;
+    }
+    const text = `⚠ responses wire failed → fell back to ${wire} (${reason ?? "unknown"}); full transcript resent, session chain off for this run`;
+    this.wireNote = text;
+    this.appendSystem(text);
+  }
+
   applyAgentState(state: AgentState): void {
     this.agentState = state;
     this.requestPending = false;
+    if (state === "Idle" || state === "Preparing") this.wireNote = null;
     switch (state) {
       case "Idle": this.activity = null; break;
       case "Preparing": this.activity = "Preparing context…"; break;
@@ -320,6 +341,19 @@ export class NetPIStore {
     if (info.modelId) this.setModel(info.modelId, false);
     if (info.reasoningLevel) this.setReasoning(info.reasoningLevel, false);
     else if (info.modelId) this.syncReasoning();
+  }
+
+  /** Insert or refresh a session in the loaded drawer page (PLAN §43 pagination). */
+  upsertSession(info: SessionInfo): void {
+    const i = this.sessions.findIndex((s) => s.id === info.id);
+    if (i >= 0) {
+      this.sessions[i] = info;
+      return;
+    }
+    // Only add unseen sessions at the head while they belong to the newest page.
+    if (this.sessions.length === 0 || info.updatedAt >= (this.sessions[0]?.updatedAt ?? 0))
+      this.sessions.unshift(info);
+    this.sessionTotal = Math.max(this.sessionTotal, this.sessions.length);
   }
 
   loadModels(models: ModelInfo[]): void {

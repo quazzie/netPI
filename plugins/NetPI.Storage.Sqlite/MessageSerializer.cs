@@ -62,9 +62,8 @@ public static class MessageSerializer
         ToolCallPart tc => Raw(new PartDto("tool-call", id: tc.Id, name: tc.Name, Arguments: tc.Arguments)),
         ToolResultPart tr => Raw(new PartDto(
             "tool-result",
-            null,
-            tr.ToolCallId,
-            tr.ToolName,
+            toolCallId: tr.ToolCallId,
+            toolName: tr.ToolName,
             isError: tr.IsError,
             parts: tr.Parts.Select(SerializePart).ToArray())),
         _ => throw new InvalidOperationException($"Unknown part kind for {p.GetType()}")

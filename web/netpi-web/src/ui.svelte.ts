@@ -28,7 +28,7 @@ class UiSettings {
   rightOpen = $state(initial.rightOpen ?? true);
   leftWidth = $state(initial.leftWidth ?? 260);
   rightWidth = $state(initial.rightWidth ?? 330);
-  rightTab = $state(initial.rightTab ?? "plugins");
+  rightTab = $state(initial.rightTab ?? "diagnostics");
   leftPage = $state<"sessions" | "settings">("sessions");
   keepThinkingOpen = $state(initial.keepThinkingOpen ?? false);
   font = $state<FontChoice>(initial.font ?? "system");

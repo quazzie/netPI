@@ -90,6 +90,7 @@ internal sealed class WebApp : IAsyncDisposable
         _commands = Resolve<NetPI.Abstractions.ICommandRegistry>("commands");
 
         _subs.Add(_ctx.Events.Subscribe<AgentEvent>(OnAgentEvent));
+        _subs.Add(_ctx.Events.Subscribe<ModelRequestDiagnostics>(OnModelDiagnostics));
 
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -116,14 +117,6 @@ internal sealed class WebApp : IAsyncDisposable
             _log.Warning("staticRoot not found; serving /ws only");
         }
         app.MapGet("/bootstrap", Bootstrap);
-        // Self-registered panel pages (docs/web-panels.md). HTML is embedded in
-        // the plugin assembly, so no extra staging files are needed. Statement-
-        // bodied handlers, per the /api/file ALC gotcha comment below.
-        app.MapGet("/panel/plugins", async (HttpContext c) =>
-        {
-            c.Response.ContentType = "text/html; charset=utf-8";
-            await c.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(PanelHtml("plugins")));
-        });
 
         app.Map("/ws", HandleWsAsync);
         // Localhost-only file view for workspace/absolute references in chat.
@@ -187,6 +180,24 @@ internal sealed class WebApp : IAsyncDisposable
     }
 
     // ---- agent event bridge ------------------------------------------------
+
+    // ---- provider wire-decision bridge (PLAN §47) ---------------------------
+    // The provider publishes one record per model request: which wire served it
+    // (responses or chat), whether the session chain was used, and whether the
+    // chat wire served as a TRANSPARENT FALLBACK after a responses-wire failure.
+    // The chat UI surfaces the fallback case; netpi.diagnostics records the rest.
+    private void OnModelDiagnostics(ModelRequestDiagnostics d)
+    {
+        SendEvent("model.wire", new
+        {
+            modelId = d.ModelId,
+            wire = d.WireServed,
+            requested = d.WireRequested,
+            chained = d.Chained,
+            fallback = d.Fallback,
+            reason = d.FailureReason,
+        }, d.SessionId);
+    }
 
     private void OnAgentEvent(AgentEvent e)
     {
@@ -435,8 +446,11 @@ internal sealed class WebApp : IAsyncDisposable
         {
             try
             {
-                var sessions = await _store.ListAsync(50, ct);
-                await SendAsync(c, "session.list", new { sessions = sessions.Select(ToSessionJson).ToList() }, null, ct);
+                var sessions = await _store.ListAsync(50, 0, ct);
+                var totalSessions = await _store.CountAsync(ct);
+                await SendAsync(c, "session.list",
+                    new { sessions = sessions.Select(ToSessionJson).ToList(), offset = 0,
+                          total = totalSessions, hasMore = sessions.Count < totalSessions }, null, ct);
 
                 // PLAN §41: replay the active session's transcript so a client
                 // (re)connecting after a host restart is not left with a blank
@@ -574,12 +588,33 @@ internal sealed class WebApp : IAsyncDisposable
                 break;
             }
 
+            case "session.delete":
+            {
+                var sid = S(p, "sessionId");
+                if (sid is null || _store is null) { await SendAckAsync(c, requestId, ct); break; }
+                // Deleting the transcript out from under an in-flight run would
+                // orphan its entries; force the user to cancel first.
+                if (_runner?.IsRunning == true && _agent?.State.ActiveSessionId == sid)
+                {
+                    await SendErrorAsync(c, requestId, "cannot delete a session with a run in progress", ct);
+                    break;
+                }
+                await _store.DeleteAsync(sid, ct);
+                await BroadcastAsync("session.deleted", new { sessionId = sid }, sid, ct);
+                await SendAckAsync(c, requestId, ct);
+                break;
+            }
+
             case "session.list":
                 if (_store is not null)
                 {
-                    var list = await _store.ListAsync(50, ct);
+                    const int pageSize = 50;
+                    var offset = Math.Max(0, I(p, "offset"));
+                    var list = await _store.ListAsync(pageSize, offset, ct);
+                    var total = await _store.CountAsync(ct);
                     await SendAsync(c, "session.list",
-                        new { sessions = list.Select(ToSessionJson).ToList() }, null, ct);
+                        new { sessions = list.Select(ToSessionJson).ToList(), offset, total,
+                              hasMore = offset + list.Count < total }, null, ct);
                 }
                 await SendAckAsync(c, requestId, ct);
                 break;
@@ -965,16 +1000,6 @@ internal sealed class WebApp : IAsyncDisposable
         }).ToArray();
     }
 
-    /// <summary>Panel page HTML embedded in the plugin assembly (docs/web-panels.md).</summary>
-    private static string PanelHtml(string name)
-    {
-        var asm = typeof(WebApp).Assembly;
-        var resName = asm.GetManifestResourceNames()
-            .Single(n => n.EndsWith($".panels.{name}.html", StringComparison.OrdinalIgnoreCase));
-        using var stream = asm.GetManifestResourceStream(resName)!;
-        using var reader = new StreamReader(stream);
-        return reader.ReadToEnd();
-    }
 
     private object[] PanelJson() =>
         _ctx.WebPanels.All().Select(p => new

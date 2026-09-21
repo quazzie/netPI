@@ -198,7 +198,7 @@
         ws.request("session.create", { workspace: store.session?.workspace || undefined }).catch((e) => store.setError(String(e)));
         break;
       case "/plugins":
-        ui.setRightTab("plugins", true);
+        ui.setRightTab("diagnostics", true);
         break;
       case "/settings":
       case "/workspace":
@@ -335,10 +335,6 @@
 
       <span class="spacer"></span>
 
-      {#if store.busy || store.requestPending}
-        <button class="stop-btn" onclick={() => { store.cancel(); ws.request("agent.cancel", {}).catch(() => {}); }} title="Stop">■</button>
-      {/if}
-
       <button class="model-pick" onclick={openModelPicker}>{modelLabel} ▾</button>
 
       <button
@@ -351,16 +347,20 @@
         {reasoningOptions.length ? (store.reasoningLevel || "off") : "reasoning n/a"} ▾
       </button>
 
-      {#if store.busy}<span class="mode-label">Steer</span>{/if}
-
+      {#if store.busy || store.requestPending}
+      <button
+        class="stop-btn"
+        title="Stop"
+        onclick={() => { store.cancel(); ws.request("agent.cancel", {}).catch(() => {}); }}
+      >■</button>
+      {:else}
       <button
         class="send-btn"
         onclick={() => void doSubmit()}
-        disabled={!text.trim() || store.requestPending}
-        title={store.busy ? "Steer at next turn boundary" : "Send"}
-      >
-        {store.requestPending ? "…" : "↑"}
-      </button>
+        disabled={!text.trim()}
+        title="Send"
+      >↑</button>
+      {/if}
     </div>
   </div>
 

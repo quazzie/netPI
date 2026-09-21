@@ -296,7 +296,7 @@ public sealed class DiagApp
         if (store is null) return new object[0];
         try
         {
-            var list = await store.ListAsync(25, ct);
+            var list = await store.ListAsync(25, 0, ct);
             return list.Select(SessionJson).ToArray();
         }
         catch { return new object[0]; }
@@ -405,7 +405,7 @@ public sealed class DiagApp
     {
         var store = TryResolve<ISessionStore>("sessions");
         if (store is null) return new { error = "no session store registered" };
-        var list = await store.ListAsync(limit, ct);
+        var list = await store.ListAsync(limit, 0, ct);
         return new { count = list.Count, sessions = list.Select(SessionJson).ToArray() };
     }
 

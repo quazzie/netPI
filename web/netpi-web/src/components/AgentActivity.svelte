@@ -48,6 +48,9 @@
   <div class="agent-activity" aria-live="polite">
     <span class="activity-label">{label}</span>
     {#if fmt(elapsed)}<span class="activity-elapsed">{fmt(elapsed)}</span>{/if}
+    {#if store.wireNote}
+      <span class="activity-warning" title="{store.wireNote}">⚠ {store.wireNote}</span>
+    {/if}
     {#if store.connection !== "open"}
       <span class="activity-warning">connection {store.connection}</span>
     {/if}

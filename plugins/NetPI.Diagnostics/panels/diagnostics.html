@@ -10,99 +10,132 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg);
-         font: 13px/1.45 ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
-  header { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+         font: 13px/1.45 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+         display: flex; flex-direction: column; height: 100vh; }
+  header { display: flex; align-items: center; gap: 6px; padding: 4px 10px;
            background: var(--panel); border-bottom: 1px solid var(--border); }
-  header h1 { font-size: 14px; margin: 0; font-weight: 600; }
-  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); flex: none; }
   header .dot.up { background: var(--ok); }
-  header .dim { margin-left: auto; color: var(--dim); font-size: 11px; }
-  main { display: grid; grid-template-columns: 280px 1fr; gap: 0; height: calc(100vh - 45px); }
-  nav { background: var(--panel); border-right: 1px solid var(--border); padding: 10px; overflow-y: auto; }
-  nav button { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent;
-               color: var(--fg); padding: 7px 10px; margin-bottom: 4px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  header .dim { color: var(--dim); font-size: 11px; }
+  header .refreshInfo { margin-left: auto; }
+  nav { display: flex; gap: 4px; padding: 5px 8px; background: var(--panel);
+        border-bottom: 1px solid var(--border); flex-wrap: wrap; flex: none; width: 100%; }
+  nav button { max-width: 100%; background: none; border: 1px solid transparent; color: var(--fg);
+               padding: 4px 9px; border-radius: 6px; cursor: pointer; font-size: 12px;
+               white-space: nowrap; flex: none; }
   nav button:hover { background: rgba(255,255,255,.04); }
   nav button.active { background: rgba(88,166,255,.12); border-color: rgba(88,166,255,.35); color: var(--accent); }
-  section { display: none; padding: 12px 14px; overflow-y: auto; }
+  main { flex: 1; overflow-y: auto; overflow-x: hidden; }
+  section { display: none; padding: 10px; min-width: 0; }
   section.active { display: block; }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 14px 0 6px; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 12px 0 6px; }
   h2:first-child { margin-top: 0; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-          padding: 10px 12px; margin-bottom: 10px; }
-  .row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
-  .row .k { color: var(--dim); }
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
-  th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-  td { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
-  .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; }
+          padding: 8px 10px; margin-bottom: 8px; min-width: 0; }
+  .card .title { font-weight: 600; margin-bottom: 4px; }
+  .row { padding: 2px 0; }
+  .row .k { color: var(--dim); font-size: 11px; }
+  .row .v { overflow-wrap: anywhere; word-break: break-word; margin-top: 1px; }
+  .tag { display: inline-block; padding: 0 7px; border-radius: 10px; font-size: 11px; }
   .tag.ok { background: rgba(63,185,80,.15); color: var(--ok); }
   .tag.warn { background: rgba(210,153,34,.15); color: var(--warn); }
   .tag.err { background: rgba(248,81,73,.15); color: var(--err); }
   .tag.dim { background: rgba(139,148,158,.15); color: var(--dim); }
-  pre.log { background: #0a0e14; border: 1px solid var(--border); border-radius: 8px; padding: 10px;
-            overflow-x: auto; font: 11.5px/1.6 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
+  pre.log { background: #0a0e14; border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+            overflow-x: auto; font: 11px/1.6 ui-monospace, Consolas, monospace;
+            white-space: pre-wrap; word-break: break-all; margin: 0; }
   .filter { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
   .filter input, .filter select { background: #0a0e14; color: var(--fg); border: 1px solid var(--border);
-                                  border-radius: 6px; padding: 5px 8px; font-size: 12px; }
-  .filter input[type=text] { flex: 1; min-width: 120px; }
-  .auto { color: var(--dim); font-size: 11px; margin: 6px 0; }
+                                   border-radius: 6px; padding: 4px 8px; font-size: 12px; width: 100%; }
+  .filter input[type=text] { flex: 1; min-width: 90px; }
+  .filter select { flex: 1; min-width: 120px; }
+  .auto { color: var(--dim); font-size: 11px; margin: 2px 0 8px; }
   .err-line { color: var(--err); }
-  .empty { color: var(--dim); font-style: italic; padding: 12px 0; }
-  #sessionPick { margin-bottom: 8px; }
+  .empty { color: var(--dim); font-style: italic; padding: 8px 0; }
+  .meta { color: var(--dim); font-size: 11px; margin: 2px 0 8px; }
+
+  /* ---- plugins (matches the former netPI.Web plugins panel) ------------- */
+  .toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; max-width: 100%; overflow: hidden; }
+  .btn { border: 1px solid var(--border); background: var(--panel); color: var(--dim);
+         border-radius: 7px; padding: 4px 10px; font-size: 11.5px; cursor: pointer; }
+  .btn:hover { background: #1d222b; color: var(--fg); }
+  .plist { display: flex; flex-direction: column; gap: 6px; }
+  .pitem { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+           padding: 8px 9px; border: 1px solid var(--border); border-radius: 8px;
+           background: var(--panel); min-width: 0; }
+  .pitem .main { min-width: 0; flex: 1; }
+  .pitem .ptitle { font-weight: 600; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pitem .pmeta { color: var(--dim); font-size: 10px; margin-top: 2px; }
+  .pitem .perr { margin-top: 4px; color: var(--err); font-size: 10px; line-height: 1.35; word-break: break-word; }
+  .pitem .actions { display: flex; align-items: center; gap: 6px; flex: none; }
+  .badge { width: max-content; padding: 2px 7px; border-radius: 999px; font-size: 10.5px;
+           color: var(--dim); background: #11151a; }
+  .badge.Active, .badge.ok { color: var(--ok); background: rgba(63,185,80,.12); }
+  .badge.off { color: var(--dim); background: rgba(139,148,158,.10); }
+  .badge.Draining, .badge.Unloading, .badge.Loading { color: var(--warn); background: rgba(210,153,34,.12); }
+  .badge.Failed { color: var(--err); background: rgba(248,81,73,.12); }
+  .mini { width: 25px; height: 25px; display: grid; place-items: center; border: 1px solid var(--border);
+          border-radius: 6px; background: transparent; color: var(--dim); font-size: 13px; cursor: pointer; }
+  .mini:hover:not(:disabled) { background: #1d222b; color: var(--fg); }
+  .mini:disabled { opacity: .4; cursor: default; }
 </style>
 </head>
 <body>
 <header>
   <span class="dot" id="dot"></span>
-  <h1>netPI — Diagnostics</h1>
   <span class="dim" id="hostLine"></span>
-  <span class="dim" id="refreshInfo">auto-refresh 4 s</span>
+  <span class="dim refreshInfo">auto 4 s</span>
 </header>
+<nav id="tabs">
+  <button data-tab="overview" class="active">Overview</button>
+  <button data-tab="model">Wire</button>
+  <button data-tab="plugins">Plugins</button>
+  <button data-tab="models">Models</button>
+  <button data-tab="events">Events</button>
+  <button data-tab="logs">Logs</button>
+  <button data-tab="sessions">Sess</button>
+</nav>
 <main>
-  <nav id="tabs">
-    <button data-tab="overview" class="active">Overview</button>
-    <button data-tab="model">Model Wire</button>
-    <button data-tab="events">Agent Events</button>
-    <button data-tab="logs">Logs</button>
-    <button data-tab="sessions">Sessions</button>
-  </nav>
   <div>
     <section id="tab-overview" class="active">
       <div class="card" id="ovHost"></div>
       <div class="card" id="ovAgent"></div>
-      <h2>Plugins</h2>
-      <div class="card" style="padding:0"><table id="ovPlugins"></table></div>
-      <h2>Models</h2>
-      <div class="card" style="padding:0"><table id="ovModels"></table></div>
+    </section>
+    <section id="tab-plugins">
+      <div class="toolbar"><button class="btn" id="reloadAll">Reload all</button></div>
+      <div class="plist" id="pluginList"></div>
+    </section>
+    <section id="tab-models">
+      <div class="toolbar"><button class="btn" id="refreshModels">Refresh catalog</button></div>
+      <div class="plist" id="ovModels"></div>
     </section>
     <section id="tab-model">
       <p class="auto">Provider wire decisions (responses vs chat, chain state, fallbacks). Latest 500.</p>
-      <div class="card" style="padding:0"><table id="modelTable"></table></div>
+      <div id="modelList"></div>
     </section>
     <section id="tab-events">
       <div class="filter">
         <input type="text" id="evFilter" placeholder="filter type / session…">
         <button onclick="loadEvents()">Reload</button>
       </div>
-      <div class="card" style="padding:0"><table id="eventsTable"></table></div>
+      <div id="eventsList"></div>
     </section>
     <section id="tab-logs">
       <div class="filter">
         <input type="text" id="logLevel" placeholder="level (e.g. Warning)">
         <input type="text" id="logPlugin" placeholder="plugin (e.g. netPI.Web)">
-        <input type="text" id="logLines" value="200" style="max-width:70px" title="lines">
-        <button onclick="loadLogs()">Tail</button>
+        <input type="text" id="logLines" value="200" style="max-width:64px; flex: none" title="lines">
+        <button onclick="loadLogs()" style="flex: none">Tail</button>
       </div>
       <h2>Host file log <span id="logFile" style="text-transform:none"></span></h2>
       <pre class="log" id="logBody"></pre>
       <h2>Bus event stream (live)</h2>
-      <div class="card" style="padding:0"><table id="logEvents"></table></div>
+      <div id="logEvents"></div>
     </section>
     <section id="tab-sessions">
       <div class="filter">
         <select id="sessionPick"><option value="">— pick a session —</option></select>
-        <button onclick="loadSession()">Load</button>
+        <button onclick="loadSession()" style="flex: none">Load</button>
       </div>
       <div id="sessionDetail"></div>
     </section>
@@ -119,18 +152,21 @@ document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   b.classList.add("active");
   document.getElementById("tab-" + b.dataset.tab).classList.add("active");
   currentTab = b.dataset.tab;
+  history.replaceState(null, "", "#tab=" + currentTab);
   refresh();
 });
 
-// ---- helpers ---------------------------------------------------------------
+// ---- helpers ----------------------------------------------------------------
 function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; }
 function clear(e) { e.innerHTML = ""; }
-function row(table, cells) {
-  const tr = el("tr");
-  cells.forEach((c, i) => tr.appendChild(el(i === 0 ? "th" : "td", "", typeof c === "string" ? c : c.html || ""));
-  table.appendChild(tr);
+function tag(kind, text) { return `<span class="tag ${kind}">${esc(text)}</span>`; }
+function card(title, rows) {
+  const c = el("div", "card");
+  if (title) c.append(el("div", "title", title));
+  rows.forEach(([k, v]) => c.append(el("div", "row", `<span class="k">${esc(k)}</span><span class="v">${v}</span>`)));
+  return c;
 }
-function tag(kind, text) { return `<span class="tag ${kind}">${text}</span>`; }
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 // ---- overview ----------------------------------------------------------------
 async function loadOverview() {
@@ -140,71 +176,164 @@ async function loadOverview() {
     if (d.host) h.textContent = `pid ${d.host.pid} · up ${Math.floor(d.host.uptimeSeconds/60)}m`;
     const host = document.getElementById("ovHost");
     clear(host);
-    host.append(el("div", "row", `<span class="k">runtime</span><span>${esc(d.host.runtimeDir)}</span>`));
-    host.append(el("div", "row", `<span class="k">pid</span><span>${d.host.pid}</span>`));
-    host.append(el("div", "row", `<span class="k">uptime</span><span>${d.host.uptimeSeconds}s</span>`));
+    host.append(el("div", "row", `<span class="k">runtime</span><span class="v">${esc(d.host.runtimeDir)}</span>`));
+    host.append(el("div", "row", `<span class="k">pid</span><span class="v">${d.host.pid}</span>`));
+    host.append(el("div", "row", `<span class="k">uptime</span><span class="v">${d.host.uptimeSeconds}s</span>`));
 
     const agent = document.getElementById("ovAgent");
     clear(agent);
     if (d.agent) {
-      agent.append(el("div", "row", `<span class="k">state</span>${d.agent.running ? tag("warn", d.agent.state) : tag("ok", d.agent.state)}`));
+      agent.append(el("div", "row", `<span class="k">state</span><span class="v">${d.agent.running ? tag("warn", d.agent.state) : tag("ok", d.agent.state)}</span>`));
       if (d.agent.activeSessionId)
-        agent.append(el("div", "row", `<span class="k">session</span><span>${esc(d.agent.activeSessionId)}</span>`));
+        agent.append(el("div", "row", `<span class="k">session</span><span class="v">${esc(d.agent.activeSessionId.slice(0, 12))}…</span>`));
     } else agent.append(el("div", "empty", "agent not registered"));
 
-    const p = document.getElementById("ovPlugins");
-    clear(p);
-    row(p, ["Plugin", "Gen", "State", "Leases"]);
-    (d.plugins || []).forEach(x => row(p, [esc(x.id), x.generation,
-      x.state === "Active" ? tag("ok", x.state) : tag(x.state === "Failed" ? "err" : "warn", x.state), x.activeLeases]));
-
-    const m = document.getElementById("ovModels");
-    clear(m);
-    if (d.models && d.models.models) {
-      row(m, ["Model", "Provider", "Tools", "Responses"]);
-      d.models.models.forEach(x => row(m, [esc(x.id), esc(x.provider), x.supportsTools ? "✓" : "—", x.supportsResponses ? "✓" : "—"]));
-      if (d.models.stale) m.append(el("tr", "", `<td colspan="4" style="color:var(--warn)">catalog stale (never refreshed)</td>`));
-    } else row(m, ["model catalog not registered"]);
+    // plugins tab: seed from overview (authoritative; WS events refine it live)
+    renderPlugins(d.plugins || []);
     document.getElementById("dot").classList.add("up");
   } catch (e) { document.getElementById("dot").classList.remove("up"); }
 }
 
+// ---- plugins ----------------------------------------------------------------
+// Data: /api/diag/overview (seed + polling on this port) refined by the host's
+// plugin.* WS events (ws://<host>:5173/ws). The former netPI.Web "plugins" panel
+// is folded in here: state pill, version, leases, last error, per-plugin reload.
+const pluginState = new Map();
+
+function renderPlugins(list) {
+  const box = document.getElementById("pluginList");
+  clear(box);
+  if (!list.length) { box.append(el("div", "empty", "no plugin statuses")); return; }
+  for (const p of list) {
+    // keep a WS-driven state (e.g. Draining right after ↻) if it differs from
+    // the snapshot; otherwise trust the snapshot
+    const cur = pluginState.get(p.id);
+    const state = (cur && cur.state && cur.state !== p.state) ? cur.state : p.state;
+    pluginState.set(p.id, { ...p, state });
+
+    const item = el("div", "pitem");
+    const main = el("div", "main");
+    main.append(el("div", "ptitle", esc(p.name || p.id)));
+    const meta = [];
+    if (p.version) meta.push("v" + esc(p.version));
+    meta.push(`gen ${p.generation}`);
+    if (p.activeLeases) meta.push(`${p.activeLeases} lease${p.activeLeases > 1 ? "s" : ""}`);
+    main.append(el("div", "pmeta", meta.join(" · ")));
+    if (p.lastError) main.append(el("div", "perr", esc(p.lastError)));
+    const actions = el("div", "actions");
+    actions.append(el("span", "badge " + esc(state), esc(state)));
+    const btn = el("button", "mini", "↻");
+    btn.title = "Reload " + p.id;
+    btn.disabled = ["Draining", "Unloading", "Loading"].includes(state);
+    btn.onclick = () => reloadPlugin(p.id);
+    actions.append(btn);
+    item.append(main, actions);
+    box.append(item);
+  }
+}
+
+// ---- host WS (plugin lifecycle events + reload commands) ----------------------
+let hostWs = null;
+function connectHostWs() {
+  try { hostWs = new WebSocket(`ws://${location.hostname}:5173/ws`); } catch { return; }
+  hostWs.onmessage = (e) => {
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    const p = m.payload || {};
+    switch (m.type) {
+      case "plugins.state":
+        pluginState.clear();
+        for (const pl of p.plugins || []) pluginState.set(pl.id, pl);
+        renderPlugins([...pluginState.values()]);
+        break;
+      case "plugin.state":
+        if (pluginState.has(p.pluginId)) pluginState.get(p.pluginId).state = p.state;
+        renderPlugins([...pluginState.values()]);
+        break;
+      case "plugin.reloaded":
+        if (pluginState.has(p.pluginId)) pluginState.get(p.pluginId).state = "Active";
+        renderPlugins([...pluginState.values()]);
+        break;
+      case "plugin.reloadFailed":
+        if (pluginState.has(p.pluginId)) pluginState.get(p.pluginId).state = "Failed";
+        renderPlugins([...pluginState.values()]);
+        break;
+    }
+  };
+  hostWs.onclose = () => setTimeout(connectHostWs, 3000);
+}
+function reloadPlugin(id) {
+  const cur = pluginState.get(id);
+  if (cur) { cur.state = "Draining"; renderPlugins([...pluginState.values()]); }
+  if (hostWs && hostWs.readyState === WebSocket.OPEN)
+    hostWs.send(JSON.stringify({ type: "plugin.reload", payload: { pluginId: id } }));
+}
+document.getElementById("reloadAll").onclick = () => {
+  if (hostWs && hostWs.readyState === WebSocket.OPEN)
+    hostWs.send(JSON.stringify({ type: "plugin.reloadAll", payload: {} }));
+};
+
+// ---- models -------------------------------------------------------------------
+async function loadModels() {
+  const d = await j("/api/diag/overview");
+  const m = document.getElementById("ovModels");
+  clear(m);
+  if (d.models && d.models.models) {
+    for (const x of d.models.models) {
+      const item = el("div", "pitem");
+      const main = el("div", "main");
+      main.append(el("div", "ptitle", esc(x.id)));
+      main.append(el("div", "pmeta", esc(x.provider || "")));
+      const actions = el("div", "actions");
+      const b1 = el("span", "badge " + (x.supportsTools ? "ok" : "off"), x.supportsTools ? "tools" : "no tools");
+      const b2 = el("span", "badge " + (x.supportsResponses ? "ok" : "off"), x.supportsResponses ? "responses" : "no responses");
+      actions.append(b1, b2);
+      item.append(main, actions);
+      m.append(item);
+    }
+    if (d.models.stale) m.append(el("div", "meta", "catalog stale (never refreshed)"));
+  } else m.append(el("div", "empty", "model catalog not registered"));
+  document.getElementById("dot").classList.add("up");
+}
+document.getElementById("refreshModels").onclick = () => {
+  if (hostWs && hostWs.readyState === WebSocket.OPEN)
+    hostWs.send(JSON.stringify({ type: "models.refresh", payload: {} }));
+};
+
 // ---- model wire ----------------------------------------------------------------
 async function loadModel() {
   const d = await j("/api/diag/model?limit=500");
-  const t = document.getElementById("modelTable");
-  clear(t);
-  row(t, ["Time", "Model", "Config", "Requested", "Served", "Chain", "Fallback", "Reason"]);
-  (d.requests || []).slice().reverse().forEach(r => {
-    const fb = r.fallback ? tag("warn", "yes") : tag("dim", "—");
-    const chain = r.chained ? tag("ok", "chained") : tag("dim", "new");
-    row(t, [
-      new Date(r.at).toLocaleTimeString(),
-      esc(r.modelId), r.wireConfig, r.wireRequested,
-      tag(r.wireServed === "responses" ? "ok" : "dim", r.wireServed),
-      chain, fb,
-      r.failureReason ? `<span class="err-line">${esc(r.failureReason)}</span>` : "—",
-    ]);
+  const list = document.getElementById("modelList");
+  clear(list);
+  const reqs = (d.requests || []).slice().reverse();
+  reqs.forEach(r => {
+    const rows = [
+      ["model", esc(r.modelId)],
+      ["wire", tag(r.wireServed === "responses" ? "ok" : "dim", r.wireServed)
+        + ` (wanted ${esc(r.wireRequested)}, cfg ${esc(r.wireConfig)})`],
+    ];
+    if (r.chained) rows.push(["chain", tag("ok", "chained")]);
+    if (r.fallback) rows.push(["fallback", tag("warn", "yes")]);
+    if (r.failureReason) rows.push(["reason", `<span class="err-line">${esc(r.failureReason)}</span>`]);
+    list.append(card(new Date(r.at).toLocaleTimeString(), rows));
   });
-  if (!d.requests || !d.requests.length) t.append(el("tr", "", `<td colspan="8" class="empty">no model requests recorded yet</td>`));
+  if (!reqs.length) list.append(el("div", "empty", "no model requests recorded yet"));
 }
 
 // ---- events ------------------------------------------------------------------
 async function loadEvents() {
   const f = document.getElementById("evFilter").value.toLowerCase();
   const d = await j("/api/diag/events?limit=500");
-  const t = document.getElementById("eventsTable");
-  clear(t);
-  row(t, ["Time", "Type", "Session", "Summary"]);
-  const list = (d.events || []).slice().reverse().filter(r =>
+  const list = document.getElementById("eventsList");
+  clear(list);
+  const evs = (d.events || []).slice().reverse().filter(r =>
     !f || (r.type || "").toLowerCase().includes(f) || (r.sessionId || "").toLowerCase().includes(f));
-  list.forEach(r => row(t, [
-    new Date(r.at).toLocaleTimeString(),
-    tag((r.type || "").includes("Failed") ? "err" : (r.type === "ModelStreamEvent" ? "dim" : "ok"), r.type),
-    r.sessionId ? esc(r.sessionId.slice(0, 8) + "…") : "—",
-    r.summary ? esc(r.summary) : "—",
-  ]));
-  if (!list.length) t.append(el("tr", "", `<td colspan="4" class="empty">no events yet</td>`));
+  evs.forEach(r => list.append(card(
+    tag((r.type || "").includes("Failed") ? "err" : (r.type === "ModelStreamEvent" ? "dim" : "ok"), r.type)
+      + ` <span style="color:var(--dim);font-weight:400">${new Date(r.at).toLocaleTimeString()}</span>`, [
+      ["session", r.sessionId ? esc(r.sessionId.slice(0, 8)) + "…" : "—"],
+      ["summary", r.summary ? esc(r.summary) : "—"],
+  ])));
+  if (!evs.length) list.append(el("div", "empty", "no events yet"));
 }
 
 // ---- logs --------------------------------------------------------------------
@@ -213,7 +342,7 @@ async function loadLogs() {
   const plugin = document.getElementById("logPlugin").value;
   const lines = document.getElementById("logLines").value || "200";
   const d = await j(`/api/diag/logs?lines=${encodeURIComponent(lines)}&level=${encodeURIComponent(level)}&plugin=${encodeURIComponent(plugin)}`);
-  document.getElementById("logFile").textContent = d.file ? `(${d.file}, showing ${d.totalLines})` : "(no log file)";
+  document.getElementById("logFile").textContent = d.file ? `(${d.file}, ${d.totalLines})` : "(no log file)";
   const body = document.getElementById("logBody");
   clear(body);
   if (d.lines && d.lines.length) {
@@ -224,14 +353,14 @@ async function loadLogs() {
     });
     body.appendChild(frag);
   } else body.textContent = "(empty)";
-  // live bus stream under the file log
   const d2 = await j("/api/diag/events?limit=50");
   const t = document.getElementById("logEvents");
   clear(t);
-  row(t, ["Time", "Type", "Summary"]);
-  (d2.events || []).slice().reverse().forEach(r => row(t, [
-    new Date(r.at).toLocaleTimeString(), tag("dim", r.type), r.summary || "—",
-  ]));
+  (d2.events || []).slice().reverse().forEach(r => t.append(card(
+    tag("dim", r.type) + ` <span style="color:var(--dim);font-weight:400">${new Date(r.at).toLocaleTimeString()}</span>`,
+    [["summary", r.summary || "—"]]
+  )));
+  if (!d2.events || !d2.events.length) t.append(el("div", "empty", "no bus events yet"));
 }
 
 // ---- sessions ----------------------------------------------------------------
@@ -252,28 +381,32 @@ async function loadSession() {
   const d = await j(`/api/diag/sessions/${id}?count=200`);
   const box = document.getElementById("sessionDetail");
   clear(box);
-  const card = el("div", "card");
-  card.append(el("div", "row", `<span class="k">title</span><span>${esc(d.session.title || "(untitled)")}</span>`));
-  card.append(el("div", "row", `<span class="k">model</span><span>${esc(d.session.modelId || "—")}</span>`));
-  card.append(el("div", "row", `<span class="k">workspace</span><span>${esc(d.session.workspace || "—")}</span>`));
-  card.append(el("div", "row", `<span class="k">entries</span><span>${d.session.entryCount}</span>`));
-  box.append(card);
-  const t = el("table");
-  row(t, ["Seq", "Kind", "Role", "Text"]);
-  (d.entries || []).forEach(e => row(t, [e.sequence, e.kind, e.role || "—", e.text ? esc(e.text) : "—"]));
-  box.append(t);
+  box.append(card(esc(d.session.title || "(untitled)"), [
+    ["model", esc(d.session.modelId || "—")],
+    ["workspace", esc(d.session.workspace || "—")],
+    ["entries", String(d.session.entryCount)],
+  ]));
+  (d.entries || []).forEach(e => {
+    box.append(card(`#${e.sequence} · ${esc(e.kind)}${e.role ? " · " + esc(e.role) : ""}`,
+      e.text ? [["text", `<span style="font-weight:400">${esc(e.text)}</span>`]] : []));
+  });
+  if (!d.entries || !d.entries.length) box.append(el("div", "empty", "no entries"));
 }
 
 // ---- loop -------------------------------------------------------------------
-function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 async function refresh() {
   const fns = {
-    overview: loadOverview, model: loadModel, events: loadEvents, logs: loadLogs,
-    sessions: loadSessionList,
+    overview: loadOverview, plugins: () => loadOverview(), models: loadModels,
+    model: loadModel, events: loadEvents, logs: loadLogs, sessions: loadSessionList,
   };
   try { await fns[currentTab](); } catch (e) { /* dot stays red */ }
 }
+connectHostWs();
 setInterval(refresh, 4000);
+// ?tab=… deep link (e.g. diagnostics#tab=plugins)
+const hashTab = location.hash.replace(/^#tab=/, "");
+if (hashTab && [...document.querySelectorAll("nav button")].some(b => b.dataset.tab === hashTab))
+  document.querySelector(`nav button[data-tab="${hashTab}"]`).click();
 refresh();
 </script>
 </body>
