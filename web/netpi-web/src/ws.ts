@@ -23,6 +23,29 @@ class NetPIWebSocket {
   >();
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private retries = 0;
+  /** astra-1 F: session to make visible via the NEXT explicit open.
+   *  Server-pushed session.updated for OTHER sessions refresh global
+   *  metadata only — they never replace the visible session. */
+  private targetSession: string | null = null;
+  /** astra-1 F: reconnect window — the server replays the active session on
+   *  bootstrap; that replay (agent.state + session.updated/entries) is
+   *  treated as navigation until the replay lands or the window expires. */
+  private reconnectNav = false;
+  private reconnectNavUntil = 0;
+
+  /** astra-1 F: explicit navigation — replace the visible session with id. */
+  openSession(id: string): Promise<unknown> {
+    this.targetSession = id;
+    this.reconnectNav = false;
+    return this.request("session.open", { sessionId: id });
+  }
+
+  /** astra-1 F: explicit navigation — a new session becomes visible.
+   *  (session.created events always navigate, so no target is needed.) */
+  createSession(payload: Record<string, unknown> = {}): Promise<unknown> {
+    this.reconnectNav = false;
+    return this.request("session.create", payload);
+  }
 
   connect(): void {
     if (this.ws && (this.ws.readyState === 0 || this.ws.readyState === 1)) {
@@ -35,6 +58,8 @@ class NetPIWebSocket {
 
     ws.onopen = () => {
       this.retries = 0;
+      this.reconnectNav = true;
+      this.reconnectNavUntil = Date.now() + 10000;
       store.connection = "open";
       store.setError(null);
     };
@@ -108,6 +133,7 @@ class NetPIWebSocket {
     let msg: {
       type: string;
       requestId?: string;
+      sessionId?: string;
       payload?: any;
     };
     try {
@@ -139,16 +165,47 @@ class NetPIWebSocket {
     if (msg.type === "ack" && p.operationId && p.kind)
       store.notePluginOpPending(String(p.operationId), String(p.kind));
 
+    // astra-1 F: events carry the session they belong to. Transcript and
+    // streaming events are scoped: a background session never mutates the
+    // visible chat. Events without a sessionId are global.
+    const sid = (msg.sessionId ?? null) as string | null;
+    const isCurrent = (sid2: string | null | undefined) =>
+      sid2 == null || sid2 === (store.session?.id ?? null);
+    const nav = (sid2: string | null) =>
+      this.reconnectNav &&
+      Date.now() < this.reconnectNavUntil &&
+      sid2 != null &&
+      (this.targetSession == null || this.targetSession === sid2);
+
     switch (msg.type) {
       case "agent.state":
-        store.applyAgentState(p.state as AgentState);
+        // Per-session state; during a reconnect the bootstrap state of the
+        // active run may arrive before the session replay lands.
+        if (isCurrent(sid) || nav(sid))
+          store.applyAgentState(p.state as AgentState);
         break;
 
       case "session.created":
-      case "session.updated":
-        store.applySession(p as SessionInfo);
-        store.upsertSession(p as SessionInfo);
+      case "session.updated": {
+        // astra-1 F: global metadata always refreshes; the VISIBLE session is
+        // replaced only for explicit navigation (open/create) or the bootstrap
+        // replay — everything else is a background metadata update.
+        const info = p as SessionInfo;
+        const eid = sid ?? info.id ?? null;
+        const navigates =
+          msg.type === "session.created" ||
+          eid === this.targetSession ||
+          isCurrent(eid) ||
+          nav(eid);
+        if (navigates) {
+          store.applySession(info);
+          if (eid === this.targetSession) this.targetSession = null;
+          if (eid != null) this.reconnectNav = false;
+        } else {
+          store.upsertSession(info);
+        }
         break;
+      }
 
       case "session.deleted": {
         const deletedId = p.sessionId as string | undefined;
@@ -160,7 +217,8 @@ class NetPIWebSocket {
           const workspace = store.session.workspace;
           store.session = null;
           store.resetTranscript();
-          this.request("session.create", workspace ? { workspace } : {}).catch(() => {});
+          // astra-1 F: explicit navigation — the fallback session becomes visible.
+          this.createSession(workspace ? { workspace } : {}).catch(() => {});
         }
         // A visible row shrank the loaded page — pull the next page so older
         // sessions surface instead of the list silently staying short.
@@ -183,10 +241,14 @@ class NetPIWebSocket {
         break;
 
       case "session.entry":
+        if (!isCurrent(sid)) break;
         this.ingestEntries(p, false);
         break;
 
       case "session.entries":
+        // A replace replay for a session we do not view is ignored unless it
+        // is the navigation target (open) or the bootstrap replay (reconnect).
+        if (!isCurrent(sid) && !nav(sid)) break;
         this.ingestEntries(p, true);
         if (p.replace) store.revealTail(REVEAL_INITIAL);
         break;
@@ -201,21 +263,26 @@ class NetPIWebSocket {
         break;
 
       case "assistant.started":
+        if (!isCurrent(sid)) break;
         store.startAssistant();
         store.applyAgentState("CallingModel");
         break;
 
       case "thinking.started":
+        if (!isCurrent(sid)) break;
         store.startThinking();
         break;
       case "thinking.delta":
+        if (!isCurrent(sid)) break;
         store.appendThinkingDelta(p.text ?? "");
         break;
       case "thinking.completed":
+        if (!isCurrent(sid)) break;
         store.completeThinking();
         break;
 
       case "text.delta":
+        if (!isCurrent(sid)) break;
         store.appendTextDelta(p.text ?? "");
         break;
       case "text.completed":
@@ -223,13 +290,16 @@ class NetPIWebSocket {
         break;
 
       case "tool.started":
+        if (!isCurrent(sid)) break;
         store.startToolCall(p.id, p.name);
         store.applyAgentState("ExecutingTools");
         break;
       case "tool.args":
+        if (!isCurrent(sid)) break;
         store.appendToolArgsDelta(p.id, p.args ?? "");
         break;
       case "tool.output":
+        if (!isCurrent(sid)) break;
         store.setToolResult(
           p.id,
           p.output ?? "",
@@ -238,29 +308,37 @@ class NetPIWebSocket {
         );
         break;
       case "tool.completed":
+        if (!isCurrent(sid)) break;
         store.completeToolCall(p.id, p.durationMs ?? 0);
         break;
 
       case "model.retrying":
+        if (!isCurrent(sid)) break;
         store.resetAssistantForRetry();
         store.applyAgentState("Retrying");
         break;
 
       case "model.wire":
+        if (!isCurrent(sid)) break;
         store.noteModelWire(p.wire ?? "", p.fallback === true, p.reason ?? null);
         break;
 
       case "model.requestFailed":
+        if (!isCurrent(sid)) break;
         store.failAssistant(p.message ?? "model request failed");
         break;
 
       case "assistant.completed":
         // Do not force Idle here. A completed model turn may be followed by a
+        if (!isCurrent(sid)) break;
+        store.completeAssistant(p.usage as Usage | undefined);
         // tool batch and another model turn. agent.state is the source of truth.
         store.completeAssistant(p.usage as Usage | undefined);
         break;
 
       case "usage.updated":
+        // Per-session meter: updates from other sessions must not touch it.
+        if (!isCurrent(sid)) break;
         store.lastUsage = p as Usage;
         if (p.promptTokens != null) {
           store.stats.contextTokens = p.promptTokens;

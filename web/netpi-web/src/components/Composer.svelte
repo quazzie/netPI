@@ -195,7 +195,8 @@
     const [name, ...rest] = t.split(" ");
     switch (name) {
       case "/new":
-        ws.request("session.create", { workspace: store.session?.workspace || undefined }).catch((e) => store.setError(String(e)));
+        // astra-1 F: explicit navigation — the created session becomes visible.
+        ws.createSession({ workspace: store.session?.workspace || undefined }).catch((e) => store.setError(String(e)));
         break;
       case "/plugins":
         ui.setRightTab("diagnostics", true);

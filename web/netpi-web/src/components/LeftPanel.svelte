@@ -11,13 +11,15 @@
   });
 
   function newSession() {
-    ws.request("session.create", {
+    // astra-1 F: explicit navigation — the created session becomes visible.
+    ws.createSession({
       workspace: store.session?.workspace || undefined,
     }).catch((e) => store.setError(String(e)));
   }
 
   function openSession(id: string) {
-    ws.request("session.open", { sessionId: id }).catch((e) => store.setError(String(e)));
+    // astra-1 F: explicit navigation — only this opens the visible session.
+    ws.openSession(id).catch((e) => store.setError(String(e)));
   }
 
   function deleteSession(e: Event, id: string, title: string) {
