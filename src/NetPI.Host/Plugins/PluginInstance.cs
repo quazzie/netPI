@@ -77,6 +77,61 @@ public sealed class PluginInstance
         }
     }
 
+    /// <summary>
+    /// astra-1 P3: begin draining atomically with the state check. Succeeds
+    /// only from Active or Failed (the two reloadable states); on failure
+    /// <c>prev</c> is the current state and nothing changed.
+    ///
+    /// Lock order (documented, one direction only): _stateGate first, never
+    /// holding any other lock; <see cref="LiveLeases"/> is a lock-free
+    /// ConcurrentDictionary, so storing into it under _stateGate cannot invert
+    /// the order with any other lock.
+    /// </summary>
+    public bool TryBeginDrain(out PluginState prev)
+    {
+        lock (_stateGate)
+        {
+            prev = _state;
+            if (_state is not (PluginState.Active or PluginState.Failed))
+                return false;
+            _state = PluginState.Draining;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// astra-1 P3: atomically admit a NEW lease: the state check and the
+    /// lease recording happen under the same lock, so a lease can never be
+    /// admitted after <see cref="TryBeginDrain"/> succeeded. External work
+    /// (registry Acquire) is admitted only from Loading/Active — a Failed or
+    /// Draining plugin takes no new external work.
+    /// </summary>
+    public bool TryAcquireLease(Guid leaseId, IDisposable lease)
+    {
+        lock (_stateGate)
+        {
+            if (_state is not (PluginState.Loading or PluginState.Active))
+                return false;
+            LiveLeases[leaseId] = lease;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// astra-1 P3: atomic admission for the plugin's OWN lease (it may hold
+    /// work on itself while Failed — but never once draining has started).
+    /// </summary>
+    public bool TryAcquireSelfLease(Guid leaseId, IDisposable lease)
+    {
+        lock (_stateGate)
+        {
+            if (_state is PluginState.Draining or PluginState.Unloading)
+                return false;
+            LiveLeases[leaseId] = lease;
+            return true;
+        }
+    }
+
     /// <summary>Most recent load/start/reload failure (PLAN §46 plugin-management surface); null when healthy.</summary>
     public string? LastError
     {
@@ -100,20 +155,31 @@ public sealed class PluginInstance
     /// </summary>
     public IValueLease<object> AcquireSelfLease()
     {
+        // astra-1 P3: atomic admission — a lease is recorded only if the state
+        // machine admits it (never after draining started). An unadmitted
+        // self-lease is returned untracked (the plugin may still touch its own
+        // already-live services; the drain target only counts admitted ones).
         var lease = new PluginSelfLease(this);
-        LiveLeases[lease.Id] = lease;
+        if (!TryAcquireSelfLease(lease.Id, lease))
+        {
+            lease.Untrack();
+            return lease;
+        }
         return lease;
     }
 
     private sealed class PluginSelfLease(PluginInstance owner) : IValueLease<object>
     {
         private int _released;
+        private bool _tracked = true;
         public Guid Id { get; } = Guid.NewGuid();
         public object Value => owner;
+        public void Untrack() => _tracked = false;
         private void Release()
         {
             if (Interlocked.Exchange(ref _released, 1) != 0) return;
-            owner.LiveLeases.TryRemove(Id, out _);
+            if (_tracked)
+                owner.LiveLeases.TryRemove(Id, out _);
         }
         void IDisposable.Dispose() => Release();
         public ValueTask DisposeAsync() { Release(); return ValueTask.CompletedTask; }

@@ -73,15 +73,14 @@ public sealed class ServiceRegistry : IServiceRegistry
         if (raw.instance is not T typed)
             throw new ServiceUnavailableException(id, $"registered as {raw.serviceType.Name}, not {typeof(T).Name}");
         var lease = new Lease<T>(typed, raw.ownerRef);
+        // astra-1 P3: admission is atomic with the state check — a new lease
+        // can never be recorded after the owner began draining.
         var owner = GetTarget(raw.ownerRef);
-        if (owner is not null &&
-            owner.State is PluginState.Draining or PluginState.Unloading or PluginState.Unloaded or PluginState.Failed)
+        if (owner is not null && !owner.TryAcquireLease(lease.Id, (IDisposable)lease))
         {
             ((IDisposable)lease).Dispose();
             throw new ServiceUnavailableException(id, $"owning plugin '{owner.PluginId}' is {owner.State}");
         }
-        if (owner is not null)
-            owner.AddLease(lease.Id, lease);
         return lease;
     }
 
@@ -96,15 +95,13 @@ public sealed class ServiceRegistry : IServiceRegistry
         if (expectedType is null) throw new ArgumentNullException(nameof(expectedType));
         var raw = AcquireCore(id, expectedType);
         var lease = new Lease<object>(raw.instance, raw.ownerRef);
+        // astra-1 P3: atomic admission (see Acquire<T>).
         var owner = GetTarget(raw.ownerRef);
-        if (owner is not null &&
-            owner.State is PluginState.Draining or PluginState.Unloading or PluginState.Unloaded or PluginState.Failed)
+        if (owner is not null && !owner.TryAcquireLease(lease.Id, (IDisposable)lease))
         {
             ((IDisposable)lease).Dispose();
             throw new ServiceUnavailableException(id, $"owning plugin '{owner.PluginId}' is {owner.State}");
         }
-        if (owner is not null)
-            owner.AddLease(lease.Id, lease);
         return lease;
     }
 
@@ -115,24 +112,34 @@ public sealed class ServiceRegistry : IServiceRegistry
     /// </summary>
     public IValueLease<T> AcquireSelfLease<T>() where T : notnull
     {
+        // astra-1 P3: the self-lease binds the ACTUAL owning generation passed
+        // in by the scoped wrapper — never ambient state left over from a
+        // previous load — and admission is atomic with the state machine.
         var owner = ServiceOwner.Current;
         if (owner is null)
             return new SelfLease<T>(); // host-side / test: no owning generation
         var lease = new SelfLease<T>(owner);
-        owner.AddLease(lease.Id, lease);
+        if (!owner.TryAcquireSelfLease(lease.Id, lease))
+        {
+            lease.Untrack();
+            return lease;
+        }
         return lease;
     }
 
     private sealed class SelfLease<T>(PluginInstance? owner = null) : IValueLease<T> where T : notnull
     {
         private int _released;
+        private bool _tracked = true;
         public Guid Id { get; } = Guid.NewGuid();
         private readonly T _value = default!;
         public T Value => _value;
+        public void Untrack() => _tracked = false;
         private void Release()
         {
             if (Interlocked.Exchange(ref _released, 1) != 0) return;
-            owner?.RemoveLease(Id, out _);
+            if (_tracked)
+                owner?.RemoveLease(Id, out _);
         }
         void IDisposable.Dispose() => Release();
         public ValueTask DisposeAsync() { Release(); return ValueTask.CompletedTask; }

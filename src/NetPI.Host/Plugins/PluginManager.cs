@@ -950,8 +950,10 @@ public sealed class PluginManager
         if (Volatile.Read(ref _shutdownStarted) == 1)
             return (Outcome("host shutdown in progress", PluginLifecyclePhase.Pinning, PluginLifecycleOutcome.Deferred), null);
 
-        var prev = old.State;
-        if (!old.TrySetState(prev, PluginState.Draining))
+        // astra-1 P3: drain admission is atomic with the state check, and
+        // atomic with lease admission — after this returns, no NEW lease can
+        // ever be admitted against this generation.
+        if (!old.TryBeginDrain(out var prev))
             return (Outcome($"state moved to {old.State} during admission",
                 PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred), null);
         _logger.LogInformation("{Plugin} draining; new service acquisitions are denied", pluginId);
