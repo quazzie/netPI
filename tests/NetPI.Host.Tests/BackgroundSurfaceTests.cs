@@ -44,8 +44,9 @@ public class BackgroundSurfaceTests
         public IValueLease<T> Acquire<T>(string id) where T : notnull => new Lease<T>(Resolve<T>(id));
         public IValueLease<object> Acquire(string id, Type expectedType)
             => new Lease<object>(_services.TryGetValue(id, out var v) ? v : throw new ServiceUnavailableException(id, "no"));
-        public IValueLease<T> AcquireSelfLease<T>() where T : notnull
-            => throw new NotSupportedException();
+        // astra-1 P5: a running background job takes a generation self-lease;
+        // in this host-less harness the lease is a no-op.
+        public IValueLease<T> AcquireSelfLease<T>() where T : notnull => new Lease<T>(default!);
         private sealed class Noop : IDisposable { public void Dispose() { } }
         private sealed class Lease<T>(T value) : IValueLease<T>
         {
@@ -64,7 +65,16 @@ public class BackgroundSurfaceTests
         public IEventBus Events => throw new NotSupportedException();
         public JsonElement OwnConfig => JsonDocument.Parse("{}").RootElement.Clone();
         public IPluginLogger Log => new NullLogger();
-        public IValueLease<object> LeaseSelf() => throw new NotSupportedException();
+        // astra-1 P5: a running background job takes a generation self-lease;
+        // in this host-less harness it is a no-op.
+        public IValueLease<object> LeaseSelf() => new NoopLease();
+    }
+
+    private sealed class NoopLease : IValueLease<object>
+    {
+        public object Value => throw new InvalidOperationException();
+        public void Dispose() { }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     /// <summary>Resolves anything to powershell -Command so the manager can spawn it.</summary>

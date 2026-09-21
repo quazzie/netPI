@@ -64,7 +64,7 @@ public class ToolsReloadDependencyTests
     }
 
     private sealed class FakeContext(
-        RegistryScope services, JsonElement ownConfig) : IPluginContext
+        RegistryScope services, JsonElement ownConfig, PluginInstance generation) : IPluginContext
     {
         public PluginInfo Info { get; } = new("netPI.BackgroundTasks", "Background Tasks Test", "0.2.0");
         public IServiceRegistry Services => services;
@@ -73,7 +73,10 @@ public class ToolsReloadDependencyTests
         public IEventBus Events => throw new NotSupportedException();
         public JsonElement OwnConfig => ownConfig;
         public IPluginLogger Log { get; } = new NullLogger();
-        public IValueLease<object> LeaseSelf() => throw new NotSupportedException();
+        // astra-1 P5: a running background job acquires a self-lease on its
+        // owning generation — bound to the real PluginInstance here so the
+        // defer-while-jobs-running behavior is testable (LeasesHeld).
+        public IValueLease<object> LeaseSelf() => generation.AcquireSelfLease();
     }
 
     /// <summary>Resolves to powershell -Command so the manager can spawn a real job.</summary>
@@ -120,7 +123,8 @@ public class ToolsReloadDependencyTests
         var hostRegistry = new ServiceRegistry();
         var reg = new RegistryScope(hostRegistry);
         var cfg = JsonDocument.Parse("{}").RootElement.Clone();
-        var ctx = new FakeContext(reg, cfg);
+        var generation = new PluginInstance("netPI.BackgroundTasks", 1) { State = PluginState.Active };
+        var ctx = new FakeContext(reg, cfg, generation);
         var tempRoot = Path.Combine(Path.GetTempPath(), "netpi-toolsreload-" + Guid.NewGuid().ToString("n"));
         Directory.CreateDirectory(tempRoot);
 
@@ -181,6 +185,47 @@ public class ToolsReloadDependencyTests
         {
             if (job is not null) await (reg.Resolve<IBackgroundJobManager>("background")).KillAsync(job.JobId);
             await plugin.StopAsync(CancellationToken.None);
+            try { Directory.Delete(tempRoot, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// astra-1 P5: while a background job is RUNNING, the owning generation
+    /// holds a self-lease, so a reload of BackgroundTasks is DEFERRED by its
+    /// drain (jobs are never silently killed); the lease releases on exit.
+    /// </summary>
+    [Fact]
+    public async Task RunningJobHoldsGenerationLeaseUntilExit()
+    {
+        var hostRegistry = new ServiceRegistry();
+        var reg = new RegistryScope(hostRegistry);
+        var cfg = JsonDocument.Parse("{}").RootElement.Clone();
+        var generation = new PluginInstance("netPI.BackgroundTasks", 1) { State = PluginState.Active };
+        var ctx = new FakeContext(reg, cfg, generation);
+        hostRegistry.Register("resolver:powershell", new FakeResolver(), reg._ownerForTest);
+
+        var mgr = new BackgroundJobManager(ctx);
+        hostRegistry.Register("background", mgr, reg._ownerForTest);
+        var tempRoot = Path.Combine(Path.GetTempPath(), "netpi-bg-lease-" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempRoot);
+        BackgroundJobInfo? job = null;
+        try
+        {
+            // No job → no lease.
+            Assert.Equal(0, generation.LeasesHeld);
+
+            // Start a real job → the generation is leased while it runs.
+            job = await mgr.StartAsync("powershell", "Start-Sleep -Seconds 60", tempRoot, null);
+            Assert.Equal(1, generation.LeasesHeld);
+
+            // Killing the job releases the lease (exit path).
+            await mgr.KillAsync(job.JobId);
+            Assert.True(WaitFor(() => generation.LeasesHeld == 0, 10000),
+                "self-lease was not released after the job exited");
+        }
+        finally
+        {
+            if (job is not null) await mgr.KillAsync(job.JobId);
             try { Directory.Delete(tempRoot, recursive: true); } catch { }
         }
     }

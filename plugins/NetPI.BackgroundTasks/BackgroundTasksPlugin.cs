@@ -21,6 +21,13 @@ internal sealed class BackgroundJob
     public Process? Process { get; set; }
     public BackgroundJobState State { get; set; } = BackgroundJobState.Running;
     public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// astra-1 P5: self-lease on the owning generation — while a job is RUNNING,
+    /// the generation cannot be reloaded (the reload's drain waits for every
+    /// job to exit; killing the job releases it). Disposed in <c>OnExited</c>.
+    /// </summary>
+    public IValueLease<object>? JobLease { get; set; }
     public DateTimeOffset? ExitedAt { get; set; }
     public int? ExitCode { get; set; }
 
@@ -144,6 +151,12 @@ public sealed class BackgroundJobManager : IBackgroundJobManager
         _ = proc.WaitForExitAsync().ContinueWith(_ => OnExited(job), TaskScheduler.Default);
         job.Process = proc;
 
+        // astra-1 P5: keep the owning generation alive while the job runs —
+        // a reload of BackgroundTasks is DEFERRED (drain) until this job
+        // exits, instead of silently killing it. Unadmitted (the generation
+        // is already draining) the lease is untracked and the job still runs.
+        job.JobLease = _ctx.LeaseSelf();
+
         lock (_gate) _jobs[job.JobId] = job;
         _ctx.Log.Information($"background start {job.JobId} [{shellId}] pid={proc.Id}: {command}");
         return job.ToInfo();
@@ -229,6 +242,10 @@ public sealed class BackgroundJobManager : IBackgroundJobManager
             job.ExitedAt ??= DateTimeOffset.UtcNow;
         }
         catch { /* process may be gone */ }
+        // astra-1 P5: the job no longer runs — release the generation lease so
+        // a (deferred) reload can proceed.
+        try { job.JobLease?.Dispose(); } catch { /* best-effort */ }
+        job.JobLease = null;
         _ctx.Log.Information($"background {job.JobId} exited code={job.ExitCode}");
     }
 

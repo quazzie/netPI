@@ -49,6 +49,13 @@ public sealed class PluginInstance
     /// <summary>astra-1 P3: true once StartAsync succeeded (Stop is only safe after it).</summary>
     public bool StartRan { get; set; }
 
+    /// <summary>
+    /// astra-1 P5: process-wide start ORDER (assigned when StartAsync succeeds).
+    /// Shutdown stops consumers before providers (reverse start order), never
+    /// by per-plugin generation number. 0 = start never succeeded.
+    /// </summary>
+    public long StartSequence { get; set; }
+
     /// <summary>astra-1 P3: idempotency guard for the unified generation cleanup.</summary>
     public bool CleanupStarted { get; set; }
 
