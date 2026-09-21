@@ -70,6 +70,10 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
                 // one Svelte/WebView surface; WinForms only supplies OS dialogs.
                 _view.CoreWebView2!.WebMessageReceived += OnWebMessageReceived;
 
+                // No Electron-style shell here: map new-window intents
+                // (target=_blank, e.g. the /api/file viewer) to the OS.
+                _view.CoreWebView2!.NewWindowRequested += OnNewWindowRequested;
+
                 // Show a waiting page while the host boots; it polls /bootstrap
                 // and reloads into the app once the host is up.
                 _view.CoreWebView2.NavigateToString(WaitingPage);
@@ -91,6 +95,48 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
             // deadlocks WebView2's UI-context completion). Fire-and-forget.
             _ = InitWebViewAsync();
             FormClosed += (_, _) => KillHost();
+        }
+
+        private void OnNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
+        {
+            e.Handled = true; // never open a second window; route to the OS
+            var urlStr = e.Uri;
+            if (string.IsNullOrEmpty(urlStr)) return;
+            try
+            {
+                var target = ResolveNewWindowTarget(new Uri(urlStr));
+                Process.Start(new ProcessStartInfo { FileName = target, UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                Trace(Path.Combine(AppContext.BaseDirectory, "host-launch.log"), $"new-window failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Maps a new-window URL to something the OS opens: an in-app
+        /// /api/file viewer URL becomes the referenced path (opened in the
+        /// default app, or Explorer for a folder -- relative against the
+        /// project root, mirroring the host CWD fallback); anything else is
+        /// the URL itself, opened in the default browser.
+        /// </summary>
+        private static string ResolveNewWindowTarget(Uri url)
+        {
+            if (url.AbsolutePath.EndsWith("/api/file", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var part in url.Query.TrimStart('?').Split('&'))
+                {
+                    var eq = part.IndexOf('=');
+                    if (eq > 0 && part[..eq] == "path" && eq + 1 < part.Length)
+                    {
+                        var raw = Uri.UnescapeDataString(part[(eq + 1)..]);
+                        return Path.IsPathRooted(raw)
+                            ? raw
+                            : Path.Combine(FindProjectRoot(AppContext.BaseDirectory) ?? AppContext.BaseDirectory, raw);
+                    }
+                }
+            }
+            return url.ToString();
         }
 
         private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
