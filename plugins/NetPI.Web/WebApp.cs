@@ -32,6 +32,27 @@ internal sealed class WebApp : IAsyncDisposable
     private readonly IPluginLogger _log;
     private WebApplication? _app;
 
+    /// <summary>Host build identity (set by the launcher via NETPI_HOST_BUILD_ID, or
+    /// the host dll's SHA-256 when started manually).</summary>
+    private static string BuildId { get; } = ResolveBuildId();
+
+    private static string ResolveBuildId()
+    {
+        var fromEnv = Environment.GetEnvironmentVariable("NETPI_HOST_BUILD_ID");
+        if (!string.IsNullOrEmpty(fromEnv)) return fromEnv;
+        try
+        {
+            var dll = Path.Combine(AppContext.BaseDirectory, "netPI.Host.dll");
+            if (File.Exists(dll))
+            {
+                using var sha = System.Security.Cryptography.SHA256.Create();
+                return Convert.ToHexString(sha.ComputeHash(File.ReadAllBytes(dll))).ToLowerInvariant();
+            }
+        }
+        catch { }
+        return "unknown";
+    }
+
     // ---- services resolved at load (reload-safe; may be null) -------------
     private IAgentRunner? _runner;
     private IAgentRuntime? _agent;
@@ -124,6 +145,24 @@ internal sealed class WebApp : IAsyncDisposable
             _log.Warning("staticRoot not found; serving /ws only");
         }
         app.MapGet("/bootstrap", Bootstrap);
+
+        // Localhost-only identity probe for launchers: proves the listener is a
+        // netPI host and reports its build id / runtime dirs, so "port open" is
+        // never mistaken for "our host is up". (PLAN §49 / astra-1 P0.3)
+        app.MapGet("/identity", (HttpContext c) =>
+        {
+            c.Response.ContentType = "application/json";
+            return c.Response.WriteAsJsonAsync(new
+            {
+                name = "netPI",
+                buildId = BuildId,
+                hostDir = AppContext.BaseDirectory,
+                netpiHome = Environment.GetEnvironmentVariable("NETPI_HOME"),
+                pluginDir = Environment.GetEnvironmentVariable("NETPI_PLUGINS"),
+                projectRoot = Environment.GetEnvironmentVariable("NETPI_PROJECT_ROOT"),
+                port = _port,
+            });
+        });
 
         app.Map("/ws", HandleWsAsync);
         // Localhost-only file view for workspace/absolute references in chat.

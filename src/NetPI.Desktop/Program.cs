@@ -249,24 +249,41 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
         {
             var trace = Path.Combine(AppContext.BaseDirectory, "host-launch.log");
             File.WriteAllText(trace, $"stage=enter time={DateTime.Now:HH:mm:ss}");
-            if (PortOpen(Port))
-            {
-                Trace(trace, "stage=port-already-open (host already running)");
-                return; // a host already serves :5173 — reuse it
-            }
-            // Run the host from a snapshot in the runtime home (~/.netpi/host),
-            // the same mechanism as tools/keep-alive-host.ps1: a host running
-            // in place locks the bundled host/*.dll, so every `dotnet build` of
-            // the Desktop project fails to re-copy them (MSB3027) while the app
-            // is open. The bundled folder is staging only; the snapshot is
-            // rebuilt fresh at every launch.
             var baseDir = AppContext.BaseDirectory;
             var stagingDir = Path.Combine(baseDir, "host");
             var runtimeHome = Environment.GetEnvironmentVariable("NETPI_HOME")
                 ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".netpi");
-            var hostDir = Path.Combine(runtimeHome, "host");
-            SyncHostSnapshot(stagingDir, hostDir, trace);
-            var host = Path.Combine(hostDir, "netPI.Host.exe");
+            if (PortOpen(Port))
+            {
+                // A TCP listener alone is not proof it is OUR netPI host — probe
+                // its identity (PLAN §49 / astra-1 P0.3): an open port may belong
+                // to anything else on the machine.
+                var existing = await ProbeIdentityAsync(trace);
+                if (!existing.HasValue)
+                    throw new InvalidOperationException(
+                        $"Port {Port} is in use by a process that does not answer like a netPI host. " +
+                        "Stop it (or run the host elsewhere) and try again.");
+                var (runningBuild, _) = existing.Value;
+                var pendingBuild = ComputeBuildId(stagingDir, trace);
+                if (runningBuild == pendingBuild)
+                {
+                    Trace(trace, "stage=port-already-open build-match (reuse existing host)");
+                    return;
+                }
+                Trace(trace, $"stage=port-already-open RUNNING={runningBuild} PENDING={pendingBuild}");
+                throw new InvalidOperationException(
+                    $"A netPI host with a DIFFERENT build is already running on port {Port} " +
+                    $"(running build {runningBuild[..12]}…, pending build {pendingBuild[..12]}…). " +
+                    "A host/Abstractions change is not a plugin hot reload — stop the old " +
+                    "instance (or its launcher window) to install the pending build.");
+            }
+            // Run the host from an IMMUTABLE per-launch snapshot (PLAN §49 /
+            // astra-1 P0.1/P0.2): the running host never maps files from the
+            // repo bin or from a directory a later launch would refresh in
+            // place. A failed or incomplete stage is never launched from.
+            var stagingId = ComputeStagingId(stagingDir);
+            var launchDir = StageHostSnapshot(Path.Combine(runtimeHome, "app-cache"), stagingId, stagingDir, trace);
+            var host = Path.Combine(launchDir, "netPI.Host.exe");
             if (!File.Exists(host))
                 throw new FileNotFoundException("netPI.Host.exe", host);
 
@@ -280,13 +297,27 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+            // Explicit launcher identity: the host cannot re-derive the project
+            // root from its (external) execution directory, so the launcher
+            // always states it; NETPI_HOST_BUILD_ID lets the next launch compare
+            // against the build that is actually running.
+            psi.Environment["NETPI_PROJECT_ROOT"] = FindProjectRoot(baseDir) ?? baseDir;
+            psi.Environment["NETPI_HOST_BUILD_ID"] = ComputeBuildId(launchDir, trace);
+            psi.Environment["NETPI_HOME"] = runtimeHome;
 
             Trace(trace, "stage=process.start");
             _host = Process.Start(psi) ?? throw new InvalidOperationException("host did not start");
             Trace(trace, $"stage=started pid={_host.Id}");
             // Drain the redirected streams continuously — otherwise the
             // child's own log output fills the 4KB pipe buffer and the process blocks.
-            _ = Task.Run(() => { _ = _host.StandardError.ReadToEnd(); _ = _host.StandardOutput.ReadToEnd(); });
+            // Drain the redirected streams concurrently and boundedly — the 4 KB
+            // pipe buffers would stall the child once full (a sequential drain
+            // of one side first could deadlock on two large bursts), and an
+            // unbounded buffer would grow with every host run. Each line is kept
+            // in a bounded ring (last 400) for the crash-dump on exit.
+            // The pump also mirrors each line to host-launch.log (Trace).
+            _ = StartDrainPump(_host.StandardOutput, trace);
+            _ = StartDrainPump(_host.StandardError, trace);
 
             for (var i = 0; i < 60 && !_host.HasExited; i++)
             {
@@ -303,36 +334,134 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
         }
 
         /// <summary>
-        /// Refresh the ~/.netpi/host snapshot from the bundled staging folder.
-        /// Files are only overwritten when the staged bytes changed (the running
-        /// snapshot's DLLs are locked while a host started from them is alive; a
-        /// busy copy that already has a usable prior snapshot is logged and
-        /// tolerated, a busy copy that does not rethrows).
+        /// astra-1 P0.2: copy the complete host payload into a NEW immutable
+        /// runtime directory under <c>app-cache/host/&lt;stagingId&gt;/launch-&lt;ts&gt;</c>
+        /// and verify it before returning. If any copy or check fails the staged
+        /// directory is discarded and the failure is reported — no file-by-file
+        /// fallback onto an old directory, no launch from a mixed payload.
+        /// Prunes prior launches of the same build, best-effort: a locked
+        /// directory is skipped, never blocking this launch (astra-1 P0.7).
         /// </summary>
-        private static void SyncHostSnapshot(string stagingDir, string hostDir, string trace)
+        private static string StageHostSnapshot(string appCacheRoot, string stagingId, string stagingDir, string trace)
         {
-            Directory.CreateDirectory(hostDir);
-            var files = Directory.EnumerateFiles(stagingDir, "*", SearchOption.AllDirectories);
-            foreach (var src in files)
+            var buildRoot = Path.Combine(appCacheRoot, "host", stagingId);
+            PruneOldLaunches(buildRoot, trace, keep: 3);
+
+            var launchDir = Path.Combine(buildRoot, $"launch-{DateTime.Now:yyyyMMdd-HHmmss}");
+            Directory.CreateDirectory(launchDir);
+            try
             {
-                var dst = Path.Combine(hostDir, Path.GetRelativePath(stagingDir, src));
-                Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-                var writeNeeded = !File.Exists(dst)
-                    || new FileInfo(src).LastWriteTimeUtc > new FileInfo(dst).LastWriteTimeUtc
-                    || new FileInfo(src).Length != new FileInfo(dst).Length;
-                if (!writeNeeded) continue;
-                try
+                foreach (var src in Directory.EnumerateFiles(stagingDir, "*", SearchOption.AllDirectories))
                 {
-                    File.Copy(src, dst, overwrite: true);
-                    Trace(trace, $"stage=host-sync {Path.GetRelativePath(hostDir, dst)}");
+                    var dst = Path.Combine(launchDir, Path.GetRelativePath(stagingDir, src));
+                    Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+                    File.Copy(src, dst, overwrite: false);
                 }
-                catch (IOException ex)
+                // Verify the staged copy is complete and byte-identical before
+                // anything may run from it.
+                foreach (var src in Directory.EnumerateFiles(stagingDir, "*", SearchOption.AllDirectories))
                 {
-                    Trace(trace, $"stage=host-sync-busy {Path.GetRelativePath(hostDir, dst)} {ex.Message}");
-                    if (!File.Exists(dst)) throw;
+                    var dst = Path.Combine(launchDir, Path.GetRelativePath(stagingDir, src));
+                    if (!File.Exists(dst)
+                        || new FileInfo(src).Length != new FileInfo(dst).Length
+                        || !FilesEqual(src, dst))
+                        throw new IOException($"staged host file differs from source: {Path.GetRelativePath(stagingDir, src)}");
                 }
+                Trace(trace, $"stage=host-staged {launchDir}");
+                return launchDir;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Never launch from a half-staged directory: discard it.
+                try { Directory.Delete(launchDir, true); } catch { }
+                throw new InvalidOperationException($"could not stage a complete host snapshot: {ex.Message}", ex);
             }
         }
+
+        private static bool FilesEqual(string a, string b)
+        {
+            using var fa = File.OpenRead(a);
+            using var fb = File.OpenRead(b);
+            var ba = new byte[8192]; var bb = new byte[8192];
+            while (true)
+            {
+                var n = fa.Read(ba, 0, ba.Length);
+                if (n != fb.Read(bb, 0, bb.Length)) return false;
+                for (var i = 0; i < n; i++) if (ba[i] != bb[i]) return false;
+                if (n == 0) return true;
+            }
+        }
+
+        /// <summary>Content id of the staged host payload (SHA-256 of netPI.Host.dll
+        /// when present, otherwise "mixed") — groups the launch directories that
+        /// belong to one build so pruning is per-build.</summary>
+        private static string ComputeStagingId(string stagingDir)
+        {
+            try
+            {
+                var dll = Path.Combine(stagingDir, "netPI.Host.dll");
+                if (File.Exists(dll))
+                    using (var sha = System.Security.Cryptography.SHA256.Create())
+                        return Convert.ToHexString(sha.ComputeHash(File.ReadAllBytes(dll))).ToLowerInvariant()[..12];
+            }
+            catch { }
+            return "mixed";
+        }
+
+        private static string ComputeBuildId(string hostDir, string trace)
+        {
+            try
+            {
+                var dll = Path.Combine(hostDir, "netPI.Host.dll");
+                if (File.Exists(dll))
+                    using (var sha = System.Security.Cryptography.SHA256.Create())
+                        return Convert.ToHexString(sha.ComputeHash(File.ReadAllBytes(dll))).ToLowerInvariant();
+            }
+            catch { }
+            return "unknown";
+        }
+
+        /// <summary>astra-1 P0.3: ask a running listener for its identity. An open
+        /// port is not evidence it is a netPI host — only the /identity contract is.</summary>
+        private static async Task<(string BuildId, string HostDir)? > ProbeIdentityAsync(string trace)
+        {
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+                var json = await http.GetStringAsync($"http://127.0.0.1:{Port}/identity");
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("name", out var n)
+                    || n.ValueKind != System.Text.Json.JsonValueKind.String
+                    || !string.Equals(n.GetString(), "netPI", StringComparison.Ordinal))
+                    return null;
+                var build = root.TryGetProperty("buildId", out var b) ? b.GetString() ?? "unknown" : "unknown";
+                var dir = root.TryGetProperty("hostDir", out var h) ? h.GetString() ?? "" : "";
+                Trace(trace, $"stage=identity build={build} dir={dir}");
+                return (build, dir);
+            }
+            catch (System.Text.Json.JsonException) { return null; }
+            catch (HttpRequestException) { return null; }
+            catch (TaskCanceledException) { return null; }
+            catch (IOException) { return null; }
+        }
+
+        private static void PruneOldLaunches(string buildRoot, string trace, int keep)
+        {
+            try
+            {
+                if (!Directory.Exists(buildRoot)) return;
+                foreach (var dir in Directory.GetDirectories(buildRoot)
+                             .OrderByDescending(d => Directory.GetLastWriteTimeUtc(d))
+                             .Skip(keep))
+                {
+                    try { Directory.Delete(dir, true); Trace(trace, $"stage=prune {Path.GetFileName(dir)}"); }
+                    catch (Exception ex) { Trace(trace, $"stage=prune-skipped {Path.GetFileName(dir)} ({ex.Message})"); }
+                }
+            }
+            catch (Exception ex) { Trace(trace, $"stage=prune-error {ex.Message}"); }
+        }
+
         /// <summary>Walk up from the output folder to the project root (the dir with plugins/).</summary>
         private static string? FindProjectRoot(string from)
         {
@@ -362,13 +491,41 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
             finally { tcp.Close(); }
         }
 
+        /// <summary>
+        /// Pumps a redirected child stream to a bounded in-memory tail so the
+        /// 4 KB pipe never blocks. Returns the (thread-safe) line buffer.
+        /// </summary>
+        private static Queue<string> StartDrainPump(StreamReader reader, string trace)
+        {
+            var lines = new Queue<string>();
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!reader.EndOfStream)
+                    {
+                        var line = await reader.ReadLineAsync();
+                        if (line is null) break;
+                        Trace(trace, $"host: {line}");
+                        lock (lines)
+                        {
+                            lines.Enqueue(line);
+                            while (lines.Count > 400) lines.Dequeue();
+                        }
+                    }
+                }
+                catch { /* child pipe closed / process killed */ }
+            });
+            return lines;
+        }
+
         private void KillHost()
         {
             try
             {
                 if (_host is { HasExited: false } p)
                 {
-                    p.StandardInput.Close();
+                    try { p.StandardInput.Close(); } catch { }
                     p.Kill(entireProcessTree: true);
                     p.WaitForExit(3000);
                 }

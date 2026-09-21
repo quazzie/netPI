@@ -46,10 +46,10 @@ public sealed class SqlitePlugin : INetPiPlugin
 
     public ValueTask UnloadAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
-    private static string DefaultDbPath()
-    {
-        var home = Environment.GetEnvironmentVariable("HOME")
-            ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return Path.Combine(home, ".netpi", "netpi.db");
-    }
+    /// <summary>astra-1 P0.5: derive the default database from the single
+    /// effective runtime home (<see cref="NetPI.Abstractions.RuntimeHome"/>,
+    /// NETPI_HOME aware). No database migration: an existing netpi.db in place
+    /// is simply used; two different runtime homes keep separate databases.</summary>
+    private static string DefaultDbPath() =>
+        Path.Combine(NetPI.Abstractions.RuntimeHome.Dir, "netpi.db");
 }

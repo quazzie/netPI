@@ -39,8 +39,9 @@ public sealed class ConfigService : IConfigService, IDisposable
             File.WriteAllText(_configPath, DefaultConfigJson);
     }
 
-    public static string DefaultRuntimeDirectory() =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".netpi");
+    /// <summary>astra-1 P0.5: the single effective runtime home — see
+    /// <see cref="NetPI.Abstractions.RuntimeHome"/> (NETPI_HOME aware).</summary>
+    public static string DefaultRuntimeDirectory() => NetPI.Abstractions.RuntimeHome.Dir;
 
     private const string DefaultConfigJson = """
     {

@@ -15,7 +15,10 @@
   <!-- WinForms control ships in lib_manual (not auto-resolved for net10). -->
   <ItemGroup>
     <Reference Include="Microsoft.Web.WebView2.WinForms">
-      <HintPath>C:\Users\quazz\.nuget\packages\microsoft.web.webview2\1.0.2903.40\lib_manual\netcoreapp3.0\Microsoft.Web.WebView2.WinForms.dll</HintPath>
+      <!-- NuGet-managed path ($(NuGetPackageRoot) = the global packages folder),
+           never a hardcoded user directory. The lib_manual TFM folder is the
+           manual-restore one; the same dll is present in the net6/net8 folders. -->
+      <HintPath>$(NuGetPackageRoot)microsoft.web.webview2/1.0.2903.40/lib_manual/netcoreapp3.0/Microsoft.Web.WebView2.WinForms.dll</HintPath>
     </Reference>
   </ItemGroup>
 
@@ -24,12 +27,15 @@
     <ProjectReference Include="..\NetPI.Host\NetPI.Host.csproj" ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
 
-  <!-- Ship the host next to the shell so the app is self-contained. -->
-  <ItemGroup>
-    <HostFiles Include="..\NetPI.Host\bin\$(Configuration)\net10.0\**\*"
-               Condition="Exists('..\NetPI.Host\bin\$(Configuration)\net10.0')" />
-  </ItemGroup>
+  <!-- Ship the host next to the shell so the app is self-contained. The
+       item list is evaluated INSIDE the copy target, after the host project
+       has built (a project-level ItemGroup would be created during evaluation
+       and could miss first-build files). -->
   <Target Name="CopyHostApp" AfterTargets="Build">
+    <ItemGroup>
+      <HostFiles Include="$(MSBuildThisFileDirectory)..\NetPI.Host\bin\$(Configuration)\net10.0\**\*"
+                 Condition="Exists('$(MSBuildThisFileDirectory)..\NetPI.Host\bin\$(Configuration)\net10.0')" />
+    </ItemGroup>
     <MakeDir Directories="$(OutputPath)host" />
     <Copy SourceFiles="@(HostFiles)" DestinationFolder="$(OutputPath)host\%(RecursiveDir)" SkipUnchangedFiles="true" />
   </Target>

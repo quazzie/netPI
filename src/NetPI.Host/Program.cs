@@ -6,10 +6,15 @@ using NetPI.Host.Logging;
 using NetPI.Host.Plugins;
 
 var runtimeDir = Environment.GetEnvironmentVariable("NETPI_HOME") ?? ConfigService.DefaultRuntimeDirectory();
-var pluginDir = Environment.GetEnvironmentVariable("NETPI_PLUGINS") ?? "./plugins";
+// The launcher (desktop shell / tools/keep-alive-host.ps1) sets the project root
+// explicitly — a host executing from an immutable runtime cache cannot discover
+// the repository by walking up the directory tree.
+var projectRoot = Environment.GetEnvironmentVariable("NETPI_PROJECT_ROOT");
+var pluginDir = Environment.GetEnvironmentVariable("NETPI_PLUGINS") ?? (projectRoot is { Length: > 0 } ? Path.Combine(projectRoot, "plugins") : "./plugins");
 if (!Path.IsPathRooted(pluginDir))
     pluginDir = Path.GetFullPath(pluginDir);
-
+if (projectRoot is { Length: > 0 })
+    Directory.SetCurrentDirectory(projectRoot);
 var options = new PluginManagerOptions
 {
     PluginDirectory = pluginDir,
