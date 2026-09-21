@@ -20,6 +20,12 @@
     ws.request("session.open", { sessionId: id }).catch((e) => store.setError(String(e)));
   }
 
+  function deleteSession(e: Event, id: string, title: string) {
+    e.stopPropagation();
+    if (!confirm(`Delete session "${title}"? Its transcript is removed permanently.`)) return;
+    ws.request("session.delete", { sessionId: id }).catch((err) => store.setError(String(err)));
+  }
+
   function saveWorkspace() {
     if (!store.session || !workspace.trim()) return;
     ws.request("session.rename", {
@@ -63,8 +69,22 @@
             <button class="session-row" class:active={s.id === store.session?.id} onclick={() => openSession(s.id)}>
               <div class="session-row-title">{s.title || "untitled"}</div>
               <div class="session-row-meta">{s.workspace || "default workspace"}</div>
+              <span
+                class="session-delete"
+                title="Delete session"
+                onclick={(e) => deleteSession(e, s.id, s.title || "untitled")}
+              >✕</span>
             </button>
           {/each}
+          {#if store.sessionRemaining > 0}
+            <button
+              class="left-more"
+              disabled={store.sessionMoreLoading}
+              onclick={() => ws.loadMoreSessions()}
+            >
+              {store.sessionMoreLoading ? "Loading…" : `Load ${Math.min(50, store.sessionRemaining)} older`}
+            </button>
+          {/if}
           {#if !store.sessions.length}
             <div class="left-empty">No sessions yet.</div>
           {/if}

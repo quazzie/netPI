@@ -126,15 +126,16 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         };
     }
 
-    public async ValueTask<IReadOnlyList<SessionInfo>> ListAsync(int count = 50, CancellationToken ct = default)
+    public async ValueTask<IReadOnlyList<SessionInfo>> ListAsync(int count = 50, int offset = 0, CancellationToken ct = default)
     {
         var list = new List<SessionInfo>();
         await using var cmd = _connection.CreateCommand();
         cmd.CommandText = """
             SELECT id, title, workspace, created_at, updated_at
-            FROM sessions ORDER BY updated_at DESC LIMIT $count;
+            FROM sessions ORDER BY updated_at DESC LIMIT $count OFFSET $offset;
             """;
         cmd.Parameters.AddWithValue("$count", count);
+        cmd.Parameters.AddWithValue("$offset", Math.Max(0, offset));
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
             list.Add(new SessionInfo(
@@ -147,12 +148,29 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         return list;
     }
 
+    public async ValueTask<int> CountAsync(CancellationToken ct = default)
+    {
+        await using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM sessions;";
+        var raw = await cmd.ExecuteScalarAsync(ct);
+        return Convert.ToInt32(raw);
+    }
+
     public async ValueTask RenameAsync(string id, string title, CancellationToken ct = default)
     {
         await using var cmd = _connection.CreateCommand();
         cmd.CommandText = "UPDATE sessions SET title = $t, updated_at = $now WHERE id = $id;";
         cmd.Parameters.AddWithValue("$t", title);
         cmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        cmd.Parameters.AddWithValue("$id", id);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async ValueTask DeleteAsync(string id, CancellationToken ct = default)
+    {
+        // Entries fall out via ON DELETE CASCADE (PRAGMA foreign_keys=ON).
+        await using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "DELETE FROM sessions WHERE id = $id;";
         cmd.Parameters.AddWithValue("$id", id);
         await cmd.ExecuteNonQueryAsync(ct);
     }

@@ -819,6 +819,16 @@ body.panel-resizing .app-shell { transition: none; }
   background: #151920;
 }
 .left-new:hover { background: var(--bg-hover); }
+.left-more {
+  margin-top: 4px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  text-align: left;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.left-more:hover:not(:disabled) { background: var(--bg-hover); color: #cbd3df; }
+.left-more:disabled { opacity: 0.5; cursor: default; }
 .left-section-label {
   padding: 4px 7px;
   color: var(--text-faint);
@@ -860,6 +870,24 @@ body.panel-resizing .app-shell { transition: none; }
   color: #c9d0db;
   font-size: 11.5px;
 }
+.session-row { position: relative; }
+.session-delete {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  width: 18px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  border-radius: 5px;
+  color: var(--text-faint);
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.session-row:hover .session-delete { opacity: 1; }
+.session-delete:hover { background: var(--bg-hover); color: #e0655f; }
 .session-row-meta {
   margin-top: 2px;
   overflow: hidden;

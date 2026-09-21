@@ -34,11 +34,17 @@ plugins/                  One folder per plugin; each contains a DLL staged by
                             NetPI.Retry         model-retry policy (§34)
                             NetPI.BackgroundTasks  background jobs + 4 tools (§27-28)
                             NetPI.Web           Kestrel Web surface, /ws, /api/file (§36, §41).
-                                                              Self-registers the "plugins" and "diagnostics"
-                                                              panels (docs/web-panels.md); shell has no hardcoded tabs.
+                                                              Registers no panel (its former
+                                                              "plugins" panel was folded into
+                                                              NetPI.Diagnostics, docs/web-panels.md);
+                                                              shell has no hardcoded tabs.
+                            NetPI.Diagnostics     standalone :5274 diagnostics Kestrel, registers
+                                                              the "diagnostics" panel (tabs: overview,
+                                                              wire, plugins, models, events, logs,
+                                                              sessions).
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
-tests/NetPI.Host.Tests/   98 xunit tests; the integration surface.
+tests/NetPI.Host.Tests/   100 xunit tests; the integration surface.
 tools/publish-plugins.ps1 Stages plugin DLLs into plugins/<name>/; the host
                               snapshots that folder into per-generation
                               plugin-cache dirs (what the ALCs actually load).
@@ -144,7 +150,11 @@ Envelope: `{ type, payload, requestId?, sessionId? }`.
 
 Client→server commands: `chat.send`, `chat.steer`, `agent.cancel`,
 `session.create`, `session.open`, `session.older` (scroll-up pagination,
-`beforeSequence`), `session.rename` (title or workspace), `session.list`,
+`beforeSequence`), `session.rename` (title or workspace), `session.delete`
+(rejected while a run is in progress on that session), `session.list` (page of
+50; request `offset`, response carries `offset`/`total`/`hasMore` — the drawer
+"load more" button fetches continuation pages and auto-advances after a
+visible delete),
 `session.model`, `session.reasoning`, `session.compact`, `models.refresh`,
 `plugin.reload` / `plugin.reloadAll` / `plugins.list`, `commands.list`,
 `workspace.files`, `config.update`.
@@ -156,6 +166,8 @@ ExecutingTools/Compacting/Retrying/Cancelling), `assistant.started` /
 `tool.started`, `tool.output` (`append:true` = grow live), `tool.completed`
 (with `durationMs`), `usage.updated`, `model.requestFailed`, `model.retrying`,
 `session.created/updated/entry/entries/older/compact.result`,
+`session.deleted` (client removed the session from the store; if it was the
+open session, the drawer starts a fresh one in the same workspace),
 `models.updated/refreshFailed`, `plugins.state`, `plugin.state`,
 `plugin.reloaded/Failed`, `ack`, `error`.
 
@@ -213,13 +225,19 @@ repo, it feeds every run in this workspace.
 ## Tests & verification
 
 ```bash
-dotnet test NetPI.sln        # 98 tests (agent runtime scenarios, session
+dotnet test NetPI.sln        # 100 tests (agent runtime scenarios, session
                              # store, plugin manager, shell detection, …)
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json
 ```
 
 Known pre-existing svelte-check errors in `Composer.svelte` (implicit `any`)
 exist on master and are unrelated to UI work.
+
+## Git discipline
+
+- Commit only when a thing is fully verified AND done; never as a mid-task
+  checkpoint.
+- Push only when the user says to. Never `git push` on its own.
 
 ## Gotchas learned the hard way
 

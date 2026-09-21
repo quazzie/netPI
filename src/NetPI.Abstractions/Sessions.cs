@@ -52,10 +52,16 @@ public interface ISessionStore
     ValueTask AppendAsync(SessionEntry entry, CancellationToken cancellationToken = default);
 
     /// <summary>Most recent sessions first (drawer listing, PLAN §43).</summary>
-    ValueTask<IReadOnlyList<SessionInfo>> ListAsync(int count = 50, CancellationToken cancellationToken = default);
+    ValueTask<IReadOnlyList<SessionInfo>> ListAsync(int count = 50, int offset = 0, CancellationToken cancellationToken = default);
+
+    /// <summary>Total session count (drawer "load more" pagination, PLAN §43).</summary>
+    ValueTask<int> CountAsync(CancellationToken cancellationToken = default);
 
     /// <summary>Update a session title (drawer rename, PLAN §43).</summary>
     ValueTask RenameAsync(string id, string title, CancellationToken cancellationToken = default);
+
+    /// <summary>Delete a session and all of its entries (drawer delete, PLAN §43).</summary>
+    ValueTask DeleteAsync(string id, CancellationToken cancellationToken = default);
 
     /// <summary>Remember the model/reasoning selected for a session (PLAN §14).</summary>
     ValueTask SetModelAsync(string sessionId, string? modelId, string? reasoningLevel,
