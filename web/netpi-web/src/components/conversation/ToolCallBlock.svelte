@@ -204,6 +204,10 @@
     aria-expanded={expanded}
     onclick={toggle}
     onkeydown={(e) => {
+      // astra-1 G3: keyboard events on the nested file link are the link's —
+      // keydown bubbles from it here, so Enter/Space on the focused link must
+      // NOT also toggle the enclosing disclosure.
+      if (e.target !== e.currentTarget) return;
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         toggle();
