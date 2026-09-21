@@ -44,7 +44,7 @@ plugins/                  One folder per plugin; each contains a DLL staged by
                                                               sessions).
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
-tests/NetPI.Host.Tests/   100 xunit tests; the integration surface.
+tests/NetPI.Host.Tests/   101 xunit tests; the integration surface.
 tools/publish-plugins.ps1 Stages plugin DLLs into plugins/<name>/; the host
                               snapshots that folder into per-generation
                               plugin-cache dirs (what the ALCs actually load).
@@ -225,7 +225,7 @@ repo, it feeds every run in this workspace.
 ## Tests & verification
 
 ```bash
-dotnet test NetPI.sln        # 100 tests (agent runtime scenarios, session
+dotnet test NetPI.sln        # 101 tests (agent runtime scenarios, session
                              # store, plugin manager, shell detection, …)
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json
 ```
@@ -252,6 +252,10 @@ exist on master and are unrelated to UI work.
 - Stale plugin generations: a failed load keeps the previous gen Active, so
   "loaded" in the log may mean your code change isn't actually running —
   check the log's generation/timestamps.
+- Reloading a plugin that registers a service other plugins hold (e.g. netpi.storage.sqlite
+  "sessions") is safe only because stores are NOT disposed in StopAsync and
+  consumers re-resolve lazily. Disposing shared state in StopAsync strands
+  consumers on a dead instance until they reload too.
 - `~/.netpi/plugin-cache/<plugin>/<gen>/` is the snapshot every generation is
   loaded from (immutable once staged) — the host never loads from `plugins/<name>/`
   directly. The staged folder is therefore free to be overwritten at any time,

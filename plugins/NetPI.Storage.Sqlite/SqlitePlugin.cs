@@ -7,6 +7,8 @@ namespace NetPI.Storage.Sqlite;
 /// The reloadable storage plugin (PLAN §29). Registers an
 /// <see cref="ISessionStore"/> backed by <c>~/.netpi/netpi.db</c> (or the
 /// path configured under the plugin's <c>database</c> key).
+/// Stop does not dispose the store — consumers may outlive the generation.
+/// 
 /// </summary>
 public sealed class SqlitePlugin : INetPiPlugin
 {
@@ -30,11 +32,16 @@ public sealed class SqlitePlugin : INetPiPlugin
 
     public ValueTask StartAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
-    public async ValueTask StopAsync(CancellationToken cancellationToken)
+    public ValueTask StopAsync(CancellationToken cancellationToken)
     {
-        _store?.Dispose();
+        // Intentionally NOT disposing the store here: the service is registered
+        // in the host registry, and other plugins (Web, Diagnostics, the agent
+        // runner) may hold a resolved reference that outlives this generation.
+        // Disposing on stop left them with a dead connection after a
+        // plugin.reload ("connection is not open"). The connection is released
+        // when the final holder unloads.
         _store = null;
-        await ValueTask.CompletedTask;
+        return ValueTask.CompletedTask;
     }
 
     public ValueTask UnloadAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;

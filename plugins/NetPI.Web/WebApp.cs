@@ -35,6 +35,13 @@ internal sealed class WebApp : IAsyncDisposable
     private IAgentRunner? _runner;
     private IAgentRuntime? _agent;
     private IModelCatalog? _catalog;
+    /// <summary>
+    /// Session store, re-resolved lazily so a <c>plugin.reload</c> of
+    /// netpi.storage.sqlite (which re-registers a fresh store) is picked up
+    /// automatically instead of leaving this app on a dead instance from an
+    /// unloaded generation.
+    /// </summary>
+    private ISessionStore? Store => _store ??= Resolve<ISessionStore>("sessions");
     private ISessionStore? _store;
     private IPluginManagerFacade? _facade;
     private IHostConfigUpdate? _config;
@@ -82,7 +89,6 @@ internal sealed class WebApp : IAsyncDisposable
         _runner = Resolve<IAgentRunner>("runner");
         _agent = Resolve<IAgentRuntime>("agent");
         _catalog = Resolve<IModelCatalog>("catalog");
-        _store = Resolve<ISessionStore>("sessions");
         _facade = Resolve<IPluginManagerFacade>("plugins");
         _config = Resolve<IHostConfigUpdate>("host-config");
         _steering = Resolve<ISteeringQueue>("steering");
@@ -442,12 +448,12 @@ internal sealed class WebApp : IAsyncDisposable
 
         await SendAsync(c, "ui.panels", new { panels = PanelJson() }, null, ct);
 
-        if (_store is not null)
+        if (Store is not null)
         {
             try
             {
-                var sessions = await _store.ListAsync(50, 0, ct);
-                var totalSessions = await _store.CountAsync(ct);
+                var sessions = await Store.ListAsync(50, 0, ct);
+                var totalSessions = await Store.CountAsync(ct);
                 await SendAsync(c, "session.list",
                     new { sessions = sessions.Select(ToSessionJson).ToList(), offset = 0,
                           total = totalSessions, hasMore = sessions.Count < totalSessions }, null, ct);
@@ -458,13 +464,13 @@ internal sealed class WebApp : IAsyncDisposable
                 // scroll-up.
                 if (_agent?.State.ActiveSessionId is { } asid)
                 {
-                    var info = await _store.GetAsync(asid, ct);
+                    var info = await Store.GetAsync(asid, ct);
                     if (info is not null)
                     {
                         const int pageSize = 200;
                         var total = info.EntryCount;
                         var offset = Math.Max(0, total - pageSize);
-                        var entries = await _store.ReadAsync(asid, offset, pageSize, ct);
+                        var entries = await Store.ReadAsync(asid, offset, pageSize, ct);
                         var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
                         await SendAsync(c, "session.updated", ToSessionJson(info), asid, ct);
                         await SendAsync(c, "session.entries",
@@ -476,13 +482,13 @@ internal sealed class WebApp : IAsyncDisposable
                 // recently used one (sessions is sorted newest-first).
                 else if (sessions.FirstOrDefault() is { } last)
                 {
-                    var info = await _store.GetAsync(last.Id, ct);
+                    var info = await Store.GetAsync(last.Id, ct);
                     if (info is not null)
                     {
                         const int pageSize = 200;
                         var total = info.EntryCount;
                         var offset = Math.Max(0, total - pageSize);
-                        var entries = await _store.ReadAsync(last.Id, offset, pageSize, ct);
+                        var entries = await Store.ReadAsync(last.Id, offset, pageSize, ct);
                         var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
                         await SendAsync(c, "session.updated", ToSessionJson(info), last.Id, ct);
                         await SendAsync(c, "session.entries",
@@ -573,15 +579,15 @@ internal sealed class WebApp : IAsyncDisposable
                 var sid = S(p, "sessionId");
                 var title = S(p, "title");
                 var workspace = S(p, "workspace");
-                if (sid is null || _store is null) { await SendAckAsync(c, requestId, ct); break; }
+                if (sid is null || Store is null) { await SendAckAsync(c, requestId, ct); break; }
                 if (!string.IsNullOrEmpty(title))
                 {
-                    await _store.RenameAsync(sid, title, ct);
+                    await Store.RenameAsync(sid, title, ct);
                     await BroadcastSession(sid, ct);
                 }
                 else if (!string.IsNullOrEmpty(workspace))
                 {
-                    await _store.SetWorkspaceAsync(sid, workspace, ct);
+                    await Store.SetWorkspaceAsync(sid, workspace, ct);
                     await BroadcastSession(sid, ct);
                 }
                 await SendAckAsync(c, requestId, ct);
@@ -591,7 +597,7 @@ internal sealed class WebApp : IAsyncDisposable
             case "session.delete":
             {
                 var sid = S(p, "sessionId");
-                if (sid is null || _store is null) { await SendAckAsync(c, requestId, ct); break; }
+                if (sid is null || Store is null) { await SendAckAsync(c, requestId, ct); break; }
                 // Deleting the transcript out from under an in-flight run would
                 // orphan its entries; force the user to cancel first.
                 if (_runner?.IsRunning == true && _agent?.State.ActiveSessionId == sid)
@@ -599,19 +605,19 @@ internal sealed class WebApp : IAsyncDisposable
                     await SendErrorAsync(c, requestId, "cannot delete a session with a run in progress", ct);
                     break;
                 }
-                await _store.DeleteAsync(sid, ct);
+                await Store.DeleteAsync(sid, ct);
                 await BroadcastAsync("session.deleted", new { sessionId = sid }, sid, ct);
                 await SendAckAsync(c, requestId, ct);
                 break;
             }
 
             case "session.list":
-                if (_store is not null)
+                if (Store is not null)
                 {
                     const int pageSize = 50;
                     var offset = Math.Max(0, I(p, "offset"));
-                    var list = await _store.ListAsync(pageSize, offset, ct);
-                    var total = await _store.CountAsync(ct);
+                    var list = await Store.ListAsync(pageSize, offset, ct);
+                    var total = await Store.CountAsync(ct);
                     await SendAsync(c, "session.list",
                         new { sessions = list.Select(ToSessionJson).ToList(), offset, total,
                               hasMore = offset + list.Count < total }, null, ct);
@@ -622,9 +628,9 @@ internal sealed class WebApp : IAsyncDisposable
             case "session.model":
             {
                 var sid = S(p, "sessionId");
-                if (sid is not null && _store is not null)
+                if (sid is not null && Store is not null)
                 {
-                    await _store.SetModelAsync(sid, S(p, "modelId"), S(p, "reasoning"), ct);
+                    await Store.SetModelAsync(sid, S(p, "modelId"), S(p, "reasoning"), ct);
                     await BroadcastSession(sid, ct);
                 }
                 await SendAckAsync(c, requestId, ct);
@@ -634,10 +640,10 @@ internal sealed class WebApp : IAsyncDisposable
             case "session.reasoning":
             {
                 var sid = S(p, "sessionId");
-                if (sid is not null && _store is not null)
+                if (sid is not null && Store is not null)
                 {
-                    var info = await _store.GetAsync(sid, ct);
-                    await _store.SetModelAsync(sid, info?.ModelId, S(p, "level"), ct);
+                    var info = await Store.GetAsync(sid, ct);
+                    await Store.SetModelAsync(sid, info?.ModelId, S(p, "level"), ct);
                     await BroadcastSession(sid, ct);
                 }
                 await SendAckAsync(c, requestId, ct);
@@ -854,7 +860,7 @@ internal sealed class WebApp : IAsyncDisposable
     private async Task ChatSendAsync(Client c, string? requestId, JsonElement p, CancellationToken ct)
     {
         if (_runner is null) { await SendErrorAsync(c, requestId, "agent runner unavailable", ct); return; }
-        if (_store is null) { await SendErrorAsync(c, requestId, "session store unavailable", ct); return; }
+        if (Store is null) { await SendErrorAsync(c, requestId, "session store unavailable", ct); return; }
 
         var text = S(p, "text") ?? "";
         var model = S(p, "model");
@@ -866,10 +872,10 @@ internal sealed class WebApp : IAsyncDisposable
         string? sid = sessionId;
         SessionInfo? info = null;
         if (!string.IsNullOrEmpty(sid))
-            info = await _store.GetAsync(sid, ct);
+            info = await Store.GetAsync(sid, ct);
         if (info is null)
         {
-            info = await _store.CreateAsync(payloadWorkspace, ct);
+            info = await Store.CreateAsync(payloadWorkspace, ct);
             sid = info.Id;
             await SendAsync(c, "session.created", ToSessionJson(info), sid, ct);
         }
@@ -885,7 +891,7 @@ internal sealed class WebApp : IAsyncDisposable
         // PLAN §14/§31: remember the model/reasoning for the session so a later
         // open restores them into the composer.
         if (!string.IsNullOrEmpty(model))
-            await _store.SetModelAsync(info.Id, model, string.IsNullOrEmpty(reasoning) ? null : reasoning, ct);
+            await Store.SetModelAsync(info.Id, model, string.IsNullOrEmpty(reasoning) ? null : reasoning, ct);
 
         var started = await _runner.StartRunAsync(new AgentRunRequest(sid, workspace, model, text,
             string.IsNullOrEmpty(reasoning) ? null : reasoning, null, null), ct);
@@ -906,9 +912,9 @@ internal sealed class WebApp : IAsyncDisposable
 
     private async Task SessionCreateAsync(Client c, string? requestId, JsonElement p, CancellationToken ct)
     {
-        if (_store is null) { await SendErrorAsync(c, requestId, "no session store", ct); return; }
+        if (Store is null) { await SendErrorAsync(c, requestId, "no session store", ct); return; }
         var ws = S(p, "workspace");
-        var created = await _store.CreateAsync(string.IsNullOrEmpty(ws) ? null : ws, ct);
+        var created = await Store.CreateAsync(string.IsNullOrEmpty(ws) ? null : ws, ct);
         await SendAsync(c, "session.created", ToSessionJson(created), created.Id, ct);
         await SendAsync(c, "session.entries",
             new { entries = new List<object>(), replace = true, total = 0,
@@ -918,10 +924,10 @@ internal sealed class WebApp : IAsyncDisposable
 
     private async Task SessionOpenAsync(Client c, string? requestId, JsonElement p, CancellationToken ct)
     {
-        if (_store is null) { await SendErrorAsync(c, requestId, "no session store", ct); return; }
+        if (Store is null) { await SendErrorAsync(c, requestId, "no session store", ct); return; }
         var sid = S(p, "sessionId");
         if (sid is null) { await SendAckAsync(c, requestId, ct); return; }
-        var info = await _store.GetAsync(sid, ct);
+        var info = await Store.GetAsync(sid, ct);
         if (info is null) { await SendErrorAsync(c, requestId, "session not found", ct); return; }
         await SendAsync(c, "session.updated", ToSessionJson(info), sid, ct);
         // PLAN §38: don't load/render an entire giant session — load the LATEST
@@ -929,7 +935,7 @@ internal sealed class WebApp : IAsyncDisposable
         const int pageSize = 200;
         var total = info.EntryCount;
         var offset = Math.Max(0, total - pageSize);
-        var entries = await _store.ReadAsync(sid, offset, pageSize, ct);
+        var entries = await Store.ReadAsync(sid, offset, pageSize, ct);
         // PLAN §38: beforeSequence is the sequence of the OLDEST entry loaded —
         // the client requests session.older { beforeSequence } on scroll-up.
         var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
@@ -942,7 +948,7 @@ internal sealed class WebApp : IAsyncDisposable
     /// <summary>PLAN §38: scroll-up pagination — entries older than a sequence.</summary>
     private async Task SessionOlderAsync(Client c, string? requestId, JsonElement p, CancellationToken ct)
     {
-        if (_store is null) { await SendErrorAsync(c, requestId, "no session store", ct); return; }
+        if (Store is null) { await SendErrorAsync(c, requestId, "no session store", ct); return; }
         var sid = S(p, "sessionId");
         if (sid is null) { await SendAckAsync(c, requestId, ct); return; }
         var beforeSequence = I(p, "beforeSequence");
@@ -954,7 +960,7 @@ internal sealed class WebApp : IAsyncDisposable
             await SendAckAsync(c, requestId, ct);
             return;
         }
-        var entries = await _store.ReadBeforeAsync(sid, beforeSequence, count, ct);
+        var entries = await Store.ReadBeforeAsync(sid, beforeSequence, count, ct);
         var newOldest = entries.Count > 0 ? entries[0].Sequence : 0;
         await SendAsync(c, "session.older",
             new { entries = EntriesToJson(entries), beforeSequence = newOldest,
@@ -964,8 +970,8 @@ internal sealed class WebApp : IAsyncDisposable
 
     private async Task BroadcastSession(string sid, CancellationToken ct)
     {
-        if (_store is null) return;
-        var info = await _store.GetAsync(sid, ct);
+        if (Store is null) return;
+        var info = await Store.GetAsync(sid, ct);
         if (info is not null)
             await BroadcastAsync("session.updated", ToSessionJson(info), sid, ct);
     }
@@ -1345,10 +1351,10 @@ internal sealed class WebApp : IAsyncDisposable
         else
         {
             var sid = context.Request.Query["sessionId"].ToString();
-            if (string.IsNullOrWhiteSpace(sid) || _store is null)
+            if (string.IsNullOrWhiteSpace(sid) || Store is null)
                 return Results.BadRequest("sessionId is required for relative paths");
 
-            var session = await _store.GetAsync(sid, context.RequestAborted);
+            var session = await Store.GetAsync(sid, context.RequestAborted);
             if (session?.WorkspacePath is null)
                 return Results.NotFound("session/workspace not found");
 
