@@ -1,7 +1,8 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { store } from "./store.svelte";
   import { ui } from "./ui.svelte";
-  import "./ws";
+  import { ws } from "./ws";
   import RightPanel from "./components/RightPanel.svelte";
   import HarnessHeader from "./components/HarnessHeader.svelte";
   import SessionTabs from "./components/SessionTabs.svelte";
@@ -20,6 +21,23 @@
   // opens this dialog. The right slot/rail/resizer are preserved.
   let settingsOpen = $state(false);
   let pickerOpen = $state(false);
+
+  // astra-1 H: the Activity panel (a cross-origin iframe on its own Kestrel port)
+  // posts { type:"netpi.activity.openSession", payload:{sessionId} } to the shell
+  // when the user clicks "Open" on a run. Route it through the socket so the
+  // session becomes the visible tab. We only trust the well-known type string
+  // from our own panel; an unknown/absent session is a no-op on the server.
+  onMount(() => {
+    const onMessage = (e: MessageEvent) => {
+      const d = e.data;
+      if (!d || d.type !== "netpi.activity.openSession") return;
+      const sid = (d.payload && typeof d.payload.sessionId === "string") ? d.payload.sessionId : null;
+      if (!sid) return;
+      ws.openSession(sid).catch(() => {});
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  });
 
   // astra-1 G1: /settings (Composer) asks the shell to open the dialog via a
   // monotonically increasing counter (ui holds no component state).

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>netPI · Activity</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --row: #1d2129; --row-hi: #232833;
+    --border: #2a2f3a; --text: #d7dbe2; --muted: #8b93a1;
+    --green: #4ec9a0; --amber: #e0b15e; --red: #e0708a;
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+    --sans: system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text); font-family: var(--sans);
+    font-size: 13px; display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel);
+    display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
+  }
+  header .title { font-weight: 600; letter-spacing: .2px; }
+  header .badge { color: var(--muted); font-size: 11px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--green); }
+  main { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; }
+  section { border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+  section:last-child { border-bottom: none; }
+  h2 {
+    margin: 0; padding: 6px 12px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .8px; color: var(--muted); background: var(--panel);
+  }
+  .row {
+    display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+    border-bottom: 1px solid #191c22; cursor: default;
+  }
+  .row:last-child { border-bottom: none; }
+  .row.sel { background: var(--row-hi); }
+  .row:hover { background: var(--row); }
+  .grow { flex: 1 1 auto; min-width: 0; }
+  .cmd { font-family: var(--mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { color: var(--muted); font-size: 11px; font-family: var(--mono); white-space: nowrap; }
+  .pill { font-size: 10px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+  .pill.running { color: var(--green); border-color: var(--green); }
+  .pill.failed, .pill.killed { color: var(--red); border-color: var(--red); }
+  .pill.cancelled, .pill.succeeded { color: var(--amber); border-color: var(--amber); }
+  button {
+    font-family: var(--sans); font-size: 11px; padding: 3px 9px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--row); color: var(--text); cursor: pointer;
+  }
+  button:hover { background: var(--row-hi); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.danger { color: var(--red); border-color: var(--red); }
+  .empty { padding: 12px; color: var(--muted); font-size: 12px; font-style: italic; }
+  .err { color: var(--red); }
+  .outbox {
+    flex: 1 1 auto; overflow-y: auto; padding: 8px 12px; margin: 0;
+    background: #0b0d10; font-family: var(--mono); font-size: 11.5px;
+    white-space: pre-wrap; word-break: break-word; color: #b8c0cc;
+    border-top: 1px solid var(--border);
+  }
+  .elapsed { color: var(--muted); font-size: 11px; font-family: var(--mono); }
+  @media (min-width: 760px) {
+    main { flex-direction: row; }
+    section { flex: 1 1 50%; border-bottom: none; }
+    section.agents { border-right: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div class="dot" id="dot"></div>
+    <span class="title">Activity</span>
+    <span class="badge" id="badge">connecting&hellip;</span>
+  </header>
+  <main>
+    <section class="agents" id="sec-agents">
+      <h2>Agents <span class="meta" id="agents-n"></span></h2>
+      <div id="agents"></div>
+    </section>
+    <section id="sec-processes">
+      <h2>Processes <span class="meta" id="proc-n"></span></h2>
+      <div id="procs"></div>
+    </section>
+  </main>
+  <div class="outbox" id="outbox" style="display:none"></div>
+  <script>
+    "use strict";
+    const api = {
+      agents: () => fetch("/api/activity/agents").then(r => r.json()),
+      processes: () => fetch("/api/activity/processes").then(r => r.json()),
+      cancel: (runId) => fetch(`/api/activity/agents/${encodeURIComponent(runId)}/cancel`, { method: "POST" }).then(r => r.json()),
+      stop: (id) => fetch(`/api/activity/processes/background/${encodeURIComponent(id)}/stop`, { method: "POST" }).then(r => r.json()),
+      bgOutput: (id) => fetch(`/api/activity/processes/background/${encodeURIComponent(id)}/output?chars=8000`).then(r => r.json()),
+    };
+    let selected = null; // { kind: "bg"|"run", id }
+
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const elapsed = (a, b) => {
+      if (!a) return "";
+      const ms = (b ? new Date(b).getTime() : Date.now()) - new Date(a).getTime();
+      if (ms < 0) ms = 0;
+      const s = Math.floor(ms / 1000);
+      return s < 60 ? s + "s" : s < 3600 ? Math.floor(s / 60) + "m" + (s % 60) + "s" : Math.floor(s / 3600) + "h" + Math.floor((s % 3600) / 60) + "m";
+    };
+    const pill = (state) => {
+      const s = String(state || "").toLowerCase();
+      const cls = s === "running" ? "running" : (s === "failed" || s === "killed" ? "failed" : (s === "succeeded" || s === "completed" || s === "cancelled" ? "cancelled" : ""));
+      return `<span class="pill ${cls}">${esc(state)}</span>`;
+    };
+
+    function openSession(sessionId) {
+      // Tell the shell (parent iframe) to select/add this session's top tab.
+      // The shell's listener matches the envelope; a no-op if the session is gone.
+      try {
+        parent.postMessage({ type: "netpi.activity.openSession", payload: { sessionId } }, "*");
+      } catch (_) { /* parent may be same-origin or gone */ }
+    }
+
+    function agentRow(r) {
+      return `<div class="row" data-run="${esc(r.runId)}" data-sid="${esc(r.sessionId || "")}">
+        <div class="grow">
+          <div class="cmd">${esc(r.sessionId || "&mdash;")} <span class="meta">${esc(r.modelId || "")}</span></div>
+          <div class="meta">${elapsed(r.startTime, r.endTime)} &middot; ${esc(r.outcome || r.state)}</div>
+        </div>
+        ${pill(r.state)}
+        ${r.sessionId ? `<button data-act="open" data-id="${esc(r.sessionId)}">Open</button>` : ""}
+        <button data-act="cancel" data-id="${esc(r.runId)}" ${r.state === "idle" ? "disabled" : ""}>Cancel</button>
+      </div>`;
+    }
+
+    function bgRow(j) {
+      const sel = selected && selected.kind === "bg" && selected.id === j.id;
+      return `<div class="row ${sel ? "sel" : ""}" data-bgid="${esc(j.id)}">
+        <div class="grow">
+          <div class="cmd" title="${esc(j.command)}">${esc(j.command)}</div>
+          <div class="meta">${esc(j.shell || "")} ${j.workingDirectory ? "&middot; " + esc(j.workingDirectory) : ""} ${j.sessionId ? "&middot; " + esc(j.sessionId) : ""}</div>
+        </div>
+        ${pill(j.state)}
+        <span class="elapsed">${elapsed(j.startedAt, j.exitedAt)}</span>
+        <button data-pact="output" data-id="${esc(j.id)}">Output</button>
+        ${j.state === "running" ? `<button data-pact="stop" data-id="${esc(j.id)}" class="danger">Stop</button>` : ""}
+      </div>`;
+    }
+
+    function fgRow(p, recent) {
+      return `<div class="row">
+        <div class="grow">
+          <div class="cmd" title="${esc(p.command)}">${esc(p.toolShellId || "")}: ${esc(p.command)}</div>
+          <div class="meta">${p.processId ? "pid " + p.processId : ""} ${p.workingDirectory ? " &middot; " + esc(p.workingDirectory) : ""} ${p.sessionId ? " &middot; " + esc(p.sessionId) : ""}</div>
+        </div>
+        ${pill(recent ? (p.exitCode == null ? "killed" : "done") : "running")}
+        <span class="elapsed">${elapsed(p.startedAt, p.exitedAt)}</span>
+      </div>`;
+    }
+
+    function renderAgents(data, err) {
+      const box = $("agents");
+      $("agents-n").textContent = data && data.available ? `(${data.runs.length})` : "";
+      if (err) { box.innerHTML = `<div class="empty err">runner unavailable &mdash; chat still works.</div>`; return; }
+      if (!data || !data.available) { box.innerHTML = `<div class="empty">no agent runner loaded.</div>`; return; }
+      if (!data.runs.length) { box.innerHTML = `<div class="empty">no runs yet.</div>`; return; }
+      box.innerHTML = data.runs.map(agentRow).join("");
+    }
+
+    function renderProcs(data, err) {
+      const box = $("procs");
+      let n = 0;
+      if (err || !data) { box.innerHTML = `<div class="empty err">process services unavailable &mdash; chat still works.</div>`; $("proc-n").textContent = ""; return; }
+      const parts = [];
+      if (data.background && data.background.available) {
+        const js = data.background.jobs || [];
+        n += js.length;
+        parts.push(js.map(bgRow).join("") || `<div class="empty">no background jobs.</div>`);
+      } else {
+        parts.push(`<div class="empty">background tasks not loaded.</div>`);
+      }
+      if (data.foreground && data.foreground.available) {
+        const run = data.foreground.running || [];
+        const rec = data.foreground.recent || [];
+        n += run.length + rec.length;
+        parts.push(run.map(p => fgRow(p, false)).join("") || "");
+        if (rec.length) parts.push(`<h2>recent</h2>` + rec.slice(0, 12).map(p => fgRow(p, true)).join(""));
+      } else {
+        parts.push(`<div class="empty">foreground tools not loaded.</div>`);
+      }
+      box.innerHTML = parts.join("");
+      $("proc-n").textContent = `(${n})`;
+    }
+
+    function showOut(title, body) {
+      const o = $("outbox");
+      o.style.display = "block";
+      o.textContent = title + "\n\n" + body;
+    }
+
+    // Row / button actions (event delegation).
+    document.addEventListener("click", (e) => {
+      const b = e.target.closest("button");
+      if (b) {
+        if (b.dataset.act === "open") { openSession(b.dataset.id); return; }
+        if (b.dataset.act === "cancel") { api.cancel(b.dataset.id).then(() => refresh()); return; }
+        if (b.dataset.pact === "stop") { api.stop(b.dataset.id).then(() => { selected = null; refresh(); }); return; }
+        if (b.dataset.pact === "output") {
+          api.bgOutput(b.dataset.id).then(o => {
+            selected = { kind: "bg", id: b.dataset.id };
+            showOut(`job ${o.id} &middot; ${o.state}${o.exitCode != null ? " &middot; exit " + o.exitCode : ""}${o.truncated ? " (truncated)" : ""}`, o.text || "(no output)");
+            refresh();
+          });
+          return;
+        }
+        return;
+      }
+      const row = e.target.closest(".row");
+      if (row && row.dataset.bgid) { selected = { kind: "bg", id: row.dataset.bgid }; refresh(); }
+      else if (row && row.dataset.run) { selected = { kind: "run", id: row.dataset.run }; refresh(); }
+    });
+
+    async function refresh() {
+      let ok = true;
+      try {
+        const [a, p] = await Promise.all([
+          api.agents().catch(() => ({ __err: true })),
+          api.processes().catch(() => ({ __err: true })),
+        ]);
+        renderAgents(a.__err ? null : a, a.__err);
+        renderProcs(p.__err ? null : p, p.__err);
+        ok = !a.__err && !p.__err;
+      } catch (_) { ok = false; }
+      $("dot").classList.toggle("on", ok);
+      $("badge").textContent = ok ? "live" : "degraded";
+    }
+
+    refresh();
+    setInterval(refresh, 3000); // modest polling while the panel is open
+  </script>
+</body>
+</html>
