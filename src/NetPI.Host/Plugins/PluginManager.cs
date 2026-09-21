@@ -81,6 +81,17 @@ public sealed class PluginManager
     private const int RecentOutcomesCap = 16;
     private readonly Dictionary<string, NetPI.Abstractions.PluginOperationRecord> _recentOutcomes = new(StringComparer.OrdinalIgnoreCase);
 
+    // ------------------------------------------------------------------
+    // astra-1 P5: queue-backed operation status (the Enqueue* surface).
+    // Bounded (~32, evicts the oldest first): Web handlers ack with an
+    // operation id, the work runs on the lifecycle queue, and the client
+    // can query the outcome LATER (even after a reconnect) via GetOperation.
+    // ------------------------------------------------------------------
+    private const int OperationStatusCap = 32;
+    private readonly object _opStatusGate = new();
+    private readonly Dictionary<string, OperationRecord> _operationStatuses = new();
+    private readonly List<string> _operationOrder = [];
+
     private readonly Dictionary<string, PluginInstance> _current = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _generation = new(StringComparer.OrdinalIgnoreCase);
 
@@ -608,7 +619,81 @@ public sealed class PluginManager
         var op = new LifecycleOp { Kind = LifecycleOpKind.Shutdown, Ct = ct };
         Enqueue(op);
         await op.Tcs.Task;
-    }
+            await op.Tcs.Task;
+        }
+
+        // ------------------------------------------------------------------
+        // astra-1 P5: queue-backed update operations (the Enqueue* surface).
+        // The caller gets an operation id IMMEDIATELY; the work runs on the
+        // SAME serial lifecycle queue (so reloads stay serial per plugin and
+        // every ReloadCoreAsync invariant holds — no separate queue), and the
+        // outcome is retained in a bounded table (GetOperation) and announced
+        // on the event bus (PluginUpdateCompletedEvent) by the RUNNER, not by
+        // the request. The operation token is host-owned: the initiating
+        // connection's cancellation never aborts the host's own update
+        // (astra-1 P5 — independent task/lifetime ownership).
+        // ------------------------------------------------------------------
+
+        /// <summary>astra-1 P5: enqueue a reload; returns the operation id immediately.</summary>
+        public string EnqueueReload(string pluginId, string? requestedBuildId, CancellationToken ct = default) =>
+            EnqueueTrackedOp(PluginOperationKind.Reload, new LifecycleOp { Kind = LifecycleOpKind.Reload, PluginId = pluginId, Ct = CancellationToken.None },
+                id => new PluginOperationStatus(id, PluginOperationKind.Reload, false, PluginLifecycleOutcome.Deferred, PluginLifecyclePhase.Admission, null, null, []));
+
+        /// <summary>astra-1 P5: enqueue a reload-all; returns the operation id immediately.</summary>
+        public string EnqueueReloadAll(CancellationToken ct = default) =>
+            EnqueueTrackedOp(PluginOperationKind.ReloadAll, new LifecycleOp { Kind = LifecycleOpKind.ReloadAll, Ct = CancellationToken.None },
+                id => new PluginOperationStatus(id, PluginOperationKind.ReloadAll, false, PluginLifecycleOutcome.Deferred, PluginLifecyclePhase.Admission, null, null, []));
+
+        /// <summary>astra-1 P5: enqueue a scan; returns the operation id immediately.</summary>
+        public string EnqueueScan(CancellationToken ct = default) =>
+            EnqueueTrackedOp(PluginOperationKind.Scan, new LifecycleOp { Kind = LifecycleOpKind.Scan, Ct = CancellationToken.None },
+                id => new PluginOperationStatus(id, PluginOperationKind.Scan, false, PluginLifecycleOutcome.Deferred, PluginLifecyclePhase.Admission, null, null, []));
+
+        private string EnqueueTrackedOp(PluginOperationKind kind, LifecycleOp op, Func<string, PluginOperationStatus> initial)
+        {
+            string operationId = Guid.NewGuid().ToString("n");
+            var rec = new OperationRecord { OpId = operationId, Kind = kind };
+            rec.Status = initial(operationId);
+            lock (_opStatusGate)
+            {
+                // Evict the oldest tracked id first when the cap is reached.
+                while (_operationStatuses.Count >= OperationStatusCap)
+                {
+                    var oldest = _operationOrder[0];
+                    _operationOrder.RemoveAt(0);
+                    _operationStatuses.Remove(oldest);
+                }
+                _operationStatuses[operationId] = rec;
+                _operationOrder.Add(operationId);
+            }
+            op.OperationRecord = rec;
+            Enqueue(op);
+            return operationId;
+        }
+
+        /// <summary>astra-1 P5: query the status of an Enqueue* operation (works after a reconnect).</summary>
+        public PluginOperationStatus GetOperation(string operationId)
+        {
+            lock (_opStatusGate)
+            {
+                if (_operationStatuses.TryGetValue(operationId, out var rec))
+                    return rec.Status;
+            }
+            return new PluginOperationStatus(operationId, PluginOperationKind.Reload, true,
+                PluginLifecycleOutcome.Deferred, PluginLifecyclePhase.Admission,
+                $"operation id '{operationId}' not found (unknown or evicted)", null, []);
+        }
+
+        /// <summary>astra-1 P5: finalize one tracked operation's status (queue runner only).</summary>
+        private void MarkOperationDone(OperationRecord rec, PluginLifecycleOutcome outcome, PluginLifecyclePhase phase, string? error, string? appliedBuildId, IReadOnlyList<string> scannedIds)
+        {
+            lock (_opStatusGate)
+            {
+                var stored = _operationStatuses.TryGetValue(rec.OpId, out var r) ? r : rec;
+                _operationStatuses[rec.OpId] = stored;
+                stored.Status = new PluginOperationStatus(rec.OpId, rec.Kind, true, outcome, phase, error, appliedBuildId, scannedIds);
+            }
+        }
 
     /// <summary>
     /// Legacy reload API (PLAN §6) kept for existing call sites and tests:
@@ -930,6 +1015,15 @@ public sealed class PluginManager
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<IReadOnlyList<PluginOperationOutcome>> ListTcs { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public OperationRecord? OperationRecord { get; set; }
+    }
+
+    /// <summary>astra-1 P5: one tracked queue-backed operation (id + kind + status).</summary>
+    private sealed class OperationRecord
+    {
+        public required string OpId { get; init; }
+        public required PluginOperationKind Kind { get; init; }
+        public PluginOperationStatus Status { get; set; } = null!;
     }
 
     private enum LifecycleOpKind { Scan, Reload, ReloadAll, Shutdown }
@@ -947,6 +1041,7 @@ public sealed class PluginManager
             var rej = RejectedOutcome(op);
             op.Tcs.TrySetResult(rej);
             op.ListTcs.TrySetResult(new List<PluginOperationOutcome>());
+            FinalizeCancelled(op, rej);
             return;
         }
         lock (_opGate)
@@ -956,6 +1051,7 @@ public sealed class PluginManager
                 var rej = RejectedOutcome(op);
                 op.Tcs.TrySetResult(rej);
                 op.ListTcs.TrySetResult(new List<PluginOperationOutcome>());
+                FinalizeCancelled(op, rej);
                 return;
             }
             _inflightOps.Add(op);
@@ -988,12 +1084,29 @@ public sealed class PluginManager
                                 // astra-1 P5: surface the outcome in the status table (diagnostics only).
                                 RecordOutcome(r.Outcome);
                                 op.Tcs.TrySetResult(r.Outcome);
+                                // astra-1 P5: queue-backed completion — finalize the
+                                // tracked status and announce it on the bus (the Web
+                                // §41 events are driven by THIS, not by the request).
+                                if (op.OperationRecord is { } rec)
+                                {
+                                    MarkOperationDone(rec, r.Outcome.Outcome, r.Outcome.Phase, r.Outcome.Error, r.Outcome.ActiveBuildId, []);
+                                    PublishUpdateCompleted(new PluginUpdateCompletedEvent(
+                                        rec.OpId, PluginOperationKind.Reload, op.PluginId,
+                                        [new PluginUpdateResult(op.PluginId!, r.Outcome.Outcome, r.Outcome.Error, r.Outcome.ActiveBuildId)],
+                                        [], null, null));
+                                }
                                 break;
                             }
                             case LifecycleOpKind.Scan:
                             {
                                 var r = await ScanCoreAsync(op.Ct);
                                 op.Tcs.TrySetResult(r);
+                                if (op.OperationRecord is { } rec)
+                                {
+                                    MarkOperationDone(rec, r.Outcome, r.Phase, r.Error, null, ParseScannedIds(r.Error));
+                                    PublishUpdateCompleted(new PluginUpdateCompletedEvent(
+                                        rec.OpId, PluginOperationKind.Scan, null, [], ParseScannedIds(r.Error), r.Error, null));
+                                }
                                 break;
                             }
                             case LifecycleOpKind.ReloadAll:
@@ -1018,6 +1131,14 @@ public sealed class PluginManager
                                             ? b
                                             : a);
                                 op.Tcs.TrySetResult(overall);
+                                if (op.OperationRecord is { } rec)
+                                {
+                                    MarkOperationDone(rec, overall.Outcome, overall.Phase, overall.Error, overall.ActiveBuildId, []);
+                                    PublishUpdateCompleted(new PluginUpdateCompletedEvent(
+                                        rec.OpId, PluginOperationKind.ReloadAll, null,
+                                        list.Select(o => new PluginUpdateResult(o.PluginId!, o.Outcome, o.Error, o.ActiveBuildId)).ToList(),
+                                        [], overall.Error, null));
+                                }
                                 break;
                             }
                             case LifecycleOpKind.Shutdown:
@@ -1042,6 +1163,9 @@ public sealed class PluginManager
                             PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred,
                             "cancelled", false));
                         op.ListTcs.TrySetResult(new List<PluginOperationOutcome>());
+                        FinalizeCancelled(op, new PluginOperationOutcome(
+                            Guid.NewGuid().ToString("n"), op.PluginId, null, null,
+                            PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Deferred, "cancelled", false));
                     }
                     catch (Exception ex)
                     {
@@ -1053,6 +1177,9 @@ public sealed class PluginManager
                         RecordOutcome(failed);
                         op.Tcs.TrySetResult(failed);
                         op.ListTcs.TrySetException(ex);
+                        FinalizeCancelled(op, new PluginOperationOutcome(
+                            Guid.NewGuid().ToString("n"), op.PluginId, null, null,
+                            PluginLifecyclePhase.Admission, PluginLifecycleOutcome.Failed, ex.Message, false));
                     }
                     finally
                     {
@@ -1363,4 +1490,29 @@ public sealed class PluginManager
             PluginLifecyclePhase.Starting, PluginLifecycleOutcome.Applied,
             loaded.Count == 0 ? null : $"loaded: {string.Join(", ", loaded)}", false);
     }
+
+    /// <summary>astra-1 P5: finalize a tracked op that ended without a core outcome (cancelled/failed/rejected).</summary>
+    private void FinalizeCancelled(LifecycleOp op, PluginOperationOutcome outcome)
+    {
+        if (op.OperationRecord is not { } rec)
+            return;
+        MarkOperationDone(rec, outcome.Outcome, outcome.Phase, outcome.Error, null, []);
+        PublishUpdateCompleted(new PluginUpdateCompletedEvent(
+            rec.OpId, rec.Kind, op.PluginId,
+            outcome.PluginId is null ? [] : [new PluginUpdateResult(outcome.PluginId, outcome.Outcome, outcome.Error, outcome.ActiveBuildId)],
+            [], outcome.Error, null));
+    }
+
+    private void PublishUpdateCompleted(PluginUpdateCompletedEvent ev)
+    {
+        _ = _bus.PublishAsync(ev);
+    }
+
+    private static IReadOnlyList<string> ParseScannedIds(string? error)
+    {
+        if (error is null || !error.StartsWith("loaded: ", StringComparison.Ordinal))
+            return [];
+        return error["loaded: ".Length..].Split(',').Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+    }
+
 }

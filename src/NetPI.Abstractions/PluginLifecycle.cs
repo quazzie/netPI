@@ -100,5 +100,68 @@ public sealed record PluginOperationRecord(
 /// loaded generation's ALC has been collected yet. The label is
 /// "&lt;pluginId&gt;-gen&lt;n&gt;" or "superseded-&lt;pluginId&gt;-gen&lt;n&gt;".
 /// </summary>
+/// <summary>
+/// astra-1 P5: the kind of a queue-backed lifecycle operation (the Enqueue*
+/// surface). Scan operations carry the ids they loaded in
+/// <see cref="PluginOperationStatus.ScannedIds"/>.
+/// </summary>
+public enum PluginOperationKind
+{
+    Reload = 0,
+    ReloadAll = 1,
+    Scan = 2,
+}
+
+/// <summary>
+/// astra-1 P5: queue-backed operation status — what an Enqueue* caller can
+/// query (via <c>IPluginManagerFacade.GetOperation</c>) before or AFTER a
+/// reconnect: the operation is acknowledged by id, runs on the host's
+/// lifecycle queue, and its status is retained in a bounded table while it is
+/// queued/running and after it completes. Unknown ids are reported as not
+/// found (Done true, outcome Deferred + Error) — never invented.
+/// </summary>
+public sealed record PluginOperationStatus(
+    string OperationId,
+    PluginOperationKind Kind,
+    bool Done,
+    PluginLifecycleOutcome Outcome,
+    PluginLifecyclePhase Phase,
+    string? Error,
+    string? AppliedBuildId,
+    IReadOnlyList<string> ScannedIds);
+
+/// <summary>
+/// astra-1 P5: the per-plugin result inside a <see cref="PluginUpdateCompletedEvent"/>
+/// — one entry per plugin for Reload/ReloadAll operations (a Deferred/Failed
+/// reload keeps its error; AppliedBuildId is the build the plugin runs after
+/// the op, null when the plugin is unavailable).
+/// </summary>
+public sealed record PluginUpdateResult(string PluginId, PluginLifecycleOutcome Outcome, string? Error, string? BuildId);
+
+/// <summary>
+/// astra-1 P5: published on the host event bus by the lifecycle queue RUNNER
+/// when a queue-backed operation completes (NOT by the Web request that acked
+/// it). The Web plugin turns this into the §41 events (plugin.state /
+/// plugin.reloaded / plugin.reloadFailed / plugin.scanned / plugins.state /
+/// ui.panels) for every LIVE connection — so a reload of netpi.web itself
+/// still reaches the other clients even though the requesting connection died
+/// mid-reload. For Reload, Results carries one entry for the plugin; for
+/// ReloadAll, one per plugin; for Scan, Results is empty and ScannedIds
+/// carries the ids that started.
+/// </summary>
+public sealed record PluginUpdateCompletedEvent(
+    string OperationId,
+    PluginOperationKind Kind,
+    string? PluginId,
+    IReadOnlyList<PluginUpdateResult> Results,
+    IReadOnlyList<string> ScannedIds,
+    string? Error,
+    string? AppliedBuildId);
+
+/// <summary>
+/// astra-1 P5: retired-ALC collection state ("gc" view): whether a previously
+/// loaded generation's ALC has been collected yet. The label is
+/// "&lt;pluginId&gt;-gen&lt;n&gt;" or "superseded-&lt;pluginId&gt;-gen&lt;n&gt;".
+/// </summary>
 public sealed record UnloadedAlocInfo(string Label, bool Collected, string? PluginId);
 

@@ -83,6 +83,28 @@ internal sealed class PluginManagerFacade : IPluginManagerFacade
 
     public async ValueTask<IReadOnlyList<string>> ScanAsync(CancellationToken cancellationToken = default)
         => await _manager.ScanAsync(cancellationToken);
+    // ------------------------------------------------------------------
+    // astra-1 P5: queue-backed update operations (the Enqueue* surface).
+    // The Web handlers ack with the operation id immediately; the work runs
+    // on the host lifecycle queue; the outcome is queryable later via GetOperation.
+    // ------------------------------------------------------------------
+
+    /// <inheritdoc/>
+    public string EnqueueReload(string pluginId, string? requestedBuildId, CancellationToken ct = default)
+        => _manager.EnqueueReload(pluginId, requestedBuildId, ct);
+
+    /// <inheritdoc/>
+    public string EnqueueReloadAll(CancellationToken ct = default)
+        => _manager.EnqueueReloadAll(ct);
+
+    /// <inheritdoc/>
+    public string EnqueueScan(CancellationToken ct = default)
+        => _manager.EnqueueScan(ct);
+
+    /// <inheritdoc/>
+    public PluginOperationStatus GetOperation(string operationId)
+        => _manager.GetOperation(operationId);
+
 }
 
 /// <summary>

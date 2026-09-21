@@ -79,6 +79,41 @@ public interface IPluginManagerFacade
     IReadOnlyList<UnloadedAlocInfo> UnloadedAlocs()
         => Array.Empty<UnloadedAlocInfo>();
 
+    // ------------------------------------------------------------------
+    // astra-1 P5: queue-backed update operations (astral-1 P5 / PLAN §36 §41).
+    // The Web handlers ack with the returned operation id IMMEDIATELY; the
+    // work runs on the host's lifecycle queue (the same serial queue reloads
+    // already use), and the client learns the outcome from the §41 events
+    // (plugin.reloaded / plugin.reloadFailed / plugin.scanned /
+    // plugins.state) emitted by the queue's completion path — NOT from the
+    // request. After a reconnect the outcome is still queryable through
+    // <see cref="GetOperation"/> (bounded, per host, evicts oldest).
+    // Host-less builds return synthetic ids and report the operation as
+    // Done/Deferred, exactly like the synchronous defaults above.
+    // ------------------------------------------------------------------
+
+    /// <summary>astra-1 P5: enqueue a reload; returns the operation id immediately.</summary>
+    string EnqueueReload(string pluginId, string? requestedBuildId, CancellationToken cancellationToken = default)
+        => Guid.NewGuid().ToString("n");
+
+    /// <summary>astra-1 P5: enqueue a reload-all; returns the operation id immediately.</summary>
+    string EnqueueReloadAll(CancellationToken cancellationToken = default)
+        => Guid.NewGuid().ToString("n");
+
+    /// <summary>astra-1 P5: enqueue a scan; returns the operation id immediately.</summary>
+    string EnqueueScan(CancellationToken cancellationToken = default)
+        => Guid.NewGuid().ToString("n");
+
+    /// <summary>
+    /// astra-1 P5: query the status of an Enqueue* operation (works after the
+    /// initiating connection has died and reconnected). Unknown ids report
+    /// Done with a Deferred outcome naming the missing id.
+    /// </summary>
+    PluginOperationStatus GetOperation(string operationId)
+        => new(operationId, PluginOperationKind.Reload, true,
+            PluginLifecycleOutcome.Deferred, PluginLifecyclePhase.Admission,
+            "plugin manager unavailable", null, Array.Empty<string>());
+
 }
 
 /// <summary>Minimal config surface the Web plugin needs for config.update (PLAN §36).</summary>
