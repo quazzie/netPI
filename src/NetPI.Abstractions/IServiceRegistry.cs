@@ -41,6 +41,23 @@ public interface IServiceRegistry
 
     /// <summary>Convenience overload: acquire and immediately resolve the instance.</summary>
     T Resolve<T>(string id) where T : notnull;
+
+    /// <summary>
+    /// astra-1 P5: notify when the instance registered under <paramref name="id"/>
+    /// is REPLACED by a different instance (e.g. the Tools plugin was reloaded
+    /// and its registry instance swapped). The callback runs on the registering
+    /// thread and is invoked only for replacements — not for the original
+    /// registration. Host-less builds (default implementation) never fire: a
+    /// service id is registered once and never replaced. Disposing the returned
+    /// handle stops watching.
+    /// </summary>
+    IDisposable WatchServiceReplacement(string id, Action<string> onReplaced)
+        => NullDisposable.Instance;
+
+    private sealed class NullDisposable : IDisposable {
+        public static readonly NullDisposable Instance = new();
+        public void Dispose() { }
+    }
 }
 
 /// <summary>

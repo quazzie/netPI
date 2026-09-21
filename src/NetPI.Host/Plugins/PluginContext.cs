@@ -94,6 +94,9 @@ internal sealed class PluginContextServices(
     public IValueLease<T> AcquireSelfLease<T>() where T : notnull => inner.AcquireSelfLease<T>(owner);
 
     public T Resolve<T>(string id) where T : notnull => inner.Resolve<T>(id);
+
+    public IDisposable WatchServiceReplacement(string id, Action<string> onReplaced)
+        => inner.WatchServiceReplacement(id, onReplaced);
 }
 
 /// <summary>

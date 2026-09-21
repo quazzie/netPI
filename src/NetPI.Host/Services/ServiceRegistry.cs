@@ -31,6 +31,12 @@ public sealed class ServiceRegistry : IServiceRegistry
     private readonly object _gate = new();
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
 
+    /// <summary>astra-1 P5: replacement watchers per service id.</summary>
+    private readonly Dictionary<string, List<Action<string>>> _watchers = new(StringComparer.Ordinal);
+
+    /// <summary>astra-1 P5: last instance ever registered per id (survives physical removals).</summary>
+    private readonly Dictionary<string, object> _lastInstance = new(StringComparer.Ordinal);
+
     public IDisposable Register<T>(string id, T instance) where T : notnull
         => Register(id, instance, ServiceOwner.Current);
 
@@ -52,12 +58,28 @@ public sealed class ServiceRegistry : IServiceRegistry
 
 
         var handle = new RegistrationHandle(id, entry, owner, _gate, _entries);
+        List<Action<string>>? watchersToFire = null;
         lock (_gate)
         {
             if (_entries.TryGetValue(id, out var existing) && !existing.Removed)
                 throw new InvalidOperationException($"Service '{id}' is already registered (by plugin '{PluginName(existing)}').");
+            // astra-1 P5: replacement detection compares against the LAST
+            // instance registered under the id (kept across physical removals
+            // — on a reload the old entry is removed before the new generation
+            // re-registers, so the live-entry compare alone would miss it).
+            // Dependents watching the id are notified after the swap commits
+            // (outside the lock, below).
+            if (_lastInstance.TryGetValue(id, out var prev) && !ReferenceEquals(prev, instance))
+                watchersToFire = GetValuesOrDefault(id);
+            _lastInstance[id] = instance;
             _entries[id] = entry;
         }
+        if (watchersToFire is not null)
+            foreach (var w in watchersToFire)
+            {
+                try { w(id); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"service replacement watcher for '{id}' failed: {ex.Message}"); }
+            }
         if (owner is not null)
             owner.Registrations[id] = handle;
         return handle;
@@ -184,6 +206,42 @@ public sealed class ServiceRegistry : IServiceRegistry
         // Acquire/AcquireLease (e.g. the agent's tool-execution batch).
         using var lease = Acquire<T>(id);
         return lease.Value;
+    }
+
+    /// <summary>
+    /// astra-1 P5: watch for a DIFFERENT instance being registered under
+    /// <paramref name="id"/> and fire <paramref name="onReplaced"/> (on the
+    /// registering thread, after the swap is committed). The original
+    /// registration does not fire. Disposing the handle stops watching.
+    /// </summary>
+    public IDisposable WatchServiceReplacement(string id, Action<string> onReplaced)
+    {
+        var list = new List<Action<string>> { onReplaced };
+        lock (_gate) _watchers[id] = list;
+        return new WatchHandle(id, list, _gate, _watchers);
+    }
+
+    private List<Action<string>>? GetValuesOrDefault(string id)
+    {
+        _watchers.TryGetValue(id, out var list);
+        return list is null ? null : list.ToList();
+    }
+
+    private sealed class WatchHandle(
+        string id, List<Action<string>> list, object gate, Dictionary<string, List<Action<string>>> watchers) : IDisposable
+    {
+        private int _disposed;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            lock (gate)
+            {
+                // astra-1 P5: removal by identity — if a NEWER watcher already
+                // took over the id, this (stale) handle must not remove it.
+                if (ReferenceEquals(watchers.GetValueOrDefault(id), list))
+                    watchers.Remove(id);
+            }
+        }
     }
 
     /// <summary>

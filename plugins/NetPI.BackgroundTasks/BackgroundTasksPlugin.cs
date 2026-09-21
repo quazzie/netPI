@@ -385,6 +385,9 @@ public sealed class BackgroundTasksPlugin : INetPiPlugin
     private BgWebApp? _app;
     private IDisposable? _panel;
     private int _port;
+    private IDisposable? _toolsWatch; // astra-1 P5: re-register when the tools registry instance is replaced
+    private readonly object _reregisterGate = new(); // astra-1 P5: at most one re-registration in flight
+    private IToolRegistry? _toolsRegistry; // astra-1 P5: which registry the live _registrations target
 
     public PluginInfo Info { get; } = new("netPI.BackgroundTasks", "Background Tasks", "0.2.0");
 
@@ -414,18 +417,21 @@ public sealed class BackgroundTasksPlugin : INetPiPlugin
         // All plugins have been loaded by the time any plugin starts, so the
         // tools registry (owned by the Tools plugin) is available now.
         var ctx = _ctx ?? throw new InvalidOperationException("Loaded context not available.");
-        var registry = ctx.Services.Resolve<IToolRegistry>("tools");
-        var mgr = _mgr ?? throw new InvalidOperationException("Job manager not initialised.");
-        var tools = new IAgentTool[]
+        RegisterTools(); // astra-1 P5: shared with the tools-replacement re-registration (resolves "tools" itself)
+        ctx.Log.Information($"BackgroundTasks ready: {string.Join(", ", _tools.Select(t => t.Name))}");
+
+        // astra-1 P5: reloading the Tools plugin REPLACES the registry instance
+        // under "tools" — our registrations would be gone. The host notifies
+        // us (service-replacement watch, fired after the swap commits) and we
+        // re-register into the NEW registry WITHOUT restarting: the job
+        // manager, running jobs and the Kestrel panel are all untouched.
+        _toolsWatch?.Dispose();
+        _toolsWatch = ctx.Services.WatchServiceReplacement("tools", id =>
         {
-            new BackgroundStartTool(mgr),
-            new BackgroundOutputTool(mgr),
-            new BackgroundListTool(mgr),
-            new BackgroundKillTool(mgr),
-        };
-        _tools = tools;
-        _registrations = tools.Select(t => registry.Register(t)).ToArray();
-        ctx.Log.Information($"BackgroundTasks ready: {string.Join(", ", tools.Select(t => t.Name))}");
+            // Re-registration is async + bounded; run it detached from the
+            // registering thread (the tools reload does not wait on us).
+            _ = ReRegisterToolsAsync();
+        });
 
         var app = _app ?? throw new InvalidOperationException("Web app not initialised.");
         await app.StartAsync(cancellationToken);
@@ -439,8 +445,66 @@ public sealed class BackgroundTasksPlugin : INetPiPlugin
         await ValueTask.CompletedTask;
     }
 
+    /// <summary>
+    /// astra-1 P5: register the background tools into the CURRENT tools registry.
+    /// Handles for a DIFFERENT registry instance are retired but NOT disposed:
+    /// after a Tools reload the old <c>ToolRegistryImpl</c> lives in an unloading
+    /// ALC — touching it during a re-registration could deadlock against the
+    /// drain. The stale handles simply leak with the old generation (their
+    /// <c>Unregister</c> was already skipped there via the removed entry).
+    /// </summary>
+    private void RegisterTools(IToolRegistry? into = null)
+    {
+        var ctx = _ctx ?? throw new InvalidOperationException("Loaded context not available.");
+        var registry = into ?? ctx.Services.Resolve<IToolRegistry>("tools");
+        var mgr = _mgr ?? throw new InvalidOperationException("Job manager not initialised.");
+        var sameRegistry = _toolsRegistry is not null && ReferenceEquals(_toolsRegistry, registry);
+        if (sameRegistry)
+            foreach (var r in _registrations) r.Dispose(); // replace-in-place on a live registry
+        // else: stale handles belong to a reloaded (or being unloaded) registry — retire without disposing
+        _registrations = [];
+        _tools = [
+            new BackgroundStartTool(mgr),
+            new BackgroundOutputTool(mgr),
+            new BackgroundListTool(mgr),
+            new BackgroundKillTool(mgr),
+        ];
+        _registrations = _tools.Select(t => registry.Register(t)).ToArray();
+        _toolsRegistry = registry;
+    }
+
+    /// <summary>
+    /// astra-1 P5: the tools registry instance was replaced (Tools reload).
+    /// Re-register our tools into the new instance without a restart; failures
+    /// are logged, never thrown (we must not take the reloading plugin down).
+    /// </summary>
+    private async Task ReRegisterToolsAsync()
+    {
+        await Task.Run(async () =>
+        {
+            var ctx = _ctx;
+            if (ctx is null) return;
+            var gate = _reregisterGate;
+            lock (gate)
+            {
+                try
+                {
+                    RegisterTools();
+                    ctx.Log.Information("BackgroundTasks re-registered tools into the reloaded tools registry");
+                }
+                catch (Exception ex)
+                {
+                    ctx.Log.Error($"BackgroundTasks could not re-register tools into the new registry: {ex.Message}", ex);
+                }
+            }
+            await ValueTask.CompletedTask;
+        });
+    }
+
     public async ValueTask StopAsync(CancellationToken cancellationToken)
     {
+        _toolsWatch?.Dispose();
+        _toolsWatch = null;
         if (_app is { } webApp)
         {
             _app = null;
