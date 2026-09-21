@@ -3,6 +3,7 @@
   import { store } from "../store.svelte";
   import { ui } from "../ui.svelte";
   import { ws } from "../ws";
+  import ContextUsage from "./ContextUsage.svelte";
 
   let text = $state("");
   let el: HTMLTextAreaElement | null = null;
@@ -337,6 +338,8 @@
       <span class="spacer"></span>
 
       <button class="model-pick" onclick={openModelPicker}>{modelLabel} ▾</button>
+
+      <ContextUsage />
 
       <button
         class="reason-pick"

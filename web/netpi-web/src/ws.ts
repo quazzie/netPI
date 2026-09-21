@@ -340,6 +340,7 @@ class NetPIWebSocket {
         // Per-session meter: updates from other sessions must not touch it.
         if (!isCurrent(sid)) break;
         store.lastUsage = p as Usage;
+        store.lastUsageSession = sid ?? store.session?.id ?? null;
         if (p.promptTokens != null) {
           store.stats.contextTokens = p.promptTokens;
         }

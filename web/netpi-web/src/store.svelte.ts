@@ -84,6 +84,9 @@ export class NetPIStore {
   // ---- run stats (kept for diagnostics, not rendered as a status bar) ---
   stats = $state<RunStats>({ turns: 0, toolSteps: 0 });
   lastUsage = $state<Usage | null>(null);
+  /** astra-1 F/G2: the session `lastUsage` belongs to — the context meter must
+   *  not read another session's usage. */
+  lastUsageSession = $state<string | null>(null);
 
   // ---- UI state ----------------------------------------------------------
   errorBanner = $state<string | null>(null);
@@ -236,6 +239,7 @@ export class NetPIStore {
     if (usage) {
       a.usage = usage;
       this.lastUsage = usage;
+      this.lastUsageSession = this.session?.id ?? null;
     }
     this.stats.turns += 1;
     this.activeAssistantId = null;
@@ -461,6 +465,7 @@ export class NetPIStore {
     this.queuedSteer = [];
     this.stats = { turns: 0, toolSteps: 0 };
     this.lastUsage = null;
+    this.lastUsageSession = null;
     this.olderSeq = 0;
     this.moreAvailable = false;
     this.olderLoading = false;
