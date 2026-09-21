@@ -43,9 +43,10 @@ public sealed class AgentRunner : IAgentRunner
             if (!string.IsNullOrEmpty(request.SessionId))
             {
                 var store = _ctx.Services.Resolve<ISessionStore>("sessions");
-                var user = new AgentMessage(Guid.NewGuid().ToString("n"), MessageRole.User,
+                var userMessageId = MessageIdentity.DeterministicId("user", request.Text);
+                var user = new AgentMessage(userMessageId, MessageRole.User,
                     [new TextPart(request.Text)], DateTimeOffset.UtcNow);
-                await store.AppendAsync(new SessionEntry(Guid.NewGuid().ToString("n"),
+                await store.AppendAsync(new SessionEntry(userMessageId,
                     request.SessionId, EntryKind.Message, user, null, DateTimeOffset.UtcNow), cancellationToken);
             }
         }
@@ -79,7 +80,13 @@ public sealed class AgentRunner : IAgentRunner
                 ? Environment.CurrentDirectory : request.WorkspacePath;
             var systemText = await BuildSystemPromptAsync(workspace);
 
-            var transcript = await BuildTranscriptAsync(request, systemText, cts.Token);
+        // astra-1 A (message identity): the run's user message reuses the EXACT
+        // message StartRunAsync persisted — same ID and timestamp — instead of
+        // reconstructing a fresh one with a different ID (identities participate
+        // in Responses fingerprints). Text-based tail de-duplication is gone:
+        // identical consecutive user messages are legitimate.
+        var userMessageId = MessageIdentity.DeterministicId("user", request.Text);
+        var transcript = await BuildTranscriptAsync(request, systemText, userMessageId, cts.Token);
 
 
             await _runtime.RunAsync(new AgentRunOptions
@@ -156,12 +163,13 @@ public sealed class AgentRunner : IAgentRunner
     /// stored message.
     /// </summary>
     private async Task<List<AgentMessage>> BuildTranscriptAsync(
-        AgentRunRequest request, string systemText, CancellationToken ct)
+        AgentRunRequest request, string systemText, string userMessageId, CancellationToken ct)
     {
         var transcript = new List<AgentMessage>();
 
         if (!string.IsNullOrWhiteSpace(systemText))
-            transcript.Add(new AgentMessage(Guid.NewGuid().ToString("n"), MessageRole.System,
+            transcript.Add(new AgentMessage(
+                MessageIdentity.DeterministicId("system", systemText), MessageRole.System,
                 [new TextPart(systemText)], DateTimeOffset.UtcNow));
 
         // Active context: via the AutoCompact plugin (handles compaction
@@ -188,12 +196,13 @@ public sealed class AgentRunner : IAgentRunner
                             .Select(e => e.Message!)
                             .ToList();
                 }
-                // De-dup the current run's user message: if the retained tail
-                // already ends with it (it was just persisted by StartRunAsync),
-                // drop it — it is re-added fresh below so the model sees it once.
-                if (context.Count > 0 && context[^1].Role == MessageRole.User &&
-                    string.Equals(TextOf(context[^1]), request.Text, StringComparison.Ordinal))
-                    context.RemoveAt(context.Count - 1);
+                // The run's user message is re-added below with its PERSISTED
+                // identity (userMessageId): if the active context already
+                // contains it (retained tail after StartRunAsync persisted it),
+                // drop it by ID — no text-based de-duplication (identical
+                // consecutive user messages are legitimate).
+                for (var i = context.Count - 1; i >= 0; i--)
+                    if (context[i].Id == userMessageId) context.RemoveAt(i);
                 // PLAN §46: a run that died mid-batch (crash/restart) leaves tool
                 // calls without results — the provider rejects the transcript
                 // ("function_call_output must contain a non-empty call_id"). Repair
@@ -207,7 +216,7 @@ public sealed class AgentRunner : IAgentRunner
             _ctx.Log.Warning($"context build failed: {ex.Message}");
         }
 
-        transcript.Add(new AgentMessage(Guid.NewGuid().ToString("n"), MessageRole.User,
+        transcript.Add(new AgentMessage(userMessageId, MessageRole.User,
             [new TextPart(request.Text)], DateTimeOffset.UtcNow));
         return transcript;
     }

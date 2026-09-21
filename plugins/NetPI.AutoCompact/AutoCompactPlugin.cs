@@ -193,9 +193,14 @@ public sealed class AutoCompactService : ICompaction
             EstimatedTokensAfter = TokenEstimator.EstimateList(activeContext),
             ModelId = request.ModelId,
         };
+        // astra-1 A (message identity): the checkpoint entry's identity is derived
+        // from its persisted payload (deterministic, not a fresh GUID), so the
+        // compaction-summary identity derived from it stays stable across runs.
+        var payloadElement = JsonSerializer.SerializeToElement(payload, WireOpts);
+        var entryId = MessageIdentity.DeterministicId("checkpoint", payloadElement.GetRawText());
         var compactionEntry = new SessionEntry(
-            Guid.NewGuid().ToString("n"), request.SessionId, EntryKind.Compaction, null,
-            JsonSerializer.SerializeToElement(payload, WireOpts), DateTimeOffset.UtcNow,
+            entryId, request.SessionId, EntryKind.Compaction, null,
+            payloadElement, DateTimeOffset.UtcNow,
             Sequence: 0); // store assigns the real seq on append
 
         await store.AppendAsync(compactionEntry, cancellationToken);
@@ -306,11 +311,15 @@ public sealed class AutoCompactService : ICompaction
 
     private static List<AgentMessage> BuildActiveContext(List<AgentMessage> retained, string summary)
     {
+        // astra-1 A (message identity): the summary message's id is derived from
+        // the summary CONTENT (deterministic), not a fresh GUID — reconstructing
+        // the same persisted checkpoint across runs must yield the same message
+        // identity so provider fingerprints stay stable (legitimate cache reuse).
+        var summaryBody = "Here is a summary of the earlier part of this conversation (auto-generated). "
+            + "Treat the work described below as already done:\n\n" + summary;
         var summaryMsg = new AgentMessage(
-            Guid.NewGuid().ToString("n"), MessageRole.System,
-            [new TextPart(
-                "Here is a summary of the earlier part of this conversation (auto-generated). " +
-                "Treat the work described below as already done:\n\n" + summary)],
+            MessageIdentity.DeterministicId("summary", summaryBody), MessageRole.System,
+            [new TextPart(summaryBody)],
             DateTimeOffset.UtcNow);
         var active = new List<AgentMessage>(retained.Count + 1) { summaryMsg };
         active.AddRange(retained);

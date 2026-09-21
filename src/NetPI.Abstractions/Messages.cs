@@ -2,6 +2,29 @@ using System.Text.Json;
 
 namespace NetPI.Abstractions;
 
+/// <summary>
+/// astra-1 A (Package A, message identity): deterministic identities for
+/// transcript messages whose identity must be STABLE across runs — the
+/// effective system context (derived from its content) and compaction
+/// summaries (derived from their persisted checkpoint). Stable IDs keep
+/// provider fingerprints stable (legitimate cache reuse) without weakening
+/// the fingerprint check itself.
+/// </summary>
+public static class MessageIdentity
+{
+    /// <summary>A 16-hex identity derived from <paramref name="prefix"/> + content.</summary>
+    public static string DeterministicId(string prefix, string content)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(prefix + "\u0000" + content));
+        return Convert.ToHexString(hash)[..16].ToLowerInvariant();
+    }
+
+    /// <summary>Identity of a compaction summary, derived from its persisted checkpoint entry.</summary>
+    public static string SummaryId(string checkpointEntryId)
+        => DeterministicId("compaction", checkpointEntryId);
+}
+
 /// <summary>Role of a message in the provider-neutral transcript (PLAN §8).</summary>
 public enum MessageRole
 {

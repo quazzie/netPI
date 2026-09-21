@@ -805,9 +805,23 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     private (object Payload, List<string> Covered) BuildResponsesPayload(ModelRequest request)
     {
         var input = new List<object>();
-        string? instructions = null;
         List<string> covered;
         var cur = MessageFingerprints(request.Messages);
+
+        // astra-1 A: EVERY system message is carried into instructions, in
+        // deterministic transcript order — the first non-empty one only used to
+        // be selected, so a reconstructed compaction summary (a separate system
+        // message after the base prompt) was silently dropped from the wire.
+        // Computed once, above the branch: BOTH the chained and the reset paths
+        // must carry the effective instructions (the chain branch used to leave
+        // `instructions` unset, dropping a changed system context on every
+        // follow-up turn). System messages carry no input items.
+        var systemTexts = request.Messages
+            .Where(m => m.Role == MessageRole.System)
+            .Select(m => string.Join("\n", m.Parts.OfType<TextPart>().Select(p => p.Text)))
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .ToList();
+        string? instructions = systemTexts.Count is 0 ? null : string.Join("\n\n", systemTexts);
 
         // PLAN §14c: chain when the head still covers a matching transcript
         // prefix: send previous_response_id plus only the delta beyond the
@@ -826,11 +840,6 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         else
         {
             covered = cur;
-            // instructions are always (re)sent; system messages carry no input items.
-            instructions = request.Messages
-                .Where(m => m.Role == MessageRole.System)
-                .Select(m => string.Join("\n", m.Parts.OfType<TextPart>().Select(p => p.Text)))
-                .FirstOrDefault(t => t.Length > 0);
             foreach (var m in request.Messages)
                 if (m.Role != MessageRole.System)
                     BuildItemsForMessage(m, input, out _);
