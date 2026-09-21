@@ -49,6 +49,7 @@ public sealed class PluginManager
     private readonly object _gate = new();
     private readonly PluginManagerOptions _options;
     private readonly EventBus _bus;
+    private readonly NativeAssetCache _nativeCache = new();
     private readonly ServiceRegistry _registry;
     private readonly CommandRegistry _commands;
     private readonly WebPanelRegistry _webPanels;
@@ -164,6 +165,12 @@ public sealed class PluginManager
         /// <summary>For <see cref="Published"/>: the build id pinned by the pointer.</summary>
         public string? BuildId { get; init; }
 
+        /// <summary>astra-1 P4: the entry assembly (top-level file name) that must be loaded.</summary>
+        public string? EntryAssembly { get; init; }
+
+        /// <summary>astra-1 P4: abstractions build id the artifact was compiled against.</summary>
+        public string? AbstractionsBuildId { get; init; }
+
         /// <summary>Reason <see cref="Kind"/> is not a loadable source (diagnostics only).</summary>
         public string? Note { get; init; }
     }
@@ -205,7 +212,7 @@ public sealed class PluginManager
                     sources.Add(new PluginSource { Id = id, Directory = sub, Kind = SourceKind.Invalid, BuildId = manifest.BuildId, Note = verr });
                     continue;
                 }
-                sources.Add(new PluginSource { Id = id, Directory = sub, Kind = SourceKind.Published, ArtifactDir = artifact, BuildId = manifest.BuildId });
+                sources.Add(new PluginSource { Id = id, Directory = sub, Kind = SourceKind.Published, ArtifactDir = artifact, BuildId = manifest.BuildId, EntryAssembly = manifest.EntryAssembly, AbstractionsBuildId = manifest.AbstractionsBuildId });
                 continue;
             }
 
@@ -349,7 +356,8 @@ public sealed class PluginManager
             errorSink?.Invoke(msg);
             return null;
         }
-        var alc = new PluginLoadContext($"{pluginId}-gen{generation}", loadFrom);
+        var alc = new PluginLoadContext($"{pluginId}-gen{generation}", loadFrom,
+            path => _nativeCache.EnsureCached(path));
         var instance = new PluginInstance(pluginId, generation)
         {
             SourceDirectory = source.Directory,
@@ -363,7 +371,8 @@ public sealed class PluginManager
                 ? _config.GetRaw(pluginId).DeepClone()
                 : ownConfigOverride.DeepClone(),
             LoadContext = alc,
-            Policy = _options.AgentIdlePlugins.Contains(pluginId) ? ReloadPolicy.AgentIdle : ReloadPolicy.PluginIdle
+            Policy = _options.AgentIdlePlugins.Contains(pluginId) ? ReloadPolicy.AgentIdle : ReloadPolicy.PluginIdle,
+            NativeFiles = NativeAssetCache.NativeRidFiles(loadFrom)
         };
 
         instance.State = PluginState.Loading;
@@ -371,10 +380,18 @@ public sealed class PluginManager
 
         try
         {
-            var plugin = FindPluginInstance(alc, loadFrom);
+            // astra-1 P4: validate the contract BEFORE activation, load the
+            // DECLARED entry assembly (not every top-level DLL), and require
+            // exactly one implementation in it.
+            var nativeCheck = ValidateContract(source);
+            if (nativeCheck is not null)
+                throw new PluginLoadException(pluginId, nativeCheck);
+            var plugin = FindPluginEntry(alc, source, loadFrom);
             if (plugin is null)
-                throw new PluginLoadException(pluginId, $"no INetPiPlugin implementation found in '{loadFrom}'");
+                throw new PluginLoadException(pluginId, $"no INetPiPlugin implementation found in the entry assembly of '{loadFrom}'");
             instance.Plugin = plugin;
+            instance.NativeFiles = LoadNativeAssets(loadFrom);
+            instance.NativeBuildHashes = NativeAssetCache.NativeBuildHashes(loadFrom);
 
             instance.Info = plugin.Info;
             if (plugin.Info.Id != pluginId)
@@ -428,96 +445,134 @@ public sealed class PluginManager
     }
 
     /// <summary>
-    /// Pre-loads native (unmanaged) libraries that ship inside the plugin
-    /// directory (e.g. <c>e_sqlite3.dll</c> for SQLitePCLRaw). P/Invoke
-    /// <c>DllImport</c> probes the process default search path, which does
-    /// not include collectible plugin ALCs; pre-loading via the default ALC
-    /// makes the DllImport resolve. Idempotent and best-effort.
+    /// astra-1 P4: load the DECLARED entry assembly (the manifest's
+    /// entryAssembly for published builds; the plugin's own DLL by assembly
+    /// name for legacy staged folders) and require exactly ONE concrete
+    /// INetPiPlugin implementation in it. Dependencies resolve on demand
+    /// through the ALC's resolver — the old loop loaded every top-level DLL
+    /// and could instantiate several implementations at once.
     /// </summary>
-    private static void PreloadNativeAssets(string pluginDir)
+    private INetPiPlugin? FindPluginEntry(PluginLoadContext alc, PluginSource source, string pluginDir)
     {
-        // Recursively collect candidate native libraries under the plugin
-        // directory (runtimes/<rid>/native/*.dll, top-level *.so / *.dylib,
-        // or any *.dll that happens to be native). NativeLibrary.TryLoad on a
-        // managed dll simply returns false, so this is safe.
-        var candidates = new List<string>();
-        void Collect(string dir)
+        string entryPath;
+        if (source.EntryAssembly is not null)
         {
-            if (!Directory.Exists(dir)) return;
-            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
-                if (f.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
-                    f.EndsWith(".so", StringComparison.OrdinalIgnoreCase) ||
-                    f.EndsWith(".dylib", StringComparison.OrdinalIgnoreCase))
-                    candidates.Add(f);
+            entryPath = Path.GetFullPath(Path.Combine(pluginDir, source.EntryAssembly));
+            if (!entryPath.StartsWith(Path.GetFullPath(pluginDir) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                throw new PluginLoadException(source.Id, $"entry assembly escapes plugin root: '{source.EntryAssembly}'");
+            if (!File.Exists(entryPath))
+                throw new PluginLoadException(source.Id, $"entry assembly missing: '{source.EntryAssembly}'");
+        }
+        else
+        {
+            // Legacy staged folder: the entry is the top-level DLL matching the
+            // DISCOVERY folder name (pluginDir is a snapshot of it — the name
+            // itself lives on source.Directory). The abstractions copy is the
+            // host's and is never loaded from here.
+            var abstractionsName = typeof(INetPiPlugin).Assembly.GetName().Name!;
+            var folderName = Path.GetFileName(source.Directory);
+            // Prefer the DLL named after the discovery folder; otherwise the
+            // folder is a RENAMED legacy staging (test fixtures do this) — the
+            // entry is then the single non-abstractions top-level DLL.
+            var candidates = Directory.EnumerateFiles(pluginDir, "*.dll", SearchOption.TopDirectoryOnly)
+                .Where(f => !string.Equals(Path.GetFileNameWithoutExtension(f), abstractionsName, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(f => string.Equals(Path.GetFileNameWithoutExtension(f), folderName, StringComparison.OrdinalIgnoreCase)
+                                 ? 0 : 1)
+                .ThenBy(f => f, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var named = candidates.FirstOrDefault(f => string.Equals(Path.GetFileNameWithoutExtension(f), folderName, StringComparison.OrdinalIgnoreCase));
+            var match = candidates.Count == 1 ? candidates[0] : (named ?? null);
+            if (match is null)
+                throw new PluginLoadException(source.Id,
+                    candidates.Count > 1
+                        ? $"ambiguous legacy folder '{pluginDir}' — {candidates.Count} top-level assemblies, none named '{folderName}'"
+                        : $"no entry assembly found in legacy folder '{pluginDir}'");
+            entryPath = match;
         }
 
-        foreach (var runtimesDir in Directory.EnumerateDirectories(pluginDir, "runtimes"))
-            Collect(runtimesDir);
-
-        // Top-level native libraries (no runtimes/ nesting).
-        CollectTopLevelOnly(pluginDir, candidates);
-
-        foreach (var path in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        var entry = alc.LoadFromAssemblyPath(entryPath);
+        Type[] types;
+        try { types = entry.GetTypes(); }
+        catch (ReflectionTypeLoadException rtle)
         {
-            try { System.Runtime.InteropServices.NativeLibrary.Load(path); }
-
-
-            catch { /* best-effort; the runtime may load it lazily */ }
+            throw new PluginLoadException(source.Id,
+                $"entry assembly '{Path.GetFileName(entryPath)}' types could not load: {rtle.LoaderExceptions?.FirstOrDefault()?.Message}", rtle);
         }
+        var impls = types
+            .Where(t => t is { IsClass: true, IsAbstract: false } && typeof(INetPiPlugin).IsAssignableFrom(t))
+            .ToList();
+        if (impls.Count == 0)
+            throw new PluginLoadException(source.Id, $"entry assembly '{Path.GetFileName(entryPath)}' has no INetPiPlugin implementation");
+        if (impls.Count > 1)
+            throw new PluginLoadException(source.Id,
+                $"entry assembly '{Path.GetFileName(entryPath)}' is ambiguous — {impls.Count} INetPiPlugin implementations: " +
+                string.Join(", ", impls.Select(t => t.FullName)));
+        return (INetPiPlugin)Activator.CreateInstance(impls[0])!;
     }
 
-    private static void CollectTopLevelOnly(string pluginDir, List<string> candidates)
+    /// <summary>
+    /// astra-1 P4: the shared contract must be compatible BEFORE activation —
+    /// the artifact's abstractions build id (content hash of the
+    /// netPI.Abstractions.dll the plugin was compiled against) must equal the
+    /// host's loaded abstractions build. An empty artifact token (pre-P4
+    /// legacy manifest) degrades to a warning.
+    /// </summary>
+    private string? ValidateContract(PluginSource source)
     {
-        foreach (var f in Directory.EnumerateFiles(pluginDir, "*", SearchOption.TopDirectoryOnly))
-            if (f.EndsWith(".so", StringComparison.OrdinalIgnoreCase) ||
-                f.EndsWith(".dylib", StringComparison.OrdinalIgnoreCase))
-                candidates.Add(f);
+        if (source.AbstractionsBuildId is null or { Length: 0 })
+        {
+            _logger.LogWarning("{Plugin}: no abstractionsBuildId available — contract check skipped", source.Id);
+            return null;
+        }
+        string hostToken;
+        try
+        {
+            var path = Path.Combine(Path.GetDirectoryName(typeof(INetPiPlugin).Assembly.Location)!,
+                typeof(INetPiPlugin).Assembly.GetName().Name! + ".dll");
+            hostToken = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)))[..12].ToLowerInvariant();
+        }
+        catch
+        {
+            return "host netPI.Abstractions build could not be hashed — refusing to load (contract unverifiable)";
+        }
+        if (!string.Equals(source.AbstractionsBuildId, hostToken, StringComparison.OrdinalIgnoreCase))
+            return $"contract mismatch: plugin built against netPI.Abstractions {source.AbstractionsBuildId}, host runs {hostToken}";
+        return null;
     }
-    private INetPiPlugin? FindPluginInstance(PluginLoadContext alc, string pluginDir)
-    {
-        // Explicitly load every local assembly into the collectible ALC so it
-        // shows up in alc.Assemblies (a fresh collectible ALC starts empty of
-        // plugin assemblies).
-        var assemblies = new List<Assembly>();
-        PreloadNativeAssets(pluginDir);
 
-        foreach (var dll in Directory.EnumerateFiles(pluginDir, "*.dll", SearchOption.TopDirectoryOnly)
-            .Where(f => !string.Equals(Path.GetFileNameWithoutExtension(f),
-                PluginLoadContext.AbstractionsAssemblyName, StringComparison.OrdinalIgnoreCase)))
+    /// <summary>
+    /// astra-1 P4: load the plugin's native libraries for the CURRENT RID only —
+    /// from the content-addressed process cache, so a second generation of the
+    /// same native build reuses the exact same process mapping (no per-reload
+    /// re-mapping, no blanket preloading of every RID). Unmappable files are
+    /// warnings, not failures.
+    /// </summary>
+    private static bool SameNativeBuild(HashSet<string> a, IReadOnlyCollection<string> b)
+    {
+        if (a.Count != b.Count) return false;
+        foreach (var x in a)
+            if (!b.Contains(x)) return false;
+        return true;
+    }
+
+    private List<string> LoadNativeAssets(string pluginDir)
+    {
+        var loaded = new List<string>();
+        foreach (var path in NativeAssetCache.NativeRidFiles(pluginDir))
         {
             try
             {
-                assemblies.Add(alc.LoadFromAssemblyPath(dll));
+                System.Runtime.InteropServices.NativeLibrary.Load(_nativeCache.EnsureCached(path));
+                loaded.Add(path);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Could not load '{Dll}' into plugin context", dll);
+                _logger.LogWarning(ex, "could not preload native asset {Path} (the runtime may load it lazily)", path);
             }
         }
-
-        // Pick the assembly that actually implements INetPiPlugin (the
-        // plugin's own assembly), not the alphabetically-first package dll.
-        INetPiPlugin? found = null;
-        foreach (var asm in assemblies
-            .Where(a => !a.IsDynamic && a.GetName().Name is not null)
-            .Where(a => a.IsCollectible))
-        {
-            try
-            {
-                var types = asm.GetTypes();
-                var impls = types.Where(t => t is { IsClass: true, IsAbstract: false } && typeof(INetPiPlugin).IsAssignableFrom(t)).ToList();
-                if (impls.Count == 0) continue;
-                if (found is not null)
-                    _logger.LogWarning("Multiple INetPiPlugin implementations found across assemblies; using first");
-                found = (INetPiPlugin)Activator.CreateInstance(impls[0])!;
-            }
-            catch (ReflectionTypeLoadException rtle)
-            {
-                _logger.LogWarning($"could not fully load plugin types in '{asm.GetName().Name}': {rtle.LoaderExceptions?.FirstOrDefault()?.Message}");
-            }
-        }
-        return found;
+        return loaded;
     }
+
     // ----------------------------------------------------------------------
     // ----------------------------------------------------------------------
     // astra-1 P2: lifecycle operation queue + structured outcomes
@@ -951,6 +1006,16 @@ public sealed class PluginManager
         requested = src.Kind == SourceKind.Published ? src.BuildId : "legacy";
         if (Volatile.Read(ref _shutdownStarted) == 1)
             return (Outcome("host shutdown in progress", PluginLifecyclePhase.Pinning, PluginLifecycleOutcome.Deferred), null);
+
+        // astra-1 P4: a changed native build cannot be hot-swapped — the old
+        // generation's native mappings stay pinned for the process lifetime,
+        // so mapping a different native build in the same process is
+        // RestartRequired (checked before the old generation is touched).
+        var candidateNative = NativeAssetCache.NativeBuildHashes(
+            src.Kind == SourceKind.Published ? src.ArtifactDir! : src.Directory);
+        if (SameNativeBuild(candidateNative, old.NativeBuildHashes) == false)
+            return (Outcome("native library build changed (e.g. e_sqlite3) — host restart required",
+                PluginLifecyclePhase.Pinning, PluginLifecycleOutcome.RestartRequired, restartRequired: true), old);
 
         // astra-1 P3: drain admission is atomic with the state check, and
         // atomic with lease admission — after this returns, no NEW lease can

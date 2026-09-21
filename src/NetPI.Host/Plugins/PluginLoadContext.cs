@@ -19,10 +19,18 @@ public sealed class PluginLoadContext : AssemblyLoadContext
 
     private readonly AssemblyDependencyResolver _resolver;
 
-    public PluginLoadContext(string name, string pluginDirectory)
+    /// <summary>
+    /// astra-1 P4: maps a native-library path to the content-addressed cache
+    /// path the process actually maps (the same build always maps to the same
+    /// file — never a second mapping from a fresh snapshot directory).
+    /// </summary>
+    private readonly Func<string, string> _remapNative;
+
+    public PluginLoadContext(string name, string pluginDirectory, Func<string, string>? remapNative = null)
         : base(name, isCollectible: true)
     {
         _resolver = new AssemblyDependencyResolver(pluginDirectory);
+        _remapNative = remapNative ?? (path => path);
     }
 
     protected override Assembly? Load(AssemblyName assemblyName)
@@ -45,6 +53,8 @@ public sealed class PluginLoadContext : AssemblyLoadContext
     protected override IntPtr LoadUnmanagedDll(string libPath)
     {
         var path = _resolver.ResolveUnmanagedDllToPath(libPath);
-        return path is null ? IntPtr.Zero : LoadUnmanagedDllFromPath(path);
+        // astra-1 P4: map the cached copy of the native build, never the
+        // snapshot copy (one process mapping per native build, P4 policy).
+        return path is null ? IntPtr.Zero : LoadUnmanagedDllFromPath(_remapNative(path));
     }
 }

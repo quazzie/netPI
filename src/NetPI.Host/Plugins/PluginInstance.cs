@@ -52,6 +52,12 @@ public sealed class PluginInstance
     /// <summary>astra-1 P3: idempotency guard for the unified generation cleanup.</summary>
     public bool CleanupStarted { get; set; }
 
+    /// <summary>astra-1 P4: native library files this generation loaded (process mappings).</summary>
+    public IReadOnlyList<string> NativeFiles { get; set; } = [];
+
+    /// <summary>astra-1 P4: native build content hashes of this generation (RestartRequired comparison on reload).</summary>
+    public IReadOnlyCollection<string> NativeBuildHashes { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Lease handles currently held on this plugin's services (drained before unload).</summary>
     public ConcurrentDictionary<Guid, IDisposable> LiveLeases { get; } = new();
 
