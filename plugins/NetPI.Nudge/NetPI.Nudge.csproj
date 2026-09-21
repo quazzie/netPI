@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Nudge</RootNamespace>
+    <AssemblyName>netPI.Nudge</AssemblyName>
+    <Description>Continues agent runs that end on an empty turn (no text, no tools) by steering a nudge (PLAN cut-off guard). Reloadable netPI plugin.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+</Project>

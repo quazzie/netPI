@@ -290,6 +290,13 @@ internal sealed class WebApp : IAsyncDisposable
             }
 
 
+            case AgentEventType.TurnEmpty:
+                // Cut-off guard: a turn ended with no answer and no tool calls.
+                // Persist a notice for session replay + broadcast it live; the
+                // nudge plugin (if active) is already steering a continuation.
+                _ = EmitTurnEmptyNoticeAsync(sid);
+                break;
+
             case AgentEventType.AgentCompleted:
             case AgentEventType.AgentCancelled:
                 // Final turns have no tool batch, so close them here.
@@ -297,6 +304,46 @@ internal sealed class WebApp : IAsyncDisposable
                 SendEvent("agent.state", new { state = "Idle" }, sid);
                 break;
         }
+    }
+
+    /// <summary>
+    /// Cut-off notice (empty turn): persist a <see cref="EntryKind.Metadata"/>
+    /// entry (wire "system_note") so the chat log shows the dead-end on session
+    /// replay, and broadcast the same notice live as a <c>session.entry</c>
+    /// event. Fire-and-forget (the hot model path must not block); failures are
+    /// logged. The nudge plugin separately persists the continuation user message.
+    /// </summary>
+    private async Task EmitTurnEmptyNoticeAsync(string? sid)
+    {
+        if (sid is null) return;
+
+        // The nudge plugin (priority 100) handles TurnEmpty BEFORE this surface
+        // (priority 0) and enqueues its nudge synchronously; give the bus a beat
+        // so the pending count reflects a real nudge when one is in flight.
+        await Task.Delay(30);
+        bool nudging = false;
+        var steering = Resolve<ISteeringQueue>("steering");
+        if (steering is not null)
+            nudging = steering.PendingCount(sid) > 0;
+        var text = "⚠ Model turn cut off (no answer, no tool call)" +
+            (nudging ? " — nudge sent, continuing the run"
+                     : " — no continuation, run ends here");
+
+        var store = Store;
+        if (store is not null)
+        {
+            try
+            {
+                var entry = new SessionEntry(
+                    Guid.NewGuid().ToString("n"), sid, EntryKind.Metadata, null,
+                    System.Text.Json.JsonSerializer.SerializeToElement(
+                        new { kind = "system_note", text }, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }),
+                    DateTimeOffset.UtcNow);
+                await store.AppendAsync(entry);
+            }
+            catch (Exception ex) { _log.Error($"EmitTurnEmptyNotice persist: {ex.Message}"); }
+        }
+        SendEvent("session.entry", new { entry = new { type = "system_note", text } as object }, sid);
     }
 
     private void ForwardModelWire(JsonElement w, string? sid)
@@ -1093,6 +1140,13 @@ internal sealed class WebApp : IAsyncDisposable
                 lastAssistant = null;
                 var root = JsonDocument.Parse(pl.ToString()).RootElement;
                 outEntries.Add(new { type = "compaction", summary = S(root, "summary") } as object);
+            }
+            else if (e.Kind == EntryKind.Metadata && e.Payload is { } mdp)
+            {
+                lastAssistant = null;
+                var mroot = JsonDocument.Parse(mdp.ToString()).RootElement;
+                if (S(mroot, "kind") == "system_note")
+                    outEntries.Add(new { type = "system_note", text = S(mroot, "text") } as object);
             }
         }
         return outEntries;

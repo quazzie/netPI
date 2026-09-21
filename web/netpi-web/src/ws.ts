@@ -322,6 +322,10 @@ class NetPIWebSocket {
           if (prepend) store.prependSystem(`Compaction: ${e.summary ?? "(summary)"}`);
           else store.appendSystem(`Compaction: ${e.summary ?? "(summary)"}`);
           break;
+        case "system_note":
+          if (prepend) store.prependSystem(e.text ?? "");
+          else store.appendSystem(e.text ?? "");
+          break;
         default:
           break;
       }

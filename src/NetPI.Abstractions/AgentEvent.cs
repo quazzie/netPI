@@ -32,5 +32,16 @@ public enum AgentEventType
     AgentCompleted = 13,
     AgentCancelled = 14,
     ModelRetrying = 15,
+    /// <summary>
+    /// A model turn completed with no assistant text and no tool calls (e.g. a
+    /// provider-truncated thinking stream). Nudge plugins use this to steer the
+    /// run into a continuation; the web surface renders it as a chat notice.
+    /// </summary>
+    TurnEmpty = 16,
+    /// <summary>
+    /// A nudge plugin auto-continued the run after a <see cref="TurnEmpty"/>
+    /// (the payload carries the nudge text). Published by the nudge plugin.
+    /// </summary>
+    Nudged = 17,
 }
 

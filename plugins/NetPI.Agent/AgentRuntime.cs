@@ -293,6 +293,25 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 var calls = assistant.Parts.OfType<ToolCallPart>().ToList();
                 if (calls.Count == 0)
                 {
+                    var hasText = assistant.Parts.Any(p => p is TextPart t && t.Text.Length > 0);
+                    if (!hasText)
+                    {
+                        // Empty turn: no answer text and no tool calls — usually a
+                        // provider-truncated thinking stream. Publish TurnEmpty so
+                        // nudge plugins can steer a continuation and the web surface
+                        // can notice the cut-off; if a nudge queued a steering
+                        // message, the loop-top drain injects it as a fresh user
+                        // message and we continue instead of ending on nothing.
+                        _state = AgentState.Idle;
+                        await PublishAsync(AgentEventType.TurnEmpty, options,
+                            new ModelEventWire { Kind = "turn-empty", ModelId = options.ModelId }, ct);
+                        if (PendingCount(_activeSession) > 0)
+                        {
+                            await PublishAsync(AgentEventType.TurnBoundary, options, null, ct);
+                            continue;
+                        }
+                        return new AgentRunResult(true, assistant, turns, null);
+                    }
                     _state = AgentState.Idle;
                     return new AgentRunResult(true, assistant, turns, null);
                 }

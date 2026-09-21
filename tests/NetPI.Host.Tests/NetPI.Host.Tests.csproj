@@ -19,5 +19,7 @@
     <ProjectReference Include="..\..\plugins\NetPI.Storage.Sqlite\NetPI.Storage.Sqlite.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Provider.AiProxy\NetPI.Provider.AiProxy.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Diagnostics\NetPI.Diagnostics.csproj" />
+    <ProjectReference Include="..\..\plugins\NetPI.BackgroundTasks\NetPI.BackgroundTasks.csproj" />
+    <ProjectReference Include="..\..\plugins\NetPI.Nudge\NetPI.Nudge.csproj" />
   </ItemGroup>
 </Project>

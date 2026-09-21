@@ -14,7 +14,7 @@ $env:PATH = "$DotNetRoot;$env:PATH"
 
 $root = Split-Path $PSScriptRoot -Parent
 $plugins = @("NetPI.Agent","NetPI.Context.Pi","NetPI.Provider.AiProxy",
-             "NetPI.Storage.Sqlite","NetPI.AutoCompact","NetPI.Retry","NetPI.TestPlugin","NetPI.Tools","NetPI.BackgroundTasks","NetPI.Web","NetPI.Diagnostics")
+             "NetPI.Storage.Sqlite","NetPI.AutoCompact","NetPI.Retry","NetPI.Nudge","NetPI.TestPlugin","NetPI.Tools","NetPI.BackgroundTasks","NetPI.Web","NetPI.Diagnostics")
 
 foreach ($p in $plugins) {
   $dir = Join-Path $root "plugins/$p"
@@ -25,10 +25,11 @@ foreach ($p in $plugins) {
     Copy-Item (Join-Path $cfg "*.dll") $dir -Force
     Copy-Item (Join-Path $cfg "$p.deps.json") $dir -Force
   }
-  # Web plugin: class-library build emits no runtimeconfig.json; the ALC needs
-  # one declaring the ASP.NET Core shared framework.
-  if ($p -eq "NetPI.Web" -or $p -eq "NetPI.Diagnostics") {
-    $asm = if ($p -eq "NetPI.Web") { "netPI.Web" } else { "netPI.Diagnostics" }
+  # Kestrel plugins (Web/Diagnostics/BackgroundTasks): class-library builds
+  # emit no runtimeconfig.json; the ALC needs one declaring the ASP.NET Core
+  # shared framework.
+  if ($p -eq "NetPI.Web" -or $p -eq "NetPI.Diagnostics" -or $p -eq "NetPI.BackgroundTasks") {
+    $asm = if ($p -eq "NetPI.Web") { "netPI.Web" } elseif ($p -eq "NetPI.BackgroundTasks") { "netPI.BackgroundTasks" } else { "netPI.Diagnostics" }
     Set-Content -Path (Join-Path $dir "$asm.runtimeconfig.json") -Value @'
 {
   "runtimeOptions": {
