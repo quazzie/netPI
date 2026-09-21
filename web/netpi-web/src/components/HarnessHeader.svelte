@@ -16,12 +16,6 @@
 </script>
 
 <div class="header">
-  <button
-    class="menu-btn"
-    title={ui.leftOpen ? "Collapse navigation" : "Open navigation"}
-    onclick={() => ui.toggleLeft()}
-  >☰</button>
-
   <span class="title">netPI</span>
 
   <!-- astra-1 G1: Sessions opens the global picker; the current-session label

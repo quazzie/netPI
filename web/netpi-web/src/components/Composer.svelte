@@ -228,8 +228,8 @@
         break;
       case "/settings":
       case "/workspace":
-        ui.leftOpen = true;
-        ui.leftPage = "settings";
+        // astra-1 G1: settings moved to the dialog — signal the shell.
+        ui.requestSettings();
         break;
       case "/model":
         openModelPicker();
