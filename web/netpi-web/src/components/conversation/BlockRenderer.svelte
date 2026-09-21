@@ -3,6 +3,7 @@
   import UserMessage from "./UserMessage.svelte";
   import AssistantMessage from "./AssistantMessage.svelte";
   import ToolCallBlock from "./ToolCallBlock.svelte";
+  import SystemNotice from "./SystemNotice.svelte";
 
   let { block }: { block: Block } = $props();
 </script>
@@ -29,5 +30,7 @@
     }}
   />
 {:else}
-  <div class="sys-block">{block.text}</div>
+  <!-- astra-1 G3: system/project/compaction notices get compact, distinct,
+       expandable entries — not generic prose lines. -->
+  <SystemNotice block={block} />
 {/if}
