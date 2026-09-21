@@ -163,6 +163,12 @@ a { color: var(--accent); }
   box-shadow: 0 3px 16px rgba(0,0,0,.12);
   white-space: pre-wrap;
   line-height: 1.55;
+  /* astra-1 G3: long unbroken paths/tokens must not break the chat width, and
+     a giant paste must not turn the bubble into a wall — wrap, bound the
+     height, and scroll (selection/copy stay intact). */
+  overflow-wrap: anywhere;
+  max-height: 360px;
+  overflow-y: auto;
 }
 .msg-user .who {
   margin-bottom: 4px;
