@@ -73,7 +73,13 @@ public sealed class TestPlugin : INetPiPlugin
         if (context_OwnConfigHas("subscribeFail"))
             throw new InvalidOperationException("TestPlugin fails after subscription (subscribeFail=true)");
         context.Log.Information($"TestPlugin loaded (generation '{generation}')");
-        // astra-1 P2 test hook: retain the stop duration for Stop decisions.
+        // astra-1 P6 test hooks: register a slash command + a web-panel so
+        // unload-leak tests can assert the host removes them with the
+        // generation (mirrors what AutoCompact/BackgroundTasks do for real).
+        if (context_OwnConfigHas("registerCommands"))
+            context.Commands.Register(new CommandDefinition("/testplugin", "TestPlugin command hook"));
+        if (context_OwnConfigHas("registerPanel"))
+            context.WebPanels.Register(new WebPanelDefinition("testpanel", "Test Panel", "T", "/plugins/testpanel/panel", 1));
         if (context.OwnConfig.ValueKind == JsonValueKind.Object
             && context.OwnConfig.TryGetProperty("stopMs", out var ms)
             && ms.ValueKind == JsonValueKind.Number)
@@ -119,7 +125,7 @@ public sealed class TestPlugin : INetPiPlugin
     private bool context_OwnConfigHas(string key) =>
         _ownConfig.ValueKind == JsonValueKind.Object
         && _ownConfig.TryGetProperty(key, out var v)
-        && v.ValueKind == JsonValueKind.True;
+        && (v.ValueKind == JsonValueKind.True || (v.ValueKind == JsonValueKind.String && v.GetString() == "true"));
 
     private JsonElement _ownConfig = default;
     private int _stopMs;
