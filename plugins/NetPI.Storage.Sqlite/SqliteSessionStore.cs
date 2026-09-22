@@ -50,7 +50,7 @@ namespace NetPI.Storage.Sqlite;
 public sealed class SqliteSessionStore : ISessionStore, IDisposable
 {
     /// <summary>Highest migration version applied by this store.</summary>
-    public const int CurrentSchemaVersion = 4;
+    public const int CurrentSchemaVersion = 5;
 
     /// <summary>
     /// astra-1 B: canonical key for deduplicating project workspace paths —
@@ -126,7 +126,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
                 );
                 """);
 
-            foreach (var version in new[] { 1, 2, 3, 4 })
+            foreach (var version in new[] { 1, 2, 3, 4, 5 })
             {
                 if (IsMigrationApplied(conn, version)) continue;
 
@@ -390,6 +390,43 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
                     );
                     """, null, tx);
                 break;
+            case 5:
+                // astra-2 10/11 (package F): persisted session mode + the shared
+                // cloud budget/reservation tables. All additive and guarded:
+                // an existing DB gains a nullable mode column and two new
+                // tables; nothing here mutates existing rows.
+                if (!HasColumn(conn, tx, "sessions", "mode"))
+                    ExecuteSql(conn, "ALTER TABLE sessions ADD COLUMN mode TEXT;", null, tx);
+                ExecuteSql(conn, """
+                    CREATE TABLE IF NOT EXISTS cloud_budgets (
+                        team_id        TEXT PRIMARY KEY,
+                        currency       TEXT NOT NULL DEFAULT '',
+                        unit           TEXT NOT NULL DEFAULT 'currency',
+                        limit_value    REAL NOT NULL,
+                        spent          REAL NOT NULL DEFAULT 0,
+                        updated_at     INTEGER NOT NULL
+                    );
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE TABLE IF NOT EXISTS cloud_budget_reservations (
+                        reservation_id TEXT PRIMARY KEY,
+                        team_id        TEXT NOT NULL REFERENCES cloud_budgets(team_id) ON DELETE CASCADE,
+                        run_id         TEXT,
+                        estimated      REAL NOT NULL,
+                        actual         REAL,
+                        convert_rate   REAL NOT NULL DEFAULT 1,
+                        state          TEXT NOT NULL,          -- reserved | settled | released
+                        created_at     INTEGER NOT NULL,
+                        settled_at     INTEGER
+                    );
+                    """, null, tx);
+                // Guarded upgrade: a DB that applied v5 before convert_rate was
+                // added keeps the old row shape; grow it in place (idempotent).
+                if (!HasColumn(conn, tx, "cloud_budget_reservations", "convert_rate"))
+                    ExecuteSql(conn, "ALTER TABLE cloud_budget_reservations ADD COLUMN convert_rate REAL NOT NULL DEFAULT 1;", null, tx);
+                ExecuteSql(conn,
+                    "CREATE INDEX IF NOT EXISTS ix_cloud_res_team ON cloud_budget_reservations(team_id, state);", null, tx);
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(version));
         }
@@ -470,7 +507,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         cmd.CommandText = """
             SELECT s.id, s.title, s.workspace, s.created_at, s.updated_at, s.model_id, s.reasoning_level,
                    COALESCE((SELECT COUNT(*) FROM session_entries e WHERE e.session_id = s.id), 0),
-                   s.project_id
+                   s.project_id, s.mode
             FROM sessions s WHERE s.id = $id;
             """;
         cmd.Parameters.AddWithValue("$id", id);
@@ -487,6 +524,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
             ModelId = reader.IsDBNull(5) ? null : reader.GetString(5),
             ReasoningLevel = reader.IsDBNull(6) ? null : reader.GetString(6),
             ProjectId = reader.IsDBNull(8) ? null : reader.GetString(8),
+            Mode = reader.IsDBNull(9) ? null : reader.GetString(9),
         };
     }
 
@@ -666,6 +704,19 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         cmd.Parameters.AddWithValue("$s", sessionId);
         cmd.Parameters.AddWithValue("$m", modelId ?? (object)DBNull.Value);
         cmd.Parameters.AddWithValue("$r", reasoningLevel ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>astra-2 10 (package F): persist the session mode ("chat"/"orchestrate").</summary>
+    public async ValueTask SetModeAsync(string sessionId, string? mode, CancellationToken ct = default)
+    {
+        var norm = string.IsNullOrWhiteSpace(mode) ? null : mode.Trim().ToLowerInvariant();
+        await using var conn = OpenConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE sessions SET mode = $m, updated_at = $now WHERE id = $s;";
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$m", norm ?? (object)DBNull.Value);
         cmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         await cmd.ExecuteNonQueryAsync(ct);
     }

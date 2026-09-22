@@ -39,6 +39,18 @@ public sealed class SqlitePlugin : INetPiPlugin
         // storage assembly.
         context.Services.Register<IOrchestrationStore>("orchestration-store",
             new SqliteOrchestrationStore(path));
+        // astra-2 11.2 (package F): shared cloud budget + atomic reservations.
+        // DDL is owned by SqliteSessionStore migration v5; the provider
+        // resolves this lazily under service "cloud-budgets" (like the other
+        // stores it is NOT disposed on Stop — consumers hold the registry ref).
+        var budgetStore = new SqliteCloudBudgetStore(path);
+        context.Services.Register<ICloudBudgetStore>("cloud-budgets", budgetStore);
+        // The execution gate the provider consults BEFORE a paid request
+        // (service "cloud-gate"). Policy (allowances/allowlists) comes from
+        // this plugin's "cloudBudgets" config section.
+        var gate = new ConfigCloudExecutionGate(budgetStore, context.OwnConfig, context.Log,
+            policySourceFactory: () => SafeResolve<IDeploymentPolicySource>(context, "deployments"));
+        context.Services.Register<ICloudExecutionGate>("cloud-gate", gate);
         context.Log.Information($"Storage ready at {path}");
         await ValueTask.CompletedTask;
     }
@@ -58,6 +70,19 @@ public sealed class SqlitePlugin : INetPiPlugin
     }
 
     public ValueTask UnloadAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    private static T? SafeResolve<T>(IPluginContext context, string id) where T : class
+    {
+        try
+        {
+            using var lease = context.Services.Acquire<T>(id);
+            return lease.Value;
+        }
+        catch (ServiceUnavailableException)
+        {
+            return null; // owner not loaded yet / draining: policy unknown
+        }
+    }
 
     /// <summary>astra-1 P0.5: derive the default database from the single
     /// effective runtime home (<see cref="NetPI.Abstractions.RuntimeHome"/>,

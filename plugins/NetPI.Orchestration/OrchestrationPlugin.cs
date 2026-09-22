@@ -195,7 +195,7 @@ internal sealed class AgentsDelegateTool : AgentToolBase
 {
     public AgentsDelegateTool(AgentOrchestrator o) : base(o) { }
     public override string Name => "agents.delegate";
-    public override string Description => "Delegate a subtask: spawns a child agent, waits for it, and suspends your run until the child finishes. Your lane is released for the child; you are resumed with the child's bounded result (not its transcript). Use agents.spawn for fire-and-forget children.";
+    public override string Description => "Delegate a subtask: spawns a child agent, waits for it, and suspends your run until the child finishes. Your lane is released for the child; you are resumed with the child's bounded result (not its transcript). Use agents.spawn for fire-and-forget children. §10: with two local lanes, the coordinator plus ONE worker can run concurrently — to run TWO workers at once, the coordinator must first checkpoint and relinquish its lane (delegate/spawn then wait), so it cannot make extra planning calls while both workers own the pool; it resumes only when its chosen wait condition is met and capacity is acquired.";
     public override JsonElement Parameters => Json.Obj(
         ("brief", "The subtask brief (the child's first user message)"),
         ("operationId", "Stable id for idempotent retries (required)"),

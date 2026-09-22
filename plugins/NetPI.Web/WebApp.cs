@@ -1147,6 +1147,25 @@ internal sealed class WebApp : IAsyncDisposable
                 break;
             }
 
+            // astra-2 §10 (package F): persisted orchestration mode per session
+            // (the user's explicit choice; a blank/null payload clears it). The
+            // runner reads this to decide orchestrate-vs-direct for the run.
+            case "session.mode":
+            {
+                var sid = S(p, "sessionId");
+                if (sid is not null && StoreLocal() is { } modeStore)
+                {
+                    try
+                    {
+                        await modeStore.Store.SetModeAsync(sid, S(p, "mode"), ct);
+                        await BroadcastSession(sid, ct);
+                    }
+                    finally { try { modeStore.Lease.Dispose(); } catch { } }
+                }
+                await SendAckAsync(c, requestId, ct);
+                break;
+            }
+
             case "session.compact":
             {
                 var sid = S(p, "sessionId");
@@ -1791,6 +1810,9 @@ internal sealed class WebApp : IAsyncDisposable
         workspace = s.WorkspacePath ?? "",
         modelId = s.ModelId,
         reasoningLevel = s.ReasoningLevel,
+        // astra-2 §10 (package F): the persisted orchestration mode (null =
+        // direct; "orchestrate" = coordinator + delegation for the run).
+        mode = s.Mode,
         createdAt = s.CreatedAt.ToUnixTimeMilliseconds(),
         updatedAt = s.UpdatedAt.ToUnixTimeMilliseconds(),
         project = await ProjectJsonAsync(s.ProjectId, ct),
@@ -1969,6 +1991,8 @@ internal sealed class WebApp : IAsyncDisposable
         workspace = s.WorkspacePath ?? "",
         modelId = s.ModelId,
         reasoningLevel = s.ReasoningLevel,
+        // astra-2 §10 (package F): the persisted orchestration mode (null = direct).
+        mode = s.Mode,
         createdAt = s.CreatedAt.ToUnixTimeMilliseconds(),
         updatedAt = s.UpdatedAt.ToUnixTimeMilliseconds(),
     };

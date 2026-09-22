@@ -22,6 +22,21 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     private readonly string _wire; // "auto" (default) | "chat" | "responses" — PLAN §14b
     /// <summary>Optional host event bus for publishing <see cref="ModelRequestDiagnostics"/> (PLAN §47).</summary>
     private readonly IEventBus? _bus;
+
+    /// <summary>
+    /// astra-2 §11.2 (package F): the cloud execution gate (service
+    /// "cloud-gate", registered by the storage plugin) — consulted BEFORE a
+    /// paid request and concluded with the reported usage after. null means
+    /// no budget accounting is configured (legacy direct execution).
+    /// </summary>
+    private readonly ICloudExecutionGate? _gate;
+
+    /// <summary>
+    /// Deferred gate factory: resolves the gate lazily (the provider loads
+    /// before the storage plugin, so the registry must be asked at RUN time,
+    /// not at construction).
+    /// </summary>
+    private readonly Func<ICloudExecutionGate?>? _gateFactory;
     private IReadOnlyList<ModelInfo> _models = [];
     /// <summary>
     /// PLAN §14c: per-session Responses-wire chain head, keyed
@@ -53,14 +68,36 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     }
     private DateTimeOffset? _refreshedAt;
 
-    public AiProxyProvider(HttpClient http, string baseUrl, IPluginLogger log, string wire = "auto", IEventBus? bus = null)
+    public AiProxyProvider(HttpClient http, string baseUrl, IPluginLogger log, string wire = "auto", IEventBus? bus = null,
+        ICloudExecutionGate? cloudGate = null, Func<ICloudExecutionGate?>? cloudGateFactory = null)
     {
         _http = http;
         _baseUrl = baseUrl.TrimEnd('/');
         _log = log;
         _wire = string.IsNullOrWhiteSpace(wire) ? "auto" : wire.Trim();
         _bus = bus;
+        _gate = cloudGate;
+        _gateFactory = cloudGateFactory;
     }
+
+    /// <summary>
+    /// The effective gate for a run: a fixed gate wins; otherwise the deferred
+    /// factory (a host service-registry lookup) is asked ONCE and its result
+    /// cached — a missing service stays missing for this provider generation
+    /// (the legacy no-accounting path).
+    /// </summary>
+    private ICloudExecutionGate? EffectiveGate()
+    {
+        if (_gate is not null) return _gate;
+        if (_gateFactory is not null && _lazyGateCache is null)
+        {
+            try { _lazyGateCache = _gateFactory(); }
+            catch (Exception ex) { _log.Warning($"cloud gate resolution failed ({ex.Message}); continuing without budget accounting"); }
+        }
+        return _lazyGateCache;
+    }
+
+    private ICloudExecutionGate? _lazyGateCache;
 
     // ---- catalog ---------------------------------------------------------
     public IReadOnlyList<ModelInfo> Models => _models;
@@ -308,8 +345,78 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         return null;
     }
 
-    // ---- run (dispatch — PLAN §14b) ------------------------------------------
+    /// <summary>
+    /// astra-2 §11.2 (package F): the public run path. Before ANY bytes hit
+    /// the wire for a cloud-capable request, the execution gate reserves the
+    /// request's maximum cost against the team's shared allowance (the atomic
+    /// draw — a rejected reservation never reaches the provider, so an
+    /// exhausted/disallowed cloud route costs nothing and is never silently
+    /// redirected). When the stream concludes, the reservation is reconciled:
+    /// <c>ModelCompleted</c> settles it with the reported usage; a failure,
+    /// cancellation, or a stream that never reaches content RELEASES it (the
+    /// request never happened or its spend is not reconcilable — the next
+    /// attempt, including a retry, re-reserves fresh).
+    /// </summary>
     public async IAsyncEnumerable<ModelEvent> RunAsync(ModelRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var gate = EffectiveGate();
+        if (gate is null)
+        {
+            // Legacy path: no accounting configured — execute directly.
+            await foreach (var ev in RunCoreAsync(request, cancellationToken))
+                yield return ev;
+            yield break;
+        }
+
+        var authorization = await gate.AuthorizeAsync(request.ModelId, request.DeploymentId, request.MaxTokens, request.RunId, cancellationToken);
+        if (!authorization.Admitted)
+        {
+            // 16: "Cloud disabled or team disallows cloud -> No paid provider
+            // call" / "exhausted budget -> checkpoint or block, never a hidden
+            // fallback". The run fails with the actionable reason; the retry
+            // plugin's attempts each re-consult the gate (fresh reservation).
+            yield return new ModelFailed(request.ModelId, authorization.Reason ?? "Cloud budget authorization was denied.");
+            yield break;
+        }
+
+        bool contentSeen = false;
+        var usage = (0, 0, 0, 0); // prompt, completion, total, cached
+        var concluded = false;
+        try
+        {
+            await foreach (var ev in RunCoreAsync(request, cancellationToken))
+            {
+                if (ev is UsageUpdated u)
+                    usage = (u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.CachedTokens);
+                else if (ev is ModelCompleted)
+                    contentSeen = true;
+                else if (ev is ModelFailed f)
+                {
+                    // A pre-content failure means the paid request produced
+                    // nothing reconcilable: release the estimate (the next
+                    // attempt re-reserves). A failure AFTER content was seen
+                    // keeps the reservation settled at the reported usage
+                    // (the tokens were consumed).
+                    contentSeen = contentSeen;
+                }
+                yield return ev;
+            }
+        }
+        finally
+        {
+            if (!concluded)
+            {
+                concluded = true;
+                double actual = usage.Item3; // total tokens (0 when no usage was reported)
+                try { await gate.ConcludeAsync(authorization.ReservationId!, contentSeen, actual, CancellationToken.None); }
+                catch (Exception ex) { _log.Warning($"cloud budget conclude failed for {request.RunId ?? request.ModelId}: {ex.Message}"); }
+            }
+        }
+        yield break;
+    }
+
+    // ---- run (dispatch — PLAN §14b) ------------------------------------------
+    private async IAsyncEnumerable<ModelEvent> RunCoreAsync(ModelRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         bool wantedResponses = UseResponsesWire(ModelById(request.ModelId));
         string failReason = "";

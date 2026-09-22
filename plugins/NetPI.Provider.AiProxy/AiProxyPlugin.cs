@@ -28,8 +28,13 @@ public sealed class AiProxyPlugin : INetPiPlugin
             _http.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
 
         var wire = Str(context.OwnConfig, "wire");
-        _provider = new AiProxyProvider(_http, baseUrl, context.Log, string.IsNullOrEmpty(wire) ? "auto" : wire, context.Events);
-        _provider = new AiProxyProvider(_http, baseUrl, context.Log, string.IsNullOrEmpty(wire) ? "auto" : wire, context.Events);
+        // astra-2 §11.2 (package F): the cloud execution gate (service "cloud-gate",
+        // registered by the storage plugin). Resolved lazily per RUN — the storage
+        // plugin may load after the provider, and its reload swaps the instance,
+        // so the provider never caches the gate across generations. A missing
+        // service (no accounting configured) is the legacy direct path.
+        _provider = new AiProxyProvider(_http, baseUrl, context.Log, string.IsNullOrEmpty(wire) ? "auto" : wire, context.Events,
+            cloudGateFactory: () => SafeResolve<ICloudExecutionGate>(context, "cloud-gate"));
         context.Services.Register<IModelProvider>("provider", _provider);
         context.Services.Register<IModelCatalog>("catalog", _provider);
         // astra-2: the Follow-AiProxy capacity source (service "provider-capacity")
@@ -56,6 +61,19 @@ public sealed class AiProxyPlugin : INetPiPlugin
     }
 
     public ValueTask UnloadAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    private static T? SafeResolve<T>(IPluginContext context, string id) where T : class
+    {
+        try
+        {
+            using var lease = context.Services.Acquire<T>(id);
+            return lease.Value;
+        }
+        catch (ServiceUnavailableException)
+        {
+            return null; // service not registered / owner draining: legacy path
+        }
+    }
 
     private static string? Str(JsonElement el, string name) =>
         el.ValueKind == JsonValueKind.Object && el.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String

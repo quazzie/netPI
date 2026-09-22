@@ -19,6 +19,12 @@ public sealed record SessionInfo(
     /// <summary>astra-1 C: the project attached to this session (its instructions snapshot lives in the latest ProjectContext entry).</summary>
     public string? ProjectId { get; init; }
 
+    /// <summary>astra-2 10 (package F): the persisted session mode -- "chat" (the
+    /// default; a plain conversation) or "orchestrate" (coordinator guidance:
+    /// define deliverables, delegate bounded work, yield while workers run).
+    /// Runtime/prompt policy, NOT a scheduler; null/empty means chat.</summary>
+    public string? Mode { get; init; }
+
     public override string ToString() => $"{Id} ({EntryCount} entries)";
 }
 
@@ -86,6 +92,15 @@ public interface ISessionStore
     /// <summary>Update the workspace path of a session (Settings overlay, PLAN §43).</summary>
     ValueTask SetWorkspaceAsync(string sessionId, string? workspacePath,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// astra-2 10 (package F): persist the session's mode ("chat" or
+    /// "orchestrate"; null/empty clears back to the default chat mode). Same
+    /// shape as SetModelAsync -- a nullable value the store records. Default
+    /// implementation is a no-op so stores that predate the mode keep working.
+    /// </summary>
+    ValueTask SetModeAsync(string sessionId, string? mode, CancellationToken cancellationToken = default)
+        => ValueTask.CompletedTask;
 
     /// <summary>Paginated read of entries in append order (oldest first).</summary>
     ValueTask<IReadOnlyList<SessionEntry>> ReadAsync(
