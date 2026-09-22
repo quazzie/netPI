@@ -662,12 +662,21 @@ string? createdAssignmentId = null;
 
     public async ValueTask<IReadOnlyList<AgentMailboxMessage>> DrainMailboxAsync(string agentId, int count, CancellationToken ct = default)
     {
+        // astra-2 §9: a turn-boundary drain fires on EVERY agent loop iteration for
+        // EVERY agent, and the mailbox is empty in the overwhelmingly common case.
+        // The read must therefore NOT open a write transaction. Each run's drain
+        // runs concurrently with the other runs' store write transactions on the
+        // same WAL file, and a write transaction acquired here (even to commit zero
+        // rows) contends for the WAL write lock: it can wedge the caller's agent
+        // loop mid-suspension, which stalls lane release and admission of other
+        // runs (the DelegationSuspension regression). So: read in auto-commit (no
+        // write lock), and only escalate to a write transaction — the only step that
+        // takes the WAL write lock — when there is actually something to consume.
         await using var conn = OpenConnection();
-        await using var tx = conn.BeginTransaction();
-        try
+        var list = new List<AgentMailboxMessage>();
+        var ids = new List<string>();
         {
             await using var sel = conn.CreateCommand();
-            sel.Transaction = tx;
             sel.CommandText = """
                 SELECT message_id, from_agent_id, to_agent_id, team_id, kind, body,
                        recipient_seq, sent_at, idempotency_key
@@ -678,8 +687,6 @@ string? createdAssignmentId = null;
                 """;
             sel.Parameters.AddWithValue("$to", agentId);
             sel.Parameters.AddWithValue("$n", Math.Max(1, count));
-            var list = new List<AgentMailboxMessage>();
-            var ids = new List<string>();
             await using (var r = await sel.ExecuteReaderAsync(ct))
             {
                 while (await r.ReadAsync(ct))
@@ -693,10 +700,15 @@ string? createdAssignmentId = null;
                         r.IsDBNull(8) ? null : r.GetString(8)));
                 }
             }
-            if (ids.Count > 0)
+        }
+        if (ids.Count > 0)
+        {
+            // Advance the consumption cursor in a write transaction (no re-delivery,
+            // no double consumption — astra-2 §9). This is the only step that takes
+            // the WAL write lock, and it only runs when there is something to consume.
+            await using var tx = conn.BeginTransaction();
+            try
             {
-                // Advance the consumption cursor in the same transaction (no
-                // re-delivery, no double consumption — astra-2 §9).
                 await using var upd = conn.CreateCommand();
                 upd.Transaction = tx;
                 upd.CommandText = "UPDATE agent_messages SET consumed = 1 WHERE message_id = $mid;";
@@ -706,11 +718,11 @@ string? createdAssignmentId = null;
                     upd.Parameters.AddWithValue("$mid", id);
                     await upd.ExecuteNonQueryAsync(ct);
                 }
+                tx.Commit();
             }
-            tx.Commit();
-            return list;
+            catch { tx.Rollback(); throw; }
         }
-        catch { tx.Rollback(); throw; }
+        return list;
     }
 
     public ValueTask<bool> NoteMessageForWaitsAsync(string toAgentId, string fromAgentId, string kind, CancellationToken ct = default)
