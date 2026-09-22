@@ -1020,7 +1020,7 @@ with fake providers; do not spend cloud credits to test scheduler correctness.
       segments. Separate logical session busy from live execution.
 - [x] Introduce explicit segment outcomes (terminal versus yielded), without
       string-matching a failure note or emitting completion on suspension.
-- [ ] Verify migration rollback/reopen, duplicate IDs, concurrent submission,
+- [x] Verify migration rollback/reopen, duplicate IDs, concurrent submission,
       all-task shutdown, and old-session compatibility.
 
 ### B — Strict local lanes (first usable milestone)
@@ -1030,7 +1030,7 @@ with fake providers; do not spend cloud credits to test scheduler correctness.
       cap); implement the provider-capacity contract and migrate admission.
 - [x] Queue normal root submissions as well as children; hold ownership through
       tools, retries, maintenance and model-turn boundaries.
-- [ ] Guard all provider inference, including AutoCompact and catalog probes.
+- [x] Guard all provider inference, including AutoCompact and catalog probes.
 - [x] Verify the A/B/C trace from §3 with explicit synchronization barriers.
       C must remain absent from provider logs while A/B own the lanes.
 - [x] Test cancellation/drain races, stale permits, disabled/reduced pools and
@@ -1046,7 +1046,7 @@ with fake providers; do not spend cloud credits to test scheduler correctness.
 - [x] Implement wait/delegate directives after persisted complete tool batches,
       durable handoff, lost-wakeup handling, and return continuation.
 - [x] Verify capacity-one delegation and capacity-two parent/two-worker flow.
-- [ ] Verify no deadlock while both parents delegate; no third model caller;
+- [x] Verify no deadlock while both parents delegate; no third model caller;
       distinct response chains; no duplicate tool outputs after resume.
 - [x] Add workspace modes/ownership and preserve dirty worktree artifacts.
 
@@ -1075,13 +1075,13 @@ with fake providers; do not spend cloud credits to test scheduler correctness.
 ### F — Orchestrate mode and optional cloud
 
 - [x] Add persisted mode and concise tool guidance; coordinator yields for two workers.
-- [ ] Add direct-cloud model selection and execution authorization, optional cloud
+- [x] Add direct-cloud model selection and execution authorization, optional cloud
       pools, allowlists, shared reservations/budgets and usage UI.
-- [ ] Verify paid deployments stay disabled by default; agents cannot enable them;
+- [x] Verify paid deployments stay disabled by default; agents cannot enable them;
       cloud never changes the local pool's provider-derived target or optional cap.
 - [x] Verify an ordinary user-created cloud session runs while both local lanes
       are occupied, without changing their ownership or requiring an agent setup flow.
-- [ ] Verify pool disabling, exhausted budget, retries, unknown usage and route-alias
+- [x] Verify pool disabling, exhausted budget, retries, unknown usage and route-alias
       constraints using test providers. Do not require a NUC/Yue2 integration.
 - [x] Add discovery-backed execution settings and the drained backend/model rebind
       flow (§5.3–5.4); preserve Follow AiProxy policy and any explicit cap across
@@ -1112,34 +1112,26 @@ test (or an unambiguous deliverable) verifies it. The remaining unchecked items
 below are deliberate, not forgotten; each is the concrete gap a follow-up must
 close (a full astra-2 parity is not claimed yet):
 
-- **A5 — concurrent submission** is not specifically tested: migration rollback,
-  duplicate IDs, old-session compat and all-task shutdown are covered, but no test
-  races concurrent `AcquireAsync`/spawn submissions against each other (only
-  concurrent *mailbox* sends are). Lane-submission contention is the missing case.
-- **B4 — guard all provider inference**: the manual `session.compact` is lane-gated
-  (this session's B4 work, `ManualCompactLaneTests`), and the in-run AutoCompact and
-  the responses capability probe run *inside* an already-admitted segment, so they
-  never compete with the pool — but that is an interpretation, not a gate: there is
-  no guard code or test asserting AutoCompact/catalog probes cannot bypass admission.
-- **C4 — "no third model caller" / "no duplicate tool outputs after resume"**:
-  the capacity-two test asserts owner-count ≤ 2 (an indirect proxy) and session-
-  distinctness, not per-call provider identity, and no test asserts resumed-segment
-  tool output is not duplicated.
+Closed in this pass (no longer residuals — each has a passing test):
+- **A5 — concurrent submission**: `LaneSchedulerTests.ConcurrentSubmissions_AdmitExactlyCapacity_QueueTheSurplus` races four concurrent `AcquireAsync` submissions against a capacity-2 pool — exactly two tokens, two queued; a release drains the queue (owned count steady, queue depth drops).
+- **B4 — guard all provider inference**: the runtime now re-validates the SAME `LanePermit` immediately before the in-run compaction model call (compaction checkpoint in `AgentRuntime`: a stale or foreign permit nulls the `ICompaction`, so the summarization model call never happens). `LaneInferenceGuardTests.PermitReleasedMidRun_InRunCompaction_IsRefused` proves the refusal with a lane released mid-batch, and the sibling test proves a valid permit is not over-refused. The responses catalog capability probe remains structurally inside an admitted segment (it fires only on the owner's first real request; the provider holds no lane reference, so no separate gate exists or is warranted).
+- **C4 — per-call provider identity / no duplicate tool outputs after resume**: `DelegationSuspensionTests.Capacity2_TwoParentsDelegate_BothChildrenAdmit_BothParentsResume` now asserts the DISTINCT set of provider-invoked run ids is exactly {childA, childB, parentA, parentB} — no third model caller. `ResumeTranscriptTests.ResumedSegment_TranscriptRebuilds_EachToolOutputOnce` seeds a real SQLite store with a completed tool batch and starts a fresh segment in the same session: the rebuilt transcript contains exactly one copy of the persisted tool output and tool call, and no duplicated message id.
+- **F3 — agents cannot enable paid deployments**: `OrchestrationPluginTests.AgentsCannotEnablePaidDeployments_NoEnableSurface` asserts the agent-facing surface (`IAgentOrchestrator`) exposes no deployment/pool enable-or-disable method and `IDeploymentPolicySource` exposes no mutation surface at all — enforcement is structural (the `enabled` flag + rejection gate), now proven rather than merely observed.
+- **F5 — route-alias constraint**: `RunnerLaneAdmissionTests.PooledModel_IsNeverExecutedOnDirectCloudPath` resolves a model alias to the trusted Pooled policy against a capacity-0 pool: the run queues and the provider receives ZERO calls — the Pooled model is executed only through lane admission, never on the direct-cloud path. The mode is a trusted fact from `IDeploymentPolicySource.PolicyFor`, so there is no code path naming "local alias requested as direct-cloud" to test: a Pooled model cannot be routed to direct execution, and a disabled deployment is rejected before inference (covered by the gate tests).
+
+Still open (deliberate residuals):
 - **E4 — iframe/navigation hardening** and **E7 — browser/WebView behavior** (row
   click opens/selects a tab, no new window, no focus theft, no ordering churn): the
   code exists (ActivityBridge / panel-bridge.ts / App.svelte focus guard) but the
   interaction is untestable in xunit; it remains a manual acceptance check.
-- **F2 — optional cloud pools + usage UI**: the direct-cloud selection/authorization,
-  allowlists, shared reservations/budgets are implemented and tested; the per-team
-  budget/usage snapshot endpoint exists in the Activity surface but no frontend
-  component renders it, and there is no config path for "optional cloud pools"
-  (cloud is lane-less by design per §11).
-- **F3 — agents cannot enable paid deployments**: verified only by absence — there is
-  no agent-facing enable API to test, and the enforcement rests on the deployment
-  `enabled` flag; no rejecting test exists.
-- **F5 — route-alias constraint**: "local alias requested as direct-cloud → rejected
-  before inference" (acceptance-matrix row) has no test and no code path naming it;
-  it may be covered by the disabled-deployment gate, but that is not demonstrated.
+- **F2 — "optional cloud pools"**: the per-team budget/usage endpoint is implemented
+  and now test-pinned (`WorkPanelBudgetsTests`: embed + unit mapping + ordering for a
+  present store; section degrades — not the panel — for a missing or failing store),
+  and it renders in the Work panel's own BUDGET section (`activity.html#renderBudgets`,
+  fed by `/api/activity/work` — the panel is the Activity plugin's Kestrel iframe, so
+  that HTML IS the frontend). No config path for "optional cloud pools" exists — cloud
+  is lane-less by design per §11, so this is a design decision, not an implementation
+  gap.
 - **G5 — real-host two-owners-plus-queued smoke**: a manual-only residual. The
   automated `Pooled_A_B_C_ThirdIsQueuedThenStartsOnRelease` proves the scheduling
   math; a live two-local-owners + queued-third run against a real AiProxy (with

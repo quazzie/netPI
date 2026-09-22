@@ -454,6 +454,44 @@ public class RunnerLaneAdmissionTests
         Assert.Equal(0, provider.StartedRunIds.Count); // no provider call for a disabled deployment
     }
 
+    // ---- astra-2 §16 "Local alias requested as direct-cloud" (F5) ---------------
+    //      The execution mode of a model is a TRUSTED fact: it comes only from the
+    //      deployment policy resolver (IDeploymentPolicySource), never from the
+    //      request (AgentRunRequest has no mode field). A model configured as a
+    //      LOCAL (Pooled) deployment is therefore always dispatched on the local
+    //      lane path and can never be executed on the direct-cloud path — a
+    //      "local alias requested as direct-cloud" has no code path to take, so
+    //      the request is governed by the lane pool (admitted or queued), and the
+    //      direct-cloud reject branch is unreachable for it.
+    [Fact]
+    public async Task PooledModel_IsNeverExecutedOnDirectCloudPath()
+    {
+        // The model is a LOCAL (Pooled) deployment — its execution mode is fixed
+        // by the trusted config, not by the (mode-less) request.
+        var policy = new FakePolicy(new DeploymentPolicy("m-alias", DeploymentExecutionMode.Pooled, "pool-1", "dep-1"));
+        var scheduler = new NetPI.Lanes.LaneScheduler("gen-1", new NullLogger());
+        scheduler.RegisterPool("pool-1", "dep-1", "m-alias", LaneCapacityMode.Manual, 0, enabled: true); // capacity 0 → cannot admit
+        var provider = new GateProvider();
+        var ctx = new AdmCtx();
+        ctx.Add("provider", provider);
+        ctx.Add("sessions", new NoopStore());
+        ctx.Add("deployments", policy);
+        var lanes = new CountingLanes(scheduler);
+        ctx.Add("lanes", lanes);
+        var runner = new AgentRunner(new AgentRuntime(ctx), ctx, maxConcurrentRuns: 8);
+
+        var start = await runner.StartRunAsync(new AgentRunRequest("s-alias", null, "m-alias", "work"));
+
+        // It is treated as a LOCAL lane work item: accepted + QUEUED on the pool
+        // (never a rejection), and it never reaches the DirectCloud reject branch.
+        Assert.Equal(RunDisposition.Queued, start.Disposition);
+        Assert.NotNull(start.RunId);
+        Assert.True(lanes.AcquireCalls >= 1, "a Pooled model must go through the lane scheduler");
+        Assert.True(start.Note is null || !start.Note.Contains("disabled"),
+            $"a Pooled model must not hit the DirectCloud reject branch; note was: {start.Note}");
+        Assert.Equal(0, provider.StartedRunIds.Count); // nothing executed, nothing paid
+    }
+
     [Fact]
     public async Task CallerSuppliedRunId_IsReusedAndReconciles()
     {

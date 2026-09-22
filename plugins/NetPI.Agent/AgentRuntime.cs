@@ -566,6 +566,20 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 // ---- auto-compaction checkpoint (PLAN §32/§33) ----------------
                 // After tool results, before the next assistant response.
                 var compaction = TryResolveCompaction();
+                // astra-2 §15 B4: in-run compaction fires its OWN model call (the
+                // plugin's SummarizeAsync → provider.RunAsync) that the main loop's
+                // per-call permit check above does NOT wrap — that check surrounds
+                // only the loop's model call. Re-validate the SAME permit here,
+                // immediately before the compaction model call: a stale/foreign
+                // permit (released lane or reloaded generation) fails closed, so the
+                // compaction is skipped rather than inferring without admission.
+                if (compaction is not null && compaction.IsAvailable
+                    && options.LanePermit is { } compPermit
+                    && lanes?.TryValidatePermit(compPermit, compPermit.PoolId, compPermit.AssignmentId) != true)
+                {
+                    _ctx.Log.Warning($"lanes: skipping in-run compaction for run {options.RunId} — permit stale/released; refusing the compaction model call");
+                    compaction = null; // refuse: no compaction model call without a valid permit
+                }
                 if (compaction is not null && compaction.IsAvailable && store is not null)
                 {
                     Current.State = AgentState.Compacting;

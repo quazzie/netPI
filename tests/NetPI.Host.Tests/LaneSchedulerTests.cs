@@ -490,4 +490,40 @@ public class LaneSchedulerTests
         Assert.False(snap.CanAdmit);
         Assert.NotNull(snap.BlockedReason);
     }
+
+    // ---- astra-2 §15 A5: CONCURRENT lane submission -----------------------------
+    //      The existing A/B/C trace acquires sequentially (one AcquireAsync at a
+    //      time). The residual is the RACE: N submissions against the same pool
+    //      must all hit the single serialized state machine, over-owning nothing
+    //      and queueing exactly the surplus — even when they arrive at the same
+    //      instant. Deterministic: AcquireAsync takes the same lock, so the
+    //      outcomes are order-independent; we assert on the SET of outcomes, not
+    //      on any particular one.
+
+    [Fact]
+    public async Task ConcurrentSubmissions_AdmitExactlyCapacity_QueueTheSurplus()
+    {
+        var s = NewScheduler(poolId: "pool-1", deploymentId: "dep-1", mode: LaneCapacityMode.Manual, maxAgents: 2);
+
+        // Fire FOUR submissions at the same time against a capacity-2 pool.
+        var results = await Task.WhenAll(
+            s.AcquireAsync(Entry("sub-0", 1, pool: "pool-1", deployment: "dep-1")).AsTask(),
+            s.AcquireAsync(Entry("sub-1", 2, pool: "pool-1", deployment: "dep-1")).AsTask(),
+            s.AcquireAsync(Entry("sub-2", 3, pool: "pool-1", deployment: "dep-1")).AsTask(),
+            s.AcquireAsync(Entry("sub-3", 4, pool: "pool-1", deployment: "dep-1")).AsTask());
+
+        var tokens = results.Where(r => r.Token is not null).Select(r => r.Token!).ToList();
+        Assert.True(tokens.Count == 2, $"expected exactly capacity (2) to own a lane, got {tokens.Count}");
+
+        var snap = s.Snapshots()[0];
+        Assert.Equal(2, snap.OwnedCount);
+        Assert.Equal(2, snap.QueueCount); // the other two are queued, never over-admitted
+
+        // Release one owner → exactly ONE queued entry is admitted (FIFO drain),
+        // and ownership never exceeds capacity.
+        await s.ReleaseAsync(tokens[0]);
+        var after = s.Snapshots()[0];
+        Assert.Equal(2, after.OwnedCount);
+        Assert.Equal(1, after.QueueCount);
+    }
 }

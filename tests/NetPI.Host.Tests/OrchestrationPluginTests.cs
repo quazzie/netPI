@@ -306,6 +306,29 @@ public sealed class OrchestrationPluginTests : IDisposable
             Assert.True(all[i].CreatedAt >= all[i - 1].CreatedAt);
     }
 
+    // ---- astra-2 §16 "agents cannot enable paid deployments" (F3) --------------
+    //      Verified by ABSENCE: no agent-facing API can enable/disable a
+    //      deployment or pool. Proved structurally by reflection:
+    //      IAgentOrchestrator (the agent's contract) has NO method whose name
+    //      combines an enable/disable verb with a deployment/pool/budget noun,
+    //      and IDeploymentPolicySource (the trusted policy source) is strictly
+    //      read-only — its sole member is PolicyFor.
+    [Fact]
+    public void AgentsCannotEnablePaidDeployments_NoEnableSurface()
+    {
+        var orchMethods = typeof(NetPI.Abstractions.IAgentOrchestrator)
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        Assert.DoesNotContain(orchMethods, m =>
+            (m.Name.Contains("Enable") || m.Name.Contains("Disable"))
+            && (m.Name.Contains("Deployment") || m.Name.Contains("Pool") || m.Name.Contains("Budget")));
+        Assert.DoesNotContain(orchMethods, m => m.Name.Contains("SetPoolEnabled") || m.Name.Contains("SetDeploymentEnabled"));
+
+        var policyMethods = typeof(NetPI.Abstractions.IDeploymentPolicySource)
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        Assert.Single(policyMethods, m => m.Name == "PolicyFor");
+        Assert.DoesNotContain(policyMethods, m => m.Name.Contains("Enable") || m.Name.Contains("Set") || m.Name.Contains("Update"));
+    }
+
     private static List<(string Epoch, string? Pool, string? Lane, string State, long CreatedAt)> JournalAll(string dbPath, string assignmentId)
     {
         using var conn = new SqliteConnection(JournalConnStr(dbPath));

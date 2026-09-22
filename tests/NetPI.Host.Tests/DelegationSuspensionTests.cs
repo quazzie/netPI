@@ -330,6 +330,13 @@ public sealed class DelegationSuspensionTests : IDisposable
         Assert.True(e.Runner.GetRun("parentB-op")!.Outcome == RunState.Running, "parent B must resume");
         Assert.Empty(await e.Store.ListSatisfiedWaitsAsync(parentA.AgentId, default));
         Assert.Empty(await e.Store.ListSatisfiedWaitsAsync(parentB.AgentId, default));
+        // astra-2 C4: assert PER-CALL provider identity, not just a count: the set
+        // of runs that actually reached the provider is exactly the four that
+        // were admitted (two parents + two children). A spurious fifth call (a
+        // third caller, a replay, or a child entering the pool out of admission)
+        // would add a run id to this set and fail the test.
+        Assert.True(e.Provider.StartedRunIds.Distinct().OrderBy(x => x).SequenceEqual(new[] { "childA-op", "childB-op", "parentA-op", "parentB-op" }.OrderBy(x => x)),
+            $"no run outside the four admitted may reach the provider (a third caller); saw: {string.Join(", ", e.Provider.StartedRunIds.Distinct())}");
     }
 
     // ---- store-level harness (fake runner over the real store) ---------------
