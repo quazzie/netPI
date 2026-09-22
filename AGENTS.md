@@ -173,7 +173,14 @@ is rejected). `/api/open` is a **POST** (never GET — a stray link/iframe can't
 trigger a shell-open; GET → 405). `/api/file` serves active content (HTML/SVG/
 MHTML) as a `text/plain` download so a user-supplied path can never render/execute
 in the app origin. `chat.send` carries a client `operationId` for idempotent
-retries (see below). These gates are tested by `ControlBoundaryTests`.
+retries (see below). Outbound (F, §11a): the broadcast/delta fan-out is
+**concurrent** (one non-reading client can no longer stall the others —
+each delivery is internally bounded) and every delivery is gated by a token
+linked to the client-lifetime, the operation, and a bounded send timeout, so
+a dead / non-reading client times out instead of holding the send forever
+(per-client ordering is preserved by the per-socket write gate; dropped
+deliveries resync on the next full broadcast). These gates are tested by
+`ControlBoundaryTests` and `OutboundBackpressureTests`.
 
 Envelope: `{ type, payload, requestId?, sessionId? }`.
 

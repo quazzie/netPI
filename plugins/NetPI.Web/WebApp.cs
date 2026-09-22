@@ -1841,8 +1841,10 @@ internal sealed class WebApp : IAsyncDisposable
         var json = Envelope(type, null, sid, payload);
         List<Client> snapshot;
         lock (_clientsLock) snapshot = _clients.ToList();
-        foreach (var c in snapshot)
-            await c.SendSafeAsync(json, ct);
+        // §11a (F): fan out concurrently — one non-reading client must not stall the
+        // others (each SendSafeAsync is internally bounded). Per-client order is
+        // preserved by the per-socket gate; durable events are replayed on resync.
+        await ConcurrentDeliverAsync(snapshot.Select(c => (Func<CancellationToken, Task>)(t => c.SendSafeAsync(json, t))), ct);
     }
 
     private const int DeltaFlushMs = 20;
@@ -1933,8 +1935,9 @@ internal sealed class WebApp : IAsyncDisposable
             var json = Envelope(type, null, sid, payload);
             List<Client> snapshot;
             lock (_clientsLock) snapshot = _clients.ToList();
-            foreach (var c in snapshot)
-                await c.SendSafeAsync(json, CancellationToken.None);
+            // §11a (F): concurrent + bounded fan-out (the ~20 ms delta path is the
+            // hot one); a single non-reading client can no longer stall the others.
+            await ConcurrentDeliverAsync(snapshot.Select(c => (Func<CancellationToken, Task>)(t => c.SendSafeAsync(json, t))), CancellationToken.None);
         });
 
     private async Task SendAsync(Client c, string type, object payload, string? sid, CancellationToken ct)
@@ -1988,17 +1991,27 @@ internal sealed class WebApp : IAsyncDisposable
         public WebSocket Ws { get; }
         public CancellationToken Ct { get; }
 
-        /// <summary>Serialize all writes on this socket (WebSocket is not thread-safe).</summary>
-        public async Task SendSafeAsync(string json, CancellationToken ct)
+        /// <summary>
+        /// Serialize all writes on this socket (WebSocket is not thread-safe) and
+        /// never let a dead / non-reading client stall the caller: a send is gated
+        /// by BOTH the client-lifetime token (a disconnect aborts it) and a bounded
+        /// delivery timeout, linked with the caller's operation token — PLAN §11a (F)
+        /// outbound backpressure: "One connected non-reading client should not stall
+        /// updates for every other client ... bounded sends with explicit resync".
+        /// Ordering per client is preserved by the gate; a timed-out / cancelled
+        /// delivery is dropped (the client resyncs on its next full broadcast).
+        /// </summary>
+        public async Task SendSafeAsync(string json, CancellationToken operation)
         {
+            using var delivery = WebApp.CreateDeliveryCancellationToken(Ct, operation, DeliveryTimeoutMs);
             try
             {
-                await _sendGate.WaitAsync(ct);
+                await _sendGate.WaitAsync(delivery.Token);
                 try
                 {
                     if (Ws.State == WebSocketState.Open)
                         await Ws.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)),
-                            WebSocketMessageType.Text, true, Ct);
+                            WebSocketMessageType.Text, true, delivery.Token);
                 }
                 finally
                 {
@@ -2037,6 +2050,36 @@ internal sealed class WebApp : IAsyncDisposable
     }
 
     /// <summary>
+    /// <summary>
+    /// astra-1 §11a (F) outbound backpressure: the client-lifetime token and the
+    /// operation token are linked into ONE cancellation (a disconnect OR an
+    /// aborted operation aborts the delivery). Pure + testable.
+    /// </summary>
+    public static CancellationTokenSource CreateDeliveryCancellationToken(
+        CancellationToken clientLifetime, CancellationToken operation, int timeoutMs)
+    {
+        var source = CancellationTokenSource.CreateLinkedTokenSource(clientLifetime, operation);
+        source.CancelAfter(timeoutMs);
+        return source;
+    }
+
+    /// <summary>
+    /// astra-1 §11a (F) outbound backpressure: fan a message out to every client
+    /// CONCURRENTLY, so one non-reading / dead client cannot stall delivery to the
+    /// others (each <paramref name="send"/> is bounded internally). Pure + testable
+    /// (the core of <c>BroadcastAsync</c> / <c>SendEvent</c> fan-out).
+    /// </summary>
+    public static Task ConcurrentDeliverAsync(
+        IEnumerable<Func<CancellationToken, Task>> sends, CancellationToken operation)
+    {
+        var tasks = sends.Select(t => t(operation)).ToArray();
+        if (tasks.Length == 0) return Task.CompletedTask;
+        return Task.WhenAll(tasks);
+    }
+
+    /// <summary>Bounded per-client delivery window for <see cref="Client.SendSafeAsync"/>.</summary>
+    public const int DeliveryTimeoutMs = 5000;
+
     /// <summary>
     /// astra-1 §11a (F/P5): validate the local browser CONTROL boundary. The listener
     /// binds loopback, but loopback binding is NOT browser-origin validation — a
