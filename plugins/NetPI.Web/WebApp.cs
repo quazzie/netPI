@@ -29,6 +29,7 @@ internal sealed class WebApp : IAsyncDisposable
     private readonly IPluginContext _ctx;
     private readonly int _port;
     private readonly string _staticRoot;
+    private readonly int _maxWsMessageBytes;
     private readonly IPluginLogger _log;
     private WebApplication? _app;
 
@@ -139,11 +140,12 @@ internal sealed class WebApp : IAsyncDisposable
 
     private int _promptTokens, _completionTokens, _totalTokens;
 
-    public WebApp(IPluginContext ctx, int port, string staticRoot, IPluginLogger log)
+    public WebApp(IPluginContext ctx, int port, string staticRoot, int maxWsMessageBytes, IPluginLogger log)
     {
         _ctx = ctx;
         _port = port;
         _staticRoot = staticRoot;
+        _maxWsMessageBytes = maxWsMessageBytes <= 0 ? 1024 * 1024 : maxWsMessageBytes;
         _log = log;
     }
 
@@ -622,14 +624,28 @@ internal sealed class WebApp : IAsyncDisposable
             await SendBootstrapAsync(client, ctx.RequestAborted);
             while (ws.State == WebSocketState.Open)
             {
-                var buf = new byte[64 * 1024];
-                var result = await ws.ReceiveAsync(new ArraySegment<byte>(buf), ctx.RequestAborted);
-                if (result.MessageType == WebSocketMessageType.Close) break;
-                var text = Encoding.UTF8.GetString(buf, 0, result.Count);
-                await HandleCommandAsync(client, text, ctx.RequestAborted);
+                // astra-1 §11a (F): assemble a COMPLETE message before decoding. A single
+                // ReceiveAsync call may return only part of a message (a long pasted
+                // prompt, a fragmented UTF-8 sequence, or split frames) and does not
+                // equal one JSON command — keep receiving until EndOfMessage, enforce a
+                // configurable total-size bound, and decode UTF-8 only once the full
+                // byte sequence is present.
+                var message = await ReceiveCompleteMessageAsync(ws, _maxWsMessageBytes, ctx.RequestAborted);
+                if (message is null) break; // clean close / end
+                await HandleCommandAsync(client, message, ctx.RequestAborted);
             }
         }
         catch (OperationCanceledException) { }
+        catch (WebSocketException ex)
+        {
+            // astra-1 §11a (F): the message exceeded the bound — reject the connection.
+            _log.Warning($"ws: oversized message ({ex.Message}); closing");
+            try
+            {
+                await ws.CloseAsync(WebSocketCloseStatus.PolicyViolation, ex.Message, CancellationToken.None);
+            }
+            catch { }
+        }
         catch (Exception ex)
         {
             _log.Warning($"ws loop: {ex.Message}");
@@ -643,6 +659,58 @@ internal sealed class WebApp : IAsyncDisposable
                     await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
             }
             catch { }
+        }
+    }
+
+    /// <summary>
+    /// astra-1 §11a (F): reads exactly one COMPLETE WebSocket message — accumulating
+    /// frame bytes until <c>EndOfMessage</c> — bounded to <paramref name="maxBytes"/>
+    /// total. Returns the UTF-8 text, or <c>null</c> when the socket closed, ended
+    /// cleanly, or the message exceeded the bound (a <c>TooBigMessage</c> close is
+    /// sent in the latter case). Cancellation propagates (caught by the ws loop).
+    /// </summary>
+    private static async Task<string?> ReceiveCompleteMessageAsync(
+        WebSocket ws, int maxBytes, CancellationToken ct)
+    {
+        var frame = new byte[64 * 1024];
+        return await AccumulateMessageAsync(
+            (ct2) => FrameNextAsync(ws, frame, ct2), maxBytes, ct);
+    }
+
+    private static async Task<WsFrame?> FrameNextAsync(WebSocket ws, byte[] frame, CancellationToken ct)
+    {
+        var r = await ws.ReceiveAsync(new ArraySegment<byte>(frame), ct);
+        if (r.MessageType == WebSocketMessageType.Close) return null;
+        var bytes = new byte[r.Count];
+        Array.Copy(frame, 0, bytes, 0, r.Count);
+        return new WsFrame(bytes, r.EndOfMessage);
+    }
+
+    /// <summary>One frame of a WebSocket message: the bytes received in this ReceiveAsync
+    /// call and whether they end the message. A complete message spans one or more frames.</summary>
+    public readonly record struct WsFrame(byte[] Bytes, bool EndOfMessage);
+
+    /// <summary>
+    /// astra-1 §11a (F): accumulate the frames of ONE complete message until
+    /// <c>EndOfMessage</c>, bounded to <paramref name="maxBytes"/> total, then decode
+    /// the complete UTF-8 byte sequence exactly once. <paramref name="receiveNext"/>
+    /// supplies the next frame (null = a close frame). A clean close returns null;
+    /// an oversized message throws <see cref="WebSocketException"/> (caught by the ws
+    /// loop, which closes the connection).
+    /// </summary>
+    public static async Task<string?> AccumulateMessageAsync(
+        Func<CancellationToken, Task<WsFrame?>> receiveNext, int maxBytes, CancellationToken ct)
+    {
+        var acc = new List<byte>(Math.Min(maxBytes, 64 * 1024));
+        while (true)
+        {
+            var frame = await receiveNext(ct);
+            if (frame is null) return null; // clean close
+            acc.AddRange(frame.Value.Bytes);
+            if (acc.Count > maxBytes)
+                throw new WebSocketException($"message exceeds {maxBytes} bytes");
+            if (frame.Value.EndOfMessage)
+                return Encoding.UTF8.GetString(acc.ToArray());
         }
     }
 

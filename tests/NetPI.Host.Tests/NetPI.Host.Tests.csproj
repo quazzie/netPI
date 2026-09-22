@@ -22,5 +22,6 @@
     <ProjectReference Include="..\..\plugins\NetPI.BackgroundTasks\NetPI.BackgroundTasks.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Activity\NetPI.Activity.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Nudge\NetPI.Nudge.csproj" />
+    <ProjectReference Include="..\..\plugins\NetPI.Web\NetPI.Web.csproj" />
   </ItemGroup>
 </Project>

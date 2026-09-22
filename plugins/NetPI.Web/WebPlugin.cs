@@ -29,8 +29,13 @@ public sealed class WebPlugin : INetPiPlugin
         var staticRoot = cfg.ValueKind == JsonValueKind.Object
                    && cfg.TryGetProperty("staticRoot", out var s) && s.ValueKind == JsonValueKind.String
             ? s.GetString() ?? string.Empty : string.Empty;
+        // astra-1 §11a (F): bound the total size of a single WebSocket message so one
+        // client cannot make the server allocate unbounded buffers (default 1 MiB).
+        var maxWsMessageBytes = cfg.ValueKind == JsonValueKind.Object
+                   && cfg.TryGetProperty("maxWsMessageBytes", out var m) && m.ValueKind == JsonValueKind.Number
+            ? m.GetInt32() : 1024 * 1024;
 
-        _app = new WebApp(context, port, staticRoot, context.Log);
+        _app = new WebApp(context, port, staticRoot, maxWsMessageBytes, context.Log);
         _context = context;
         _port = port;
         return ValueTask.CompletedTask;
