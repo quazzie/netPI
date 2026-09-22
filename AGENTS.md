@@ -339,7 +339,7 @@ changes run `npx vite build` and **reload the Web plugin** (Web UI → reload, o
 | plugin | keys |
 |---|---|
 | `netpi.web` | `port` (5173), `staticRoot` (path to `web/netpi-web/dist`), `maxWsMessageBytes` (1 MiB default; a larger WS message → `PolicyViolation` close, §11a F) |
-| `netpi.provider.aiproxy` | `baseUrl` (**required**), `apiKey`, `wire` = auto\|chat\|responses (default auto: responses with probe fallback; §14c `previous_response_id` chaining per session\|model) |
+| `netpi.provider.aiproxy` | `baseUrl` (**required**), `apiKey`, `wire` = auto\|chat\|responses (default auto: responses once the model's `/v1/responses` capability has been probed LAZILY on the owner's first real request — a catalog refresh never probes, an unprobed model runs on chat; astra-2 §3.3; §14c `previous_response_id` chaining per session\|model) |
 | `netpi.storage.sqlite` | `database` (default `~/.netpi/netpi.db`); astra-2 `cloudBudgets`: `defaultOutputTokens` (8192) + `teams[]`: `teamId`, `currency`, `limit`, `unit` (`currency` or `tokens`), optional `pricePer1kTokens` (absent = token-based policy), optional `models[]` allowlist — a direct-cloud model no team claims has no budget, so the gate rejects it and the provider never sends the paid call |
 | `netpi.autocompact` | `enabled`, `reserveTokens` (16384), `keepRecentTokens` (20000), `defaultContextWindow` (131072), `maxContextMessages` (4096) |
 | `netpi.retry` | `enabled`, `maxAttempts` (3), `baseDelayMs` (500), `maxDelayMs` (5000) |

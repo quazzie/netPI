@@ -155,49 +155,59 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         // Publish the catalog IMMEDIATELY. The model list is complete here and is
         // all the UI needs to show models. The /v1/responses capability probe is slow
         // on a cold nInfer (each probe forces the model to load, ~7-10 s each) and only
-        // decides which wire each run uses, so it must never block RefreshAsync.
+        // decides which wire each run uses — so per astra-2 §3.3 it is
+        // negotiated LAZILY: on the owner's first real request (where a pooled run
+        // has already re-validated its lane permit), never during a refresh.
         // Runs default to chat completions until a probe refines the flag.
         _models = list;
         _refreshedAt = DateTimeOffset.UtcNow;
         _log.Information($"AiProxy catalog: {list.Count} model(s)");
 
-        if (_wire is "auto" or "responses")
-        {
-            var gen = ++_catalogGeneration;
-            _probeTask = Task.Run(() => RunResponsesProbeInBackground(list, gen, cancellationToken));
-        }
         return _models;
     }
 
-    /// <summary>Await the in-flight background responses-capability probe (no-op when
-    /// none is running). Callers that depend on <c>SupportsResponses</c> being current
-    /// (tests, diagnostics) await this; the host's UI path never does.</summary>
-    public async Task WaitForProbeAsync()
-    {
-        var t = _probeTask;
-        if (t is not null) await t;
-    }
+    /// <summary>astra-2 §3.3: wire negotiation is now LAZY (see
+    /// <see cref="EnsureWireCapabilityAsync"/>); nothing runs in the background after
+    /// a refresh. Kept as a no-op so pre-existing callers (tests, diagnostics)
+    /// still compile.</summary>
+    public Task WaitForProbeAsync() => Task.CompletedTask;
 
-    private async Task RunResponsesProbeInBackground(List<ModelInfo> snapshot, int generation, CancellationToken externalToken)
+    /// <summary>
+    /// astra-2 §3.3: lazy wire negotiation. When the wire is auto/responses and
+    /// the model's /v1/responses capability has not been probed yet, the probe
+    /// happens ONCE on the owner's first real request — inside the run, where a
+    /// pooled run has already re-validated its lane permit — and the verdict
+    /// (including a definitive false) is recorded so later runs never re-probe.
+    /// A probe error (timeout/blip/shutdown) records NO verdict: the next run
+    /// re-probes. Catalog refresh never probes.
+    /// </summary>
+    private async Task<ModelInfo?> EnsureWireCapabilityAsync(ModelInfo? model, CancellationToken cancellationToken)
     {
-        try
+        if (_wire == "chat" || model is null || model.ResponsesProbed)
+            return model;
+
+        var probed = await ProbeResponsesSupportAsync(model, cancellationToken);
+        if (probed is null)
+            return model; // not probed yet: a later run re-probes
+
+        var idx = -1;
+        for (var i = 0; i < _models.Count; i++)
+            if (_models[i].ModelId == model.ModelId) { idx = i; break; }
+        if (idx >= 0)
         {
-            var probed = new List<ModelInfo>(snapshot.Count);
-            probed.AddRange(snapshot.Select(_ => (ModelInfo)null!));
-            await Task.WhenAll(Enumerable.Range(0, snapshot.Count).Select(async i =>
-                probed[i] = await ProbeResponsesSupportAsync(snapshot[i], externalToken)));
-            if (generation == _catalogGeneration)
-            {
-                _models = probed;
-                foreach (var m in probed)
-                    _log.Debug($"responses wire: {m.ModelId} supports={m.SupportsResponses}");
-            }
+            var next = new List<ModelInfo>(_models.Count);
+            next.AddRange(_models);
+            next[idx] = probed;
+            _models = next;
+            _log.Debug($"responses wire: {probed.ModelId} supports={probed.SupportsResponses}");
         }
-        catch { /* best-effort: on failure the pre-probe catalog stays as-is */ }
+        return probed;
     }
 
-    /// <summary>One-shot non-streaming probe of <c>/v1/responses</c> for a model.</summary>
-    private async Task<ModelInfo> ProbeResponsesSupportAsync(ModelInfo model, CancellationToken cancellationToken)
+    /// <summary>One-shot non-streaming probe of <c>/v1/responses</c> for a model.
+    /// Returns null when the probe could not get a definitive answer (timeout,
+    /// network blip, shutdown) so the caller does not record a verdict.</summary>
+    private async Task<ModelInfo?> ProbeResponsesSupportAsync(ModelInfo model, CancellationToken cancellationToken)
     {
         try
         {
@@ -210,15 +220,16 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             if (resp.IsSuccessStatusCode)
             {
                 _log.Debug($"responses probe ok: {model.ModelId}");
-                return model with { SupportsResponses = true };
+                return model with { SupportsResponses = true, ResponsesProbed = true };
             }
             _log.Debug($"responses probe failed ({(int)resp.StatusCode}): {model.ModelId}");
+            return model with { SupportsResponses = false, ResponsesProbed = true };
         }
-        catch (Exception ex) // non-fatal by design: timeout, network blip or shutdown all keep SupportsResponses=false
+        catch (Exception ex) // non-fatal by design: no verdict — the next run re-probes
         {
             _log.Debug($"responses probe error for {model.ModelId}: {ex.Message}");
         }
-        return model with { SupportsResponses = false };
+        return null;
     }
 
     private static IReadOnlyList<string>? ParseReasoningLevels(JsonElement model)
@@ -418,7 +429,12 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     // ---- run (dispatch — PLAN §14b) ------------------------------------------
     private async IAsyncEnumerable<ModelEvent> RunCoreAsync(ModelRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        bool wantedResponses = UseResponsesWire(ModelById(request.ModelId));
+        // Lazy wire negotiation (astra-2 §3.3): resolve the /v1/responses
+        // capability on the owner's first real request — inside the run, never
+        // during a catalog refresh — and let a not-yet-probed auto/responses
+        // run fall back to chat.
+        var candidate = await EnsureWireCapabilityAsync(ModelById(request.ModelId), cancellationToken);
+        bool wantedResponses = UseResponsesWire(candidate);
         string failReason = "";
 
         if (wantedResponses)
@@ -520,8 +536,6 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     private bool UseResponsesWire(ModelInfo? model) =>
         _wire != "chat" && model is { SupportsResponses: true };
 
-    private int _catalogGeneration;
-    private Task? _probeTask;
 
     private ModelInfo? ModelById(string id) => _models.FirstOrDefault(m => m.ModelId == id);
 

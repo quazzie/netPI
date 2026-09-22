@@ -118,15 +118,19 @@ Config (`netpi.provider.aiproxy` section):
       | "responses" // force responses; unprobed models still fall back on probe failure
 ```
 
-- **Probe (only in `auto`/`responses`):** during `RefreshAsync`, one tiny
-  non-streaming request per model (`input:"hi"`, 10 s timeout, errors
-  non-fatal). Success → `ModelInfo.SupportsResponses = true`.
+- **Probe (only in `auto`/`responses`; astra-2 §3.3 — LAZY):** never during
+  `RefreshAsync` (catalog refresh is metadata-only). The probe is one tiny
+  non-streaming request per model (`input:"hi"`, 30 s timeout) and happens ONCE
+  on the owner's first real request — inside the run, where a pooled run has
+  already re-validated its lane permit. A definitive verdict (success →
+  `SupportsResponses = true`; non-2xx → `false`) is cached in
+  `ModelInfo.ResponsesProbed` so later runs never re-probe; a probe ERROR
+  (timeout/blip/shutdown) records no verdict and the next run re-probes.
+  An unprobed model runs on chat completions until it is probed.
 - **Per run:** `SupportsResponses && wire != "chat"` → responses; else chat.
 - **Mid-run failure:** a non-2xx from `/v1/responses` triggers one automatic
   retry of the same request via chat completions for that model run (logged);
   subsequent failures go through the normal retry plugin.
-- Probe cost is bounded: refresh happens at startup and on model-picker open
-  only (§13), off the hot path.
 
 ## 6. File-by-file changes
 

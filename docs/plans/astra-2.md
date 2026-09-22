@@ -7,12 +7,14 @@ cloud budget/gate). §13/§16: full capacity is an accepted queue (a durable `Qu
 assignment + ACK, never a rejection) and `agent.cancel` handles queued/suspended
 records — implemented and tested. §15.B: the runtime re-validates a pooled run's
 lane permit against the scheduler before EVERY model call (in-run compaction
-included) and fails closed on a stale/foreign permit — implemented and tested
-(the catalog wire-capability probe guard is still open, §3.3 "inference-based
-probe" clause). Remaining open gates: the `agent_lane_journal`/`agent_checkpoints`
-tables are declared but never written, mailbox drain at turn boundaries,
-crash-after-tool-effect quarantine, workspace modes, and orchestrate-mode
-coordinator guidance.
+included) and fails closed on a stale/foreign permit — implemented and tested.
+§3.3: the catalog wire-capability probe is now LAZY — negotiated once on the
+owner's first real request (inside the run, where a pooled run's permit was just
+re-validated), with the verdict cached so later runs never re-probe; a catalog
+refresh never probes — implemented and tested. Remaining open gates: the
+`agent_lane_journal`/`agent_checkpoints` tables are declared but never written,
+mailbox drain at turn boundaries, crash-after-tool-effect quarantine, workspace
+modes, and orchestrate-mode coordinator guidance.
 Consolidated 2026-09-22 from the user's decisions and a targeted inspection of the
 current repository.
 

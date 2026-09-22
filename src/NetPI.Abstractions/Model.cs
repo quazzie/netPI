@@ -2,7 +2,11 @@ using System.Text.Json;
 
 namespace NetPI.Abstractions;
 
-/// <summary>Metadata describing an available model (PLAN §13/§14).</summary>
+/// <summary>Metadata describing an available model (PLAN §13/§14).
+/// <see cref="ResponsesProbed"/> (astra-2 §3.3 lazy wire negotiation) is true once a capability
+/// probe has DEFINITIVELY answered for the model — including a failed probe that keeps
+/// <see cref="SupportsResponses"/> false — so later runs never re-probe. Refreshing the catalog
+/// does not reset it.</summary>
 public sealed record ModelInfo(
     string ModelId,
     string Provider,
@@ -12,7 +16,8 @@ public sealed record ModelInfo(
     int? ContextWindowTokens = null,
     int? MaxOutputTokens = null,
     IReadOnlyList<string>? ReasoningLevels = null,
-    bool SupportsResponses = false)
+    bool SupportsResponses = false,
+    bool ResponsesProbed = false)
 {
     /// <summary>Input modalities the model accepts (PLAN §13). Defaults to text-only.</summary>
     public IReadOnlyList<string> InputModalities { get; init; } = ["text"];
