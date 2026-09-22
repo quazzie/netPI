@@ -219,7 +219,13 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 {
                     var userMsg = new AgentMessage(NewId(), MessageRole.User, [new TextPart(steer.Text)], DateTimeOffset.UtcNow);
                     transcript.Add(userMsg);
-                    await AppendAsync(store, userMsg, ct);
+                    if (!await AppendAsync(store, userMsg, ct))
+                    {
+                        // astra-1 §11a (A/B): the accepted input was not persisted —
+                        // the run would proceed on a transcript the store lacks. Fail it.
+                        Current.State = AgentState.Idle;
+                        return new AgentRunResult(false, null, turns, "failed to persist the session entry");
+                    }
                     await PublishAsync(AgentEventType.TurnBoundary, options, null, ct);
                 }
 
@@ -359,7 +365,15 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
 
                 assistant ??= new AgentMessage(NewId(), MessageRole.Assistant, [], DateTimeOffset.UtcNow);
                 transcript.Add(assistant);
-                await AppendAsync(store, assistant, ct);
+                if (!await AppendAsync(store, assistant, ct))
+                {
+                    // astra-1 §11a (A/B): the assistant's tool-call intent was not
+                    // persisted — do NOT execute tools whose calls we have no durable
+                    // record of (a retry could otherwise re-run side effects).
+                    Current.State = AgentState.Idle;
+                    return new AgentRunResult(false, assistant, turns,
+                        "failed to persist the assistant tool-call intent");
+                }
                 await PublishAsync(AgentEventType.AssistantCompleted, options, ModelEventWireMapper.ToWire(new ModelCompleted(assistant)), ct);
 
                 // ---- tool calls? -------------------------------------------
@@ -446,7 +460,19 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
 
                 var toolMsg = new AgentMessage(NewId(), MessageRole.Tool, results, DateTimeOffset.UtcNow);
                 transcript.Add(toolMsg);
-                await AppendAsync(store, toolMsg, ct);
+                if (!await AppendAsync(store, toolMsg, ct))
+                {
+                    // astra-1 §11a (A/B): the tools EXECUTED but their results were not
+                    // persisted. Stop before the next model turn (which would run on a
+                    // transcript with no durable record of these results — and any
+                    // later retry could re-run a side-effecting tool). Report the
+                    // uncertain recovery state; never automatically rerun the tools.
+                    // (A database transaction cannot make filesystem/process side
+                    // effects exactly-once; we document that limit here.)
+                    Current.State = AgentState.Idle;
+                    return new AgentRunResult(false, toolMsg, turns,
+                        "tools executed but their results could not be persisted; recovery state is uncertain — do not automatically rerun");
+                }
 
                 // ---- auto-compaction checkpoint (PLAN §32/§33) ----------------
                 // After tool results, before the next assistant response.
@@ -577,14 +603,22 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         catch (ServiceUnavailableException) { return null; }
     }
 
-    private async ValueTask AppendAsync(ISessionStore? store, AgentMessage msg, CancellationToken ct)
+    private async ValueTask<bool> AppendAsync(ISessionStore? store, AgentMessage msg, CancellationToken ct)
     {
-        if (store is null || string.IsNullOrEmpty(Current.SessionId)) return;
+        if (store is null || string.IsNullOrEmpty(Current.SessionId)) return true; // nothing to persist
         try
         {
             await store.AppendAsync(new SessionEntry(NewId(), Current.SessionId, EntryKind.Message, msg, null, DateTimeOffset.UtcNow), ct);
+            return true;
         }
-        catch (Exception ex) { _ctx.Log.Warning($"Failed to persist entry: {ex.Message}"); }
+        catch (OperationCanceledException) { throw; } // cancellation is not a persistence failure
+        catch (Exception ex)
+        {
+            // astra-1 §11a (A/B): a persistence failure is NO LONGER swallowed. The
+            // caller decides how to fail the run; we keep the warning for observability.
+            _ctx.Log.Warning($"Failed to persist entry: {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>Resolve the AutoCompact service if present (id "compaction").</summary>

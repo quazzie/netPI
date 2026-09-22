@@ -269,6 +269,70 @@ public class AgentRuntimeTests
         Assert.False(result.Ok);
         Assert.Equal("cancelled", result.Note);
     }
+
+    // ---- astra-1 §11a (A/B): transcript persistence failure → failed run -------
+
+    [Fact]
+    public async Task ToolCallIntent_PersistFails_BeforeExecution_RunsFail_ToolsNotExecuted()
+    {
+        // astra-1 §11a (A/B): the assistant's tool-call INTENT is persisted before the
+        // tools run. If that persist fails, the run must stop WITHOUT executing the
+        // tools (we have no durable record of the calls, and a retry could otherwise
+        // re-run side effects).
+        var tool = new CountingLeaseTool(new NoopPluginContext());
+        var registry = new TestRegistry(tool);
+        var provider = new FakeProvider([
+            [new ModelStarted("model"), new ModelCompleted(Assistant(
+                new ToolCallPart("t1", "counting",
+                    JsonSerializer.SerializeToElement(new { }))))],
+        ]);
+        var store = new FailingAppendStore(failAfter: 0); // every append fails
+        var rt = MakeRuntime(provider, registry, store);
+
+        var result = await rt.RunAsync(Options("x"), CancellationToken.None);
+
+        Assert.False(result.Ok);
+        Assert.True(tool.TurnsSeen == 0, "tools must NOT execute when the tool-call intent is lost (TurnsSeen=" + tool.TurnsSeen + ")");
+        Assert.NotNull(result.FinalAssistant);
+        Assert.True(result.Note is not null && result.Note.Contains("tool-call intent"), result.Note);
+    }
+
+    [Fact]
+    public async Task ToolResult_PersistFails_AfterExecution_RunsFail_ToolsRunExactlyOnce()
+    {
+        // astra-1 §11a (A/B): if the tool RESULTS cannot be persisted after execution,
+        // the run stops before the next model turn and reports the uncertain recovery
+        // state. The tools already ran exactly once — they must NOT be rerun.
+        var tool = new CountingLeaseTool(new NoopPluginContext());
+        var registry = new TestRegistry(tool);
+        var provider = new FakeProvider([
+            [new ModelStarted("model"), new ModelCompleted(Assistant(
+                new ToolCallPart("t1", "counting",
+                    JsonSerializer.SerializeToElement(new { }))))],
+            [new ModelCompleted(Assistant(new TextPart("done")))], // never reached
+        ]);
+        var store = new FailingAppendStore(failAfter: 1); // 1st append ok, 2nd fails
+        var rt = MakeRuntime(provider, registry, store);
+
+        var result = await rt.RunAsync(Options("x"), CancellationToken.None);
+
+        Assert.False(result.Ok);
+        Assert.True(tool.TurnsSeen == 1, "the tool ran exactly once and must not be rerun (TurnsSeen=" + tool.TurnsSeen + ")");
+        Assert.True(result.Note is not null && result.Note.Contains("persisted"), result.Note);
+    }
+
+    [Fact]
+    public async Task Cancellation_DuringPersist_IsCancellationNotPersistenceFailure()
+    {
+        // astra-1 §11a (A/B): a cancel must surface as a cancelled run, not a
+        // persistence failure (AppendAsync rethrows OperationCanceledException).
+        var provider = new HangProvider();
+        var rt = MakeRuntime(provider);
+        using var cts = new CancellationTokenSource(20);
+        var result = await rt.RunAsync(Options("hi"), cts.Token);
+        Assert.False(result.Ok);
+        Assert.Equal("cancelled", result.Note);
+    }
 }
 
 // ---- test doubles for tools -----------------------------------------------
@@ -324,4 +388,42 @@ internal sealed class HangProvider : IModelProvider
         yield return new ModelStarted("model");
         await Task.Delay(Timeout.Infinite, cancellationToken);
     }
+}
+
+/// <summary>
+/// astra-1 §11a (A/B) test double: an ISessionStore whose AppendAsync succeeds for the
+/// first <c>failAfter</c> calls, then throws (simulating a disk-full / store outage).
+/// </summary>
+internal sealed class FailingAppendStore(int failAfter) : ISessionStore
+{
+    private int _appends;
+    public int AppendCalls;
+
+    public ValueTask<SessionInfo> CreateAsync(string? workspacePath, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(new SessionInfo("s1", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, null));
+    public ValueTask<SessionInfo?> GetAsync(string id, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult<SessionInfo?>(null);
+    public ValueTask AppendAsync(SessionEntry entry, CancellationToken cancellationToken = default)
+    {
+        AppendCalls++; _appends++;
+        if (_appends > failAfter) throw new InvalidOperationException("disk full (simulated)");
+        return ValueTask.CompletedTask;
+    }
+    public ValueTask<IReadOnlyList<SessionInfo>> ListAsync(int count = 50, int offset = 0, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult<IReadOnlyList<SessionInfo>>([]);
+    public ValueTask<int> CountAsync(CancellationToken cancellationToken = default) => ValueTask.FromResult(0);
+    public ValueTask RenameAsync(string id, string title, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+    public ValueTask DeleteAsync(string id, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+    public ValueTask SetModelAsync(string sessionId, string? modelId, string? reasoningLevel, CancellationToken cancellationToken = default)
+        => ValueTask.CompletedTask;
+    public ValueTask SetWorkspaceAsync(string sessionId, string? workspacePath, CancellationToken cancellationToken = default)
+        => ValueTask.CompletedTask;
+    public ValueTask<IReadOnlyList<SessionEntry>> ReadAsync(string sessionId, int offset, int count, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult<IReadOnlyList<SessionEntry>>([]);
+    public ValueTask<IReadOnlyList<SessionEntry>> ReadBeforeAsync(string sessionId, int beforeSequence, int count, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult<IReadOnlyList<SessionEntry>>([]);
+    public ValueTask<IReadOnlyList<SessionEntry>> ReadRecentAsync(string sessionId, int count, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult<IReadOnlyList<SessionEntry>>([]);
+    public ValueTask<ProjectChangeResult> SetProjectAsync(ProjectChangeRequest change, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException();
 }
