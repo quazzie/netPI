@@ -162,8 +162,18 @@ Model-level wire kinds (`ModelEvents.cs`): `model-started`,
 Kestrel on the configured port (5173): `/ws` (the hub), `/bootstrap` (health),
 `/api/file` (localhost-only file viewer for chat-embedded path links) and `/api/open`
 (localhost-only; shell-opens a path in the OS default app / Explorer — files
-launch their registered handler, folders open in Explorer),
-static `dist/`, SPA fallback for everything else.
+launch their registered handler, folders open in Explorer).
+
+**astra-1 §11a (F/P5) browser control boundary** — loopback binding is NOT origin
+validation, so the control routes enforce it explicitly: the `/ws` upgrade and
+`/api/open` validate Host/Origin (Host must be a loopback name; an Origin, if
+present, must be the same http:// loopback host:port — an absent Origin is allowed
+only on a loopback Host = the originless CLI path, and a present-but-wrong Origin
+is rejected). `/api/open` is a **POST** (never GET — a stray link/iframe can't
+trigger a shell-open; GET → 405). `/api/file` serves active content (HTML/SVG/
+MHTML) as a `text/plain` download so a user-supplied path can never render/execute
+in the app origin. `chat.send` carries a client `operationId` for idempotent
+retries (see below). These gates are tested by `ControlBoundaryTests`.
 
 Envelope: `{ type, payload, requestId?, sessionId? }`.
 
@@ -214,9 +224,11 @@ blocks. Transcript rendering is capped: after (re)load only the last
 at a time via the "Load earlier" button (`store.hidden` / `store.revealed`),
 which also drives the scroll-to-top fetch of further `session.older` pages. Markdown goes through `marked` + `DOMPurify` (throttled re-parse while
 streaming). File-like paths in assistant text/tool args become file links:
-a plain click shell-opens via `/api/open?path=...&sessionId=...` (no page
-navigation — the anchor is intercepted and the open is a fetch); ctrl/middle
-click keeps the in-app `/api/file?path=...&sessionId=...` viewer. Same for
+a plain click shell-opens via a **POST** to `/api/open?path=...&sessionId=...` (no page
+navigation — the anchor is intercepted and the open is a fetch; §11a F/P5: POST, never
+GET, so a stray link/iframe can't trigger a shell-open); ctrl/middle
+click keeps the in-app `/api/file?path=...&sessionId=...` viewer (active content
+HTML/SVG is served as a `text/plain` download, never rendered in the app origin). Same for
 tool-call file names and write/edit artifact pills. Relative paths resolve
 against the session workspace; when the session has none (or the id is
 missing/unknown) they fall back to the host process CWD (the project root —
@@ -250,7 +262,7 @@ changes run `npx vite build` and **reload the Web plugin** (Web UI → reload, o
 
 | plugin | keys |
 |---|---|
-| `netpi.web` | `port` (5173), `staticRoot` (path to `web/netpi-web/dist`) |
+| `netpi.web` | `port` (5173), `staticRoot` (path to `web/netpi-web/dist`), `maxWsMessageBytes` (1 MiB default; a larger WS message → `PolicyViolation` close, §11a F) |
 | `netpi.provider.aiproxy` | `baseUrl` (**required**), `apiKey`, `wire` = auto\|chat\|responses (default auto: responses with probe fallback; §14c `previous_response_id` chaining per session\|model) |
 | `netpi.storage.sqlite` | `database` (default `~/.netpi/netpi.db`) |
 | `netpi.autocompact` | `enabled`, `reserveTokens` (16384), `keepRecentTokens` (20000), `defaultContextWindow` (131072), `maxContextMessages` (4096) |

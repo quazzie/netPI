@@ -105,7 +105,7 @@
     if (store.session?.id) params.set("sessionId", store.session.id);
     // fetch does not reject on HTTP error statuses — check res.ok and
     // surface the server's reason, otherwise a 404 would fail silently.
-    fetch(`/api/open?${params.toString()}`)
+    fetch(`/api/open?${params.toString()}`, { method: "POST" })
       .then(async (res) => {
         if (!res.ok)
           store.setError(`Could not open ${path}: ${(await res.text().catch(() => "")) || res.statusText}`);

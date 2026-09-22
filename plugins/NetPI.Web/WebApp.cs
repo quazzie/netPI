@@ -226,11 +226,23 @@ internal sealed class WebApp : IAsyncDisposable
         // Localhost-only "open with the OS default application" (Windows:
         // Explorer / shell). Same path resolution as /api/file; the request
         // never leaves the machine, so the spawned process is safe.
-        app.MapGet("/api/open", async (HttpContext c) =>
+        //
+        // astra-1 §11a (F/P5): this is a MUTATING shell action, so it is a POST
+        // (never GET — a link/iframe can trigger a GET without user intent) and
+        // is Origin/Host-validated before it is allowed to run. The web UI POSTs.
+        app.MapPost("/api/open", async (HttpContext c) =>
         {
+            if (!ControlOriginIsAllowed(c.Request.Host.Host, c.Request.Headers.Origin.ToString(), _port))
+            {
+                _log.Warning($"api/open: rejected (origin={c.Request.Headers.Origin.ToString() ?? "(none)"} host={c.Request.Host.Host})");
+                return Results.Forbid();
+            }
             var result = await OpenInShellAsync(c);
             return result;
         });
+        // A GET (or any non-POST) to /api/open is a mutation by a non-POST route:
+        // reject it so a stray link/iframe cannot trigger a shell-open.
+        app.MapGet("/api/open", (HttpContext c) => Results.StatusCode(StatusCodes.Status405MethodNotAllowed));
         // SPA routing: any request that matched no file and no explicit route
         // (including the bare "/") serves index.html from the frontend build.
         if (RootsTheFrontend())
@@ -613,6 +625,19 @@ internal sealed class WebApp : IAsyncDisposable
         if (!ctx.WebSockets.IsWebSocketRequest)
         {
             ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        // astra-1 §11a (F/P5): the WS is the browser CONTROL surface — validate the
+        // Host/Origin BEFORE accepting the upgrade (loopback binding is not origin
+        // validation; a malicious page in any browser can cross-request 127.0.0.1).
+        if (!ControlOriginIsAllowed(
+                ctx.Request.Host.Host,
+                ctx.Request.Headers.Origin.ToString(),
+                _port))
+        {
+            _log.Warning($"ws: rejected upgrade from origin={ctx.Request.Headers.Origin.ToString() ?? "(none)"} host={ctx.Request.Host.Host}");
+            ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
             return;
         }
 
@@ -1997,7 +2022,13 @@ internal sealed class WebApp : IAsyncDisposable
         if (!TryGetContentType(fullPath, out var contentType))
             contentType = "application/octet-stream";
 
-        var download = context.Request.Query["download"] == "1";
+        // astra-1 §11a (F/P5): active content (HTML/SVG) served from a user-supplied
+        // path must never be RENDERED in the app origin — it could execute script.
+        // Serve it as a plain-text download instead (the in-app viewer shows inert
+        // text; the desktop shell opens it in the OS default app).
+        var download = context.Request.Query["download"] == "1" || IsActiveContent(fullPath);
+        if (IsActiveContent(fullPath))
+            contentType = "text/plain; charset=utf-8";
         return Results.File(
             fullPath,
             contentType,
@@ -2006,6 +2037,34 @@ internal sealed class WebApp : IAsyncDisposable
     }
 
     /// <summary>
+    /// <summary>
+    /// astra-1 §11a (F/P5): validate the local browser CONTROL boundary. The listener
+    /// binds loopback, but loopback binding is NOT browser-origin validation — a
+    /// malicious page in ANY browser can open a cross-origin request to
+    /// 127.0.0.1:port. So the Host must be a loopback name AND, when an Origin is
+    /// present, it must be the same http:// loopback host:port (the local app). An
+    /// absent Origin is allowed ONLY on a loopback Host (the explicit originless CLI
+    /// path); a present-but-wrong Origin is rejected (an absent/spoofed Origin is not
+    /// proof of trust). Testable pure predicate.
+    /// </summary>
+    public static bool ControlOriginIsAllowed(string? host, string? origin, int boundPort)
+    {
+        var hostOk = host is null or "" ? false :
+            host == "127.0.0.1" || host == "127.0.0.1:" + boundPort ||
+            host == "localhost" || host == "localhost:" + boundPort ||
+            host == "::1" || host == "[::1]" || host == "[::1]:" + boundPort;
+        if (!hostOk) return false;
+
+        if (string.IsNullOrWhiteSpace(origin)) return true; // originless CLI, loopback host
+
+        Uri u;
+        try { u = new Uri(origin, UriKind.Absolute); }
+        catch { return false; }
+        if (u.Scheme != Uri.UriSchemeHttp) return false;
+        if (u.Port != boundPort) return false;
+        return u.Host is "127.0.0.1" or "localhost" or "::1" or "[::1]";
+    }
+
     /// Shared path resolution for /api/file and /api/open: an absolute path is
     /// used as-is; a relative path is resolved against the workspace of the
     /// session named by <c>sessionId</c>. Returns a pre-built error
@@ -2071,6 +2130,14 @@ internal sealed class WebApp : IAsyncDisposable
         }
 
         return Results.NoContent();
+    }
+
+    /// <summary>astra-1 §11a (F/P5): active content (HTML/SVG) that, if rendered in
+    /// the app origin, could execute script — /api/file serves these as a download.</summary>
+    public static bool IsActiveContent(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".html" or ".htm" or ".svg" or ".mhtml" or ".mht";
     }
 
     private static bool TryGetContentType(string path, out string? contentType)
