@@ -230,6 +230,9 @@ public sealed class DelegationSuspensionTests : IDisposable
         Assert.True(e.Runner.GetRun("child-op")!.Outcome == RunState.Running, "child run must be Running");
         Assert.Contains("child-op", e.Provider.StartedRunIds);
 
+        // §16: with capacity 1 there is never more than one owner.
+        Assert.Equal(1, e.Runner.ListRuns().Count(r => r.Outcome == RunState.Running));
+
         // (c) the child finishes; the durable wake resumes the parent on the SAME run id.
         Assert.True(e.Provider.OpenRun("child-op"), "child gate must be openable");
         await WaitUntil(() => e.Runner.GetRun("parent-op") is { Outcome: RunState.Running });
@@ -279,6 +282,10 @@ public sealed class DelegationSuspensionTests : IDisposable
                           && e.Runner.GetRun("childB-op") is { Outcome: RunState.Running });
         Assert.True(e.Runner.GetRun("childA-op")!.Outcome == RunState.Running, "child A must run");
         Assert.True(e.Runner.GetRun("childB-op")!.Outcome == RunState.Running, "child B must run");
+
+        // §16: never more than two owners at once (capacity 2).
+        var runningCount = e.Runner.ListRuns().Count(r => r.Outcome == RunState.Running);
+        Assert.True(runningCount <= 2, $"never more than two owners, saw {runningCount}");
 
         // Both children finish; both parents resume on their own run ids.
         e.Provider.OpenRun("childA-op");
@@ -415,6 +422,24 @@ public sealed class DelegationSuspensionTests : IDisposable
         Assert.Equal("idempotent replay", again.Reason);
         Assert.Single(e.Runner.SuspendedRunIds); // the parent quiesced exactly once
         Assert.Empty(e.Runner.Requeued);
+    }
+
+    // ---- §16: duplicate send — the same idempotency key returns the same seq,
+    //      never a second row.
+    [Fact]
+    public async Task DuplicateSend_SameIdempotencyKey_ReturnsSameSeq_NoDuplicateRow()
+    {
+        var e = MakeStore();
+        var root = await e.Store.EnsureRootAgentAsync("sess-A", null, "A");
+        var other = await e.Store.EnsureRootAgentAsync("sess-B", null, "B");
+
+        var seq1 = await e.Orch.SendMessageAsync(root.AgentId, other.AgentId, "note", "body", "key-1", default);
+        var seq2 = await e.Orch.SendMessageAsync(root.AgentId, other.AgentId, "note", "body", "key-1", default);
+
+        Assert.Equal(seq1, seq2); // same recipient sequence, not a fresh row
+
+        var inbox = await e.Orch.DrainMailboxAsync(other.AgentId, 10, default);
+        Assert.Single(inbox); // exactly one delivered, despite two sends
     }
 
     // ---- §16/§6.2: delegation is depth-bounded by the configured max
