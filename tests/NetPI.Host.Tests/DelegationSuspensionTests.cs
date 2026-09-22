@@ -73,6 +73,40 @@ public sealed class DelegationSuspensionTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// §16 "Provider ignores cancellation temporarily": the model call does NOT
+    /// end when its token is cancelled — it only ends when the test releases it.
+    /// (A real non-cooperative HTTP stream behaves this way until the socket is
+    /// actually torn down.)
+    /// </summary>
+    private sealed class StickyGateProvider : IModelProvider
+    {
+        private readonly object _lock = new();
+        private TaskCompletionSource? _gate;
+        private bool _cancelObserved;
+        public bool CancelObserved { get { lock (_lock) return _cancelObserved; } }
+
+        public bool Entered { get { lock (_lock) return _entered; } }
+        private bool _entered;
+        private readonly List<string> _started = new();
+        public IReadOnlyList<string> StartedRunIds { get { lock (_lock) return _started.ToList(); } }
+        public async IAsyncEnumerable<ModelEvent> RunAsync(ModelRequest request, CancellationToken cancellationToken)
+        {
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_lock) { _gate = tcs; _entered = true; _started.Add(request.RunId ?? "ad-hoc"); }
+            yield return new ModelStarted("model");
+            using var reg = cancellationToken.Register(() => { lock (_lock) _cancelObserved = true; });
+            await tcs.Task; // never ends on cancellation
+            yield return new ModelCompleted(new AgentMessage("a", MessageRole.Assistant,
+                [new TextPart("done")], DateTimeOffset.UtcNow));
+        }
+
+        public bool Release()
+        {
+            lock (_lock) return _gate?.TrySetResult() ?? false;
+        }
+    }
+
     private sealed class FakePolicy : IDeploymentPolicySource
     {
         private readonly Dictionary<string, DeploymentPolicy> _map;
@@ -569,5 +603,58 @@ public sealed class DelegationSuspensionTests : IDisposable
         var inbox = await e.Orch.DrainMailboxAsync(root.AgentId, 10, default);
         Assert.Single(inbox);
         Assert.Equal("hello while suspended", inbox[0].Body);
+    }
+
+    // ---- §16: provider ignores cancellation — the lane stays occupied until the
+    //      stream truly ends; queued work cannot overlap it.
+    [Fact]
+    public async Task ProviderIgnoresCancellation_LaneStaysOccupied_QueuedWorkCannotOverlap()
+    {
+        var e = MakeE2E(capacity: 1);
+        var sticky = new StickyGateProvider();
+        e.Ctx.Add("provider", sticky); // replace the harness gate provider
+
+        var rootA = await e.Store.EnsureRootAgentAsync("sess-A", null, "A");
+        var rootC = await e.Store.EnsureRootAgentAsync("sess-C", null, "C");
+        await e.Store.CreateAssignmentAsync("A-op", rootA.AgentId, "sess-A",
+            null, null, "m-1", "pool-1", "dep-1", "A work", "A brief");
+        await e.Store.CreateAssignmentAsync("C-op", rootC.AgentId, "sess-C",
+            null, null, "m-1", "pool-1", "dep-1", "C work", "C brief");
+
+        var startA = await e.Runner.StartRunAsync(new AgentRunRequest(
+            "sess-A", null, "m-1", "A work", RunId: "A-op"));
+        Assert.Equal(RunDisposition.Admitted, startA.Disposition);
+        await WaitUntil(() => e.Runner.GetRun("A-op") is { Outcome: RunState.Running });
+
+        // C is submitted while A runs: capacity 1 → C queues, never starts.
+        var startC = await e.Runner.StartRunAsync(new AgentRunRequest(
+            "sess-C", null, "m-1", "C work", RunId: "C-op"));
+        Assert.Equal(RunDisposition.Queued, startC.Disposition);
+        Assert.DoesNotContain("C-op", sticky.StartedRunIds);
+
+        // Cancel A while its provider ignores cancellation: the cancel request is
+        // delivered to the provider (it observed it) but the stream does NOT end.
+        // The run must be AT THE PROVIDER (stream in flight) when we cancel.
+        await WaitUntil(() => sticky.Entered);
+        Assert.True(sticky.Entered, "run must reach the provider before cancel");
+        e.Runner.CancelRun("A-op");
+        await WaitUntil(() => sticky.CancelObserved);
+        var a = e.Runner.GetRun("A-op");
+        Assert.True(sticky.CancelObserved, $"provider must observe the cancellation (state={a?.Outcome})");
+        Assert.True(sticky.CancelObserved, "provider must observe the cancellation");
+
+        // While the non-cooperative stream is still live, the lane stays occupied
+        // and C cannot overlap it.
+        var running = e.Runner.ListRuns().Count(r => r.Outcome == RunState.Running);
+        Assert.True(running >= 1, $"A must still own the lane (running={running})");
+        Assert.DoesNotContain("C-op", sticky.StartedRunIds);
+
+        // Only when the stream actually ends does the lane release and C admit.
+        sticky.Release();
+        // C starts only AFTER A's segment unwinds and releases the lane — wait
+        // for C's provider entry specifically (A's terminal state alone would
+        // be satisfied before the release is processed).
+        await WaitUntil(() => sticky.StartedRunIds.Contains("C-op"), ms: 20, max: 150);
+        Assert.Contains("C-op", sticky.StartedRunIds);
     }
 }
