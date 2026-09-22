@@ -424,6 +424,68 @@ public sealed class DelegationSuspensionTests : IDisposable
         Assert.Empty(e.Runner.Requeued);
     }
 
+    // ---- §16: a direct-cloud coordinator delegates two local workers — the
+    //      coordinator holds NO local lane (direct deployment); the children
+    //      pin the LOCAL pooled model and need ordinary local admission.
+    [Fact]
+    public async Task CloudCoordinator_DelegatesTwoLocalWorkers_ChildrenUseLocalPooledModel()
+    {
+        var e = MakeE2E(capacity: 2);
+        var cloudModel = "cloud-m";
+        var localModel = "m-1"; // the pool's model
+        var policy = new FakePolicy(
+            new DeploymentPolicy("m-1", DeploymentExecutionMode.Pooled, "pool-1", "dep-1"),
+            new DeploymentPolicy("cloud-m", DeploymentExecutionMode.DirectCloud, null, "cloud"));
+        // Re-register with both policies (the harness created one with m-1 only).
+        e.Ctx.Add("deployments", policy);
+
+        var coord = await e.Store.EnsureRootAgentAsync("sess-cloud", null, "coordinator");
+        await e.Store.CreateAssignmentAsync("coord-op", coord.AgentId, "sess-cloud",
+            null, null, cloudModel, null, "cloud", "coordinator work", default);
+        e.Orch.SubscribeToRunnerEvents();
+
+        // The coordinator runs DIRECT (no lane): it admits immediately, holds nothing.
+        var start = await e.Runner.StartRunAsync(new AgentRunRequest(
+            "sess-cloud", null, cloudModel, "coordinator work", RunId: "coord-op"));
+        Assert.Equal(RunDisposition.Admitted, start.Disposition);
+        await WaitUntil(() => e.Runner.GetRun("coord-op") is { Outcome: RunState.Running });
+        var coordRow = await e.Store.GetByRunIdAsync("coord-op", default);
+        Assert.Null(coordRow!.LaneId); // direct: never held a local lane
+
+        // Delegate two local workers — the child model is EXPLICIT (the local
+        // pooled model), never inherited from the cloud parent.
+        var rA = await e.Orch.DelegateAsync(coord.AgentId, new AgentSpawnRequest
+        {
+            Brief = "local A", OperationId = "localA-op",
+            PoolId = "pool-1", DeploymentId = "dep-1", ModelId = localModel,
+        }, default);
+        var rB = await e.Orch.DelegateAsync(coord.AgentId, new AgentSpawnRequest
+        {
+            Brief = "local B", OperationId = "localB-op",
+            PoolId = "pool-1", DeploymentId = "dep-1", ModelId = localModel,
+        }, default);
+
+        // The coordinator quiesced; it STILL holds no lane (direct deployments
+        // never acquire one — the children got their own via ordinary admission).
+        Assert.Equal(RunState.Suspended, e.Runner.GetRun("coord-op")!.Outcome);
+
+        var childA = await e.Store.GetByRunIdAsync("localA-op", default);
+        var childB = await e.Store.GetByRunIdAsync("localB-op", default);
+        Assert.NotNull(childA); Assert.NotNull(childB);
+        // Children pinned to the LOCAL pooled model (not the cloud model).
+        Assert.Equal(localModel, childA!.ModelId);
+        Assert.Equal(localModel, childB!.ModelId);
+        Assert.Equal(localModel, (await e.Store.GetAssignmentAsync(rA.ChildAssignmentId, default))!.ModelId);
+
+        // Both children admitted (capacity 2), both running.
+        await WaitUntil(() => e.Runner.GetRun("localA-op") is { Outcome: RunState.Running }
+                          && e.Runner.GetRun("localB-op") is { Outcome: RunState.Running });
+        Assert.True(e.Runner.GetRun("localA-op")!.Outcome == RunState.Running, "local A runs");
+        Assert.True(e.Runner.GetRun("localB-op")!.Outcome == RunState.Running, "local B runs");
+        Assert.Contains("localA-op", e.Provider.StartedRunIds);
+        Assert.Contains("localB-op", e.Provider.StartedRunIds);
+    }
+
     // ---- §16: duplicate send — the same idempotency key returns the same seq,
     //      never a second row.
     [Fact]

@@ -399,6 +399,14 @@ public sealed record AgentSpawnRequest
     /// </summary>
     public string WorkspaceMode { get; init; } = "shared-read";
 
+    /// <summary>
+    /// The model the child runs on. When present the child is pinned to it
+    /// (astra-2 §11: a direct-cloud coordinator may delegate LOCAL work — the
+    /// child's pool/model come from this request, never from the parent's
+    /// deployment). Null → the parent's model is inherited.
+    /// </summary>
+    public string? ModelId { get; init; }
+
     /// <summary>Explicit full-parent-transcript inheritance (astra-2 §8: NEVER the default).</summary>
     public bool InheritParentTranscript { get; init; }
 

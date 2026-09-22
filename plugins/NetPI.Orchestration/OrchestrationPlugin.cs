@@ -200,7 +200,8 @@ internal sealed class AgentsDelegateTool : AgentToolBase
         ("brief", "The subtask brief (the child's first user message)"),
         ("operationId", "Stable id for idempotent retries (required)"),
         ("poolId", "Optional pool id (pooled deployment only)"),
-        ("deploymentId", "Optional deployment id (trusted config, not model-chosen)"));
+        ("deploymentId", "Optional deployment id (trusted config, not model-chosen)"),
+        ("modelId", "Optional model the child runs on (a direct-cloud coordinator delegating local work names the local model here; default: inherit the parent's model)"));
     public override IReadOnlyList<string> Guidelines => [
         "Delegation SUSPENDS your run: no further model call happens in this segment after the tool returns.",
         "You are resumed when the child reaches a terminal outcome; the result is a bounded summary, not the child's transcript.",
@@ -213,6 +214,7 @@ internal sealed class AgentsDelegateTool : AgentToolBase
         var opId = S(args, "operationId") ?? Guid.NewGuid().ToString("N");
         var poolId = S(args, "poolId");
         var depId = S(args, "deploymentId");
+        var modelId = S(args, "modelId");
         if (string.IsNullOrEmpty(parentAgentId))
             return Err(context, "parentAgentId is required (or the runtime must provide AgentId)");
         if (string.IsNullOrEmpty(brief))
@@ -226,6 +228,7 @@ internal sealed class AgentsDelegateTool : AgentToolBase
                 OperationId = opId,
                 PoolId = poolId,
                 DeploymentId = depId,
+                ModelId = modelId,
             }, cancellationToken);
             return Ok(context, new
             {

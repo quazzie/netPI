@@ -100,6 +100,9 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             modelId = parentNonterm?.ModelId;
         }
         if (modelId is null) modelId = "default";
+        // astra-2 §11: an explicit child model (e.g. a direct-cloud coordinator
+        // delegating LOCAL pooled work) wins over the inherited parent model.
+        if (request.ModelId is { } m) modelId = m;
 
         var title = string.IsNullOrEmpty(request.Brief)
             ? "child" : (request.Brief.Length <= 32 ? request.Brief : request.Brief[..32] + "...");
