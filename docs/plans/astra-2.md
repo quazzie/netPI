@@ -19,8 +19,13 @@ as if the human sent it); the read takes no write transaction (escalating only
 to consume), so a drain never wedges the run or contends for the WAL write lock
 in concurrent delegation. §15.F: `agent_lane_journal` rows are now written — the
 store owns a per-process `host_epoch` and journals `spawn`/`admit`/`release`
-lane-ownership transitions durably. Remaining open gates: workspace modes, and
-orchestrate-mode coordinator guidance. §15.D: the crash-after-tool-effect
+lane-ownership transitions durably. Both former open gates are now implemented and
+tested: workspace modes (§15.C/§8 — shared-read read-only tool policy,
+isolated-worktree provisioning, shared-write ownership; the runtime enforces
+shared-read at the model's tool list and at preflight, and the orchestrator
+provisions an independent git worktree of the parent's base revision without
+touching the parent's dirty worktree) and orchestrate-mode coordinator
+guidance (§10/§15.F). §15.D: the crash-after-tool-effect
 quarantine is now implemented and tested — the runtime durably marks a tool batch
 IN-FLIGHT just before its results are persisted (and clears it on success), so a crash
 in that uncertain window leaves a durable `agent_checkpoints` row; load-recovery then
@@ -1043,7 +1048,7 @@ with fake providers; do not spend cloud credits to test scheduler correctness.
 - [ ] Verify capacity-one delegation and capacity-two parent/two-worker flow.
 - [ ] Verify no deadlock while both parents delegate; no third model caller;
       distinct response chains; no duplicate tool outputs after resume.
-- [ ] Add workspace modes/ownership and preserve dirty worktree artifacts.
+- [x] Add workspace modes/ownership and preserve dirty worktree artifacts.
 
 ### D — Mailboxes, collaboration, and recovery
 

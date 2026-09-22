@@ -42,7 +42,8 @@ public class MailboxDrainTests
             CancellationToken ct = default) => throw new NotSupportedException();
         public ValueTask<AgentSpawnOutcome> SpawnChildAsync(string operationId, string? parentAgentId,
             string? teamId, string modelId, string? poolId, string? deploymentId, string brief, string title,
-            CancellationToken ct = default) => throw new NotSupportedException();
+            string? workspaceMode = null, string? workspacePath = null, CancellationToken ct = default)
+            => throw new NotSupportedException();
         public ValueTask<AgentIdentity?> GetAgentAsync(string agentId, CancellationToken ct = default)
             => throw new NotSupportedException();
         public ValueTask<AgentIdentity?> GetAgentBySessionAsync(string sessionId, CancellationToken ct = default)
@@ -76,7 +77,8 @@ public class MailboxDrainTests
             => throw new NotSupportedException();
         public ValueTask<AgentAssignmentRow> CreateAssignmentAsync(string operationId, string agentId,
             string sessionId, string? teamId, string? parentAgentId, string? modelId, string? poolId,
-            string? deploymentId, string title, string? briefRef, CancellationToken ct = default)
+            string? deploymentId, string title, string? briefRef,
+            string? workspaceMode = null, string? workspacePath = null, CancellationToken ct = default)
             => throw new NotSupportedException();
         public ValueTask SetSessionWorkspaceAsync(string sessionId, string? workspace, CancellationToken ct = default)
             => throw new NotSupportedException();

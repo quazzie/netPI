@@ -18,10 +18,13 @@ internal sealed class FakeProvider : IModelProvider
     public FakeProvider(params IReadOnlyList<ModelEvent>[] turns) => _turns = new Queue<IReadOnlyList<ModelEvent>>(turns);
     /// <summary>Messages sent on the most recent model call (PLAN §12 assertions).</summary>
     public IReadOnlyList<AgentMessage>? LastMessages;
+    /// <summary>Tools offered on the most recent model call (astra-2 §8 shared-read assertions).</summary>
+    public IReadOnlyList<ToolDefinition>? LastTools;
 
     public async IAsyncEnumerable<ModelEvent> RunAsync(ModelRequest request, CancellationToken cancellationToken)
     {
         LastMessages = request.Messages;
+        LastTools = request.Tools;
         var events = _turns.Count > 0 ? _turns.Dequeue() : null;
         if (events is null) yield break;
         foreach (var ev in events)

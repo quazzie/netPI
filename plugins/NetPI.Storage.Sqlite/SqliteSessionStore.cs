@@ -50,7 +50,7 @@ namespace NetPI.Storage.Sqlite;
 public sealed class SqliteSessionStore : ISessionStore, IDisposable
 {
     /// <summary>Highest migration version applied by this store.</summary>
-    public const int CurrentSchemaVersion = 6;
+    public const int CurrentSchemaVersion = 7;
 
     /// <summary>
     /// astra-1 B: canonical key for deduplicating project workspace paths —
@@ -126,7 +126,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
                 );
                 """);
 
-            foreach (var version in new[] { 1, 2, 3, 4, 5, 6 })
+            foreach (var version in new[] { 1, 2, 3, 4, 5, 6, 7 })
             {
                 if (IsMigrationApplied(conn, version)) continue;
 
@@ -436,6 +436,18 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
                     CREATE UNIQUE INDEX IF NOT EXISTS uq_checkpoints_assignment
                         ON agent_checkpoints(assignment_id);
                     """, null, tx);
+                break;
+            case 7:
+                // astra-2 §15.C: workspace mode/ownership — each assignment
+                // records the workspace mode its child was spawned with
+                // (shared-read | isolated-worktree | shared-write) and the
+                // concrete workspace the run executes in (a worktree path for
+                // isolated children). Additive nullable columns; existing rows
+                // stay NULL (historical default: shared-read / inherited workspace).
+                if (!HasColumn(conn, tx, "agent_assignments", "workspace_mode"))
+                    ExecuteSql(conn, "ALTER TABLE agent_assignments ADD COLUMN workspace_mode TEXT;", null, tx);
+                if (!HasColumn(conn, tx, "agent_assignments", "workspace_path"))
+                    ExecuteSql(conn, "ALTER TABLE agent_assignments ADD COLUMN workspace_path TEXT;", null, tx);
                 break;
 
             default:

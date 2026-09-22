@@ -156,7 +156,8 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
             return ValueTask.FromResult(new AgentIdentity("agent-1", teamId, null, sessionId, title, false, DateTimeOffset.UtcNow));
         }
         public ValueTask<AgentAssignmentRow> CreateAssignmentAsync(string operationId, string agentId, string sessionId, string? teamId,
-            string? parentAgentId, string? modelId, string? poolId, string? deploymentId, string title, string? briefRef, CancellationToken ct = default)
+            string? parentAgentId, string? modelId, string? poolId, string? deploymentId, string title, string? briefRef,
+            string? workspaceMode = null, string? workspacePath = null, CancellationToken ct = default)
         {
             var row = new AgentAssignmentRow("a-new", agentId, teamId, sessionId, parentAgentId,
                 AgentAssignmentLifecycle.Queued, AgentState.Idle, DeploymentExecutionMode.DirectCloud,
@@ -165,7 +166,7 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
             return ValueTask.FromResult(row);
         }
         // ---- unused members ---------------------------------------------------
-        public ValueTask<AgentSpawnOutcome> SpawnChildAsync(string operationId, string? parentAgentId, string? teamId, string modelId, string? poolId, string? deploymentId, string brief, string title, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<AgentSpawnOutcome> SpawnChildAsync(string operationId, string? parentAgentId, string? teamId, string modelId, string? poolId, string? deploymentId, string brief, string title, string? workspaceMode = null, string? workspacePath = null, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask<AgentIdentity?> GetAgentAsync(string agentId, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask<AgentIdentity?> GetAgentBySessionAsync(string sessionId, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask<bool> TransitionAsync(string assignmentId, int expectedVersion, AgentAssignmentLifecycle lifecycle, AgentState phase, string? poolId, string? laneId, string? deploymentId, string? reason, string? checkpointRef, CancellationToken ct = default) => throw new NotImplementedException();

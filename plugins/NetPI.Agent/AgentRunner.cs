@@ -697,6 +697,9 @@ public sealed class AgentRunner : IAgentRunner
                 // turn boundaries (same ownership record, resolved once).
                 AssignmentId = runOwnership.AssignmentId,
                 AgentId = runOwnership.AgentId,
+                // astra-2 §8: the workspace mode the runtime enforces (shared-read →
+                // read-only tool policy) — same store row, same single lookup.
+                WorkspaceMode = runOwnership.WorkspaceMode,
             }, cts.Token);
             // astra-1 A: the RUNTIME result carries the terminal outcome —
             // cancellation comes back as a result (note "cancelled"), not a
@@ -1038,9 +1041,9 @@ public sealed class AgentRunner : IAgentRunner
         catch (ServiceUnavailableException) { return default; }
     }
 
-    private sealed record RunOwnership(string? AssignmentId, string? AgentId)
+    private sealed record RunOwnership(string? AssignmentId, string? AgentId, string? WorkspaceMode)
     {
-        public static readonly RunOwnership None = new(null, null);
+        public static readonly RunOwnership None = new(null, null, null);
     }
 
     /// <summary>
@@ -1056,7 +1059,7 @@ public sealed class AgentRunner : IAgentRunner
         try
         {
             var row = await store.GetByRunIdAsync(runId, ct);
-            return row is null ? RunOwnership.None : new RunOwnership(row.AssignmentId, row.AgentId);
+            return row is null ? RunOwnership.None : new RunOwnership(row.AssignmentId, row.AgentId, row.WorkspaceMode);
         }
         catch { return RunOwnership.None; }
     }

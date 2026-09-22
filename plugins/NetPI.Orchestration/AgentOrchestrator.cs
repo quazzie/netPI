@@ -35,6 +35,66 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         catch { return null; }
     }
 
+    /// <summary>Resolve the sessions service (id "sessions") when present.</summary>
+    private ISessionStore? Sessions()
+    {
+        try { return _ctx.Services.Resolve<ISessionStore>("sessions"); }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// astra-2 §8: the workspace an agent's runs execute in. The assignment row's
+    /// <c>workspace_path</c> wins (a provisioned worktree); otherwise the session's
+    /// recorded workspace (null = host CWD, as before §8).
+    /// </summary>
+    private async ValueTask<string?> ResolveAgentWorkspaceAsync(AgentAssignmentRow row, string? sessionId, CancellationToken ct)
+    {
+        if (row.WorkspacePath is { } p && !string.IsNullOrEmpty(p)) return p;
+        if (sessionId is not null)
+        {
+            var sessions = Sessions();
+            if (sessions is not null)
+            {
+                try { return (await sessions.GetAsync(sessionId, ct))?.WorkspacePath; }
+                catch { return null; }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// astra-2 §8 (isolated-worktree): provision an independent git worktree for a
+    /// child — an independent checkout of the parent workspace's BASE revision on
+    /// a fresh <c>codex/…</c> branch (worktree add -b: the parent's uncommitted
+    /// changes are not copied in, and the parent's dirty worktree is never
+    /// touched — §15.C's "preserve dirty worktree artifacts"). The worktree lives
+    /// under <c>&lt;parent-workspace&gt;/.netpi/worktrees/</c>: a sibling artifact the
+    /// user reviews after the run, kept until reviewed (no automatic push, merge
+    /// or cleanup as a side effect of delegation). Returns the worktree path, or
+    /// null when isolation cannot be provisioned (non-Git workspace, git
+    /// unavailable, or a collision — the caller fails the spawn with a reason).
+    /// </summary>
+    private string? PrepareWorktree(string parentWorkspace, string operationId)
+    {
+        var dotGit = Path.Combine(parentWorkspace, ".git");
+        if (!Directory.Exists(dotGit) && !File.Exists(dotGit))
+            return null; // non-Git workspace: §8 requires an explicit shared mode (or a bounded snapshot)
+        var branch = "codex/" + operationId[..Math.Min(12, operationId.Length)];
+        var path = Path.Combine(parentWorkspace, ".netpi", "worktrees", branch.Replace('/', '-'));
+        if (Directory.Exists(path) || File.Exists(path)) return null; // collision: never clobber a review artifact
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git", $"worktree add -b \"{branch}\" \"{path}\"")
+            { WorkingDirectory = parentWorkspace, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false };
+            using var proc = System.Diagnostics.Process.Start(psi) ?? throw new InvalidOperationException("git spawn failed");
+            _ = proc.StandardError.ReadToEnd();
+            if (!proc.WaitForExit(30_000)) { try { proc.Kill(); } catch { } return null; }
+            return proc.ExitCode == 0 ? path : null;
+        }
+        catch { return null; }
+    }
+
+
     /// <summary>
     /// Subscribe to the runner's terminal AgentEvents (published to the host bus by
     /// NetPI.Agent) and reconcile each into the assignment store (astra-2: run to
@@ -104,12 +164,40 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         // delegating LOCAL pooled work) wins over the inherited parent model.
         if (request.ModelId is { } m) modelId = m;
 
+        // astra-2 §8: workspace modes. The request's mode is the policy
+        // (default shared-read). The child ALWAYS runs in the parent's workspace
+        // — "shared" means the child's tools resolve relative to the same
+        // workspace as the parent, not the host's CWD; for isolated-worktree we
+        // provision an independent git worktree of the parent workspace NOW
+        // (branch codex/…, base = the recorded parent HEAD) and the child's tools
+        // are pointed at THAT instead. Shared modes record the parent's workspace
+        // path on the child session so the run executes there.
+        var workspaceMode = (request.WorkspaceMode ?? "shared-read").Trim().ToLowerInvariant();
+        var parentWorkspace = parent is not null
+            ? (Sessions() is { } ss ? (await ss.GetAsync(parent.SessionId, cancellationToken))?.WorkspacePath : null)
+            : null;
+        string? childWorkspace = workspaceMode == "isolated-worktree"
+            ? (parentWorkspace is null
+                ? null
+                : PrepareWorktree(parentWorkspace, request.OperationId))
+            : parentWorkspace;
+        if (workspaceMode == "isolated-worktree" && childWorkspace is null)
+        {
+            return new AgentSpawnResult(
+                new AgentIdentity(string.Empty, teamId, null, string.Empty, "child", IsChild: true, DateTimeOffset.UtcNow),
+                string.Empty, string.Empty, AgentAssignmentLifecycle.Failed,
+                parentWorkspace is null
+                    ? "isolated-worktree requires a parent workspace (a Git repo) — the parent session has none"
+                    : "isolated-worktree could not be provisioned (non-Git workspace, git unavailable, or a colliding worktree path) — non-Git workspaces need an explicit shared mode or a bounded snapshot");
+        }
+
         var title = string.IsNullOrEmpty(request.Brief)
             ? "child" : (request.Brief.Length <= 32 ? request.Brief : request.Brief[..32] + "...");
 
         var outcome = await _store.SpawnChildAsync(
             request.OperationId, parentAgentId, teamId, modelId,
-            request.PoolId, request.DeploymentId, request.Brief, title, cancellationToken);
+            request.PoolId, request.DeploymentId, request.Brief, title,
+            workspaceMode, childWorkspace, cancellationToken);
 
         var runner = Runner();
         if (runner is not null)
@@ -117,15 +205,17 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             // astra-2 §7: the store's run_id = operationId; the runner's terminal
             // AgentEvent carries the same id (request.RunId), so reconciliation
             // maps the event back to this assignment via GetByRunIdAsync.
+            // astra-2 §8: the child's tools are scoped to ITS workspace — for an
+            // isolated worktree that is the worktree, never the parent's working tree.
             var start = await runner.StartRunAsync(
-                new AgentRunRequest(outcome.Agent.SessionId, null, modelId, request.Brief,
+                new AgentRunRequest(outcome.Agent.SessionId, childWorkspace, modelId, request.Brief,
                     RunId: request.OperationId),
                 cancellationToken);
             if (start.Disposition == RunDisposition.Admitted)
                 await TryTransitionAsync(outcome.AssignmentId, AgentAssignmentLifecycle.Running, AgentState.CallingModel, cancellationToken);
         }
 
-        return new AgentSpawnResult(outcome.Agent, outcome.AssignmentId, outcome.Agent.SessionId, outcome.Status, outcome.Reason);
+        return new AgentSpawnResult(outcome.Agent, outcome.AssignmentId, outcome.Agent.SessionId, outcome.Status, outcome.Reason, childWorkspace);
     }
 
     public async ValueTask<AgentSpawnResult> ContinueAsync(
@@ -136,9 +226,13 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         var opId = operationId ?? Guid.NewGuid().ToString("N");
         var modelId = (await _store.GetNonterminalAsync(agent.SessionId, cancellationToken))?.ModelId ?? "default";
 
+        // astra-2 §8: a follow-up keeps the agent's recorded workspace ownership —
+        // its last assignment's workspace mode + the workspace that run executed in.
+        var prior = await _store.GetNonterminalAsync(agent.SessionId, cancellationToken);
         var row = await _store.CreateAssignmentAsync(
             opId, agent.AgentId, agent.SessionId, agent.TeamId, agent.ParentAgentId,
-            modelId, null, null, "follow-up", text, cancellationToken);
+            modelId, null, null, "follow-up", text,
+            prior?.WorkspaceMode, prior?.WorkspacePath, cancellationToken);
 
         var runner = Runner();
         if (runner is not null)
@@ -146,13 +240,13 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             // astra-2 §7: same id-mapping as spawn — the store row's run_id is opId
             // and the runner's terminal event carries it (request.RunId).
             var start = await runner.StartRunAsync(
-                new AgentRunRequest(agent.SessionId, null, modelId, text, RunId: opId),
+                new AgentRunRequest(agent.SessionId, prior?.WorkspacePath, modelId, text, RunId: opId),
                 cancellationToken);
             if (start.Disposition == RunDisposition.Admitted)
                 await TryTransitionAsync(row.AssignmentId, AgentAssignmentLifecycle.Running, AgentState.CallingModel, cancellationToken);
         }
 
-        return new AgentSpawnResult(agent, row.AssignmentId, agent.SessionId, row.Lifecycle, null);
+        return new AgentSpawnResult(agent, row.AssignmentId, agent.SessionId, row.Lifecycle, null, prior?.WorkspacePath);
     }
 
     // ---- messaging ---------------------------------------------------------
@@ -323,8 +417,15 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             // the resume must carry the parent's model so re-queue re-enters the
             // SAME admission policy (pooled → re-acquire the lane) as the original.
             var nontermBefore = await _store.GetNonterminalAsync(agent.SessionId, cancellationToken);
+            // astra-2 §8: resume in the SAME workspace the parent runs in — the
+            // nonterminal assignment's recorded workspace, else the session's own.
+            var parentWs = await ResolveAgentWorkspaceAsync(
+                nontermBefore ?? new AgentAssignmentRow(string.Empty, agent.AgentId, null, agent.SessionId, null,
+                    AgentAssignmentLifecycle.Running, AgentState.Idle, DeploymentExecutionMode.Pooled, null, null, null, null,
+                    "resume", DateTimeOffset.UtcNow, null, null, null),
+                agent.SessionId, cancellationToken);
             var requeued = await runner.RequeueRunAsync(new AgentRunRequest(
-                agent.SessionId, null, nontermBefore?.ModelId, brief, RunId: w.RunId), cancellationToken);
+                agent.SessionId, parentWs, nontermBefore?.ModelId, brief, RunId: w.RunId), cancellationToken);
             if (requeued)
             {
                 if (nontermBefore is not null)
@@ -491,8 +592,16 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                     _ctx.Log.Information($"Reconcile: no runner for {q.AssignmentId} — left queued");
                     continue;
                 }
+                // astra-2 §8: a re-adopted run returns to the workspace its
+                // assignment recorded (null = the session's workspace via the runner).
+                var adoptionWs = await ResolveAgentWorkspaceAsync(
+                    new AgentAssignmentRow(q.AssignmentId, string.Empty, null, q.SessionId, null,
+                        AgentAssignmentLifecycle.Queued, AgentState.Idle, DeploymentExecutionMode.Pooled,
+                        q.PoolId, null, q.DeploymentId, q.ModelId, "adopt", DateTimeOffset.UtcNow, null, null, null)
+                    { WorkspaceMode = q.WorkspaceMode, WorkspacePath = q.WorkspacePath },
+                    q.SessionId, cancellationToken);
                 var requeued = await runner.RequeueRunAsync(new AgentRunRequest(
-                    q.SessionId, null, q.ModelId, q.Brief, RunId: q.OperationId), cancellationToken);
+                    q.SessionId, adoptionWs, q.ModelId, q.Brief, RunId: q.OperationId), cancellationToken);
                 _ctx.Log.Information(
                     $"Reconcile: re-entered queued assignment {q.AssignmentId} (run {q.OperationId}) as {(requeued ? "adopted" : "held")}");
             }

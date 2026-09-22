@@ -485,7 +485,7 @@ internal sealed class WebApp : IAsyncDisposable
             var root = await store.EnsureRootAgentAsync(sid!, null, string.IsNullOrEmpty(model) ? "agent" : model!, ct);
             await store.CreateAssignmentAsync(
                 runId ?? Guid.NewGuid().ToString("n"), root.AgentId, sid!, null, null,
-                model, null, null, "assignment", null, ct);
+                model, null, null, "assignment", null, null, null, ct);
             return null;
         }
         catch (Exception ex)

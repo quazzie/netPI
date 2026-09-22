@@ -86,7 +86,8 @@ public sealed class SqliteOrchestrationStore : IOrchestrationStore
 
     public async ValueTask<AgentSpawnOutcome> SpawnChildAsync(
         string operationId, string? parentAgentId, string? teamId, string modelId,
-        string? poolId, string? deploymentId, string brief, string title, CancellationToken ct = default)
+        string? poolId, string? deploymentId, string brief, string title,
+        string? workspaceMode = null, string? workspacePath = null, CancellationToken ct = default)
     {
         await using var conn = OpenConnection();
         await using var tx = conn.BeginTransaction();
@@ -115,10 +116,11 @@ public sealed class SqliteOrchestrationStore : IOrchestrationStore
             // One atomic child: session + agent + queued assignment + initial brief.
             await ExecAsync(conn, tx, """
                 INSERT INTO sessions (id, title, workspace, created_at, updated_at, last_sequence)
-                VALUES ($s, 'untitled', NULL, $now, $now, 0);
+                VALUES ($s, 'untitled', $w, $now, $now, 0);
                 """, ct, c =>
                 {
                     c.Parameters.AddWithValue("$s", sessionId);
+                    c.Parameters.AddWithValue("$w", (object?)workspacePath ?? DBNull.Value);
                     c.Parameters.AddWithValue("$now", now);
                 });
             await ExecAsync(conn, tx, """
@@ -136,9 +138,10 @@ public sealed class SqliteOrchestrationStore : IOrchestrationStore
             await ExecAsync(conn, tx, """
                 INSERT INTO agent_assignments
                   (assignment_id, run_id, agent_id, team_id, session_id, parent_agent_id, lifecycle, phase,
-                   execution_mode, pool_id, deployment_id, model_id, title, brief_ref, ready_seq, created_at, version)
+                   execution_mode, pool_id, deployment_id, model_id, title, brief_ref, ready_seq, created_at, version,
+                   workspace_mode, workspace_path)
                 VALUES
-                  ($aid, $run, $a, $t, $s, $p, 'queued', 'idle', $mode, $pool, $dep, $model, $title, $brief, 0, $now, 0);
+                  ($aid, $run, $a, $t, $s, $p, 'queued', 'idle', $mode, $pool, $dep, $model, $title, $brief, 0, $now, 0, $wm, $wp);
                 """, ct, c =>
                 {
                     c.Parameters.AddWithValue("$aid", assignmentId);
@@ -151,6 +154,8 @@ public sealed class SqliteOrchestrationStore : IOrchestrationStore
                     c.Parameters.AddWithValue("$pool", (object?)poolId ?? DBNull.Value);
                     c.Parameters.AddWithValue("$dep", (object?)deploymentId ?? DBNull.Value);
                     c.Parameters.AddWithValue("$model", modelId);
+                    c.Parameters.AddWithValue("$wm", (object?)workspaceMode ?? DBNull.Value);
+                    c.Parameters.AddWithValue("$wp", (object?)workspacePath ?? DBNull.Value);
                     c.Parameters.AddWithValue("$title", (object?)(string.IsNullOrEmpty(title) ? "child" : title) ?? DBNull.Value);
                     c.Parameters.AddWithValue("$brief", brief);
                     c.Parameters.AddWithValue("$now", now);
@@ -334,7 +339,8 @@ public sealed class SqliteOrchestrationStore : IOrchestrationStore
             SELECT aa.assignment_id, aa.run_id, aa.agent_id, aa.team_id, aa.session_id, aa.parent_agent_id,
                    aa.lifecycle, aa.phase, aa.execution_mode, aa.pool_id, aa.lane_id,
                    aa.deployment_id, aa.model_id, aa.title, aa.ready_seq, aa.created_at,
-                   aa.started_at, aa.ended_at, aa.reason, aa.version, aa.checkpoint_ref
+                   aa.started_at, aa.ended_at, aa.reason, aa.version, aa.checkpoint_ref,
+                   aa.workspace_mode, aa.workspace_path
               FROM agent_assignments aa
               JOIN subtree s ON aa.agent_id = s.agent_id
              WHERE aa.lifecycle NOT IN (TERM);
@@ -349,7 +355,8 @@ public sealed class SqliteOrchestrationStore : IOrchestrationStore
     public async ValueTask<AgentAssignmentRow> CreateAssignmentAsync(
         string operationId, string agentId, string sessionId, string? teamId,
         string? parentAgentId, string? modelId, string? poolId, string? deploymentId,
-        string title, string? briefRef, CancellationToken ct = default)
+        string title, string? briefRef,
+        string? workspaceMode = null, string? workspacePath = null, CancellationToken ct = default)
     {
 string? createdAssignmentId = null;
         await using var conn = OpenConnection();
@@ -377,9 +384,10 @@ string? createdAssignmentId = null;
             await ExecAsync(conn, tx, """
                 INSERT INTO agent_assignments
                   (assignment_id, run_id, agent_id, team_id, session_id, parent_agent_id, lifecycle, phase,
-                   execution_mode, pool_id, deployment_id, model_id, title, brief_ref, ready_seq, created_at, version)
+                   execution_mode, pool_id, deployment_id, model_id, title, brief_ref, ready_seq, created_at, version,
+                   workspace_mode, workspace_path)
                 VALUES
-                  ($aid, $run, $a, $t, $s, $p, 'queued', 'idle', $mode, $pool, $dep, $model, $title, $brief, 0, $now, 0);
+                  ($aid, $run, $a, $t, $s, $p, 'queued', 'idle', $mode, $pool, $dep, $model, $title, $brief, 0, $now, 0, $wm, $wp);
                 """, ct, c =>
                 {
                     c.Parameters.AddWithValue("$aid", assignmentId);
@@ -394,6 +402,8 @@ string? createdAssignmentId = null;
                     c.Parameters.AddWithValue("$model", (object?)modelId ?? DBNull.Value);
                     c.Parameters.AddWithValue("$title", (object?)(string.IsNullOrEmpty(title) ? "assignment" : title) ?? DBNull.Value);
                     c.Parameters.AddWithValue("$brief", (object?)briefRef ?? DBNull.Value);
+                    c.Parameters.AddWithValue("$wm", (object?)workspaceMode ?? DBNull.Value);
+                    c.Parameters.AddWithValue("$wp", (object?)workspacePath ?? DBNull.Value);
                     c.Parameters.AddWithValue("$now", now);
                 });
             tx.Commit();
@@ -457,7 +467,8 @@ string? createdAssignmentId = null;
         while (await r.ReadAsync(ct))
         {
             // SelectAssignment column order: 0=assignment_id, 1=run_id, 4=session_id,
-            // 9=pool_id, 11=deployment_id, 12=model_id, 13=title
+            // 9=pool_id, 11=deployment_id, 12=model_id, 13=title, 21=workspace_mode,
+            // 22=workspace_path (astra-2 §8).
             list.Add(new QueuedAdoptionInfo(
                 r.GetString(0),
                 r.GetString(1),
@@ -465,7 +476,9 @@ string? createdAssignmentId = null;
                 r.IsDBNull(12) ? null : r.GetString(12),
                 r.IsDBNull(9) ? null : r.GetString(9),
                 r.IsDBNull(11) ? null : r.GetString(11),
-                r.IsDBNull(13) ? null : r.GetString(13)));
+                r.IsDBNull(13) ? null : r.GetString(13),
+                r.IsDBNull(21) ? null : r.GetString(21),
+                r.IsDBNull(22) ? null : r.GetString(22)));
         }
         return list;
     }
@@ -486,7 +499,8 @@ string? createdAssignmentId = null;
     private const string SelectAssignment = """
         SELECT assignment_id, run_id, agent_id, team_id, session_id, parent_agent_id,
                lifecycle, phase, execution_mode, pool_id, lane_id, deployment_id, model_id,
-               title, ready_seq, created_at, started_at, ended_at, reason, version, checkpoint_ref
+               title, ready_seq, created_at, started_at, ended_at, reason, version, checkpoint_ref,
+               workspace_mode, workspace_path
         FROM agent_assignments
         """;
 
@@ -508,7 +522,9 @@ string? createdAssignmentId = null;
         r.IsDBNull(16) ? null : ToUtc(r.GetString(16)),
         r.IsDBNull(17) ? null : ToUtc(r.GetString(17)),
         r.IsDBNull(18) ? null : r.GetString(18))
-        { CheckpointRef = r.IsDBNull(20) ? null : r.GetString(20), Version = r.GetInt32(19) };
+        { CheckpointRef = r.IsDBNull(20) ? null : r.GetString(20), Version = r.GetInt32(19),
+          WorkspaceMode = r.IsDBNull(21) ? null : r.GetString(21),
+          WorkspacePath = r.IsDBNull(22) ? null : r.GetString(22) };
 
     // ---- lane-ownership journal (astra-2 §15) ---------------------------
 

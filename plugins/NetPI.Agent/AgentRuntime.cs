@@ -40,6 +40,17 @@ public sealed record AgentRunOptions
     public string? DeploymentId { get; init; }
 
     /// <summary>
+    /// astra-2 §8: the run's workspace MODE as recorded on its assignment
+    /// ("shared-read" / "isolated-worktree" / "shared-write"). The runtime
+    /// resolves it from the orchestration store ONCE per run from the run id
+    /// (null for ad-hoc runs with no orchestration record — they carry no
+    /// mode and run unrestricted). "shared-read" enforces a read-only tool
+    /// policy: mutating tools are withheld from the model's tool list and
+    /// rejected at preflight if called.
+    /// </summary>
+    public string? WorkspaceMode { get; init; }
+
+    /// <summary>
     /// astra-2 §15.B/§3.3: the lane ownership permit for a pooled run — the
     /// runner's authoritative <see cref="LaneOwnershipToken"/> for this segment.
     /// Present ONLY for pooled (lane-holding) runs. The runtime re-validates it
@@ -292,7 +303,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                     ModelId = options.ModelId,
                     SessionId = options.SessionId,
                     Messages = transcript,
-                    Tools = tools?.All().Select(t => new ToolDefinition(t.Name, t.Description, t.Parameters)).ToList() ?? [],
+                    Tools = options.WorkspaceMode != "shared-read" ? BuildToolDefs(tools) : BuildSharedReadToolDefs(tools),
                     Temperature = options.Temperature,
                     ReasoningLevel = options.ReasoningLevel,
                     RunId = options.RunId,
@@ -491,7 +502,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 // then execute concurrently; results keep the original call order.
                 // Resolved tool instances are held by reference for the whole
                 // batch so a reload cannot unload them mid-invocation.
-                var batch = await ResolveAndPreflightAsync(tools, calls, ct);
+                var batch = await ResolveAndPreflightAsync(tools, calls, options.WorkspaceMode, ct);
 
                 // Per-call preflight outcome; invalid calls become error results
                 // without executing (PLAN §11: preflight validates arguments and
@@ -615,21 +626,46 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     /// unload them mid-invocation; a lease on the shared tools registry is held
     /// for the batch duration as well.
     /// </summary>
-    private Task<ToolBatch> ResolveAndPreflightAsync(IToolRegistry? tools, IReadOnlyList<ToolCallPart> calls, CancellationToken ct)
+    private Task<ToolBatch> ResolveAndPreflightAsync(IToolRegistry? tools, IReadOnlyList<ToolCallPart> calls, string? workspaceMode, CancellationToken ct)
     {
         var prepared = new List<(ToolCallPart Call, IAgentTool? Tool, string? Error)>(calls.Count);
         foreach (var call in calls)
         {
+            // astra-2 §8: a shared-read workspace runs a READ-ONLY tool policy —
+            // mutating tools are withheld from the model's tool list and rejected
+            // here if still called, so a generic shell can never mutate the shared
+            // workspace through a loophole.
             string? error = null;
-            var tool = tools?.Find(call.Name);
-            if (tool is null)
-                error = $"Unknown tool: {call.Name}";
-            else if (call.Arguments.ValueKind != JsonValueKind.Object)
-                error = $"Tool '{call.Name}' expected a JSON object of arguments.";
+            IAgentTool? tool = null;
+            if (workspaceMode == "shared-read" && IsMutatingTool(call.Name))
+            {
+                error = $"Tool '{call.Name}' is not available: this workspace is shared-read (read-only tool policy). Use read/grep/background_output/background_list instead, or ask for the workspace to be granted shared-write or isolated-worktree.";
+            }
+            else
+            {
+                tool = tools?.Find(call.Name);
+                if (tool is null)
+                    error = $"Unknown tool: {call.Name}";
+                else if (call.Arguments.ValueKind != JsonValueKind.Object)
+                    error = $"Tool '{call.Name}' expected a JSON object of arguments.";
+            }
             prepared.Add((call, tool, error));
         }
         return Task.FromResult(new ToolBatch(prepared));
     }
+
+    /// <summary>astra-2 §8: the mutating tools withheld from a shared-read workspace.
+    /// A generic shell (bash/powershell) is NOT read-only enforcement — it can write,
+    /// so it is withheld; a caller needs shared-write or isolated-worktree for it.</summary>
+    internal static bool IsMutatingTool(string name) =>
+        name is "write" or "edit" or "bash" or "powershell" or "background_start" or "background_kill";
+
+    private static List<ToolDefinition> BuildToolDefs(IToolRegistry? tools)
+        => tools?.All().Select(t => new ToolDefinition(t.Name, t.Description, t.Parameters)).ToList() ?? [];
+
+    /// <summary>astra-2 §8: the shared-read model sees only non-mutating tools.</summary>
+    private static List<ToolDefinition> BuildSharedReadToolDefs(IToolRegistry? tools)
+        => tools?.All().Where(t => !IsMutatingTool(t.Name)).Select(t => new ToolDefinition(t.Name, t.Description, t.Parameters)).ToList() ?? [];
 
     private sealed record ToolBatch(IReadOnlyList<(ToolCallPart Call, IAgentTool? Tool, string? Error)> Prepared);
 

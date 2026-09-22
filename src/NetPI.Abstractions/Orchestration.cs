@@ -13,7 +13,13 @@ public sealed record QueuedAdoptionInfo(
     string? ModelId,
     string? PoolId,
     string? DeploymentId,
-    string? Brief);
+    string? Brief,
+
+    /// <summary>astra-2 §8: the assignment's workspace mode (null = default shared-read).</summary>
+    string? WorkspaceMode = null,
+
+    /// <summary>astra-2 §8: the workspace the run must execute in (null = the session's recorded workspace).</summary>
+    string? WorkspacePath = null);
 
 // astra-2 (docs/plans/astra-2.md §2, §6, §7, §9): the logical assignment
 // lifecycle, team/agent identity, mailboxes and the orchestrator contracts.
@@ -194,6 +200,22 @@ public sealed record AgentAssignmentRow(
     /// version loses (astra-2 §7: no silent overwrite of a newer transition).
     /// </summary>
     public int Version { get; init; } = 0;
+
+    /// <summary>
+    /// astra-2 §15.C: the workspace mode the child was spawned with —
+    /// "shared-read" (read-only tool policy), "isolated-worktree"
+    /// (independent changes from a recorded base), or "shared-write"
+    /// (explicit file ownership). NULL for pre-migration rows / direct
+    /// (non-child) assignments; readers treat null as the default "shared-read".
+    /// </summary>
+    public string? WorkspaceMode { get; init; }
+
+    /// <summary>
+    /// astra-2 §15.C: the concrete workspace this assignment's runs execute
+    /// in — for an isolated-worktree child, the worktree path the run's tools
+    /// are pointed at; null = inherit the session's workspace (shared modes).
+    /// </summary>
+    public string? WorkspacePath { get; init; }
 
     /// <summary>
     /// astra-2 §15.D: set while a durable in-flight checkpoint exists for the
@@ -443,7 +465,15 @@ public sealed record AgentSpawnResult(
     string AssignmentId,
     string SessionId,
     AgentAssignmentLifecycle Status,
-    string? Reason = null);
+    string? Reason = null,
+
+    /// <summary>
+    /// astra-2 §8: the workspace the child runs in — the parent's workspace for
+    /// shared-read/shared-write (null = inherit the session's workspace), or the
+    /// provisioned worktree path for isolated-worktree. Null when no workspace
+    /// differs from the session's recorded one.
+    /// </summary>
+    string? WorkspacePath = null);
 
 /// <summary>
 /// A wait condition (astra-2 §6.2): the assignment enters <c>Waiting</c> and
@@ -511,7 +541,8 @@ public interface IOrchestrationStore
     /// </summary>
     ValueTask<AgentSpawnOutcome> SpawnChildAsync(
         string operationId, string? parentAgentId, string? teamId, string modelId,
-        string? poolId, string? deploymentId, string brief, string title, CancellationToken ct = default);
+        string? poolId, string? deploymentId, string brief, string title,
+        string? workspaceMode = null, string? workspacePath = null, CancellationToken ct = default);
 
     /// <summary>Look up an agent by id (null when unknown).</summary>
     ValueTask<AgentIdentity?> GetAgentAsync(string agentId, CancellationToken ct = default);
@@ -603,7 +634,8 @@ public interface IOrchestrationStore
     ValueTask<AgentAssignmentRow> CreateAssignmentAsync(
         string operationId, string agentId, string sessionId, string? teamId,
         string? parentAgentId, string? modelId, string? poolId, string? deploymentId,
-        string title, string? briefRef, CancellationToken ct = default);
+        string title, string? briefRef,
+        string? workspaceMode = null, string? workspacePath = null, CancellationToken ct = default);
 
     /// <summary>Set a session's workspace path (astra-2 §8: the child inherits the parent's workspace). No-op-safe.</summary>
     ValueTask SetSessionWorkspaceAsync(string sessionId, string? workspace, CancellationToken ct = default);
