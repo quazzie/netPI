@@ -253,6 +253,9 @@ public sealed class OrchestrationPluginTests : IDisposable
     private sealed class FakeRunner(string mode) : IAgentRunner
     {
         private readonly List<RunInfo> _runs = [];
+        public ValueTask<bool> RequeueRunAsync(AgentRunRequest request, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(false);
+
         public ValueTask<AgentRunStart> StartRunAsync(AgentRunRequest request, CancellationToken cancellationToken = default)
             => ValueTask.FromResult(new AgentRunStart(request.SessionId, null, null, RunDisposition.Admitted));
         public ValueTask CancelRunAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;

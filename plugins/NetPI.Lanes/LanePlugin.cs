@@ -21,7 +21,7 @@ public sealed class LanePlugin : INetPiPlugin
     private Task? _pollTask;
 
     /// <summary>model → execution policy, built from the parsed pools/deployments (astra-2 §4).</summary>
-    internal record PolicyBinding(string ModelId, string PoolId, string DeploymentId);
+    internal record PolicyBinding(string ModelId, string PoolId, string DeploymentId, bool Enabled);
     private readonly List<PolicyBinding> _policies = new();
     public PluginInfo Info { get; } = new("netPI.Lanes", "Lane Scheduler", "0.1.0");
 
@@ -50,13 +50,24 @@ public sealed class LanePlugin : INetPiPlugin
         }
 
         var deployments = new Dictionary<string, string>();
+        var deploymentEnabled = new Dictionary<string, bool>(StringComparer.Ordinal);
         if (context.OwnConfig.TryGetProperty("deployments", out var depEl) && depEl.ValueKind == JsonValueKind.Array)
         {
             foreach (var d in depEl.EnumerateArray())
             {
                 if (d.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String)
-                    deployments[idEl.GetString()!] = d.TryGetProperty("modelId", out var mEl) && mEl.ValueKind == JsonValueKind.String
-                        ? mEl.GetString()! : idEl.GetString()!;
+                {
+                    var depId = idEl.GetString()!;
+                    var depModel = d.TryGetProperty("modelId", out var mEl) && mEl.ValueKind == JsonValueKind.String
+                        ? mEl.GetString()! : depId;
+                    deployments[depId] = depModel;
+                    // astra-2 §11.2: a disabled deployment ("enabled": false, e.g. a
+                    // direct-cloud model the user switched off) still records its
+                    // execution policy so the runner REJECTS its requests before any
+                    // inference — no paid call despite a busy local queue.
+                    deploymentEnabled[depModel] = !d.TryGetProperty("enabled", out var enEl)
+                        || enEl.ValueKind == JsonValueKind.True;
+                }
             }
         }
 
@@ -112,7 +123,8 @@ public sealed class LanePlugin : INetPiPlugin
                 _scheduler.RegisterPool(poolId, deployment, deployments[deployment], mode, maxAgents, poolEnabled);
                 // astra-2 §4: record the trusted model→(pool, deployment) binding so
                 // the runner can resolve a model to its admission policy.
-                _policies.Add(new PolicyBinding(deployments[deployment], poolId, deployment));
+                _policies.Add(new PolicyBinding(deployments[deployment], poolId, deployment,
+                    deploymentEnabled.TryGetValue(deployments[deployment], out var de) && de));
             }
         }
 
@@ -248,7 +260,7 @@ internal sealed class DeploymentPolicySource : IDeploymentPolicySource
     {
         var map = new Dictionary<string, DeploymentPolicy>(StringComparer.Ordinal);
         foreach (var b in bindings)
-            map[b.ModelId] = new DeploymentPolicy(b.ModelId, DeploymentExecutionMode.Pooled, b.PoolId, b.DeploymentId);
+            map[b.ModelId] = new DeploymentPolicy(b.ModelId, DeploymentExecutionMode.Pooled, b.PoolId, b.DeploymentId, b.Enabled);
         _byModel = map;
     }
 

@@ -194,7 +194,24 @@ public sealed class AgentRunner : IAgentRunner
             var active = _runs.Values.Count(r => r.Outcome == RunState.Running);
             if (active >= _maxConcurrentRuns)
                 capacityFull = true;
-            var runId = Guid.NewGuid().ToString("n");
+            // astra-2 §7: a caller-provided run identity is reused (the orchestration
+            // store's run_id = operation id, and its reconciliation maps events back
+            // by that id). A repeated operation id with the SAME session is a
+            // duplicate of an accepted run, not a new one (idempotent retry);
+            // a different session is a conflict.
+            string runId = string.IsNullOrEmpty(request.RunId)
+                ? Guid.NewGuid().ToString("n") : request.RunId!;
+            if (_runs.TryGetValue(runId, out var existing))
+            {
+                if (string.Equals(existing.SessionId, request.SessionId, StringComparison.Ordinal))
+                {
+                    return new AgentRunStart(
+                        request.SessionId,
+                        "Duplicate operation: run already accepted.",
+                        runId, _queuedRuns.ContainsKey(runId) ? RunDisposition.Queued : RunDisposition.Admitted);
+                }
+                return new AgentRunStart(request.SessionId, $"Operation id conflict: {runId} belongs to another session.");
+            }
             rec = new RunRecord(runId, request.SessionId, request.ModelId, DateTimeOffset.UtcNow, new CancellationTokenSource());
             _runs[runId] = rec;
             }
@@ -206,6 +223,18 @@ public sealed class AgentRunner : IAgentRunner
             // queue, never a rejection); a Direct deployment at runner capacity
             // is still refused (the pre-lane behavior).
             var policy = _deployments?.PolicyFor(request.ModelId ?? string.Empty);
+
+            // astra-2 §11.2/§17: a DISABLED direct-cloud deployment refuses new
+            // requests before any inference — no paid provider call despite a
+            // busy local queue. (A pooled cloud deployment drains through the
+            // pool instead, per the pool drain rules.)
+            if (policy is { Mode: DeploymentExecutionMode.DirectCloud } && !policy.Enabled)
+            {
+                RemoveRun(rec);
+                return new AgentRunStart(request.SessionId,
+                    $"Cloud deployment {policy.DeploymentId} is disabled — request rejected.");
+            }
+
             var disposition = RunDisposition.Admitted;
             string? queueReason = null;
             if (!sessionBusy && !capacityFull)
@@ -293,6 +322,73 @@ public sealed class AgentRunner : IAgentRunner
         {
             sessionGate?.Release();
         }
+    }
+
+    /// <summary>
+    /// astra-2 §7: re-enter a durable accepted run (store-adopted after restart) into
+    /// the admission pipeline exactly once. Re-runs the admission decision for its
+    /// deployment policy; a pooled run re-acquires (or re-queues) on the lane
+    /// scheduler, a direct run starts or refuses at runner capacity. Idempotent:
+    /// an unknown run id returns false; a run already executing/queued is not
+    /// double-started.
+    /// </summary>
+    public async ValueTask<bool> RequeueRunAsync(AgentRunRequest request, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(request.RunId)) return false;
+        var runId = request.RunId!;
+        var rec = new RunRecord(runId, request.SessionId, request.ModelId, DateTimeOffset.UtcNow, new CancellationTokenSource());
+
+        lock (_gate)
+        {
+            if (_runs.ContainsKey(runId) || _queuedRuns.ContainsKey(runId))
+                return false; // adopt exactly once — already executing or already queued
+            _runs[runId] = rec;
+        }
+
+        var policy = _deployments?.PolicyFor(request.ModelId ?? string.Empty);
+        if (policy is { RequiresLane: true })
+        {
+            if (_lanes is null)
+            {
+                _queuedRuns[runId] = new QueuedRun(request, rec.Cts.Token);
+                _ctx.Log.Information($"requeue: {runId} queued — no lane scheduler available");
+                return true;
+            }
+            var entry = new LaneQueueEntry(
+                runId, policy.PoolId!, policy.DeploymentId, 0,
+                null, runId, request.SessionId,
+                request.Text.Length <= 48 ? request.Text : request.Text[..48],
+                DateTimeOffset.UtcNow);
+            var result = await _lanes.AcquireAsync(entry);
+            if (result.Token is not null)
+            {
+                rec.LaneToken = result.Token;
+                rec.LaneBinding = (policy.PoolId!, policy.DeploymentId);
+                _runTasks[runId] = Task.Run(() => ExecuteAsync(request, rec));
+                _runTask = _runTasks[runId];
+            }
+            else
+            {
+                _queuedRuns[runId] = new QueuedRun(request, rec.Cts.Token);
+                _ctx.Log.Information($"requeue: {runId} accepted into queue ({result.BlockedReason})");
+            }
+        }
+        else
+        {
+            // Direct execution: governed by the runner's own capacity (no lane).
+            bool capacityFull;
+            lock (_gate)
+                capacityFull = _runs.Values.Count(r => r.Outcome == RunState.Running) >= _maxConcurrentRuns;
+            if (capacityFull)
+            {
+                RemoveRun(rec);
+                _ctx.Log.Information($"requeue: {runId} refused — runner capacity full; left in the store as queued");
+                return false;
+            }
+            _runTasks[runId] = Task.Run(() => ExecuteAsync(request, rec));
+            _runTask = _runTasks[runId];
+        }
+        return true;
     }
 
     /// <summary>astra-2: release a run's lane token (idempotent no-op when none) — the

@@ -11,8 +11,16 @@ public sealed record AgentRunRequest(
     string Text,
     string? ReasoningLevel = null,
     float? Temperature = null,
-    IReadOnlyList<AgentMessage>? PriorMessages = null)
+    IReadOnlyList<AgentMessage>? PriorMessages = null,
+    string? RunId = null)
 {
+    /// <summary>
+    /// The caller-provided run identity (astra-2 §7): when present the runner uses
+    /// this id for the run record, its terminal <c>AgentEvent.RunId</c>, and any
+    /// persistence mapping. This is what makes the orchestration store's
+    /// run_id (= operation id) reconcile against the runner's events. Null keeps
+    /// the legacy runner-minted Guid.
+    /// </summary>
     public override string ToString() => $"run[{SessionId ?? "new"}] {Text.Length} chars";
 }
 
@@ -42,6 +50,15 @@ public interface IAgentRunner
 {
     /// <summary>Kick off a run (background); returns once it has started.</summary>
     ValueTask<AgentRunStart> StartRunAsync(AgentRunRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// astra-2 §7: re-enter a durable accepted run into the admission pipeline after
+    /// a restart/reload (one-time adoption of a store's Queued records). Re-runs
+    /// the same admission decision: pooled → re-acquire/queue on the lane
+    /// scheduler; direct → starts (or refuses at the runner's own capacity).
+    /// No-op (false) when the run id is unknown or already executing.
+    /// </summary>
+    ValueTask<bool> RequeueRunAsync(AgentRunRequest request, CancellationToken cancellationToken = default);
 
     /// <summary>Cancel the in-flight run, if any.</summary>
     ValueTask CancelRunAsync(CancellationToken cancellationToken = default);

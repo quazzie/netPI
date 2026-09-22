@@ -376,6 +376,30 @@ string? createdAssignmentId = null;
         return list;
     }
 
+    public async ValueTask<IReadOnlyList<QueuedAdoptionInfo>> ListQueuedForAdoptionAsync(CancellationToken ct = default)
+    {
+        await using var conn = OpenConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = SelectAssignment +
+            " WHERE lifecycle = 'queued' ORDER BY ready_seq ASC, created_at ASC;";
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<QueuedAdoptionInfo>();
+        while (await r.ReadAsync(ct))
+        {
+            // SelectAssignment column order: 0=assignment_id, 1=run_id, 4=session_id,
+            // 9=pool_id, 11=deployment_id, 12=model_id, 13=title
+            list.Add(new QueuedAdoptionInfo(
+                r.GetString(0),
+                r.GetString(1),
+                r.GetString(4),
+                r.IsDBNull(12) ? null : r.GetString(12),
+                r.IsDBNull(9) ? null : r.GetString(9),
+                r.IsDBNull(11) ? null : r.GetString(11),
+                r.IsDBNull(13) ? null : r.GetString(13)));
+        }
+        return list;
+    }
+
     public async ValueTask<IReadOnlyList<AgentAssignmentRow>> ListRecentTerminalAsync(int limit, CancellationToken ct = default)
     {
         await using var conn = OpenConnection();

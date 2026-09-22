@@ -1,5 +1,20 @@
 namespace NetPI.Abstractions;
 
+/// <summary>
+/// astra-2 §7: a durable Queued assignment's re-entry facts (one-time adoption
+/// after a restart). <see cref="OperationId"/> is the store's <c>run_id</c> —
+/// the runner re-enters it under that id so the terminal event reconciles back
+/// to this assignment; <see cref="Brief"/> is the run's prompt text.
+/// </summary>
+public sealed record QueuedAdoptionInfo(
+    string AssignmentId,
+    string OperationId,
+    string SessionId,
+    string? ModelId,
+    string? PoolId,
+    string? DeploymentId,
+    string? Brief);
+
 // astra-2 (docs/plans/astra-2.md §2, §6, §7, §9): the logical assignment
 // lifecycle, team/agent identity, mailboxes and the orchestrator contracts.
 // Logical lifecycle is SEPARATE from the execution phase (AgentState): a
@@ -450,6 +465,13 @@ public interface IOrchestrationStore
 
     /// <summary>All nonterminal assignments across every session/team.</summary>
     ValueTask<IReadOnlyList<AgentAssignmentRow>> ListNonterminalAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// astra-2 §7: durable Queued assignments in ready order, for one-time adoption
+    /// after a restart/reload (the new generation re-enters them into the lane
+    /// pipeline exactly once — no old callbacks, no lost work).
+    /// </summary>
+    ValueTask<IReadOnlyList<QueuedAdoptionInfo>> ListQueuedForAdoptionAsync(CancellationToken ct = default);
     /// <summary>
     /// The nonterminal assignment that owns a runner run id (null when the run
     /// has no live assignment or is already terminal) — astra-2 §6.3 reconciliation:

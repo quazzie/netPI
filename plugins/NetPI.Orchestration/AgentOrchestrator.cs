@@ -101,8 +101,12 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         var runner = Runner();
         if (runner is not null)
         {
+            // astra-2 §7: the store's run_id = operationId; the runner's terminal
+            // AgentEvent carries the same id (request.RunId), so reconciliation
+            // maps the event back to this assignment via GetByRunIdAsync.
             var start = await runner.StartRunAsync(
-                new AgentRunRequest(outcome.Agent.SessionId, null, modelId, request.Brief),
+                new AgentRunRequest(outcome.Agent.SessionId, null, modelId, request.Brief,
+                    RunId: request.OperationId),
                 cancellationToken);
             if (start.Disposition == RunDisposition.Admitted)
                 await TryTransitionAsync(outcome.AssignmentId, AgentAssignmentLifecycle.Running, AgentState.CallingModel, cancellationToken);
@@ -126,8 +130,10 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         var runner = Runner();
         if (runner is not null)
         {
+            // astra-2 §7: same id-mapping as spawn — the store row's run_id is opId
+            // and the runner's terminal event carries it (request.RunId).
             var start = await runner.StartRunAsync(
-                new AgentRunRequest(agent.SessionId, null, modelId, text),
+                new AgentRunRequest(agent.SessionId, null, modelId, text, RunId: opId),
                 cancellationToken);
             if (start.Disposition == RunDisposition.Admitted)
                 await TryTransitionAsync(row.AssignmentId, AgentAssignmentLifecycle.Running, AgentState.CallingModel, cancellationToken);
@@ -290,6 +296,30 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 if (ok)
                     _ctx.Log.Information($"Reconciled assignment {row.AssignmentId} to Queued (no live runner after restart)");
             }
+        }
+
+        // astra-2 §7/§16: durable queued records are re-entered into the admission
+        // pipeline exactly once (adoption) — a restart must not strand them.
+        try
+        {
+            var queued = await _store.ListQueuedForAdoptionAsync(cancellationToken);
+            foreach (var q in queued)
+            {
+                var runner = Runner();
+                if (runner is null)
+                {
+                    _ctx.Log.Information($"Reconcile: no runner for {q.AssignmentId} — left queued");
+                    continue;
+                }
+                var requeued = await runner.RequeueRunAsync(new AgentRunRequest(
+                    q.SessionId, null, q.ModelId, q.Brief, RunId: q.OperationId), cancellationToken);
+                _ctx.Log.Information(
+                    $"Reconcile: re-entered queued assignment {q.AssignmentId} (run {q.OperationId}) as {(requeued ? "adopted" : "held")}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _ctx.Log.Warning($"Reconcile: queued adoption failed: {ex.Message}");
         }
     }
 }

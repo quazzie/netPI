@@ -121,7 +121,8 @@ public sealed record DeploymentPolicy(
     string ModelId,
     DeploymentExecutionMode Mode,
     string? PoolId,
-    string DeploymentId)
+    string DeploymentId,
+    bool Enabled = true)
 {
     /// <summary>True when this model runs through a lane pool (requires admission).</summary>
     public bool RequiresLane => Mode == DeploymentExecutionMode.Pooled && !string.IsNullOrEmpty(PoolId);

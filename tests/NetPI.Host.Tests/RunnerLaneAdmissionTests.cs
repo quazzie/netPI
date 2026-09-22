@@ -113,8 +113,25 @@ public class RunnerLaneAdmissionTests
             => throw new NotSupportedException();
     }
 
+    // ---- a bus that records the AgentEvents it is published ------------------
+    private sealed class CapturingBus : IEventBus
+    {
+        private readonly object _lock = new();
+        private readonly List<AgentEvent> _events = new();
+        public IReadOnlyList<AgentEvent> Events
+        { get { lock (_lock) return _events.ToList(); } }
+        public IDisposable Subscribe<TEvent>(NetPI.Abstractions.EventHandler<TEvent> h, EventSubscriptionOptions? o = null) => new NoopSub();
+        public ValueTask PublishAsync<TEvent>(TEvent e, CancellationToken c = default) where TEvent : notnull
+        {
+            if (e is AgentEvent aev) { lock (_lock) _events.Add(aev); }
+            return ValueTask.CompletedTask;
+        }
+        private sealed class NoopSub : IDisposable { public void Dispose() { } }
+    }
+
     // ---- a fully in-memory plugin context (services + no-op bus/leases) ------
-    private sealed class AdmCtx : IPluginContext
+
+    private sealed class AdmCtx(IEventBus? bus = null) : IPluginContext
     {
         private sealed class Reg : IServiceRegistry
         {
@@ -134,7 +151,7 @@ public class RunnerLaneAdmissionTests
         public IServiceRegistry Services { get; } = new Reg();
         public ICommandRegistry Commands => throw new NotSupportedException();
         public IWebPanelRegistry WebPanels => throw new NotSupportedException();
-        public IEventBus Events { get; } = new Bus();
+        public IEventBus Events { get; } = bus ?? new Bus();
         public JsonElement OwnConfig => JsonDocument.Parse("{}").RootElement;
         public IPluginLogger Log => new NoopLog();
         public IValueLease<object> LeaseSelf() => new NoopLease();
@@ -238,5 +255,121 @@ public class RunnerLaneAdmissionTests
         Assert.True(acquiresAfterA == lanes.AcquireCalls, "a direct run must not call AcquireAsync");
         await WaitUntil(() => provider.StartedRunIds.Contains(d.RunId!));
         Assert.Contains(d.RunId, provider.StartedRunIds);
+    }
+
+    [Fact]
+    public async Task Disabled_DirectCloud_IsRejectedBeforeInference()
+    {
+        // astra-2 11.2/17: a disabled direct-cloud deployment refuses the request
+        // BEFORE any provider call - no paid call despite a busy local queue.
+        var scheduler = new NetPI.Lanes.LaneScheduler("gen-1", new NullLogger());
+        var policy = new FakePolicy(new DeploymentPolicy("m-cloud", DeploymentExecutionMode.DirectCloud, null, "dep-cloud", false));
+        var provider = new GateProvider();
+        var ctx = new AdmCtx();
+        ctx.Add("provider", provider);
+        ctx.Add("sessions", new NoopStore());
+        ctx.Add("deployments", policy);
+        ctx.Add("lanes", new CountingLanes(scheduler));
+        var runner = new AgentRunner(new AgentRuntime(ctx), ctx, maxConcurrentRuns: 8);
+
+        var start = await runner.StartRunAsync(new AgentRunRequest("s-cloud", null, "m-cloud", "work"));
+
+        Assert.NotNull(start.Note);
+        Assert.True(start.Note!.Contains("disabled"), $"note was: {start.Note}");
+        Assert.Equal(0, provider.StartedRunIds.Count); // no provider call for a disabled deployment
+    }
+
+    [Fact]
+    public async Task CallerSuppliedRunId_IsReusedAndReconciles()
+    {
+        // astra-2 7: a caller-supplied run identity (the store's run_id = operation id)
+        // is reused for the run record AND the terminal event, so the orchestrator
+        // reconciles the event back to its assignment via GetByRunIdAsync.
+        var scheduler = new NetPI.Lanes.LaneScheduler("gen-1", new NullLogger());
+        var policy = new FakePolicy(new DeploymentPolicy("m-cloud", DeploymentExecutionMode.DirectCloud, null, "dep-cloud", true));
+        var provider = new GateProvider();
+        var bus = new CapturingBus();
+        var ctx = new AdmCtx(bus);
+        ctx.Add("provider", provider);
+        ctx.Add("sessions", new NoopStore());
+        ctx.Add("deployments", policy);
+        ctx.Add("lanes", new CountingLanes(scheduler));
+        var runner = new AgentRunner(new AgentRuntime(ctx), ctx, maxConcurrentRuns: 8);
+
+        const string opId = "op-abc-123";
+        var start = await runner.StartRunAsync(new AgentRunRequest("s-r", null, "m-cloud", "work", RunId: opId));
+
+        Assert.Equal(RunDisposition.Admitted, start.Disposition);
+        Assert.Equal(opId, start.RunId);
+        await WaitUntil(() => provider.StartedRunIds.Count == 1);
+        Assert.Equal(opId, provider.StartedRunIds.Single());
+
+        // Release the gate so the run reaches a terminal outcome.
+        Assert.True(provider.OpenRun(opId));
+        // Terminal event carries the operation id (reconciliation key).
+        await WaitUntil(() => bus.Events.Any(e => e.Type is AgentEventType.AgentCompleted or AgentEventType.AgentFailed or AgentEventType.AgentCancelled), ms: 20, max: 300);
+        var terminal = bus.Events.Where(e => e.Type is AgentEventType.AgentCompleted or AgentEventType.AgentFailed or AgentEventType.AgentCancelled).ToList();
+        Assert.Single(terminal);
+        Assert.Equal(opId, terminal[0].RunId);
+    }
+
+    [Fact]
+    public async Task Requeue_AcceptsDurableRunExactlyOnce()
+    {
+        // astra-2 7/16: a durable Queued record is re-entered into the admission
+        // pipeline exactly once after a restart (re-adoption). A pooled run
+        // re-acquires a lane and starts; a second adopt of the same id is a no-op.
+        var scheduler = new NetPI.Lanes.LaneScheduler("gen-1", new NullLogger());
+        scheduler.RegisterPool("pool-1", "dep-1", "m-1", LaneCapacityMode.Manual, 1, true);
+        var policy = new FakePolicy(new DeploymentPolicy("m-1", DeploymentExecutionMode.Pooled, "pool-1", "dep-1"));
+        var provider = new GateProvider();
+        var ctx = new AdmCtx();
+        ctx.Add("provider", provider);
+        ctx.Add("sessions", new NoopStore());
+        ctx.Add("deployments", policy);
+        var lanes = new CountingLanes(scheduler);
+        ctx.Add("lanes", lanes);
+        var runner = new AgentRunner(new AgentRuntime(ctx), ctx, maxConcurrentRuns: 8);
+
+        var first = await runner.RequeueRunAsync(new AgentRunRequest("s-adopt", null, "m-1", "work", RunId: "op-adopt"));
+        Assert.True(first, "the first adoption enters the pipeline");
+        await WaitUntil(() => provider.StartedRunIds.Contains("op-adopt"));
+        Assert.True(provider.StartedRunIds.Contains("op-adopt"), "the adopted pooled run starts on its lane");
+
+        var second = await runner.RequeueRunAsync(new AgentRunRequest("s-adopt", null, "m-1", "work", RunId: "op-adopt"));
+        Assert.False(second, "a second adopt of the same id is a no-op (adopt once)");
+        Assert.Single(provider.StartedRunIds.Where(id => id == "op-adopt"));
+    }
+
+    [Fact]
+    public async Task DuplicateOperationId_SameSession_IsIdempotent()
+    {
+        // astra-2 7: a repeated operation id with the SAME session is a duplicate of
+        // an accepted run, not a new one (idempotent retry).
+        var scheduler = new NetPI.Lanes.LaneScheduler("gen-1", new NullLogger());
+        var policy = new FakePolicy(new DeploymentPolicy("m-cloud", DeploymentExecutionMode.DirectCloud, null, "dep-cloud", true));
+        var provider = new GateProvider();
+        var ctx = new AdmCtx();
+        ctx.Add("provider", provider);
+        ctx.Add("sessions", new NoopStore());
+        ctx.Add("deployments", policy);
+        ctx.Add("lanes", new CountingLanes(scheduler));
+        var runner = new AgentRunner(new AgentRuntime(ctx), ctx, maxConcurrentRuns: 8);
+
+        // Keep the first run admitted but alive (gated) so the second call sees it live.
+        var first = await runner.StartRunAsync(new AgentRunRequest("s-d", null, "m-cloud", "work", RunId: "op-dup"));
+        Assert.Equal(RunDisposition.Admitted, first.Disposition);
+        await WaitUntil(() => provider.StartedRunIds.Contains("op-dup"));
+
+        var second = await runner.StartRunAsync(new AgentRunRequest("s-d", null, "m-cloud", "work", RunId: "op-dup"));
+
+        Assert.Equal("op-dup", second.RunId);
+        Assert.NotNull(second.Note);
+        Assert.True(second.Note!.Contains("Duplicate"), $"note was: {second.Note}");
+        // A different session with the same id is a conflict, not a duplicate.
+        var conflict = await runner.StartRunAsync(new AgentRunRequest("s-other", null, "m-cloud", "work", RunId: "op-dup"));
+        Assert.NotNull(conflict.Note);
+        Assert.True(conflict.Note!.Contains("conflict"), $"note was: {conflict.Note}");
+        Assert.Single(provider.StartedRunIds.Where(id => id == "op-dup")); // a duplicate must not start a second run
     }
 }

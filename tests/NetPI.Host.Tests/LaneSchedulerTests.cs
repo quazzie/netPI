@@ -49,6 +49,33 @@ public class LaneSchedulerTests
     // C must make ZERO inference requests and run ZERO agent tools before A
     // releases lane 1.
 
+    // astra-2 §5.3 / §17: a deployment's context window and its total concurrency
+    // are SEPARATE provider facts. The lane scheduler admits by the reported total
+    // concurrency (or a manual cap) and never reads the model context window — a
+    // reduced-context, four-parallel deployment admits exactly four, and no context
+    // figure anywhere in the pipeline can admit a fifth. The proof is behavioral:
+    // only the concurrency observation moves admission; nothing else does.
+    [Fact]
+    public async Task AdmissionIsTheConcurrencyFact_NotContext()
+    {
+        var s = NewScheduler();
+        // The provider reports total concurrency 4 for this deployment. (A context
+        // window is a distinct fact on the deployment record; it is NOT a capacity
+        // input to this scheduler — there is no context parameter to set.)
+        SetCapacity(s, total: 4);
+
+        var admitted = 0;
+        for (var i = 1; i <= 5; i++)
+        {
+            var r = await s.AcquireAsync(Entry($"R{i}", i));
+            if (r.Token is not null) admitted++;
+        }
+        Assert.Equal(4, admitted); // admission is exactly the reported total concurrency
+        var snap = s.Snapshots()[0];
+        Assert.Equal(4, snap.OwnedCount);
+        Assert.Equal(1, snap.QueueCount); // the 5th queues, never over-admits
+    }
+
     [Fact]
     public async Task AbcTrace_ThirdAdmittedOnlyAfterFirstRelease()
     {

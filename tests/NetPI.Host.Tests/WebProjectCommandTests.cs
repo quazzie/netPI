@@ -90,6 +90,9 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
         public int CancelActiveCount;
 
         public bool IsRunning => false;
+        public ValueTask<bool> RequeueRunAsync(AgentRunRequest request, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(false);
+
         public ValueTask<AgentRunStart> StartRunAsync(AgentRunRequest request, CancellationToken ct = default)
             => ValueTask.FromResult(new AgentRunStart(request.SessionId, null));
         public ValueTask CancelRunAsync(CancellationToken ct = default)
