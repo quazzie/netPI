@@ -250,7 +250,7 @@ NetPI.BackgroundTasks no longer registers one either (astra-2 §12.1):
   (absolute URL; default port 5276, `plugins.netpi.activity.port`).
   `ActivityWebApp.cs` serves the embedded `panels/activity.html` plus
   `GET /api/activity/agents` (lifecycle rows + pool snapshots + monotonic revision +
-  per-service availability; legacy `runs` kept), `GET /api/activity/work` (the
+  per-service availability; legacy `runs` kept; each live row carries its `lifecycle` (lower-case wire string: running, queued, waiting, suspended, …), `executionMode` (`pooled` or `cloud-direct`), and `reason` (the waiting/suspended cause), and the response also carries a bounded `history` of recent TERMINAL rows — terminal assignments never appear in the live `agents` list),
   combined poll), `POST /api/activity/agents/{id}/cancel` (orchestration contract
   with subtree semantics; legacy runner fallback), `GET /api/activity/processes`
   (background jobs + foreground shell processes, newest-first — no running-first

@@ -62,6 +62,7 @@ Every command is answered with an `ack` (or `error`) carrying the `requestId`;
 | `session.older` | scroll-up pagination (`beforeSequence` + `count`) |
 | `session.list` | page of 50 (`offset` → `offset`/`total`/`hasMore`); optional `query` = **server-side search over ALL stored sessions** (astra-1 G1: title + workspace, case-insensitive, `ESCAPE`d LIKE in SQLite) — the picker searches the store, not just loaded pages; a `query`-carrying frame is echoed back in the payload |
 | `session.model` / `session.reasoning` / `session.compact` | session-scoped settings |
+| `session.mode` | astra-2 §10: persist the session's mode — `"chat"` (default) or `"orchestrate"` (coordinator guidance); `null`/empty clears back to chat. Stored by the session store (`SetModeAsync`) and echoed in the session snapshot, shaped like `session.model` |
 | `session.project` / `session.project.refresh` | select/clear the session's project (`operationId` idempotent); idle sessions apply at once, running ones go **pending** and apply at the run's safe boundary; refresh re-snapshots the project's instructions |
 | `runs.list` | all active + recent runs, every session (Activity surface's run query) |
 | `project.list` / `project.create` / `project.update` | project management surface (astra-1 C/D); `create` upserts by canonical workspace path |
@@ -112,3 +113,5 @@ search response carries `query` in its payload and is the one to await.
   tail cannot bleed into a new run's stream.
 - **Per-client ordering survives concurrent fan-out** because each `Client`
   serializes its own writes; concurrency is across clients, never within one.
+- **A disabled direct-cloud deployment is rejected BEFORE inference** (astra-2 §11.2): the runner asks the trusted policy source (`deployments`) for the model's execution mode; a `DirectCloud` deployment recorded as disabled refuses the request with an actionable note and the provider is never called — no paid call even while the local queues are full. The same gate is enforced at the provider by the `cloud-gate` reservation: a direct-cloud model no team's budget policy claims has no budget, so the reservation is denied before the request goes on the wire.
+- **The Work panel reads, never drives** (astra-2 §12): `GET /api/activity/*` are presentation-only query surfaces on the Activity plugin's own Kestrel port; the only stateful surface is `POST /api/activity/agents/{id}/cancel`, which delegates to the orchestration contract (subtree semantics) with a legacy runner fallback.

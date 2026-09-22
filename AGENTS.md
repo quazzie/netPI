@@ -69,6 +69,10 @@ plugins/                  One folder per plugin; each now holds only a `current.
                             IAgentOrchestrator (spawn/continue/cancel, mailboxes, waits, delegate/suspend-resume,
                             terminal reconciliation) + agents.* tools (incl. agents.delegate);
                             runner through the service registry.
+                            NetPI.Lanes          astra-2: lane scheduler (service "lanes") - assignment-held
+                            local lanes following AiProxy capacity (§4/§5.3/§5.4); polls the
+                            provider capacity source; registers the trusted model→policy
+                            resolver "deployments". Config: pools + deployments (Follow AiProxy).
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
 tests/NetPI.Host.Tests/   xunit suite; the integration surface.
@@ -160,8 +164,8 @@ _Lifecycle, reload policy, leases, snapshots and native pre-load in depth:
   retried with `plugin.reload` after fixing its config/bytes.
 - Plugins talk only through `IPluginContext`: `Services` (id-keyed registry),
   `Commands`, `Events` (bus), `OwnConfig` (raw JSON section), `Log`.
-  Service ids: agent → `agent`, `steering`, `runner`; AutoCompact → `compaction`; Sqlite also → `orchestration-store` (IOrchestrationStore, astra-2); Orchestration → `orchestration` (IAgentOrchestrator, astra-2);
-  Retry → `retry`; Sqlite → `sessions`; AiProxy → `provider`, `catalog`;
+  Service ids: agent → `agent`, `steering`, `runner`; AutoCompact → `compaction`; Sqlite also → `orchestration-store` (IOrchestrationStore, astra-2), `cloud-budgets` (ICloudBudgetStore, astra-2), `cloud-gate` (ICloudExecutionGate, astra-2); Orchestration → `orchestration` (IAgentOrchestrator, astra-2); Lanes → `lanes` (ILaneScheduler, astra-2), `deployments` (IDeploymentPolicySource, astra-2); AiProxy → `provider`, `catalog`, `provider-capacity` (IProviderCapacitySource, astra-2);
+  Retry → `retry`; Sqlite → `sessions`;
   Tools → `tools`, `resolver:bash`, `resolver:powershell`; BackgroundTasks →
   `background` + `foreground-processes`; Context.Pi → `system-prompt`, `workspace-context`;
   Sqlite also → `projects` (+ `pending-projects`); instruction snapshots → `instruction-context`.
@@ -336,7 +340,7 @@ changes run `npx vite build` and **reload the Web plugin** (Web UI → reload, o
 |---|---|
 | `netpi.web` | `port` (5173), `staticRoot` (path to `web/netpi-web/dist`), `maxWsMessageBytes` (1 MiB default; a larger WS message → `PolicyViolation` close, §11a F) |
 | `netpi.provider.aiproxy` | `baseUrl` (**required**), `apiKey`, `wire` = auto\|chat\|responses (default auto: responses with probe fallback; §14c `previous_response_id` chaining per session\|model) |
-| `netpi.storage.sqlite` | `database` (default `~/.netpi/netpi.db`) |
+| `netpi.storage.sqlite` | `database` (default `~/.netpi/netpi.db`); astra-2 `cloudBudgets`: `defaultOutputTokens` (8192) + `teams[]`: `teamId`, `currency`, `limit`, `unit` (`currency` or `tokens`), optional `pricePer1kTokens` (absent = token-based policy), optional `models[]` allowlist — a direct-cloud model no team claims has no budget, so the gate rejects it and the provider never sends the paid call |
 | `netpi.autocompact` | `enabled`, `reserveTokens` (16384), `keepRecentTokens` (20000), `defaultContextWindow` (131072), `maxContextMessages` (4096) |
 | `netpi.retry` | `enabled`, `maxAttempts` (3), `baseDelayMs` (500), `maxDelayMs` (5000) |
 | `netpi.tools` | `bash.executable`, `powershell.executable` (auto-detected otherwise) |
@@ -345,6 +349,7 @@ changes run `npx vite build` and **reload the Web plugin** (Web UI → reload, o
 | `netpi.backgroundtasks` | `port` (5275) |
 | `netpi.activity` | `port` (5276) |
 | `netpi.orchestration` | `maxDelegationDepth` (3), `maxOutstandingMessagesPerAgent` |
+| `netpi.lanes` | astra-2: `enabled` (false = legacy, no pools), `deployments[]` (`id`, optional `modelId`, `enabled` — a disabled deployment is recorded so its requests are REJECTED before inference, never rerouted), `pools[]`: `id`, `enabled`, `deploymentIds[]`, `capacity`: `mode` (`provider` = Follow AiProxy, default / `manual`), `maxAgents` (positive cap; manual mode without it falls back to provider mode and logs) |
 | `netpi.nudge` | `enabled` (default true), `maxNudges` (2), `nudgeText` |
 | `netpi.agent` | `maxConcurrentRuns` (default 1 — astra-1 E: admit more than one concurrent run across sessions; a `chat.steer` without a `sessionId` is rejected while >1 run is active) |
 | `netpi.context.pi` | (none) |
@@ -369,7 +374,9 @@ values derive from `usage.updated` + compaction policy, no polling).
 
 ```bash
 dotnet test NetPI.sln        # xunit: agent runtime scenarios, session
-                             # store, plugin lifecycle/publication, shell detection, delegation/suspension, …
+                             # store, plugin lifecycle/publication, shell detection, astra-2 lane
+                             # admission, delegation/suspension, the cloud budget gate, the
+                             # Work panel data contracts, …
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json
 ```
 

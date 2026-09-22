@@ -116,13 +116,20 @@ reload while an in-flight operation is live (the reload then waits, up to the
 | `compaction` | NetPI.AutoCompact |
 | `retry` | NetPI.Retry |
 | `sessions`, `projects`, `pending-projects` | NetPI.Storage.Sqlite |
-| `provider`, `catalog` | NetPI.Provider.AiProxy |
+| `orchestration-store` | NetPI.Storage.Sqlite (astra-2 §7) |
+| `cloud-budgets` (`ICloudBudgetStore`), `cloud-gate` (`ICloudExecutionGate`) | NetPI.Storage.Sqlite (astra-2 §11.2; policy from its `cloudBudgets` config) |
+| `provider`, `catalog`, `provider-capacity` | NetPI.Provider.AiProxy (astra-2: the Follow-AiProxy capacity source the lanes poll) |
+| `lanes` (`ILaneScheduler`), `deployments` (`IDeploymentPolicySource`) | NetPI.Lanes (astra-2 §4/§5) |
+| `orchestration` (`IAgentOrchestrator`) | NetPI.Orchestration (astra-2 §6-§9) |
 | `tools`, `resolver:bash`, `resolver:powershell` | NetPI.Tools |
 | `background`, `foreground-processes` | NetPI.BackgroundTasks |
 | `system-prompt`, `workspace-context`, `instruction-context` | NetPI.Context.Pi |
 | `background-tasks` surface | NetPI.BackgroundTasks (panel on :5275) |
 | `plugins` (facade), `host-config`, `commands` | host-owned (not a plugin) |
 
+### astra-2: execution leases vs ALC leases
+
+The plugin service-lease above is the *assembly* lease (reload safety). astra-2 §14 adds a second, independent kind of hold — the **execution** hold: an admitted segment that is actively running holds its lane in the lane scheduler, and (through the runner's service leases held for the duration of the run) keeps its owning plugin generation from unloading — so a reload while a live segment exists is **deferred**, not forced. A **cleanly checkpointed** record (a suspended or waiting agent) is the other case: it holds no runtime task, provider object, tool object, callback, or service lease — so queued and checkpointed work does NOT block a plugin reload. A suspended agent's lane was released at the suspension checkpoint; resuming re-acquires it through the same admission path. Lane ownership (which pool/segment) and the ALC service lease (which generation may unload) are tracked separately and drained in that order: stop admission, drain live segments or report reload deferred, persist intent, then transfer ownership.
 Panels (right-hand tab) are registered on the Web side by the Diagnostics
 (:5274), BackgroundTasks (:5275), and Activity (:5276) plugins — see
 `docs/web-panels.md`.
