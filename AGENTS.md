@@ -254,7 +254,7 @@ visible delete);
 clear the session's project — `operationId` makes retries idempotent; idle sessions apply at once,
 running sessions go **pending** and apply at the run's safe boundary), `session.project.refresh` (astra-1 F: re-snapshot the active project's instructions for a session — re-applies through the same per-session gate; the snapshot entry is deduped by `operationId`), `runs.list` (astra-1 F: all active + recent runs, every session — the Activity surface's run query), `project.list` / `project.create` (upsert by workspace path, `name` defaults to the leaf) / `project.update` (rename by `id` + `name`) (astra-1 F: the project-management surface for the client-side picker; replies `project.list` / `project.created` / `ack`), `models.refresh`,
 `plugin.reload` / `plugin.reloadAll` / `plugin.scan` (rescan plugins/ for folders staged after startup — loads new plugins without a host restart; existing plugins are untouched) / `plugins.list`, `commands.list`,
-`workspace.files`, `config.update`. `agent.cancel` takes an optional `runId` (astra-1 F): present → cancels THAT run (`runner.CancelRun(runId)`); absent → the legacy cancel of the active run. `chat.steer` without a `sessionId` is rejected while more than one run is active (astra-1 E: no global "active session" fallback); with the default single-run capacity the legacy hold-until-next-run behavior is preserved.
+`workspace.files`, `config.update`. `agent.cancel` takes an optional `runId` (astra-1 F): present → cancels THAT run — **including queued and suspended records** (astra-2 §13: the runner's `CancelRun` + `CancelQueuedRun` pair purges the live record, the runner's queue record and the lane scheduler's queue entry before the run ever starts); absent → the legacy cancel of all active runs. `chat.send` against a full pool is an **accepted queue, not a rejection** (astra-2 §13/§16): the run starts with disposition `admitted` or `queued`; a `queued` start persists a durable `Queued` assignment and ACKs (no `error` frame, no `agent.state` — the tab badge comes from `agents.state`/`agent.updated`). `chat.steer` without a `sessionId` is rejected while more than one run is active (astra-1 E: no global "active session" fallback); with the default single-run capacity the legacy hold-until-next-run behavior is preserved.
 
 Project management itself (astra-1 C) lives in the storage plugin, not the WS hub: `IProjectStore`
 (service `projects`) does project CRUD + upsert-by-canonical-path; the Web surface exposes it
@@ -374,7 +374,7 @@ values derive from `usage.updated` + compaction policy, no polling).
 
 ```bash
 dotnet test NetPI.sln        # xunit: agent runtime scenarios, session
-                             # store, plugin lifecycle/publication, shell detection, astra-2 lane
+                             # store, plugin lifecycle/publication, shell detection, auto-compaction trigger, astra-2 lane
                              # admission, delegation/suspension, the cloud budget gate, the
                              # Work panel data contracts, …
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json

@@ -380,8 +380,24 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             var runner = Runner();
             if (runner is not null)
             {
-                var live = runner.ListRuns().FirstOrDefault(r => r.SessionId == target.SessionId && r.Outcome == RunState.Running);
-                if (live is not null) runner.CancelRun(live.RunId);
+                // astra-2 §13: match by the durable run id (not by session) so a
+                // CANCELLED target's runner record is reached precisely — a queued
+                // or suspended record may share a session with a newer live run.
+                var runId = await _store.GetRunIdAsync(target.AssignmentId, cancellationToken);
+                var live = runner.ListRuns().FirstOrDefault(r =>
+                    (runId is not null && r.RunId == runId) ||
+                    (r.SessionId == target.SessionId && r.Outcome == RunState.Running));
+                if (live is not null)
+                {
+                    runner.CancelRun(live.RunId);
+                    // a CancelRun on a QUEUED record signals its token but leaves
+                    // the queued record + the lane queue entry; purge both.
+                    if (runId is not null)
+                    {
+                        try { await runner.CancelQueuedRun(runId); }
+                        catch { /* best-effort: the row is already cancelled */ }
+                    }
+                }
             }
         }
 

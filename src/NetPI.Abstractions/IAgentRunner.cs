@@ -97,7 +97,17 @@ public interface IAgentRunner
     RunInfo? GetSessionRun(string sessionId);
 
     /// <summary>astra-1 E: cancel one specific run. True when a live run was signalled.</summary>
+    /// <summary>astra-1 E: cancel one specific run. True when a live run was signalled.</summary>
     bool CancelRun(string runId);
+
+    /// <summary>
+    /// astra-2 §13: cancel one QUEUED (admitted but not yet started) run. A queued
+    /// run holds no live segment, so <see cref="CancelRun"/> cannot reach it — this
+    /// removes the queued record, signals its cancellation token, and purges the
+    /// lane scheduler's queue entry (so a racing admission fires into a cancelled
+    /// token and unwinds as cancelled). True when a queued run was cancelled.
+    /// </summary>
+    ValueTask<bool> CancelQueuedRun(string runId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// astra-1 D2 (slice 2): the per-session gate that serializes the send

@@ -1,7 +1,16 @@
 # astra-2 — Configurable agent lanes, delegation, and work overview
 
-Status: **implementation plan; not implemented**. Consolidated 2026-09-22 from
-the user's decisions and a targeted inspection of the current repository.
+Status: **substantially implemented** — packages A–F are in place (contracts +
+persistence, strict local lanes following AiProxy capacity, child/delegation,
+mailboxes + waits, the combined Work panel, orchestrate-mode persistence, and the
+cloud budget/gate). §13/§16: full capacity is an accepted queue (a durable `Queued`
+assignment + ACK, never a rejection) and `agent.cancel` handles queued/suspended
+records — implemented and tested. Open gates remain: per-inference permit
+validation (§15.B), the `agent_lane_journal`/`agent_checkpoints` tables are declared
+but never written, mailbox drain at turn boundaries, crash-after-tool-effect
+quarantine, workspace modes, and orchestrate-mode coordinator guidance.
+Consolidated 2026-09-22 from the user's decisions and a targeted inspection of the
+current repository.
 
 This document is an implementation specification for local implementors. Complete
 and verify the packages in §15; do not interpret examples as existing APIs. The

@@ -204,6 +204,8 @@ public class WorkPanelDataTests
             Cancelled.Add(runId);
             return Runs.Any(r => r.RunId == runId);
         }
+        public ValueTask<bool> CancelQueuedRun(string runId, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(false);
         public SemaphoreSlim SessionGate(string sessionId) => new(1, 1);
     }
 

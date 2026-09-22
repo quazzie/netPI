@@ -127,6 +127,8 @@ public sealed class ServiceReloadTests : IAsyncLifetime
         public RunInfo? GetSessionRun(string sessionId) =>
             ListRuns().FirstOrDefault(r => r.SessionId == sessionId && r.Outcome == RunState.Running);
         public bool CancelRun(string runId) => false;
+        public ValueTask<bool> CancelQueuedRun(string runId, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(false);
         public System.Threading.SemaphoreSlim SessionGate(string sessionId) => new(1, 1);
     }
 

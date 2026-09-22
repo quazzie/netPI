@@ -174,6 +174,8 @@ public sealed class WorkPanelPackageETests
         public RunInfo? GetRun(string runId) => Runs.FirstOrDefault(r => r.RunId == runId);
         public RunInfo? GetSessionRun(string sessionId) => Runs.FirstOrDefault(r => r.SessionId == sessionId);
         public bool CancelRun(string runId) => true;
+        public ValueTask<bool> CancelQueuedRun(string runId, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(false);
         public SemaphoreSlim SessionGate(string sessionId) => new(1, 1);
     }
 

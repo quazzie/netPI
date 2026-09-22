@@ -266,6 +266,8 @@ public sealed class OrchestrationPluginTests : IDisposable
         public RunInfo? GetRun(string runId) => _runs.FirstOrDefault(r => r.RunId == runId);
         public RunInfo? GetSessionRun(string sessionId) => _runs.FirstOrDefault(r => r.SessionId == sessionId);
         public bool CancelRun(string runId) => false;
+        public ValueTask<bool> CancelQueuedRun(string runId, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(false);
         public System.Threading.SemaphoreSlim SessionGate(string sessionId) => new(1, 1);
     }
 

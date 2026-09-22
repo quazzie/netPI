@@ -26,6 +26,7 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
     private FakeProjectStore? _projects;
     private FakeResolver? _resolver;
     private FakeSessionStore? _sessions;
+    private FakeOrchestrationStore? _orchStore;
     private int _port;
 
     // ---- the plugin context (the pattern from ProjectPendingApplyTests) --------
@@ -88,6 +89,12 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
     {
         public readonly List<string> CancelledRuns = [];
         public int CancelActiveCount;
+        // astra-2 §13 test hooks: when true, StartRunAsync returns a QUEUED
+        // disposition (full pool) with the given run id; the queued-cancel path
+        // records the ids it cancels.
+        public bool QueuedMode;
+        public string? QueuedRunId;
+        public readonly List<string> CancelledQueuedRuns = [];
 
         public bool IsRunning => false;
         public ValueTask<bool> SuspendRunAsync(string runId, CancellationToken cancellationToken = default)
@@ -96,7 +103,14 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
             => ValueTask.FromResult(false);
 
         public ValueTask<AgentRunStart> StartRunAsync(AgentRunRequest request, CancellationToken ct = default)
-            => ValueTask.FromResult(new AgentRunStart(request.SessionId, null));
+        {
+            if (QueuedMode)
+            {
+                var rid = request.RunId ?? QueuedRunId ?? Guid.NewGuid().ToString("n");
+                return ValueTask.FromResult(new AgentRunStart(request.SessionId, "Queued: waiting for a free lane.", rid, RunDisposition.Queued));
+            }
+            return ValueTask.FromResult(new AgentRunStart(request.SessionId, null, request.RunId));
+        }
         public ValueTask CancelRunAsync(CancellationToken ct = default)
         {
             CancelActiveCount++;
@@ -117,7 +131,60 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
             if (ListRuns().Any(r => r.RunId == runId)) { CancelledRuns.Add(runId); return true; }
             return false;
         }
+        public ValueTask<bool> CancelQueuedRun(string runId, CancellationToken cancellationToken = default)
+        {
+            lock (CancelledQueuedRuns) CancelledQueuedRuns.Add(runId);
+            return ValueTask.FromResult(true);
+        }
         public System.Threading.SemaphoreSlim SessionGate(string sessionId) => new(1, 1);
+    }
+
+    /// <summary>astra-2 §13: a minimal IOrchestrationStore that records durable
+    /// assignment creation — the queued-send path persists a Queued row through
+    /// <c>EnsureRootAgentAsync</c> + <c>CreateAssignmentAsync</c>. Unused members
+    /// throw (the test only exercises the two above).</summary>
+    private sealed class FakeOrchestrationStore : IOrchestrationStore
+    {
+        public readonly List<AgentAssignmentRow> Created = [];
+        public int EnsureRootCount;
+        public string? LastOperationId;
+        public string? LastSessionId;
+
+        public ValueTask<AgentIdentity> EnsureRootAgentAsync(string sessionId, string? teamId, string title, CancellationToken ct = default)
+        {
+            lock (Created) { EnsureRootCount++; }
+            return ValueTask.FromResult(new AgentIdentity("agent-1", teamId, null, sessionId, title, false, DateTimeOffset.UtcNow));
+        }
+        public ValueTask<AgentAssignmentRow> CreateAssignmentAsync(string operationId, string agentId, string sessionId, string? teamId,
+            string? parentAgentId, string? modelId, string? poolId, string? deploymentId, string title, string? briefRef, CancellationToken ct = default)
+        {
+            var row = new AgentAssignmentRow("a-new", agentId, teamId, sessionId, parentAgentId,
+                AgentAssignmentLifecycle.Queued, AgentState.Idle, DeploymentExecutionMode.DirectCloud,
+                poolId, null, deploymentId, modelId, title, DateTimeOffset.UtcNow, null, null, null);
+            lock (Created) { Created.Add(row); LastOperationId = operationId; LastSessionId = sessionId; }
+            return ValueTask.FromResult(row);
+        }
+        // ---- unused members ---------------------------------------------------
+        public ValueTask<AgentSpawnOutcome> SpawnChildAsync(string operationId, string? parentAgentId, string? teamId, string modelId, string? poolId, string? deploymentId, string brief, string title, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<AgentIdentity?> GetAgentAsync(string agentId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<AgentIdentity?> GetAgentBySessionAsync(string sessionId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<bool> TransitionAsync(string assignmentId, int expectedVersion, AgentAssignmentLifecycle lifecycle, AgentState phase, string? poolId, string? laneId, string? deploymentId, string? reason, string? checkpointRef, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<AgentAssignmentRow?> GetAssignmentAsync(string assignmentId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<AgentAssignmentRow?> GetNonterminalAsync(string sessionId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<IReadOnlyList<AgentAssignmentRow>> ListNonterminalAsync(CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<IReadOnlyList<QueuedAdoptionInfo>> ListQueuedForAdoptionAsync(CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<AgentAssignmentRow?> GetByRunIdAsync(string runId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<string?> GetRunIdAsync(string assignmentId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<IReadOnlyList<AgentAssignmentRow>> ListSubtreeAsync(string agentId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask SetSessionWorkspaceAsync(string sessionId, string? workspace, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<IReadOnlyList<AgentAssignmentRow>> ListRecentTerminalAsync(int limit, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<int> SendMessageAsync(string messageId, string fromAgentId, string toAgentId, string? teamId, string kind, string body, IReadOnlyList<string>? artifacts, string? idempotencyKey, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<IReadOnlyList<AgentMailboxMessage>> DrainMailboxAsync(string agentId, int count, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<bool> NoteMessageForWaitsAsync(string toAgentId, string fromAgentId, string kind, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask RegisterWaitAsync(string waitId, string agentId, string assignmentId, AgentWaitCondition condition, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<bool> NoteTerminalForWaitsAsync(string assignmentId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<IReadOnlyList<AgentSatisfiedWait>> ListSatisfiedWaitsAsync(string agentId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask MarkWaitConsumedAsync(string waitId, CancellationToken ct = default) => throw new NotImplementedException();
     }
 
     /// <summary>In-memory IProjectStore — upsert by exact path (the canonical
@@ -243,6 +310,8 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
         _ctx.Add("runner", _runner);
         _ctx.Add("projects", _projects);
         _ctx.Add("instruction-context", _resolver);
+        _orchStore = new FakeOrchestrationStore();
+        _ctx.Add("orchestration-store", _orchStore);
         _ctx.Add("sessions", _sessions);
         _app = new WebApp(_ctx, _port,
             System.IO.Path.Combine(AppContext.BaseDirectory, "does-not-exist"), 1024 * 1024, new WsLogger());
@@ -753,5 +822,38 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
         Assert.Equal(1, p.GetProperty("ownedCount").GetInt32());
         Assert.Equal(1, p.GetProperty("queueCount").GetInt32());
         Assert.Equal(2, p.GetProperty("targetCapacity").GetInt32());
+    }
+
+    // astra-2 §13/§16: a QUEUED send (full pool) is ACCEPTED, not rejected — the
+    // Web surface persists a durable Queued assignment, ACKs (never errors), and a
+    // later `agent.cancel` by runId reaches the queued record (purging the queue).
+    [Fact]
+    public async Task ChatSend_WhenPoolFull_IsAcceptedQueue_NotError()
+    {
+        _runner!.QueuedMode = true;
+        _runner.QueuedRunId = "run-q1";
+        var ws = await ConnectAsync();
+
+        // The send must ACK (not error) even though the pool is full; AwaitAsync
+        // fails on any `error` frame, so a successful `ack` proves no rejection.
+        await AwaitAsync(ws, "chat.send",
+            new() { ["text"] = "a queued message", ["sessionId"] = "s1", ["operationId"] = "op-q1" }, "ack");
+
+        // A durable Queued assignment was persisted: root agent + assignment row,
+        // keyed by the operation id (the store's run_id == the runner's run id).
+        Assert.Equal(1, _orchStore!.EnsureRootCount);
+        Assert.Equal(1, _orchStore.Created.Count);
+        Assert.Equal("op-q1", _orchStore.LastOperationId);
+        Assert.Equal("s1", _orchStore.LastSessionId);
+        Assert.Equal(AgentAssignmentLifecycle.Queued, _orchStore.Created[0].Lifecycle);
+        // No legacy cancel fired (the run was queued, not live).
+        Assert.Equal(0, _runner.CancelActiveCount);
+        Assert.Empty(_runner.CancelledQueuedRuns);
+
+        // agent.cancel by runId reaches the QUEUED record (purge path), not the
+        // legacy active-cancel.
+        await AwaitAsync(ws, "agent.cancel", new() { ["runId"] = "run-q1" }, "ack");
+        Assert.Contains("run-q1", _runner.CancelledQueuedRuns);
+        Assert.Equal(0, _runner.CancelActiveCount); // still no legacy cancel
     }
 }

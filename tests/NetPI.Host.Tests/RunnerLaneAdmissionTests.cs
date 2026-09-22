@@ -252,6 +252,48 @@ public class RunnerLaneAdmissionTests
         Assert.Equal(0, lanes.Snapshots().Single(p => p.PoolId == "pool-1").QueueCount);
     }
 
+    // ---- §13: a QUEUED run (full pool) is cancellable before it ever starts.
+    //      CancelQueuedRun removes the queued record, signals its token, and
+    //      purges the lane scheduler's queue entry — the run executes nothing and
+    //      a later lane admission can no longer fire it (queue drained).
+    [Fact]
+    public async Task QueuedRun_CancelPurgesQueueEntryAndNeverStarts()
+    {
+        var scheduler = new NetPI.Lanes.LaneScheduler("gen-1", new NullLogger());
+        // capacity 1 so B must queue behind A.
+        scheduler.RegisterPool("pool-1", "dep-1", "m-1", LaneCapacityMode.Manual, 1, true);
+        var policy = new FakePolicy(new DeploymentPolicy("m-1", DeploymentExecutionMode.Pooled, "pool-1", "dep-1"));
+        var provider = new GateProvider();
+        var ctx = new AdmCtx();
+        ctx.Add("provider", provider);
+        ctx.Add("sessions", new NoopStore());
+        ctx.Add("deployments", policy);
+        ctx.Add("lanes", new CountingLanes(scheduler));
+        var runner = new AgentRunner(new AgentRuntime(ctx), ctx, maxConcurrentRuns: 8);
+
+        var a = await runner.StartRunAsync(new AgentRunRequest("s-a", null, "m-1", "A work"));
+        Assert.Equal(RunDisposition.Admitted, a.Disposition);
+
+        // B: pool full → accepted + queued (NOT rejected), and not started yet.
+        var b = await runner.StartRunAsync(new AgentRunRequest("s-b", null, "m-1", "B work"));
+        Assert.Equal(RunDisposition.Queued, b.Disposition);
+        Assert.NotNull(b.RunId);
+        Assert.False(provider.StartedRunIds.Contains(b.RunId!));
+        Assert.Equal(1, scheduler.Snapshots().Single(p => p.PoolId == "pool-1").QueueCount);
+
+        // Cancel the queued run: it must not start, and the queue entry purges.
+        Assert.True(await runner.CancelQueuedRun(b.RunId!));
+        Assert.Equal(0, scheduler.Snapshots().Single(p => p.PoolId == "pool-1").QueueCount);
+        // The queued record is gone (no live/queued outcome for B's run id).
+        Assert.False(runner.ListRuns().Any(r => r.RunId == b.RunId && r.Outcome == RunState.Running));
+        // B never executed: the provider never saw its run id.
+        Assert.False(provider.StartedRunIds.Contains(b.RunId!), "a cancelled queued run must never execute");
+        // A is unaffected and still owns its lane; wait for its segment to start.
+        await WaitUntil(() => provider.StartedRunIds.Contains(a.RunId!));
+        Assert.Equal(1, scheduler.Snapshots().Single(p => p.PoolId == "pool-1").OwnedCount);
+        Assert.Contains(a.RunId, provider.StartedRunIds);
+    }
+
     [Fact]
     public async Task Direct_BypassesLanesEvenWhenPoolFull()
     {

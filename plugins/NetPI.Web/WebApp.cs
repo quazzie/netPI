@@ -464,6 +464,37 @@ internal sealed class WebApp : IAsyncDisposable
         endedAt = r.EndedAt,
         reason = r.Reason,
     };
+
+    /// <summary>
+    /// astra-2 §13/§16: persist a QUEUED send as a durable assignment so a full
+    /// local pool is an accepted queue, not a rejection. The run id (the store's
+    /// run_id == the runner's run identity) keys the row; <c>EnsureRootAgent</c>
+    /// mints the session's root agent lazily and <c>CreateAssignmentAsync</c>
+    /// persists a <c>Queued/Idle</c> row (the runner's terminal event reconciles
+    /// against it via <c>GetByRunIdAsync</c>). Returns null on success, or an
+    /// error message string. A missing orchestration-store plugin degrades to
+    /// ack-only (null) — the runner still owns the in-memory queue — so a queued
+    /// send never fails just because the orchestration stack is absent.
+    /// </summary>
+    private async Task<string?> PersistQueuedAssignmentAsync(string? sid, string? model, string? runId, CancellationToken ct)
+    {
+        var store = Resolve<IOrchestrationStore>("orchestration-store");
+        if (store is null) return null; // no orchestration stack: ack-only
+        try
+        {
+            var root = await store.EnsureRootAgentAsync(sid!, null, string.IsNullOrEmpty(model) ? "agent" : model!, ct);
+            await store.CreateAssignmentAsync(
+                runId ?? Guid.NewGuid().ToString("n"), root.AgentId, sid!, null, null,
+                model, null, null, "assignment", null, ct);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            // Best-effort durability: the runner still owns the in-memory queue, so
+            // a persistence failure is reported, not fatal to the send.
+            return $"queued run could not be persisted: {ex.Message}";
+        }
+    }
     private void OnAgentEvent(AgentEvent e)
     {
         string? sid = e.SessionId;
@@ -1012,12 +1043,50 @@ internal sealed class WebApp : IAsyncDisposable
                 // Activity panel's Cancel); without it the legacy cancel of
                 // the active run is preserved.
                 var cancelRunId = S(p, "runId");
+                var cancelSessionId = S(p, "sessionId");
                 if (_runner is not null)
                 {
                     if (cancelRunId is not null)
+                    {
+                        // astra-1 F + §13: a specific run. CancelRun reaches a live
+                        // (or a shared-token) record; a QUEUED record is reached via
+                        // CancelQueuedRun, which also purges the lane queue entry.
                         _ = _runner.CancelRun(cancelRunId);
+                        try { await _runner.CancelQueuedRun(cancelRunId); }
+                        catch { /* best-effort */ }
+                    }
+                    else if (cancelSessionId is not null)
+                    {
+                        // astra-2 §13: stop the session's run — a queued record holds
+                        // no live task, so the legacy all-live cancel cannot reach
+                        // it; cancel the queued/suspended records of THIS session.
+                        var sessionRunIds = _runner.ListRuns()
+                            .Where(r => r.SessionId == cancelSessionId && r.Outcome == RunState.Running)
+                            .Select(r => r.RunId).ToList();
+                        foreach (var rid in sessionRunIds)
+                        {
+                            _ = _runner.CancelRun(rid);
+                            try { await _runner.CancelQueuedRun(rid); }
+                            catch { /* best-effort */ }
+                        }
+                    }
                     else
+                    {
+                        // Legacy global stop: every live run, plus every queued run
+                        // (a queued record is the durable form of "active" astra-2
+                        // §13 — a full pool is an accepted queue, and stopping must
+                        // stop it too). CancelRunAsync cancels the live records;
+                        // the queued ones are reached by their run id.
                         await _runner.CancelRunAsync(ct);
+                        var queuedRunIds = _runner.ListRuns()
+                            .Where(r => r.Outcome == RunState.Running)
+                            .Select(r => r.RunId).ToList();
+                        foreach (var rid in queuedRunIds)
+                        {
+                            try { await _runner.CancelQueuedRun(rid); }
+                            catch { /* best-effort */ }
+                        }
+                    }
                 }
                 if (_agent?.State.ActiveSessionId is { } csid)
                     await SendAsync(c, "agent.state", new { state = "Cancelling" }, csid, ct);
@@ -1673,8 +1742,31 @@ internal sealed class WebApp : IAsyncDisposable
         if (!string.IsNullOrEmpty(model))
             await Store.SetModelAsync(info.Id, model, string.IsNullOrEmpty(reasoning) ? null : reasoning, ct);
 
+        // astra-2 §7/§13: thread the operation id into the runner as the run
+        // identity (the store's run_id == operation id, so the runner's terminal
+        // event reconciles against the durable assignment row). A non-idempotent
+        // legacy send (no operation id) keeps the runner minting its own id.
         var started = await _runner.StartRunAsync(new AgentRunRequest(sid, workspace, model, text,
-            string.IsNullOrEmpty(reasoning) ? null : reasoning, null, null), ct);
+            RunId: string.IsNullOrEmpty(operationId) ? null : operationId), ct);
+        if (started.Disposition == RunDisposition.Queued)
+        {
+            // astra-2 §13/§16: a full local pool is an ACCEPTED queue, never a
+            // rejection. Persist a durable Queued assignment (survives reload,
+            // shows a tab badge, and is cancellable), then ACK as queued. A
+            // missing orchestration-store plugin degrades to an ack-only queued
+            // send (the runner still owns the in-memory queue).
+            var queuedError = await PersistQueuedAssignmentAsync(sid, model, started.RunId, ct);
+            if (queuedError is { } qe)
+            {
+                await SendErrorAsync(c, requestId, qe, ct); return;
+            }
+            await SendAsync(c, "session.entry",
+                new { entry = new { type = "user_message", text } as object }, sid, ct);
+            if (!string.IsNullOrEmpty(operationId))
+                _sends.Accept(operationId, new SendIdempotency.Accepted(sid, text, "queued", DateTimeOffset.UtcNow));
+            await SendAckAsync(c, requestId, ct);
+            return;
+        }
         if (!string.IsNullOrEmpty(started.Note))
         {
             await SendErrorAsync(c, requestId, started.Note, ct);

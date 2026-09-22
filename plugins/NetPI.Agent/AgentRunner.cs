@@ -136,6 +136,39 @@ public sealed class AgentRunner : IAgentRunner
     }
 
     /// <summary>
+    /// astra-2 §13: cancel a QUEUED run (admitted but not yet started). A queued
+    /// run holds no live segment, so <see cref="CancelRun"/> cannot reach it: there is
+    /// no task to signal and no lane to release. Removing the queued record
+    /// (and signalling its token) is the whole runner-side cancel; the lane
+    /// scheduler's queue entry is purged on the same run id so a racing admission
+    /// fires into an already-cancelled token and unwinds as cancelled while the
+    /// durable row is already Cancelled. Returns true when a queued run was
+    /// cancelled.
+    /// </summary>
+    public async ValueTask<bool> CancelQueuedRun(string runId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(runId)) return false;
+        if (!_queuedRuns.TryRemove(runId, out _)) return false;
+        lock (_gate)
+        {
+            if (_runs.TryGetValue(runId, out var rec))
+            {
+                try { rec.Cts.Cancel(); } catch { /* already disposed */ }
+                rec.Outcome = RunState.Cancelled;
+                rec.EndTime = DateTimeOffset.UtcNow;
+                rec.State = AgentState.Idle;
+                ((System.Collections.Generic.IDictionary<string, RunRecord>)_runs).Remove(runId);
+            }
+        }
+        if (_lanes is not null)
+        {
+            try { await _lanes.CancelQueuedAsync(runId); }
+            catch { /* a failed purge never strands the cancel */ }
+        }
+        return true;
+    }
+
+    /// <summary>
     /// astra-2 §6.3 (runner-side suspension): quiesce the run's current segment
     /// into a suspended durable wait. Returns true when the run was live
     /// (Running) and is now Suspended; false when it was already terminal or
