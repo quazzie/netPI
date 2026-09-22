@@ -36,8 +36,12 @@ public sealed class OrchestrationPlugin : INetPiPlugin
             if (cfg.TryGetProperty("maxOutstandingMessagesPerAgent", out var m) && m.ValueKind == JsonValueKind.Number)
                 _maxOutstandingMessages = m.GetInt32();
         }
-        var store = context.Services.Resolve<IOrchestrationStore>("orchestration-store");
-        _orchestrator = new AgentOrchestrator(context, store, _maxDelegationDepth, _maxOutstandingMessages);
+        // The store is NOT resolved at load: the host loads plugins
+        // ALPHABETICALLY and runs every LoadAsync before any StartAsync, so
+        // "NetPI.Orchestration" cannot see the "orchestration-store"
+        // service (registered by NetPI.Storage.Sqlite) yet. The orchestrator
+        // resolves the store lazily per operation (AgentOrchestrator.Store()).
+        _orchestrator = new AgentOrchestrator(context, null, _maxDelegationDepth, _maxOutstandingMessages);
         context.Services.Register<IAgentOrchestrator>("orchestration", _orchestrator);
         await ValueTask.CompletedTask;
     }

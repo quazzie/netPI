@@ -12,17 +12,32 @@ namespace NetPI.Orchestration;
 public sealed class AgentOrchestrator : IAgentOrchestrator
 {
     private readonly IPluginContext _ctx;
-    private readonly IOrchestrationStore _store;
+    private readonly IOrchestrationStore? _store;
     private readonly int _maxDelegationDepth;
     private readonly List<IDisposable> _subs = [];
     private readonly int _maxOutstandingMessages;
 
-    public AgentOrchestrator(IPluginContext ctx, IOrchestrationStore store, int maxDelegationDepth = 3, int maxOutstandingMessages = 0)
+    public AgentOrchestrator(IPluginContext ctx, IOrchestrationStore? store = null, int maxDelegationDepth = 3, int maxOutstandingMessages = 0)
     {
         _ctx = ctx;
-        _store = store;
+        _store = store; // fixed store (tests); null => lazy resolution
         _maxDelegationDepth = maxDelegationDepth;
         _maxOutstandingMessages = maxOutstandingMessages;
+    }
+
+    /// <summary>
+    /// Store resolution. The host loads plugins ALPHABETICALLY and runs every
+    /// LoadAsync before any StartAsync — "NetPI.Orchestration" therefore loads
+    /// before "NetPI.Storage.Sqlite" registers the "orchestration-store"
+    /// service, so an eager resolve at load time always fails on a fresh host.
+    /// Resolve on demand instead: by StartAsync all loads have completed, so the
+    /// service is present (it throws ServiceUnavailableException — failing
+    /// closed — only when storage genuinely is not loaded).
+    /// </summary>
+    private IOrchestrationStore Store()
+    {
+        if (_store is not null) return _store;
+        return _ctx.Services.Resolve<IOrchestrationStore>("orchestration-store");
     }
 
     private IAgentRunner? Runner()
@@ -112,7 +127,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         if (evt.RunId is null) return;
         if (evt.Type is not (AgentEventType.AgentCompleted or AgentEventType.AgentFailed or AgentEventType.AgentCancelled))
             return;
-        var row = await _store.GetByRunIdAsync(evt.RunId);
+        var row = await Store().GetByRunIdAsync(evt.RunId);
         if (row is null) return;
         var lifecycle = evt.Type switch
         {
@@ -120,12 +135,12 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             AgentEventType.AgentFailed    => AgentAssignmentLifecycle.Failed,
             _                             => AgentAssignmentLifecycle.Cancelled,
         };
-        var ok = await _store.TransitionAsync(
+        var ok = await Store().TransitionAsync(
             row.AssignmentId, row.Version, lifecycle, AgentState.Idle,
             row.PoolId, row.LaneId, row.DeploymentId,
             evt.Type == AgentEventType.AgentFailed ? "agent-failed" : null, null);
         if (!ok) return;
-        var updated = await _store.GetAssignmentAsync(row.AssignmentId);
+        var updated = await Store().GetAssignmentAsync(row.AssignmentId);
         _ctx.Events.PublishAsync(new AgentLifecycleEvent(
             AgentLifecycleEventKind.Updated, updated is null ? [row] : [updated], null, DateTimeOffset.UtcNow));
         _ctx.Events.PublishAsync(new LanesStateEvent(Pools(), DateTimeOffset.UtcNow));
@@ -154,11 +169,11 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     {
         string? modelId = null;
         string? teamId = null;
-        var parent = await _store.GetAgentAsync(parentAgentId, cancellationToken);
+        var parent = await Store().GetAgentAsync(parentAgentId, cancellationToken);
         if (parent is not null)
         {
             teamId = parent.TeamId;
-            var parentNonterm = await _store.GetNonterminalAsync(parent.SessionId, cancellationToken);
+            var parentNonterm = await Store().GetNonterminalAsync(parent.SessionId, cancellationToken);
             modelId = parentNonterm?.ModelId;
         }
         if (modelId is null) modelId = "default";
@@ -196,7 +211,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         var title = string.IsNullOrEmpty(request.Brief)
             ? "child" : (request.Brief.Length <= 32 ? request.Brief : request.Brief[..32] + "...");
 
-        var outcome = await _store.SpawnChildAsync(
+        var outcome = await Store().SpawnChildAsync(
             request.OperationId, parentAgentId, teamId, modelId,
             request.PoolId, request.DeploymentId, request.Brief, title,
             workspaceMode, childWorkspace, cancellationToken);
@@ -223,15 +238,15 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     public async ValueTask<AgentSpawnResult> ContinueAsync(
         string agentId, string text, string? operationId, CancellationToken cancellationToken)
     {
-        var agent = await _store.GetAgentAsync(agentId, cancellationToken)
+        var agent = await Store().GetAgentAsync(agentId, cancellationToken)
             ?? throw new InvalidOperationException($"Unknown agent {agentId}");
         var opId = operationId ?? Guid.NewGuid().ToString("N");
-        var modelId = (await _store.GetNonterminalAsync(agent.SessionId, cancellationToken))?.ModelId ?? "default";
+        var modelId = (await Store().GetNonterminalAsync(agent.SessionId, cancellationToken))?.ModelId ?? "default";
 
         // astra-2 §8: a follow-up keeps the agent's recorded workspace ownership —
         // its last assignment's workspace mode + the workspace that run executed in.
-        var prior = await _store.GetNonterminalAsync(agent.SessionId, cancellationToken);
-        var row = await _store.CreateAssignmentAsync(
+        var prior = await Store().GetNonterminalAsync(agent.SessionId, cancellationToken);
+        var row = await Store().CreateAssignmentAsync(
             opId, agent.AgentId, agent.SessionId, agent.TeamId, agent.ParentAgentId,
             modelId, null, null, "follow-up", text,
             prior?.WorkspaceMode, prior?.WorkspacePath, cancellationToken);
@@ -264,39 +279,39 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         // never letting an unbounded queue form. A bound of 0 = unbounded (no check).
         if (_maxOutstandingMessages > 0)
         {
-            var outstanding = await _store.CountOutstandingAsync(toAgentId, cancellationToken);
+            var outstanding = await Store().CountOutstandingAsync(toAgentId, cancellationToken);
             if (outstanding >= _maxOutstandingMessages)
                 throw new MessageBoundExceededException(toAgentId, outstanding, _maxOutstandingMessages);
         }
 
-        return await _store.SendMessageAsync(
+        return await Store().SendMessageAsync(
             Guid.NewGuid().ToString("N"), fromAgentId, toAgentId, null,
             kind, body, null, idempotencyKey, cancellationToken);
     }
     public async ValueTask<IReadOnlyList<AgentMailboxMessage>> DrainMailboxAsync(
         string agentId, int count, CancellationToken cancellationToken)
-        => await _store.DrainMailboxAsync(agentId, count, cancellationToken);
+        => await Store().DrainMailboxAsync(agentId, count, cancellationToken);
 
     // ---- task board (astra-2 §9) ---------------------------------------------
 
 
     public ValueTask<AgentTaskRecord> CreateTaskAsync(string taskId, string teamId, string title,
         IReadOnlyList<string> dependsOnTaskIds, CancellationToken cancellationToken = default)
-        => _store.CreateTaskAsync(taskId, teamId, title, dependsOnTaskIds, cancellationToken);
+        => Store().CreateTaskAsync(taskId, teamId, title, dependsOnTaskIds, cancellationToken);
 
     public ValueTask<IReadOnlyList<AgentTaskRecord>> ListTasksAsync(string teamId, string? status,
         CancellationToken cancellationToken = default)
-        => _store.ListTasksAsync(teamId, status, cancellationToken);
+        => Store().ListTasksAsync(teamId, status, cancellationToken);
 
     public ValueTask<bool> ClaimTaskAsync(string taskId, string agentId, CancellationToken cancellationToken = default)
-        => _store.ClaimTaskAsync(taskId, agentId, cancellationToken);
+        => Store().ClaimTaskAsync(taskId, agentId, cancellationToken);
 
     public ValueTask UpdateTaskStatusAsync(string taskId, string status, string? ownerAgentId,
         CancellationToken cancellationToken = default)
-        => _store.UpdateTaskStatusAsync(taskId, status, ownerAgentId, cancellationToken);
+        => Store().UpdateTaskStatusAsync(taskId, status, ownerAgentId, cancellationToken);
 
     public ValueTask<bool> DeleteTaskAsync(string taskId, CancellationToken cancellationToken = default)
-        => _store.DeleteTaskAsync(taskId, cancellationToken);
+        => Store().DeleteTaskAsync(taskId, cancellationToken);
 
 
     // ---- waits ---------------------------------------------------------------
@@ -304,9 +319,9 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     public async ValueTask RegisterWaitAsync(
         string agentId, AgentWaitCondition condition, CancellationToken cancellationToken)
     {
-        var agent = await _store.GetAgentAsync(agentId, cancellationToken)
+        var agent = await Store().GetAgentAsync(agentId, cancellationToken)
             ?? throw new InvalidOperationException($"Unknown agent {agentId}");
-        var nonterm = await _store.GetNonterminalAsync(agent.SessionId, cancellationToken);
+        var nonterm = await Store().GetNonterminalAsync(agent.SessionId, cancellationToken);
 
         // astra-2 §16: a wait dependency cycle is REJECTED with an actionable reason
         // (no stranded lane). An agent may wait on a descendant (the normal
@@ -314,14 +329,14 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         // reach terminal while one of its descendants is still live.
         foreach (var targetId in condition.AssignmentIds)
         {
-            var target = await _store.GetAssignmentAsync(targetId, cancellationToken);
+            var target = await Store().GetAssignmentAsync(targetId, cancellationToken);
             if (target is null) continue; // unknown targets are ignored (satisfied-by-none semantics)
             if (target.AgentId == agent.AgentId)
                 throw new InvalidOperationException(
                     $"wait rejected: agent {agent.AgentId} cannot wait on its own assignment {targetId} (dependency cycle)");
             if (nonterm is not null)
             {
-                var ancestorSubtree = await _store.ListSubtreeAsync(target.AgentId, cancellationToken);
+                var ancestorSubtree = await Store().ListSubtreeAsync(target.AgentId, cancellationToken);
                 if (ancestorSubtree.Any(r => r.AssignmentId == nonterm.AssignmentId))
                     throw new InvalidOperationException(
                         $"wait rejected: agent {agent.AgentId} is a descendant of {target.AgentId} and cannot wait for it (dependency cycle)");
@@ -329,7 +344,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         }
 
         var waitId = Guid.NewGuid().ToString("N");
-        await _store.RegisterWaitAsync(waitId, agentId, nonterm?.AssignmentId, condition, cancellationToken);
+        await Store().RegisterWaitAsync(waitId, agentId, nonterm?.AssignmentId, condition, cancellationToken);
         if (nonterm is not null)
             await TryTransitionAsync(nonterm.AssignmentId, AgentAssignmentLifecycle.Waiting, AgentState.Idle, cancellationToken);
     }
@@ -346,7 +361,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     public async ValueTask<AgentDelegateResult> DelegateAsync(
         string parentAgentId, AgentSpawnRequest request, CancellationToken cancellationToken)
     {
-        var parent = await _store.GetAgentAsync(parentAgentId, cancellationToken)
+        var parent = await Store().GetAgentAsync(parentAgentId, cancellationToken)
             ?? throw new InvalidOperationException($"Unknown agent {parentAgentId}");
 
         // astra-2 §6.2: delegation is depth-bounded — a handoff stack cannot
@@ -359,7 +374,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             if (depth + 1 > _maxDelegationDepth)
                 throw new InvalidOperationException(
                     $"Delegation rejected: the child would be at depth {depth + 1}, past the configured maximum {_maxDelegationDepth} (astra-2 6.2).");
-            cursor = await _store.GetAgentAsync(p2, cancellationToken)
+            cursor = await Store().GetAgentAsync(p2, cancellationToken)
                 ?? throw new InvalidOperationException($"Ancestor agent missing for {p2}");
         }
 
@@ -368,11 +383,11 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         // retried delegation returns the original child and does NOT re-register
         // a wait or re-suspend — the original delegation already persisted the
         // durable wake.
-        var existingChild = await _store.GetByRunIdAsync(request.OperationId, cancellationToken);
+        var existingChild = await Store().GetByRunIdAsync(request.OperationId, cancellationToken);
         if (existingChild is not null)
         {
-            var existingAgent = await _store.GetAgentAsync(existingChild.AgentId, cancellationToken);
-            var parentNonterm = await _store.GetNonterminalAsync(parent.SessionId, cancellationToken);
+            var existingAgent = await Store().GetAgentAsync(existingChild.AgentId, cancellationToken);
+            var parentNonterm = await Store().GetNonterminalAsync(parent.SessionId, cancellationToken);
             return new AgentDelegateResult(
                 existingAgent ?? throw new InvalidOperationException($"Child agent missing for {existingChild.AgentId}"),
                 existingChild.AssignmentId, existingChild.SessionId,
@@ -380,14 +395,14 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 AgentAssignmentLifecycle.Waiting, "idempotent replay");
         }
 
-        var nonterm = await _store.GetNonterminalAsync(parent.SessionId, cancellationToken);
+        var nonterm = await Store().GetNonterminalAsync(parent.SessionId, cancellationToken);
 
         // (1) spawn — the child gets its own session/assignment, queued or admitted.
         var spawn = await SpawnChildAsync(parentAgentId, request, cancellationToken);
 
         // (2) durable wait: the parent waits for the child's assignment to go terminal.
         var waitId = Guid.NewGuid().ToString("N");
-        await _store.RegisterWaitAsync(
+        await Store().RegisterWaitAsync(
             waitId, parentAgentId, nonterm?.AssignmentId,
             new AgentWaitCondition { AssignmentIds = [spawn.AssignmentId] }, cancellationToken);
 
@@ -425,8 +440,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     /// </summary>
     public async ValueTask<int> ConsumeSatisfiedWaitsAsync(string agentId, CancellationToken cancellationToken)
     {
-        var waits = await _store.ListSatisfiedWaitsAsync(agentId, cancellationToken);
-        var agent = await _store.GetAgentAsync(agentId, cancellationToken);
+        var waits = await Store().ListSatisfiedWaitsAsync(agentId, cancellationToken);
+        var agent = await Store().GetAgentAsync(agentId, cancellationToken);
         if (agent is null || waits.Count == 0) return 0;
         var runner = Runner();
         if (runner is null) return 0;
@@ -434,14 +449,14 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         var resumed = 0;
         foreach (var w in waits)
         {
-            if (w.RunId is null) { await _store.MarkWaitConsumedAsync(w.WaitId, cancellationToken); continue; }
+            if (w.RunId is null) { await Store().MarkWaitConsumedAsync(w.WaitId, cancellationToken); continue; }
 
             // Bounded result: the child's outcome + summary — never its transcript.
             var resultParts = new System.Text.StringBuilder();
             foreach (var t in w.Targets)
             {
                 if (t.AssignmentId is null) continue;
-                var row = await _store.GetAssignmentAsync(t.AssignmentId, cancellationToken);
+                var row = await Store().GetAssignmentAsync(t.AssignmentId, cancellationToken);
                 if (row is null) continue;
                 resultParts.AppendLine($"child {row.AgentId} (assignment {row.AssignmentId}): {AgentAssignmentLifecycleNames.Name(row.Lifecycle)} — {row.Title}");
             }
@@ -453,7 +468,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             // astra-2 §6.3: waking is never permission to execute without a lane —
             // the resume must carry the parent's model so re-queue re-enters the
             // SAME admission policy (pooled → re-acquire the lane) as the original.
-            var nontermBefore = await _store.GetNonterminalAsync(agent.SessionId, cancellationToken);
+            var nontermBefore = await Store().GetNonterminalAsync(agent.SessionId, cancellationToken);
             // astra-2 §8: resume in the SAME workspace the parent runs in — the
             // nonterminal assignment's recorded workspace, else the session's own.
             var parentWs = await ResolveAgentWorkspaceAsync(
@@ -471,7 +486,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             }
             // a held resume (capacity full) stays satisfied; the next consumer pass
             // retries — the durable wake is never lost.
-            if (requeued) await _store.MarkWaitConsumedAsync(w.WaitId, cancellationToken);
+            if (requeued) await Store().MarkWaitConsumedAsync(w.WaitId, cancellationToken);
         }
         return resumed;
     }
@@ -479,15 +494,15 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     // ---- queries ---------------------------------------------------------------
 
     public ValueTask<AgentAssignmentRow?> GetAssignmentAsync(string assignmentId, CancellationToken cancellationToken)
-        => _store.GetAssignmentAsync(assignmentId, cancellationToken);
+        => Store().GetAssignmentAsync(assignmentId, cancellationToken);
 
     public ValueTask<AgentAssignmentRow?> GetNonterminalAsync(string sessionId, CancellationToken cancellationToken)
-        => _store.GetNonterminalAsync(sessionId, cancellationToken);
+        => Store().GetNonterminalAsync(sessionId, cancellationToken);
 
     public async ValueTask<IReadOnlyList<AgentAssignmentRow>> ListAssignmentsAsync(CancellationToken cancellationToken)
     {
-        var nonterm = await _store.ListNonterminalAsync(cancellationToken);
-        var term = await _store.ListRecentTerminalAsync(20, cancellationToken);
+        var nonterm = await Store().ListNonterminalAsync(cancellationToken);
+        var term = await Store().ListRecentTerminalAsync(20, cancellationToken);
         var all = new List<AgentAssignmentRow>(nonterm.Count + term.Count);
         all.AddRange(nonterm);
         all.AddRange(term);
@@ -495,20 +510,20 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     }
 
     public ValueTask<IReadOnlyList<AgentAssignmentRow>> ListSubtreeAsync(string agentId, CancellationToken cancellationToken)
-        => _store.ListSubtreeAsync(agentId, cancellationToken);
+        => Store().ListSubtreeAsync(agentId, cancellationToken);
 
     // ---- cancel -------------------------------------------------------------------
 
     public async ValueTask<AgentAssignmentLifecycle> CancelAsync(
         string assignmentId, bool subtree, CancellationToken cancellationToken)
     {
-        var row = await _store.GetAssignmentAsync(assignmentId, cancellationToken)
+        var row = await Store().GetAssignmentAsync(assignmentId, cancellationToken)
             ?? throw new InvalidOperationException($"Unknown assignment {assignmentId}");
         if (!row.IsNonTerminal) return row.Lifecycle;
 
         var toCancel = new List<AgentAssignmentRow>();
         if (subtree && row.AgentId is not null)
-            toCancel.AddRange(await _store.ListSubtreeAsync(row.AgentId, cancellationToken));
+            toCancel.AddRange(await Store().ListSubtreeAsync(row.AgentId, cancellationToken));
         toCancel.Add(row);
 
         foreach (var target in toCancel)
@@ -521,7 +536,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 // astra-2 §13: match by the durable run id (not by session) so a
                 // CANCELLED target's runner record is reached precisely — a queued
                 // or suspended record may share a session with a newer live run.
-                var runId = await _store.GetRunIdAsync(target.AssignmentId, cancellationToken);
+                var runId = await Store().GetRunIdAsync(target.AssignmentId, cancellationToken);
                 var live = runner.ListRuns().FirstOrDefault(r =>
                     (runId is not null && r.RunId == runId) ||
                     (r.SessionId == target.SessionId && r.Outcome == RunState.Running));
@@ -560,16 +575,16 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         string assignmentId, AgentAssignmentLifecycle lifecycle, AgentState phase,
         CancellationToken ct, string? reason = null)
     {
-        var row = await _store.GetAssignmentAsync(assignmentId, ct);
+        var row = await Store().GetAssignmentAsync(assignmentId, ct);
         if (row is null) return;
-        var ok = await _store.TransitionAsync(
+        var ok = await Store().TransitionAsync(
             assignmentId, row.Version, lifecycle, phase,
             row.PoolId, row.LaneId, row.DeploymentId, reason, null, ct);
         if (!ok)
         {
-            var fresh = await _store.GetAssignmentAsync(assignmentId, ct);
+            var fresh = await Store().GetAssignmentAsync(assignmentId, ct);
             if (fresh is not null)
-                await _store.TransitionAsync(
+                await Store().TransitionAsync(
                     assignmentId, fresh.Version, lifecycle, phase,
                     fresh.PoolId, fresh.LaneId, fresh.DeploymentId, reason, null, ct);
         }
@@ -582,7 +597,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     /// </summary>
     public async ValueTask ReconcileOnLoadAsync(CancellationToken cancellationToken)
     {
-        var nonterm = await _store.ListNonterminalAsync(cancellationToken);
+        var nonterm = await Store().ListNonterminalAsync(cancellationToken);
         foreach (var row in nonterm)
         {
             if (row.Lifecycle != AgentAssignmentLifecycle.Running) continue;
@@ -596,9 +611,9 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 // checkpoint — quarantine the assignment as recovery-required
                 // instead of re-running it: uncertain side effects are never
                 // replayed automatically.
-                if (await _store.HasToolBatchCheckpointAsync(row.AssignmentId, cancellationToken))
+                if (await Store().HasToolBatchCheckpointAsync(row.AssignmentId, cancellationToken))
                 {
-                    var okQ = await _store.TransitionAsync(
+                    var okQ = await Store().TransitionAsync(
                         row.AssignmentId, row.Version,
                         AgentAssignmentLifecycle.RecoveryRequired, AgentState.Idle,
                         row.PoolId, row.LaneId, row.DeploymentId,
@@ -607,7 +622,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                         _ctx.Log.Warning($"Reconcile: quarantined assignment {row.AssignmentId} (in-flight tool-batch checkpoint; recovery-required, no auto-replay)");
                     continue;
                 }
-                var ok = await _store.TransitionAsync(
+                var ok = await Store().TransitionAsync(
                     row.AssignmentId, row.Version,
                     AgentAssignmentLifecycle.Queued, AgentState.Idle,
                     row.PoolId, row.LaneId, row.DeploymentId, "restart-reconciled", null, cancellationToken);
@@ -620,7 +635,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         // pipeline exactly once (adoption) — a restart must not strand them.
         try
         {
-            var queued = await _store.ListQueuedForAdoptionAsync(cancellationToken);
+            var queued = await Store().ListQueuedForAdoptionAsync(cancellationToken);
             foreach (var q in queued)
             {
                 var runner = Runner();
