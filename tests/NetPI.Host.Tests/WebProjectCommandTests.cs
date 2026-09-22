@@ -190,6 +190,12 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
         public ValueTask<bool> NoteTerminalForWaitsAsync(string assignmentId, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask<IReadOnlyList<AgentSatisfiedWait>> ListSatisfiedWaitsAsync(string agentId, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask MarkWaitConsumedAsync(string waitId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<AgentTaskRecord> CreateTaskAsync(string taskId, string teamId, string title, IReadOnlyList<string> dependsOnTaskIds, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<IReadOnlyList<AgentTaskRecord>> ListTasksAsync(string teamId, string? status, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<bool> ClaimTaskAsync(string taskId, string agentId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask UpdateTaskStatusAsync(string taskId, string status, string? ownerAgentId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<bool> DeleteTaskAsync(string taskId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<int> CountOutstandingAsync(string toAgentId, CancellationToken ct = default) => throw new NotImplementedException();
     }
 
     /// <summary>In-memory IProjectStore — upsert by exact path (the canonical

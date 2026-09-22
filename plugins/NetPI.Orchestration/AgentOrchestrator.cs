@@ -15,12 +15,14 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     private readonly IOrchestrationStore _store;
     private readonly int _maxDelegationDepth;
     private readonly List<IDisposable> _subs = [];
+    private readonly int _maxOutstandingMessages;
 
-    public AgentOrchestrator(IPluginContext ctx, IOrchestrationStore store, int maxDelegationDepth = 3)
+    public AgentOrchestrator(IPluginContext ctx, IOrchestrationStore store, int maxDelegationDepth = 3, int maxOutstandingMessages = 0)
     {
         _ctx = ctx;
         _store = store;
         _maxDelegationDepth = maxDelegationDepth;
+        _maxOutstandingMessages = maxOutstandingMessages;
     }
 
     private IAgentRunner? Runner()
@@ -254,13 +256,48 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     public async ValueTask<int> SendMessageAsync(
         string fromAgentId, string toAgentId, string kind, string body,
         string? idempotencyKey = null, CancellationToken cancellationToken = default)
-        => await _store.SendMessageAsync(
+    {
+        // astra-2 §9: a per-agent outstanding-message bound keeps any one recipient's
+        // mailbox from growing unboundedly (memory + turn-boundary drain cost). When
+        // the recipient already has `bound` UNCONSUMED messages, a further send would
+        // make it `bound+1` — reject it as a bounded result (an actionable reason),
+        // never letting an unbounded queue form. A bound of 0 = unbounded (no check).
+        if (_maxOutstandingMessages > 0)
+        {
+            var outstanding = await _store.CountOutstandingAsync(toAgentId, cancellationToken);
+            if (outstanding >= _maxOutstandingMessages)
+                throw new MessageBoundExceededException(toAgentId, outstanding, _maxOutstandingMessages);
+        }
+
+        return await _store.SendMessageAsync(
             Guid.NewGuid().ToString("N"), fromAgentId, toAgentId, null,
             kind, body, null, idempotencyKey, cancellationToken);
-
+    }
     public async ValueTask<IReadOnlyList<AgentMailboxMessage>> DrainMailboxAsync(
         string agentId, int count, CancellationToken cancellationToken)
         => await _store.DrainMailboxAsync(agentId, count, cancellationToken);
+
+    // ---- task board (astra-2 §9) ---------------------------------------------
+
+
+    public ValueTask<AgentTaskRecord> CreateTaskAsync(string taskId, string teamId, string title,
+        IReadOnlyList<string> dependsOnTaskIds, CancellationToken cancellationToken = default)
+        => _store.CreateTaskAsync(taskId, teamId, title, dependsOnTaskIds, cancellationToken);
+
+    public ValueTask<IReadOnlyList<AgentTaskRecord>> ListTasksAsync(string teamId, string? status,
+        CancellationToken cancellationToken = default)
+        => _store.ListTasksAsync(teamId, status, cancellationToken);
+
+    public ValueTask<bool> ClaimTaskAsync(string taskId, string agentId, CancellationToken cancellationToken = default)
+        => _store.ClaimTaskAsync(taskId, agentId, cancellationToken);
+
+    public ValueTask UpdateTaskStatusAsync(string taskId, string status, string? ownerAgentId,
+        CancellationToken cancellationToken = default)
+        => _store.UpdateTaskStatusAsync(taskId, status, ownerAgentId, cancellationToken);
+
+    public ValueTask<bool> DeleteTaskAsync(string taskId, CancellationToken cancellationToken = default)
+        => _store.DeleteTaskAsync(taskId, cancellationToken);
+
 
     // ---- waits ---------------------------------------------------------------
 

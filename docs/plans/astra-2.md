@@ -1013,99 +1013,137 @@ with fake providers; do not spend cloud credits to test scheduler correctness.
 
 ### A — Contracts, persistence, and execution ownership
 
-- [ ] Add lifecycle/identity/permit/checkpoint contracts and storage migration.
-- [ ] Implement atomic child creation and idempotent operations; preserve existing
+- [x] Add lifecycle/identity/permit/checkpoint contracts and storage migration.
+- [x] Implement atomic child creation and idempotent operations; preserve existing
       session/history APIs and project snapshots.
-- [ ] Replace the runner's single-task shutdown bookkeeping with ownership of all
+- [x] Replace the runner's single-task shutdown bookkeeping with ownership of all
       segments. Separate logical session busy from live execution.
-- [ ] Introduce explicit segment outcomes (terminal versus yielded), without
+- [x] Introduce explicit segment outcomes (terminal versus yielded), without
       string-matching a failure note or emitting completion on suspension.
 - [ ] Verify migration rollback/reopen, duplicate IDs, concurrent submission,
       all-task shutdown, and old-session compatibility.
 
 ### B — Strict local lanes (first usable milestone)
 
-- [ ] Add NetPI.Lanes and register it in solution/publication/test references.
-- [ ] Configure the local pool to Follow AiProxy (initially two lanes, no manual
+- [x] Add NetPI.Lanes and register it in solution/publication/test references.
+- [x] Configure the local pool to Follow AiProxy (initially two lanes, no manual
       cap); implement the provider-capacity contract and migrate admission.
-- [ ] Queue normal root submissions as well as children; hold ownership through
+- [x] Queue normal root submissions as well as children; hold ownership through
       tools, retries, maintenance and model-turn boundaries.
 - [ ] Guard all provider inference, including AutoCompact and catalog probes.
-- [ ] Verify the A/B/C trace from §3 with explicit synchronization barriers.
+- [x] Verify the A/B/C trace from §3 with explicit synchronization barriers.
       C must remain absent from provider logs while A/B own the lanes.
-- [ ] Test cancellation/drain races, stale permits, disabled/reduced pools and
+- [x] Test cancellation/drain races, stale permits, disabled/reduced pools and
       failure paths. Passing semaphore/request-concurrency tests alone is insufficient.
-- [ ] Verify provider capacity 2→4 admits two more owners and queues a fifth;
+- [x] Verify provider capacity 2→4 admits two more owners and queues a fifth;
       4→2 drains without preemption. Cover optional caps, unknown/stale metadata,
       and separate context-limit changes without inferring concurrency from context.
 
 ### C — Child agents and same-pool delegation
 
-- [ ] Add NetPI.Orchestration tools, bounded independent child contexts, and
+- [x] Add NetPI.Orchestration tools, bounded independent child contexts, and
       result summaries linked to full sessions.
-- [ ] Implement wait/delegate directives after persisted complete tool batches,
+- [x] Implement wait/delegate directives after persisted complete tool batches,
       durable handoff, lost-wakeup handling, and return continuation.
-- [ ] Verify capacity-one delegation and capacity-two parent/two-worker flow.
+- [x] Verify capacity-one delegation and capacity-two parent/two-worker flow.
 - [ ] Verify no deadlock while both parents delegate; no third model caller;
       distinct response chains; no duplicate tool outputs after resume.
 - [x] Add workspace modes/ownership and preserve dirty worktree artifacts.
 
 ### D — Mailboxes, collaboration, and recovery
 
-- [ ] Add durable messages/cursors, task board, conditions/deadlines and cycle checks.
-- [ ] Add explicit continue/cancel/resume behavior and subtree cleanup.
-- [ ] Recover queued/clean checkpoints across restart/reload; quarantine uncertain
+- [x] Add durable messages/cursors, task board, conditions/deadlines and cycle checks.
+- [x] Add explicit continue/cancel/resume behavior and subtree cleanup.
+- [x] Recover queued/clean checkpoints across restart/reload; quarantine uncertain
       side effects rather than automatically replaying them.
-- [ ] Verify concurrent deliveries, deduplication, late results, orphan prevention,
+- [x] Verify concurrent deliveries, deduplication, late results, orphan prevention,
       mailbox bounds, and service-generation fencing.
 
 ### E — Combined Background panel and navigation
 
-- [ ] Consolidate Background/Activity into the Work view owned by Activity, retain
+- [x] Consolidate Background/Activity into the Work view owned by Activity, retain
       panel ID `background`, and migrate old `activity` selections safely.
-- [ ] Extend Activity's query payloads with lanes/lifecycle and two newest-first lists.
-- [ ] Include every nonterminal root/child and expose waiting/suspended reasons.
+- [x] Extend Activity's query payloads with lanes/lifecycle and two newest-first lists.
+- [x] Include every nonterminal root/child and expose waiting/suspended reasons.
 - [ ] Reuse/harden iframe navigation and handle child session creation without focus theft.
-- [ ] Preserve process output/stop behavior and independent missing-service states.
-- [ ] Use the canonical projection without another registry; preserve foreground
+- [x] Preserve process output/stop behavior and independent missing-service states.
+- [x] Use the canonical projection without another registry; preserve foreground
       inspection, background tail/stop behavior, and legacy process APIs.
 - [ ] Verify browser/WebView behavior: row click opens/selects a tab, no new window,
       queued/suspended chat inspection, no implicit resume, no ordering churn.
 
 ### F — Orchestrate mode and optional cloud
 
-- [ ] Add persisted mode and concise tool guidance; coordinator yields for two workers.
+- [x] Add persisted mode and concise tool guidance; coordinator yields for two workers.
 - [ ] Add direct-cloud model selection and execution authorization, optional cloud
       pools, allowlists, shared reservations/budgets and usage UI.
 - [ ] Verify paid deployments stay disabled by default; agents cannot enable them;
       cloud never changes the local pool's provider-derived target or optional cap.
-- [ ] Verify an ordinary user-created cloud session runs while both local lanes
+- [x] Verify an ordinary user-created cloud session runs while both local lanes
       are occupied, without changing their ownership or requiring an agent setup flow.
 - [ ] Verify pool disabling, exhausted budget, retries, unknown usage and route-alias
       constraints using test providers. Do not require a NUC/Yue2 integration.
-- [ ] Add discovery-backed execution settings and the drained backend/model rebind
+- [x] Add discovery-backed execution settings and the drained backend/model rebind
       flow (§5.3–5.4); preserve Follow AiProxy policy and any explicit cap across
       engine changes while updating effective capacity from the validated backend.
 
 ### G — Delivery and operational verification
 
-- [ ] Update AGENTS.md, protocol, plugin architecture, web-panels, and Responses
+- [x] Update AGENTS.md, protocol, plugin architecture, web-panels, and Responses
       documentation to describe shipped behavior and new service IDs/config.
-- [ ] Run focused tests first, then `dotnet build NetPI.sln` and `dotnet test NetPI.sln`.
+- [x] Run focused tests first, then `dotnet build NetPI.sln` and `dotnet test NetPI.sln`.
       Extend existing ConcurrentRuns, RunRegistry, RunCleanup, ResponsesIdentity,
       AutoCompact, ActivitySurface, BackgroundSurface and control-boundary coverage.
-- [ ] From `web/netpi-web`, run `npx svelte-check --tsconfig ./tsconfig.app.json`
+- [x] From `web/netpi-web`, run `npx svelte-check --tsconfig ./tsconfig.app.json`
       and `npx vite build`; report unrelated pre-existing warnings separately.
-- [ ] Publish changed plugins through `tools/publish-plugins.ps1`; verify pointers,
+- [x] Publish changed plugins through `tools/publish-plugins.ps1`; verify pointers,
       active build IDs, and expected services after activation. Host/Abstractions
       changes require a coordinated staged restart, not a claim of hot reload.
 - [ ] Smoke-test two real local owners and a queued third, retaining tools/retries
       between requests; inspect netPI admission logs. Backend cache metrics can
       support performance observations but cannot replace the correctness proof.
-- [ ] Commit only complete verified work if requested/appropriate under repository
+- [x] Commit only complete verified work if requested/appropriate under repository
       discipline; never push without the user's instruction. Keep artifacts/dist
       and runtime state out of Git.
+## 15.1 Residuals — items intentionally left open
 
+The §15 gates above are ticked where the behavior is implemented **and** a passing
+test (or an unambiguous deliverable) verifies it. The remaining unchecked items
+below are deliberate, not forgotten; each is the concrete gap a follow-up must
+close (a full astra-2 parity is not claimed yet):
+
+- **A5 — concurrent submission** is not specifically tested: migration rollback,
+  duplicate IDs, old-session compat and all-task shutdown are covered, but no test
+  races concurrent `AcquireAsync`/spawn submissions against each other (only
+  concurrent *mailbox* sends are). Lane-submission contention is the missing case.
+- **B4 — guard all provider inference**: the manual `session.compact` is lane-gated
+  (this session's B4 work, `ManualCompactLaneTests`), and the in-run AutoCompact and
+  the responses capability probe run *inside* an already-admitted segment, so they
+  never compete with the pool — but that is an interpretation, not a gate: there is
+  no guard code or test asserting AutoCompact/catalog probes cannot bypass admission.
+- **C4 — "no third model caller" / "no duplicate tool outputs after resume"**:
+  the capacity-two test asserts owner-count ≤ 2 (an indirect proxy) and session-
+  distinctness, not per-call provider identity, and no test asserts resumed-segment
+  tool output is not duplicated.
+- **E4 — iframe/navigation hardening** and **E7 — browser/WebView behavior** (row
+  click opens/selects a tab, no new window, no focus theft, no ordering churn): the
+  code exists (ActivityBridge / panel-bridge.ts / App.svelte focus guard) but the
+  interaction is untestable in xunit; it remains a manual acceptance check.
+- **F2 — optional cloud pools + usage UI**: the direct-cloud selection/authorization,
+  allowlists, shared reservations/budgets are implemented and tested; the per-team
+  budget/usage snapshot endpoint exists in the Activity surface but no frontend
+  component renders it, and there is no config path for "optional cloud pools"
+  (cloud is lane-less by design per §11).
+- **F3 — agents cannot enable paid deployments**: verified only by absence — there is
+  no agent-facing enable API to test, and the enforcement rests on the deployment
+  `enabled` flag; no rejecting test exists.
+- **F5 — route-alias constraint**: "local alias requested as direct-cloud → rejected
+  before inference" (acceptance-matrix row) has no test and no code path naming it;
+  it may be covered by the disabled-deployment gate, but that is not demonstrated.
+- **G5 — real-host two-owners-plus-queued smoke**: a manual-only residual. The
+  automated `Pooled_A_B_C_ThirdIsQueuedThenStartsOnRelease` proves the scheduling
+  math; a live two-local-owners + queued-third run against a real AiProxy (with
+  admission log inspection) is what the checkbox demands and has not been run.
 ## 16. Required acceptance matrix
 
 Use controllable fake provider streams, barriers and an injectable clock. Avoid

@@ -92,6 +92,18 @@ public class MailboxDrainTests
             => throw new NotSupportedException();
         public ValueTask MarkWaitConsumedAsync(string waitId, CancellationToken ct = default)
             => throw new NotSupportedException();
+        public ValueTask<AgentTaskRecord> CreateTaskAsync(string taskId, string teamId, string title,
+            IReadOnlyList<string> dependsOnTaskIds, CancellationToken ct = default) => throw new NotSupportedException();
+        public ValueTask<IReadOnlyList<AgentTaskRecord>> ListTasksAsync(string teamId, string? status,
+            CancellationToken ct = default) => throw new NotSupportedException();
+        public ValueTask<bool> ClaimTaskAsync(string taskId, string agentId, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public ValueTask UpdateTaskStatusAsync(string taskId, string status, string? ownerAgentId, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public ValueTask<bool> DeleteTaskAsync(string taskId, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public ValueTask<int> CountOutstandingAsync(string toAgentId, CancellationToken ct = default)
+            => throw new NotSupportedException();
     }
 
     private static (AgentRuntime Rt, FakeOrchStore Orch, FakeProvider Provider, FailingAppendStore Store) Make(

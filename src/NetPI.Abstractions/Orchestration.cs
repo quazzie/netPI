@@ -678,4 +678,56 @@ public interface IOrchestrationStore
     /// exactly once per wait, never zero or twice.
     /// </summary>
     ValueTask MarkWaitConsumedAsync(string waitId, CancellationToken ct = default);
+
+    // ---- task board (astra-2 §9) ------------------------------------------
+    /// <summary>
+    /// Create a task-board record for a team (astra-2 §9). Dependencies must be
+    /// a DAG (cycles are rejected at create time). Returns the created record.
+    /// </summary>
+    ValueTask<AgentTaskRecord> CreateTaskAsync(
+        string taskId, string teamId, string title, IReadOnlyList<string> dependsOnTaskIds,
+        CancellationToken ct = default);
+
+    /// <summary>List a team's tasks, optionally filtered by status ("" = all).</summary>
+    ValueTask<IReadOnlyList<AgentTaskRecord>> ListTasksAsync(string teamId, string? status,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Claim a task for an agent (idempotent: re-claiming by the same owner
+    /// succeeds; a claim by a different agent fails and does NOT clobber the
+    /// existing owner). Returns true when the claim was applied, false otherwise.
+    /// </summary>
+    ValueTask<bool> ClaimTaskAsync(string taskId, string agentId, CancellationToken ct = default);
+
+    /// <summary>Set a task's status (open|claimed|done|dropped). "claimed" sets the owner; the others leave it.</summary>
+    ValueTask UpdateTaskStatusAsync(string taskId, string status, string? ownerAgentId, CancellationToken ct = default);
+
+    /// <summary>Delete a task (true when a row was removed).</summary>
+    ValueTask<bool> DeleteTaskAsync(string taskId, CancellationToken ct = default);
+
+    /// <summary>
+    /// astra-2 §9: the count of this recipient's UNCONSUMED (outstanding) mailbox
+    /// messages — the value the per-agent outstanding-message bound compares against.
+    /// </summary>
+    ValueTask<int> CountOutstandingAsync(string toAgentId, CancellationToken ct = default);
+}
+
+/// <summary>
+/// astra-2 §9: thrown by the send path when a recipient's outstanding (unconsumed)
+/// mailbox messages would exceed the configured per-agent bound. Carries the current
+/// count and the bound so the caller produces an actionable, bounded rejection
+/// (never an unhandled exception at the tool boundary).
+/// </summary>
+public sealed class MessageBoundExceededException : Exception
+{
+    public MessageBoundExceededException(string toAgentId, int current, int bound)
+        : base($"recipient {toAgentId} has {current} outstanding message(s); the per-agent bound is {bound} — the send was rejected to keep the mailbox bounded")
+    {
+        ToAgentId = toAgentId;
+        CurrentCount = current;
+        Bound = bound;
+    }
+    public string ToAgentId { get; }
+    public int CurrentCount { get; }
+    public int Bound { get; }
 }

@@ -818,7 +818,181 @@ string? createdAssignmentId = null;
         cmd.CommandText = "DELETE FROM agent_waits WHERE wait_id = $w AND satisfied = 1;";
         cmd.Parameters.AddWithValue("$w", waitId);
         await cmd.ExecuteNonQueryAsync(ct);
+        await cmd.ExecuteNonQueryAsync(ct);
     }
+
+    // ---- task board (astra-2 §9) --------------------------------------------
+
+    private static AgentTaskRecord ReadTask(SqliteDataReader r) => new(
+        r.GetString(0), r.GetString(1), r.GetString(2),
+        r.IsDBNull(3) ? null : r.GetString(3), r.GetString(4),
+        ParseTaskDeps(r.IsDBNull(5) ? null : r.GetString(5)),
+        r.GetInt32(6), ToUtc(r.GetString(7)), ToUtc(r.GetString(8)));
+
+    private static IReadOnlyList<string> ParseTaskDeps(string? json)
+        => json is { Length: > 0 }
+            ? JsonSerializer.Deserialize<List<string>>(json) ?? []
+            : [];
+
+    public async ValueTask<AgentTaskRecord> CreateTaskAsync(
+        string taskId, string teamId, string title, IReadOnlyList<string> dependsOnTaskIds,
+        CancellationToken ct = default)
+    {
+        // astra-2 §9: dependencies must form a DAG. The new task does not exist
+        // yet, so a cycle is only possible if it lists itself or a dependency that
+        // (transitively) already points back at it. Reject self-loops outright and
+        // verify every dependency exists before inserting.
+        if (dependsOnTaskIds.Contains(taskId))
+            throw new InvalidOperationException($"task {taskId} cannot depend on itself (dependency cycle)");
+        await using var conn = OpenConnection();
+        await using var tx = conn.BeginTransaction();
+        try
+        {
+            foreach (var dep in dependsOnTaskIds.Distinct())
+            {
+                if (dep == taskId)
+                    throw new InvalidOperationException($"task {taskId} cannot depend on itself (dependency cycle)");
+                await using var chk = conn.CreateCommand();
+                chk.Transaction = tx;
+                chk.CommandText = "SELECT 1 FROM agent_tasks WHERE task_id = $d LIMIT 1;";
+                chk.Parameters.AddWithValue("$d", dep);
+                var exists = await chk.ExecuteScalarAsync(ct);
+                if (exists is null or DBNull)
+                    throw new InvalidOperationException($"task {taskId} depends on unknown task {dep}");
+            }
+
+            await ExecAsync(conn, tx, """
+                INSERT INTO agent_tasks (task_id, team_id, title, owner_agent_id, status,
+                                         depends_on_json, version, created_at, updated_at)
+                VALUES ($id, $team, $title, NULL, 'open', $deps, 0, $now, $now);
+                """, ct, c =>
+                {
+                    c.Parameters.AddWithValue("$id", taskId);
+                    c.Parameters.AddWithValue("$team", teamId);
+                    c.Parameters.AddWithValue("$title", title);
+                    c.Parameters.AddWithValue("$deps", JsonSerializer.Serialize(dependsOnTaskIds));
+                    var now = Now();
+                    c.Parameters.AddWithValue("$now", now);
+                });
+            tx.Commit();
+        }
+        catch { tx.Rollback(); throw; }
+
+        return await ReadTaskAsync(conn, taskId, ct) ?? throw new InvalidOperationException($"task {taskId} vanished after create");
+    }
+
+    public async ValueTask<IReadOnlyList<AgentTaskRecord>> ListTasksAsync(string teamId, string? status, CancellationToken ct = default)
+    {
+        await using var conn = OpenConnection();
+        var sql = """
+            SELECT task_id, team_id, title, owner_agent_id, status, depends_on_json,
+                   version, created_at, updated_at
+            FROM agent_tasks
+            WHERE team_id = $t
+            """;
+        if (!string.IsNullOrEmpty(status)) sql += " AND status = $s";
+        sql += " ORDER BY created_at ASC;";
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$t", teamId);
+        if (!string.IsNullOrEmpty(status)) cmd.Parameters.AddWithValue("$s", status);
+        var list = new List<AgentTaskRecord>();
+        await using (var r = await cmd.ExecuteReaderAsync(ct))
+        {
+            while (await r.ReadAsync(ct)) list.Add(ReadTask(r));
+        }
+        return list;
+    }
+    public async ValueTask<bool> ClaimTaskAsync(string taskId, string agentId, CancellationToken ct = default)
+    {
+        // Idempotent claim: re-claiming by the SAME owner is a no-op success. A claim
+        // by a DIFFERENT agent fails and does NOT clobber the existing owner — the
+        // WHERE clause only matches open (unowned) or same-owner rows, so a competing
+        // claim against an already-owned task updates 0 rows.
+        await using var conn = OpenConnection();
+        await using var tx = conn.BeginTransaction();
+        var affected = 0;
+        try
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE agent_tasks
+                SET status = 'claimed', owner_agent_id = $owner, version = version + 1, updated_at = $now
+                WHERE task_id = $id AND (owner_agent_id IS NULL OR owner_agent_id = $owner);
+                """;
+            cmd.Parameters.AddWithValue("$id", taskId);
+            cmd.Parameters.AddWithValue("$owner", agentId);
+            cmd.Parameters.AddWithValue("$now", Now());
+            affected = await cmd.ExecuteNonQueryAsync(ct);
+            tx.Commit();
+        }
+        catch { tx.Rollback(); throw; }
+        return affected > 0;
+    }
+
+    public async ValueTask UpdateTaskStatusAsync(string taskId, string status, string? ownerAgentId, CancellationToken ct = default)
+    {
+        await using var conn = OpenConnection();
+        await using var tx = conn.BeginTransaction();
+        try
+        {
+            await ExecAsync(conn, tx, """
+                UPDATE agent_tasks
+                SET status = $st, owner_agent_id = $owner, version = version + 1, updated_at = $now
+                WHERE task_id = $id;
+                """, ct, c =>
+                {
+                    c.Parameters.AddWithValue("$id", taskId);
+                    c.Parameters.AddWithValue("$st", status);
+                    c.Parameters.AddWithValue("$owner", (object?)ownerAgentId ?? DBNull.Value);
+                    c.Parameters.AddWithValue("$now", Now());
+                });
+            tx.Commit();
+        }
+        catch { tx.Rollback(); throw; }
+    }
+
+    public async ValueTask<bool> DeleteTaskAsync(string taskId, CancellationToken ct = default)
+    {
+        await using var conn = OpenConnection();
+        await using var tx = conn.BeginTransaction();
+        try
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "DELETE FROM agent_tasks WHERE task_id = $id;";
+            cmd.Parameters.AddWithValue("$id", taskId);
+            var affected = await cmd.ExecuteNonQueryAsync(ct);
+            tx.Commit();
+            return affected > 0;
+        }
+        catch { tx.Rollback(); throw; }
+    }
+
+    public async ValueTask<int> CountOutstandingAsync(string toAgentId, CancellationToken ct = default)
+    {
+        await using var conn = OpenConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(1) FROM agent_messages WHERE to_agent_id = $to AND consumed = 0;";
+        cmd.Parameters.AddWithValue("$to", toAgentId);
+        var raw = await cmd.ExecuteScalarAsync(ct);
+        return Convert.ToInt32(raw ?? 0);
+    }
+
+    private async ValueTask<AgentTaskRecord?> ReadTaskAsync(SqliteConnection conn, string taskId, CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT task_id, team_id, title, owner_agent_id, status, depends_on_json,
+                   version, created_at, updated_at
+            FROM agent_tasks WHERE task_id = $id LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue("$id", taskId);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        return (await r.ReadAsync(ct)) ? ReadTask(r) : null;
+    }
+
 
     public async ValueTask<bool> NoteTerminalForWaitsAsync(string assignmentId, CancellationToken ct = default)
     {

@@ -92,6 +92,10 @@
       <h2>LANES <span class="meta" id="lanes-n"></span></h2>
       <div id="lanes"></div>
     </section>
+    <section id="sec-budget">
+      <h2>BUDGET <span class="meta" id="budget-n"></span></h2>
+      <div id="budget"></div>
+    </section>
     <section id="sec-agents">
       <h2>AGENTS <span class="meta" id="agents-n"></span></h2>
       <div id="agents"></div>
@@ -160,6 +164,8 @@
       if (m) return `${m}m ${ss}s`;
       return `${ss}s`;
     }
+
+    const fmtNum = (n) => { const v = Number(n); if (!isFinite(v)) return "0"; return v >= 1000 ? v.toLocaleString() : String(Math.round(v * 1000) / 1000); };
 
     /**
      * Reconcile a list container: rows are keyed by data-<key> and updated IN
@@ -413,6 +419,32 @@
       $("lanes-n").textContent = `(${pools.length} pool${pools.length === 1 ? "" : "s"} · ${totalOwned} owned · ${totalQueue} queued)`;
     }
 
+    function renderBudgets(b) {
+      const box = $("budget");
+      if (!b || !b.available) {
+        sectionUnavailable(box, "cloud budget service unavailable.");
+        $("budget-n").textContent = "";
+        return;
+      }
+      const teams = b.teams || [];
+      if (!teams.length) {
+        box.innerHTML = `<div class="empty">no cloud budgets configured.</div>`;
+        $("budget-n").textContent = "";
+        return;
+      }
+      box.innerHTML = teams.map(t => {
+        const label = `${esc(t.teamId)} · ${esc(t.unit)}` + (t.currency ? ` (${esc(t.currency)})` : "");
+        const spent = `${fmtNum(t.spent)} / ${fmtNum(t.limit)}${t.unit === "tokens" ? " tok" : ""}`;
+        const pct = t.limit > 0 ? Math.min(100, Math.round((t.spent / t.limit) * 100)) : 0;
+        return `<div class="lane-row">
+          <span class="pool">${label}</span>
+          <span class="pill ${pct >= 100 ? "" : "running"}">${spent}</span>
+          <span class="meta2">remaining ${fmtNum(t.remaining)} · reserved ${fmtNum(t.reserved)}</span>
+        </div>`;
+      }).join("");
+      $("budget-n").textContent = `(${teams.length} team${teams.length === 1 ? "" : "s"})`;
+    }
+
     function renderAgents(a) {
       const box = $("agents");
       const wrap = $("history-wrap");
@@ -509,6 +541,7 @@
         $("dot").classList.add("on");
         $("badge").textContent = "live";
         renderLanes(d.lanes);
+        renderBudgets(d.budgets);
         renderAgents(d.agents);
         renderBg(d.processes);
         renderFg(d.processes);

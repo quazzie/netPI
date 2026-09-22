@@ -61,6 +61,21 @@ internal sealed class WebApp : IAsyncDisposable
     private IAgentRuntime? _agent;
     private IModelCatalog? _catalog;
     /// <summary>
+    /// astra-2 §3.3: lane admission + execution policy for POOLED models.
+    /// Manual maintenance (<c>session.compact</c>) for a pooled model must be
+    /// admitted like any other segment — a missing Lanes plugin resolves both
+    /// to null and degrades to the legacy direct path.
+    /// </summary>
+    private ILaneScheduler? _lanes;
+    private IDeploymentPolicySource? _deployments;
+    /// <summary>
+    /// astra-2 §3.3: in-flight manual-maintenance tokens held under a lane,
+    /// keyed by the durable assignment id (the lane token's AssignmentId).
+    /// The admission-sink handler looks a freed token up here to decide
+    /// whether it owns the maintenance run (vs. a chat run the runner owns).
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, MaintenanceRun> _maintenance = new();
+    /// <summary>
     /// astra-1 P3: the session store is resolved per access, NEVER cached.
     /// The old <c>_store ??=</c> cache pinned an unleased instance forever —
     /// a <c>plugin.reload</c> of netpi.storage.sqlite would leave this surface
@@ -168,6 +183,18 @@ internal sealed class WebApp : IAsyncDisposable
         _steering = Resolve<ISteeringQueue>("steering");
         _compaction = Resolve<ICompaction>("compaction");
         _commands = Resolve<NetPI.Abstractions.ICommandRegistry>("commands");
+        // astra-2 §3.3: manual maintenance for a POOLED model goes through lane
+        // admission, never bypasses it. Resolve the scheduler + policy source here
+        // (absent → legacy direct path; see the session.compact handler).
+        _lanes = Resolve<ILaneScheduler>("lanes");
+        _deployments = Resolve<IDeploymentPolicySource>("deployments");
+        if (_lanes is ILaneAdmissionSink admissionSink)
+        {
+            // The runner subscribes to the SAME sink and no-ops on run ids it
+            // never started, so this second subscriber is safe. The sink is
+            // add-only (no unsubscribe), so the stop guard lives in the handler.
+            admissionSink.OnAdmittedFromQueue(OnMaintenanceAdmitted);
+        }
 
         _subs.Add(_ctx.Events.Subscribe<AgentEvent>(OnAgentEvent));
         _subs.Add(_ctx.Events.Subscribe<ModelRequestDiagnostics>(OnModelDiagnostics));
@@ -335,6 +362,8 @@ internal sealed class WebApp : IAsyncDisposable
         _catalog = Resolve<IModelCatalog>("catalog");
         _steering = Resolve<ISteeringQueue>("steering");
         _compaction = Resolve<ICompaction>("compaction");
+        _lanes = Resolve<ILaneScheduler>("lanes");
+        _deployments = Resolve<IDeploymentPolicySource>("deployments");
     }
 
     // ---- agent event bridge ------------------------------------------------
@@ -494,6 +523,129 @@ internal sealed class WebApp : IAsyncDisposable
             // a persistence failure is reported, not fatal to the send.
             return $"queued run could not be persisted: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// astra-2 §3.3 (B4): one manual-maintenance compaction held under a lane.
+    /// Keyed by the durable assignment id (== the lane token's AssignmentId);
+    /// the admission-sink handler uses it to tell "our" tokens apart from the
+    /// runner's chat-run tokens.
+    /// </summary>
+    private sealed record MaintenanceRun(
+        string AssignmentId,
+        LaneOwnershipToken? Token,
+        string SessionId,
+        string ModelId,
+        string? Reasoning);
+
+    /// <summary>
+    /// astra-2 §3.3 (B4): the lane pool admitted a QUEUED manual compaction —
+    /// run it now. Only tokens we minted (tracked in <see cref="_maintenance"/>
+    /// by their assignment id) are ours; the runner's chat-run tokens are
+    /// no-ops here (it owns them and starts them itself). The handler must be
+    /// non-blocking (it fires right after the admission lock releases), so the
+    /// compaction runs fire-and-forget; the token is released in its finally
+    /// even when the compaction faults.
+    /// </summary>
+    private void OnMaintenanceAdmitted(LaneOwnershipToken token)
+    {
+        if (_app is null) return; // surface stopped: never touch a released lane
+        // TryRemove: the inline (directly-admitted) path already ran and
+        // removed its run; a token released AFTER that re-fires this sink,
+        // and the miss keeps it a no-op (never a double compaction).
+        if (!_maintenance.TryGetValue(token.AssignmentId, out var run)) return;
+        // The admitted token is the lane authority for this run (queued runs
+        // were registered with a null token; the sink is only reached for
+        // queue admissions, so this never clobbers a live token).
+        run = run with { Token = token };
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await RunMaintenanceAsync(run, CancellationToken.None);
+            }
+            finally
+            {
+                if (_lanes is { } l) { try { await l.ReleaseAsync(token); } catch { } }
+            }
+        });
+    }
+
+    /// <summary>
+    /// astra-2 §3.3 (B4): execute the manual compaction for a held maintenance
+    /// run (its lane is already ours). Updates the durable row's lifecycle
+    /// (Queued → Running → Completed/Failed) so the Work board and shell
+    /// reflect it, releases nothing (the caller owns the token release), and
+    /// notifies the session. Returns true when a compaction actually ran.
+    /// </summary>
+    private async Task<bool> RunMaintenanceAsync(MaintenanceRun run, CancellationToken ct, bool notify = true)
+    {
+        // The single-run guard: whoever removes the run from the tracking map
+        // executes it; a second removal (a re-fired sink token) no-ops.
+        if (!_maintenance.TryRemove(run.AssignmentId, out _)) return false;
+        var store = Resolve<IOrchestrationStore>("orchestration-store");
+        var compaction = _compaction;
+        bool performed = false;
+        string reason = "";
+        try
+        {
+            if (compaction is { IsAvailable: true })
+            {
+                var result = await compaction.CompactAsync(new CompactionRequest
+                {
+                    SessionId = run.SessionId,
+                    ModelId = run.ModelId,
+                    ReasoningLevel = run.Reasoning,
+                }, ct);
+                performed = result is { Performed: true };
+                reason = performed ? "manual compaction completed under lane" : "no-op (below threshold)";
+            }
+            else
+            {
+                reason = "compaction service unavailable";
+            }
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+            _log.Warning($"manual compaction failed ({run.AssignmentId}): {ex.Message}");
+        }
+
+        // Reconcile the durable row (best-effort: no store → in-memory queue
+        // only, same degrade as a missing stack elsewhere). The row's run_id
+        // IS the op id; GetByRunIdAsync keys the update.
+        if (store is not null)
+        {
+            try
+            {
+                var row = await store.GetByRunIdAsync(run.AssignmentId, ct);
+                if (row is not null)
+                {
+                    if (row.Lifecycle == AgentAssignmentLifecycle.Queued)
+                        await store.TransitionAsync(row.AssignmentId, row.Version,
+                            AgentAssignmentLifecycle.Running, AgentState.Compacting,
+                            row.PoolId, run.Token?.LaneId, row.DeploymentId, "lane admitted", null, ct);
+                    var r2 = await store.GetByRunIdAsync(run.AssignmentId, ct);
+                    if (r2 is not null && r2.IsNonTerminal)
+                        await store.TransitionAsync(r2.AssignmentId, r2.Version,
+                            performed ? AgentAssignmentLifecycle.Completed : AgentAssignmentLifecycle.Failed,
+                            AgentState.Idle, r2.PoolId, r2.LaneId, r2.DeploymentId, reason, null, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Warning($"manual compaction row reconcile failed ({run.AssignmentId}): {ex.Message}");
+            }
+        }
+
+        if (performed) await BroadcastSession(run.SessionId, ct);
+        if (notify)
+            SendEvent("session.compact.result", new
+            {
+                sessionId = run.SessionId, performed = performed, note = reason,
+                queued = false, assignmentId = run.AssignmentId,
+            }, run.SessionId);
+        return performed;
     }
     private void OnAgentEvent(AgentEvent e)
     {
@@ -1248,22 +1400,109 @@ internal sealed class WebApp : IAsyncDisposable
                         modelId = _catalog.Models[0].ModelId;
                     if (!string.IsNullOrEmpty(modelId))
                     {
-                        try
+                        // astra-2 §3.3 (B4): a POOLED model's manual maintenance
+                        // must be admitted by the lane pool like any other segment
+                        // — never a direct compaction call that bypasses admission.
+                        var policy = _deployments?.PolicyFor(modelId);
+                        if (policy is { RequiresLane: true } pooled)
                         {
-                            var result = await _compaction.CompactAsync(new CompactionRequest
+                            if (_runner?.GetSessionRun(sid) is not null)
                             {
-                                SessionId = sid,
-                                ModelId = modelId,
-                                ReasoningLevel = reasoning,
-                            }, ct);
-                            ok = result is { Performed: true };
-                            note = ok ? "compacted" : "no-op (below threshold)";
-                            await BroadcastSession(sid, ct);
+                                note = "session is busy — manual maintenance waits for the live run";
+                            }
+                            else if (_lanes is null)
+                            {
+                                note = "lane scheduler unavailable — maintenance cannot be admitted";
+                            }
+                            else
+                            {
+                                // Durable first (the store's run_id == this assignment
+                                // id), so a queued maintenance row survives a restart
+                                // as stored work — never a live-task bypass. A missing
+                                // orchestration store degrades to in-memory queueing
+                                // (the runner's chat queue works the same way); the
+                                // admission itself is unaffected.
+                                var opId = Guid.NewGuid().ToString("n");
+                                string? persistError = null;
+                                var store = Resolve<IOrchestrationStore>("orchestration-store");
+                                if (store is not null)
+                                {
+                                    try
+                                    {
+                                        var root = await store.EnsureRootAgentAsync(sid, null, "agent", ct);
+                                        // A fresh row is always Queued/Idle: a session
+                                        // with an existing nonterminal row gets one QUEUED
+                                        // BEHIND it (store invariant), an idle session gets
+                                        // a lone Queued row. Either way the pool arbitrates
+                                        // below — the row is the durable work, the lane is
+                                        // the authority.
+                                        await store.CreateAssignmentAsync(
+                                            opId, root.AgentId, sid, null, null, modelId,
+                                            pooled.PoolId, pooled.DeploymentId,
+                                            "compact: manual context compaction", null, null, null, ct);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        persistError = $"could not be made durable: {ex.Message}";
+                                    }
+                                }
+                                var acquire = await _lanes.AcquireAsync(new LaneQueueEntry(
+                                    opId, pooled.PoolId!, pooled.DeploymentId, 0, null, null,
+                                    sid, "compact", DateTimeOffset.UtcNow));
+                                if (acquire.Token is { } token)
+                                {
+                                    var run = new MaintenanceRun(
+                                        opId, token, sid, modelId, reasoning);
+                                    _maintenance[opId] = run;
+                                    try
+                                    {
+                                        ok = await RunMaintenanceAsync(run, ct, notify: false);
+                                    }
+                                    finally
+                                    {
+                                        // The inline path runs the maintenance itself; the
+                                        // admission sink fires later with a token we no longer
+                                        // own (TryRemove misses) and no-ops. Release HERE so a
+                                        // pool slot is freed exactly once per run.
+                                        try { await _lanes.ReleaseAsync(token); } catch { }
+                                    }
+                                    note = ok
+                                        ? "compacted (lane admitted)" + (persistError is null ? "" : $"; but {persistError}")
+                                        : note;
+                                }
+                                else
+                                {
+                                    // Hold the pending run: when the pool later admits this queue
+                                    // entry, the admission sink finds it and executes the
+                                    // compaction (the durable row above is the stored work).
+                                    _maintenance[opId] = new MaintenanceRun(
+                                        opId, null, sid, modelId, reasoning);
+                                    note = $"queued: position {acquire.QueuePosition} in pool {pooled.PoolId}" +
+                                           (persistError is null ? "" : $" ({persistError})");
+                                }
+                            }
                         }
-                        catch (Exception ex)
+                        else
                         {
-                            note = ex.Message;
-                            _log.Warning($"session.compact failed: {ex.Message}");
+                            // No pool binding (legacy direct / cloud-direct / no
+                            // Lanes plugin): the historical direct path.
+                            try
+                            {
+                                var result = await _compaction.CompactAsync(new CompactionRequest
+                                {
+                                    SessionId = sid,
+                                    ModelId = modelId,
+                                    ReasoningLevel = reasoning,
+                                }, ct);
+                                ok = result is { Performed: true };
+                                note = ok ? "compacted" : "no-op (below threshold)";
+                                await BroadcastSession(sid, ct);
+                            }
+                            catch (Exception ex)
+                            {
+                                note = ex.Message;
+                                _log.Warning($"session.compact failed: {ex.Message}");
+                            }
                         }
                     }
                     else note = "no model";

@@ -17,6 +17,25 @@
     workspace = store.session?.workspace ?? "";
   });
 
+  // astra-2 §5.3/§5.4 (F6): the execution model is discovery-backed and read-only.
+  // The shell already receives the lanes/pool snapshot (`lanes.state`) into
+  // store.laneSnapshot; surface it here as provider-discovered pools/deployments
+  // with their live capacity — no free-text editing, no rebind controls.
+  type LanePool = {
+    poolId: string;
+    deploymentId: string;
+    modelId: string;
+    ownedCount: number;
+    queueCount: number;
+    targetCapacity: number | null;
+    enabled: boolean;
+    blockReason?: string | null;
+  };
+  let pools = $derived<LanePool[]>(
+    (store.laneSnapshot?.["pools"] as LanePool[]) ?? []
+  );
+  let anyLanes = $derived(pools.length > 0);
+
   $effect(() => {
     if (!open) return;
     // focus the dialog on open; restore focus to the opener on close.
@@ -101,6 +120,48 @@
           <small>Tool calls stay expanded by default instead of collapsing to a header row.</small>
         </span>
       </label>
+
+      <div class="setting-group">
+        <strong>Execution (discovery-backed)</strong>
+        <small class="setting-note" style="display:block">
+          Pools, deployments and live capacity are discovered from the provider —
+          read-only here. Adjust them via the host config, not this dialog.
+        </small>
+        {#if anyLanes}
+          <div class="exec-pools">
+            {#each pools as p, i (p.poolId + i)}
+              <div class="exec-pool" class:disabled={!p.enabled}>
+                <div class="exec-pool-head">
+                  <span class="exec-pool-name">{p.poolId}</span>
+                  {#if p.enabled}
+                    <span class="exec-tag on">enabled</span>
+                  {:else}
+                    <span class="exec-tag off">disabled</span>
+                  {/if}
+                </div>
+                <div class="exec-pool-meta">
+                  <span>deployment: {p.deploymentId}</span>
+                  <span>model: {p.modelId}</span>
+                  <span>
+                    owned {p.ownedCount}
+                    / {p.targetCapacity != null ? `cap ${p.targetCapacity}` : "provider"}
+                    · queued {p.queueCount}
+                  </span>
+                </div>
+                {#if p.blockReason}
+                  <div class="exec-pool-block">{p.blockReason}</div>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <div class="setting-note exec-empty">
+            No pools discovered yet — local lanes are disabled or the pool capacity
+            source has not reported. Execution settings live in the host config
+            (<code>netpi.lanes</code>); they are not editable from this surface.
+          </div>
+        {/if}
+      </div>
 
       <div class="setting-group">
         <label for="settings-workspace">Session workspace</label>

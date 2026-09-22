@@ -37,7 +37,7 @@ public sealed class OrchestrationPlugin : INetPiPlugin
                 _maxOutstandingMessages = m.GetInt32();
         }
         var store = context.Services.Resolve<IOrchestrationStore>("orchestration-store");
-        _orchestrator = new AgentOrchestrator(context, store, _maxDelegationDepth);
+        _orchestrator = new AgentOrchestrator(context, store, _maxDelegationDepth, _maxOutstandingMessages);
         context.Services.Register<IAgentOrchestrator>("orchestration", _orchestrator);
         await ValueTask.CompletedTask;
     }
@@ -83,6 +83,7 @@ public sealed class OrchestrationPlugin : INetPiPlugin
             new AgentsContinueTool(orch),
             new AgentsCancelTool(orch),
             new LanesListTool(orch),
+            new TeamTasksTool(orch),
         ];
         _registrations = _tools.Select(t => registry.Register(t)).ToArray();
         _toolsRegistry = registry;
@@ -278,6 +279,7 @@ internal sealed class AgentsMessageTool : AgentToolBase
             var seq = await Orch.SendMessageAsync(from, to!, kind, body, key, cancellationToken);
             return Ok(context, new { toAgentId = to, kind, seq });
         }
+        catch (MessageBoundExceededException ex) { return Err(context, ex.Message); }
         catch (Exception ex) { return Err(context, $"Message failed: {ex.Message}"); }
     }
     private static string? S(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
@@ -473,4 +475,87 @@ internal sealed class LanesListTool : AgentToolBase
         return new ValueTask<ToolResult>(new ToolResult("", "lanes.list", [new TextPart(json)]));
     }
     private static string? S(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+}
+
+internal sealed class TeamTasksTool : AgentToolBase
+{
+    public TeamTasksTool(AgentOrchestrator o) : base(o) { }
+    public override string Name => "team.tasks";
+    public override string Description => "Manage the team's task board. Actions: list (read the team's tasks, optional status filter), create (add a task, optional dependsOn array), claim (take ownership of a task — idempotent; a claim by another agent fails without clobbering), update (set status open|claimed|done|dropped), delete. Caller identity (team + agent) comes from the runtime context — you cannot target another team or impersonate another agent.";
+    public override JsonElement Parameters => Json.Obj(
+        ("action", "One of: list | create | claim | update | delete"),
+        ("taskId", "Task id (required for claim | update | delete)"),
+        ("title", "Task title (required for create)"),
+        ("status", "New status for update: open | claimed | done | dropped"),
+        ("dependsOn", "Array of task ids this task depends on (create only; must form a DAG)"));
+    public override IReadOnlyList<string> Guidelines => [
+        "Task board is team-scoped: operations apply to your own team and are attributed to your agent id (from the runtime context).",
+        "Use claim before update(status='done') to record ownership; a competing claim by another agent will fail.",
+        "List supports an optional status filter to narrow the view."];
+    public override async ValueTask<ToolResult> ExecuteAsync(ToolContext context, CancellationToken cancellationToken)
+    {
+        var args = context.Arguments;
+        var action = S(args, "action") ?? "";
+        var agentId = context.AgentId ?? "";
+        var teamId = context.TeamId;
+        if (string.IsNullOrEmpty(teamId)) return Err(context, "team.tasks: no team id in runtime context");
+
+        switch (action)
+        {
+            case "list":
+            {
+                var status = S(args, "status");
+                var tasks = await Orch.ListTasksAsync(teamId, status, cancellationToken);
+                return Ok(context, new { action, count = tasks.Count, tasks });
+            }
+            case "create":
+            {
+                var title = S(args, "title") ?? "";
+                if (string.IsNullOrEmpty(title)) return Err(context, "create requires 'title'");
+                var deps = ParseStringArray(args, "dependsOn");
+                var taskId = Guid.NewGuid().ToString("N");
+                try
+                {
+                    var rec = await Orch.CreateTaskAsync(taskId, teamId, title, deps, cancellationToken);
+                    return Ok(context, new { action, taskId = rec.TaskId, title, status = rec.Status });
+                }
+                catch (Exception ex) { return Err(context, $"create failed: {ex.Message}"); }
+            }
+            case "claim":
+            {
+                var taskId = S(args, "taskId") ?? "";
+                if (string.IsNullOrEmpty(taskId)) return Err(context, "claim requires 'taskId'");
+                if (string.IsNullOrEmpty(agentId)) return Err(context, "claim requires an agent id in runtime context");
+                var ok = await Orch.ClaimTaskAsync(taskId, agentId, cancellationToken);
+                return Ok(context, new { action, taskId, claimed = ok,
+                    reason = ok ? "" : "task already claimed by another agent or does not exist" });
+            }
+            case "update":
+            {
+                var taskId = S(args, "taskId") ?? "";
+                var status = S(args, "status") ?? "";
+                if (string.IsNullOrEmpty(taskId)) return Err(context, "update requires 'taskId'");
+                if (string.IsNullOrEmpty(status)) return Err(context, "update requires 'status' (open|claimed|done|dropped)");
+                var owner = status == "claimed" ? agentId : null;
+                await Orch.UpdateTaskStatusAsync(taskId, status, owner, cancellationToken);
+                return Ok(context, new { action, taskId, status });
+            }
+            case "delete":
+            {
+                var taskId = S(args, "taskId") ?? "";
+                if (string.IsNullOrEmpty(taskId)) return Err(context, "delete requires 'taskId'");
+                var deleted = await Orch.DeleteTaskAsync(taskId, cancellationToken);
+                return Ok(context, new { action, taskId, deleted });
+            }
+            default:
+                return Err(context, $"team.tasks: unknown action '{action}' (use list|create|claim|update|delete)");
+        }
+    }
+    private static string? S(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    private static IReadOnlyList<string> ParseStringArray(JsonElement e, string k)
+        => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Array
+            ? v.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList()
+            : [];
+    private static ToolResult Ok(ToolContext ctx, object p) => new("", "team.tasks", [new TextPart(JsonSerializer.Serialize(p))]);
+    private static ToolResult Err(ToolContext ctx, string m) => new("", "team.tasks", [new TextPart(m)], IsError: true);
 }

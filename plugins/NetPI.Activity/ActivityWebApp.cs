@@ -121,11 +121,13 @@ public sealed class ActivityWebApp
             var agents = await AgentsPayloadAsync(ct);
             var processes = await ProcessesPayloadAsync(ct);
             var lanes = LanesPayloadAsync();
+            var budgets = await BudgetsPayloadAsync(ct);
             c.Response.ContentType = "application/json; charset=utf-8";
             await c.Response.WriteAsync(JsonSerializer.Serialize(new
             {
                 agents,
                 lanes,
+                budgets,
                 processes,
                 ts = DateTimeOffset.UtcNow,
             }, Json));
@@ -250,6 +252,12 @@ public sealed class ActivityWebApp
     private IAgentOrchestrator? Orchestrator()
     {
         try { return _ctx.Services.Resolve<IAgentOrchestrator>("orchestration"); }
+        catch (ServiceUnavailableException) { return null; }
+    }
+
+    private ICloudBudgetStore? Budgets()
+    {
+        try { return _ctx.Services.Resolve<ICloudBudgetStore>("cloud-budgets"); }
         catch (ServiceUnavailableException) { return null; }
     }
 
@@ -389,6 +397,40 @@ public sealed class ActivityWebApp
         catch
         {
             return new LanePayload(false, Array.Empty<LaneRowDto>());
+        }
+    }
+
+    /// <summary>
+    /// astra-2 §11 (package F): the per-team cloud budget/usage snapshot — read-only
+    /// display data for the Work panel. Resolves the storage plugin's cloud-budgets
+    /// service (null when absent) and reports EXPLICIT availability; a missing or
+    /// failing service degrades the section, not the view.
+    /// </summary>
+    internal async ValueTask<BudgetPayload> BudgetsPayloadAsync(CancellationToken ct)
+    {
+        var store = Budgets();
+        if (store is null)
+            return new BudgetPayload(false, Array.Empty<BudgetRowDto>());
+        try
+        {
+            var rows = (await store.UsageAsync(ct))
+                .OrderBy(u => u.TeamId, StringComparer.Ordinal)
+                .Select(u => new BudgetRowDto
+                {
+                    TeamId = u.TeamId,
+                    Currency = u.Currency,
+                    Unit = u.Unit == CloudBudgetUnit.Tokens ? "tokens" : "currency",
+                    Limit = u.Limit,
+                    Reserved = u.Reserved,
+                    Spent = u.Spent,
+                    Remaining = u.Remaining,
+                })
+                .ToArray();
+            return new BudgetPayload(true, rows);
+        }
+        catch
+        {
+            return new BudgetPayload(false, Array.Empty<BudgetRowDto>());
         }
     }
 
@@ -564,6 +606,25 @@ public sealed class LaneRowDto
 
 /// <summary>The lanes section of the Work payload (explicit availability).</summary>
 public sealed record LanePayload(bool Available, LaneRowDto[] Pools);
+
+/// <summary>
+/// One team's cloud budget/usage row for the Work panel's read-only budget section
+/// (astra-2 §11). Unit is already a wire string ("tokens" | "currency").
+/// </summary>
+public sealed class BudgetRowDto
+{
+    public string TeamId { get; init; } = "";
+    public string Currency { get; init; } = "";
+    public string Unit { get; init; } = "currency";
+    public double Limit { get; init; }
+    public double Reserved { get; init; }
+    public double Spent { get; init; }
+    public double Remaining { get; init; }
+}
+
+/// <summary>The budget section of the Work payload (explicit availability).</summary>
+public sealed record BudgetPayload(bool Available, BudgetRowDto[] Teams);
+
 
 /// <summary>
 /// Lower-case wire names for the non-lifecycle enums the panel renders
