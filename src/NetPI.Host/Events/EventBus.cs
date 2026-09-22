@@ -31,8 +31,16 @@ public sealed class EventBus : IEventBus
     private int _order;
     private readonly Dictionary<Type, List<SubEntry>> _subs = new();
 
+    /// <summary>
+    /// astra-1 P3: ambient subscribe — NO owning plugin. The scoped wrapper
+    /// (<see cref="Plugins.PluginContextEvents"/>) is the only path that binds
+    /// a generation to a subscription; this overload (host-side / anonymous)
+    /// does not. It no longer consults a process-global ambient static — that
+    /// state was mutable shared ownership and never assigned, so it always
+    /// resolved to null anyway.
+    /// </summary>
     public IDisposable Subscribe<TEvent>(NetPI.Abstractions.EventHandler<TEvent> handler, EventSubscriptionOptions? options = null)
-        => Subscribe(handler, options, ServiceRegistry.ServiceOwner.Current);
+        => Subscribe(handler, options, null);
 
     /// <summary>
     /// astra-1 P3: subscription with an EXPLICIT owner (the scoped wrapper
@@ -73,6 +81,18 @@ public sealed class EventBus : IEventBus
     }
 
     public ValueTask PublishAsync<TEvent>(TEvent @event, CancellationToken cancellationToken = default) where TEvent : notnull
+        => PublishAsync(@event, null, cancellationToken);
+
+    /// <summary>
+    /// astra-1 P3: publish with an EXPLICIT publisher owner (the scoped wrapper
+    /// passes the actual owning generation). The self-event filter
+    /// (ReceiveSelfEvents == false → skip the publisher's own handler) matches
+    /// against this explicit owner, not a process-global ambient static (which
+    /// was mutable shared ownership, never assigned, and thus always null — so
+    /// the filter could never match a plugin). The parameterless overload keeps
+    /// the host-side / anonymous path.
+    /// </summary>
+    public ValueTask PublishAsync<TEvent>(TEvent @event, Plugins.PluginInstance? publisher, CancellationToken cancellationToken = default) where TEvent : notnull
     {
         List<SubEntry> snapshot;
         lock (_gate)
@@ -86,7 +106,6 @@ public sealed class EventBus : IEventBus
                 .ToList();
         }
 
-        var publisher = ServiceRegistry.ServiceOwner.Current;
         foreach (var s in snapshot)
         {
             cancellationToken.ThrowIfCancellationRequested();

@@ -4,6 +4,7 @@ import type {
   ModelInfo,
   PluginStatus,
   SessionInfo,
+  ProjectInfo,
   Usage,
 } from "./types";
 
@@ -235,6 +236,20 @@ class NetPIWebSocket {
         }
         break;
       }
+      // astra-1 C (G1 gap): server-backed project management. project.list is
+      // a request reply (the ack for the request resolves separately) — mirror
+      // its payload into the store; project.created upserts the fresh row.
+      case "project.list": {
+        store.setProjects((p.projects as ProjectInfo[]) ?? []);
+        break;
+      }
+
+      case "project.created": {
+        const proj = p.project as ProjectInfo | undefined;
+        if (proj) store.upsertProject(proj);
+        break;
+      }
+
 
       case "session.project.pending": {
         // astra-1 D2: a project switch was enqueued while a run is in flight.
@@ -252,6 +267,9 @@ class NetPIWebSocket {
         // notice; the session metadata refresh arrives via session.updated.
         const psid = sid ?? p.sessionId ?? null;
         if (psid) store.setProjectPending(psid, null);
+        // astra-1 C (G1 gap): a switch (or refresh) that lands also resolves any
+        // picker notice tagged with this operation (a retried op that now works).
+        store.clearProjectNotice(typeof p.operationId === "string" ? p.operationId : null);
         break;
       }
       case "session.deleted": {
@@ -279,14 +297,26 @@ class NetPIWebSocket {
       case "session.list":
         {
           const list = (p.sessions as SessionInfo[]) ?? [];
-          if ((p.offset ?? 0) > 0) {
+          const query = typeof p.query === "string" && p.query ? p.query : null;
+          if (query) {
+            // astra-1 G1: server-side search — a separate result set; the loaded
+            // global list (tabs, "load more") is untouched by the query.
+            if ((p.offset ?? 0) > 0) {
+              const known = new Set(store.sessionSearch?.map((s) => s.id) ?? []);
+              for (const s of list)
+                if (!known.has(s.id)) (store.sessionSearch ??= []).push(s);
+            } else {
+              store.sessionSearch = list;
+            }
+            store.sessionSearchTotal = p.total ?? list.length;
+          } else if ((p.offset ?? 0) > 0) {
             // Continuation page ("load more"): append unseen sessions in server order.
             const known = new Set(store.sessions.map((s) => s.id));
             for (const s of list) if (!known.has(s.id)) store.sessions.push(s);
           } else {
             store.sessions = list;
           }
-          store.sessionTotal = p.total ?? store.sessions.length;
+          if (!query) store.sessionTotal = p.total ?? store.sessions.length;
         }
         break;
 
@@ -301,6 +331,15 @@ class NetPIWebSocket {
         if (!isCurrent(sid) && !nav(sid)) break;
         this.ingestEntries(p, true);
         if (p.replace) store.revealTail(REVEAL_INITIAL);
+        // astra-1 F: reconstruct the in-flight assistant message. The server
+        // folds the unflushed deltas into the accumulator, so this snapshot is
+        // the authoritative partial output; subsequent live text.delta events
+        // append to the same block (no duplication). maxSequence is the
+        // reconcile cursor for any late entry replay.
+        if (p.streaming && typeof p.streaming.text === "string" && p.streaming.text.length) {
+          store.startAssistant();
+          store.appendTextDelta(p.streaming.text);
+        }
         break;
 
       case "session.older":
@@ -489,6 +528,20 @@ class NetPIWebSocket {
           if (prepend) store.prependSystem(e.text ?? "");
           else store.appendSystem(e.text ?? "");
           break;
+        // astra-1 D: project-change events (server entry type `project_context`)
+        // are a distinct transcript block — provenance is the application, not
+        // the model (rendered by ProjectContextBlock, never as a user message).
+        case "project_context": {
+          const block = {
+            projectName: String(e.projectName ?? ""),
+            workspace: String(e.workspace ?? ""),
+            contentHash: String(e.contentHash ?? ""),
+            text: String(e.text ?? ""),
+          };
+          if (prepend) store.prependProjectContext(block);
+          else store.appendProjectContext(block);
+          break;
+        }
         default:
           break;
       }

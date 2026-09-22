@@ -6,7 +6,9 @@ namespace NetPI.Host.Plugins;
 
 /// <summary>
 /// Collectible <see cref="AssemblyLoadContext"/> for one plugin generation
-/// (PLAN §5). Uses an <see cref="AssemblyDependencyResolver"/> for the plugin's
+/// (PLAN §5). Uses an <see cref="AssemblyDependencyResolver"/> scoped to the
+/// plugin's DECLARED ENTRY assembly (astra-1 P4 — the resolver's documented
+/// input is a path to the entry DLL, not a directory) for the plugin's
 /// private dependencies, but always resolves <c>netPI.Abstractions</c> from the
 /// default ALC — otherwise interface type identity breaks across the boundary.
 /// </summary>
@@ -26,10 +28,16 @@ public sealed class PluginLoadContext : AssemblyLoadContext
     /// </summary>
     private readonly Func<string, string> _remapNative;
 
-    public PluginLoadContext(string name, string pluginDirectory, Func<string, string>? remapNative = null)
+    /// <summary>
+    /// astra-1 P4: <paramref name="entryAssemblyPath"/> is the FULL path to the
+    /// plugin's declared entry DLL — the documented input for
+    /// <see cref="AssemblyDependencyResolver"/>, which resolves private
+    /// dependencies relative to that assembly's location.
+    /// </summary>
+    public PluginLoadContext(string name, string entryAssemblyPath, Func<string, string>? remapNative = null)
         : base(name, isCollectible: true)
     {
-        _resolver = new AssemblyDependencyResolver(pluginDirectory);
+        _resolver = new AssemblyDependencyResolver(entryAssemblyPath);
         _remapNative = remapNative ?? (path => path);
     }
 

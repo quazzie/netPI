@@ -43,6 +43,7 @@ web/netpi-web: ws.ts "ui.panels" → store.webPanels → RightPanel.svelte tab l
 | `plugins/NetPI.Web/WebPlugin.cs` | Self-registers the "plugins" panel (see Reference implementation) |
 | `plugins/NetPI.Diagnostics/` | Registers the "diagnostics" panel with an **absolute** `EntryUrl` (`http://127.0.0.1:5274/panel/diagnostics`) — the page + API live on the Diagnostics plugin's own Kestrel port; the panel tab appears/disappears with the plugin generation |
 | `plugins/NetPI.BackgroundTasks/` | Registers the "background" panel (`http://127.0.0.1:5275/panel/background`); the page lists background jobs and stops them via same-origin `/api/bg/*` endpoints (BgWebApp.cs) |
+| `plugins/NetPI.Activity/` | Registers the "activity" panel (`http://127.0.0.1:5276/panel/activity`); runs + managed processes via same-origin `/api/activity/*` endpoints (ActivityWebApp.cs, astra-1 H) |
 | `web/netpi-web/src/types.ts` | `WebPanelInfo` wire type |
 | `web/netpi-web/src/store.svelte.ts` | `webPanels` state |
 | `web/netpi-web/src/ws.ts` | `case "ui.panels"` → store |
@@ -193,6 +194,18 @@ the Diagnostics plugin — the Svelte shell has zero hardcoded tabs:
   every 2 s, re-points the registration at the real bound URL when port 0 is
   used, and `location.reload()`s itself if the surface stays unreachable
   (plugin reload / host restart) so it self-heals across generations.
+- `plugins/NetPI.Activity/` — `LoadAsync` registers
+  `("activity", "Activity", "✦", "http://127.0.0.1:{port}/panel/activity", 7)`
+  (absolute URL; default port 5276, `plugins.netpi.activity.port`).
+  `ActivityWebApp.cs` serves the embedded `panels/activity.html` plus
+  `GET /api/activity/agents` (run-query: all runs from every session),
+  `POST /api/activity/agents/{runId}/cancel`, `GET /api/activity/processes`
+  (background jobs + foreground shell processes),
+  `GET /api/activity/processes/background/{id}/output?chars=` and
+  `POST /api/activity/processes/background/{id}/stop`. All services are
+  resolved LAZILY — a missing Agent/BackgroundTasks/Tools plugin degrades a
+  section to "unavailable" instead of erroring, so Activity never blocks
+  chat. It is presentation-only: unloading it never touches the runs it shows.
 
 **Deploying a new NetPI.Web build:** `dotnet build` the plugin →
 `pwsh tools/publish-plugins.ps1 -Configuration Debug` → `plugin.reload` in the

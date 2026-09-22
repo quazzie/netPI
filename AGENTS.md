@@ -46,9 +46,15 @@ plugins/                  One folder per plugin; each now holds only a `current.
                                                               the "diagnostics" panel (tabs: overview,
                                                               wire, plugins, models, events, logs,
                                                               sessions).
+                            NetPI.Activity      agent-runs + managed-process view (astra-1 H): "activity" panel on
+                                                              its own :5276 Kestrel; run-query + background-job +
+                                                              foreground-process surfaces; presentation-only
+                                                              (docs/web-panels.md).
+                            NetPI.Nudge         cut-off guard (astra-1 follow-up): steers a run back on an
+                                                              empty model turn (bounded per run); Web owns the notice.
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
-tests/NetPI.Host.Tests/   150 xunit tests; the integration surface.
+tests/NetPI.Host.Tests/   332 xunit tests; the integration surface.
 tools/publish-plugins.ps1 Publishes each plugin as an IMMUTABLE build (astra-1 P1):
                               marker-discovers `plugins/*/ *.csproj` (no hardcoded list;
                               TestPlugin excluded unless -IncludeTestPlugin), `dotnet publish`
@@ -61,7 +67,20 @@ tools/publish-plugins.ps1 Publishes each plugin as an IMMUTABLE build (astra-1 P
                               host resolves the pointer, snapshots into per-instance
                               plugin-cache dirs (what the ALCs actually load), never from
                               `.artifacts/` or `plugins/` directly.
-tools/keep-alive-host.ps1 Runs the host with stdin held open (background job).
+tools/keep-alive-host.ps1 Runs the host with stdin held open (background job). Like the desktop shell
+                              (astra-1 P0) it stages the complete host payload into a NEW immutable
+                              `~/.netpi/app-cache/host/<staging-id>/launch-<ts>/` and runs from there
+                              (never from bin/); probes `GET /identity` so an open :5173 is never
+                              mistaken for a healthy netPI host; reuses a running host only when its
+                              build id matches, otherwise errors.
+tools/launch-desktop.ps1 The desktop-shell developer launch path (astra-1 P0.1): builds
+                              the desktop app (unless -NoBuild), stages the COMPLETE desktop
+                              payload (shell + WebView2 + its bundled host/) into a NEW immutable
+                              `~/.netpi/app-cache/desktop/<staging-id>/launch-<ts>/` (byte-verified;
+                              a failed/partial stage aborts), then launches that copy — the shell
+                              never runs from the repo bin. It sets explicit launcher identity
+                              (NETPI_HOME/NETPI_PROJECT_ROOT/NETPI_PLUGINS); the shell then
+                              re-stages its bundled host/ into ~/.netpi/app-cache/host/... on its own.
 ```
 
 Runtime home: `~/.netpi/` — `config.json`, `netpi.db` (SQLite), `logs/`,
@@ -86,9 +105,13 @@ pwsh tools/publish-plugins.ps1 -Configuration Debug [-Reload]
 pwsh tools/keep-alive-host.ps1          # via a background job; serves :5173
 
 # 4b. The real desktop app (WinForms window; spawns its own host, or reuses a
-#     running one if :5173 already answers)
-dotnet build src/NetPI.Desktop
-dotnet src/NetPI.Desktop/bin/Debug/net10.0-windows/netPI.Desktop.exe
+#     running one if :5173 already answers). The developer launch path stages
+#     the complete desktop payload to a NEW immutable runtime dir under
+#     ~/.netpi/app-cache/desktop/<staging-id>/launch-<ts> and launches THAT copy
+#     (astra-1 P0.1: the shell never runs from the repo bin/):
+pwsh tools/launch-desktop.ps1          # builds first (default); -NoBuild stages
+                                        # an existing build. The shell then re-stages
+                                        # its bundled host/ under ~/.netpi/app-cache/host/
 ```
 
 - The AiProxy provider plugin requires `plugins.netpi.provider.aiproxy.baseUrl`
@@ -118,7 +141,9 @@ dotnet src/NetPI.Desktop/bin/Debug/net10.0-windows/netPI.Desktop.exe
   Service ids: agent → `agent`, `steering`, `runner`; AutoCompact → `compaction`;
   Retry → `retry`; Sqlite → `sessions`; AiProxy → `provider`, `catalog`;
   Tools → `tools`, `resolver:bash`, `resolver:powershell`; BackgroundTasks →
-  `background`; Context.Pi → `system-prompt`, `workspace-context`.
+  `background` + `foreground-processes`; Context.Pi → `system-prompt`, `workspace-context`;
+  Sqlite also → `projects` (+ `pending-projects`); instruction snapshots → `instruction-context`.
+  Activity resolves these lazily (its surface must not block chat when they are absent).
   Host-owned: `plugins` (facade), `host-config`, `commands`.
 - **Never reference another plugin's assembly.** Cross-plugin coupling is via
   the service registry and the event bus only.
@@ -151,18 +176,23 @@ Model-level wire kinds (`ModelEvents.cs`): `model-started`,
 
 - Steering: per-session channel (`chat.steer` → `ISteeringQueue`); drained only
   at the top of a turn — a steer is appended as a fresh user message, never
-  cancels a running tool batch.
+  cancels a running tool batch. Empty turns: the `NetPI.Nudge` plugin steers a
+  run back on a model turn that produced neither text nor tool calls (bounded
+  per run); the Web surface owns the cut-off notice.
 - Compaction (AutoCompact, PLAN §31-33): after each tool batch, if
   estimated context > `contextWindow − reserveTokens`, summarize the old part
   (T=0.3, no tools), persist an `EntryKind.Compaction` entry, and rebuild the
-  transcript as [run system msg] + [summary as System msg] + retained tail.
+  transcript as [run system msg] + [summary as System msg] + retained tail. Project-change
+  entries survive compaction: preserved in the tail, or reconstructed once from their persisted
+  snapshot (astra-1 D).
 
 ## Web surface / WebSocket protocol (PLAN §36, §38, §41)
 
 Kestrel on the configured port (5173): `/ws` (the hub), `/bootstrap` (health),
 `/api/file` (localhost-only file viewer for chat-embedded path links) and `/api/open`
 (localhost-only; shell-opens a path in the OS default app / Explorer — files
-launch their registered handler, folders open in Explorer).
+launch their registered handler, folders open in Explorer), and `/identity`
+(localhost-only launcher probe — proves the :5173 listener is a netPI host and reports its build id).
 
 **astra-1 §11a (F/P5) browser control boundary** — loopback binding is NOT origin
 validation, so the control routes enforce it explicitly: the `/ws` upgrade and
@@ -188,12 +218,20 @@ Client→server commands: `chat.send`, `chat.steer`, `agent.cancel`,
 `session.create`, `session.open`, `session.older` (scroll-up pagination,
 `beforeSequence`), `session.rename` (title or workspace; fresh sessions are also auto-titled server-side from the first user message — `ChatSendAsync` renames + broadcasts `session.updated` when the session has no title, and a one-shot backfill at Web-surface start renames pre-existing untitled sessions from their first user message), `session.delete`
 (rejected while a run is in progress on that session), `session.list` (page of
-50; request `offset`, response carries `offset`/`total`/`hasMore` — the drawer
+50; request `offset` — and, for the global picker's server-side search (astra-1 G1), an optional `query` searched across ALL stored sessions (title + workspace, case-insensitive; the picker's search covers every stored session, not just the client's loaded pages) — response carries `offset`/`total`/`hasMore`, `sessionSearch*` state — the drawer
 "load more" button fetches continuation pages and auto-advances after a
-visible delete),
-`session.model`, `session.reasoning`, `session.compact`, `models.refresh`,
+visible delete);
+`session.model`, `session.reasoning`, `session.compact`, `session.project` (astra-1 D2: select or
+clear the session's project — `operationId` makes retries idempotent; idle sessions apply at once,
+running sessions go **pending** and apply at the run's safe boundary), `session.project.refresh` (astra-1 F: re-snapshot the active project's instructions for a session — re-applies through the same per-session gate; the snapshot entry is deduped by `operationId`), `runs.list` (astra-1 F: all active + recent runs, every session — the Activity surface's run query), `project.list` / `project.create` (upsert by workspace path, `name` defaults to the leaf) / `project.update` (rename by `id` + `name`) (astra-1 F: the project-management surface for the client-side picker; replies `project.list` / `project.created` / `ack`), `models.refresh`,
 `plugin.reload` / `plugin.reloadAll` / `plugin.scan` (rescan plugins/ for folders staged after startup — loads new plugins without a host restart; existing plugins are untouched) / `plugins.list`, `commands.list`,
-`workspace.files`, `config.update`.
+`workspace.files`, `config.update`. `agent.cancel` takes an optional `runId` (astra-1 F): present → cancels THAT run (`runner.CancelRun(runId)`); absent → the legacy cancel of the active run. `chat.steer` without a `sessionId` is rejected while more than one run is active (astra-1 E: no global "active session" fallback); with the default single-run capacity the legacy hold-until-next-run behavior is preserved.
+
+Project management itself (astra-1 C) lives in the storage plugin, not the WS hub: `IProjectStore`
+(service `projects`) does project CRUD + upsert-by-canonical-path; the Web surface exposes it
+through `session.project` and the session snapshot. The instruction layer (service `instruction-context`)
+snapshots a project's effective AGENTS text at switch time; pending changes ride on service
+`pending-projects` and survive a host restart.
 
 Server→client events: `agent.state` (Idle/Preparing/CallingModel/
 ExecutingTools/Compacting/Retrying/Cancelling), `assistant.started` /
@@ -202,6 +240,8 @@ ExecutingTools/Compacting/Retrying/Cancelling), `assistant.started` /
 `tool.started`, `tool.output` (`append:true` = grow live), `tool.completed`
 (with `durationMs`), `usage.updated`, `model.requestFailed`, `model.retrying`,
 `session.created/updated/entry/entries/older/compact.result`,
+`session.project.pending` / `session.project.applied` (astra-1 D2; the session
+snapshot in `session.updated`/bootstrap carries the active `project`),
 `session.deleted` (client removed the session from the store; if it was the
 open session, the drawer starts a fresh one in the same workspace),
 `models.updated/refreshFailed`, `plugins.state`, `plugin.state`,
@@ -257,7 +297,7 @@ path (relative ones against the project root) and opened via the OS
 (default app, Explorer for folders); any other URL opens in the default
 browser.
 Thinking blocks collapse
-by default; Settings → "Keep thinking open" (left panel) expands them —
+by default; Settings → "Keep thinking open" expands them —
 including while streaming, replacing the one-liner. Tool calls are collapsed
 by default (a manual toggle always wins; running shell calls no longer auto-expand). Settings →
 "Keep tool calls open" keeps them expanded. Both settings persist in
@@ -278,22 +318,32 @@ changes run `npx vite build` and **reload the Web plugin** (Web UI → reload, o
 | `netpi.diagnostics` | `port` (5274) |
 | `netpi.testplugin` | `loadFail`, `generation`, `register` |
 | `netpi.backgroundtasks` | `port` (5275) |
-| `netpi.agent`, `netpi.context.pi` | (none) |
+| `netpi.activity` | `port` (5276) |
+| `netpi.nudge` | `enabled` (default true), `maxNudges` (2), `nudgeText` |
+| `netpi.agent` | `maxConcurrentRuns` (default 1 — astra-1 E: admit more than one concurrent run across sessions; a `chat.steer` without a `sessionId` is rejected while >1 run is active) |
+| `netpi.context.pi` | (none) |
 
 ## System-prompt layering (NetPI.Context.Pi, PLAN §16-17)
 
-Base prompt ← `.netpi/AGENTS.md` layers discovered broad→specific (home
-`~/.netpi` → drive root → … → workspace; `AGENTS.override.md` replaces, not
-appends) ← `SYSTEM.md` (replaces base) ← `APPEND_SYSTEM.md` (global→project
-append) ← tool guidelines + available tools + environment. This file (the
+Base prompt ← per-directory layers discovered broad→specific (home `~/.netpi` →
+drive root → … → workspace). Each directory contributes at most ONE file, chosen by
+precedence: `.netpi/AGENTS.override.md` › `AGENTS.override.md` › `AGENTS.md` ›
+`.netpi/AGENTS.md` (an override REPLACES the other layers in its directory) ← `SYSTEM.md` (replaces base) ← `APPEND_SYSTEM.md` (global→project append) ← tool guidelines + available tools + environment. This file (the
 workspace-level `AGENTS.md`) is one of those layers — keep it accurate to the
 repo, it feeds every run in this workspace.
+
+Shell navigation (astra-1 G1): no left panel. Open sessions are TABS in the header
+(`SessionTabs`, persisted); the global searchable history lives in `SessionPicker`;
+settings moved to `SettingsDialog`; the collapsible right plugin panel (rail,
+resize, plugin views) is retained. The composer row carries the model/reasoning
+controls plus the `ContextUsage` circle (astra-1 G2 — session-scoped context meter;
+values derive from `usage.updated` + compaction policy, no polling).
 
 ## Tests & verification
 
 ```bash
-dotnet test NetPI.sln        # 150 tests (agent runtime scenarios, session
-                             # store, plugin manager, shell detection, …)
+dotnet test NetPI.sln        # 332 tests (agent runtime scenarios, session
+                             # store, plugin lifecycle/publication, shell detection, …)
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json
 ```
 

@@ -59,6 +59,17 @@ public interface ISessionStore
     /// <summary>Most recent sessions first (drawer listing, PLAN §43).</summary>
     ValueTask<IReadOnlyList<SessionInfo>> ListAsync(int count = 50, int offset = 0, CancellationToken cancellationToken = default);
 
+    /// <summary>astra-1 G1: search stored sessions (title + workspace) server-side.
+    /// The global picker's search must cover ALL stored sessions, not just the
+    /// client's loaded pages. Default: no server support — fall back to the plain
+    /// listing; the SQLite store overrides with a real index-friendly LIKE query.</summary>
+    ValueTask<IReadOnlyList<SessionInfo>> SearchAsync(string query, int count = 100, int offset = 0, CancellationToken cancellationToken = default)
+        => ListAsync(count, offset, cancellationToken);
+
+    /// <summary>Total matching sessions for <see cref="SearchAsync"/> (pagination). Same fallback.</summary>
+    ValueTask<int> SearchCountAsync(string query, CancellationToken cancellationToken = default)
+        => CountAsync(cancellationToken);
+
     /// <summary>Total session count (drawer "load more" pagination, PLAN §43).</summary>
     ValueTask<int> CountAsync(CancellationToken cancellationToken = default);
 

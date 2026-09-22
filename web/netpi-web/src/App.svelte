@@ -10,6 +10,7 @@
   import Composer from "./components/Composer.svelte";
   import SettingsDialog from "./components/SettingsDialog.svelte";
   import SessionPicker from "./components/SessionPicker.svelte";
+  import ProjectPicker from "./components/ProjectPicker.svelte";
 
   let shellStyle = $derived(
     `--right-panel-width:${ui.rightOpen ? ui.rightWidth : 26}px`, /* 26 must match --right-rail-width in app.css */
@@ -21,6 +22,8 @@
   // opens this dialog. The right slot/rail/resizer are preserved.
   let settingsOpen = $state(false);
   let pickerOpen = $state(false);
+  // astra-1 C (G1 gap): the header project chip opens the project picker.
+  let projectPickerOpen = $state(false);
 
   // astra-1 H: the Activity panel (a cross-origin iframe on its own Kestrel port)
   // posts { type:"netpi.activity.openSession", payload:{sessionId} } to the shell
@@ -84,7 +87,7 @@
       </div>
     {/if}
 
-    <HarnessHeader onSessions={() => (pickerOpen = true)} />
+    <HarnessHeader onSessions={() => (pickerOpen = true)} onProjects={() => (projectPickerOpen = true)} />
     <SessionTabs />
     <ConversationViewport />
     <Composer />
@@ -103,4 +106,5 @@
 
   <SettingsDialog open={settingsOpen} onClose={() => (settingsOpen = false)} />
   <SessionPicker open={pickerOpen} onClose={() => (pickerOpen = false)} />
+  <ProjectPicker open={projectPickerOpen} onClose={() => (projectPickerOpen = false)} />
 </div>

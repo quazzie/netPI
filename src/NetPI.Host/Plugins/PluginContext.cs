@@ -114,7 +114,9 @@ internal sealed class PluginContextEvents(
     }
 
     public ValueTask PublishAsync<TEvent>(TEvent @event, CancellationToken ct = default) where TEvent : notnull =>
-        inner.PublishAsync(@event, ct);
+        // astra-1 P3: explicit publisher owner — the self-event filter matches
+        // the actual owning generation (never a process-global ambient static).
+        inner.PublishAsync(@event, owner, ct);
 }
 
 /// <summary>Console/file logger adapter for plugins.</summary>

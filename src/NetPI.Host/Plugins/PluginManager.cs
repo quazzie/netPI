@@ -377,7 +377,12 @@ public sealed class PluginManager
             errorSink?.Invoke(msg);
             return null;
         }
-        var alc = new PluginLoadContext($"{pluginId}-gen{generation}", loadFrom,
+        // astra-1 P4: the ALC's dependency resolver takes the DECLARED entry
+        // DLL path (its documented input), so resolve the entry BEFORE the
+        // context is created — the same discovery FindPluginEntry then reuses
+        // for the actual load (no double enumeration, no path drift).
+        var entryPath = ResolveEntryPath(source, loadFrom);
+        var alc = new PluginLoadContext($"{pluginId}-gen{generation}", entryPath,
             path => _nativeCache.EnsureCached(path));
         var instance = new PluginInstance(pluginId, generation)
         {
@@ -407,7 +412,7 @@ public sealed class PluginManager
             var nativeCheck = ValidateContract(source);
             if (nativeCheck is not null)
                 throw new PluginLoadException(pluginId, nativeCheck);
-            var plugin = FindPluginEntry(alc, source, loadFrom);
+            var plugin = FindPluginEntry(alc, pluginId, entryPath);
             if (plugin is null)
                 throw new PluginLoadException(pluginId, $"no INetPiPlugin implementation found in the entry assembly of '{loadFrom}'");
             instance.Plugin = plugin;
@@ -473,59 +478,67 @@ public sealed class PluginManager
     /// through the ALC's resolver — the old loop loaded every top-level DLL
     /// and could instantiate several implementations at once.
     /// </summary>
-    private INetPiPlugin? FindPluginEntry(PluginLoadContext alc, PluginSource source, string pluginDir)
+    /// <summary>
+    /// astra-1 P4: discover the plugin's entry assembly path — the documented
+    /// input for the ALC's <c>AssemblyDependencyResolver</c> AND the assembly
+    /// <see cref="FindPluginEntry"/> loads the implementation from. Declared
+    /// <c>source.EntryAssembly</c> wins (validated against the plugin root);
+    /// otherwise the legacy top-level DLL matching the discovery folder name.
+    /// </summary>
+    private string ResolveEntryPath(PluginSource source, string pluginDir)
     {
-        string entryPath;
         if (source.EntryAssembly is not null)
         {
-            entryPath = Path.GetFullPath(Path.Combine(pluginDir, source.EntryAssembly));
-            if (!entryPath.StartsWith(Path.GetFullPath(pluginDir) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            var declared = Path.GetFullPath(Path.Combine(pluginDir, source.EntryAssembly));
+            if (!declared.StartsWith(Path.GetFullPath(pluginDir) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
                 throw new PluginLoadException(source.Id, $"entry assembly escapes plugin root: '{source.EntryAssembly}'");
-            if (!File.Exists(entryPath))
+            if (!File.Exists(declared))
                 throw new PluginLoadException(source.Id, $"entry assembly missing: '{source.EntryAssembly}'");
-        }
-        else
-        {
-            // Legacy staged folder: the entry is the top-level DLL matching the
-            // DISCOVERY folder name (pluginDir is a snapshot of it — the name
-            // itself lives on source.Directory). The abstractions copy is the
-            // host's and is never loaded from here.
-            var abstractionsName = typeof(INetPiPlugin).Assembly.GetName().Name!;
-            var folderName = Path.GetFileName(source.Directory);
-            // Prefer the DLL named after the discovery folder; otherwise the
-            // folder is a RENAMED legacy staging (test fixtures do this) — the
-            // entry is then the single non-abstractions top-level DLL.
-            var candidates = Directory.EnumerateFiles(pluginDir, "*.dll", SearchOption.TopDirectoryOnly)
-                .Where(f => !string.Equals(Path.GetFileNameWithoutExtension(f), abstractionsName, StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(f => string.Equals(Path.GetFileNameWithoutExtension(f), folderName, StringComparison.OrdinalIgnoreCase)
-                                 ? 0 : 1)
-                .ThenBy(f => f, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var named = candidates.FirstOrDefault(f => string.Equals(Path.GetFileNameWithoutExtension(f), folderName, StringComparison.OrdinalIgnoreCase));
-            var match = candidates.Count == 1 ? candidates[0] : (named ?? null);
-            if (match is null)
-                throw new PluginLoadException(source.Id,
-                    candidates.Count > 1
-                        ? $"ambiguous legacy folder '{pluginDir}' — {candidates.Count} top-level assemblies, none named '{folderName}'"
-                        : $"no entry assembly found in legacy folder '{pluginDir}'");
-            entryPath = match;
+            return declared;
         }
 
+        // Legacy staged folder: the entry is the top-level DLL matching the
+        // DISCOVERY folder name (pluginDir is a snapshot of it — the name
+        // itself lives on source.Directory). The abstractions copy is the
+        // host's and is never loaded from here.
+        var abstractionsName = typeof(INetPiPlugin).Assembly.GetName().Name!;
+        var folderName = Path.GetFileName(source.Directory);
+        // Prefer the DLL named after the discovery folder; otherwise the
+        // folder is a RENAMED legacy staging (test fixtures do this) — the
+        // entry is then the single non-abstractions top-level DLL.
+        var candidates = Directory.EnumerateFiles(pluginDir, "*.dll", SearchOption.TopDirectoryOnly)
+            .Where(f => !string.Equals(Path.GetFileNameWithoutExtension(f), abstractionsName, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(f => string.Equals(Path.GetFileNameWithoutExtension(f), folderName, StringComparison.OrdinalIgnoreCase)
+                 ? 0 : 1)
+            .ThenBy(f => f, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var named = candidates.FirstOrDefault(f => string.Equals(Path.GetFileNameWithoutExtension(f), folderName, StringComparison.OrdinalIgnoreCase));
+        var match = candidates.Count == 1 ? candidates[0] : (named ?? null);
+        if (match is null)
+            throw new PluginLoadException(source.Id,
+                candidates.Count > 1
+                    ? $"ambiguous legacy folder '{pluginDir}' — {candidates.Count} top-level assemblies, none named '{folderName}'"
+                    : $"no entry assembly found in legacy folder '{pluginDir}'");
+        return match;
+    }
+
+    private INetPiPlugin? FindPluginEntry(PluginLoadContext alc, string pluginId, string entryPath)
+    {
         var entry = alc.LoadFromAssemblyPath(entryPath);
         Type[] types;
         try { types = entry.GetTypes(); }
         catch (ReflectionTypeLoadException rtle)
         {
-            throw new PluginLoadException(source.Id,
+            throw new PluginLoadException(pluginId,
                 $"entry assembly '{Path.GetFileName(entryPath)}' types could not load: {rtle.LoaderExceptions?.FirstOrDefault()?.Message}", rtle);
         }
         var impls = types
             .Where(t => t is { IsClass: true, IsAbstract: false } && typeof(INetPiPlugin).IsAssignableFrom(t))
             .ToList();
         if (impls.Count == 0)
-            throw new PluginLoadException(source.Id, $"entry assembly '{Path.GetFileName(entryPath)}' has no INetPiPlugin implementation");
+            throw new PluginLoadException(pluginId, $"entry assembly '{Path.GetFileName(entryPath)}' has no INetPiPlugin implementation");
         if (impls.Count > 1)
-            throw new PluginLoadException(source.Id,
+            throw new PluginLoadException(pluginId,
                 $"entry assembly '{Path.GetFileName(entryPath)}' is ambiguous — {impls.Count} INetPiPlugin implementations: " +
                 string.Join(", ", impls.Select(t => t.FullName)));
         return (INetPiPlugin)Activator.CreateInstance(impls[0])!;

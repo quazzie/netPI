@@ -59,6 +59,67 @@
     return null;
   });
 
+  /**
+   * astra-1 G2: category estimates with a DECLARED, NON-OVERLAPPING counting
+   * convention. Everything derives from store state (no polling):
+   *
+   *  unit: estimated tokens = round(chars / 4) per category — the same ¼-token
+   *        heuristic the meter's `est` uses; the total is a TRANSCRIPT estimate
+   *        (it may differ from the provider-measured prompt tokens).
+   *
+   *  category mapping (each block's text counts toward EXACTLY ONE category):
+   *    project instructions : project_context block `text` (the effective
+   *                           instructions snapshot taken at switch/refresh)
+   *    conversation         : user block text + assistant text + assistant
+   *                           thinking text (thinking is model-visible)
+   *    tool results         : tool call argsJson + result on assistant blocks,
+   *                           plus standalone tool blocks (argsPreview +
+   *                           output); a call lives in one of those places
+   *                           per the store's event flow, never both
+   *    system & notices     : system block text (system_note / compaction)
+   *
+   *  NOT reported client-side: the base system prompt, tool definitions and
+   *  tool guidelines are layered server-side (PLAN §16-17) and their text never
+   *  reaches the browser — that row shows "— (not reported)", never a zero.
+   */
+  const breakdown = $derived.by(() => {
+    let projectChars = 0;
+    let conversationChars = 0;
+    let toolChars = 0;
+    let systemChars = 0;
+    for (const b of store.blocks) {
+      switch (b.kind) {
+        case "user":
+          conversationChars += b.text.length;
+          break;
+        case "assistant":
+          conversationChars += b.text.length + (b.thinking?.text.length ?? 0);
+          for (const c of b.toolCalls)
+            toolChars += c.argsJson.length + (c.result?.length ?? 0);
+          break;
+        case "tool":
+          toolChars += b.argsPreview.length + b.output.length;
+          break;
+        case "system":
+          systemChars += b.text.length;
+          break;
+        case "project_context":
+          projectChars += b.text.length;
+          break;
+      }
+    }
+    const est = (chars: number) => Math.round(chars / 4);
+    return [
+      { label: "project instructions", tokens: est(projectChars) },
+      { label: "conversation", tokens: est(conversationChars) },
+      { label: "tool results", tokens: est(toolChars) },
+      { label: "system & notices", tokens: est(systemChars) },
+      // Server-side layers (base prompt, tool definitions, guidelines) —
+      // the client never sees their text, so this stays honest.
+      { label: "system prompt + tools", tokens: null },
+    ];
+  });
+
   function fmt(n: number): string {
     return n.toLocaleString("en-US");
   }
@@ -121,6 +182,22 @@
           </div>
         {/if}
       {/if}
+      <div class="ctx-breakdown">
+          <div class="ctx-row ctx-breakdown-head">
+            <span>estimate by category</span>
+            <span>tokens (chars ÷ 4)</span>
+          </div>
+          {#each breakdown as row}
+            <div class="ctx-row">
+              <span>{row.label}</span>
+              <span>{row.tokens === null ? "— (not reported)" : fmt(row.tokens)}</span>
+            </div>
+          {/each}
+          <div class="ctx-row">
+            <span>transcript total</span>
+            <span>{fmt(breakdown.reduce((s, r) => s + (r.tokens ?? 0), 0))} (estimate)</span>
+          </div>
+        </div>
       <div class="ctx-row">
         {#if threshold !== null}
           <span>auto-compact</span>

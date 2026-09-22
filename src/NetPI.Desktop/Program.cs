@@ -17,6 +17,10 @@ namespace NetPI.Desktop;
 public static class Program
 {
     private static Process? _host;
+    // astra-1 P0.5: the host's stdout/stderr drain pumps, tracked so shutdown can
+    // await them — the exit code is only trustworthy once the child's output has
+    // fully drained, and a wedged pump must not be silently abandoned.
+    private static Task[]? _pumps;
 
     [STAThread]
     private static void Main()
@@ -301,7 +305,12 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
             // root from its (external) execution directory, so the launcher
             // always states it; NETPI_HOST_BUILD_ID lets the next launch compare
             // against the build that is actually running.
-            psi.Environment["NETPI_PROJECT_ROOT"] = FindProjectRoot(baseDir) ?? baseDir;
+            var projectRoot = FindProjectRoot(baseDir) ?? baseDir;
+            psi.Environment["NETPI_PROJECT_ROOT"] = projectRoot;
+            // astra-1 P0.1: state the plugin root explicitly — a staged host
+            // launched from ~/.netpi/app-cache must not fall back to a CWD-
+            // relative ./plugins (the keep-alive launcher does the same).
+            psi.Environment["NETPI_PLUGINS"] = Path.Combine(projectRoot, "plugins");
             psi.Environment["NETPI_HOST_BUILD_ID"] = ComputeBuildId(launchDir, trace);
             psi.Environment["NETPI_HOME"] = runtimeHome;
 
@@ -316,8 +325,10 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
             // unbounded buffer would grow with every host run. Each line is kept
             // in a bounded ring (last 400) for the crash-dump on exit.
             // The pump also mirrors each line to host-launch.log (Trace).
-            _ = StartDrainPump(_host.StandardOutput, trace);
-            _ = StartDrainPump(_host.StandardError, trace);
+            // The pumps are tracked (astra-1 P0.5) and awaited in KillHost.
+            var (_, stdoutDone) = StartDrainPump(_host.StandardOutput, trace);
+            var (_, stderrDone) = StartDrainPump(_host.StandardError, trace);
+            _pumps = new[] { stdoutDone, stderrDone };
 
             for (var i = 0; i < 60 && !_host.HasExited; i++)
             {
@@ -465,6 +476,13 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
         /// <summary>Walk up from the output folder to the project root (the dir with plugins/).</summary>
         private static string? FindProjectRoot(string from)
         {
+            // astra-1 P0.1: an explicit launcher identity always wins — a staged
+            // external copy runs from ~/.netpi/app-cache, and a walk-up from there
+            // can never discover the repository, so the launcher must state the
+            // root (the keep-alive script does the same with NETPI_PLUGINS).
+            var explicitRoot = Environment.GetEnvironmentVariable("NETPI_PROJECT_ROOT");
+            if (!string.IsNullOrWhiteSpace(explicitRoot))
+                return explicitRoot;
             for (var dir = new DirectoryInfo(from); dir is not null; dir = dir.Parent)
                 if (Directory.Exists(Path.Combine(dir.FullName, "plugins")))
                     return dir.FullName;
@@ -493,12 +511,13 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
 
         /// <summary>
         /// Pumps a redirected child stream to a bounded in-memory tail so the
-        /// 4 KB pipe never blocks. Returns the (thread-safe) line buffer.
+        /// 4 KB pipe never blocks. Returns the (thread-safe) line buffer and the
+        /// pump's completion task (astra-1 P0.5: shutdown awaits it).
         /// </summary>
-        private static Queue<string> StartDrainPump(StreamReader reader, string trace)
+        private static (Queue<string> Lines, Task Done) StartDrainPump(StreamReader reader, string trace)
         {
             var lines = new Queue<string>();
-            _ = Task.Run(async () =>
+            var done = Task.Run(async () =>
             {
                 try
                 {
@@ -516,7 +535,7 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
                 }
                 catch { /* child pipe closed / process killed */ }
             });
-            return lines;
+            return (lines, done);
         }
 
         private void KillHost()
@@ -531,6 +550,14 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
                 }
             }
             catch { }
+            // astra-1 P0.5: await the drain pumps before declaring the shutdown
+            // complete (bounded — a wedged pump must not hang the form).
+            var pumps = _pumps;
+            if (pumps is not null)
+            {
+                _pumps = null;
+                Task.WhenAll(pumps).Wait(TimeSpan.FromSeconds(5));
+            }
             _host = null;
         }
 

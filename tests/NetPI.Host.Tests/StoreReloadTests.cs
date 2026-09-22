@@ -63,4 +63,56 @@ public class StoreReloadTests : IDisposable
             store.Dispose();
         }
     }
+    /// <summary>
+    /// astra-1 P3/B: the RELOAD invariant the plan requires — not "the old
+    /// store survives", but "valid operations finish AND subsequent operations
+    /// resolve the NEW store". A reload swaps the generation's backing store
+    /// and the registry pointer; a consumer that re-resolves lazily must now
+    /// see the NEW instance (a cached old reference would silently write to the
+    /// retired generation). The old store stays live for in-flight readers —
+    /// it is not disposed by the reload.
+    /// </summary>
+    [Fact]
+    public async Task Reload_SubsequentOperations_ResolveTheNewStore()
+    {
+        var oldStore = new SqliteSessionStore(Path.Combine(_dir, "gen1.db"));
+        var newStore = new SqliteSessionStore(Path.Combine(_dir, "gen2.db"));
+        try
+        {
+            var plugin = new SqlitePlugin();
+            var field = typeof(SqlitePlugin).GetField("_store", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            field.SetValue(plugin, oldStore);
+
+            var registry = new FixedServiceRegistry();
+            registry.Put("sessions", oldStore);
+
+            // Generation 1: a valid operation completes on the old store.
+            var a = await oldStore.CreateAsync("/ws-a");
+            Assert.False(string.IsNullOrEmpty(a.Id));
+
+            // Reload: the new generation gets its OWN store; the registry
+            // pointer flips to it (the old store is NOT disposed).
+            field.SetValue(plugin, newStore);
+            registry.Put("sessions", newStore);
+
+            // Subsequent operations resolve the NEW store, not the old one.
+            var resolved = registry.Resolve<ISessionStore>("sessions");
+            Assert.Same(newStore, resolved);
+            Assert.NotSame(oldStore, resolved);
+
+            // A write through the re-resolved store lands on the new generation.
+            var b = await resolved.CreateAsync("/ws-b");
+            Assert.False(string.IsNullOrEmpty(b.Id));
+            Assert.Equal(1, await newStore.CountAsync(CancellationToken.None));
+
+            // The old generation's data is intact and still readable (not
+            // disposed, not lost) — a consumer still holding it keeps working.
+            Assert.Equal(1, await oldStore.CountAsync(CancellationToken.None));
+        }
+        finally
+        {
+            oldStore.Dispose();
+            newStore.Dispose();
+        }
+    }
 }

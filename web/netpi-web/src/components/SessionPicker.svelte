@@ -2,9 +2,8 @@
   // astra-1 G1: SessionPicker — searchable global session list with
   // pagination (page size 50 from the server, "load more" continues from the
   // current offset), rename and delete. Rows show title, project (workspace),
-  // updated time and running state. Search covers the LOADED pages; true
-  // server-side search lands with the F2 session.* slice — until then the
-  // placeholder says what it searches (honest, not a fake no-result).
+  // updated time and running state. Search is SERVER-SIDE (astra-1 G1): it
+  // covers ALL stored sessions via `session.list { query }`.
   import { store } from "../store.svelte";
   import { ws } from "../ws";
   import type { SessionInfo } from "../types";
@@ -28,21 +27,64 @@
     return () => {
       clearTimeout(t);
       opener?.focus?.();
-      query = "";
+      clearSearch();
       renamingId = null;
     };
   });
 
-  const q = $derived(query.trim().toLowerCase());
-  let rows = $derived.by(() => {
-    const all = store.sessions;
-    if (!q) return all;
-    return all.filter(
-      (s) =>
-        s.title.toLowerCase().includes(q) ||
-        (s.workspace ?? "").toLowerCase().includes(q),
-    );
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearSearch() {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = null;
+    query = "";
+    store.sessionSearch = null;
+    store.sessionSearchTotal = 0;
+  }
+
+  // astra-1 G1: the picker searches ALL stored sessions through the server
+  // (the doc forbade a loaded-pages-only search). Debounced 150 ms so typing
+  // doesn't fan out a request per keystroke.
+  $effect(() => {
+    if (!open) return;
+    const q = query.trim();
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      searchTimer = null;
+      if (!q) {
+        store.sessionSearch = null;
+        store.sessionSearchTotal = 0;
+        return;
+      }
+      ws.request("session.list", { query: q })
+        .catch((e) => store.setError(String(e)))
+        .finally(() => (store.sessionSearchMoreLoading = false));
+    }, 150);
+    return () => {
+      if (searchTimer) {
+        clearTimeout(searchTimer);
+        searchTimer = null;
+      }
+    };
   });
+
+  function loadMoreSearch() {
+    if (store.sessionSearchMoreLoading || !store.sessionSearch) return;
+    store.sessionSearchMoreLoading = true;
+    ws.request("session.list", { query: query.trim(), offset: store.sessionSearch.length })
+      .catch((e) => store.setError(String(e)))
+      .finally(() => (store.sessionSearchMoreLoading = false));
+  }
+
+  const q = $derived(query.trim());
+  let rows = $derived.by(() => {
+    // Server-side search (astra-1 G1): when a search is active, the rows come
+    // from the server's result set over ALL stored sessions.
+    if (q) return store.sessionSearch ?? [];
+    return store.sessions;
+  });
+  let searchTotal = $derived(q ? store.sessionSearchTotal : store.sessionTotal);
+  let searchRemaining = $derived(Math.max(0, searchTotal - rows.length));
 
   function fmtTime(ts: number): string {
     if (!ts) return "";
@@ -201,14 +243,20 @@
         {/each}
         {#if !rows.length}
           <div class="picker-empty">
-            {store.sessions.length ? "No loaded sessions match." : "No sessions yet."}
+            {#if q}
+              {"No matching sessions."}
+            {:else if store.sessions.length}
+              {"No loaded sessions match."}
+            {:else}
+              {"No sessions yet."}
+            {/if}
           </div>
         {/if}
       </div>
 
       <div class="picker-foot">
         <span class="picker-count">{rows.length} shown</span>
-        {#if store.sessionRemaining > 0}
+        {#if !q && store.sessionRemaining > 0}
           <button
             class="btn"
             disabled={store.sessionMoreLoading}
@@ -216,9 +264,17 @@
           >
             {store.sessionMoreLoading ? "Loading…" : "Load older"}
           </button>
+        {:else if q && searchRemaining > 0}
+          <button
+            class="btn"
+            disabled={store.sessionSearchMoreLoading}
+            onclick={() => loadMoreSearch()}
+          >
+            {store.sessionSearchMoreLoading ? "Loading…" : "Load more"}
+          </button>
         {/if}
         {#if q}
-          <span class="picker-hint">search covers loaded pages only</span>
+          <span class="picker-hint">search covers all stored sessions</span>
         {/if}
       </div>
     </div>

@@ -18,7 +18,16 @@ public sealed class AgentPlugin : INetPiPlugin
     public async ValueTask LoadAsync(IPluginContext context, CancellationToken cancellationToken)
     {
         _runtime = new AgentRuntime(context);
-        _runner = new AgentRunner(_runtime, context);
+        // astra-1 E: a configurable per-host run capacity (default 1 —
+        // the single-active-run behavior stays the default; a second
+        // concurrent run is admitted only when the config raises this).
+        var maxRuns = 1;
+        if (context.OwnConfig.ValueKind == System.Text.Json.JsonValueKind.Object
+            && context.OwnConfig.TryGetProperty("maxConcurrentRuns", out var mcr)
+            && mcr.ValueKind == System.Text.Json.JsonValueKind.Number
+            && mcr.TryGetInt32(out var mcrVal) && mcrVal > 0)
+            maxRuns = mcrVal;
+        _runner = new AgentRunner(_runtime, context, maxRuns);
         context.Services.Register<IAgentRuntime>("agent", _runtime);
         context.Services.Register<ISteeringQueue>("steering", _runtime);
         context.Services.Register<IAgentRunner>("runner", _runner);

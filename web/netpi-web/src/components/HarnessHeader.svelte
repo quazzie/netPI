@@ -3,7 +3,7 @@
   import { ui } from "../ui.svelte";
 
   // astra-1 G1: the Sessions button opens the global picker.
-  let { onSessions }: { onSessions: () => void } = $props();
+  let { onSessions, onProjects }: { onSessions: () => void; onProjects: () => void } = $props();
 
   let connClass = $derived(
     store.connection === "open" ? "conn open"
@@ -28,9 +28,11 @@
        stays after it (the left panel's session list remains until removal). -->
   <button class="header-sessions" title="All sessions" onclick={onSessions}>Sessions</button>
   <span class="session" title={store.session?.workspace ?? ""}>{sessionLabel}</span>
-  {#if projectLabel}
-    <span class="header-project" title="Active project">▣ {projectLabel}</span>
-  {/if}
+  <!-- astra-1 C (G1 gap): the project chip opens ProjectPicker (switch/create).
+       Always shown — "No project" is an actionable state, not an empty one. -->
+  <button class="header-project" title="Switch project" onclick={onProjects}>
+    ▣ {projectLabel ?? "No project"}
+  </button>
   {#if projectPending}
     <span class="header-project-pending" title={projectPending.operationId}>
       ⇄ {projectPending.project}…

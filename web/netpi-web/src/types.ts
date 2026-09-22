@@ -32,11 +32,12 @@ export interface ModelInfo {
 // ---- Transcript blocks -----------------------------------------------------
 
 export type Block =
+
   | UserBlock
   | AssistantBlock
   | ToolBlock
-  | SystemBlock;
-
+  | SystemBlock
+  | ProjectContextBlock;
 export interface UserBlock {
   kind: "user";
   id: string;
@@ -100,6 +101,18 @@ export interface SystemBlock {
   createdAt: number;
 }
 
+/** astra-1 D: a project-change event (server entry type `project_context`).
+ *  Provenance is the APPLICATION, not the model — the effective instructions
+ *  snapshot taken at project switch/refresh. Rendered as a distinct block. */
+export interface ProjectContextBlock {
+  kind: "project_context";
+  id: string;
+  projectName: string;
+  workspace: string;
+  contentHash: string;
+  text: string;
+  createdAt: number;
+}
 export interface Usage {
   promptTokens?: number;
   completionTokens?: number;
@@ -157,6 +170,15 @@ export interface SessionInfo {
   compaction?: { available: boolean; reserveTokens: number } | null;
 }
 
+// astra-1 C: a project row (project.list / project.created payloads —
+// ToProjectJson in NetPI.Web). workspacePath is the project root.
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  workspacePath: string;
+  /** unix ms */
+  updatedAt: number;
+}
 
 export interface WebPanelInfo {
   id: string;

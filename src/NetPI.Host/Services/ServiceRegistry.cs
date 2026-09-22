@@ -37,8 +37,15 @@ public sealed class ServiceRegistry : IServiceRegistry
     /// <summary>astra-1 P5: last instance ever registered per id (survives physical removals).</summary>
     private readonly Dictionary<string, object> _lastInstance = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// astra-1 P3: ambient registration — NO owning plugin (host-side).
+    /// The scoped wrapper (<see cref="Plugins.PluginContextServices"/>) is the
+    /// only path that binds a generation to a registration; this overload no
+    /// longer consults a process-global ambient static (mutable shared
+    /// ownership, never assigned — it always resolved to null anyway).
+    /// </summary>
     public IDisposable Register<T>(string id, T instance) where T : notnull
-        => Register(id, instance, ServiceOwner.Current);
+        => Register(id, instance, null);
 
     /// <summary>
     /// astra-1 P3: registration with an EXPLICIT owner (the scoped wrapper
@@ -134,12 +141,15 @@ public sealed class ServiceRegistry : IServiceRegistry
     }
 
     /// <summary>
-    /// PLAN §11/§44: a lease on the owning plugin itself, held for the duration
-    /// of work. Counts toward the owning generation's live lease count so a
-    /// reload's lease drain blocks until it is released.
+    /// astra-1 P3: ambient self-lease — NO owning plugin (host-side). A lease on
+    /// the owning plugin (PLAN §11/§44), held for the duration of work; while a
+    /// generation's lease is live a reload's lease drain blocks until it is
+    /// released. Explicit per-generation self-leases go through the scoped
+    /// wrapper / the explicit-owner overload below; this no longer reads a
+    /// process-global ambient static.
     /// </summary>
     public IValueLease<T> AcquireSelfLease<T>() where T : notnull
-        => AcquireSelfLease<T>(ServiceOwner.Current);
+        => AcquireSelfLease<T>(null);
 
     /// <summary>
     /// astra-1 P3: self-lease with an EXPLICIT owner — the scoped wrapper
@@ -325,14 +335,4 @@ public sealed class ServiceRegistry : IServiceRegistry
         }
     }
 
-    /// <summary>
-    /// Context of the plugin currently loading. Set by the plugin manager
-    /// around <c>LoadAsync</c>; registrations made inside attribute to that
-    /// plugin generation. Host-side code (no context) registers under the
-    /// host itself.
-    /// </summary>
-    public sealed class ServiceOwner
-    {
-        public static PluginInstance? Current { get; set; }
-    }
 }

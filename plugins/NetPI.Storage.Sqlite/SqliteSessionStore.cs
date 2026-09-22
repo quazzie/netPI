@@ -360,18 +360,64 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
         cmd.Parameters.AddWithValue("$offset", Math.Max(0, offset));
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
-            list.Add(new SessionInfo(
-                reader.GetString(0),
-                reader.IsDBNull(2) ? null : reader.GetString(2),
-                FromTicks(reader.GetInt64(3)),
-                FromTicks(reader.GetInt64(4)),
-                0,
-                reader.IsDBNull(1) ? null : reader.GetString(1))
-            {
-                ProjectId = reader.IsDBNull(5) ? null : reader.GetString(5),
-            });
+            list.Add(ReadSessionInfo(reader));
         return list;
     }
+
+    // astra-1 G1: server-side session search — the global picker must search ALL
+    // stored sessions, not just the pages already loaded client-side. Case-insensitive
+    // title/workspace match (SQLite LIKE is case-insensitive for ASCII; the title
+    // column is indexed-free — session counts stay small).
+    public async ValueTask<IReadOnlyList<SessionInfo>> SearchAsync(string query, int count = 100, int offset = 0, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return await ListAsync(count, offset, ct);
+        var list = new List<SessionInfo>();
+        var like = "%" + query.Trim().Replace("%", "\\%").Replace("_", "\\_") + "%";
+        await using var conn = OpenConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, title, workspace, created_at, updated_at, project_id
+            FROM sessions
+            WHERE (title IS NOT NULL AND title LIKE $q ESCAPE '\') OR (workspace IS NOT NULL AND workspace LIKE $q ESCAPE '\')
+            ORDER BY updated_at DESC LIMIT $count OFFSET $offset;
+            """;
+        cmd.Parameters.AddWithValue("$q", like);
+        cmd.Parameters.AddWithValue("$count", Math.Max(1, count));
+        cmd.Parameters.AddWithValue("$offset", Math.Max(0, offset));
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            list.Add(ReadSessionInfo(reader));
+        return list;
+    }
+
+    public async ValueTask<int> SearchCountAsync(string query, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return await CountAsync(ct);
+        var like = "%" + query.Trim().Replace("%", "\\%").Replace("_", "\\_") + "%";
+        await using var conn = OpenConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT COUNT(*) FROM sessions
+            WHERE (title IS NOT NULL AND title LIKE $q ESCAPE '\') OR (workspace IS NOT NULL AND workspace LIKE $q ESCAPE '\');
+            """;
+        cmd.Parameters.AddWithValue("$q", like);
+        var raw = await cmd.ExecuteScalarAsync(ct);
+        return Convert.ToInt32(raw);
+    }
+
+    private static SessionInfo ReadSessionInfo(Microsoft.Data.Sqlite.SqliteDataReader reader)
+        => new(
+            reader.GetString(0),
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            FromTicks(reader.GetInt64(3)),
+            FromTicks(reader.GetInt64(4)),
+            0,
+            reader.IsDBNull(1) ? null : reader.GetString(1))
+        {
+            ProjectId = reader.IsDBNull(5) ? null : reader.GetString(5),
+        };
 
     public async ValueTask<int> CountAsync(CancellationToken ct = default)
     {

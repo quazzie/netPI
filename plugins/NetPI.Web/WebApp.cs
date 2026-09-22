@@ -131,6 +131,13 @@ internal sealed class WebApp : IAsyncDisposable
     }
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DeltaBatcher> _batchers = new();
 
+    /// <summary>astra-1 F/#11: the run id that last opened the assistant turn per session.
+    /// With more than one concurrent run, a delayed wire event from an OLDER run must not
+    /// pollute the (single) per-session batcher; <c>ForwardModelWire</c> drops any
+    /// <see cref="AgentEventType.ModelStreamEvent"/> whose <c>RunId</c> differs from the
+    /// session's active run. Null-RunId events (e.g. the test bus) pass through unchanged.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _activeRun = new();
+
     /// <summary>Per-session accumulated assistant text since the last
     /// model-completed (PLAN §41: text.completed must carry the full final text,
     /// but the deltas were already flushed by the 120 ms timer).</summary>
@@ -306,6 +313,27 @@ internal sealed class WebApp : IAsyncDisposable
         catch (ServiceUnavailableException) { return default; }
     }
 
+    /// <summary>
+    /// astra-1 §F: re-resolve the five plugin-owned services from the CURRENT
+    /// registry. The host's registry removes the old generation's entries on
+    /// reload (RemoveAllFor) before the new generation re-registers, so a plain
+    /// re-resolve picks up the new generation (a failure that keeps the old
+    /// generation active resolves to the SAME instances). Called from
+    /// <see cref="OnPluginUpdateCompleted"/> after any plugin update; without it
+    /// a <c>plugin.reload</c> of netpi.agent / netpi.autocompact /
+    /// netpi.provider.aiproxy would leave this surface calling the RETIRED
+    /// generation's runner/agent/steering/compaction/catalog (chat.send,
+    /// agent.cancel, runs.list, compaction, models.refresh).
+    /// </summary>
+    private void RefreshReloadableServices()
+    {
+        _runner = Resolve<IAgentRunner>("runner");
+        _agent = Resolve<IAgentRuntime>("agent");
+        _catalog = Resolve<IModelCatalog>("catalog");
+        _steering = Resolve<ISteeringQueue>("steering");
+        _compaction = Resolve<ICompaction>("compaction");
+    }
+
     // ---- agent event bridge ------------------------------------------------
 
     // ---- provider wire-decision bridge (PLAN §47) ---------------------------
@@ -335,6 +363,11 @@ internal sealed class WebApp : IAsyncDisposable
     /// </summary>
     private void OnPluginUpdateCompleted(PluginUpdateCompletedEvent ev)
     {
+        // astra-1 §F: a Reload/ReloadAll swapped (or attempted to swap) one or
+        // more plugin generations — re-resolve the five plugin-owned services
+        // NOW so every subsequent operation uses the current registry entries.
+        if (ev.Kind is PluginOperationKind.Reload or PluginOperationKind.ReloadAll)
+            RefreshReloadableServices();
         switch (ev.Kind)
         {
             case PluginOperationKind.Reload:
@@ -437,7 +470,32 @@ internal sealed class WebApp : IAsyncDisposable
             }
 
             case AgentEventType.ModelStreamEvent when e.Payload is not null:
-                ForwardModelWire(e.Payload.Value, sid);
+                // astra-1 F/#11: a wire event from an OLDER run must not pollute
+                // this session's (single) batcher. The session's STREAMING OWNER is
+                // the run that currently owns its open assistant turn:
+                //  - model-started opens a NEW turn: it DISCARDS any previous
+                //    run's stale buffered/accumulated text (a cancelled or
+                //    dropped run may never have delivered its boundary flush)
+                //    and claims ownership. In normal operation the buffer is
+                //    already empty here (each boundary flushes it), so the
+                //    discard only bites for runs that did not complete.
+                //  - any other stream event from a non-owning run (a delayed
+                //    delta or terminal from an older run) is dropped.
+                // Null-RunId events (the test bus) pass through unchanged.
+                if (e.RunId is not null && sid is not null)
+                {
+                    var key = sid;
+                    var kind = S(e.Payload.Value, "kind");
+                    if (kind == "model-started")
+                    {
+                        _batchers.TryRemove(key, out _);
+                        _completedText.TryRemove(key, out _);
+                        _activeRun[key] = e.RunId;
+                    }
+                    else if (_activeRun.TryGetValue(key, out var owner) && owner != e.RunId)
+                        break;
+                }
+                ForwardModelWire(e.Payload.Value, sid, e.RunId);
                 break;
 
             case AgentEventType.ModelRequestFailed when e.Payload is not null:
@@ -539,7 +597,7 @@ internal sealed class WebApp : IAsyncDisposable
         SendEvent("session.entry", new { entry = new { type = "system_note", text } as object }, sid);
     }
 
-    private void ForwardModelWire(JsonElement w, string? sid)
+    private void ForwardModelWire(JsonElement w, string? sid, string? runId = null)
     {
         if (w.ValueKind != JsonValueKind.Object) return;
         var kind = S(w, "kind") ?? "";
@@ -553,6 +611,9 @@ internal sealed class WebApp : IAsyncDisposable
                 if (_assistantOpen.ContainsKey(key))
                     CompleteAssistantTurn(sid);
                 _assistantOpen[key] = 1;
+                // astra-1 F/#11: this run is now the session's active streaming run.
+                // A delayed event from an older run (a different RunId) is dropped below.
+                _activeRun[key] = runId;
                 SendEvent("assistant.started", new { model = S(w, "modelId") }, sid);
                 break;
             }
@@ -792,9 +853,13 @@ internal sealed class WebApp : IAsyncDisposable
                         var entries = await bootStore.Store.ReadAsync(asid, offset, pageSize, ct);
                         var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
                         await SendAsync(c, "session.updated", await ToVisibleSessionJsonAsync(info, ct), asid, ct);
+                        object? bootStreaming = null;
+                        var bInFlight = InFlightText(asid);
+                        if (bInFlight is not null)
+                            bootStreaming = new { text = bInFlight, maxSequence = entries.Count > 0 ? entries[^1].Sequence : beforeSeq };
                         await SendAsync(c, "session.entries",
                             new { entries = EntriesToJson(entries), replace = true, total = total,
-                                  hasMore = total > entries.Count, beforeSequence = beforeSeq }, asid, ct);
+                                  hasMore = total > entries.Count, beforeSequence = beforeSeq, streaming = bootStreaming }, asid, ct);
                     }
                 }
                 // else: agent restarted without a session — restore the most
@@ -810,9 +875,13 @@ internal sealed class WebApp : IAsyncDisposable
                         var entries = await bootStore.Store.ReadAsync(last.Id, offset, pageSize, ct);
                         var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
                         await SendAsync(c, "session.updated", await ToVisibleSessionJsonAsync(info, ct), last.Id, ct);
+                        object? bootStreaming = null;
+                        var bInFlight = InFlightText(last.Id);
+                        if (bInFlight is not null)
+                            bootStreaming = new { text = bInFlight, maxSequence = entries.Count > 0 ? entries[^1].Sequence : beforeSeq };
                         await SendAsync(c, "session.entries",
                             new { entries = EntriesToJson(entries), replace = true, total = total,
-                                  hasMore = total > entries.Count, beforeSequence = beforeSeq }, last.Id, ct);
+                                  hasMore = total > entries.Count, beforeSequence = beforeSeq, streaming = bootStreaming }, last.Id, ct);
                     }
                 }
             }
@@ -873,17 +942,38 @@ internal sealed class WebApp : IAsyncDisposable
 
             case "chat.steer":
                 if (_steering is null) { await SendErrorAsync(c, requestId, "steering unavailable", ct); break; }
-                // PLAN §12: steer targets the session (falls back to the active run).
-                await _steering.EnqueueAsync(S(p, "text") ?? "", S(p, "sessionId"), ct);
+                // astra-1 E: with multiple runs possible (maxConcurrentRuns > 1)
+                // a steer without a session ID has no unambiguous target —
+                // reject it rather than fall back to a global "active run".
+                // With the default single-run capacity the legacy fallback
+                // ("held until the next run") is unambiguous and preserved.
+                var steerSid = S(p, "sessionId");
+                if (steerSid is null && (_runner?.ListRuns().Count(r => r.Outcome == RunState.Running) ?? 0) > 1)
+                {
+                    await SendErrorAsync(c, requestId, "steer needs a sessionId while multiple runs are active", ct); break;
+                }
+                await _steering.EnqueueAsync(S(p, "text") ?? "", steerSid, ct);
                 await SendAckAsync(c, requestId, ct);
                 break;
 
             case "agent.cancel":
-                if (_runner is not null) await _runner.CancelRunAsync(ct);
+            {
+                // astra-1 F: an optional runId cancels ONE specific run (the
+                // Activity panel's Cancel); without it the legacy cancel of
+                // the active run is preserved.
+                var cancelRunId = S(p, "runId");
+                if (_runner is not null)
+                {
+                    if (cancelRunId is not null)
+                        _ = _runner.CancelRun(cancelRunId);
+                    else
+                        await _runner.CancelRunAsync(ct);
+                }
                 if (_agent?.State.ActiveSessionId is { } csid)
                     await SendAsync(c, "agent.state", new { state = "Cancelling" }, csid, ct);
                 await SendAckAsync(c, requestId, ct);
                 break;
+            }
 
             case "session.create":
                 await SessionCreateAsync(c, requestId, p, ct);
@@ -950,11 +1040,24 @@ internal sealed class WebApp : IAsyncDisposable
                     {
                         const int pageSize = 50;
                         var offset = Math.Max(0, I(p, "offset"));
-                        var list = await lStore.Store.ListAsync(pageSize, offset, ct);
-                        var total = await lStore.Store.CountAsync(ct);
+                        var query = S(p, "query");
+                        IReadOnlyList<SessionInfo> list;
+                        int total;
+                        if (!string.IsNullOrWhiteSpace(query))
+                        {
+                            // astra-1 G1: server-side search over ALL stored sessions
+                            // (the picker's search must not be bounded to loaded pages).
+                            list = await lStore.Store.SearchAsync(query, pageSize, offset, ct);
+                            total = await lStore.Store.SearchCountAsync(query, ct);
+                        }
+                        else
+                        {
+                            list = await lStore.Store.ListAsync(pageSize, offset, ct);
+                            total = await lStore.Store.CountAsync(ct);
+                        }
                         await SendAsync(c, "session.list",
-                            new { sessions = list.Select(ToSessionJson).ToList(), offset, total,
-                                  hasMore = offset + list.Count < total }, null, ct);
+                            new { sessions = list.Select(ToSessionJson).ToList(), query,
+                                  offset, total, hasMore = offset + list.Count < total }, null, ct);
                     }
                     finally { try { lStore.Lease.Dispose(); } catch { } }
                 }
@@ -1123,6 +1226,101 @@ internal sealed class WebApp : IAsyncDisposable
                 await SendAckAsync(c, requestId, ct);
                 await BroadcastAsync("session.project.pending",
                     new { sessionId = sid, operationId = opId, projectId, projectName = proj.Name }, sid, ct);
+                break;
+            }
+
+            case "runs.list":
+            {
+                // astra-1 F: active/recent runs for the Activity surface's WS
+                // consumers (the Activity panel itself polls /api/activity).
+                var runs = _runner?.ListRuns()
+                    ?? System.Array.Empty<RunInfo>();
+                await SendAsync(c, "runs.list",
+                    new { runs = runs.Select(r => new
+                    {
+                        runId = r.RunId, sessionId = r.SessionId, modelId = r.ModelId,
+                        state = r.State.ToString(), outcome = r.Outcome.ToString(),
+                        startTime = r.StartTime, endTime = r.EndTime,
+                    }).ToArray() }, null, ct);
+                await SendAckAsync(c, requestId, ct);
+                break;
+            }
+
+            case "project.list":
+            {
+                var plStore = Resolve<IProjectStore>("projects");
+                if (plStore is null) { await SendErrorAsync(c, requestId, "project store unavailable", ct); break; }
+                var plList = await plStore.ListAsync(ct);
+                await SendAsync(c, "project.list", new { projects = plList.Select(ToProjectJson).ToArray() }, null, ct);
+                await SendAckAsync(c, requestId, ct);
+                break;
+            }
+
+            case "project.create":
+            {
+                var pcStore = Resolve<IProjectStore>("projects");
+                if (pcStore is null) { await SendErrorAsync(c, requestId, "project store unavailable", ct); break; }
+                var pcName = S(p, "name");
+                var pcPath = S(p, "workspacePath");
+                if (string.IsNullOrEmpty(pcPath)) { await SendErrorAsync(c, requestId, "workspacePath is required", ct); break; }
+                if (string.IsNullOrEmpty(pcName)) pcName = System.IO.Path.GetFileName(pcPath.TrimEnd(System.IO.Path.DirectorySeparatorChar));
+                try
+                {
+                    var created = await pcStore.CreateAsync(pcName, pcPath, ct);
+                    await SendAsync(c, "project.created", new { project = ToProjectJson(created) }, null, ct);
+                    await SendAckAsync(c, requestId, ct);
+                }
+                catch (Exception ex) { await SendErrorAsync(c, requestId, ex.Message, ct); }
+                break;
+            }
+
+            case "project.update":
+            {
+                var puStore = Resolve<IProjectStore>("projects");
+                if (puStore is null) { await SendErrorAsync(c, requestId, "project store unavailable", ct); break; }
+                var puId = S(p, "id");
+                if (puId is null) { await SendErrorAsync(c, requestId, "id is required", ct); break; }
+                var newName = S(p, "name");
+                if (!string.IsNullOrEmpty(newName))
+                    await puStore.RenameAsync(puId, newName, ct);
+                await SendAckAsync(c, requestId, ct);
+                break;
+            }
+
+            case "session.project.refresh":
+            {
+                // astra-1 F: re-snapshot the session's active project
+                // instructions (the D2 command resolves at selection; this
+                // lets a later instruction change be captured without a new
+                // switch). Re-apply through the same gate the switch uses so
+                // send / project-change / compaction stay serialized.
+                var srSid = S(p, "sessionId");
+                if (srSid is null) { await SendErrorAsync(c, requestId, "sessionId is required", ct); break; }
+                var srStore = Resolve<ISessionStore>("sessions");
+                var srProjStore = Resolve<IProjectStore>("projects");
+                if (srStore is null || srProjStore is null) { await SendErrorAsync(c, requestId, "session or project store unavailable", ct); break; }
+                var srInfo = await srStore.GetAsync(srSid, ct);
+                if (srInfo?.ProjectId is null) { await SendErrorAsync(c, requestId, "session has no project", ct); break; }
+                var srProj = await srProjStore.GetAsync(srInfo.ProjectId, ct);
+                if (srProj is null) { await SendErrorAsync(c, requestId, "project no longer exists", ct); break; }
+                var srResolver = Resolve<IInstructionContextResolver>("instruction-context");
+                if (srResolver is null) { await SendErrorAsync(c, requestId, "instruction resolver unavailable", ct); break; }
+                var srGate = _runner?.SessionGate(srSid);
+                var srHold = srGate is null || srGate.Wait(TimeSpan.FromSeconds(5), ct);
+                if (!srHold) { await SendErrorAsync(c, requestId, "session is busy with a boundary operation; retry", ct); break; }
+                try
+                {
+                    var srSnap = await srResolver.ResolveAsync(srProj.Id, srProj.Name, srProj.WorkspacePath, ct);
+                    var srOpId = S(p, "operationId") ?? Guid.NewGuid().ToString("n");
+                    // Same atomic path as a fresh switch (revision bump is a no-op
+                    // re-apply; the snapshot entry is deduped by operation id).
+                    await srStore.SetProjectAsync(new ProjectChangeRequest(srOpId, srSid, srProj.Id, srSnap), ct);
+                    await BroadcastSession(srSid, ct);
+                    await SendAsync(c, "session.project.applied",
+                        new { sessionId = srSid, operationId = srOpId, projectId = srProj.Id, projectName = srProj.Name }, srSid, ct);
+                    await SendAckAsync(c, requestId, ct);
+                }
+                finally { if (srHold) { try { srGate.Release(); } catch { } } }
                 break;
             }
 
@@ -1462,9 +1660,37 @@ internal sealed class WebApp : IAsyncDisposable
         // PLAN §38: beforeSequence is the sequence of the OLDEST entry loaded —
         // the client requests session.older { beforeSequence } on scroll-up.
         var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
+        // astra-1 F: if an assistant turn is in flight RIGHT NOW, return a
+        // snapshot of the currently streaming text in the SAME response —
+        // persistence alone cannot reconstruct an unfinished streamed message.
+        // The maxSequence cursor is the reconcile point: any live event that
+        // lands for this session after the open is replayed against it (a
+        // client-side; the in-flight snapshot belongs to the CURRENT run only).
+        // The cursor is the HIGHEST persisted sequence: any live event that
+        // carries a lower sequence is a stale replay and the client must skip
+        // it; deltas for the in-flight turn are appended to the snapshot's
+        // assistant block (no duplication — the snapshot already includes the
+        // text that any pre-snapshot deltas would have delivered).
+        // astra-1 F: reconstruct the in-flight assistant message. If a turn is
+        // streaming, InFlightText() merges the flushed portion with the unflushed
+        // batcher buffer (and folds that buffer into the accumulator so the next
+        // flush doesn't re-emit it). The maxSequence cursor is the highest
+        // persisted entry — the reconcile point for any live event arriving
+        // during replay.
+        var key = sid ?? "";
+        var inFlight = InFlightText(sid);
+        object? streaming = null;
+        if (inFlight is not null)
+        {
+            streaming = new
+            {
+                text = inFlight,
+                maxSequence = entries.Count > 0 ? entries[^1].Sequence : beforeSeq,
+            };
+        }
         await SendAsync(c, "session.entries",
             new { entries = EntriesToJson(entries), replace = true, total = total,
-                  hasMore = total > entries.Count, beforeSequence = beforeSeq }, sid, ct);
+                  hasMore = total > entries.Count, beforeSequence = beforeSeq, streaming }, sid, ct);
         await SendAckAsync(c, requestId, ct);
     }
 
@@ -1552,6 +1778,16 @@ internal sealed class WebApp : IAsyncDisposable
             updatedAt = proj.UpdatedAt.ToUnixTimeMilliseconds(),
         };
     }
+
+    /// <summary>astra-1 F: a project row as the client shape (the project.list /
+    /// project.created payloads).</summary>
+    private static object ToProjectJson(ProjectInfo proj) => new
+    {
+        id = proj.Id,
+        name = proj.Name,
+        workspacePath = proj.WorkspacePath,
+        updatedAt = proj.UpdatedAt.ToUnixTimeMilliseconds(),
+    };
 
     // ---- shape helpers ------------------------------------------------------
     /// <summary>
@@ -1871,6 +2107,40 @@ internal sealed class WebApp : IAsyncDisposable
             System.Threading.Tasks.TaskScheduler.Default);
     }
 
+    /// <summary>asta-1 F: the currently streaming assistant text for <paramref name="sid"/>,
+    /// merging the already-flushed portion (<c>_completedText</c>) with the deltas still
+    /// sitting in the unflushed batcher buffer. Only an OPEN turn is in flight — a
+    /// completed turn's text already went out as <c>text.completed</c> and was removed
+    /// from <c>_completedText</c>, so a stale entry can never re-emit here. Under the
+    /// batcher's gate so the merge is consistent with an in-flight flush; the pending
+    /// delayed-flush task is cancelled so the consumed text is never emitted twice.</summary>
+    private string? InFlightText(string? sid)
+    {
+        if (sid is null || !_assistantOpen.ContainsKey(sid)) return null;
+        var key = sid;
+        string flushed = _completedText.TryGetValue(key, out var t) ? t : string.Empty;
+        if (_batchers.TryGetValue(key, out var b))
+        {
+            lock (b.Gate)
+            {
+                if (b.Buffers.TryGetValue("text", out var buf) && buf.Length > 0)
+                {
+                    // Consume: the snapshot carries this text, so fold it into the
+                    // running accumulator now and clear the buffer.
+                    flushed += buf.ToString();
+                    _completedText[key] = flushed;
+                    buf.Clear();
+                }
+                // The pending delayed flush (if any) is harmless now: the text lane
+                // is already consumed, so a late flush finds nothing to emit. Null it
+                // (don't dispose — a Task.Delay still in the waiting state cannot be
+                // disposed); this mirrors FlushDeltas' own "we drained" cancellation.
+                b.Pending = null;
+            }
+        }
+        return string.IsNullOrEmpty(flushed) ? null : flushed;
+    }
+
     /// <summary>PLAN §39: drain all buffered lanes for a session now
     /// (window elapsed, or a boundary event forced the flush).</summary>
     /// <summary>Synchronous drain: emit every buffered lane now (no 120 ms delay),
@@ -1927,6 +2197,9 @@ internal sealed class WebApp : IAsyncDisposable
             } : (object?)null,
         }, sid);
         _promptTokens = _completionTokens = _totalTokens = 0;
+        // astra-1 F/#11: the owner of this turn is gone — a delayed stream event
+        // from it (or an even older run) must not open a new owner claim.
+        _activeRun.TryRemove(key, out _);
     }
 
     private void SendEvent(string type, object payload, string? sid) =>
@@ -2089,6 +2362,18 @@ internal sealed class WebApp : IAsyncDisposable
     /// absent Origin is allowed ONLY on a loopback Host (the explicit originless CLI
     /// path); a present-but-wrong Origin is rejected (an absent/spoofed Origin is not
     /// proof of trust). Testable pure predicate.
+    ///
+    /// astra-1 §11a (F/P5) also asked for a "same-origin anti-forgery/session proof" for
+    /// mutations. For a loopback-only control surface the SAME-ORIGIN CHECK IS that
+    /// proof: a malicious cross-origin page cannot present the local app's Origin
+    /// (browsers set it from the page's own URL, not from the request), so only a
+    /// document genuinely served by THIS host (or the explicit originless CLI path)
+    /// can drive mutating routes. Adding a separate session/CSRF token on top would
+    /// be a login-flow for a single local user, which §11a explicitly rules out
+    /// ("do not add a login flow for the local user"). Origin/Host gate + POST-only
+    /// <c>/api/open</c> + active-content-as-download (never rendered on the origin)
+    /// together form the complete local-control boundary; no stateful proof is
+    /// necessary because there is no second client to impersonate.
     /// </summary>
     public static bool ControlOriginIsAllowed(string? host, string? origin, int boundPort)
     {

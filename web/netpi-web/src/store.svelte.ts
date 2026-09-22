@@ -9,6 +9,7 @@ import type {
   RunStats,
   Usage,
   WebPanelInfo,
+  ProjectInfo,
 } from "./types";
 
 let counter = 0;
@@ -48,6 +49,11 @@ export class NetPIStore {
   sessions = $state<SessionInfo[]>([]);
   sessionTotal = $state(0);
   sessionMoreLoading = $state(false);
+  /** astra-1 G1: server-side search results (null = no active search; the picker
+   *  shows these instead of the loaded global list while set). */
+  sessionSearch = $state<SessionInfo[] | null>(null);
+  sessionSearchTotal = $state(0);
+  sessionSearchMoreLoading = $state(false);
   /** Older sessions still hidden beyond the loaded page. */
   get sessionRemaining(): number {
     return Math.max(0, this.sessionTotal - this.sessions.length);
@@ -190,8 +196,39 @@ export class NetPIStore {
     else this.projectPending[sessionId] = op;
   }
 
+  /** astra-1 C (G1 gap): server-backed project list (project.list payload) +
+   *  load state. Refreshed by ProjectPicker on open / after a create. */
+  projects = $state<ProjectInfo[]>([]);
+  projectsLoading = $state(false);
+  setProjects(projects: ProjectInfo[]): void {
+    this.projects = projects;
+  }
+
+  /** astra-1 C: a created/upserted project row (project.created payload) —
+   *  upsert it in place so the picker shows the fresh name/updatedAt. */
+  upsertProject(project: ProjectInfo): void {
+    const i = this.projects.findIndex((p) => p.id === project.id);
+    if (i >= 0) this.projects[i] = project;
+    else this.projects = [project, ...this.projects];
+  }
+
+  /** astra-1 C (G1 gap): picker-local notice (project create/switch errors and
+   *  the refresh-instructions result) — cleared by the matching applied event
+   *  for a switch, or dismissed. */
+  projectNotice = $state<{ operationId: string; message: string } | null>(null);
+
+  setProjectNotice(message: string, operationId = ""): void {
+    this.projectNotice = { operationId, message };
+  }
+
+  clearProjectNotice(operationId: string | null = null): void {
+    if (operationId && this.projectNotice?.operationId !== operationId) return;
+    this.projectNotice = null;
+  }
+
   // ---- transcript -------------------------------------------------------
   blocks = $state<Block[]>([]);
+
   /** Count of head blocks in `blocks` that are not rendered ("load earlier"). */
   hidden = $state(0);
   activeAssistantId = $state<string | null>(null);
@@ -275,6 +312,19 @@ export class NetPIStore {
   prependSystem(text: string): string {
     const id = uid("s");
     this.blocks.unshift({ kind: "system", id, text, createdAt: Date.now() });
+    return id;
+  }
+
+  /** astra-1 D: prepend (session.older pagination) variant of
+   *  appendProjectContext. */
+  prependProjectContext(block: {
+    projectName: string;
+    workspace: string;
+    contentHash: string;
+    text: string;
+  }): string {
+    const id = uid("p");
+    this.blocks.unshift({ kind: "project_context", id, ...block, createdAt: Date.now() });
     return id;
   }
 
@@ -630,6 +680,19 @@ export class NetPIStore {
       text,
       createdAt: Date.now(),
     });
+  }
+
+  /** astra-1 D: a project-change event (entry type `project_context`).
+   *  Distinct block kind — provenance is the application, not the model. */
+  appendProjectContext(block: {
+    projectName: string;
+    workspace: string;
+    contentHash: string;
+    text: string;
+  }): string {
+    const id = uid("p");
+    this.blocks.push({ kind: "project_context", id, ...block, createdAt: Date.now() });
+    return id;
   }
 
   resetTranscript(): void {

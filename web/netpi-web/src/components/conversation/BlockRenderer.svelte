@@ -4,6 +4,7 @@
   import AssistantMessage from "./AssistantMessage.svelte";
   import ToolCallBlock from "./ToolCallBlock.svelte";
   import SystemNotice from "./SystemNotice.svelte";
+  import ProjectContextBlock from "./ProjectContextBlock.svelte";
 
   let { block }: { block: Block } = $props();
 </script>
@@ -29,6 +30,10 @@
       status: block.done ? (block.isError ? "failed" : "done") : "interrupted",
     }}
   />
+{:else if block.kind === "project_context"}
+  <!-- astra-1 D: project-change events are application-provenance snapshots —
+       distinct block, never a user message (rendered by ProjectContextBlock). -->
+  <ProjectContextBlock block={block} />
 {:else}
   <!-- astra-1 G3: system/project/compaction notices get compact, distinct,
        expandable entries — not generic prose lines. -->
