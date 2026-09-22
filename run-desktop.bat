@@ -1,15 +1,13 @@
 @echo off
-rem netPI desktop launcher — builds (if needed) and starts the WinForms + WebView2 app.
-rem The app spawns its own host, or reuses an already-running one on :5173.
+rem netPI desktop launcher — delegates to tools\launch-desktop.ps1 (astra-1 P0.1).
+rem The shell must never run from the repo bin\: the ps1 stages the complete
+rem desktop payload into ~/.netpi/app-cache/desktop/<staging-id>/launch-<ts>/,
+rem byte-verifies it, sets launcher identity (NETPI_HOME / NETPI_PROJECT_ROOT /
+rem NETPI_PLUGINS), and launches the staged copy.
+rem
+rem   run-desktop.bat            build, stage, launch (default)
+rem   run-desktop.bat -NoBuild    stage + launch an existing build
+
 cd /d "%~dp0"
-
-echo Building NetPI.Desktop (Debug)...
-dotnet build src\NetPI.Desktop -c Debug --nologo -v q
-if errorlevel 1 (
-    echo Build failed — see output above.
-    exit /b 1
-)
-
-rem Launch the apphost exe (WinExe — no console window). Running the DLL
-rem through "dotnet <dll>" is what created the blank cmd window.
-start "netPI" src\NetPI.Desktop\bin\Debug\net10.0-windows\netPI.Desktop.exe
+pwsh -NoProfile -File tools\launch-desktop.ps1 %*
+exit /b %errorlevel%

@@ -102,6 +102,9 @@ tools/launch-desktop.ps1 The desktop-shell developer launch path (astra-1 P0.1):
                               never runs from the repo bin. It sets explicit launcher identity
                               (NETPI_HOME/NETPI_PROJECT_ROOT/NETPI_PLUGINS); the shell then
                               re-stages its bundled host/ into ~/.netpi/app-cache/host/... on its own.
+run-desktop.bat           Thin wrapper around tools/launch-desktop.ps1: `run-desktop.bat [-NoBuild]`
+                              is the double-clickable / PATH entry point to the same build → stage →
+                              launch path (delegates to the ps1; never runs the shell from the repo bin).
 ```
 
 Runtime home: `~/.netpi/` — `config.json`, `netpi.db` (SQLite), `logs/`,
@@ -134,7 +137,9 @@ pwsh tools/keep-alive-host.ps1          # via a background job; serves :5173
 #     (astra-1 P0.1: the shell never runs from the repo bin/):
 pwsh tools/launch-desktop.ps1          # builds first (default); -NoBuild stages
                                         # an existing build. The shell then re-stages
-                                        # its bundled host/ under ~/.netpi/app-cache/host/
+                                        # its bundled host/ under ~/.netpi/app-cache/host/.
+                                        # run-desktop.bat is a thin wrapper that delegates
+                                        # here (same flags: -NoBuild).
 ```
 
 - The AiProxy provider plugin requires `plugins.netpi.provider.aiproxy.baseUrl`
