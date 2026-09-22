@@ -505,4 +505,101 @@ public class RunnerLaneAdmissionTests
         Assert.True(conflict.Note!.Contains("conflict"), $"note was: {conflict.Note}");
         Assert.Single(provider.StartedRunIds.Where(id => id == "op-dup")); // a duplicate must not start a second run
     }
+
+    // ---- §16: "Chat Completions / different fake engine — identical ownership
+    // guarantees without response IDs/cache support" --------------------------
+    // The wire is a property of the PROVIDER, below the lane layer: the scheduler
+    // and runner only ever call IModelProvider.RunAsync, so ownership (who is
+    // admitted, who queues, who executes) cannot depend on which wire the
+    // provider speaks. Two fake engines prove it: the Responses engine emits a
+    // usage event (response IDs/usage), the Chat Completions engine emits plain
+    // completion only (no response IDs, no cache). The observable OWNERSHIP
+    // transitions must be identical; only the provider's emitted events differ.
+    private sealed class WireProvider : IModelProvider
+    {
+        private readonly string _engine;
+        private readonly object _lock = new();
+        private readonly Dictionary<string, TaskCompletionSource> _gates = new();
+        private readonly List<string> _started = new();
+        public WireProvider(string engine) => _engine = engine;
+        public IReadOnlyList<string> StartedRunIds { get { lock (_lock) return _started.ToList(); } }
+        /// <summary>Whether this engine's stream carried a usage event (the wire difference).</summary>
+        public bool EmitsUsage { get; private set; }
+
+        public async IAsyncEnumerable<ModelEvent> RunAsync(ModelRequest request, CancellationToken cancellationToken)
+        {
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var key = request.RunId ?? "ad-hoc";
+            lock (_lock) { _gates[key] = tcs; _started.Add(key); }
+            yield return new ModelStarted("model");
+            using var reg = cancellationToken.Register(() => tcs.TrySetResult());
+            await tcs.Task;
+            if (_engine == "responses") { EmitsUsage = true; yield return new UsageUpdated(1, 2, 3); }
+            yield return new ModelCompleted(new AgentMessage("a", MessageRole.Assistant,
+                [new TextPart("done")], DateTimeOffset.UtcNow));
+        }
+
+        public bool OpenRun(string runId)
+        { lock (_lock) return _gates.TryGetValue(runId, out var t) ? t.TrySetResult() : false; }
+    }
+
+    /// <summary>Runs the A/B/C ownership scenario on the given fake engine and returns
+    /// every observable OWNERSHIP fact (wire-agnostic) + the engine's wire signature.</summary>
+    private static async Task<(
+        string[] disp, int acquire, int owned, int queue, bool cQueuedNotStarted, bool cStartedAfterRelease,
+        bool emitsUsage)> WireScenario(string engine)
+    {
+        var scheduler = new NetPI.Lanes.LaneScheduler("gen-1", new NullLogger());
+        scheduler.RegisterPool("pool-1", "dep-1", "m-1", LaneCapacityMode.Manual, 2, true);
+        var provider = new WireProvider(engine);
+        var ctx = new AdmCtx();
+        ctx.Add("provider", provider);
+        ctx.Add("sessions", new NoopStore());
+        ctx.Add("deployments", new FakePolicy(new DeploymentPolicy("m-1", DeploymentExecutionMode.Pooled, "pool-1", "dep-1")));
+        var lanes = new CountingLanes(scheduler);
+        ctx.Add("lanes", lanes);
+
+        var runner = new AgentRunner(new AgentRuntime(ctx), ctx, maxConcurrentRuns: 8);
+        var a = await runner.StartRunAsync(new AgentRunRequest("s-a", null, "m-1", "work"));
+        var b = await runner.StartRunAsync(new AgentRunRequest("s-b", null, "m-1", "work"));
+        var c = await runner.StartRunAsync(new AgentRunRequest("s-c", null, "m-1", "work"));
+        var owned = lanes.Snapshots().Single(p => p.PoolId == "pool-1").OwnedCount;
+        var queue = lanes.Snapshots().Single(p => p.PoolId == "pool-1").QueueCount;
+        var cQueuedNotStarted = !provider.StartedRunIds.Contains(c.RunId!);
+
+        // Release A → the scheduler admits C → the queued record starts.
+        await WaitUntil(() => provider.StartedRunIds.Contains(a.RunId!));
+        Assert.True(provider.OpenRun(a.RunId!), "engine " + engine + ": could not open A's gate");
+        await WaitUntil(() => provider.StartedRunIds.Contains(c.RunId!));
+        var cStartedAfterRelease = provider.StartedRunIds.Contains(c.RunId!);
+        provider.OpenRun(b.RunId!); provider.OpenRun(c.RunId!);
+        await Task.Delay(100); // let the two segments drain
+
+        return (
+            new[] { a.Disposition.ToString(), b.Disposition.ToString(), c.Disposition.ToString() },
+            lanes.AcquireCalls, owned, queue, cQueuedNotStarted, cStartedAfterRelease,
+            provider.EmitsUsage);
+    }
+
+    [Fact]
+    public async Task ChatCompletionsEngine_SameOwnershipGuarantees_AsResponsesEngine()
+    {
+        var resp = await WireScenario("responses");
+        var chat = await WireScenario("chat");
+
+        // The engines are observably DIFFERENT: only the Responses engine carried
+        // a usage event (response IDs/usage); the Chat engine has none.
+        Assert.True(resp.emitsUsage, "the Responses fake must carry response usage");
+        Assert.False(chat.emitsUsage, "the Chat fake must carry no response usage (no IDs, no cache)");
+
+        // IDENTICAL ownership guarantees across wires: the scheduler never sees
+        // the wire, so who is admitted/queued/executing is wire-independent.
+        Assert.Equal(resp.disp, chat.disp);
+        Assert.Equal(new[] { nameof(RunDisposition.Admitted), nameof(RunDisposition.Admitted), nameof(RunDisposition.Queued) }, resp.disp);
+        Assert.Equal(resp.acquire, chat.acquire);
+        Assert.Equal(resp.owned, chat.owned);
+        Assert.Equal(resp.queue, chat.queue);
+        Assert.True(resp.cQueuedNotStarted && chat.cQueuedNotStarted, "the queued run must not execute before its lane, on either wire");
+        Assert.True(resp.cStartedAfterRelease && chat.cStartedAfterRelease, "the queued run must start after a release, on either wire");
+    }
 }
