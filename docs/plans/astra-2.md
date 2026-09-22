@@ -5,10 +5,14 @@ persistence, strict local lanes following AiProxy capacity, child/delegation,
 mailboxes + waits, the combined Work panel, orchestrate-mode persistence, and the
 cloud budget/gate). §13/§16: full capacity is an accepted queue (a durable `Queued`
 assignment + ACK, never a rejection) and `agent.cancel` handles queued/suspended
-records — implemented and tested. Open gates remain: per-inference permit
-validation (§15.B), the `agent_lane_journal`/`agent_checkpoints` tables are declared
-but never written, mailbox drain at turn boundaries, crash-after-tool-effect
-quarantine, workspace modes, and orchestrate-mode coordinator guidance.
+records — implemented and tested. §15.B: the runtime re-validates a pooled run's
+lane permit against the scheduler before EVERY model call (in-run compaction
+included) and fails closed on a stale/foreign permit — implemented and tested
+(the catalog wire-capability probe guard is still open, §3.3 "inference-based
+probe" clause). Remaining open gates: the `agent_lane_journal`/`agent_checkpoints`
+tables are declared but never written, mailbox drain at turn boundaries,
+crash-after-tool-effect quarantine, workspace modes, and orchestrate-mode
+coordinator guidance.
 Consolidated 2026-09-22 from the user's decisions and a targeted inspection of the
 current repository.
 

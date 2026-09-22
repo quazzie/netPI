@@ -680,6 +680,10 @@ public sealed class AgentRunner : IAgentRunner
                 ReasoningLevel = request.ReasoningLevel,
                 Temperature = request.Temperature,
                 Workspace = workspace,
+                // astra-2 §15.B: hand the runtime the pooled run's lane permit so it
+                // re-validates it before every model call. Direct/legacy runs carry
+                // no token (run.LaneToken is null) — a different authorized policy.
+                LanePermit = run.LaneToken,
             }, cts.Token);
             // astra-1 A: the RUNTIME result carries the terminal outcome —
             // cancellation comes back as a result (note "cancelled"), not a

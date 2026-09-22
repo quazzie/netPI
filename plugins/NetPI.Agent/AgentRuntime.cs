@@ -23,6 +23,15 @@ public sealed record AgentRunOptions
     /// </summary>
     public string? DeploymentId { get; init; }
 
+    /// <summary>
+    /// astra-2 §15.B/§3.3: the lane ownership permit for a pooled run — the
+    /// runner's authoritative <see cref="LaneOwnershipToken"/> for this segment.
+    /// Present ONLY for pooled (lane-holding) runs. The runtime re-validates it
+    /// against the lane scheduler before EVERY model call (in-run compaction
+    /// included) and fails closed on a stale/missing permit; direct and legacy
+    /// runs carry no token (a different authorized policy, not a bypass).
+    /// </summary>
+    public NetPI.Abstractions.LaneOwnershipToken? LanePermit { get; init; }
     /// <summary>Session workspace (PLAN §18/§25): tool paths + shell cwd.</summary>
     public string? Workspace { get; init; }
     public float? Temperature { get; init; }
@@ -179,6 +188,10 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         IToolRegistry? tools = null;
         IModelCatalog? catalog = null;
         ISessionStore? store = null;
+        // astra-2 §15.B: the lane scheduler, resolved ONLY for a pooled run (one
+        // that carries a LanePermit) — used to re-validate the execution permit
+        // before every model call. Direct/legacy runs (no permit) never resolve it.
+        NetPI.Abstractions.ILaneScheduler? lanes = null;
         int turns = 0;
         string? note = null;
 
@@ -203,6 +216,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
             tools = toolsLease?.Value;
             catalog = catalogLease?.Value;
             store = storeLease?.Value;
+            lanes = options.LanePermit is not null ? Acquire<NetPI.Abstractions.ILaneScheduler>("lanes") : null;
             if (catalog is not null && string.IsNullOrEmpty(options.ModelId))
             {
                 var models = await catalog.RefreshAsync(ct);
@@ -280,6 +294,24 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                         string? deltaLane = null;
                         var deltaBuf = new System.Text.StringBuilder();
                         var lastDeltaFlush = DateTime.UtcNow;
+                        // astra-2 §3.3/§15.B: re-validate the execution permit against
+                        // the lane scheduler BEFORE every model call (the runner's
+                        // admission is the initial grant; a stale/foreign permit —
+                        // from a reloaded generation or a released lane — fails
+                        // closed here, before any network I/O). In-run compaction
+                        // goes through this same model call, so it is covered too.
+                        if (options.LanePermit is { } permit)
+                        {
+                            if (lanes?.TryValidatePermit(permit, permit.PoolId, permit.AssignmentId) != true)
+                            {
+                                modelError = $"lane permit invalid for pool '{permit.PoolId}' (stale or released); refusing to infer";
+                                _ctx.Log.Warning($"lanes: refusing inference for run {options.RunId} — permit not owned by this generation");
+                                await PublishAsync(AgentEventType.ModelRequestFailed, options,
+                                    new ModelEventWire { Kind = "model-failed", ModelId = request.ModelId, Error = modelError }, ct);
+                                return new AgentRunResult(false, null, turns,
+                                    modelError ?? "lane permit invalid");
+                            }
+                        }
                         await foreach (var ev in provider.RunAsync(request, ct))
                         {
                             if (ev is TextDelta td)

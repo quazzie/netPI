@@ -644,4 +644,49 @@ public class RunnerLaneAdmissionTests
         Assert.True(resp.cQueuedNotStarted && chat.cQueuedNotStarted, "the queued run must not execute before its lane, on either wire");
         Assert.True(resp.cStartedAfterRelease && chat.cStartedAfterRelease, "the queued run must start after a release, on either wire");
     }
+
+    // ---- §15.B: the runtime re-validates the lane permit before EVERY model
+    //      call. A valid (still-owned) permit passes through; a stale permit
+    //      (lane released, generation changed) fails closed BEFORE any network
+    //      I/O — the provider never sees the run.
+    [Fact]
+    public async Task LanePermit_Stale_RefusesInference_BeforeNetwork()
+    {
+        var scheduler = new NetPI.Lanes.LaneScheduler("gen-1", new NullLogger());
+        scheduler.RegisterPool("pool-1", "dep-1", "m-1", LaneCapacityMode.Manual, 1, true);
+        var provider = new GateProvider();
+        var ctx = new AdmCtx();
+        ctx.Add("provider", provider);
+        ctx.Add("sessions", new NoopStore());
+        ctx.Add("lanes", scheduler);
+        var runtime = new AgentRuntime(ctx);
+
+        // Admit a pooled run to get a valid token.
+        var token = await AcquireToken(scheduler);
+
+        // Release the lane → the token is no longer owned → TryValidatePermit fails.
+        await scheduler.ReleaseAsync(token);
+
+        // Now drive the runtime with the stale token: it must refuse inference.
+        var result = await runtime.RunAsync(new AgentRunOptions
+        {
+            SessionId = "s1",
+            ModelId  = "m-1",
+            RunId    = "run-stale",
+            LanePermit = token,
+        }, CancellationToken.None);
+
+        Assert.False(result.Ok);
+        Assert.Contains("lane permit invalid", result.Note, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("run-stale", provider.StartedRunIds);
+    }
+
+
+    private static async Task<LaneOwnershipToken> AcquireToken(NetPI.Lanes.LaneScheduler scheduler)
+    {
+        var entry = new LaneQueueEntry("a-1", "pool-1", "dep-1", 0, "agent-1", "run-1", "s1", "test", DateTimeOffset.UtcNow);
+        var result = await scheduler.AcquireAsync(entry);
+        Assert.NotNull(result.Token);
+        return result.Token!;
+    }
 }
