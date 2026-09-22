@@ -34,6 +34,25 @@ public interface IAgentTool
     ValueTask<ToolResult> ExecuteAsync(ToolContext context, CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Optional capability for a tool whose invocations target a single file
+/// (PLAN §11, docs/plans/file-tool-reliability.md). Implementing it lets the
+/// agent runtime order SAME-FILE calls within a batch (and across concurrent
+/// runs sharing one runtime) while keeping different files and non-file tools
+/// concurrent.
+/// </summary>
+public interface IFileTargetTool
+{
+    /// <summary>
+    /// Declare the one file this call targets (canonical path resolved against
+    /// the context's workspace), WITHOUT reading or mutating it. Tools validate
+    /// their path argument first; a missing/invalid path returns this call's own
+    /// preflight error (return null for "no target") instead of throwing.
+    /// </summary>
+    string? GetTargetPath(ToolContext context);
+}
+
+
 /// <summary>Registry of tools contributed by all active plugins.</summary>
 public interface IToolRegistry
 {

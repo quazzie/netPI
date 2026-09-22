@@ -95,6 +95,20 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     /// it is drained at the turn boundary, after tool results are appended.
     /// </summary>
     private readonly ConcurrentDictionary<string, Channel<QueuedUserMessage>> _steer = new();
+
+    /// <summary>
+    /// docs/plans/file-tool-reliability.md §3B: the RUNTIME-WIDE file-path gate
+    /// coordinator — one per shared AgentRuntime instance (NOT a run-local
+    /// dict), so concurrent runs on this runtime never overlap same-path file
+    /// groups and no other session slips between two dependent edits of the
+    /// same file. The runtime groups file-target calls by canonical path
+    /// without referencing any plugin assembly or tool name: any tool that
+    /// implements <c>IFileTargetTool</c> (Abstractions) participates.
+    /// </summary>
+    private readonly FileGateCoordinator _fileGates = new();
+
+    /// <summary>Internal test/diagnostics access to the gate coordinator.</summary>
+    internal FileGateCoordinator FileGates => _fileGates;
     /// <summary>The calling task's active run scope (null outside a run loop).</summary>
     private RunScope Current => _runScope.Value!;
 
@@ -507,25 +521,75 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                 // Per-call preflight outcome; invalid calls become error results
                 // without executing (PLAN §11: preflight validates arguments and
                 // runtime prerequisites — there is no approval UI yet).
-                var execs = new List<Task<ToolResultPart>>(batch.Prepared.Count);
-                foreach (var (call, tool, error) in batch.Prepared)
+                //
+                // docs/plans/file-tool-reliability.md §2/§3B: file-target calls
+                // (read/write/edit/replace) are grouped by canonical file path and
+                // each group runs IN ORIGINAL CALL ORDER under a runtime-wide
+                // reference-counted path gate — a dependent edit never reads stale
+                // contents, and no other session slips between two dependent edits
+                // of the same file. Non-file calls and different files stay
+                // concurrent. A failing call SKIPS the rest of its file group (an
+                // explicit error naming the failed predecessor); other groups
+                // continue. Results still publish in original overall order below.
+                var preExec = new ToolResultPart?[batch.Prepared.Count];
+                for (var i = 0; i < batch.Prepared.Count; i++)
                 {
+                    var (call, tool, error) = batch.Prepared[i];
                     if (error is not null)
-                    {
-                        execs.Add(Task.FromResult(new ToolResultPart(call.Id, call.Name, [new TextPart(error)], IsError: true)));
-                        continue;
-                    }
-                    execs.Add(ExecuteToolAsync(tool!, call, options, ct));
-
+                        preExec[i] = new ToolResultPart(call.Id, call.Name, [new TextPart(error)], IsError: true);
                 }
-                await Task.WhenAll(execs);
+
+                // Workspace for canonical keys: the EXACT execution workspace
+                // (the same resolution ExecuteToolAsync uses for the tool context).
+                var workspace = string.IsNullOrEmpty(options.Workspace) ? Environment.CurrentDirectory : options.Workspace!;
+                var groups = new Dictionary<(string Workspace, string Path), List<int>>();
+                var grouped = new HashSet<int>();
+                for (var i = 0; i < batch.Prepared.Count; i++)
+                {
+                    if (preExec[i] is not null) continue; // already resolved (preflight error)
+                    var (call, tool, _) = batch.Prepared[i];
+                    if (tool is not IFileTargetTool ftt) continue; // non-file: runs free
+                    try
+                    {
+                        var ctx = new ToolContext(call.Arguments, workspace, options.SessionId, null, options.RunId);
+                        var target = ftt.GetTargetPath(ctx);
+                        if (target is { Length: > 0 })
+                        {
+                            var key = CanonicalFilePath(target, workspace);
+                            grouped.Add(i);
+                            if (!groups.TryGetValue(key, out var idxs)) groups[key] = idxs = new List<int>();
+                            idxs.Add(i);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // A path-resolution failure is THIS call's preflight error,
+                        // not a crashed batch (plan §3B).
+                        preExec[i] = new ToolResultPart(call.Id, call.Name, [new TextPart($"file target could not be resolved: {ex.Message}")], IsError: true);
+                    }
+                }
+
+                // Run: file groups (concurrent with each other, sequential within
+                // a group) + free (non-file / pre-resolved) calls, all at once.
+                var work = new List<Task>();
+                foreach (var (key, idxs) in groups)
+                    work.Add(RunFileGroupAsync(key, idxs, batch, preExec, options, ct));
+                for (var i = 0; i < batch.Prepared.Count; i++)
+                    if (preExec[i] is null && !grouped.Contains(i))
+                        work.Add(RunFreeAsync(i, batch, preExec, options, ct));
+                await Task.WhenAll(work);
+
+                // Materialize the per-call results (every slot is now filled).
+                var execs = new List<ToolResultPart>(batch.Prepared.Count);
+                for (var i = 0; i < batch.Prepared.Count; i++)
+                    execs.Add(preExec[i]!);
 
                 // Original call order, not completion order (PLAN §11).
                 var results = new List<MessagePart>(batch.Prepared.Count);
                 for (var i = 0; i < batch.Prepared.Count; i++)
                 {
                     var (call, _, error) = batch.Prepared[i];
-                    var res = execs[i].Result;
+                    var res = execs[i];
                     results.Add(res);
                     await PublishAsync(AgentEventType.AfterToolCall, options,
                         new ModelEventWire
@@ -681,7 +745,236 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
     private static List<ToolDefinition> BuildSharedReadToolDefs(IToolRegistry? tools)
         => tools?.All().Where(t => !IsMutatingTool(t.Name)).Select(t => new ToolDefinition(t.Name, t.Description, t.Parameters)).ToList() ?? [];
 
+    /// <summary>
+    /// docs/plans/file-tool-reliability.md §3B: the RUNTIME-WIDE file-path gate
+    /// coordinator. One instance per shared AgentRuntime (NOT a run-local
+    /// dict), so concurrent runs on the same runtime never overlap same-path
+    /// file groups — a whole file group holds the gate from its first call to
+    /// its last, so no other session can slip between two dependent edits of
+    /// the same file. Gate entries are reference-counted (holders + queued
+    /// waiters) and removed the moment the count hits zero (idle gates are
+    /// reclaimed — a long-running host does not retain every visited path;
+    /// plan §2 "idle gates reclaimed after release").
+    ///
+    /// Waiting is on a <see cref="SemaphoreSlim(1,1)"/>, which serves its
+    /// waiters FIFO, so a session queued behind a held gate gets the path as
+    /// soon as that holder group finishes — and only that holder group holds
+    /// it in between.
+    /// </summary>
+    public sealed class FileGateCoordinator
+    {
+        private readonly Dictionary<(string Workspace, string Path), Gate> _gates = new();
+        private readonly object _lock = new();
+
+        /// <summary>One mutual-exclusion gate per canonical (workspace, path).</summary>
+        public sealed class Gate
+        {
+            public readonly SemaphoreSlim One = new(1, 1);
+            /// <summary>Outstanding references: holders + queued waiters.
+            /// The gate entry is removed (idle reclamation) at 0.</summary>
+            public int Count;
+        }
+
+        /// <summary>
+        /// Acquire the gate for one canonical path: free → taken at once;
+        /// held → queued FIFO behind the current holder (and any earlier
+        /// waiters) until that holder group finishes. Cancellable: on
+        /// cancellation the waiter is dequeued, its reference released, and the
+        /// acquire fails with <see cref="OperationCanceledException"/> — the
+        /// gate stays re-acquirable for everyone else (plan §2 "the path is
+        /// re-acquirable immediately; no later mutation runs").
+        /// </summary>
+        public async Task<IGateLease> AcquireAsync((string Workspace, string Path) key, CancellationToken ct)
+        {
+            var gate = GetOrCreate(key);
+            lock (_lock) gate.Count++;
+            try
+            {
+                await gate.One.WaitAsync(ct);
+                return new Lease(this, gate);
+            }
+            catch (OperationCanceledException)
+            {
+                lock (_lock) gate.Count--; // the cancelled waiter's reference
+                RemoveIfIdle(gate);
+                throw;
+            }
+        }
+
+        private Gate GetOrCreate((string Workspace, string Path) key)
+        {
+            lock (_lock)
+                return _gates.TryGetValue(key, out var g) ? g : (_gates[key] = new Gate());
+        }
+
+        /// <summary>
+        /// Release a held gate. The lease is idempotent; the reference is
+        /// dropped and the entry removed (idle reclamation) when the count
+        /// reaches zero.
+        /// </summary>
+        private void Release(Gate gate)
+        {
+            bool release = false;
+            lock (_lock)
+            {
+                if (gate.Count > 0)
+                {
+                    gate.Count--;
+                    release = true;
+                }
+            }
+            if (release)
+            {
+                gate.One.Release();
+                RemoveIfIdle(gate);
+            }
+        }
+
+        private void RemoveIfIdle(Gate gate)
+        {
+            lock (_lock)
+            {
+                if (gate.Count == 0)
+                {
+                    var key = FindKey(gate);
+                    if (key is { } k) _gates.Remove(k);
+                }
+            }
+        }
+
+        private (string Workspace, string Path)? FindKey(Gate gate)
+            => _gates.FirstOrDefault(kvp => ReferenceEquals(kvp.Value, gate)) is { } hit ? hit.Key : null;
+
+        /// <summary>Number of gate entries currently retained (diagnostics/tests:
+        /// idle gates are reclaimed, so this must not grow without bound).</summary>
+        public int GateCount
+        {
+            get { lock (_lock) return _gates.Count; }
+        }
+
+        private sealed class Lease : IGateLease
+        {
+            private FileGateCoordinator? _owner;
+            private Gate? _gate;
+            public Lease(FileGateCoordinator owner, Gate gate) { _owner = owner; _gate = gate; }
+            public void Dispose()
+            {
+                var o = Interlocked.Exchange(ref _owner, null);
+                var g = _gate;
+                _gate = null;
+                if (o is not null && g is not null) o.Release(g);
+            }
+        }
+    }
+
     private sealed record ToolBatch(IReadOnlyList<(ToolCallPart Call, IAgentTool? Tool, string? Error)> Prepared);
+
+    /// <summary>
+    /// Execute one canonical-path file group in ORIGINAL CALL ORDER under the
+    /// runtime-wide path gate: acquire (cancellable) → run the calls
+    /// sequentially (a predecessor failure/cancellation SKIPS the rest of the
+    /// group with an explicit error naming the failed predecessor) → release in
+    /// finally, so a gate is never leaked even on cancellation (plan §2 "no
+    /// detached mutation tasks").
+    /// </summary>
+    private async Task RunFileGroupAsync(
+        (string Workspace, string Path) pathKey,
+        List<int> indices,
+        ToolBatch batch,
+        ToolResultPart?[] preExec,
+        AgentRunOptions options,
+        CancellationToken ct)
+    {
+        var gate = await _fileGates.AcquireAsync(pathKey, ct);
+        try
+        {
+            ToolResultPart? failed = null;
+            foreach (var i in indices)
+            {
+                if (failed is not null)
+                {
+                    // Skipped by a failed/cancelled predecessor in the SAME file
+                    // group — a later edit could not read the change it depended
+                    // on (plan §2 "a failing call causes later calls in the group
+                    // to be skipped with an explicit error").
+                    var (sk, _, _) = batch.Prepared[i];
+                    preExec[i] = new ToolResultPart(sk.Id, sk.Name,
+                        [new TextPart($"skipped: earlier call {failed.ToolCallId} in the same file group failed; nothing was executed for this call")], IsError: true);
+                    continue;
+                }
+                if (ct.IsCancellationRequested)
+                {
+                    // Cancellation prevents LATER calls from starting (plan §2);
+                    // the gate is released in the finally below.
+                    var (sk, _, _) = batch.Prepared[i];
+                    preExec[i] = new ToolResultPart(sk.Id, sk.Name,
+                        [new TextPart("skipped: the run was cancelled before this call could start")], IsError: true);
+                    failed = preExec[i];
+                    continue;
+                }
+                var (call, tool, _) = batch.Prepared[i];
+                try
+                {
+                    preExec[i] = await ExecuteToolAsync(tool!, call, options, ct);
+                    if (preExec[i]!.IsError) failed = preExec[i];
+                }
+                catch (OperationCanceledException)
+                {
+                    // A cancelled in-flight call is not an ordinary failure:
+                    // record it and skip the rest of the group.
+                    preExec[i] = new ToolResultPart(call.Id, call.Name,
+                        [new TextPart("cancelled before this call could complete")], IsError: true);
+                    failed = preExec[i];
+                }
+                catch (Exception ex)
+                {
+                    preExec[i] = new ToolResultPart(call.Id, call.Name, [new TextPart($"Tool error: {ex.Message}")], IsError: true);
+                    failed = preExec[i];
+                }
+            }
+        }
+        finally { gate.Dispose(); }
+    }
+
+    /// <summary>
+    /// A non-file call (or a call with no file target) runs concurrently with
+    /// everything else, exactly as the legacy start-all batch did.
+    /// </summary>
+    private async Task RunFreeAsync(int i, ToolBatch batch, ToolResultPart?[] preExec, AgentRunOptions options, CancellationToken ct)
+    {
+        var (call, tool, _) = batch.Prepared[i];
+        try
+        {
+            preExec[i] = await ExecuteToolAsync(tool!, call, options, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            preExec[i] = new ToolResultPart(call.Id, call.Name, [new TextPart("cancelled before this call could complete")], IsError: true);
+        }
+        catch (Exception ex)
+        {
+            preExec[i] = new ToolResultPart(call.Id, call.Name, [new TextPart($"Tool error: {ex.Message}")], IsError: true);
+        }
+    }
+
+    /// <summary>
+    /// Canonical grouping key for a file path: resolved against the EXACT
+    /// execution workspace and always through Path.GetFullPath (including
+    /// rooted inputs — Path.IsPathRooted alone is not a canonical key), so
+    /// relative/absolute, ./.., slash and case variants of the same file share
+    /// one gate; different workspaces' relative paths do not. Windows is
+    /// case-insensitive (OrdinalIgnoreCase) for the comparison, POSIX is
+    /// Ordinal (plan §3B). The workspace is part of the key tuple.
+    /// </summary>
+    internal static (string Workspace, string Path) CanonicalFilePath(string path, string workspace)
+    {
+        var full = Path.IsPathRooted(path) ? Path.GetFullPath(path) : Path.GetFullPath(Path.Combine(workspace, path));
+        // Windows is case-insensitive: normalize the key so "A.md" and "a.md"
+        // (and mixed-case workspaces) share ONE gate; POSIX keys stay exact.
+        return OperatingSystem.IsWindows()
+            ? (workspace.ToLowerInvariant(), full.ToLowerInvariant())
+            : (workspace, full);
+    }
 
     private async Task<ToolResultPart> ExecuteToolAsync(IAgentTool tool, ToolCallPart call, AgentRunOptions options, CancellationToken ct)
     {
@@ -913,3 +1206,6 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         }
     }
 }
+
+/// <summary>A held file-path gate; release exactly once (idempotent).</summary>
+public interface IGateLease : IDisposable { }

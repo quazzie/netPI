@@ -31,10 +31,86 @@ internal static class Args
     /// <summary>Cap output to a max number of bytes, appending a truncation note.</summary>
     public static string Truncate(string s, int maxChars = 50_000)
         => s.Length <= maxChars ? s : s[..maxChars] + $"\n…[truncated {s.Length - maxChars} chars]";
+
+    // ---- file-target tools: shared schema/validation helpers
+    // (docs/plans/file-tool-reliability.md §2: required fields + integer/
+    // minimum constraints declared in the schema AND validated at execution —
+    // reject missing/null/wrong-type/blank path, empty oldText, absent
+    // newText, fractional/zero/negative/out-of-range expectedCount. No
+    // coercion; unrelated schemas are untouched.)
+
+    private static Dictionary<string, object> BuildProps(params (string name, string type, string? desc)[] fields)
+    {
+        var props = new Dictionary<string, object>();
+        foreach (var (n, t, d) in fields)
+        {
+            var o = new Dictionary<string, object> { ["type"] = t };
+            if (d is not null) o["description"] = d;
+            if (n == "path") o["minLength"] = 1;
+            if (n == "oldText") o["minLength"] = 1;
+            if (n == "expectedCount") { o["minimum"] = 1; o["maximum"] = int.MaxValue; }
+            props[n] = o;
+        }
+        return props;
+    }
+
+    /// <summary>An object schema with a required list (file-target tools).</summary>
+    public static JsonElement FileTargetSchema(params (string name, string type, string? desc)[] fields)
+    {
+        var required = fields.Where(f => f.name is "path" or "oldText" or "newText" or "expectedCount").Select(f => f.name).ToList();
+        return JsonSerializer.SerializeToElement(new
+        {
+            type = "object",
+            properties = BuildProps(fields),
+            required,
+            additionalProperties = false,
+        });
+    }
+
+    /// <summary>Required nonblank string path (rejects missing/null/wrong-type/blank; no coercion).</summary>
+    public static bool TryPath(JsonElement el, out string path)
+    {
+        path = "";
+        if (el.ValueKind != JsonValueKind.Object || !el.TryGetProperty("path", out var p) || p.ValueKind != JsonValueKind.String) return false;
+        var v = p.GetString();
+        return v is { Length: > 0 } && !string.IsNullOrWhiteSpace(v) && (path = v, true).Item2;
+    }
+
+    /// <summary>A present nonempty string field.</summary>
+    public static bool TryNonEmptyString(JsonElement el, string name, out string value)
+    {
+        value = "";
+        if (el.ValueKind != JsonValueKind.Object || !el.TryGetProperty(name, out var p) || p.ValueKind != JsonValueKind.String) return false;
+        var v = p.GetString();
+        return v is { Length: > 0 } && (value = v, true).Item2;
+    }
+
+    /// <summary>A present string field (explicit "" is valid). Rejects missing/null/wrong-type.</summary>
+    public static bool TryStringPresent(JsonElement el, string name, out string value)
+    {
+        value = "";
+        if (el.ValueKind != JsonValueKind.Object || !el.TryGetProperty(name, out var p) || p.ValueKind != JsonValueKind.String) return false;
+        value = p.GetString() ?? "";
+        return true;
+    }
+
+    /// <summary>A present positive int32. Rejects missing/null/wrong-type, fractional, zero, negative, out-of-range — no coercion.</summary>
+    public static bool TryPositiveInt(JsonElement el, string name, out int value)
+    {
+        value = 0;
+        if (el.ValueKind != JsonValueKind.Object || !el.TryGetProperty(name, out var p) || p.ValueKind != JsonValueKind.Number) return false;
+        if (!p.TryGetInt32(out var v) || v <= 0) return false; // rejects fractional, zero, negative, out-of-range
+        value = v;
+        return true;
+    }
+
+    /// <summary>Read the validated path argument from a context (null when invalid).</summary>
+    public static string? ValidPath(ToolContext ctx)
+        => TryPath(ctx.Arguments, out var p) ? p : null;
 }
 
 /// <summary>A file-read tool.</summary>
-public sealed class ReadTool : IAgentTool
+public sealed class ReadTool : IAgentTool, IFileTargetTool
 {
     public string Name => "read";
     public string Description => "Read a text file (line-numbered, bounded). Relative paths resolve against the workspace. Use offset/limit to page large files; binary files return an error.";
@@ -48,13 +124,19 @@ public sealed class ReadTool : IAgentTool
         ("offset", "number", "Line number to start reading from (1-indexed). Optional."),
         ("limit", "number", "Maximum number of lines to read. Optional."));
 
+    /// <summary>Declare the target path without reading the file (validation first).</summary>
+    public string? GetTargetPath(ToolContext context)
+        => Args.ValidPath(context) is { } p ? context.ResolvePath(p) : null;
+
     public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
         // PLAN §19: relative -> workspace, absolute unchanged, text-only with
         // line numbers, bounded output + continuation marker, binary -> useful
         // error (no garbage).
-        var path = ctx.ResolvePath(Args.Str(ctx.Arguments, "path"));
-        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+        if (!Args.TryPath(ctx.Arguments, out var raw))
+            return Error("path is required (a nonblank string).");
+        var path = ctx.ResolvePath(raw);
+        if (!File.Exists(path))
             return Error($"File not found: {path}");
         try
         {
@@ -63,8 +145,8 @@ public sealed class ReadTool : IAgentTool
                 return Error($"Refusing to read binary file {path} ({bytes.Length} bytes). Convert it to text first or use the bash tool.");
             var offset = Math.Max(1, Args.Int(ctx.Arguments, "offset", 1));
             var limit = Math.Clamp(Args.Int(ctx.Arguments, "limit", 200), 1, 2000);
-            var raw = Encoding.UTF8.GetString(bytes).Replace("\r\n", "\n").Replace("\r", "\n");
-            var lines = raw.Split('\n');
+            var rawText = Encoding.UTF8.GetString(bytes).Replace("\r\n", "\n").Replace("\r", "\n");
+            var lines = rawText.Split('\n');
             // A trailing newline must not count as an extra (empty) line.
             if (lines.Length > 0 && string.IsNullOrEmpty(lines[^1]))
                 lines = lines.Take(lines.Length - 1).ToArray();
@@ -108,23 +190,28 @@ public sealed class ReadTool : IAgentTool
 }
 
 /// <summary>A file-write tool (creates or overwrites).</summary>
-public sealed class WriteTool : IAgentTool
+public sealed class WriteTool : IAgentTool, IFileTargetTool
 {
     public string Name => "write";
     public string Description => "Write text content to a file, creating it (and parent dirs) if needed and overwriting if it exists.";
     public IReadOnlyList<string> Guidelines => [
         "Overwrites the whole file — read it first when the file already exists and you only want to change part of it; use edit for partial changes.",
     ];
-    public JsonElement Parameters => Args.Schema(
-        ("path", "string", "File path to write."),
-        ("content", "string", "Full file content to write."));
+    public JsonElement Parameters => Args.FileTargetSchema(
+        ("path", "string", "File path to write (required)."),
+        ("content", "string", "Full file content to write (required; must be present — an explicit empty string overwrites with an empty file)."));
+
+    /// <summary>Declare the target path without reading the file (validation first).</summary>
+    public string? GetTargetPath(ToolContext context)
+        => Args.ValidPath(context) is { } p ? context.ResolvePath(p) : null;
 
     public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
-        var path = ctx.ResolvePath(Args.Str(ctx.Arguments, "path"));
-        var content = Args.Str(ctx.Arguments, "content");
-        if (string.IsNullOrEmpty(path))
-            return new ToolResult("tool", "write", [new TextPart("path is required")], IsError: true);
+        if (!Args.TryPath(ctx.Arguments, out var raw))
+            return new ToolResult("tool", "write", [new TextPart("path is required (a nonblank string).")], IsError: true);
+        if (!Args.TryStringPresent(ctx.Arguments, "content", out var content))
+            return new ToolResult("tool", "write", [new TextPart("content is required (a present string; an explicit empty string overwrites with an empty file).")], IsError: true);
+        var path = ctx.ResolvePath(raw);
         try
         {
             var dir = Path.GetDirectoryName(Path.GetFullPath(path));
@@ -141,59 +228,48 @@ public sealed class WriteTool : IAgentTool
 
 /// <summary>
 /// A file-edit tool: replace the <c>old</c> text (which must occur exactly once)
-/// with <c>new</c>.
+/// with <c>new</c>. Matching is CRLF/LF-equivalent (comparison view only — the
+/// file bytes are never normalized outside the replaced span); a lone CR stays
+/// literal (docs/plans/file-tool-reliability.md §2).
 /// </summary>
-public sealed class EditTool : IAgentTool
+public sealed class EditTool : IAgentTool, IFileTargetTool
 {
     public string Name => "edit";
-    public string Description => "Replace a unique exact text span in a file. oldText must occur exactly once (0 or >1 matches both fail; no fuzzy matching).";
+    public string Description => "Replace a unique exact text span in a file. oldText must occur exactly once (0 or >1 matches both fail; no fuzzy matching). CRLF and LF compare equivalently; a lone CR is literal; the rest of the file is preserved byte-for-byte.";
     public IReadOnlyList<string> Guidelines => [
-        "View the file first and copy the exact text (including whitespace) — fuzzy or partial matches fail.",
+        "View the file first and copy the exact text (including whitespace) — fuzzy or partial matches fail; only line endings (CRLF vs LF) are equivalent.",
         "Widen oldText (more surrounding context) when a match is ambiguous.",
+        "If oldText occurs multiple times, use replace with expectedCount instead.",
+        "Same-file calls in one response run in your original order; a failed call in a file group skips the rest of that file's calls in this batch.",
     ];
-    public JsonElement Parameters => Args.Schema(
-        ("path", "string", "File path to edit."),
-        ("oldText", "string", "Exact text to find (must occur exactly once)."),
-        ("newText", "string", "Replacement text."));
+    public JsonElement Parameters => Args.FileTargetSchema(
+        ("path", "string", "File path to edit (required)."),
+        ("oldText", "string", "Exact text to find (required, must occur exactly once; CRLF/LF-equivalent)."),
+        ("newText", "string", "Replacement text (required; must be present — an explicit empty string deletes the span)."));
+
+    /// <summary>Declare the target path without reading the file (validation first).</summary>
+    public string? GetTargetPath(ToolContext context)
+        => Args.ValidPath(context) is { } p ? context.ResolvePath(p) : null;
 
     public async ValueTask<ToolResult> ExecuteAsync(ToolContext ctx, CancellationToken ct)
     {
-        // PLAN §21: exact replacement, 0 or >1 matches both fail, no fuzzy
-        // matching, rest of the file preserved byte-for-byte.
-        var path = ctx.ResolvePath(Args.Str(ctx.Arguments, "path"));
-        var old = Args.Str(ctx.Arguments, "oldText");
-        var newText = Args.Str(ctx.Arguments, "newText");
-        if (string.IsNullOrEmpty(path) || !File.Exists(path))
-            return new ToolResult("tool", "edit", [new TextPart($"File not found: {path}")], IsError: true);
-        try
-        {
-            var content = await File.ReadAllTextAsync(path, ct);
-            var count = CountOccurrences(content, old);
-            if (count == 0)
-                return new ToolResult("tool", "edit", [new TextPart("0 matches for oldText: nothing to edit (oldText must match exactly, once).")], IsError: true);
-            if (count > 1)
-                return new ToolResult("tool", "edit", [new TextPart($"Ambiguous: oldText matches {count} times - add surrounding context so it is unique.")], IsError: true);
-            var idx = content.IndexOf(old, StringComparison.Ordinal);
-            var updated = idx < 0 ? content : content.Substring(0, idx) + newText + content.Substring(idx + old.Length);
-            await File.WriteAllTextAsync(path, updated, ct);
-            return new ToolResult("tool", "edit", [new TextPart($"Edited {path}.")], false);
-        }
-        catch (Exception ex)
-        {
-            return new ToolResult("tool", "edit", [new TextPart($"Edit failed: {ex.Message}")], IsError: true);
-        }
-    }
+        // PLAN §21 (updated by docs/plans/file-tool-reliability.md): exactly one
+        // CRLF/LF-equivalent literal match; encoding/BOM and untouched bytes
+        // (including EOLs) survive the write; a failed validation never touches
+        // the file.
+        if (!Args.TryPath(ctx.Arguments, out var raw))
+            return new ToolResult("tool", "edit", [new TextPart("path is required (a nonblank string).")], IsError: true);
+        if (!Args.TryNonEmptyString(ctx.Arguments, "oldText", out var oldText))
+            return new ToolResult("tool", "edit", [new TextPart("oldText is required (a nonempty string).")], IsError: true);
+        if (!Args.TryStringPresent(ctx.Arguments, "newText", out var newText))
+            return new ToolResult("tool", "edit", [new TextPart("newText is required (a present string; an explicit empty string deletes the span).")], IsError: true);
 
-    private static int CountOccurrences(string content, string find)
-    {
-        if (string.IsNullOrEmpty(find)) return 0;
-        var count = 0;
-        var idx = 0;
-        while ((idx = content.IndexOf(find, idx, StringComparison.Ordinal)) >= 0)
-        { count++; idx += find.Length; }
-        return count;
+        var path = ctx.ResolvePath(raw);
+        var (ok, message) = await TextFileEditor.EditAsync(path, oldText, newText, ct);
+        return new ToolResult("tool", "edit", [new TextPart(message)], IsError: !ok);
     }
 }
+
 
 /// <summary>A grep/search tool: find files whose contents match a regex.</summary>
 public sealed class GrepTool : IAgentTool
@@ -514,7 +590,7 @@ public sealed class ToolsPlugin : INetPiPlugin
         context.Log.Information($"Bash: {bash.Label}");
         context.Log.Information($"PowerShell: {pwsh.Label}");
 
-        _tools = [new ReadTool(), new WriteTool(), new EditTool(), new GrepTool(),
+        _tools = [new ReadTool(), new WriteTool(), new EditTool(), new ReplaceTool(), new GrepTool(),
             new BashTool(bash, _tracker), new PowerShellTool(pwsh, _tracker)];
         _registry = new ToolRegistryImpl();
         _registrations = _tools.Select(t => _registry.Register(t)).ToArray();

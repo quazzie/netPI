@@ -156,6 +156,29 @@ public class AiProxySseTests
         Assert.Equal(2, calls.Select(c => c.Id).Distinct().Count());
     }
 
+    /// <summary>
+    /// plan §3C: the chat wire's completed message must carry tool calls in the
+    /// wire's numeric index order, NOT raw SSE arrival order. Here index 1's
+    /// events stream before index 0's — the assembled calls must still be [0,1].
+    /// </summary>
+    private const string ReorderedIndices =
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"b\",\"function\":{\"name\":\"t1\",\"arguments\":\"{}\"}}]}}]}\n" +
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"t0\",\"arguments\":\"{}\"}}]}}]}\n" +
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"total_tokens\":9}}\n" +
+        "data: [DONE]\n";
+
+    [Fact]
+    public async Task ReorderedIndices_AssembleInIndexOrderNotArrivalOrder()
+    {
+        var (p, _) = Make(ReorderedIndices);
+        var ev = await Collect(p);
+
+        var done = Assert.Single(ev.OfType<ModelCompleted>());
+        var ids = done.Message.Parts.OfType<ToolCallPart>().Select(c => c.Id).ToList();
+        // index 1 arrived first, but the completed message is ordered by index.
+        Assert.Equal(new[] { "a", "b" }, ids);
+    }
+
     [Fact]
     public async Task DisconnectMidStream_EmitsWhatArrivedThenCompletes()
     {

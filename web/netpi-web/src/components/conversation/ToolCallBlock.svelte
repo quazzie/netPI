@@ -120,6 +120,7 @@
       case "read": return "Read";
       case "write": return "Write";
       case "edit": return "Edit";
+      case "replace": return "Replace";
       case "grep": return "Grep";
       default: return call.name.replace(/(^|[_-])(\w)/g, (_, __, c) => c.toUpperCase());
     }
@@ -131,7 +132,8 @@
       case "powershell": return ">_";
       case "read": return "▤";
       case "write":
-      case "edit": return "✎";
+      case "edit":
+      case "replace": return "✎";
       case "grep": return "⌕";
       default: return "◇";
     }

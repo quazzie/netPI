@@ -44,7 +44,7 @@ plugins/                  One folder per plugin; each now holds only a `current.
                             NetPI.Context.Pi    system-prompt + workspace-context layering (§15-17)
                             NetPI.Provider.AiProxy  provider + model catalog (§13-14, §14b/§14c)
                             NetPI.Storage.Sqlite  session store ("sessions") (§29-30)
-                            NetPI.Tools         read/write/edit/grep + bash/powershell (§18-26)
+                            NetPI.Tools         read/write/edit/replace/grep + bash/powershell (§18-26)
                             NetPI.AutoCompact   context compaction (§31-33)
                             NetPI.Retry         model-retry policy (§34)
                             NetPI.BackgroundTasks  background jobs + 4 tools (§27-28); "background"
@@ -189,7 +189,12 @@ loop:  drain steering (append as new user msg if non-empty → TurnBoundary)
        [failure: ModelRequestFailed → ModelRetrying → backoff, or terminal]
        AssistantCompleted
        BeforeToolBatch → BeforeToolCall* (preflight: tool exists, args JSON object)
-       → concurrent tool execution (results in original call order)
+       → concurrent tool execution (results in original call order); file-target
+         calls (read/write/edit/replace) are grouped by canonical file path and
+         run sequentially IN CALL ORDER under a runtime-wide per-path gate —
+         same-file dependent edits never race, a failed group member skips the
+         rest of that file group; other files and non-file calls stay concurrent
+         (docs/plans/file-tool-reliability.md)
        → AfterToolCall* → AfterToolBatch
        → compaction checkpoint (if "compaction" service present) → ContextBuilt
 TurnBoundary

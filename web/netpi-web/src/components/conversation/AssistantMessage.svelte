@@ -229,7 +229,7 @@
 
   function artifactPath(call: ToolCall): string | null {
     if (call.result === undefined || call.isError) return null;
-    if (call.name !== "write" && call.name !== "edit") return null;
+    if (call.name !== "write" && call.name !== "edit" && call.name !== "replace") return null;
     try {
       const args = JSON.parse(call.argsJson || "{}");
       return typeof args.path === "string" && args.path.trim() ? args.path.trim() : null;

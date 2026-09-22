@@ -58,7 +58,7 @@ public class ContextDiscovery
     protected virtual string ReadFileRaw(string path) => File.ReadAllText(path);
 
     /// <summary>netPI's built-in base prompt; REPLACED by SYSTEM.md (PLAN §17).</summary>
-    private const string BuiltInBasePrompt = "You are netPI, a local AI agent. You work in a workspace directory using tools (read, write, edit, grep, bash, powershell, background tasks). Be direct, act with the tools when asked, and keep answers concise.";
+    private const string BuiltInBasePrompt = "You are netPI, a local AI agent. You work in a workspace directory using tools (read, write, edit, replace, grep, bash, powershell, background tasks). Be direct, act with the tools when asked, and keep answers concise. Per-tool behavior rules live in the tool guidelines below.";
     private readonly Dictionary<string, Entry> _cache = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>

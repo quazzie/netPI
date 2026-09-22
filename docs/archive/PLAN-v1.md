@@ -547,6 +547,17 @@ Results are inserted into the transcript in the **original call order**, not com
 
 Hold each tool's lease from resolution through execution completion, preventing it from unloading halfway through an invocation.
 
+**File-target grouping (implemented; see `docs/plans/file-tool-reliability.md`).**
+Calls whose tool implements `IFileTargetTool` (Abstractions) and reports a
+target path are grouped by canonical file path (resolved against the exact
+execution workspace) and run **sequentially in original call order** under a
+runtime-wide, reference-counted per-path gate — so a dependent `write → edit →
+replace → read` on one file never reads stale contents, and no other session
+slips between two dependent edits of the same file. A failing call skips the
+rest of its file group with an explicit error; non-file calls and different
+files remain concurrent with each other. Results still publish in original
+overall call order.
+
 ---
 
 # 12. Steering
@@ -957,6 +968,17 @@ No fuzzy matching.
 No hidden AI patching.
 
 Preserve the rest of the file byte-for-byte as much as normal text handling allows.
+
+**Implemented (see `docs/plans/file-tool-reliability.md`).** `edit` matches
+newline-tolerantly (CRLF and LF occurrences of `oldText` are equivalent;
+lone CR stays literal) and requires exactly one match, so the ambiguity rule
+applies to the *normalized* comparison view. Its sibling `replace` swaps ALL
+non-overlapping occurrences and is refused unless the caller's `expectedCount`
+equals the actual count. Both re-encode into the file's existing encoding
+(UTF-8 with/without BOM, BOM-marked UTF-16/UTF-32) and write atomically via a
+sibling temp file, so bytes outside the replaced spans — and the BOM — are
+untouched. Malformed calls fail before any write; a failed batch call is never
+followed by a write that could truncate the file.
 
 ---
 

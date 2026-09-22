@@ -598,9 +598,15 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         if (!usageSeen) yield return new UsageUpdated(0, 0, 0);
 
         // ---- accumulate streamed parts into the completed message (PLAN §9) ----
+        // docs/plans/file-tool-reliability.md §3C: assemble tool calls in SEMANTIC
+        // order — the chat wire's numeric tool-call index — not in the stream's
+        // arrival order (a provider may deliver chunks out of order). The numeric
+        // index is the chat wire's SEMANTIC call order; the downstream runtime
+        // relies on it to run same-file dependent edits (a→b→c) in the order the
+        // model emitted them (plan §3C).
         if (thinkBuf.Length > 0) parts.Add(new ThinkingPart(thinkBuf.ToString()));
         if (textBuf.Length > 0) parts.Add(new TextPart(textBuf.ToString()));
-        foreach (var tc in tools.Values)
+        foreach (var tc in tools.OrderBy(kvp => kvp.Key).Select(kvp => kvp.Value))
             if (tc.Started)
             {
                 var argsJson = tc.FullArgs.Length > 0 ? tc.FullArgs.ToString().Trim() : string.Empty;
@@ -704,7 +710,25 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     private static int? GetIntProp(JsonElement e, string prop)
         => e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : null;
 
-    private sealed class ToolState { public string Id; public string ItemId = ""; public string Name; public StringBuilder Args = new(); public StringBuilder FullArgs = new(); public bool Started; public ToolState(string id, string name) { Id = id; Name = name; } }
+    private sealed class ToolState
+    {
+        public string Id;
+        public string ItemId = "";
+        public string Name;
+        public StringBuilder Args = new();
+        public StringBuilder FullArgs = new();
+        public bool Started;
+        /// <summary>docs/plans/file-tool-reliability.md §3C: the responses wire's
+        /// <c>output_index</c> — the SEMANTIC position of this call in the model's
+        /// output. Completion-time assembly uses this order (encounter order for
+        /// any call without one), so an out-of-order stream still yields the calls
+        /// in the order the model emitted them.</summary>
+        public int? OutputIndex;
+        /// <summary>Stream encounter ordinal (set when the tool call first appears) —
+        /// the fallback ordering for calls without an output_index.</summary>
+        public int Encounter = -1;
+        public ToolState(string id, string name) { Id = id; Name = name; }
+    }
 
     // ---- run (responses wire, PLAN §14b) -------------------------------------
     /// <summary>State accumulated across the /v1/responses SSE stream.</summary>
@@ -715,6 +739,8 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         public bool UsageSeen;
         public string ModelId = "";
         public Dictionary<string, ToolState> Tools = new();
+        /// <summary>plan §3C: encounter ordinal handed to each new tool state.</summary>
+        public int EncounterCounter;
         public List<MessagePart> Parts = new();
         public StringBuilder Text = new();
         public StringBuilder Think = new();
@@ -777,15 +803,21 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         // ---- assemble the completed assistant message ----
         if (state.Think.Length > 0) state.Parts.Add(new ThinkingPart(state.Think.ToString()));
         if (state.Text.Length > 0) state.Parts.Add(new TextPart(state.Text.ToString()));
-        foreach (var tc in state.Tools.Values)
-            if (tc.Started)
-            {
-                var argsJson = tc.FullArgs.Length > 0 ? tc.FullArgs.ToString().Trim() : string.Empty;
-                JsonElement argsEl;
-                try { argsEl = JsonDocument.Parse(argsJson).RootElement.Clone(); }
-                catch { argsEl = JsonDocument.Parse("{}").RootElement.Clone(); }
-                state.Parts.Add(new ToolCallPart(tc.Id, tc.Name, argsEl));
-            }
+        // plan §3C: assemble in SEMANTIC output order (output_index), with
+        // encounter order for calls without an index — NOT raw stream
+        // arrival order, so out-of-order SSE still yields the calls in the
+        // order the model emitted them.
+        foreach (var tc in state.Tools.Values
+            .Where(t => t.Started)
+            .OrderBy(t => t.OutputIndex is null ? int.MaxValue : t.OutputIndex.Value)
+            .ThenBy(t => t.Encounter))
+        {
+            var argsJson = tc.FullArgs.Length > 0 ? tc.FullArgs.ToString().Trim() : string.Empty;
+            JsonElement argsEl;
+            try { argsEl = JsonDocument.Parse(argsJson).RootElement.Clone(); }
+            catch { argsEl = JsonDocument.Parse("{}").RootElement.Clone(); }
+            state.Parts.Add(new ToolCallPart(tc.Id, tc.Name, argsEl));
+        }
 
         var message = new AgentMessage(Guid.NewGuid().ToString("n"), MessageRole.Assistant, state.Parts, DateTimeOffset.UtcNow);
 
@@ -837,7 +869,12 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                         var cid = it.TryGetProperty("call_id", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString()! : "";
                         var name = it.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() ?? "" : "";
                         var itemId = it.TryGetProperty("id", out var fi) && fi.ValueKind == JsonValueKind.String ? fi.GetString()! : "";
-                        var ts = new ToolState(string.IsNullOrEmpty(cid) ? $"call_{s.Tools.Count}" : cid, name) { ItemId = itemId, Started = true };
+                        // plan §3C: the SEMANTIC output position (output_index) is
+                        // what completion assembly orders by — capture it here, on
+                        // the item that starts the call, not in arrival order.
+                        var oi = root.TryGetProperty("output_index", out var oidx) && oidx.ValueKind == JsonValueKind.Number ? oidx.GetInt32() : (int?)null;
+                        var ts = new ToolState(string.IsNullOrEmpty(cid) ? $"call_{s.Tools.Count}" : cid, name)
+                        { ItemId = itemId, Started = true, OutputIndex = oi, Encounter = s.EncounterCounter++ };
                         s.Tools[ts.ItemId.Length > 0 ? ts.ItemId : ts.Id] = ts;
                         events.Add(new ToolCallStarted(ts.Id, name));
                     }

@@ -520,4 +520,57 @@ public class ResponsesSseTests
         Assert.Equal("call_1", toolMsgs[0].GetProperty("tool_call_id").GetString());
         Assert.Equal("call_2", toolMsgs[1].GetProperty("tool_call_id").GetString());
     }
+
+    /// <summary>
+    /// plan §3C: the Responses wire's completed message must carry tool calls in
+    /// the model's SEMANTIC output order (the output_index on each
+    /// output_item.added), NOT raw SSE arrival order. Here the item for call_B
+    /// (output_index 1) streams BEFORE call_A (output_index 0); the assembled
+    /// calls must still be [call_A, call_B].
+    /// </summary>
+    private const string RespOutOfOrderIndices =
+        "event: response.created\ndata: {\"response\":{\"id\":\"r9\"},\"type\":\"response.created\"}\n" +
+        "event: response.output_item.added\ndata: {\"output_index\":1,\"item\":{\"id\":\"fc_B\",\"call_id\":\"call_B\",\"name\":\"second\",\"arguments\":\"\",\"type\":\"function_call\"},\"type\":\"response.output_item.added\"}\n" +
+        "event: response.function_call_arguments.delta\ndata: {\"delta\":\"{}\",\"item_id\":\"fc_B\",\"type\":\"response.function_call_arguments.delta\"}\n" +
+        "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"fc_A\",\"call_id\":\"call_A\",\"name\":\"first\",\"arguments\":\"\",\"type\":\"function_call\"},\"type\":\"response.output_item.added\"}\n" +
+        "event: response.function_call_arguments.delta\ndata: {\"delta\":\"{}\",\"item_id\":\"fc_A\",\"type\":\"response.function_call_arguments.delta\"}\n" +
+        "event: response.completed\ndata: {\"response\":{\"id\":\"r9\",\"usage\":{\"input_tokens\":10,\"output_tokens\":10,\"total_tokens\":20}},\"type\":\"response.completed\"}\n";
+
+    [Fact]
+    public async Task Responses_OutOfOrderOutputIndex_AssembleInSemanticOrder()
+    {
+        var (p, _) = MakeWire("responses", CatalogRoute(RespOutOfOrderIndices, "probe", ChatText));
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
+        var ev = await Collect(p, Req());
+
+        var done = Assert.Single(ev.OfType<ModelCompleted>());
+        var ids = done.Message.Parts.OfType<ToolCallPart>().Select(c => c.Id).ToList();
+        // call_B (output_index 1) streamed first; the message is ordered by output_index.
+        Assert.Equal(new[] { "call_A", "call_B" }, ids);
+    }
+
+    /// <summary>
+    /// plan §3C fallback: when a call carries NO output_index, ordering falls
+    /// back to ENCOUNTER order (stable by first-seen position). Two index-less
+    /// calls arrive in order and assemble in that same order.
+    /// </summary>
+    private const string RespNoIndexEncounterOrder =
+        "event: response.created\ndata: {\"response\":{\"id\":\"r10\"},\"type\":\"response.created\"}\n" +
+        "event: response.output_item.added\ndata: {\"item\":{\"id\":\"fc_C\",\"call_id\":\"call_C\",\"name\":\"c\",\"arguments\":\"\",\"type\":\"function_call\"},\"type\":\"response.output_item.added\"}\n" +
+        "event: response.function_call_arguments.delta\ndata: {\"delta\":\"{}\",\"item_id\":\"fc_C\",\"type\":\"response.function_call_arguments.delta\"}\n" +
+        "event: response.output_item.added\ndata: {\"item\":{\"id\":\"fc_D\",\"call_id\":\"call_D\",\"name\":\"d\",\"arguments\":\"\",\"type\":\"function_call\"},\"type\":\"response.output_item.added\"}\n" +
+        "event: response.function_call_arguments.delta\ndata: {\"delta\":\"{}\",\"item_id\":\"fc_D\",\"type\":\"response.function_call_arguments.delta\"}\n" +
+        "event: response.completed\ndata: {\"response\":{\"id\":\"r10\",\"usage\":{\"input_tokens\":10,\"output_tokens\":10,\"total_tokens\":20}},\"type\":\"response.completed\"}\n";
+
+    [Fact]
+    public async Task Responses_NoOutputIndex_FallsBackToEncounterOrder()
+    {
+        var (p, _) = MakeWire("responses", CatalogRoute(RespNoIndexEncounterOrder, "probe", ChatText));
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
+        var ev = await Collect(p, Req());
+
+        var done = Assert.Single(ev.OfType<ModelCompleted>());
+        var ids = done.Message.Parts.OfType<ToolCallPart>().Select(c => c.Id).ToList();
+        Assert.Equal(new[] { "call_C", "call_D" }, ids);
+    }
 }
