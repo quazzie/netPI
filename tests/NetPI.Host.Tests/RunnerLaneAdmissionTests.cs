@@ -46,6 +46,30 @@ public class RunnerLaneAdmissionTests
         }
     }
 
+    private sealed class NonCooperativeProvider : IModelProvider
+    {
+        private readonly object _lock = new();
+        private readonly List<TaskCompletionSource> _gates = new();
+        public int EnteredCount { get { lock (_lock) return _gates.Count; } }
+
+        public async IAsyncEnumerable<ModelEvent> RunAsync(ModelRequest request, CancellationToken cancellationToken)
+        {
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_lock) _gates.Add(tcs);
+            yield return new ModelStarted("model");
+            await tcs.Task; // ignores cancellation
+            yield return new ModelCompleted(new AgentMessage("a", MessageRole.Assistant,
+                [new TextPart("done")], DateTimeOffset.UtcNow));
+        }
+
+        public void ReleaseAll()
+        {
+            List<TaskCompletionSource> all;
+            lock (_lock) { all = _gates.ToList(); _gates.Clear(); }
+            foreach (var t in all) t.TrySetResult();
+        }
+    }
+
     // ---- deployment policy source: only the given models are pooled ---------
     private sealed class FakePolicy : IDeploymentPolicySource
     {
@@ -300,6 +324,70 @@ public class RunnerLaneAdmissionTests
         var snaps = scheduler.Snapshots();
         Assert.Equal(2, snaps[0].OwnedCount); // both local lanes still owned by A/B
         Assert.Equal(0, snaps[0].QueueCount);
+    }
+
+    // ---- §16: reload/shutdown with TWO live segments — both are owned by the
+    //      stop path and drained (or visibly deferred); no orphan task.
+    [Fact]
+    public async Task TwoLiveSegments_StopDrainsBoth_NoOrphan()
+    {
+        var scheduler = new NetPI.Lanes.LaneScheduler("gen-1", new NullLogger());
+        scheduler.RegisterPool("pool-1", "dep-1", "m-1", LaneCapacityMode.Manual, 2, true);
+        var policy = new FakePolicy(new DeploymentPolicy("m-1", DeploymentExecutionMode.Pooled, "pool-1", "dep-1"));
+        var provider = new GateProvider();
+        var ctx = new AdmCtx();
+        ctx.Add("provider", provider);
+        ctx.Add("sessions", new NoopStore());
+        ctx.Add("deployments", policy);
+        ctx.Add("lanes", new CountingLanes(scheduler));
+        var runner = new AgentRunner(new AgentRuntime(ctx), ctx, maxConcurrentRuns: 8);
+
+        var a = await runner.StartRunAsync(new AgentRunRequest("s-a", null, "m-1", "A work"));
+        var b = await runner.StartRunAsync(new AgentRunRequest("s-b", null, "m-1", "B work"));
+        Assert.Equal(RunDisposition.Admitted, a.Disposition);
+        Assert.Equal(RunDisposition.Admitted, b.Disposition);
+        await WaitUntil(() => provider.StartedRunIds.Count >= 2);
+        Assert.Equal(2, runner.ListRuns().Count(r => r.Outcome == RunState.Running));
+
+        // Cooperative: both segments quiesce when cancelled → the stop drains both.
+        var drained = await runner.WaitForRunAsync(TimeSpan.FromSeconds(10));
+        Assert.True(drained, "both live segments must quiesce within the bound");
+        // Each segment reached a terminal outcome (Completed when the stream
+        // honored the cancel and finished; Cancelled when it unwound mid-call).
+        Assert.True(runner.GetRun(a.RunId)!.Outcome is RunState.Completed or RunState.Cancelled, $"A={runner.GetRun(a.RunId)!.Outcome}");
+        Assert.True(runner.GetRun(b.RunId)!.Outcome is RunState.Completed or RunState.Cancelled, $"B={runner.GetRun(b.RunId)!.Outcome}");
+        await Task.Delay(50);
+        Assert.Equal(0, runner.ListRuns().Count(r => r.Outcome == RunState.Running));
+    }
+
+    [Fact]
+    public async Task TwoLiveSegments_NonCooperativeStop_IsVisiblyDeferred_NotOrphaned()
+    {
+        var scheduler = new NetPI.Lanes.LaneScheduler("gen-1", new NullLogger());
+        scheduler.RegisterPool("pool-1", "dep-1", "m-1", LaneCapacityMode.Manual, 2, true);
+        var policy = new FakePolicy(new DeploymentPolicy("m-1", DeploymentExecutionMode.Pooled, "pool-1", "dep-1"));
+        var ctx = new AdmCtx();
+        // A provider whose stream ignores cancellation: the stop must REPORT
+        // the deferral, not hang forever and not strand the segment silently.
+        var sticky = new NonCooperativeProvider();
+        ctx.Add("provider", sticky);
+        ctx.Add("sessions", new NoopStore());
+        ctx.Add("deployments", policy);
+        ctx.Add("lanes", new CountingLanes(scheduler));
+        var runner = new AgentRunner(new AgentRuntime(ctx), ctx, maxConcurrentRuns: 8);
+
+        var a = await runner.StartRunAsync(new AgentRunRequest("s-a", null, "m-1", "A work"));
+        var b = await runner.StartRunAsync(new AgentRunRequest("s-b", null, "m-1", "B work"));
+        await WaitUntil(() => sticky.EnteredCount >= 2);
+
+        // Bounded stop against non-cooperative streams → deferred, not orphaned.
+        var drained = await runner.WaitForRunAsync(TimeSpan.FromMilliseconds(500));
+        Assert.False(drained, "a non-cooperative stop must be reported as deferred");
+        // ...and the segments are still tracked (not dropped into the void).
+        Assert.True(runner.GetRun(a.RunId!) is { } ra && ra.Outcome != RunState.Completed, "A must still be tracked");
+        sticky.ReleaseAll();
+        await WaitUntil(() => runner.GetRun(a.RunId)!.Outcome is RunState.Completed or RunState.Cancelled
+                          && runner.GetRun(b.RunId)!.Outcome is RunState.Completed or RunState.Cancelled);
     }
 
     [Fact]

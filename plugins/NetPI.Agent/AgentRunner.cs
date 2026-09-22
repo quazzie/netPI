@@ -576,16 +576,28 @@ public sealed class AgentRunner : IAgentRunner
     public async ValueTask<bool> WaitForRunAsync(TimeSpan bound)
     {
         await CancelRunAsync(default);
-        Task? task;
-        lock (_gate) task = _runTask;
-        if (task is null) return true;
-        var done = await Task.WhenAny(task, Task.Delay(bound));
-        if (done != task)
+        // astra-2 §15.A/§16: OWNERSHIP OF ALL SEGMENTS — a stop must not strand a
+        // live segment just because another run owns the legacy _runTask slot.
+        // Await EVERY tracked execution task under one shared bound; any task
+        // still alive after the bound is reported as deferred (never orphaned
+        // silently).
+        Task[] tasks;
+        lock (_gate)
+            tasks = _runTasks.Values.Where(t => !t.IsCompleted).ToArray();
+        if (tasks.Length == 0) return true;
+        using var cts = new CancellationTokenSource(bound);
+        var all = Task.WhenAll(tasks);
+        var guard = Task.Delay(Timeout.Infinite, cts.Token);
+        var completed = await Task.WhenAny(all, guard);
+        if (!ReferenceEquals(completed, all))
         {
-            _ctx.Log.Warning("agent run did not quiesce within the stop bound; releasing it as-is");
+            _ctx.Log.Warning($"{tasks.Length} agent segment(s) did not quiesce within the stop bound; releasing them as-is");
             return false;
         }
-        try { await task; } catch { /* the terminal event already reported it */ }
+        foreach (var t in tasks)
+        {
+            try { await t; } catch { /* the terminal event already reported it */ }
+        }
         return true;
     }
 
