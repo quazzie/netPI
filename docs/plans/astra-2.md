@@ -11,9 +11,16 @@ included) and fails closed on a stale/foreign permit — implemented and tested.
 §3.3: the catalog wire-capability probe is now LAZY — negotiated once on the
 owner's first real request (inside the run, where a pooled run's permit was just
 re-validated), with the verdict cached so later runs never re-probe; a catalog
-refresh never probes — implemented and tested. Remaining open gates: the
-`agent_lane_journal` rows are never written, mailbox drain at turn boundaries, workspace
-modes, and orchestrate-mode coordinator guidance. §15.D: the crash-after-tool-effect
+refresh never probes — implemented and tested. §9 mailbox drain at turn
+boundaries is now implemented and tested — the runtime drains the recipient's
+durable mailbox once per model-turn boundary (after a complete tool batch,
+bounded ≤10 messages), injecting each as a provenance-carrying User entry (never
+as if the human sent it); the read takes no write transaction (escalating only
+to consume), so a drain never wedges the run or contends for the WAL write lock
+in concurrent delegation. §15.F: `agent_lane_journal` rows are now written — the
+store owns a per-process `host_epoch` and journals `spawn`/`admit`/`release`
+lane-ownership transitions durably. Remaining open gates: workspace modes, and
+orchestrate-mode coordinator guidance. §15.D: the crash-after-tool-effect
 quarantine is now implemented and tested — the runtime durably marks a tool batch
 IN-FLIGHT just before its results are persisted (and clears it on success), so a crash
 in that uncertain window leaves a durable `agent_checkpoints` row; load-recovery then

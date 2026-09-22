@@ -26,6 +26,13 @@ public sealed record AgentRunOptions
     public string? AssignmentId { get; init; }
 
     /// <summary>
+    /// astra-2 §9: the logical agent identity this run belongs to (null for
+    /// ad-hoc runs with no orchestration record). Used to drain the durable
+    /// mailbox at model-turn boundaries.
+    /// </summary>
+    public string? AgentId { get; init; }
+
+    /// <summary>
     /// astra-2: the deployment/route binding this run was pinned to (trusted
     /// config, never the model). Stamped onto the ModelRequest so the provider
     /// can key chain/ownership identity on it; informational to the provider.
@@ -258,6 +265,18 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                         return new AgentRunResult(false, null, turns, "failed to persist the session entry");
                     }
                     await PublishAsync(AgentEventType.TurnBoundary, options, null, ct);
+                }
+
+                // ---- mailbox drain (astra-2 §9) ------------------------------
+                // Model-turn boundary after a complete tool batch: deliver the
+                // recipient's peer messages as provenance-carrying User entries
+                // (agent communication, not human instructions), bounded per
+                // turn. Remaining messages stay queued for the next boundary;
+                // a drain never interrupts an in-flight tool batch.
+                if (await DrainMailboxAsync(options, transcript, store, ct) is DrainOutcome.PersistenceFailed)
+                {
+                    Current.State = AgentState.Idle;
+                    return new AgentRunResult(false, null, turns, "failed to persist a mailbox message");
                 }
 
                 // ---- build + run the model ----------------------------------
@@ -720,6 +739,53 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
             _ctx.Log.Warning($"tool-batch checkpoint clear failed for {options.AssignmentId}: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// astra-2 §9: bounded mailbox delivery at a model-turn boundary. Delivers up
+    /// to <see cref="MailboxDrainMax"/> unread messages for the run's agent as
+    /// User-role entries with explicit provenance (sender + kind), persisted like
+    /// any other session entry. <see cref="DrainOutcome.PersistenceFailed"/> means
+    /// a message was consumed but its transcript entry failed to persist — the
+    /// run must stop rather than proceed on a transcript the store lacks.
+    /// </summary>
+    private async ValueTask<DrainOutcome> DrainMailboxAsync(AgentRunOptions options,
+        List<AgentMessage> transcript, ISessionStore? store, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(options.AgentId)) return DrainOutcome.None;
+        var orch = TryResolveOrchestrationStore();
+        if (orch is null) return DrainOutcome.None;
+        IReadOnlyList<AgentMailboxMessage> messages;
+        try
+        {
+            messages = await orch.DrainMailboxAsync(options.AgentId, MailboxDrainMax, ct);
+        }
+        catch (Exception ex)
+        {
+            // A mailbox outage must not break the run: messages stay undelivered
+            // for the next boundary (drain is consume-on-read, so nothing is lost).
+            _ctx.Log.Warning($"mailbox drain failed for {options.AgentId}: {ex.Message}");
+            return DrainOutcome.None;
+        }
+        if (messages.Count == 0) return DrainOutcome.None;
+        foreach (var m in messages)
+        {
+            // Provider-compatible representation: a User entry whose text carries
+            // the provenance (who sent it and why) — never an invented wire role.
+            var msg = new AgentMessage(NewId(), MessageRole.User,
+                [new TextPart($"[agent message from {m.FromAgentId} ({m.Kind})] {m.Body}")],
+                DateTimeOffset.UtcNow);
+            transcript.Add(msg);
+            if (store is not null && !await AppendAsync(store, msg, ct))
+                return DrainOutcome.PersistenceFailed;
+        }
+        _ctx.Log.Information($"delivered {messages.Count} mailbox message(s) to {options.AgentId} at the turn boundary");
+        return DrainOutcome.Delivered;
+    }
+
+    /// <summary>astra-2 §9: delivery cap per turn (bounded count; the rest stays queued).</summary>
+    private const int MailboxDrainMax = 10;
+
+    private enum DrainOutcome { None, Delivered, PersistenceFailed }
 
     /// <summary>Resolve the orchestration store if present (id "orchestration-store").</summary>
     private IOrchestrationStore? TryResolveOrchestrationStore()

@@ -669,6 +669,9 @@ public sealed class AgentRunner : IAgentRunner
         // identical consecutive user messages are legitimate.
         var userMessageId = MessageIdentity.DeterministicId("user", request.Text);
         var transcript = await BuildTranscriptAsync(request, systemText, userMessageId, cts.Token);
+        // astra-2 §9/§15.D: resolve the run's logical ownership (assignment
+        // + agent identity) ONCE per segment, before the runtime call.
+        var runOwnership = await ResolveRunOwnershipAsync(run.RunId, cts.Token);
 
 
             var result = await _runtime.RunAsync(new AgentRunOptions
@@ -686,7 +689,10 @@ public sealed class AgentRunner : IAgentRunner
                 LanePermit = run.LaneToken,
                 // astra-2 §15.D: the logical assignment this run reconciles to
                 // (null for direct/legacy runs — no checkpoint to write).
-                AssignmentId = await ResolveAssignmentIdAsync(run.RunId, cts.Token),
+                // astra-2 §9: the agent identity used to drain the mailbox at
+                // turn boundaries (same ownership record, resolved once).
+                AssignmentId = runOwnership.AssignmentId,
+                AgentId = runOwnership.AgentId,
             }, cts.Token);
             // astra-1 A: the RUNTIME result carries the terminal outcome —
             // cancellation comes back as a result (note "cancelled"), not a
@@ -980,21 +986,27 @@ public sealed class AgentRunner : IAgentRunner
         catch (ServiceUnavailableException) { return default; }
     }
 
+    private sealed record RunOwnership(string? AssignmentId, string? AgentId)
+    {
+        public static readonly RunOwnership None = new(null, null);
+    }
+
     /// <summary>
-    /// astra-2 §15.D: the nonterminal assignment that owns this run (the
-    /// orchestration store, lazily resolved; null for runs without one —
-    /// ad-hoc/direct executions have no logical assignment to checkpoint).
+    /// astra-2 §15.D/§9: the nonterminal assignment that owns this run plus the
+    /// agent identity it belongs to (the orchestration store, lazily resolved;
+    /// both null for runs without one — ad-hoc/direct executions have no
+    /// logical assignment to checkpoint and no mailbox to drain).
     /// </summary>
-    private async ValueTask<string?> ResolveAssignmentIdAsync(string runId, CancellationToken ct)
+    private async ValueTask<RunOwnership> ResolveRunOwnershipAsync(string runId, CancellationToken ct)
     {
         var store = Resolve<IOrchestrationStore>("orchestration-store");
-        if (store is null || string.IsNullOrEmpty(runId)) return null;
+        if (store is null || string.IsNullOrEmpty(runId)) return RunOwnership.None;
         try
         {
             var row = await store.GetByRunIdAsync(runId, ct);
-            return row?.AssignmentId;
+            return row is null ? RunOwnership.None : new RunOwnership(row.AssignmentId, row.AgentId);
         }
-        catch { return null; }
+        catch { return RunOwnership.None; }
     }
 
     private static string TextOf(AgentMessage m)
