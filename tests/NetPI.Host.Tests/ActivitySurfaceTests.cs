@@ -84,6 +84,8 @@ public class ActivitySurfaceTests
         public List<RunInfo> Runs { get; } = [];
         public List<string> Cancelled { get; } = [];
         public bool IsRunning => false;
+        public ValueTask<bool> SuspendRunAsync(string runId, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(false);
         public ValueTask<bool> RequeueRunAsync(AgentRunRequest request, CancellationToken cancellationToken = default)
             => ValueTask.FromResult(false);
 

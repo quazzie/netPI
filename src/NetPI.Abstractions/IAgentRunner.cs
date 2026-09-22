@@ -60,6 +60,26 @@ public interface IAgentRunner
     /// </summary>
     ValueTask<bool> RequeueRunAsync(AgentRunRequest request, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// astra-2 §6.3: quiesce the run's CURRENT segment into a suspended durable
+    /// wait (the runner-side half of the suspension transaction — the
+    /// orchestrator owns the wake condition and the resume). Returns true when
+    /// the run was live (Running) and is now Suspended; false when it was
+    /// already terminal, already suspended, or unknown.
+    ///
+    /// This is NOT a terminal outcome (no AgentCompleted/AgentFailed/
+    /// AgentCancelled is published) and it is not a cancellation (the run is
+    /// not signalled). Instead a RunSuspended lifecycle event is published so
+    /// subscribers (the orchestrator) know the run entered a durable wait and
+    /// can reconcile it. A suspended run holds NO lane (its token is released
+    /// for normal admission or handoff) and holds no blocking claim on its
+    /// session: IsRunning/GetSessionRun ignore Suspended, so a suspended run
+    /// never blocks a new send. The record stays registered so the later
+    /// resume — RequeueRunAsync with the SAME RunId, which re-enters admission
+    /// as a fresh segment — can re-admit it.
+    /// </summary>
+    ValueTask<bool> SuspendRunAsync(string runId, CancellationToken cancellationToken = default);
+
     /// <summary>Cancel the in-flight run, if any.</summary>
     ValueTask CancelRunAsync(CancellationToken cancellationToken = default);
 
@@ -101,6 +121,14 @@ public enum RunState
     Cancelled = 2,
     /// <summary>The run escaped the model loop with an unhandled exception.</summary>
     Failed = 3,
+    /// <summary>
+    /// astra-2 §6.3: the segment quiesced into a durable wait (suspension
+    /// transaction). This is NOT a terminal outcome — a later resume
+    /// (RequeueRunAsync with the same RunId) starts a new segment. A Suspended
+    /// run holds no lane and is not "live": IsRunning/GetSessionRun ignore it,
+    /// so it never blocks a new send on its session.
+    /// </summary>
+    Suspended = 4,
 }
 
 /// <summary>Read-only summary of one run (Package E — the run-query contract).</summary>

@@ -60,5 +60,23 @@ public enum AgentEventType
     /// surface uses it to broadcast session.project.applied + session.updated.
     /// </summary>
     ProjectApplied = 19,
+
+    /// <summary>
+    /// astra-2 §6.3: a run's current segment quiesced into a SUSPENDED durable
+    /// wait (suspension transaction). Suspension is NOT AgentCompleted — the run
+    /// is not terminal and not cancelled; a later resume starts a new segment.
+    /// Published by the agent runner (SuspendRunAsync) with the run's RunId +
+    /// SessionId so the orchestrator can reconcile the durable wait. No lane is
+    /// held while suspended (the token is released for normal admission or
+    /// handoff) and the session is free for a new send.
+    /// </summary>
+    RunSuspended = 20,
+
+    /// <summary>
+    /// astra-2 §6.3: a suspended run re-entered admission as a fresh segment
+    /// (resume = RequeueRunAsync with the same RunId). Published by the agent
+    /// runner when a requeue admits a run whose previous segment was Suspended.
+    /// </summary>
+    RunResumed = 21,
 }
 
