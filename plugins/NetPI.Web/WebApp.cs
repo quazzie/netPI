@@ -31,6 +31,8 @@ internal sealed class WebApp : IAsyncDisposable
     private readonly string _staticRoot;
     private readonly int _maxWsMessageBytes;
     private readonly IPluginLogger _log;
+    // astra-1 §11a (F/A): idempotency table for chat.send operationIds.
+    private readonly SendIdempotency _sends = new();
     private WebApplication? _app;
 
     /// <summary>Host build identity (set by the launcher via NETPI_HOST_BUILD_ID, or
@@ -1323,6 +1325,23 @@ internal sealed class WebApp : IAsyncDisposable
         var reasoning = S(p, "reasoning");
         var sessionId = S(p, "sessionId");
         var payloadWorkspace = S(p, "workspace");
+        // astra-1 §11a (F/A): a stable client operationId makes retries idempotent.
+        // Absent/blank operationId is a NON-idempotent legacy send (behaviour unchanged).
+        var operationId = S(p, "operationId");
+
+        if (!string.IsNullOrEmpty(operationId))
+        {
+            // Replay a send that was already accepted: do NOT append another message
+            // or execute another run — just re-send the original outcome + ack.
+            if (_sends.TryGet(operationId) is { SessionId: { } priorSid } prior)
+            {
+                await SendAsync(c, "session.entry",
+                    new { entry = new { type = "user_message", text = prior.Text } as object },
+                    priorSid, ct);
+                await SendAckAsync(c, requestId, ct);
+                return;
+            }
+        }
 
         // Ensure a session exists (the runner persists the initial user entry).
         string? sid = sessionId;
@@ -1376,6 +1395,12 @@ internal sealed class WebApp : IAsyncDisposable
         await SendAsync(c, "session.entry",
             new { entry = new { type = "user_message", text } as object }, sid, ct);
         await SendAsync(c, "agent.state", new { state = "Preparing" }, sid, ct);
+        // astra-1 §11a (F/A): stamp acceptance BEFORE the ack is delivered, so a
+        // disconnect between acceptance and acknowledgement still lets a retry
+        // replay the existing result instead of starting duplicate work.
+        if (!string.IsNullOrEmpty(operationId))
+            _sends.Accept(operationId, new SendIdempotency.Accepted(
+                sid, text, "accepted", DateTimeOffset.UtcNow));
         await SendAckAsync(c, requestId, ct);
     }
 

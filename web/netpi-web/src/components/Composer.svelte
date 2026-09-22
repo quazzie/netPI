@@ -184,6 +184,11 @@
           workspace: store.session?.workspace || undefined,
           model: store.currentModel || undefined,
           reasoning: store.reasoningLevel || undefined,
+          // astra-1 §11a (F/A): a stable operationId names this send, so a retry of the
+          // SAME operation replays the host's existing result instead of appending a
+          // duplicate message / starting a duplicate run. Each deliberate tap makes a
+          // fresh send(), hence a fresh id (identical text still gets a distinct id).
+          operationId: globalThis.crypto?.randomUUID?.() ?? `op-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         }).catch(onSendError);
       } else {
         await ws.request("chat.steer", {
