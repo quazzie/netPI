@@ -293,6 +293,13 @@ public interface IAgentOrchestrator
     ValueTask<IReadOnlyList<AgentAssignmentRow>> ListAssignmentsAsync(CancellationToken cancellationToken);
 
     /// <summary>
+    /// astra-2 §6.2: the nonterminal assignments of <paramref name="agentId"/> and
+    /// all its descendants (the wait-dependency cycle check). Empty for an
+    /// unknown agent.
+    /// </summary>
+    ValueTask<IReadOnlyList<AgentAssignmentRow>> ListSubtreeAsync(string agentId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Cancel one assignment: terminal-ize it (and, with <c>subtree</c>, its
     /// descendants). Idempotent — cancelling an already-terminal assignment
     /// returns the recorded outcome.

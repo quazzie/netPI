@@ -113,6 +113,8 @@ public class WorkPanelDataTests
             ValueTask.FromResult(Rows.FirstOrDefault(r => r.SessionId == s && r.IsNonTerminal));
         public ValueTask<IReadOnlyList<AgentAssignmentRow>> ListAssignmentsAsync(CancellationToken ct) =>
             ValueTask.FromResult(Rows);
+        public ValueTask<IReadOnlyList<AgentAssignmentRow>> ListSubtreeAsync(string agentId, CancellationToken ct = default) =>
+            ValueTask.FromResult<IReadOnlyList<AgentAssignmentRow>>(Rows.Where(r => r.AgentId == agentId).ToList());
         public ValueTask<AgentAssignmentLifecycle> CancelAsync(string assignmentId, bool subtree, CancellationToken ct)
         {
             Cancelled = (assignmentId, subtree);

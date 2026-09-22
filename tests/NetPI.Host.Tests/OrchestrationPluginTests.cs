@@ -140,6 +140,57 @@ public sealed class OrchestrationPluginTests : IDisposable
     }
 
     [Fact]
+    public async Task RegisterWait_DependencyCycle_IsRejected()
+    {
+        var e = Make();
+        var root = await e.Store.EnsureRootAgentAsync("sess-root", null, "root");
+        var child = await e.Store.SpawnChildAsync(
+            "op-c", root.AgentId, null, "default", null, null, "child", "child");
+
+        // The child may NOT wait on its own assignment (self-cycle).
+        var childAgent = child.Agent;
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await e.Orch.RegisterWaitAsync(childAgent.AgentId, new AgentWaitCondition
+            { AssignmentIds = [child.AssignmentId] }, default));
+    }
+
+    [Fact]
+    public async Task RegisterWait_DescendantWaitingOnAncestor_IsRejected()
+    {
+        var e = Make();
+        var root = await e.Store.EnsureRootAgentAsync("sess-root", null, "root");
+        var rootAssign = await e.Store.CreateAssignmentAsync(
+            "op-anc", root.AgentId, root.SessionId, null, null, "default",
+            null, null, "root work", "root brief");
+        var child = await e.Store.SpawnChildAsync(
+            "op-desc", root.AgentId, null, "default", null, null, "child", "child");
+
+        // The child is a descendant of the root; waiting for the root's assignment
+        // is a cycle (the root cannot go terminal while the child is live).
+        var childAgent = child.Agent;
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await e.Orch.RegisterWaitAsync(childAgent.AgentId, new AgentWaitCondition
+            { AssignmentIds = [rootAssign.AssignmentId] }, default));
+    }
+
+    [Fact]
+    public async Task RegisterWait_DescendantWaitingOnSibOrSelfAssignment_Ok()
+    {
+        // A child waiting on ITS OWN (other) assignment is the normal delegation
+        // pattern and must be accepted.
+        var e = Make();
+        var root = await e.Store.EnsureRootAgentAsync("sess-root", null, "root");
+        var child = await e.Store.SpawnChildAsync(
+            "ok-1", root.AgentId, null, "default", null, null, "child", "child");
+        var other = await e.Store.SpawnChildAsync(
+            "ok-2", root.AgentId, null, "default", null, null, "other", "other");
+
+        // Should not throw: the child waits on the sibling's assignment (no cycle).
+        await e.Orch.RegisterWaitAsync(child.Agent.AgentId, new AgentWaitCondition
+        { AssignmentIds = [other.AssignmentId] }, default);
+    }
+
+    [Fact]
     public async Task Pools_IsEmptyWithoutLanes()
     {
         var e = Make();

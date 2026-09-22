@@ -157,6 +157,27 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         var agent = await _store.GetAgentAsync(agentId, cancellationToken)
             ?? throw new InvalidOperationException($"Unknown agent {agentId}");
         var nonterm = await _store.GetNonterminalAsync(agent.SessionId, cancellationToken);
+
+        // astra-2 §16: a wait dependency cycle is REJECTED with an actionable reason
+        // (no stranded lane). An agent may wait on a descendant (the normal
+        // delegation case), never on itself or an ancestor: an ancestor cannot
+        // reach terminal while one of its descendants is still live.
+        foreach (var targetId in condition.AssignmentIds)
+        {
+            var target = await _store.GetAssignmentAsync(targetId, cancellationToken);
+            if (target is null) continue; // unknown targets are ignored (satisfied-by-none semantics)
+            if (target.AgentId == agent.AgentId)
+                throw new InvalidOperationException(
+                    $"wait rejected: agent {agent.AgentId} cannot wait on its own assignment {targetId} (dependency cycle)");
+            if (nonterm is not null)
+            {
+                var ancestorSubtree = await _store.ListSubtreeAsync(target.AgentId, cancellationToken);
+                if (ancestorSubtree.Any(r => r.AssignmentId == nonterm.AssignmentId))
+                    throw new InvalidOperationException(
+                        $"wait rejected: agent {agent.AgentId} is a descendant of {target.AgentId} and cannot wait for it (dependency cycle)");
+            }
+        }
+
         var waitId = Guid.NewGuid().ToString("N");
         await _store.RegisterWaitAsync(waitId, agentId, nonterm?.AssignmentId, condition, cancellationToken);
         if (nonterm is not null)
@@ -180,6 +201,9 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         all.AddRange(term);
         return all;
     }
+
+    public ValueTask<IReadOnlyList<AgentAssignmentRow>> ListSubtreeAsync(string agentId, CancellationToken cancellationToken)
+        => _store.ListSubtreeAsync(agentId, cancellationToken);
 
     // ---- cancel -------------------------------------------------------------------
 
