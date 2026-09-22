@@ -684,6 +684,9 @@ public sealed class AgentRunner : IAgentRunner
                 // re-validates it before every model call. Direct/legacy runs carry
                 // no token (run.LaneToken is null) — a different authorized policy.
                 LanePermit = run.LaneToken,
+                // astra-2 §15.D: the logical assignment this run reconciles to
+                // (null for direct/legacy runs — no checkpoint to write).
+                AssignmentId = await ResolveAssignmentIdAsync(run.RunId, cts.Token),
             }, cts.Token);
             // astra-1 A: the RUNTIME result carries the terminal outcome —
             // cancellation comes back as a result (note "cancelled"), not a
@@ -975,6 +978,23 @@ public sealed class AgentRunner : IAgentRunner
     {
         try { return _ctx.Services.Resolve<T>(id); }
         catch (ServiceUnavailableException) { return default; }
+    }
+
+    /// <summary>
+    /// astra-2 §15.D: the nonterminal assignment that owns this run (the
+    /// orchestration store, lazily resolved; null for runs without one —
+    /// ad-hoc/direct executions have no logical assignment to checkpoint).
+    /// </summary>
+    private async ValueTask<string?> ResolveAssignmentIdAsync(string runId, CancellationToken ct)
+    {
+        var store = Resolve<IOrchestrationStore>("orchestration-store");
+        if (store is null || string.IsNullOrEmpty(runId)) return null;
+        try
+        {
+            var row = await store.GetByRunIdAsync(runId, ct);
+            return row?.AssignmentId;
+        }
+        catch { return null; }
     }
 
     private static string TextOf(AgentMessage m)

@@ -50,7 +50,7 @@ namespace NetPI.Storage.Sqlite;
 public sealed class SqliteSessionStore : ISessionStore, IDisposable
 {
     /// <summary>Highest migration version applied by this store.</summary>
-    public const int CurrentSchemaVersion = 5;
+    public const int CurrentSchemaVersion = 6;
 
     /// <summary>
     /// astra-1 B: canonical key for deduplicating project workspace paths —
@@ -126,7 +126,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
                 );
                 """);
 
-            foreach (var version in new[] { 1, 2, 3, 4, 5 })
+            foreach (var version in new[] { 1, 2, 3, 4, 5, 6 })
             {
                 if (IsMigrationApplied(conn, version)) continue;
 
@@ -427,6 +427,17 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
                 ExecuteSql(conn,
                     "CREATE INDEX IF NOT EXISTS ix_cloud_res_team ON cloud_budget_reservations(team_id, state);", null, tx);
                 break;
+            case 6:
+                // astra-2 §15.D: one in-flight tool-batch checkpoint per
+                // assignment — a crash between a successful tool effect and
+                // result persistence is exactly the row the recovery path keys
+                // on. The table itself (v4) is unchanged.
+                ExecuteSql(conn, """
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_checkpoints_assignment
+                        ON agent_checkpoints(assignment_id);
+                    """, null, tx);
+                break;
+
             default:
                 throw new ArgumentOutOfRangeException(nameof(version));
         }

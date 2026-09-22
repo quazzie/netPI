@@ -17,6 +17,15 @@ public sealed record AgentRunOptions
     public string? RunId { get; init; }
 
     /// <summary>
+    /// astra-2 §15.D: the logical assignment this run belongs to (null for
+    /// ad-hoc runs with no orchestration record). Used to write/clear the
+    /// durable in-flight tool-batch checkpoint around a tool batch's result
+    /// persistence, so a crash in that window is recoverable (quarantined,
+    /// never auto-replayed).
+    /// </summary>
+    public string? AssignmentId { get; init; }
+
+    /// <summary>
     /// astra-2: the deployment/route binding this run was pinned to (trusted
     /// config, never the model). Stamped onto the ModelRequest so the provider
     /// can key chain/ownership identity on it; informational to the provider.
@@ -502,6 +511,12 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
 
                 var toolMsg = new AgentMessage(NewId(), MessageRole.Tool, results, DateTimeOffset.UtcNow);
                 transcript.Add(toolMsg);
+                // astra-2 §15.D: the batch EXECUTED — from here until the
+                // results are persisted, a crash would leave uncertain side
+                // effects. Mark it in-flight durably (load-recovery then
+                // quarantines the assignment instead of silently replaying it).
+                await RecordToolBatchCheckpointAsync(options, transcript.Count,
+                    batch.Prepared.Select(pr => pr.Call.Id).ToList(), ct);
                 if (!await AppendAsync(store, toolMsg, ct))
                 {
                     // astra-1 §11a (A/B): the tools EXECUTED but their results were not
@@ -515,6 +530,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                     return new AgentRunResult(false, toolMsg, turns,
                         "tools executed but their results could not be persisted; recovery state is uncertain — do not automatically rerun");
                 }
+                // Results are durable — the uncertain window is closed.
+                await ClearToolBatchCheckpointAsync(options, ct);
 
                 // ---- auto-compaction checkpoint (PLAN §32/§33) ----------------
                 // After tool results, before the next assistant response.
@@ -663,6 +680,52 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
             _ctx.Log.Warning($"Failed to persist entry: {ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>
+    /// astra-2 §15.D: durable in-flight checkpoint for the executing tool batch
+    /// (side effects already happened; results not yet persisted). Written only
+    /// when the run belongs to a logical assignment and the orchestration store is
+    /// present — otherwise there is nothing to recover.
+    /// </summary>
+    private async ValueTask RecordToolBatchCheckpointAsync(AgentRunOptions options, int transcriptCursor,
+        IReadOnlyList<string> toolCallIds, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(options.AssignmentId)) return;
+        var store = TryResolveOrchestrationStore();
+        if (store is null) return;
+        try
+        {
+            await store.MarkToolBatchInFlightAsync(options.AssignmentId, options.SessionId ?? string.Empty,
+                options.SessionId ?? string.Empty, transcriptCursor,
+                JsonSerializer.Serialize(toolCallIds), ct);
+        }
+        catch (Exception ex)
+        {
+            _ctx.Log.Warning($"tool-batch checkpoint failed for {options.AssignmentId}: {ex.Message}");
+        }
+    }
+
+    private async ValueTask ClearToolBatchCheckpointAsync(AgentRunOptions options, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(options.AssignmentId)) return;
+        var store = TryResolveOrchestrationStore();
+        if (store is null) return;
+        try
+        {
+            await store.ClearToolBatchCheckpointAsync(options.AssignmentId, ct);
+        }
+        catch (Exception ex)
+        {
+            _ctx.Log.Warning($"tool-batch checkpoint clear failed for {options.AssignmentId}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Resolve the orchestration store if present (id "orchestration-store").</summary>
+    private IOrchestrationStore? TryResolveOrchestrationStore()
+    {
+        try { return _services.Resolve<IOrchestrationStore>("orchestration-store"); }
+        catch (ServiceUnavailableException) { return null; }
     }
 
     /// <summary>Resolve the AutoCompact service if present (id "compaction").</summary>

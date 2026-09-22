@@ -274,7 +274,7 @@ public sealed class SqliteOrchestrationStore : IOrchestrationStore
             SELECT aa.assignment_id, aa.run_id, aa.agent_id, aa.team_id, aa.session_id, aa.parent_agent_id,
                    aa.lifecycle, aa.phase, aa.execution_mode, aa.pool_id, aa.lane_id,
                    aa.deployment_id, aa.model_id, aa.title, aa.ready_seq, aa.created_at,
-                   aa.started_at, aa.ended_at, aa.reason, aa.version
+                   aa.started_at, aa.ended_at, aa.reason, aa.version, aa.checkpoint_ref
               FROM agent_assignments aa
               JOIN subtree s ON aa.agent_id = s.agent_id
              WHERE aa.lifecycle NOT IN (TERM);
@@ -426,7 +426,7 @@ string? createdAssignmentId = null;
     private const string SelectAssignment = """
         SELECT assignment_id, run_id, agent_id, team_id, session_id, parent_agent_id,
                lifecycle, phase, execution_mode, pool_id, lane_id, deployment_id, model_id,
-               title, ready_seq, created_at, started_at, ended_at, reason, version
+               title, ready_seq, created_at, started_at, ended_at, reason, version, checkpoint_ref
         FROM agent_assignments
         """;
 
@@ -448,7 +448,86 @@ string? createdAssignmentId = null;
         r.IsDBNull(16) ? null : ToUtc(r.GetString(16)),
         r.IsDBNull(17) ? null : ToUtc(r.GetString(17)),
         r.IsDBNull(18) ? null : r.GetString(18))
-        { Version = r.GetInt32(19) };
+        { CheckpointRef = r.IsDBNull(20) ? null : r.GetString(20), Version = r.GetInt32(19) };
+
+    // ---- in-flight tool-batch checkpoint (astra-2 §15.D) ---------------
+
+    /// <summary>
+    /// Mark the batch in-flight: a durable checkpoint keyed by assignment (unique
+    /// index) + checkpoint_ref on the assignment row, in one transaction. The
+    /// checkpoint id is derived from the assignment, so a re-mark (retry or a crash
+    /// loop) never creates a second checkpoint; it refreshes the existing one.
+    /// </summary>
+    public async ValueTask MarkToolBatchInFlightAsync(string assignmentId, string agentId, string sessionId,
+        int transcriptCursor, string? toolCallIdsJson, CancellationToken ct = default)
+    {
+        var checkpointId = $"cp-{assignmentId}";
+        await using var conn = OpenConnection();
+        await using var tx = conn.BeginTransaction();
+        try
+        {
+            await ExecAsync(conn, tx, """
+                INSERT INTO agent_checkpoints
+                  (checkpoint_id, assignment_id, agent_id, schema_version, transcript_cursor,
+                   workspace_context, project_context, mailbox_cursor, budgets_json, resume_json, created_at)
+                VALUES
+                  ($cp, $a, $ag, 1, $cur, $ws, NULL, 0, NULL, $json, $now)
+                ON CONFLICT(checkpoint_id) DO UPDATE SET
+                  transcript_cursor = $cur2,
+                  resume_json = $json2,
+                  created_at = $now2;
+""", ct, c =>
+                {
+                    c.Parameters.AddWithValue("$cp", checkpointId);
+                    c.Parameters.AddWithValue("$a", assignmentId);
+                    c.Parameters.AddWithValue("$ag", agentId);
+                    c.Parameters.AddWithValue("$cur", transcriptCursor);
+                    c.Parameters.AddWithValue("$cur2", transcriptCursor);
+                    c.Parameters.AddWithValue("$ws", (object?)sessionId ?? DBNull.Value);
+                    c.Parameters.AddWithValue("$json", (object?)toolCallIdsJson ?? DBNull.Value);
+                    c.Parameters.AddWithValue("$json2", (object?)toolCallIdsJson ?? DBNull.Value);
+                    c.Parameters.AddWithValue("$now", Now());
+                    c.Parameters.AddWithValue("$now2", Now());
+                });
+            await ExecAsync(conn, tx, """
+                UPDATE agent_assignments SET checkpoint_ref = $cp
+                WHERE assignment_id = $a;
+""", ct, c =>
+                {
+                    c.Parameters.AddWithValue("$cp", checkpointId);
+                    c.Parameters.AddWithValue("$a", assignmentId);
+                });
+            tx.Commit();
+        }
+        catch { tx.Rollback(); throw; }
+    }
+
+    public async ValueTask ClearToolBatchCheckpointAsync(string assignmentId, CancellationToken ct = default)
+    {
+        await using var conn = OpenConnection();
+        await using var tx = conn.BeginTransaction();
+        try
+        {
+            await ExecAsync(conn, tx, "DELETE FROM agent_checkpoints WHERE assignment_id = $a;", ct,
+                c => c.Parameters.AddWithValue("$a", assignmentId));
+            await ExecAsync(conn, tx, """
+                UPDATE agent_assignments SET checkpoint_ref = NULL
+                WHERE assignment_id = $a AND checkpoint_ref IS NOT NULL;
+""", ct, c => c.Parameters.AddWithValue("$a", assignmentId));
+            tx.Commit();
+        }
+        catch { tx.Rollback(); throw; }
+    }
+
+    public async ValueTask<bool> HasToolBatchCheckpointAsync(string assignmentId, CancellationToken ct = default)
+    {
+        await using var conn = OpenConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT EXISTS(SELECT 1 FROM agent_checkpoints WHERE assignment_id = $a);";
+        cmd.Parameters.AddWithValue("$a", assignmentId);
+        var raw = await cmd.ExecuteScalarAsync(ct);
+        return Convert.ToInt32(raw) == 1;
+    }
 
     // ---- mailboxes ------------------------------------------------------
 

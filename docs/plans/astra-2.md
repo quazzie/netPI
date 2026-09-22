@@ -12,9 +12,13 @@ included) and fails closed on a stale/foreign permit — implemented and tested.
 owner's first real request (inside the run, where a pooled run's permit was just
 re-validated), with the verdict cached so later runs never re-probe; a catalog
 refresh never probes — implemented and tested. Remaining open gates: the
-`agent_lane_journal`/`agent_checkpoints` tables are declared but never written,
-mailbox drain at turn boundaries, crash-after-tool-effect quarantine, workspace
-modes, and orchestrate-mode coordinator guidance.
+`agent_lane_journal` rows are never written, mailbox drain at turn boundaries, workspace
+modes, and orchestrate-mode coordinator guidance. §15.D: the crash-after-tool-effect
+quarantine is now implemented and tested — the runtime durably marks a tool batch
+IN-FLIGHT just before its results are persisted (and clears it on success), so a crash
+in that uncertain window leaves a durable `agent_checkpoints` row; load-recovery then
+quarantines a stale in-flight assignment as `recovery-required` (never auto-replayed),
+while a clean in-flight one re-queues as before.
 Consolidated 2026-09-22 from the user's decisions and a targeted inspection of the
 current repository.
 

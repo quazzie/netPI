@@ -453,6 +453,22 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 && runner.ListRuns().Any(r => r.SessionId == row.SessionId && r.Outcome == RunState.Running);
             if (!isLive)
             {
+                // astra-2 §15.D: a crash in the tool-batch window (side effects
+                // executed, results not persisted) leaves a durable in-flight
+                // checkpoint — quarantine the assignment as recovery-required
+                // instead of re-running it: uncertain side effects are never
+                // replayed automatically.
+                if (await _store.HasToolBatchCheckpointAsync(row.AssignmentId, cancellationToken))
+                {
+                    var okQ = await _store.TransitionAsync(
+                        row.AssignmentId, row.Version,
+                        AgentAssignmentLifecycle.RecoveryRequired, AgentState.Idle,
+                        row.PoolId, row.LaneId, row.DeploymentId,
+                        "crash after tool effect before result persistence — side effects uncertain; recovery required, not auto-replayed", null, cancellationToken);
+                    if (okQ)
+                        _ctx.Log.Warning($"Reconcile: quarantined assignment {row.AssignmentId} (in-flight tool-batch checkpoint; recovery-required, no auto-replay)");
+                    continue;
+                }
                 var ok = await _store.TransitionAsync(
                     row.AssignmentId, row.Version,
                     AgentAssignmentLifecycle.Queued, AgentState.Idle,

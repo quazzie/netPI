@@ -196,6 +196,61 @@ public sealed class OrchestrationPluginTests : IDisposable
         var e = Make();
         Assert.Empty(e.Orch.Pools());
     }
+    [Fact]
+    public async Task CrashAfterToolEffect_WithCheckpoint_QuarantinedNotReplayed()
+    {
+        var e = Make();
+        var root = await e.Store.EnsureRootAgentAsync("sess-quar", null, "root");
+        var spawned = await e.Store.SpawnChildAsync(
+            "op-quar", root.AgentId, null, "default", null, null, "child", "child");
+        var row = spawned.Agent is not null
+            ? await e.Store.GetAssignmentAsync(spawned.AssignmentId) : null;
+        Assert.NotNull(row);
+
+        // The process died after the tool batch EXECUTED but before its results
+        // were persisted: the assignment is Running (in-flight) and a durable
+        // in-flight checkpoint exists. Recovery must quarantine it, not replay.
+        await e.Store.TransitionAsync(row!.AssignmentId, row.Version,
+            AgentAssignmentLifecycle.Running, AgentState.ExecutingTools,
+            null, null, null, "in-flight", "cp-quar");
+        await e.Store.MarkToolBatchInFlightAsync(row.AssignmentId, root.AgentId, "sess-quar", 5, "[\"t1\"]");
+
+        await e.Orch.ReconcileOnLoadAsync(default);
+
+        var after = await e.Store.GetAssignmentAsync(row.AssignmentId);
+        Assert.NotNull(after);
+        Assert.Equal(AgentAssignmentLifecycle.RecoveryRequired, after!.Lifecycle);
+        Assert.True(after.IsNonTerminal);
+        Assert.Contains("crash after tool effect", after.Reason);
+        // Quarantined, not re-queued: no live/queued re-entry from the fake runner.
+        Assert.Empty(e.Runner.ListRuns());
+    }
+
+    [Fact]
+    public async Task InFlightWithoutCheckpoint_IsRequeuedNotQuarantined()
+    {
+        var e = Make();
+        var root = await e.Store.EnsureRootAgentAsync("sess-clean", null, "root");
+        var spawned = await e.Store.SpawnChildAsync(
+            "op-clean", root.AgentId, null, "default", null, null, "child", "child");
+        var row = spawned.Agent is not null
+            ? await e.Store.GetAssignmentAsync(spawned.AssignmentId) : null;
+        Assert.NotNull(row);
+
+        // Clean in-flight (a crash before the tool batch executed) has no durable
+        // checkpoint: recovery re-queues it for a retry (the pre-existing behavior).
+        await e.Store.TransitionAsync(row!.AssignmentId, row.Version,
+            AgentAssignmentLifecycle.Running, AgentState.ExecutingTools,
+            null, null, null, "in-flight", null);
+
+        await e.Orch.ReconcileOnLoadAsync(default);
+
+        var after = await e.Store.GetAssignmentAsync(row.AssignmentId);
+        Assert.NotNull(after);
+        Assert.Equal(AgentAssignmentLifecycle.Queued, after!.Lifecycle);
+        Assert.Contains("restart-reconciled", after.Reason);
+    }
+
 
     private static async Task<bool> WaitUntil(Func<ValueTask<AgentAssignmentRow?>> probe)
     {

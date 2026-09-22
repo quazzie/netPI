@@ -173,6 +173,9 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
         public ValueTask<AgentAssignmentRow?> GetNonterminalAsync(string sessionId, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask<IReadOnlyList<AgentAssignmentRow>> ListNonterminalAsync(CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask<IReadOnlyList<QueuedAdoptionInfo>> ListQueuedForAdoptionAsync(CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask MarkToolBatchInFlightAsync(string assignmentId, string agentId, string sessionId, int transcriptCursor, string? toolCallIdsJson, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask ClearToolBatchCheckpointAsync(string assignmentId, CancellationToken ct = default) => throw new NotImplementedException();
+        public ValueTask<bool> HasToolBatchCheckpointAsync(string assignmentId, CancellationToken ct = default) => ValueTask.FromResult(false);
         public ValueTask<AgentAssignmentRow?> GetByRunIdAsync(string runId, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask<string?> GetRunIdAsync(string assignmentId, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask<IReadOnlyList<AgentAssignmentRow>> ListSubtreeAsync(string agentId, CancellationToken ct = default) => throw new NotImplementedException();

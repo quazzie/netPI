@@ -55,6 +55,15 @@ public enum AgentAssignmentLifecycle
 
     /// <summary>Terminal, explicitly cancelled.</summary>
     Cancelled = 7,
+
+    /// <summary>
+    /// Non-terminal, recovery-required (astra-2 §15.D): the process died with a
+    /// durable in-flight checkpoint — side effects of an executed-but-unpersisted
+    /// tool batch are uncertain. The assignment holds no lane and no work is
+    /// automatically replayed; it stays visible (and blocks the session's
+    /// nonterminal gate) until explicit recovery clears it.
+    /// </summary>
+    RecoveryRequired = 8,
 }
 
 /// <summary>
@@ -74,6 +83,7 @@ public static class AgentAssignmentLifecycleNames
         AgentAssignmentLifecycle.Completed => "completed",
         AgentAssignmentLifecycle.Failed => "failed",
         AgentAssignmentLifecycle.Cancelled => "cancelled",
+        AgentAssignmentLifecycle.RecoveryRequired => "recovery-required",
         _ => "unknown",
     };
 
@@ -89,6 +99,7 @@ public static class AgentAssignmentLifecycleNames
             case "completed": l = AgentAssignmentLifecycle.Completed; return true;
             case "failed": l = AgentAssignmentLifecycle.Failed; return true;
             case "cancelled": l = AgentAssignmentLifecycle.Cancelled; return true;
+            case "recovery-required": l = AgentAssignmentLifecycle.RecoveryRequired; return true;
             default: l = AgentAssignmentLifecycle.Queued; return false;
         }
     }
@@ -185,6 +196,14 @@ public sealed record AgentAssignmentRow(
     public int Version { get; init; } = 0;
 
     /// <summary>
+    /// astra-2 §15.D: set while a durable in-flight checkpoint exists for the
+    /// assignment (an executed-but-unpersisted tool batch). Non-null on a row
+    /// only until recovery clears it; the store persists it in
+    /// <c>agent_assignments.checkpoint_ref</c>.
+    /// </summary>
+    public string? CheckpointRef { get; init; }
+
+    /// <summary>
     /// True while the assignment still holds a logical slot (queued, running,
     /// waiting, cancelling, suspended). The panel and the session-busy gate
     /// both key off this — NOT off a lane, so a queued/suspended record is
@@ -195,7 +214,8 @@ public sealed record AgentAssignmentRow(
         or AgentAssignmentLifecycle.Running
         or AgentAssignmentLifecycle.Waiting
         or AgentAssignmentLifecycle.Cancelling
-        or AgentAssignmentLifecycle.Suspended;
+        or AgentAssignmentLifecycle.Suspended
+        or AgentAssignmentLifecycle.RecoveryRequired;
 }
 
 /// <summary>
@@ -518,6 +538,22 @@ public interface IOrchestrationStore
 
     /// <summary>All nonterminal assignments across every session/team.</summary>
     ValueTask<IReadOnlyList<AgentAssignmentRow>> ListNonterminalAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// astra-2 §15.D: mark a tool batch IN-FLIGHT — the tools executed, their
+    /// results are not persisted yet. Durable so a crash in this window is
+    /// recoverable (the side effects are uncertain and must not be replayed
+    /// automatically). Idempotent: re-marking the same assignment keeps the same
+    /// checkpoint (the checkpoint id is derived from the assignment).
+    /// </summary>
+    ValueTask MarkToolBatchInFlightAsync(string assignmentId, string agentId, string sessionId,
+        int transcriptCursor, string? toolCallIdsJson, CancellationToken ct = default);
+
+    /// <summary>astra-2 §15.D: the batch's results were persisted (or the run unwound) — the checkpoint no longer exists.</summary>
+    ValueTask ClearToolBatchCheckpointAsync(string assignmentId, CancellationToken ct = default);
+
+    /// <summary>astra-2 §15.D: true when the assignment has a durable in-flight checkpoint (a crash left uncertain side effects).</summary>
+    ValueTask<bool> HasToolBatchCheckpointAsync(string assignmentId, CancellationToken ct = default);
 
     /// <summary>
     /// astra-2 §7: durable Queued assignments in ready order, for one-time adoption
