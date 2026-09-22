@@ -222,6 +222,32 @@ public sealed record AgentChildResult(
     IReadOnlyList<string>? UnresolvedIssues = null);
 
 /// <summary>
+/// astra-2 §6.2/§6.3: the acceptance receipt for a delegation — the child's
+/// identity + assignment plus the parent's assignment and post-suspension
+/// lifecycle. The child's actual result is delivered LATER, as a separate
+/// bounded mailbox event when the child's wait is satisfied (the tool never
+/// blocks waiting for the child to finish).
+/// </summary>
+public sealed record AgentDelegateResult(
+    AgentIdentity ChildAgent,
+    string ChildAssignmentId,
+    string ChildSessionId,
+    string ParentAssignmentId,
+    AgentAssignmentLifecycle ParentStatus,
+    string? Reason);
+
+/// <summary>
+/// astra-2 §6.3: one satisfied wait ready for resume — the wait's identity,
+/// the awaited targets, and the parent's durable run id (resume = RequeueRunAsync
+/// with the same run id).
+/// </summary>
+public sealed record AgentSatisfiedWait(
+    string WaitId,
+    IReadOnlyList<AgentWaitTarget> Targets,
+    string? AssignmentId,
+    string? RunId);
+
+/// <summary>
 /// A durable, addressed message between agents (astra-2 §9). Ordered
 /// per-recipient via <see cref="RecipientSequence"/>; bounded body; sender
 /// and kind metadata survive compaction. Consumption is cursor-based and
@@ -319,6 +345,25 @@ public interface IAgentOrchestrator
     /// descendants). Idempotent — cancelling an already-terminal assignment
     /// returns the recorded outcome.
     /// </summary>
+    /// <summary>
+    /// astra-2 §6.2/§6.3: spawn a child agent, register a durable wait of the
+    /// parent on the child's assignment, then quiesce the parent's live segment
+    /// (SuspendRunAsync — no further model call in this segment; the lane is
+    /// released so the child can be admitted for it). When the child reaches a
+    /// terminal outcome, the wait is satisfied and the parent is resumed with a
+    /// bounded result in its mailbox. Idempotent by the delegation operation id.
+    /// </summary>
+    ValueTask<AgentDelegateResult> DelegateAsync(
+        string parentAgentId, AgentSpawnRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// astra-2 §6.3 step 5: consume satisfied durable waits of <paramref name="agentId"/>
+    /// and resume each (RequeueRunAsync with the SAME run id + a bounded result in the
+    /// mailbox). Returns the number of parents resumed. Waking is never permission to
+    /// execute without a lane — resume re-enters admission.
+    /// </summary>
+    ValueTask<int> ConsumeSatisfiedWaitsAsync(string agentId, CancellationToken cancellationToken);
+
     ValueTask<AgentAssignmentLifecycle> CancelAsync(
         string assignmentId, bool subtree, CancellationToken cancellationToken);
 
@@ -480,6 +525,13 @@ public interface IOrchestrationStore
     ValueTask<AgentAssignmentRow?> GetByRunIdAsync(string runId, CancellationToken ct = default);
 
     /// <summary>
+    /// astra-2 §6.3: the durable run/operation id for an assignment (the store's
+    /// run_id). A delegated parent is suspended and later resumed by this id —
+    /// resume = RequeueRunAsync with the same run id.
+    /// </summary>
+    ValueTask<string?> GetRunIdAsync(string assignmentId, CancellationToken ct = default);
+
+    /// <summary>
     /// Every nonterminal assignment in an agent's descendant subtree (the agent
     /// itself and, recursively, all of its children) — astra-2 §9 subtree cancel.
     /// The walk follows <c>parent_agent_id</c> links downward.
@@ -525,4 +577,19 @@ public interface IOrchestrationStore
 
     /// <summary>Wake waiters of <paramref name="assignmentId"/> once it reaches a terminal outcome (true when any were satisfied).</summary>
     ValueTask<bool> NoteTerminalForWaitsAsync(string assignmentId, CancellationToken ct = default);
+
+    /// <summary>
+    /// astra-2 §6.3 step 5: the satisfied (but not yet consumed) waits of one
+    /// agent — the resume consumer re-enters the parent for each. A satisfied
+    /// wait persists until consumed, so a crash/kill between satisfaction and
+    /// resume never loses the wake (no lost-wakeup window).
+    /// </summary>
+    ValueTask<IReadOnlyList<AgentSatisfiedWait>> ListSatisfiedWaitsAsync(string agentId, CancellationToken ct = default);
+
+    /// <summary>
+    /// astra-2 §6.3: mark a satisfied wait consumed AFTER the resume was re-
+    /// queued — the consumption is part of the wake so a consumer crash retries
+    /// exactly once per wait, never zero or twice.
+    /// </summary>
+    ValueTask MarkWaitConsumedAsync(string waitId, CancellationToken ct = default);
 }

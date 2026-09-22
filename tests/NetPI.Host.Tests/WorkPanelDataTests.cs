@@ -120,6 +120,10 @@ public class WorkPanelDataTests
             Cancelled = (assignmentId, subtree);
             return ValueTask.FromResult(AgentAssignmentLifecycle.Cancelled);
         }
+        public ValueTask<AgentDelegateResult> DelegateAsync(string p, AgentSpawnRequest r, CancellationToken ct) =>
+            throw new NotSupportedException();
+        public ValueTask<int> ConsumeSatisfiedWaitsAsync(string a, CancellationToken ct) =>
+            throw new NotSupportedException();
         public ValueTask<AgentSpawnResult> ContinueAsync(string a, string t, string? op, CancellationToken ct) =>
             throw new NotSupportedException();
     }

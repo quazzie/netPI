@@ -66,12 +66,12 @@ plugins/                  One folder per plugin; each now holds only a `current.
                             NetPI.Nudge         cut-off guard (astra-1 follow-up): steers a run back on an
                                                               empty model turn (bounded per run); Web owns the notice.
                             NetPI.Orchestration astra-2: agent orchestration (service "orchestration") -
-                            IAgentOrchestrator (spawn/continue/cancel, mailboxes, waits, terminal
-                            reconciliation) + agents.* tools; consumes the orchestration-store +
+                            IAgentOrchestrator (spawn/continue/cancel, mailboxes, waits, delegate/suspend-resume,
+                            terminal reconciliation) + agents.* tools (incl. agents.delegate);
                             runner through the service registry.
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
-tests/NetPI.Host.Tests/   332 xunit tests; the integration surface.
+tests/NetPI.Host.Tests/   xunit suite; the integration surface.
 tools/publish-plugins.ps1 Publishes each plugin as an IMMUTABLE build (astra-1 P1):
                               marker-discovers `plugins/*/ *.csproj` (no hardcoded list;
                               TestPlugin excluded unless -IncludeTestPlugin), `dotnet publish`
@@ -368,8 +368,8 @@ values derive from `usage.updated` + compaction policy, no polling).
 ## Tests & verification
 
 ```bash
-dotnet test NetPI.sln        # 332 tests (agent runtime scenarios, session
-                             # store, plugin lifecycle/publication, shell detection, …)
+dotnet test NetPI.sln        # xunit: agent runtime scenarios, session
+                             # store, plugin lifecycle/publication, shell detection, delegation/suspension, …
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json
 ```
 

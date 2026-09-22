@@ -67,6 +67,16 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         _ctx.Events.PublishAsync(new AgentLifecycleEvent(
             AgentLifecycleEventKind.Updated, updated is null ? [row] : [updated], null, DateTimeOffset.UtcNow));
         _ctx.Events.PublishAsync(new LanesStateEvent(Pools(), DateTimeOffset.UtcNow));
+
+        // astra-2 §6.3 step 5: a satisfied wait's owner must be resumed — consume its
+        // durable waits and re-enter the parent for admission (waking is never
+        // permission to execute without a lane; resume re-acquires).
+        var parentId = row.ParentAgentId;
+        if (parentId is not null && parentId != row.AgentId)
+        {
+            try { await ConsumeSatisfiedWaitsAsync(parentId, CancellationToken.None); }
+            catch (Exception ex) { _ctx.Log.Warning($"Wake consumer failed for {parentId}: {ex.Message}"); }
+        }
     }
 
     public void Dispose()
@@ -188,6 +198,141 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         await _store.RegisterWaitAsync(waitId, agentId, nonterm?.AssignmentId, condition, cancellationToken);
         if (nonterm is not null)
             await TryTransitionAsync(nonterm.AssignmentId, AgentAssignmentLifecycle.Waiting, AgentState.Idle, cancellationToken);
+    }
+
+    // ---- delegation (astra-2 §6.2/§6.3) --------------------------------------
+
+    /// <summary>
+    /// astra-2 §6.3 sequence: (1) spawn the child, (2) persist the parent's durable
+    /// wait on the child's assignment, (3) quiesce the parent's live segment — no
+    /// further model call in this segment — releasing its lane so the child is
+    /// admitted for it. The receipt returns promptly; the child's result arrives
+    /// later as a mailbox event on resume.
+    /// </summary>
+    public async ValueTask<AgentDelegateResult> DelegateAsync(
+        string parentAgentId, AgentSpawnRequest request, CancellationToken cancellationToken)
+    {
+        var parent = await _store.GetAgentAsync(parentAgentId, cancellationToken)
+            ?? throw new InvalidOperationException($"Unknown agent {parentAgentId}");
+
+        // astra-2 §6.2: delegation is depth-bounded — a handoff stack cannot
+        // rotate parent/child past the configured depth (depth 0 = the root).
+        var depth = 0;
+        var cursor = parent;
+        while (cursor.ParentAgentId is { } p2)
+        {
+            depth++;
+            if (depth + 1 > _maxDelegationDepth)
+                throw new InvalidOperationException(
+                    $"Delegation rejected: the child would be at depth {depth + 1}, past the configured maximum {_maxDelegationDepth} (astra-2 6.2).");
+            cursor = await _store.GetAgentAsync(p2, cancellationToken)
+                ?? throw new InvalidOperationException($"Ancestor agent missing for {p2}");
+        }
+
+        // Idempotent by operation id: the CHILD's assignment carries run_id =
+        // request.OperationId (the store is the idempotency source of truth). A
+        // retried delegation returns the original child and does NOT re-register
+        // a wait or re-suspend — the original delegation already persisted the
+        // durable wake.
+        var existingChild = await _store.GetByRunIdAsync(request.OperationId, cancellationToken);
+        if (existingChild is not null)
+        {
+            var existingAgent = await _store.GetAgentAsync(existingChild.AgentId, cancellationToken);
+            var parentNonterm = await _store.GetNonterminalAsync(parent.SessionId, cancellationToken);
+            return new AgentDelegateResult(
+                existingAgent ?? throw new InvalidOperationException($"Child agent missing for {existingChild.AgentId}"),
+                existingChild.AssignmentId, existingChild.SessionId,
+                parentNonterm?.AssignmentId ?? string.Empty,
+                AgentAssignmentLifecycle.Waiting, "idempotent replay");
+        }
+
+        var nonterm = await _store.GetNonterminalAsync(parent.SessionId, cancellationToken);
+
+        // (1) spawn — the child gets its own session/assignment, queued or admitted.
+        var spawn = await SpawnChildAsync(parentAgentId, request, cancellationToken);
+
+        // (2) durable wait: the parent waits for the child's assignment to go terminal.
+        var waitId = Guid.NewGuid().ToString("N");
+        await _store.RegisterWaitAsync(
+            waitId, parentAgentId, nonterm?.AssignmentId,
+            new AgentWaitCondition { AssignmentIds = [spawn.AssignmentId] }, cancellationToken);
+
+        // (3) quiesce the parent's live segment: Suspended, lane released (the child
+        // is admitted for it through normal admission), no further model call.
+        var runner = Runner();
+        var parentStatus = AgentAssignmentLifecycle.Waiting;
+        if (runner is not null && nonterm is not null)
+        {
+            var parentRun = runner.ListRuns()
+                .FirstOrDefault(r => r.SessionId == parent.SessionId && r.Outcome == RunState.Running);
+            if (parentRun is not null)
+            {
+                // best-effort: if the parent had already quiesced on its own, the wait
+                // above still resumes it (the durable wake is the source of truth).
+                _ = await runner.SuspendRunAsync(parentRun.RunId, cancellationToken);
+            }
+            await TryTransitionAsync(
+                nonterm.AssignmentId, AgentAssignmentLifecycle.Waiting, AgentState.Idle,
+                cancellationToken, reason: "delegated");
+        }
+
+        return new AgentDelegateResult(
+            spawn.Agent, spawn.AssignmentId, spawn.SessionId,
+            nonterm?.AssignmentId ?? string.Empty, parentStatus, spawn.Reason);
+    }
+
+    /// <summary>
+    /// astra-2 §6.3 step 5: consume satisfied waits and resume the parent.
+    /// Each resume = RequeueRunAsync with the SAME run id (fresh segment; the
+    /// runner publishes RunResumed) carrying the bounded child result. The wait
+    /// is consumed only AFTER the resume is accepted — a crash in between
+    /// retries once, never zero or twice. Waking is never permission to
+    /// execute without a lane: re-queue re-enters admission.
+    /// </summary>
+    public async ValueTask<int> ConsumeSatisfiedWaitsAsync(string agentId, CancellationToken cancellationToken)
+    {
+        var waits = await _store.ListSatisfiedWaitsAsync(agentId, cancellationToken);
+        var agent = await _store.GetAgentAsync(agentId, cancellationToken);
+        if (agent is null || waits.Count == 0) return 0;
+        var runner = Runner();
+        if (runner is null) return 0;
+
+        var resumed = 0;
+        foreach (var w in waits)
+        {
+            if (w.RunId is null) { await _store.MarkWaitConsumedAsync(w.WaitId, cancellationToken); continue; }
+
+            // Bounded result: the child's outcome + summary — never its transcript.
+            var resultParts = new System.Text.StringBuilder();
+            foreach (var t in w.Targets)
+            {
+                if (t.AssignmentId is null) continue;
+                var row = await _store.GetAssignmentAsync(t.AssignmentId, cancellationToken);
+                if (row is null) continue;
+                resultParts.AppendLine($"child {row.AgentId} (assignment {row.AssignmentId}): {AgentAssignmentLifecycleNames.Name(row.Lifecycle)} — {row.Title}");
+            }
+            var summary = resultParts.Length > 0
+                ? resultParts.ToString().TrimEnd()
+                : "wait satisfied";
+
+            var brief = "delegation result: " + summary;
+            // astra-2 §6.3: waking is never permission to execute without a lane —
+            // the resume must carry the parent's model so re-queue re-enters the
+            // SAME admission policy (pooled → re-acquire the lane) as the original.
+            var nontermBefore = await _store.GetNonterminalAsync(agent.SessionId, cancellationToken);
+            var requeued = await runner.RequeueRunAsync(new AgentRunRequest(
+                agent.SessionId, null, nontermBefore?.ModelId, brief, RunId: w.RunId), cancellationToken);
+            if (requeued)
+            {
+                if (nontermBefore is not null)
+                    await TryTransitionAsync(nontermBefore.AssignmentId, AgentAssignmentLifecycle.Running, AgentState.Preparing, cancellationToken, reason: "delegation-resume");
+                resumed++;
+            }
+            // a held resume (capacity full) stays satisfied; the next consumer pass
+            // retries — the durable wake is never lost.
+            if (requeued) await _store.MarkWaitConsumedAsync(w.WaitId, cancellationToken);
+        }
+        return resumed;
     }
 
     // ---- queries ---------------------------------------------------------------

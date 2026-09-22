@@ -164,15 +164,15 @@ public sealed class AgentRunner : IAgentRunner
     public async ValueTask<bool> SuspendRunAsync(string runId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(runId)) return false;
-        RunRecord rec;
-        bool newlySuspended;
+        RunRecord? rec = null;
         lock (_gate)
         {
-            if (!_runs.TryGetValue(runId, out rec)) return false;
-            // Only a LIVE segment can be quiesced. A run already suspended or
-            // terminal returns false (its suspension/terminal event already
-            // reported it) — idempotent, never double-suspends.
-            if (rec.Outcome != RunState.Running) return false;
+            // Only a LIVE segment can be quiesced. An unknown run, or one
+            // already suspended / terminal, returns false (its suspension or
+            // terminal event already reported it) — idempotent, never
+            // double-suspends.
+            if (!_runs.TryGetValue(runId, out rec) || rec.Outcome != RunState.Running)
+                return false;
             rec.SuspendedRequested = true;
             rec.Outcome = RunState.Suspended;
             rec.EndTime = DateTimeOffset.UtcNow;
@@ -181,28 +181,30 @@ public sealed class AgentRunner : IAgentRunner
             // in-flight segment's finally (which also observes Suspended)
             // will NOT publish a second RunSuspended — exactly one event.
             rec.SuspendedEventPublished = true;
-            newlySuspended = true;
         }
 
         // Release OUTSIDE the gate (ReleaseLaneAsync awaits the scheduler's own
         // gate). Returns the lane for normal admission or handoff (astra-2 6.2/6.3
         // — a suspended run holds no lane). Idempotent no-op when no token.
+        // astra-2 §6.3 step 3: stop the in-flight segment at its next safe
+        // boundary so the segment runs NO further model/compaction call. The
+        // finally observes SuspendedRequested and records Suspended (not
+        // Cancelled) — suspension is not a cancellation.
+        try { rec.Cts.Cancel(); } catch { /* already disposed */ }
+
         await ReleaseLaneAsync(rec);
 
-        if (newlySuspended)
+        try
         {
-            try
-            {
-                var evt = new AgentEvent(Guid.NewGuid().ToString("n"), AgentEventType.RunSuspended,
-                    DateTimeOffset.UtcNow, rec.SessionId, null, rec.RunId);
-                await _ctx.Events.PublishAsync(evt, CancellationToken.None);
-            }
-            catch { /* bus may already be gone */ }
+            var evt = new AgentEvent(Guid.NewGuid().ToString("n"), AgentEventType.RunSuspended,
+                DateTimeOffset.UtcNow, rec.SessionId, null, rec.RunId);
+            await _ctx.Events.PublishAsync(evt, CancellationToken.None);
         }
+        catch { /* bus may already be gone */ }
         return true;
     }
 
-        /// <summary>astra-1 E: one owned run — identity + cancellation + terminal outcome.
+    /// <summary>astra-1 E: one owned run — identity + cancellation + terminal outcome.
     /// The runner (not the runtime) is the owner of run state.</summary>
     private sealed class RunRecord(
         string runId, string? sessionId, string? modelId, DateTimeOffset startTime, CancellationTokenSource cts)
@@ -440,6 +442,13 @@ public sealed class AgentRunner : IAgentRunner
                 existing.EndTime = null;
                 existing.State = AgentState.Preparing;
                 existing.ResumedFromSuspended = true;
+                // astra-2 §6.3: the FRESH segment is not suspended — clear the
+                // prior segment's suspension flags so this segment ends with a
+                // normal terminal outcome (they are only meaningful for the
+                // prior, still-unwinding segment, which is guarded out by its
+                // own isCurrent=false and never reads these in its finally).
+                existing.SuspendedRequested = false;
+                existing.SuspendedEventPublished = false;
                 // astra-2 §6.3: RESUME — reuse the previous segment's record
                 // (the orchestrator's durable wait names the RunId). The prior
                 // segment's unwind observes SuspendedRequested, so it ends the
@@ -588,6 +597,22 @@ public sealed class AgentRunner : IAgentRunner
         bool failed = false;
         try
         {
+            // astra-2 §6.3: this segment is a RESUME of a previously-suspended
+            // run (RequeueRunAsync adopted it). Publish RunResumed so the
+            // orchestrator knows the parent re-entered execution — suspension
+            // was NOT AgentCompleted, so the dependents' wake has to be told.
+            if (run.ResumedFromSuspended)
+            {
+                run.ResumedFromSuspended = false;
+                try
+                {
+                    var rEvt = new AgentEvent(Guid.NewGuid().ToString("n"), AgentEventType.RunResumed,
+                        DateTimeOffset.UtcNow, sessionId, null, run.RunId);
+                    await _ctx.Events.PublishAsync(rEvt, CancellationToken.None);
+                }
+                catch { /* bus may already be gone */ }
+            }
+
             var workspace = string.IsNullOrEmpty(request.WorkspacePath)
                 ? Environment.CurrentDirectory : request.WorkspacePath;
             var systemText = await BuildSystemPromptAsync(workspace);
@@ -633,7 +658,21 @@ public sealed class AgentRunner : IAgentRunner
         }
         finally
         {
+            // astra-2 §6.3: STALE-SEGMENT guard. A best-effort suspension is
+            // best-effort for the RUNTIME too: if a resume (RequeueRunAsync)
+            // re-enters admission BEFORE this in-flight segment unwinds, the
+            // resume swaps run.Cts — so this segment's captured `cts` is no
+            // longer the record's. Such a stale unwind must write NOTHING:
+            // no record bookkeeping, no _runTask/_runTasks, no lane release
+            // (SuspendRunAsync already returned it), no event (the terminal
+            // event of a resumed run belongs to its NEW segment), no boundary
+            // apply.
+            bool isCurrent = ReferenceEquals(run.Cts, cts);
             bool publishSuspended = false;
+            // astra-2 §6.3: true when this segment ended suspended — then it
+            // must NEVER publish a terminal event (suspension is not
+            // AgentCompleted). Set in the gate alongside publishSuspended.
+            bool endedSuspended = false;
             // astra-1 A (run cleanup): clear the running state BEFORE the
             // terminal notification — IsRunning must not report a finished
             // run, and a new send must not be refused by a dead one.
@@ -648,41 +687,56 @@ public sealed class AgentRunner : IAgentRunner
                 // RunSuspended publish is a flag race — SuspendRunAsync took the
                 // flag when it won; this finally takes it when the segment ended
                 // suspended first. Either way, exactly one event.
-                if (run.SuspendedRequested && run.Outcome == RunState.Suspended)
+                if (isCurrent)
                 {
-                    if (!run.SuspendedEventPublished)
+                    if (run.SuspendedRequested && run.Outcome == RunState.Suspended)
                     {
-                        run.SuspendedEventPublished = true;
-                        publishSuspended = true;
+                        endedSuspended = true;
+                        if (!run.SuspendedEventPublished)
+                        {
+                            run.SuspendedEventPublished = true;
+                            publishSuspended = true;
+                        }
                     }
+                    else if (!run.SuspendedRequested)
+                    {
+                        run.Outcome = cancelled ? RunState.Cancelled : failed ? RunState.Failed : RunState.Completed;
+                        run.EndTime = DateTimeOffset.UtcNow;
+                    }
+                    run.State = AgentState.Idle;
+                    _runTask = null;
                 }
-                else if (!run.SuspendedRequested)
-                {
-                    run.Outcome = cancelled ? RunState.Cancelled : failed ? RunState.Failed : RunState.Completed;
-                    run.EndTime = DateTimeOffset.UtcNow;
-                }
-                run.State = AgentState.Idle;
+                // Idempotent dispose: a stale segment's cts was already disposed
+                // by the resume (which swapped run.Cts).
                 cts.Dispose();
-                _runTask = null;
             }
 
             // astra-2 §5.1: the segment has drained (model unwound / tool batch
             // finished or cancelled) — return the lane to the scheduler so the
             // FIFO queue can admit the next assignment. Release OUTSIDE the lock
             // (it awaits the scheduler's own gate). Idempotent: a double release
-            // or a stale epoch is a no-op, never an error.
-            if (run.LaneToken is not null)
+            // or a stale epoch is a no-op, never an error. A STALE segment never
+            // releases (its lane was already returned by SuspendRunAsync —
+            // releasing again would hand a second, phantom lane to the queue).
+            if (isCurrent && run.LaneToken is not null)
                 await ReleaseLaneAsync(run);
 
             // astra-2 §4: the execution task is done; drop it from the registry.
-            _runTasks.TryRemove(run.RunId, out _);
+            // A STALE segment must NOT touch the registry: the CURRENT (resumed)
+            // segment's task owns _runTasks[runId] and _runTask.
+            if (isCurrent)
+                _runTasks.TryRemove(run.RunId, out _);
 
-            // astra-2 6.3: a SUSPENDED segment publishes RunSuspended, NOT a
+            // astra-2 §6.3: a SUSPENDED segment publishes RunSuspended, NOT a
             // terminal outcome (suspension is not AgentCompleted; a resumed run
             // starts a fresh segment). Exactly one event per suspension — either
             // SuspendRunAsync took the flag when it won the race, or this finally
             // does (the segment ended suspended first). Otherwise: exactly one
             // terminal outcome (completed / cancelled / FAILED).
+            // A STALE segment publishes NOTHING (its terminal event belongs to
+            // the CURRENT resumed segment; SuspendRunAsync already emitted
+            // RunSuspended for the suspension).
+            if (isCurrent)
             try
             {
                 if (publishSuspended)
@@ -691,8 +745,10 @@ public sealed class AgentRunner : IAgentRunner
                         DateTimeOffset.UtcNow, sessionId, null, run.RunId);
                     await _ctx.Events.PublishAsync(sEvt, CancellationToken.None);
                 }
-                else
+                else if (!endedSuspended)
                 {
+                    // endedSuspended (but SuspendRunAsync already published
+                    // RunSuspended): the suspended run emits NO terminal event.
                     var type = cancelled ? AgentEventType.AgentCancelled
                         : failed ? AgentEventType.AgentFailed
                         : AgentEventType.AgentCompleted;
@@ -708,7 +764,7 @@ public sealed class AgentRunner : IAgentRunner
             // before the session is usable for the next send). The resulting
             // ProjectApplied event is bridged by the Web surface to
             // session.project.applied + session.updated.
-            if (!string.IsNullOrEmpty(sessionId))
+            if (!string.IsNullOrEmpty(sessionId) && isCurrent)
             {
                 try
                 {

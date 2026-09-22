@@ -76,6 +76,7 @@ public sealed class OrchestrationPlugin : INetPiPlugin
         var orch = _orchestrator!;
         _tools = [
             new AgentsSpawnTool(orch),
+            new AgentsDelegateTool(orch),
             new AgentsMessageTool(orch),
             new AgentsWaitTool(orch),
             new AgentsInspectTool(orch),
@@ -188,6 +189,62 @@ internal sealed class AgentsSpawnTool : AgentToolBase
     }
     private static ToolResult Err(ToolContext ctx, string msg)
         => new("", "agents.spawn", [new TextPart(msg)], IsError: true);
+}
+
+internal sealed class AgentsDelegateTool : AgentToolBase
+{
+    public AgentsDelegateTool(AgentOrchestrator o) : base(o) { }
+    public override string Name => "agents.delegate";
+    public override string Description => "Delegate a subtask: spawns a child agent, waits for it, and suspends your run until the child finishes. Your lane is released for the child; you are resumed with the child's bounded result (not its transcript). Use agents.spawn for fire-and-forget children.";
+    public override JsonElement Parameters => Json.Obj(
+        ("brief", "The subtask brief (the child's first user message)"),
+        ("operationId", "Stable id for idempotent retries (required)"),
+        ("poolId", "Optional pool id (pooled deployment only)"),
+        ("deploymentId", "Optional deployment id (trusted config, not model-chosen)"));
+    public override IReadOnlyList<string> Guidelines => [
+        "Delegation SUSPENDS your run: no further model call happens in this segment after the tool returns.",
+        "You are resumed when the child reaches a terminal outcome; the result is a bounded summary, not the child's transcript.",
+        "Use agents.spawn (not delegate) when you want to keep working while the child runs."];
+    public override async ValueTask<ToolResult> ExecuteAsync(ToolContext context, CancellationToken cancellationToken)
+    {
+        var args = context.Arguments;
+        var parentAgentId = S(args, "parentAgentId") ?? context.AgentId ?? "";
+        var brief = S(args, "brief") ?? "";
+        var opId = S(args, "operationId") ?? Guid.NewGuid().ToString("N");
+        var poolId = S(args, "poolId");
+        var depId = S(args, "deploymentId");
+        if (string.IsNullOrEmpty(parentAgentId))
+            return Err(context, "parentAgentId is required (or the runtime must provide AgentId)");
+        if (string.IsNullOrEmpty(brief))
+            return Err(context, "brief is required");
+
+        try
+        {
+            var r = await Orch.DelegateAsync(parentAgentId, new AgentSpawnRequest
+            {
+                Brief = brief,
+                OperationId = opId,
+                PoolId = poolId,
+                DeploymentId = depId,
+            }, cancellationToken);
+            return Ok(context, new
+            {
+                childAgentId = r.ChildAgent.AgentId,
+                childAssignmentId = r.ChildAssignmentId,
+                childSessionId = r.ChildSessionId,
+                parentAssignmentId = r.ParentAssignmentId,
+                parentStatus = AgentAssignmentLifecycleNames.Name(r.ParentStatus),
+                reason = r.Reason,
+            });
+        }
+        catch (Exception ex)
+        {
+            return Err(context, $"Delegation failed: {ex.Message}");
+        }
+    }
+    private static string? S(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    private static ToolResult Ok(ToolContext ctx, object p) => new("", "agents.delegate", [new TextPart(JsonSerializer.Serialize(p))]);
+    private static ToolResult Err(ToolContext ctx, string m) => new("", "agents.delegate", [new TextPart(m)], IsError: true);
 }
 
 internal sealed class AgentsMessageTool : AgentToolBase

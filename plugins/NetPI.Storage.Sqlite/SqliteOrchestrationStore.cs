@@ -376,6 +376,16 @@ string? createdAssignmentId = null;
         return list;
     }
 
+    public async ValueTask<string?> GetRunIdAsync(string assignmentId, CancellationToken ct = default)
+    {
+        await using var conn = OpenConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT run_id FROM agent_assignments WHERE assignment_id = $a ORDER BY version DESC LIMIT 1;";
+        cmd.Parameters.AddWithValue("$a", assignmentId);
+        var v = await cmd.ExecuteScalarAsync(ct);
+        return v is System.DBNull or null ? null : Convert.ToString(v);
+    }
+
     public async ValueTask<IReadOnlyList<QueuedAdoptionInfo>> ListQueuedForAdoptionAsync(CancellationToken ct = default)
     {
         await using var conn = OpenConnection();
@@ -604,6 +614,35 @@ string? createdAssignmentId = null;
             tx.Commit();
         }
         catch { tx.Rollback(); throw; }
+    }
+
+    public async ValueTask<IReadOnlyList<AgentSatisfiedWait>> ListSatisfiedWaitsAsync(string agentId, CancellationToken ct = default)
+    {
+        await using var conn = OpenConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT wait_id, agent_id, assignment_id, targets_json FROM agent_waits WHERE agent_id = $a AND satisfied = 1 ORDER BY created_at ASC;";
+        cmd.Parameters.AddWithValue("$a", agentId);
+        var list = new List<AgentSatisfiedWait>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            var aid = r.IsDBNull(2) ? null : r.GetString(2);
+            // astra-2 §7: the wait's run id IS the parent assignment's operation id —
+            // resume the parent with that id.
+            string? runId = null;
+            if (aid is not null) runId = await GetRunIdAsync(aid, ct);
+            list.Add(new AgentSatisfiedWait(r.GetString(0), ParseTargets(r.GetString(3)), aid, runId));
+        }
+        return list;
+    }
+
+    public async ValueTask MarkWaitConsumedAsync(string waitId, CancellationToken ct = default)
+    {
+        await using var conn = OpenConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM agent_waits WHERE wait_id = $w AND satisfied = 1;";
+        cmd.Parameters.AddWithValue("$w", waitId);
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public async ValueTask<bool> NoteTerminalForWaitsAsync(string assignmentId, CancellationToken ct = default)
