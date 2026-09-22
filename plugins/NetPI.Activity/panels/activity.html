@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>netPI · Activity</title>
+<title>netPI · Work</title>
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --row: #1d2129; --row-hi: #232833;
     --border: #2a2f3a; --text: #d7dbe2; --muted: #8b93a1;
-    --green: #4ec9a0; --amber: #e0b15e; --red: #e0708a;
+    --green: #4ec9a0; --amber: #e0b15e; --blue: #679efe; --purple: #b180d8;
+    --red: #e0708a;
     --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
     --sans: system-ui, "Segoe UI", Roboto, sans-serif;
   }
@@ -24,219 +25,515 @@
   }
   header .title { font-weight: 600; letter-spacing: .2px; }
   header .badge { color: var(--muted); font-size: 11px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
   .dot.on { background: var(--green); }
   main { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; }
   section { border-bottom: 1px solid var(--border); flex: 0 0 auto; }
-  section:last-child { border-bottom: none; }
   h2 {
     margin: 0; padding: 6px 12px; font-size: 11px; text-transform: uppercase;
     letter-spacing: .8px; color: var(--muted); background: var(--panel);
+    display: flex; align-items: center; gap: 8px;
   }
+  h2 button.toggle { all: unset; cursor: pointer; color: var(--muted); font-size: 10px; padding: 0 4px; }
   .row {
-    display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
     border-bottom: 1px solid #191c22; cursor: default;
   }
   .row:last-child { border-bottom: none; }
   .row.sel { background: var(--row-hi); }
   .row:hover { background: var(--row); }
+  .row.nav { cursor: pointer; }
+  .row.nav:focus-visible { outline: 1px solid var(--blue); outline-offset: -1px; }
   .grow { flex: 1 1 auto; min-width: 0; }
-  .cmd { font-family: var(--mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .meta { color: var(--muted); font-size: 11px; font-family: var(--mono); white-space: nowrap; }
-  .pill { font-size: 10px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+  .t1 { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .t1 .mono, .mono { font-family: var(--mono); font-size: 11.5px; }
+  .meta { color: var(--muted); font-size: 11px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pill { font-size: 10px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; flex: none; }
   .pill.running { color: var(--green); border-color: var(--green); }
+  .pill.queued, .pill.waiting, .pill.cancelling { color: var(--amber); border-color: var(--amber); }
+  .pill.suspended { color: var(--purple); border-color: var(--purple); }
   .pill.failed, .pill.killed { color: var(--red); border-color: var(--red); }
-  .pill.cancelled, .pill.succeeded { color: var(--amber); border-color: var(--amber); }
-  button {
-    font-family: var(--sans); font-size: 11px; padding: 3px 9px; border-radius: 6px;
-    border: 1px solid var(--border); background: var(--row); color: var(--text); cursor: pointer;
+  .pill.cancelled { color: var(--muted); border-color: var(--muted); }
+  .pill.completed, .pill.succeeded, .pill.runningjob { color: var(--green); border-color: var(--green); }
+  button.ctl {
+    font-family: var(--sans); font-size: 11px; padding: 2px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--row); color: var(--text); cursor: pointer; flex: none;
   }
-  button:hover { background: var(--row-hi); }
-  button:disabled { opacity: .4; cursor: not-allowed; }
-  button.danger { color: var(--red); border-color: var(--red); }
-  .empty { padding: 12px; color: var(--muted); font-size: 12px; font-style: italic; }
+  button.ctl:hover { background: var(--row-hi); }
+  button.ctl:disabled { opacity: .4; cursor: not-allowed; }
+  button.ctl.danger { color: var(--red); border-color: var(--red); }
+  .empty { padding: 10px 12px; color: var(--muted); font-size: 12px; font-style: italic; }
   .err { color: var(--red); }
   .outbox {
-    flex: 1 1 auto; overflow-y: auto; padding: 8px 12px; margin: 0;
-    background: #0b0d10; font-family: var(--mono); font-size: 11.5px;
-    white-space: pre-wrap; word-break: break-word; color: #b8c0cc;
-    border-top: 1px solid var(--border);
+    margin: 4px 12px 8px; padding: 8px; background: #0b0d10; border: 1px solid var(--border);
+    border-radius: 6px; font-family: var(--mono); font-size: 11.5px;
+    white-space: pre-wrap; word-break: break-word; color: #b8c0cc; max-height: 240px; overflow-y: auto;
+    display: block;
   }
-  .elapsed { color: var(--muted); font-size: 11px; font-family: var(--mono); }
-  @media (min-width: 760px) {
-    main { flex-direction: row; }
-    section { flex: 1 1 50%; border-bottom: none; }
-    section.agents { border-right: 1px solid var(--border); }
-  }
+  .trunc-note { color: var(--amber); font-size: 11px; font-family: var(--sans); margin: 4px 0 0; }
+  .lane-row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; font-size: 12px; }
+  .lane-row .pool { font-family: var(--mono); }
+  .meta2 { color: var(--muted); font-size: 11px; }
+  .lane-blocked { color: var(--red); font-size: 11px; }
+  .subhead { padding: 4px 12px; font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); background: #12151b; }
+  .elapsed { color: var(--muted); font-size: 11px; font-family: var(--mono); flex: none; }
 </style>
 </head>
 <body>
   <header>
     <div class="dot" id="dot"></div>
-    <span class="title">Activity</span>
+    <span class="title">Work</span>
     <span class="badge" id="badge">connecting&hellip;</span>
+    <span style="flex:1"></span>
+    <span class="badge">2 s &middot; visible only</span>
   </header>
-  <main>
-    <section class="agents" id="sec-agents">
-      <h2>Agents <span class="meta" id="agents-n"></span></h2>
-      <div id="agents"></div>
+  <main id="main">
+    <section id="sec-lanes">
+      <h2>LANES <span class="meta" id="lanes-n"></span></h2>
+      <div id="lanes"></div>
     </section>
-    <section id="sec-processes">
-      <h2>Processes <span class="meta" id="proc-n"></span></h2>
-      <div id="procs"></div>
+    <section id="sec-agents">
+      <h2>AGENTS <span class="meta" id="agents-n"></span></h2>
+      <div id="agents"></div>
+      <div id="history-wrap" hidden>
+        <div class="subhead">recent (terminal)</div>
+        <div id="history"></div>
+      </div>
+    </section>
+    <section id="sec-bg">
+      <h2>BACKGROUND PROCESSES <span class="meta" id="bg-n"></span></h2>
+      <div id="bgs"></div>
+    </section>
+    <section id="sec-fg">
+      <h2>PROCESSES <span class="meta" id="fg-n"></span>
+        <button class="toggle" id="fg-toggle" aria-expanded="true">[&minus;]</button>
+      </h2>
+      <div id="fgrun"></div>
+      <div id="fgrecent"></div>
     </section>
   </main>
-  <div class="outbox" id="outbox" style="display:none"></div>
   <script>
     "use strict";
     const api = {
-      agents: () => fetch("/api/activity/agents").then(r => r.json()),
-      processes: () => fetch("/api/activity/processes").then(r => r.json()),
-      cancel: (runId) => fetch(`/api/activity/agents/${encodeURIComponent(runId)}/cancel`, { method: "POST" }).then(r => r.json()),
+      work: () => fetch("/api/activity/work").then(r => r.json()),
+      cancel: (id, subtree) => fetch(`/api/activity/agents/${encodeURIComponent(id)}/cancel`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ subtree }),
+      }).then(r => r.json()),
       stop: (id) => fetch(`/api/activity/processes/background/${encodeURIComponent(id)}/stop`, { method: "POST" }).then(r => r.json()),
       bgOutput: (id) => fetch(`/api/activity/processes/background/${encodeURIComponent(id)}/output?chars=8000`).then(r => r.json()),
     };
-    let selected = null; // { kind: "bg"|"run", id }
 
-    const $ = (id) => document.getElementById(id);
-    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-    const elapsed = (a, b) => {
-      if (!a) return "";
-      const ms = (b ? new Date(b).getTime() : Date.now()) - new Date(a).getTime();
-      if (ms < 0) ms = 0;
-      const s = Math.floor(ms / 1000);
-      return s < 60 ? s + "s" : s < 3600 ? Math.floor(s / 60) + "m" + (s % 60) + "s" : Math.floor(s / 3600) + "h" + Math.floor((s % 3600) / 60) + "m";
-    };
-    const pill = (state) => {
-      const s = String(state || "").toLowerCase();
-      const cls = s === "running" ? "running" : (s === "failed" || s === "killed" ? "failed" : (s === "succeeded" || s === "completed" || s === "cancelled" ? "cancelled" : ""));
-      return `<span class="pill ${cls}">${esc(state)}</span>`;
-    };
+    // ---- bridge handshake (astra-2 §12.3) ------------------------------------
+    // The shell (parent frame) posts { type:"netpi.panel.init", version:1 } to
+    // this page after it mounts. We accept it ONLY from our immediate parent
+    // frame and record its origin as the ONLY targetOrigin we ever post to
+    // (never "*", never a hardcoded 5173). Until the handshake lands,
+    // openSession is a no-op — nothing is guessed.
+    let shellOrigin = null;
+    window.addEventListener("message", (e) => {
+      if (e.source !== window.parent) return;
+      const d = e.data;
+      if (!d || d.type !== "netpi.panel.init" || d.version !== 1) return;
+      shellOrigin = e.origin;
+    });
 
     function openSession(sessionId) {
-      // Tell the shell (parent iframe) to select/add this session's top tab.
-      // The shell's listener matches the envelope; a no-op if the session is gone.
+      // Navigation ONLY: the shell selects the existing chat tab or opens the
+      // session by id. This never spawns/resumes/cancels or touches lanes.
+      if (!shellOrigin || !sessionId) return;
       try {
-        parent.postMessage({ type: "netpi.activity.openSession", payload: { sessionId } }, "*");
-      } catch (_) { /* parent may be same-origin or gone */ }
+        window.parent.postMessage(
+          { type: "netpi.panel.openSession", version: 1, payload: { sessionId } },
+          shellOrigin);
+      } catch (_) { /* parent gone — the next poll refresh is enough */ }
+    }
+
+    // ---- DOM helpers ----------------------------------------------------------
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const fmtTime = (iso) => { try { return new Date(iso).toLocaleTimeString([], { hour12: false }); } catch { return ""; } };
+    function fmtDur(ms) {
+      if (!isFinite(ms) || ms < 0) ms = 0;
+      const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+      if (h) return `${h}h ${m}m`;
+      if (m) return `${m}m ${ss}s`;
+      return `${ss}s`;
+    }
+
+    /**
+     * Reconcile a list container: rows are keyed by data-<key> and updated IN
+     * PLACE (text/badges) so scroll, focus and selection survive polls. Rows
+     * are reordered (re-appended) only when the id sequence changed; focused
+     * elements are re-focused by (row, part) after a reorder.
+     */
+    function reconcile(container, key, items, render, update) {
+      const existing = new Map();
+      for (const el of Array.from(container.children))
+        if (el.dataset && el.dataset[key]) existing.set(el.dataset[key], el);
+      const active = document.activeElement;
+      const activeKey = active && container.contains(active) && active.dataset ? active.dataset[key] : null;
+      const activePart = active && active.dataset ? (active.dataset.part || null) : null;
+
+      const oldOrder = Array.from(existing.keys());
+      const newOrder = items.map(it => it[key]);
+      const orderChanged = oldOrder.length !== newOrder.length ||
+        oldOrder.some((id, i) => id !== newOrder[i]);
+
+      for (const item of items) {
+        let el = existing.get(item[key]);
+        if (!el) {
+          el = render(item, container);
+          container.appendChild(el);
+        } else {
+          update(el, item);
+          if (orderChanged) container.appendChild(el); // re-append = move
+        }
+      }
+      for (const [id, el] of existing) if (!newOrder.includes(id)) el.remove();
+
+      if (activeKey && activePart) {
+        const el = existing.get(activeKey);
+        const tgt = el && el.querySelector(`[data-part="${activePart}"]`);
+        if (tgt && tgt !== active) { try { tgt.focus({ preventScroll: true }); } catch (_) {} }
+      }
+    }
+
+    // ---- section renderers ----------------------------------------------------
+
+    const selRow = { agent: null, bg: null };
+    const expandedBg = new Set(); // job ids whose output pane is open
+
+    function laneDisplay(r) {
+      if (r.executionMode === "cloud-direct") return "Cloud · direct";
+      if (r.lifecycle === "queued" || r.lifecycle === "waiting")
+        return r.poolId ? `waiting for ${r.poolId}` : "waiting for pool";
+      if (r.laneId) return `${r.poolId || "pool"} / ${r.laneId}`;
+      return r.poolId || "—";
+    }
+
+    function agentBadges(r) {
+      return `<span class="pill ${esc(r.lifecycle)}">${esc(r.lifecycle)}</span>` +
+        `<span class="meta">${esc(r.phase || "")}</span>`;
+    }
+
+    function agentRowInner(r) {
+      const lane = laneDisplay(r);
+      const created = r.createdAt ? fmtTime(r.createdAt) : "";
+      const started = r.startedAt ? ` started ${fmtTime(r.startedAt)}` : "";
+      const dur = r.startedAt ? ` · ${fmtDur((r.endedAt ? new Date(r.endedAt) : Date.now()) - new Date(r.startedAt))}` : "";
+      const parent = r.parentAgentId ? ` ← ${r.parentAgentId.slice(0, 8)}` : "";
+      const team = r.teamId ? ` team ${r.teamId.slice(0, 6)}` : "";
+      return `
+        <div class="grow">
+          <div class="t1">${esc(r.title || "—")} <span class="meta">${esc(r.sessionId || "")}${team}${parent}</span></div>
+          <div class="meta">${esc(lane)}${r.modelId ? " · " + esc(r.modelId) : ""} · ${created}${started}${dur}${r.reason ? " · " + esc(r.reason) : ""}</div>
+        </div>
+        ${agentBadges(r)}
+        ${r.nonTerminal ? `<button class="ctl danger" data-part="cancel" data-id="${esc(r.assignmentId)}" title="Cancel this assignment and its descendants (subtree)">cancel</button>` : ""}
+      `;
     }
 
     function agentRow(r) {
-      return `<div class="row" data-run="${esc(r.runId)}" data-sid="${esc(r.sessionId || "")}">
+      const el = document.createElement("div");
+      el.className = "row nav";
+      el.dataset.a = r.assignmentId;
+      el.tabIndex = 0;
+      el.setAttribute("role", "link");
+      el.innerHTML = agentRowInner(r);
+      el.addEventListener("click", (e) => {
+        if (e.target.closest("button")) return; // controls never navigate
+        selRow.agent = r.assignmentId;
+        if (r.sessionId) openSession(r.sessionId);
+      });
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          selRow.agent = r.assignmentId;
+          if (r.sessionId) openSession(r.sessionId);
+        }
+      });
+      return el;
+    }
+
+    function updateAgentRow(el, r) {
+      el.dataset.a = r.assignmentId;
+      el.title = r.sessionId ? `Open session ${r.sessionId}` : "no session";
+      const inner = agentRowInner(r);
+      if (el.innerHTML !== inner) el.innerHTML = inner;
+    }
+
+    function historyRow(r) {
+      const el = document.createElement("div");
+      el.className = "row";
+      el.dataset.h = r.assignmentId;
+      el.innerHTML = `
         <div class="grow">
-          <div class="cmd">${esc(r.sessionId || "&mdash;")} <span class="meta">${esc(r.modelId || "")}</span></div>
-          <div class="meta">${elapsed(r.startTime, r.endTime)} &middot; ${esc(r.outcome || r.state)}</div>
+          <div class="t1">${esc(r.title || "—")} <span class="meta">${esc(r.sessionId || "")}</span></div>
+          <div class="meta">${r.endedAt ? fmtTime(r.endedAt) : ""}${r.reason ? " · " + esc(r.reason) : ""}</div>
         </div>
-        ${pill(r.state)}
-        ${r.sessionId ? `<button data-act="open" data-id="${esc(r.sessionId)}">Open</button>` : ""}
-        <button data-act="cancel" data-id="${esc(r.runId)}" ${r.state === "idle" ? "disabled" : ""}>Cancel</button>
-      </div>`;
+        <span class="pill ${esc(r.lifecycle)}">${esc(r.lifecycle)}</span>`;
+      return el;
+    }
+
+    function bgRowInner(j) {
+      const end = j.exitedAt ? new Date(j.exitedAt) : Date.now();
+      const dur = fmtDur(end - new Date(j.startedAt));
+      const stateCls = j.state === "Running" ? "runningjob" : j.state === "Failed" ? "failed" : j.state === "Killed" ? "killed" : "completed";
+      return `
+        <div class="grow">
+          <div class="t1 mono" title="${esc(j.command)}">${esc(j.command)}</div>
+          <div class="meta">${j.shell ? esc(j.shell) + " · " : ""}${fmtTime(j.startedAt)} · ${dur}${j.exitCode != null ? " · exit " + j.exitCode : ""}${j.sessionId ? " · " + esc(j.sessionId) : ""}</div>
+        </div>
+        <span class="pill ${stateCls}">${esc(j.state)}</span>
+        <button class="ctl" data-part="out" data-id="${esc(j.id)}">${expandedBg.has(j.id) ? "hide output" : "output"}</button>
+        ${j.state === "Running" ? `<button class="ctl danger" data-part="stop" data-id="${esc(j.id)}">stop</button>` : ""}
+      `;
     }
 
     function bgRow(j) {
-      const sel = selected && selected.kind === "bg" && selected.id === j.id;
-      return `<div class="row ${sel ? "sel" : ""}" data-bgid="${esc(j.id)}">
+      const el = document.createElement("div");
+      el.className = "row";
+      el.dataset.b = j.id;
+      el.innerHTML = bgRowInner(j);
+      el.addEventListener("click", (e) => {
+        if (e.target.closest("button")) return;
+        selRow.bg = j.id;
+      });
+      return el;
+    }
+
+    function updateBgRow(el, j) {
+      el.dataset.b = j.id;
+      el.innerHTML = bgRowInner(j);
+    }
+
+    /**
+     * Output panes are rendered as a child `.outbox[data-for]` of the row, so
+     * they move with the row and are never orphaned by a reconcile.
+     */
+    function renderBgOutput(el, id) {
+      el.querySelectorAll(".outbox, .trunc-note").forEach(x => x.remove());
+      if (!expandedBg.has(id)) return;
+      const box = document.createElement("pre");
+      box.className = "outbox";
+      box.dataset.for = id;
+      box.textContent = "loading…";
+      el.appendChild(box);
+      refreshOutput(id, box);
+    }
+
+    async function refreshOutput(id, box) {
+      if (!box) {
+        const row = document.querySelector(`[data-b="${CSS.escape(id)}"]`);
+        box = row && row.querySelector(`.outbox[data-for="${CSS.escape(id)}"]`);
+        if (!box || !expandedBg.has(id)) return;
+      }
+      try {
+        const o = await api.bgOutput(id);
+        if (!expandedBg.has(id)) {
+          const row = box.closest("[data-b]");
+          if (row && !row.querySelector(`[data-part="out"][data-id="${CSS.escape(id)}"]`)) return;
+        }
+        box.textContent = o.text && o.text.length ? o.text : "(no output)";
+        box.scrollTop = box.scrollHeight; // keep the tail pinned
+        let note = box.nextElementSibling;
+        if (o.truncated) {
+          if (!note || !note.classList || !note.classList.contains("trunc-note")) {
+            note = document.createElement("div");
+            note.className = "trunc-note";
+            note.textContent = "showing the last 8000 chars — earlier output was dropped";
+            box.after(note);
+          }
+        } else if (note && note.classList && note.classList.contains("trunc-note")) note.remove();
+      } catch (_) { if (box) box.textContent = "(output unavailable)"; }
+    }
+
+    function fgInner(p, recent) {
+      const state = recent ? (p.exitCode == null ? "killed" : "completed") : "running";
+      const stateCls = state === "running" ? "runningjob" : state === "killed" ? "killed" : "completed";
+      return `
         <div class="grow">
-          <div class="cmd" title="${esc(j.command)}">${esc(j.command)}</div>
-          <div class="meta">${esc(j.shell || "")} ${j.workingDirectory ? "&middot; " + esc(j.workingDirectory) : ""} ${j.sessionId ? "&middot; " + esc(j.sessionId) : ""}</div>
+          <div class="t1 mono" title="${esc(p.command)}">${esc(p.toolShellId || "")}: ${esc(p.command)}</div>
+          <div class="meta">${p.processId ? "pid " + p.processId : ""}${p.workingDirectory ? " · " + esc(p.workingDirectory) : ""}${p.sessionId ? " · " + esc(p.sessionId) : ""} · ${fmtTime(p.startedAt)}</div>
         </div>
-        ${pill(j.state)}
-        <span class="elapsed">${elapsed(j.startedAt, j.exitedAt)}</span>
-        <button data-pact="output" data-id="${esc(j.id)}">Output</button>
-        ${j.state === "running" ? `<button data-pact="stop" data-id="${esc(j.id)}" class="danger">Stop</button>` : ""}
-      </div>`;
+        <span class="pill ${stateCls}">${state}</span>
+        <span class="elapsed">${fmtDur((p.exitedAt ? new Date(p.exitedAt) : Date.now()) - new Date(p.startedAt))}</span>`;
     }
 
     function fgRow(p, recent) {
-      return `<div class="row">
-        <div class="grow">
-          <div class="cmd" title="${esc(p.command)}">${esc(p.toolShellId || "")}: ${esc(p.command)}</div>
-          <div class="meta">${p.processId ? "pid " + p.processId : ""} ${p.workingDirectory ? " &middot; " + esc(p.workingDirectory) : ""} ${p.sessionId ? " &middot; " + esc(p.sessionId) : ""}</div>
-        </div>
-        ${pill(recent ? (p.exitCode == null ? "killed" : "done") : "running")}
-        <span class="elapsed">${elapsed(p.startedAt, p.exitedAt)}</span>
-      </div>`;
+      const el = document.createElement("div");
+      el.className = "row";
+      el.dataset.f = String(p.processId);
+      el.innerHTML = fgInner(p, recent);
+      return el;
     }
 
-    function renderAgents(data, err) {
-      const box = $("agents");
-      $("agents-n").textContent = data && data.available ? `(${data.runs.length})` : "";
-      if (err) { box.innerHTML = `<div class="empty err">runner unavailable &mdash; chat still works.</div>`; return; }
-      if (!data || !data.available) { box.innerHTML = `<div class="empty">no agent runner loaded.</div>`; return; }
-      if (!data.runs.length) { box.innerHTML = `<div class="empty">no runs yet.</div>`; return; }
-      box.innerHTML = data.runs.map(agentRow).join("");
+    // ---- availability / section state ------------------------------------------
+
+    function sectionUnavailable(box, msg) {
+      box.innerHTML = "";
+      const d = document.createElement("div");
+      d.className = "empty err";
+      d.textContent = msg;
+      box.appendChild(d);
     }
 
-    function renderProcs(data, err) {
-      const box = $("procs");
-      let n = 0;
-      if (err || !data) { box.innerHTML = `<div class="empty err">process services unavailable &mdash; chat still works.</div>`; $("proc-n").textContent = ""; return; }
-      const parts = [];
-      if (data.background && data.background.available) {
-        const js = data.background.jobs || [];
-        n += js.length;
-        parts.push(js.map(bgRow).join("") || `<div class="empty">no background jobs.</div>`);
-      } else {
-        parts.push(`<div class="empty">background tasks not loaded.</div>`);
-      }
-      if (data.foreground && data.foreground.available) {
-        const run = data.foreground.running || [];
-        const rec = data.foreground.recent || [];
-        n += run.length + rec.length;
-        parts.push(run.map(p => fgRow(p, false)).join("") || "");
-        if (rec.length) parts.push(`<h2>recent</h2>` + rec.slice(0, 12).map(p => fgRow(p, true)).join(""));
-      } else {
-        parts.push(`<div class="empty">foreground tools not loaded.</div>`);
-      }
-      box.innerHTML = parts.join("");
-      $("proc-n").textContent = `(${n})`;
-    }
-
-    function showOut(title, body) {
-      const o = $("outbox");
-      o.style.display = "block";
-      o.textContent = title + "\n\n" + body;
-    }
-
-    // Row / button actions (event delegation).
-    document.addEventListener("click", (e) => {
-      const b = e.target.closest("button");
-      if (b) {
-        if (b.dataset.act === "open") { openSession(b.dataset.id); return; }
-        if (b.dataset.act === "cancel") { api.cancel(b.dataset.id).then(() => refresh()); return; }
-        if (b.dataset.pact === "stop") { api.stop(b.dataset.id).then(() => { selected = null; refresh(); }); return; }
-        if (b.dataset.pact === "output") {
-          api.bgOutput(b.dataset.id).then(o => {
-            selected = { kind: "bg", id: b.dataset.id };
-            showOut(`job ${o.id} &middot; ${o.state}${o.exitCode != null ? " &middot; exit " + o.exitCode : ""}${o.truncated ? " (truncated)" : ""}`, o.text || "(no output)");
-            refresh();
-          });
-          return;
-        }
+    function renderLanes(d) {
+      const box = $("lanes");
+      if (!d || !d.available) {
+        sectionUnavailable(box, "lane scheduler unavailable — agents & processes still work.");
+        $("lanes-n").textContent = "";
         return;
       }
-      const row = e.target.closest(".row");
-      if (row && row.dataset.bgid) { selected = { kind: "bg", id: row.dataset.bgid }; refresh(); }
-      else if (row && row.dataset.run) { selected = { kind: "run", id: row.dataset.run }; refresh(); }
-    });
-
-    async function refresh() {
-      let ok = true;
-      try {
-        const [a, p] = await Promise.all([
-          api.agents().catch(() => ({ __err: true })),
-          api.processes().catch(() => ({ __err: true })),
-        ]);
-        renderAgents(a.__err ? null : a, a.__err);
-        renderProcs(p.__err ? null : p, p.__err);
-        ok = !a.__err && !p.__err;
-      } catch (_) { ok = false; }
-      $("dot").classList.toggle("on", ok);
-      $("badge").textContent = ok ? "live" : "degraded";
+      const pools = d.pools || [];
+      if (!pools.length) {
+        box.innerHTML = `<div class="empty">no pools configured.</div>`;
+        $("lanes-n").textContent = "";
+        return;
+      }
+      box.innerHTML = pools.map(p => {
+        // Render the REPORTED N — never a hardcoded lane count.
+        const cap = p.effectiveCapacity != null ? `${p.ownedCount}/${p.effectiveCapacity}` : `${p.ownedCount}/?`;
+        const mode = p.capacityMode === "provider" ? "follows provider" : p.capacityMode === "manual" ? "manual" : "";
+        const provider = p.providerReportedConcurrency != null ? ` provider ${p.providerReportedConcurrency}` : "";
+        const status = p.providerStatus === "stale" ? " · provider observation stale" : "";
+        const capNote = p.userCap != null ? ` (cap ${p.userCap})` : "";
+        return `<div class="lane-row">
+          <span class="pool">${esc(p.poolId)}</span>
+          <span class="pill ${p.canAdmit ? "running" : ""}">${esc(cap)}</span>
+          <span class="meta2">${esc(mode)}${provider}${capNote}${status}</span>
+          <span class="meta2">queue ${p.queueCount}</span>
+          ${p.draining ? `<span class="pill cancelling">draining</span>` : ""}
+          ${p.blockedReason ? `<span class="lane-blocked">${esc(p.blockedReason)}</span>` : ""}
+        </div>`;
+      }).join("");
+      const totalOwned = pools.reduce((a, p) => a + p.ownedCount, 0);
+      const totalQueue = pools.reduce((a, p) => a + p.queueCount, 0);
+      $("lanes-n").textContent = `(${pools.length} pool${pools.length === 1 ? "" : "s"} · ${totalOwned} owned · ${totalQueue} queued)`;
     }
 
-    refresh();
-    setInterval(refresh, 3000); // modest polling while the panel is open
+    function renderAgents(a) {
+      const box = $("agents");
+      const wrap = $("history-wrap");
+      if (a && a.agentsAvailable) {
+        const rows = (a.agents || []);
+        reconcile(box, "a", rows, agentRow, updateAgentRow);
+        const hist = (a.history || []);
+        wrap.hidden = hist.length === 0;
+        if (hist.length)
+          reconcile($("history"), "h", hist, historyRow, () => {}); // terminal rows are immutable
+        $("agents-n").textContent = `(${rows.length} active${hist.length ? ` · ${hist.length} recent` : ""})`;
+      } else if (a && !a.agentsAvailable) {
+        sectionUnavailable(box, "agent orchestration unavailable — processes still work.");
+        $("agents-n").textContent = "";
+        wrap.hidden = true;
+      }
+    }
+
+    function renderBg(p) {
+      const box = $("bgs");
+      if (p && p.background && p.background.available) {
+        const jobs = p.background.jobs || [];
+        reconcile(box, "b", jobs, bgRow, updateBgRow);
+        for (const j of jobs) renderBgOutput(box.querySelector(`[data-b="${CSS.escape(j.id)}"]`), j.id);
+        $("bg-n").textContent = `(${jobs.length})`;
+      } else if (p && p.background && !p.background.available) {
+        sectionUnavailable(box, "background tasks not loaded.");
+        $("bg-n").textContent = "";
+      }
+    }
+
+    let fgOpen = true;
+    function renderFg(p) {
+      const runBox = $("fgrun"), recBox = $("fgrecent");
+      if (fgOpen) runBox.style.display = recBox.style.display = "";
+      if (p && p.foreground && p.foreground.available) {
+        const run = p.foreground.running || [];
+        const rec = (p.foreground.recent || []).slice(0, 12);
+        reconcile(runBox, "f", run, (x) => fgRow(x, false), (el, r) => { if (el.innerHTML !== fgInner(r, false)) el.innerHTML = fgInner(r, false); });
+        reconcile(recBox, "f", rec, (x) => fgRow(x, true), (el, r) => { if (el.innerHTML !== fgInner(r, true)) el.innerHTML = fgInner(r, true); });
+        $("fg-n").textContent = `(${run.length} running · ${rec.length} recent)`;
+      } else if (p && p.foreground && !p.foreground.available) {
+        if (fgOpen) { sectionUnavailable(runBox, "foreground tools not loaded."); recBox.innerHTML = ""; }
+        $("fg-n").textContent = "";
+      }
+    }
+
+    // ---- button actions (event delegation) --------------------------------------
+    document.addEventListener("click", (e) => {
+      const b = e.target.closest("button.ctl");
+      if (!b) return;
+      e.stopPropagation(); // controls never trigger row navigation
+      const id = b.dataset.id;
+      const part = b.dataset.part;
+      if (part === "cancel") {
+        b.disabled = true;
+        api.cancel(id, true).then(() => schedulePoll()).catch(() => {});
+      } else if (part === "stop") {
+        b.disabled = true;
+        api.stop(id).then(() => schedulePoll()).catch(() => {});
+      } else if (part === "out") {
+        if (expandedBg.has(id)) expandedBg.delete(id); else expandedBg.add(id);
+        const row = b.closest("[data-b]");
+        if (row) renderBgOutput(row, id);
+        schedulePoll();
+      }
+    });
+
+    $("fg-toggle").addEventListener("click", () => {
+      fgOpen = !fgOpen;
+      $("fg-toggle").setAttribute("aria-expanded", String(fgOpen));
+      $("fg-toggle").textContent = fgOpen ? "[−]" : "[+]";
+      $("fgrun").style.display = $("fgrecent").style.display = fgOpen ? "" : "none";
+    });
+
+    // ---- polling: 2 s while visible, no overlap, backoff on failure -------------
+    let pollTimer = null, failures = 0, inFlight = false, pollPending = false;
+
+    function schedulePoll() {
+      pollPending = true; // the next tick runs early instead of at the normal cadence
+    }
+
+    async function tick(early = false) {
+      if (inFlight) { pollTimer = setTimeout(() => tick(false), 2000); return; }
+      if (document.visibilityState !== "visible") {
+        pollPending = false;
+        pollTimer = setTimeout(() => tick(false), 2000);
+        return;
+      }
+      inFlight = true;
+      try {
+        const d = await api.work();
+        failures = 0;
+        $("dot").classList.add("on");
+        $("badge").textContent = "live";
+        renderLanes(d.lanes);
+        renderAgents(d.agents);
+        renderBg(d.processes);
+        renderFg(d.processes);
+      } catch (_) {
+        $("dot").classList.remove("on");
+        $("badge").textContent = "reconnecting…";
+        failures += 1;
+      } finally {
+        inFlight = false;
+        const earlyNow = early || pollPending;
+        pollPending = false;
+        // backoff: 2 s → 4 s → 8 s → 15 s cap; reset on success; an early
+        // action (cancel/stop/output) polls in 300 ms instead
+        const wait = earlyNow ? 300 : Math.min(15000, 2000 * 2 ** Math.min(failures, 3));
+        pollTimer = setTimeout(() => tick(false), wait);
+      }
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && !inFlight && pollTimer == null) {
+        pollTimer = setTimeout(() => tick(false), 50);
+      }
+    });
+
+    tick(false);
   </script>
 </body>
 </html>

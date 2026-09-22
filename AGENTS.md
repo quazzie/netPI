@@ -12,6 +12,7 @@ static files on Kestrel `127.0.0.1:5173`.
 |---|---|
 | `docs/archive/PLAN-v1.md` | Authoritative design, §-numbered (2790 lines) — cite sections when referring to behavior |
 | `docs/plans/astra-1.md` | Completed hardening plan (P0–P6, A–F, G0–G3, H, I, 11a) |
+| `docs/plans/astra-2.md` | Implementation plan: assignment-held local lanes following AiProxy capacity, delegation/suspension, messaging, direct cloud sessions/optional cloud pools, and combined Work overview |
 | `docs/plans/responses-wire.md` | Active plan: the responses wire |
 | `docs/protocol.md` | **Deep:** Web surface & WebSocket protocol — control boundary, envelope, command/event behavior, invariants with their *why* |
 | `docs/plugin-architecture.md` | **Deep:** ALC generations, lifecycle, reload policy, leases, snapshots, native pre-load, service-id map |
@@ -64,6 +65,10 @@ plugins/                  One folder per plugin; each now holds only a `current.
                                                               (docs/web-panels.md).
                             NetPI.Nudge         cut-off guard (astra-1 follow-up): steers a run back on an
                                                               empty model turn (bounded per run); Web owns the notice.
+                            NetPI.Orchestration astra-2: agent orchestration (service "orchestration") -
+                            IAgentOrchestrator (spawn/continue/cancel, mailboxes, waits, terminal
+                            reconciliation) + agents.* tools; consumes the orchestration-store +
+                            runner through the service registry.
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
 tests/NetPI.Host.Tests/   332 xunit tests; the integration surface.
@@ -155,7 +160,7 @@ _Lifecycle, reload policy, leases, snapshots and native pre-load in depth:
   retried with `plugin.reload` after fixing its config/bytes.
 - Plugins talk only through `IPluginContext`: `Services` (id-keyed registry),
   `Commands`, `Events` (bus), `OwnConfig` (raw JSON section), `Log`.
-  Service ids: agent → `agent`, `steering`, `runner`; AutoCompact → `compaction`;
+  Service ids: agent → `agent`, `steering`, `runner`; AutoCompact → `compaction`; Sqlite also → `orchestration-store` (IOrchestrationStore, astra-2); Orchestration → `orchestration` (IAgentOrchestrator, astra-2);
   Retry → `retry`; Sqlite → `sessions`; AiProxy → `provider`, `catalog`;
   Tools → `tools`, `resolver:bash`, `resolver:powershell`; BackgroundTasks →
   `background` + `foreground-processes`; Context.Pi → `system-prompt`, `workspace-context`;
@@ -253,7 +258,7 @@ through `session.project` and the session snapshot. The instruction layer (servi
 snapshots a project's effective AGENTS text at switch time; pending changes ride on service
 `pending-projects` and survive a host restart.
 
-Server→client events: `agent.state` (Idle/Preparing/CallingModel/
+Server→client events: `agents.state` (astra-2: `{agents:[row]}` snapshot, grouped per session), `agent.updated` (astra-2: `{row}` single-assignment delta), `lanes.state` (astra-2: pool capacity snapshot) — published by NetPI.Orchestration, forwarded by Web; `agent.state` (Idle/Preparing/CallingModel/
 ExecutingTools/Compacting/Retrying/Cancelling), `assistant.started` /
 `assistant.completed` (with `usage?`), `thinking.started/delta/completed`,
 `text.delta`, `text.completed`, `tool.args` (streamed arg deltas),
@@ -339,6 +344,7 @@ changes run `npx vite build` and **reload the Web plugin** (Web UI → reload, o
 | `netpi.testplugin` | `loadFail`, `generation`, `register` |
 | `netpi.backgroundtasks` | `port` (5275) |
 | `netpi.activity` | `port` (5276) |
+| `netpi.orchestration` | `maxDelegationDepth` (3), `maxOutstandingMessagesPerAgent` |
 | `netpi.nudge` | `enabled` (default true), `maxNudges` (2), `nudgeText` |
 | `netpi.agent` | `maxConcurrentRuns` (default 1 — astra-1 E: admit more than one concurrent run across sessions; a `chat.steer` without a `sessionId` is rejected while >1 run is active) |
 | `netpi.context.pi` | (none) |

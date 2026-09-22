@@ -8,6 +8,7 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+      <ProjectReference Include="..\..\plugins\NetPI.Orchestration\NetPI.Orchestration.csproj" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\NetPI.Host\NetPI.Host.csproj" />
@@ -21,7 +22,9 @@
     <ProjectReference Include="..\..\plugins\NetPI.Diagnostics\NetPI.Diagnostics.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.BackgroundTasks\NetPI.BackgroundTasks.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Activity\NetPI.Activity.csproj" />
+    <ProjectReference Include="..\..\plugins\NetPI.Lanes\NetPI.Lanes.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Nudge\NetPI.Nudge.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Web\NetPI.Web.csproj" />
+      <ProjectReference Include="..\..\plugins\NetPI.Orchestration\NetPI.Orchestration.csproj" />
   </ItemGroup>
 </Project>

@@ -50,7 +50,7 @@ namespace NetPI.Storage.Sqlite;
 public sealed class SqliteSessionStore : ISessionStore, IDisposable
 {
     /// <summary>Highest migration version applied by this store.</summary>
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
 
     /// <summary>
     /// astra-1 B: canonical key for deduplicating project workspace paths —
@@ -126,7 +126,7 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
                 );
                 """);
 
-            foreach (var version in new[] { 1, 2, 3 })
+            foreach (var version in new[] { 1, 2, 3, 4 })
             {
                 if (IsMigrationApplied(conn, version)) continue;
 
@@ -247,6 +247,149 @@ public sealed class SqliteSessionStore : ISessionStore, IDisposable
                     """, null, tx);
                 break;
 
+            case 4:
+                // astra-2 §7: agent orchestration records (Package A persistence).
+                // All lifecycle/phase/execution-mode values are stored as their
+                // stable lower-case strings (AgentAssignmentLifecycleNames /
+                // AgentState strings) — the wire and panels never use enum ToString.
+                // Timestamps are unix milliseconds. Enforced invariants:
+                //   * agents.session_id is UNIQUE (one session per agent).
+                //   * agent_assignments enforces ONE nonterminal assignment per
+                //     session via a partial unique index (terminal rows are history).
+                ExecuteSql(conn, """
+                    CREATE TABLE IF NOT EXISTS agent_teams (
+                        id            TEXT PRIMARY KEY,
+                        title         TEXT,
+                        mode          TEXT NOT NULL,
+                        pools_json    TEXT,
+                        budgets_json  TEXT,
+                        created_at    INTEGER NOT NULL,
+                        updated_at    INTEGER NOT NULL
+                    );
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE TABLE IF NOT EXISTS agents (
+                        agent_id        TEXT PRIMARY KEY,
+                        team_id         TEXT,
+                        parent_agent_id TEXT,
+                        session_id      TEXT UNIQUE NOT NULL,
+                        title           TEXT,
+                        is_child        INTEGER NOT NULL DEFAULT 0,
+                        created_at      INTEGER NOT NULL
+                    );
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE TABLE IF NOT EXISTS agent_assignments (
+                        assignment_id   TEXT PRIMARY KEY,
+                        run_id          TEXT,
+                        agent_id        TEXT NOT NULL REFERENCES agents(agent_id),
+                        team_id         TEXT,
+                        session_id      TEXT NOT NULL,
+                        parent_agent_id TEXT,
+                        lifecycle       TEXT NOT NULL,
+                        phase           TEXT NOT NULL,
+                        execution_mode  TEXT NOT NULL,
+                        pool_id         TEXT,
+                        lane_id         TEXT,
+                        deployment_id   TEXT,
+                        model_id        TEXT,
+                        title           TEXT,
+                        brief_ref       TEXT,
+                        checkpoint_ref  TEXT,
+                        result_ref      TEXT,
+                        ready_seq       INTEGER NOT NULL DEFAULT 0,
+                        created_at      INTEGER NOT NULL,
+                        started_at      INTEGER,
+                        ended_at        INTEGER,
+                        reason          TEXT,
+                        version         INTEGER NOT NULL DEFAULT 0
+                    );
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_assignments_nonterminal
+                        ON agent_assignments(session_id)
+                        WHERE lifecycle NOT IN ('completed', 'failed', 'cancelled');
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE INDEX IF NOT EXISTS ix_assignments_agent ON agent_assignments(agent_id);
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE TABLE IF NOT EXISTS agent_waits (
+                        wait_id          TEXT PRIMARY KEY,
+                        agent_id         TEXT NOT NULL REFERENCES agents(agent_id),
+                        assignment_id    TEXT,
+                        any_all          INTEGER NOT NULL DEFAULT 0,
+                        targets_json     TEXT NOT NULL,
+                        satisfied        INTEGER NOT NULL DEFAULT 0,
+                        deadline         INTEGER,
+                        continuation_json TEXT,
+                        created_at       INTEGER NOT NULL,
+                        satisfied_at     INTEGER
+                    );
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE TABLE IF NOT EXISTS agent_messages (
+                        message_id       TEXT PRIMARY KEY,
+                        from_agent_id     TEXT NOT NULL,
+                        to_agent_id       TEXT NOT NULL,
+                        team_id           TEXT,
+                        kind              TEXT NOT NULL,
+                        body              TEXT NOT NULL,
+                        artifact_refs_json TEXT,
+                        recipient_seq     INTEGER NOT NULL,
+                        consumed          INTEGER NOT NULL DEFAULT 0,
+                        idempotency_key   TEXT,
+                        sent_at           INTEGER NOT NULL
+                    );
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_recipient_seq
+                        ON agent_messages(to_agent_id, recipient_seq);
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE INDEX IF NOT EXISTS ix_messages_to_consumed
+                        ON agent_messages(to_agent_id, consumed, recipient_seq);
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE TABLE IF NOT EXISTS agent_checkpoints (
+                        checkpoint_id     TEXT PRIMARY KEY,
+                        assignment_id     TEXT NOT NULL,
+                        agent_id          TEXT NOT NULL,
+                        schema_version    INTEGER NOT NULL,
+                        transcript_cursor INTEGER,
+                        workspace_context TEXT,
+                        project_context   TEXT,
+                        mailbox_cursor    INTEGER NOT NULL DEFAULT 0,
+                        budgets_json      TEXT,
+                        resume_json       TEXT,
+                        created_at        INTEGER NOT NULL
+                    );
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE TABLE IF NOT EXISTS agent_lane_journal (
+                        seq               INTEGER PRIMARY KEY AUTOINCREMENT,
+                        host_epoch        TEXT NOT NULL,
+                        assignment_id     TEXT NOT NULL,
+                        pool_id           TEXT,
+                        lane_id           TEXT,
+                        state             TEXT NOT NULL,
+                        created_at        INTEGER NOT NULL
+                    );
+                    """, null, tx);
+                ExecuteSql(conn, """
+                    CREATE TABLE IF NOT EXISTS agent_tasks (
+                        task_id          TEXT PRIMARY KEY,
+                        team_id          TEXT NOT NULL,
+                        title            TEXT,
+                        owner_agent_id   TEXT,
+                        status           TEXT NOT NULL,
+                        depends_on_json  TEXT,
+                        version          INTEGER NOT NULL DEFAULT 0,
+                        created_at       INTEGER NOT NULL,
+                        updated_at       INTEGER NOT NULL
+                    );
+                    """, null, tx);
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(version));
         }

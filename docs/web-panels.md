@@ -8,8 +8,7 @@ a plugin can never destabilize the chat app (`src/NetPI.Abstractions/WebUi.cs`).
 > shell contains **no hardcoded tabs**: every right-panel tab is a
 > `WebPanelDefinition` from the `ui.panels` catalog. The "diagnostics" tab
 > (with the former "plugins" view folded in) is registered by the
-> NetPI.Diagnostics plugin (PLAN §47) on its own Kestrel port, and the "background" tab by the
-> NetPI.BackgroundTasks plugin — see "Reference implementation" below.
+> NetPI.Diagnostics plugin (PLAN §47) on its own Kestrel port, and the "background" tab by the NetPI.Activity plugin (astra-2 §12: the combined **Work** panel) — see "Reference implementation" below.
 
 ## Data flow
 
@@ -42,8 +41,8 @@ web/netpi-web: ws.ts "ui.panels" → store.webPanels → RightPanel.svelte tab l
 | `plugins/NetPI.Web/WebApp.cs` | `PanelJson()` (~:1861); `ui.panels` broadcast on bootstrap (~:829), on every plugin-state change via the runner (~:407), and for `ui.panels.list` (~:1447) |
 | `plugins/NetPI.Web/WebPlugin.cs` | Registers **no** panel — the former standalone "plugins" panel was folded into the Diagnostics plugin's "Plugins" sub-tab (see Reference implementation) |
 | `plugins/NetPI.Diagnostics/` | Registers the "diagnostics" panel with an **absolute** `EntryUrl` (`http://127.0.0.1:5274/panel/diagnostics`) — the page + API live on the Diagnostics plugin's own Kestrel port; the panel includes the former "Plugins" sub-tab; the tab appears/disappears with the plugin generation |
-| `plugins/NetPI.BackgroundTasks/` | Registers the "background" panel (`http://127.0.0.1:5275/panel/background`); the page lists background jobs and stops them via same-origin `/api/bg/*` endpoints (BgWebApp.cs) |
-| `plugins/NetPI.Activity/` | Registers the "activity" panel (`http://127.0.0.1:5276/panel/activity`); runs + managed processes via same-origin `/api/activity/*` endpoints (ActivityWebApp.cs, astra-1 H) |
+| `plugins/NetPI.BackgroundTasks/` | Registers **no** panel anymore (astra-2 §12.1): it keeps process ownership, its 4 background tools, and its own Kestrel surface `GET /api/bg/jobs` + `GET /api/bg/{id}/output` + `POST /api/bg/{id}/kill` on :5275 (BgWebApp.cs), but its `panel/background.html` is no longer a registered tab |
+| `plugins/NetPI.Activity/` | Registers the combined **Work** panel — `("background", "Work", "▶", "http://127.0.0.1:{port}/panel/activity", 5)` (astra-2 §12.1); one view with Agents / Background processes / Processes (foreground) / lane summary; the page + `/api/activity/*` endpoints live on its own Kestrel port (ActivityWebApp.cs). The old `/panel/background` path still resolves (302 → `/panel/activity`). **Owns the shell↔panel navigation bridge** (see below) |
 | `web/netpi-web/src/types.ts` | `WebPanelInfo` wire type |
 | `web/netpi-web/src/store.svelte.ts` | `webPanels` state |
 | `web/netpi-web/src/ws.ts` | `case "ui.panels"` → store |
@@ -112,7 +111,7 @@ Semantics (verified in code + tests):
   (the `ui.panels` catalog) — the shell has no hardcoded tabs and no
   per-tab-id content branches; every tab renders through the same
   `<iframe src={panel.entryUrl}>` path (the catalog today: Diagnostics,
-  Background, Activity — NetPI.Web registers none, see below). Tab labels
+  Work — NetPI.Web and NetPI.BackgroundTasks register none, see below). Tab labels
   `writing-mode: vertical-rl` (see `.vertical-tab*` in `app.css`; rail width is
   `--right-rail-width: 26px` in `:root` — the `26` in `App.svelte`'s
   `shellStyle` must stay in sync).
@@ -121,9 +120,11 @@ Semantics (verified in code + tests):
   is in the catalog, else "No panels available."
 - **Guard**: an `$effect` falls back to the first catalog panel if the active
   tab disappears (e.g. a reload dropped it).
-- **Iframe semantics**: no `key` on the `<iframe>` — a catalog refresh that
-  leaves `entryUrl` unchanged does **not** reload the visible panel; switching
-  tabs away and back remounts (fresh load).
+- **Iframe semantics**: the `<iframe>` is keyed on the panel `entryUrl` — a catalog
+  refresh that leaves `entryUrl` unchanged does **not** reload the visible panel, but
+  switching tabs (or a panel swap) remounts the frame. Remounting is what re-registers
+  the new `contentWindow` with the navigation bridge (below); a stale/unmounted frame
+  can never navigate.
 - `ui.rightTab` is persisted in `localStorage` (`netpi.ui.v2`); panel width is
   clamped to 260–760 px.
 
@@ -141,21 +142,75 @@ Gotchas:
   (`WebApp.cs`, ~:256 — only when `staticRoot` is configured).
   A panel URL there only works if it matches an actual
   static file in a served root.
-- **No bridge**: no `postMessage` protocol, no shared store access, no auth.
-  What a panel page *can* do: serve its own static assets, open its own
-  `ws://127.0.0.1:5173/ws` connection and speak the §41 protocol (expect the
-  full bootstrap incl. latest-200-entries session replay; client→server
-  commands per AGENTS.md), and use `GET /api/file?path=…&sessionId=…`
-  (localhost-only).
+- **Navigation bridge (astra-2 §12.3)**: a panel may ask the shell to open a
+  session, but only through the versioned `postMessage` envelope below — the shell
+  validates the *frame* (`event.source` + `event.origin`) and the *shape* (type,
+  version, bounded session id). See "Shell↔panel navigation bridge". The page still
+  serves its own static assets and may open its own `ws://127.0.0.1:5173/ws`
+  connection and speak the §41 protocol (as before); the bridge is the *only*
+  panel→shell command channel and it is navigation-only (select/open a session —
+  never spawn, resume, cancel, or change lanes).
 - A same-origin panel page can read the shell's `localStorage` (`netpi.ui.v2`)
   — keep panel content cross-origin to preserve the isolation the design
   intends.
 
+## Shell↔panel navigation bridge (astra-2 §12.3)
+
+A cross-origin panel (today the Work panel) can navigate the shell to a session
+by activating an agent row. The protocol is a versioned `postMessage` envelope,
+checked on **both** the frame and the shape:
+
+```
+page → shell: { type: "netpi.panel.openSession", version: 1, payload: { sessionId: "…" } }
+shell → page: { type: "netpi.panel.init", version: 1 }            (one-time handshake)
+```
+
+**Frame checks (shell, `panel-bridge.ts` + `App.svelte` + `RightPanel.svelte`):**
+
+- The shell registers the **currently mounted** panel iframe's `contentWindow`
+  and its registered entry-URL origin (in `panel-bridge.setActivePanel`, driven by
+  `RightPanel`'s keyed `<iframe>` `onload` / effect-cleanup). A message is
+  accepted **only** when `event.source === that window` **and**
+  `event.origin === that registered origin`. A matching type string from any other
+  origin, a stale (unmounted) frame, or an unregistered origin is rejected.
+- The shell's origin reaches the page via a one-time `netpi.panel.init` handshake
+  posted to the registered frame — **never** `"*"`, **never** a hardcoded port.
+  The page then echoes navigation back to that exact origin only.
+
+**Shape checks (shared: `ActivityBridge.Validate` in C# = `panel-bridge.handlePanelMessage`
+in the shell):**
+
+- `netpi.panel.openSession` requires `version: 1`; `payload.sessionId` must be a
+  bounded string (≤ 128 chars, no whitespace/control chars).
+- The **legacy** Activity envelope `netpi.activity.openSession` (no version field)
+  is accepted **temporarily** with the same frame + shape checks. It is deprecated
+  (this doc) and will be removed in a later round once no old Activity page build
+  is in use.
+
+**Navigation is navigation-only.** An accepted message opens the session through
+the existing `ws.openSession` / `session.open` machinery — selecting an existing
+tab or adding a session by ID (a session absent from the loaded first-50 rows
+still opens by ID). A deleted/unknown session surfaces a small visible notice —
+the shell never silently navigates elsewhere. Row activation never spawns,
+resumes, cancels, or changes lanes.
+
+**Frontend migration (astra-2 §12.4):** the persisted right-panel tab selection
+migrates one-time `activity` → `background` (the Work panel id) in
+`ui.svelte.ts`, preserving the panel's width and open state. This is a stored
+key remap, not a hardcoded content branch.
+
+**Frontend state (astra-2 §13):** `store.assignments` tracks nonterminal
+assignments per session (from `agents.state` / `agent.updated` events); a session
+with a queued / waiting / suspended (non-live) assignment shows a tab badge
+**distinct** from the running dot. A background child session's creation is
+metadata/intent only and must not steal focus from the parent.
+
 ## Reference implementation: the panel catalog today
 
-There are exactly **three** production panels — NetPI.Web registers **no** panel
+There are exactly **two** production panels — NetPI.Web registers **no** panel
 of its own (its former standalone "plugins" panel was folded into the
-Diagnostics plugin's "Plugins" sub-tab; `WebPlugin.cs` registers nothing):
+Diagnostics plugin's "Plugins" sub-tab; `WebPlugin.cs` registers nothing), and
+NetPI.BackgroundTasks no longer registers one either (astra-2 §12.1):
 
 - `plugins/NetPI.Diagnostics/DiagnosticsPlugin.cs` — `LoadAsync` registers
   `("diagnostics", "Diagnostics", "◌", "http://127.0.0.1:{port}/panel/diagnostics", 10)`
@@ -182,27 +237,30 @@ Diagnostics plugin's "Plugins" sub-tab; `WebPlugin.cs` registers nothing):
   that WS 3 s after any drop (`hostWs.onclose`), self-healing across plugin
   reloads and host restarts; `#tab=plugins` deep-links straight to the former
   plugins view.
-- `plugins/NetPI.BackgroundTasks/` — `LoadAsync` registers
-  `("background", "Background", "▶", "http://127.0.0.1:{port}/panel/background", 5)`
-  (absolute URL; default port 5275, `plugins.netpi.backgroundtasks.port`).
-  `BgWebApp.cs` serves the embedded `panels/background.html` plus
+- `plugins/NetPI.BackgroundTasks/` — **registers no panel** (astra-2 §12.1).
+  `BgWebApp.cs` still serves the embedded `panels/background.html` plus
   `GET /api/bg/jobs`, `GET /api/bg/{id}/output?chars=` (tail of the bounded
-  output ring) and `POST /api/bg/{id}/kill`. The page polls `/api/bg/jobs`
-  every 2 s, re-points the registration at the real bound URL when port 0 is
-  used, and `location.reload()`s itself if the surface stays unreachable
-  (plugin reload / host restart) so it self-heals across generations.
-- `plugins/NetPI.Activity/` — `LoadAsync` registers
-  `("activity", "Activity", "✦", "http://127.0.0.1:{port}/panel/activity", 7)`
+  output ring) and `POST /api/bg/{id}/kill` on its own port (default 5275, `plugins.netpi.backgroundtasks.port`);
+  it keeps **process ownership** and its 4 background tools. The old
+  `panel/background.html` is no longer a registered tab — the combined Work panel
+  (below) owns that tab id now.
+- `plugins/NetPI.Activity/` — **the combined Work panel** (astra-2 §12.1).
+  `LoadAsync` registers
+  `("background", "Work", "▶", "http://127.0.0.1:{port}/panel/activity", 5)`
   (absolute URL; default port 5276, `plugins.netpi.activity.port`).
   `ActivityWebApp.cs` serves the embedded `panels/activity.html` plus
-  `GET /api/activity/agents` (run-query: all runs from every session),
-  `POST /api/activity/agents/{runId}/cancel`, `GET /api/activity/processes`
-  (background jobs + foreground shell processes),
-  `GET /api/activity/processes/background/{id}/output?chars=` and
-  `POST /api/activity/processes/background/{id}/stop`. All services are
-  resolved LAZILY — a missing Agent/BackgroundTasks/Tools plugin degrades a
-  section to "unavailable" instead of erroring, so Activity never blocks
-  chat. It is presentation-only: unloading it never touches the runs it shows.
+  `GET /api/activity/agents` (lifecycle rows + pool snapshots + monotonic revision +
+  per-service availability; legacy `runs` kept), `GET /api/activity/work` (the
+  combined poll), `POST /api/activity/agents/{id}/cancel` (orchestration contract
+  with subtree semantics; legacy runner fallback), `GET /api/activity/processes`
+  (background jobs + foreground shell processes, newest-first — no running-first
+  regrouping), `GET /api/activity/processes/background/{id}/output?chars=` (the
+  **latest** tail of the bounded ring) and
+  `POST /api/activity/processes/background/{id}/stop`. The old `/panel/background`
+  path still resolves (302 → `/panel/activity`). All services are resolved LAZILY —
+  a missing orchestration/lanes/BackgroundTasks/Tools/Agent plugin degrades the
+  relevant section to "unavailable" instead of erroring, so the panel never blocks
+  chat. It is presentation-only: unloading it never touches the work it shows.
 
 **Deploying a new NetPI.Web build:** `dotnet build` the plugin →
 `pwsh tools/publish-plugins.ps1 -Configuration Debug` → `plugin.reload` in the
@@ -215,11 +273,22 @@ the reload snapshots the new bytes as generation N+1.
 
 - `dotnet test NetPI.sln` — `WebPanelRegistryTests` covers scoped-unload and
   same-id replacement (the two core invariants).
+- `WorkPanelDataTests` / `WorkPanelBridgeTests` (astra-2 §12/§13) cover the
+  combined Work panel: agents newest-first ordering + stable id tiebreak, the
+  monotonic revision + bounded terminal history, processes newest-started-first
+  with no running-first regrouping, cancel through the orchestration contract
+  (subtree) with the legacy runner fallback, per-service independence (kill one
+  service → its section degrades, the others still serve), the **latest-tail**
+  output contract (not the tail of the first fetched chunk), the panel
+  registration (`background`/Work/order 5) + `/panel/background` 302, and the
+  bridge envelope shape (current + legacy type, version, id bounds).
 - `PluginHotSwapTests` (same suite) prove the snapshot hot-swap: load from
   snapshot, staged folder rewritable while a generation is live (reload picks
   up new bytes), prune-to-two with ALC collectibility.
 - Not covered: `ui.panels` broadcast behavior in `WebApp` (would be an
-  integration test), and end-to-end iframe rendering.
+  integration test), end-to-end iframe rendering, and the **frame** half of the
+  navigation bridge (source/origin checks live in the Svelte shell —
+  `panel-bridge.ts`; its SHAPE half is the C# `ActivityBridge` covered above).
 - The reference implementation is the Diagnostics "Diagnostics" panel (above);
   `plugins/NetPI.TestPlugin` (the reload/lease fixture, published only with
   `-IncludeTestPlugin`) is the place to add a *second*-plugin panel test if
@@ -229,11 +298,15 @@ the reload snapshots the new bytes as generation N+1.
 
 ## Known gaps (TODO for future agents)
 
-1. No iframe reload on plugin reload (stale content if `entryUrl` is unchanged;
-   the panel pages mitigate this by self-healing — the diagnostics page
-   re-opens its host WS 3 s after a drop, background/activity pages
-   `location.reload()` when their surface is unreachable — but the shell
-   iframe is not keyed on plugin generation).
-2. No shell↔panel `postMessage` bridge protocol (panels open their own `/ws`).
-3. No integration-level test for the `ui.panels` broadcast or the diagnostics
-   panel routes — registry mechanics are unit-tested.
+1. The shell iframe is keyed on the panel `entryUrl`, so a plugin reload that
+   keeps the SAME entry URL (a fixed port) does NOT force a frame reload; the
+   panel pages mitigate with self-healing (the Work page re-fetches on its 2 s
+   poll; diagnostics re-opens its host WS after a drop). A stale/unmounted frame
+   is de-registered from the navigation bridge, so it can't navigate — but the
+   frame itself is not keyed on plugin generation.
+2. No integration-level test for the `ui.panels` broadcast or the panel routes
+   beyond `WorkPanelDataTests` — registry mechanics are unit-tested.
+3. The navigation bridge's **frame** checks (source/origin) live in the Svelte
+   shell (`panel-bridge.ts`) and are not unit-tested here (no JS test runner); the
+   envelope **shape** is shared with the C# `ActivityBridge` and IS covered by
+   `WorkPanelBridgeTests`.

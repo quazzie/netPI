@@ -22,6 +22,24 @@ function load(): PersistedUi {
 const initial: PersistedUi =
   typeof localStorage === "undefined" ? {} : load();
 
+// astra-2 §12.1: one-time persisted selection migration. The combined Work
+// panel reuses the "background" tab id, so an old "activity" selection maps to
+// it. This is a data migration (width/open state are untouched); it is NOT a
+// hardcoded panel-content branch in the shell. The flag makes it one-time.
+const MIGRATION_FLAG = "netpi.migrated.workTab.v1";
+
+function savedMigrated(): boolean {
+  try { return localStorage.getItem(MIGRATION_FLAG) === "1"; } catch { return false; }
+}
+function markMigrated() {
+  try { localStorage.setItem(MIGRATION_FLAG, "1"); } catch {}
+}
+
+if (typeof localStorage !== "undefined" && initial.rightTab === "activity" && !savedMigrated()) {
+  initial.rightTab = "background";
+  markMigrated();
+  try { localStorage.setItem(KEY, JSON.stringify(initial)); } catch {}
+}
 class UiSettings {
   rightOpen = $state(initial.rightOpen ?? true);
   rightWidth = $state(initial.rightWidth ?? 330);

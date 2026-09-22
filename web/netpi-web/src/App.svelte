@@ -2,13 +2,13 @@
   import { onMount } from "svelte";
   import { store } from "./store.svelte";
   import { ui } from "./ui.svelte";
-  import { ws } from "./ws";
   import RightPanel from "./components/RightPanel.svelte";
   import HarnessHeader from "./components/HarnessHeader.svelte";
   import SessionTabs from "./components/SessionTabs.svelte";
   import ConversationViewport from "./components/ConversationViewport.svelte";
   import Composer from "./components/Composer.svelte";
   import SettingsDialog from "./components/SettingsDialog.svelte";
+  import { handlePanelMessage } from "./panel-bridge";
   import SessionPicker from "./components/SessionPicker.svelte";
   import ProjectPicker from "./components/ProjectPicker.svelte";
 
@@ -25,19 +25,16 @@
   // astra-1 C (G1 gap): the header project chip opens the project picker.
   let projectPickerOpen = $state(false);
 
-  // astra-1 H: the Activity panel (a cross-origin iframe on its own Kestrel port)
-  // posts { type:"netpi.activity.openSession", payload:{sessionId} } to the shell
-  // when the user clicks "Open" on a run. Route it through the socket so the
-  // session becomes the visible tab. We only trust the well-known type string
-  // from our own panel; an unknown/absent session is a no-op on the server.
+  // astra-2 §12.3: the combined Work panel (cross-origin iframe on its own
+  // Kestrel port) posts the versioned envelope { type:"netpi.panel.openSession",
+  // version:1, payload:{sessionId} } when the user activates an agent row. It is
+  // accepted ONLY from the currently mounted panel iframe (source + origin
+  // checked in handlePanelMessage); the legacy Activity envelope is kept
+  // temporarily with the same checks (deprecated — docs/web-panels.md). The
+  // shell derives its own origin via a one-time init handshake to the frame
+  // (RightPanel), never a hardcoded port.
   onMount(() => {
-    const onMessage = (e: MessageEvent) => {
-      const d = e.data;
-      if (!d || d.type !== "netpi.activity.openSession") return;
-      const sid = (d.payload && typeof d.payload.sessionId === "string") ? d.payload.sessionId : null;
-      if (!sid) return;
-      ws.openSession(sid).catch(() => {});
-    };
+    const onMessage = (e: MessageEvent) => { handlePanelMessage(e); };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   });
@@ -86,6 +83,13 @@
         <button aria-label="Dismiss error" onclick={() => store.setError(null)}>×</button>
       </div>
     {/if}
+    {#if store.panelNavNotice}
+      <div class="error-banner panel-nav-notice" role="status">
+        <span>⚠ {store.panelNavNotice}</span>
+        <button aria-label="Dismiss notice" onclick={() => store.setPanelNavNotice(null)}>×</button>
+      </div>
+    {/if}
+
 
     <HarnessHeader onSessions={() => (pickerOpen = true)} onProjects={() => (projectPickerOpen = true)} />
     <SessionTabs />

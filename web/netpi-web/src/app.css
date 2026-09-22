@@ -1414,6 +1414,9 @@ body.panel-resizing .app-shell { transition: none; }
 .tab-dot.running { background: #679efe; }
 .tab-dot.unread { background: #e3b341; }
 .tab-dot.running.unread { background: #e3b341; }
+/* astra-2 §13: queued/waiting/suspended — a non-live logical assignment (purple,
+   distinct from running=blue / unread=amber). */
+.tab-dot.queued { background: #b180d8; }
 .tab-close {
   display: inline-grid;
   place-items: center;

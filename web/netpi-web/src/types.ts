@@ -187,3 +187,40 @@ export interface WebPanelInfo {
   entryUrl: string;
   order: number;
 }
+
+// ---- astra-2 §12/§13: Work-panel + session-assignment state -------------------
+// The Work panel (right-panel id "background") reports these; the shell uses
+// them for tab indicators that distinguish queued/waiting/suspended from Idle.
+
+/** Documented lower-case lifecycle strings (the panel never sends enum ToString). */
+export type AgentAssignmentLifecycle =
+  | "queued" | "running" | "waiting" | "suspended" | "cancelling"
+  | "completed" | "failed" | "cancelled";
+
+/** One nonterminal assignment row as the Work panel / agents.state report it. */
+export interface AgentAssignment {
+  assignmentId: string;
+  agentId: string;
+  teamId?: string | null;
+  sessionId: string;
+  parentAgentId?: string | null;
+  lifecycle: AgentAssignmentLifecycle;
+  nonTerminal: boolean;
+  phase?: string;
+  executionMode: "pooled" | "cloud-direct";
+  poolId?: string | null;
+  laneId?: string | null;
+  modelId?: string | null;
+  title: string;
+  createdAt: number | string;
+  startedAt?: number | string | null;
+  endedAt?: number | string | null;
+  reason?: string | null;
+}
+
+/** The generic panel→shell navigation envelope (astra-2 §12.3, version 1). */
+export interface PanelOpenSessionMessage {
+  type: "netpi.panel.openSession";
+  version: 1;
+  payload: { sessionId: string };
+}

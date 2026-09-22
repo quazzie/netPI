@@ -17,7 +17,21 @@ public sealed record AgentRunRequest(
 }
 
 /// <summary>Outcome of starting a run (the run itself streams via the event bus).</summary>
-public sealed record AgentRunStart(string? SessionId, string? Note, string? RunId = null);
+/// <summary>
+/// How an accepted submission was admitted (astra-2 §13): full capacity is an
+/// ACCEPTED queue, not a rejection.
+/// </summary>
+public enum RunDisposition
+{
+    /// <summary>The segment executes now (or the deployment needs no admission).</summary>
+    Admitted = 0,
+
+    /// <summary>Accepted and persisted; awaiting capacity/pool policy. The session stays open in the UI.</summary>
+    Queued = 1,
+}
+
+/// <summary>Outcome of starting a run (the run itself streams via the event bus).</summary>
+public sealed record AgentRunStart(string? SessionId, string? Note, string? RunId = null, RunDisposition Disposition = RunDisposition.Admitted);
 
 /// <summary>
 /// Starts and cancels agent runs. Implemented by the agent plugin; resolved by

@@ -71,7 +71,7 @@ Every command is answered with an `ack` (or `error`) carrying the `requestId`;
 
 ## Server → client events
 
-`agent.state` (Idle/Preparing/CallingModel/ExecutingTools/Compacting/Retrying/
+`agents.state` (astra-2: `{agents:[row]}` assignment snapshot, grouped per session), `agent.updated` (astra-2: `{row}` single-assignment delta), `lanes.state` (astra-2: pool capacity snapshot) - published by NetPI.Orchestration, forwarded by the Web hub; `agent.state` (Idle/Preparing/CallingModel/ExecutingTools/Compacting/Retrying/
 Cancelling — the **source of truth** for run state), `assistant.started` /
 `assistant.completed` (with `usage?`), `thinking.*`, `text.delta` /
 `text.completed` (deltas coalesced 40 ms, text/thinking lanes), `tool.args`

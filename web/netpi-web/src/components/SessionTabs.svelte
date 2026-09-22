@@ -10,11 +10,16 @@
   let tabs = $derived(
     store.openTabIds.map((id) => {
       const info = store.sessions.find((s) => s.id === id);
+      // astra-2 §13: nonterminal but non-live assignments (queued / waiting /
+      // suspended / cancelling) are DISTINCT from a running agent — the tab
+      // shows a badge even though the execution phase reads Idle.
+      const nonLive = store.nonLiveAssignments(id).length;
       return {
         id,
         title: info?.title || (info?.workspace ? info.workspace : id.slice(0, 8)),
         running: store.busySessions[id] !== undefined,
         unread: !!store.unreadTabs[id],
+        queued: nonLive > 0,
         selected: store.session?.id === id,
       };
     }),
@@ -34,7 +39,7 @@
   let overflowHasSelected = $derived(
     overflowTabs.some((t) => t.selected),
   );
-  let overflowHasBusy = $derived(overflowTabs.some((t) => t.running || t.unread));
+  let overflowHasBusy = $derived(overflowTabs.some((t) => t.running || t.unread || t.queued));
 
   $effect(() => {
     // astra-1 G1: when keyboard/Home-End moves the selection into the
@@ -107,13 +112,14 @@
         class:selected={t.selected}
         role="tab"
         aria-selected={t.selected}
-        title={t.title}
+        title={t.queued ? `${t.title} — queued/waiting/suspended agent` : t.title}
         onclick={() => select(t.id)}
       >
         <span
           class="tab-dot"
           class:running={t.running}
           class:unread={t.unread}
+          class:queued={t.queued && !t.running && !t.unread}
           aria-hidden="true"></span>
         <span class="tab-title">{t.title}</span>
         <button
@@ -161,6 +167,7 @@
                   class="tab-dot"
                   class:running={t.running}
                   class:unread={t.unread}
+                  class:queued={t.queued && !t.running && !t.unread}
                   aria-hidden="true"></span>
                 <span class="tab-title">{t.title}</span>
                 <button

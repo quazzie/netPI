@@ -450,8 +450,13 @@ public sealed class BackgroundKillTool : IAgentTool
 /// <summary>
 /// The reloadable BackgroundTasks plugin (PLAN §27/§28). Registers the
 /// <see cref="IBackgroundJobManager"/> service and the background_* tools into
-/// the shared tool registry, and registers the "background" right-panel tab
-/// (docs/web-panels.md) served by its own Kestrel port (default 5275).
+/// the shared tool registry, and serves a Kestrel surface (default 5275)
+/// with /api/bg/* endpoints for its own job page.
+///
+/// astra-2 §12.1: it STOPS registering its own right-panel tab — the combined
+/// Work view is registered by NetPI.Activity (id "background") on Activity's
+/// own port. This plugin keeps process ownership, the tools and the /api/bg/*
+/// APIs; the panel registration is gone (docs/web-panels.md).
 /// </summary>
 public sealed class BackgroundTasksPlugin : INetPiPlugin
 {
@@ -460,7 +465,6 @@ public sealed class BackgroundTasksPlugin : INetPiPlugin
     private IDisposable[] _registrations = [];
     private BackgroundJobManager? _mgr;
     private BgWebApp? _app;
-    private IDisposable? _panel;
     private int _port;
     private IDisposable? _toolsWatch; // astra-1 P5: re-register when the tools registry instance is replaced
     private readonly object _reregisterGate = new(); // astra-1 P5: at most one re-registration in flight
@@ -474,18 +478,16 @@ public sealed class BackgroundTasksPlugin : INetPiPlugin
         _mgr = new BackgroundJobManager(context);
         context.Services.Register<IBackgroundJobManager>("background", _mgr);
 
-        // First-class panel registration (like Diagnostics, PLAN §47): the page
-        // and the /api/bg endpoints live on this plugin's own Kestrel port.
-        // The registration is generation-scoped, so the tab disappears with
-        // the generation even if we never dispose the handle.
+        // astra-2 §12.1: this plugin no longer registers a right-panel — the
+        // combined Work view is registered by NetPI.Activity (id "background").
+        // The /api/bg/* endpoints below stay for this plugin's own page and for
+        // tool/legacy access (docs/web-panels.md).
         var cfg = context.OwnConfig;
         int port = cfg.ValueKind == System.Text.Json.JsonValueKind.Object
                    && cfg.TryGetProperty("port", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.Number
             ? p.GetInt32() : 5275;
         _port = port;
         _app = new BgWebApp(_mgr, context.Log, port);
-        _panel = context.WebPanels.Register(new WebPanelDefinition(
-            "background", "Background", "▶", $"http://127.0.0.1:{port}/panel/background", 5));
         return ValueTask.CompletedTask;
     }
 
@@ -512,13 +514,7 @@ public sealed class BackgroundTasksPlugin : INetPiPlugin
 
         var app = _app ?? throw new InvalidOperationException("Web app not initialised.");
         await app.StartAsync(cancellationToken);
-        // Port 0 (tests): re-register over our own entry with the real bound URL.
-        if (_port == 0 && app.BoundUrl is { } url)
-        {
-            _panel?.Dispose();
-            _panel = ctx.WebPanels.Register(new WebPanelDefinition(
-                "background", "Background", "▶", url + "/panel/background", 5));
-        }
+        // astra-2: the panel moved to NetPI.Activity — nothing to re-register here.
         await ValueTask.CompletedTask;
     }
 
@@ -597,8 +593,7 @@ public sealed class BackgroundTasksPlugin : INetPiPlugin
 
     public async ValueTask UnloadAsync(CancellationToken cancellationToken)
     {
-        _panel?.Dispose();
-        _panel = null;
+        // astra-2: no panel to dispose (it moved to NetPI.Activity).
         await ValueTask.CompletedTask;
     }
 }

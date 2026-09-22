@@ -1,4 +1,5 @@
 import type {
+  AgentAssignment,
   AgentState,
   Block,
   AssistantBlock,
@@ -77,6 +78,79 @@ export class NetPIStore {
   scrollStick = $state<Record<string, boolean>>({});
   /** Per thinking-block disclosure override (block id → open/closed). */
   thinkingDisclosure = $state<Record<string, "open" | "closed">>({});
+
+  // ---- astra-2 §13: logical assignment state (queued/waiting/suspended) ------
+  /**
+   * Nonterminal assignments per session (all sessions, not just the visible
+   * one). Driven by the `agents.state` snapshot / `agent.updated` deltas. This
+   * is the source for the tab "queued/waiting/suspended" badges — DISTINCT from
+   * `busySessions` (the execution-phase AgentState, which reads Idle for a
+   * queued/suspended record).
+   */
+  assignments = $state<Record<string, AgentAssignment[]>>({});
+  /**
+   * Explicit open-session intent from a background child being created. A
+   * background child must NOT steal focus from the parent (astra-2 §13): the
+   * shell publishes child creation as metadata/intent only, and the selected
+   * conversation is replaced only by an explicit navigation (openSession).
+   */
+  pendingSessionOpen = $state<string | null>(null);
+  /**
+   * One-shot visible notice for a panel navigation that landed on a
+   * deleted/unknown session (astra-2 §12.3: never silently navigate elsewhere).
+   */
+  panelNavNotice = $state<string | null>(null);
+  setPanelNavNotice(message: string | null): void {
+    this.panelNavNotice = message;
+  }
+  setPendingSessionOpen(id: string | null): void {
+    this.pendingSessionOpen = id;
+  }
+  /** Replace the assignments for one session (snapshot / delta). */
+  setAssignments(sid: string | null, rows: AgentAssignment[]): void {
+    if (!sid) return;
+    const next = new Map<string, AgentAssignment>();
+    for (const a of this.assignments[sid] ?? []) next.set(a.assignmentId, a);
+    for (const r of rows) {
+      if (r.nonTerminal) next.set(r.assignmentId, r);
+      else next.delete(r.assignmentId); // terminal → drop from the nonterminal set
+    }
+    this.assignments[sid] = [...next.values()];
+    if (!this.assignments[sid].length) delete this.assignments[sid];
+  }
+  /**
+   * The nonterminal, non-live assignments for a session (queued / waiting /
+   * suspended / cancelling). A session with any of these shows a tab badge
+   * even though its execution-phase state is Idle.
+   */
+  nonLiveAssignments(sid: string | null): AgentAssignment[] {
+    if (!sid) return [];
+    return (this.assignments[sid] ?? []).filter(
+      (a) => a.lifecycle !== "running" && a.nonTerminal,
+    );
+  }
+  /** True when a session has a queued/waiting/suspended (non-live) assignment. */
+  hasNonLiveAssignment(sid: string | null): boolean {
+    return this.nonLiveAssignments(sid).length > 0;
+  }
+  /**
+   * Register a session in the drawer if unknown, so a Work-panel navigation to a
+   * session absent from the loaded first-50 rows can still open by ID.
+   */
+  ensureSessionVisible(info: SessionInfo): void {
+    if (this.sessions.some((s) => s.id === info.id)) {
+      this.upsertSession(info);
+      return;
+    }
+    this.sessions.unshift(info);
+  }
+
+  /** astra-2 §13: the latest lane/pool snapshot (metadata; the panel polls its own). */
+  laneSnapshot = $state<Record<string, unknown> | null>(null);
+  setLaneSnapshot(s: Record<string, unknown> | null): void {
+    this.laneSnapshot = s;
+  }
+
 
   static readonly TAB_STORAGE_KEY = "netpi.openTabs.v1";
 

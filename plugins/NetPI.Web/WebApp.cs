@@ -172,6 +172,9 @@ internal sealed class WebApp : IAsyncDisposable
         _subs.Add(_ctx.Events.Subscribe<AgentEvent>(OnAgentEvent));
         _subs.Add(_ctx.Events.Subscribe<ModelRequestDiagnostics>(OnModelDiagnostics));
         _subs.Add(_ctx.Events.Subscribe<PluginUpdateCompletedEvent>(OnPluginUpdateCompleted));
+        // astra-2 section 13: assignment/lane lifecycle (NetPI.Orchestration + lanes publish these).
+        _subs.Add(_ctx.Events.Subscribe<AgentLifecycleEvent>(OnAgentLifecycleEvent));
+        _subs.Add(_ctx.Events.Subscribe<LanesStateEvent>(OnLanesStateEvent));
 
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -414,6 +417,53 @@ internal sealed class WebApp : IAsyncDisposable
         return st is null ? "failed" : MapPluginState(st.State);
     }
 
+    /// <summary>
+    /// astra-2 section 13: forward assignment lifecycle changes to the shell.
+    /// </summary>
+    private void OnAgentLifecycleEvent(AgentLifecycleEvent ev)
+    {
+        if (ev.Rows.Count == 0) return;
+        foreach (var row in ev.Rows)
+        {
+            var json = JsonSerializer.Serialize(AgentRowDto(row));
+            SendEvent("agent.updated", new { row = JsonSerializer.Deserialize<JsonElement>(json) }, row.SessionId);
+        }
+        // One grouped snapshot per event (the shell keeps the whole board current).
+        SendEvent("agents.state", new { agents = ev.Rows.Select(AgentRowDto).ToList() }, null);
+    }
+
+    /// <summary>astra-2 section 13: forward the pool/lane capacity snapshot to the shell.</summary>
+    private void OnLanesStateEvent(LanesStateEvent ev)
+    {
+        SendEvent("lanes.state", new { pools = ev.Pools.Select(p => new
+        {
+            poolId = p.PoolId, deploymentId = p.DeploymentId, modelId = p.ModelId,
+            ownedCount = p.OwnedCount, queueCount = p.QueueCount, targetCapacity = p.TargetCapacity,
+            enabled = p.Enabled, blockReason = p.BlockReason,
+        }).ToList() }, null);
+    }
+
+    /// <summary>astra-2 section 12.2: camelCase web projection of an assignment row.</summary>
+    private static object AgentRowDto(AgentAssignmentRow r) => new
+    {
+        assignmentId = r.AssignmentId,
+        agentId = r.AgentId,
+        teamId = r.TeamId,
+        sessionId = r.SessionId,
+        parentAgentId = r.ParentAgentId,
+        lifecycle = AgentAssignmentLifecycleNames.Name(r.Lifecycle),
+        nonTerminal = r.IsNonTerminal,
+        phase = r.Phase.ToString(),
+        executionMode = r.ExecutionMode == DeploymentExecutionMode.DirectCloud ? "cloud-direct" : "pooled",
+        poolId = r.PoolId,
+        laneId = r.LaneId,
+        modelId = r.ModelId,
+        title = r.Title,
+        createdAt = r.CreatedAt,
+        startedAt = r.StartedAt,
+        endedAt = r.EndedAt,
+        reason = r.Reason,
+    };
     private void OnAgentEvent(AgentEvent e)
     {
         string? sid = e.SessionId;

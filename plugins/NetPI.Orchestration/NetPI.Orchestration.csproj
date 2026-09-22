@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Orchestration</RootNamespace>
+    <AssemblyName>netPI.Orchestration</AssemblyName>
+    <Description>astra-2: agent orchestration (service "orchestration"). IAgentOrchestrator implementation: team/agent lifecycle, spawn/continue/cancel, mailbox/wake rules, task dependencies, budget policy. Consumes the orchestration-store (NetPI.Storage.Sqlite) and the runner (NetPI.Agent) through the service registry — never their assemblies.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>NetPI.Host.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

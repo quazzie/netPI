@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Lanes</RootNamespace>
+    <AssemblyName>netPI.Lanes</AssemblyName>
+    <Description>astra-2: the lane scheduler (service "lanes"). Assignment-held lanes, pool registry, atomic admission, ownership tokens, ordered queue, explicit handoff, permit validation and pool draining. Enforces admitted agent count in netPI itself; the provider plugin only supplies capacity metadata (service "provider-capacity").</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>NetPI.Host.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

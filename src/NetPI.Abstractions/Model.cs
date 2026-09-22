@@ -30,6 +30,21 @@ public sealed record ModelInfo(
 public sealed record ModelRequest
 {
     public string ModelId { get; init; } = string.Empty;
+
+    /// <summary>
+    /// astra-2: the netPI-owned run identity for diagnostics and ownership
+    /// transitions. Informational to the provider — it is NOT a scheduling
+    /// authority and the provider must not key admission on it.
+    /// </summary>
+    public string? RunId { get; init; }
+
+    /// <summary>
+    /// astra-2 §8: the effective deployment/route binding the request was
+    /// pinned to. Chain identity must include this (or the route) so identical
+    /// model names on different backends never share a response chain.
+    /// </summary>
+    public string? DeploymentId { get; init; }
+
     public string? SessionId { get; init; }
     public IReadOnlyList<AgentMessage> Messages { get; init; } = [];
     public IReadOnlyList<ToolDefinition> Tools { get; init; } = [];

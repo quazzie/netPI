@@ -15,6 +15,14 @@ public sealed record AgentRunOptions
     public string? ReasoningLevel { get; init; }
     /// <summary>astra-1 E: the run's id — stamped onto this run's events.</summary>
     public string? RunId { get; init; }
+
+    /// <summary>
+    /// astra-2: the deployment/route binding this run was pinned to (trusted
+    /// config, never the model). Stamped onto the ModelRequest so the provider
+    /// can key chain/ownership identity on it; informational to the provider.
+    /// </summary>
+    public string? DeploymentId { get; init; }
+
     /// <summary>Session workspace (PLAN §18/§25): tool paths + shell cwd.</summary>
     public string? Workspace { get; init; }
     public float? Temperature { get; init; }
@@ -245,6 +253,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                     Tools = tools?.All().Select(t => new ToolDefinition(t.Name, t.Description, t.Parameters)).ToList() ?? [],
                     Temperature = options.Temperature,
                     ReasoningLevel = options.ReasoningLevel,
+                    RunId = options.RunId,
+                    DeploymentId = options.DeploymentId,
                 };
 
                 AgentMessage? assistant = null;
@@ -564,7 +574,9 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
         // ModelStreamEvent kind "tool-output-chunk" for each chunk; WebApp
         // forwards them as WS tool.output { append: true }.
         var toolStream = new ProgressiveToolStream(this, options, call);
-        var toolCtx = new ToolContext(call.Arguments, workspace, options.SessionId, toolStream);
+        // astra-2: the tool sees the TRUSTED run/session identity (stamped by the
+        // runtime from the run, never parsed from model arguments).
+        var toolCtx = new ToolContext(call.Arguments, workspace, options.SessionId, toolStream, options.RunId);
         try
         {
             var res = await tool.ExecuteAsync(toolCtx, ct);

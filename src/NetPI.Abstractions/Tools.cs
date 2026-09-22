@@ -69,8 +69,19 @@ public sealed record ToolContext(
     JsonElement Arguments,
     string Workspace,
     string? SessionId,
-    IToolStream? Stream)
+    IToolStream? Stream,
+    string? RunId = null,
+    string? AgentId = null,
+    string? TeamId = null)
 {
+    /// <summary>
+    /// astra-2 §3.3: the TRUSTED execution identity supplied by the runtime —
+    /// never from model arguments. <see cref="SessionId"/>/RunId/AgentId/
+    /// TeamId (all optional for pre-orchestration runs) are the only caller
+    /// identity a tool may act with; a tool may NAME a target but cannot
+    /// impersonate it.
+    /// </summary>
+
     /// <summary>Resolve a path against the session workspace; absolute paths pass through.</summary>
     public string ResolvePath(string? p) =>
         string.IsNullOrEmpty(p) ? Workspace

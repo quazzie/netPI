@@ -1,5 +1,6 @@
 import { store, NetPIStore, REVEAL_INITIAL, REVEAL_STEP } from "./store.svelte";
 import type {
+  AgentAssignment,
   AgentState,
   ModelInfo,
   PluginStatus,
@@ -203,6 +204,34 @@ class NetPIWebSocket {
         if (isCurrent(sid) || nav(sid))
           store.applyAgentState(p.state as AgentState);
         break;
+
+      // astra-2 §13: assignment/lane lifecycle events. The Work panel polls its
+      // own Kestrel surface; these keep the SHELL aware (tab badges + capacity).
+      case "agents.state": {
+        const rows = (p.agents ?? (Array.isArray(p) ? p : [])) as AgentAssignment[];
+        const bySession = new Map<string, AgentAssignment[]>();
+        for (const r of rows) {
+          if (r?.sessionId && r?.assignmentId) {
+            const list = bySession.get(r.sessionId) ?? [];
+            list.push(r);
+            bySession.set(r.sessionId, list);
+          }
+        }
+        for (const [s, list] of bySession) store.setAssignments(s, list);
+        break;
+      }
+
+      case "agent.updated": {
+        const row = (p.row ?? p) as AgentAssignment | null;
+        if (row?.sessionId && row?.assignmentId) store.setAssignments(row.sessionId, [row]);
+        break;
+      }
+
+      case "lanes.state": {
+        store.setLaneSnapshot(p as Record<string, unknown>);
+        break;
+      }
+
 
       case "session.created":
       case "session.updated": {

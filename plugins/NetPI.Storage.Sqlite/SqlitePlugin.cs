@@ -30,9 +30,15 @@ public sealed class SqlitePlugin : INetPiPlugin
         context.Services.Register<IProjectStore>("projects", projects);
         // astra-1 D2: pending project changes (a selection made while a session’s
         // run is in flight). The table is DDL-owned by SqliteSessionStore (v3);
-        // like the other stores it is NOT disposed on Stop — the registry holds it.
+        // Like the other stores it is NOT disposed on Stop — the registry holds it.
         context.Services.Register<IPendingProjectChangeStore>("pending-projects",
             new PendingProjectChangeStore(path));
+        // astra-2 §7: agent-orchestration persistence (agents/assignments/mailboxes/
+        // waits/checkpoints/lane-journal). DDL is owned by SqliteSessionStore (v4);
+        // the orchestration plugin consumes this through the registry, never the
+        // storage assembly.
+        context.Services.Register<IOrchestrationStore>("orchestration-store",
+            new SqliteOrchestrationStore(path));
         context.Log.Information($"Storage ready at {path}");
         await ValueTask.CompletedTask;
     }

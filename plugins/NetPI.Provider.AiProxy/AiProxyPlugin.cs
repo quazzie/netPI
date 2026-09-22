@@ -29,8 +29,14 @@ public sealed class AiProxyPlugin : INetPiPlugin
 
         var wire = Str(context.OwnConfig, "wire");
         _provider = new AiProxyProvider(_http, baseUrl, context.Log, string.IsNullOrEmpty(wire) ? "auto" : wire, context.Events);
+        _provider = new AiProxyProvider(_http, baseUrl, context.Log, string.IsNullOrEmpty(wire) ? "auto" : wire, context.Events);
         context.Services.Register<IModelProvider>("provider", _provider);
         context.Services.Register<IModelCatalog>("catalog", _provider);
+        // astra-2: the Follow-AiProxy capacity source (service "provider-capacity")
+        // — metadata polling only; the NetPI.Lanes scheduler consumes it and
+        // enforces admission in netPI itself (astra-2 §5.3).
+        context.Services.Register<IProviderCapacitySource>("provider-capacity",
+            new AiProxyCapacitySource(_http, baseUrl, context.Log));
         context.Log.Information($"AiProxy provider configured (baseUrl={baseUrl})");
 
         // Best-effort initial catalog refresh; failures are non-fatal (the UI

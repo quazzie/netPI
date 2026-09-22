@@ -4,16 +4,24 @@ using NetPI.Abstractions;
 namespace NetPI.Activity;
 
 /// <summary>
-/// astra-1 H: the Activity plugin (PLAN §10). Registers the "Activity"
-/// right-panel tab — ONE view with two sections: <b>Agents</b> (runs from every
-/// session, via the run-query service) and <b>Processes</b> (background jobs +
-/// foreground shell commands). It CONSUMES the other plugins' services through
-/// Abstractions only (no ALC references) and never owns or terminates agent
-/// runtimes when it unloads — it presents and, at most, signals a cancel.
+/// astra-2 §12 (package E): the combined Work panel. Replaces the separate
+/// "Activity" panel — NetPI.Activity is the presentation owner of the one
+/// **Work** view (id `background`, title "Work", order 5): Agents (all
+/// nonterminal assignments across every session/team + bounded terminal
+/// history), Background processes, Processes (foreground) and a compact lane
+/// summary, served from this plugin's own Kestrel port (/panel/activity).
+/// The old /panel/background endpoint still resolves (302 → /panel/activity).
+/// NetPI.BackgroundTasks keeps process ownership, tools and /api/bg/* on its
+/// own port but no longer registers a panel.
 ///
-/// Missing BackgroundTasks / Tools / Agent plugins do not prevent normal chat:
-/// each service is resolved lazily and a null is surfaced as "unavailable" in
-/// the relevant section, not an error.
+/// It CONSUMES the other plugins' services through Abstractions only (no ALC
+/// references) and never owns or terminates agent runtimes when it unloads —
+/// it presents and, at most, signals a cancel through the orchestration
+/// contract.
+///
+/// Missing orchestration/lanes/BackgroundTasks/Tools/Agent plugins do not
+/// prevent normal chat: each service is resolved lazily and a null is surfaced
+/// as "unavailable" in the relevant section, not an error.
 /// </summary>
 public sealed class ActivityPlugin : INetPiPlugin
 {
@@ -35,7 +43,7 @@ public sealed class ActivityPlugin : INetPiPlugin
         // registration is generation-scoped, so the tab disappears with the
         // generation even if we never dispose the handle.
         _panel = context.WebPanels.Register(new WebPanelDefinition(
-            "activity", "Activity", "✦", $"http://127.0.0.1:{port}/panel/activity", 7));
+            "background", "Work", "▶", $"http://127.0.0.1:{port}/panel/activity", 5));
         return ValueTask.CompletedTask;
     }
 
@@ -49,7 +57,7 @@ public sealed class ActivityPlugin : INetPiPlugin
         {
             _panel?.Dispose();
             _panel = ctx.WebPanels.Register(new WebPanelDefinition(
-                "activity", "Activity", "✦", url + "/panel/activity", 7));
+                "background", "Work", "▶", url + "/panel/activity", 5));
         }
         ctx.Log.Information($"Activity surface listening on {app.BoundUrl ?? $"http://127.0.0.1:{_port}"}");
     }

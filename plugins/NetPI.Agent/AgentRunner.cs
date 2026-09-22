@@ -27,12 +27,40 @@ public sealed class AgentRunner : IAgentRunner
     /// keeps its original workspace), serialized per session with the send
     /// path (shared gates).</summary>
     private readonly RunnerSafeBoundary _boundary;
+
+    /// <summary>
+    /// astra-2 §3/§4: a Pooled deployment is admitted through the lane scheduler
+    /// (service <c>lanes</c>) and its model→pool policy comes from the deployment
+    /// resolver (service <c>deployments</c>). Both are optional: absent services
+    /// mean "no pool bound this model" → the legacy direct-execution path
+    /// governed by the runner's own capacity. Resolved once at construction
+    /// (the host service registry is global and load-order independent — a
+    /// plugin resolves its cross-plugin peers lazily).
+    /// </summary>
+    private readonly NetPI.Abstractions.ILaneScheduler? _lanes;
+    private readonly NetPI.Abstractions.IDeploymentPolicySource? _deployments;
+
+    /// <summary>astra-2: accepted-but-QUEUED runs (persisted, awaiting capacity) — no live segment yet.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, QueuedRun> _queuedRuns = new();
+
+    /// <summary>astra-2: a queued (not yet started) accepted run.</summary>
+    private sealed record QueuedRun(AgentRunRequest Request, CancellationToken Cts);
+
+    /// <summary>astra-2 §4: every execution task (runId → segment), not just the legacy _runTask.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task> _runTasks = new();
+
     public AgentRunner(AgentRuntime runtime, IPluginContext ctx, int maxConcurrentRuns = 1)
     {
         _runtime = runtime;
         _ctx = ctx;
         _maxConcurrentRuns = Math.Max(1, maxConcurrentRuns);
         _boundary = new RunnerSafeBoundary(ctx);
+        _lanes = Resolve<NetPI.Abstractions.ILaneScheduler>("lanes");
+        _deployments = Resolve<NetPI.Abstractions.IDeploymentPolicySource>("deployments");
+        // astra-2 §3.1: when the scheduler supports the admission sink, subscribe
+        // so a queued segment starts the moment its lane frees (FIFO).
+        if (_lanes is NetPI.Abstractions.ILaneAdmissionSink sink)
+            sink.OnAdmittedFromQueue(OnLaneAdmitted);
     }
 
     /// <summary>astra-1 D2 (slice 2): the per-session gate the send path
@@ -119,6 +147,7 @@ public sealed class AgentRunner : IAgentRunner
         public string RunId => _runId;
         /// <summary>astra-1 E: the session this run belongs to (null for ad-hoc runs).</summary>
         public string? SessionId => _sessionId;
+        public string? ModelId => _modelId;
         private readonly string _runId = runId;
         private readonly string? _sessionId = sessionId;
         private readonly string? _modelId = modelId;
@@ -128,6 +157,12 @@ public sealed class AgentRunner : IAgentRunner
         public DateTimeOffset? EndTime { get; set; }
         /// <summary>The runtime state a completed/cancelled/failed run reflects.</summary>
         public AgentState State { get; set; } = AgentState.Preparing;
+
+        /// <summary>astra-2: the lane token this segment holds (Pooled deployments only). Released once on drain.</summary>
+        public NetPI.Abstractions.LaneOwnershipToken? LaneToken { get; set; }
+
+        /// <summary>astra-2: this run's pool + deployment binding (null for direct execution).</summary>
+        public (string PoolId, string DeploymentId)? LaneBinding { get; set; }
 
         public RunInfo Info => new(_runId, _sessionId, _modelId, State, _start, EndTime, Outcome);
     }
@@ -149,17 +184,56 @@ public sealed class AgentRunner : IAgentRunner
         RunRecord rec = null!;
         try
         {
+            bool sessionBusy = false;
+            bool capacityFull = false;
             lock (_gate)
             {
             if (!string.IsNullOrEmpty(request.SessionId) &&
                 _runs.Values.Any(r => r.SessionId == request.SessionId && r.Outcome == RunState.Running))
-                return new AgentRunStart(request.SessionId, "This session already has an active run.");
+                sessionBusy = true;
             var active = _runs.Values.Count(r => r.Outcome == RunState.Running);
             if (active >= _maxConcurrentRuns)
-                return new AgentRunStart(request.SessionId, "All concurrent runs are busy.");
+                capacityFull = true;
             var runId = Guid.NewGuid().ToString("n");
             rec = new RunRecord(runId, request.SessionId, request.ModelId, DateTimeOffset.UtcNow, new CancellationTokenSource());
             _runs[runId] = rec;
+            }
+
+            // astra-2 §4/§13: admission by deployment policy, decided OUTSIDE the
+            // lock (a pooled model may await the lane scheduler; a direct model
+            // is governed only by the runner's own capacity). A Pooled deployment
+            // that cannot be admitted is ACCEPTED + QUEUED (full capacity is a
+            // queue, never a rejection); a Direct deployment at runner capacity
+            // is still refused (the pre-lane behavior).
+            var policy = _deployments?.PolicyFor(request.ModelId ?? string.Empty);
+            var disposition = RunDisposition.Admitted;
+            string? queueReason = null;
+            if (!sessionBusy && !capacityFull)
+            {
+                if (policy is { RequiresLane: true })
+                {
+                    if (_lanes is null)
+                    { disposition = RunDisposition.Queued; queueReason = "no lane scheduler available"; }
+                    else
+                    {
+                        var entry = new LaneQueueEntry(
+                            rec.RunId, policy.PoolId!, policy.DeploymentId, 0,
+                            null, rec.RunId, request.SessionId,
+                            request.Text.Length <= 48 ? request.Text : request.Text[..48],
+                            DateTimeOffset.UtcNow);
+                        var result = await _lanes.AcquireAsync(entry);
+                        if (result.Token is not null)
+                        {
+                            rec.LaneToken = result.Token;
+                            rec.LaneBinding = (policy.PoolId!, policy.DeploymentId);
+                        }
+                        else
+                        {
+                            disposition = RunDisposition.Queued;
+                            queueReason = result.BlockedReason;
+                        }
+                    }
+                }
             }
 
         // Persist the initial user entry (the agent runtime does not persist
@@ -179,23 +253,89 @@ public sealed class AgentRunner : IAgentRunner
             }
             catch (Exception ex)
             {
-                lock (_gate)
-                {
-                    rec.Outcome = RunState.Failed;
-                    rec.EndTime = DateTimeOffset.UtcNow;
-                    rec.Cts.Dispose();
-                    ((System.Collections.Generic.IDictionary<string, RunRecord>)_runs).Remove(rec.RunId);
-                }
+                await ReleaseLaneAsync(rec);
+                RemoveRun(rec);
                 return new AgentRunStart(request.SessionId, $"Failed to persist the message: {ex.Message}");
             }
         }
 
-            _runTask = Task.Run(() => ExecuteAsync(request, rec));
-            return new AgentRunStart(request.SessionId, null, rec.RunId);
+        // astra-2 §3.1: the admission OUTCOME decides what happens next.
+        if (sessionBusy)
+        {
+            await ReleaseLaneAsync(rec);
+            RemoveRun(rec);
+            return new AgentRunStart(request.SessionId, "This session already has an active run.");
+        }
+        if (disposition == RunDisposition.Queued)
+        {
+            // Accepted + QUEUED: stored as durable work (a record, not a live
+            // task) that starts ONLY when its lane frees (astra-2 §3.1/§5.1).
+            _queuedRuns[rec.RunId] = new QueuedRun(request, rec.Cts.Token);
+            return new AgentRunStart(request.SessionId,
+                string.IsNullOrEmpty(queueReason) ? "Queued: waiting for a free lane."
+                                                 : $"Queued: {queueReason}.",
+                rec.RunId, RunDisposition.Queued);
+        }
+        if (capacityFull)
+        {
+            // A Direct model at the runner's own capacity is still refused
+            // (the pre-lane behavior — astra-2 §11: direct bypasses lanes).
+            RemoveRun(rec);
+            return new AgentRunStart(request.SessionId, "All concurrent runs are busy.");
+        }
+
+        // Admitted (direct, or a pooled model that got a lane token NOW): run it.
+        _runTasks[rec.RunId] = Task.Run(() => ExecuteAsync(request, rec));
+        _runTask = _runTasks[rec.RunId];
+        return new AgentRunStart(request.SessionId, null, rec.RunId);
         }
         finally
         {
             sessionGate?.Release();
+        }
+    }
+
+    /// <summary>astra-2: release a run's lane token (idempotent no-op when none) — the
+    /// ownership authority returns to the scheduler so the queue advances.</summary>
+    private async Task ReleaseLaneAsync(RunRecord rec)
+    {
+        if (rec.LaneToken is not { } token || _lanes is null) return;
+        rec.LaneToken = null;
+        try { await _lanes.ReleaseAsync(token); }
+        catch { /* a failed release never strands a run; the scheduler fences it */ }
+    }
+
+    /// <summary>astra-2: drop an unstarted run record (and any queued placeholder).</summary>
+    private void RemoveRun(RunRecord rec)
+    {
+        lock (_gate)
+        {
+            rec.Cts.Dispose();
+            ((System.Collections.Generic.IDictionary<string, RunRecord>)_runs).Remove(rec.RunId);
+            if (_runTask is not null && !ReferenceEquals(_runTask, Task.CompletedTask))
+            { /* _runTask is only set for started runs */ }
+        }
+        _queuedRuns.TryRemove(rec.RunId, out _);
+    }
+
+    /// <summary>
+    /// astra-2 §3.1: the ONLY trigger that starts a stored queued segment — the
+    /// scheduler fires it (outside its own gate) the instant a queued lane is
+    /// admitted. A queued record holds NO live task; this pop-then-starts it.
+    /// </summary>
+    private void OnLaneAdmitted(LaneOwnershipToken token)
+    {
+        if (token is null) return;
+        if (!_queuedRuns.TryGetValue(token.RunId, out var queued)) return;
+        if (!_queuedRuns.TryRemove(token.RunId, out _)) return;
+        lock (_gate)
+        {
+            if (!_runs.TryGetValue(token.RunId, out var rec)) return;
+            rec.LaneToken = token;
+            var pol = _deployments?.PolicyFor(rec.ModelId ?? string.Empty);
+            rec.LaneBinding = pol?.RequiresLane == true ? (pol.PoolId!, pol.DeploymentId) : rec.LaneBinding;
+            _runTask = Task.Run(() => ExecuteAsync(queued.Request, rec));
+            _runTasks[token.RunId] = _runTask;
         }
     }
 
@@ -301,6 +441,17 @@ public sealed class AgentRunner : IAgentRunner
                 cts.Dispose();
                 _runTask = null;
             }
+
+            // astra-2 §5.1: the segment has drained (model unwound / tool batch
+            // finished or cancelled) — return the lane to the scheduler so the
+            // FIFO queue can admit the next assignment. Release OUTSIDE the lock
+            // (it awaits the scheduler's own gate). Idempotent: a double release
+            // or a stale epoch is a no-op, never an error.
+            if (run.LaneToken is not null)
+                await ReleaseLaneAsync(run);
+
+            // astra-2 §4: the execution task is done; drop it from the registry.
+            _runTasks.TryRemove(run.RunId, out _);
 
             // astra-1 A: exactly one terminal outcome per accepted run —
             // completed, cancelled or FAILED (a crashed loop must not be
