@@ -15,8 +15,8 @@ namespace NetPI.Host.Tests;
 /// <c>CreateDeliveryCancellationToken</c> links the client-lifetime + operation
 /// tokens plus a bounded delivery timeout (a dead / non-reading client times out
 /// instead of holding the send forever). Per-client ordering is preserved by the
-/// per-socket gate inside <c>Client</c> (not the fan-out), so ordering is not
-/// disturbed by the concurrency.
+/// FIFO outbox + single writer inside <c>Client</c> (astra-2) — the fan-out only
+/// enqueues, so ordering is independent of task scheduling.
 /// </summary>
 public sealed class OutboundBackpressureTests
 {

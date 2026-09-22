@@ -656,6 +656,136 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task WireOrdering_ManyDeltas_AllPrecedeCompleted()
+    {
+        // astra-2: the captured flake was text.completed racing AHEAD of the
+        // timer flush's text.delta — two fire-and-forget fan-out tasks took the
+        // per-socket gate out of emission order, so a text.delta could land on
+        // the wire AFTER the text.completed that belonged to it. The per-client
+        // FIFO outbox makes wire order == emission order: the forced boundary
+        // flush enqueues text.delta BEFORE text.completed (outbox is drained in
+        // enqueue order by ONE writer), so on a single socket every text.delta
+        // frame arrives before text.completed, and the delta frames concatenate
+        // exactly to the terminal text (no reorder, no loss, no double-emit).
+        //
+        // Connect with an EMPTY store so the bootstrap replays nothing; there is
+        // no session.open, so there is NO snapshot channel — every byte travels
+        // as a live text.delta frame. That is the pure shape of the original
+        // flake and keeps the test deterministic (no snapshot-fold timing).
+        var store = _sessions!;
+        store.Entries.Clear();
+        store.Sessions.Clear();
+        var ws = await ConnectAsync();
+
+        await StreamEventAsync(_ctx!, "s1", "model-started");
+        for (var i = 0; i < 50; i++)
+            await StreamEventAsync(_ctx!, "s1", "text-delta", $"d{i} ");
+        // Several 20 ms windows must have fired timer flushes: force them.
+        await Task.Delay(120);
+        await StreamEventAsync(_ctx!, "s1", "model-completed");
+
+        // Read until the terminal text.completed arrives; on this one socket the
+        // outbox guarantees every text.delta precedes it.
+        var deltas = new List<string>();
+        string? completed = null;
+        while (completed is null)
+        {
+            var msg = await ReceiveMessageAsync(ws);
+            if (msg is null) break;
+            using var doc = JsonDocument.Parse(msg);
+            var type = doc.RootElement.GetProperty("type").GetString();
+            if (type == "error")
+                Assert.Fail("unexpected error: " + doc.RootElement.GetProperty("payload").ToString());
+            if (type == "text.delta")
+                deltas.Add(doc.RootElement.GetProperty("payload").GetProperty("text").GetString() ?? "");
+            else if (type == "text.completed")
+                completed = doc.RootElement.GetProperty("payload").GetProperty("text").GetString();
+        }
+        Assert.NotNull(completed);
+        Assert.True(deltas.Count > 0, "the forced boundary flush must emit at least one text.delta");
+        Assert.Equal(string.Concat(deltas), completed);
+    }
+
+    [Fact]
+    public async Task Snapshot_InFlightTurn_TextDeliveredExactlyOnce()
+    {
+        // astra-2: session.open folds the batcher's unflushed text into the
+        // streaming snapshot; a timer flush MID-DRAIN (Draining=true) or a stale
+        // timer callback must NOT re-emit it — the captured double-emit race
+        // that would have appended the same words again as live text.delta
+        // frames. Every word must appear EXACTLY ONCE across the whole wire
+        // (pre-open live deltas + snapshot + post-open live deltas), and the
+        // terminal text.completed must equal that concatenation.
+        var store = _sessions!;
+        store.Entries.Clear();
+        store.Sessions.Clear();
+        var ws = await ConnectAsync();
+        store.Entries["s1"] = [new SessionEntry("e1", "s1", EntryKind.Message,
+            new AgentMessage("m1", MessageRole.User, new MessagePart[] { new TextPart("hi") }, DateTimeOffset.UtcNow),
+            null, DateTimeOffset.UtcNow, 1)];
+        store.Sessions["s1"] = new SessionInfo("s1", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1, "t");
+
+        await StreamEventAsync(_ctx!, "s1", "model-started");
+        // A burst right before the open maximizes the chance the 20 ms timer is
+        // mid-drain when the snapshot folds.
+        for (var i = 0; i < 20; i++)
+            await StreamEventAsync(_ctx!, "s1", "text-delta", $"wq{i}z ");
+        await SendCommandAsync(ws, "session.open", new() { ["sessionId"] = "s1" });
+
+        // Read frames directly (not AwaitAsync) so pre-open live deltas count too.
+        string? snapshot = null;
+        var preOpen = new List<string>();
+        while (snapshot is null)
+        {
+            var msg = await ReceiveMessageAsync(ws);
+            Assert.NotNull(msg);
+            using var doc = JsonDocument.Parse(msg!);
+            var type = doc.RootElement.GetProperty("type").GetString();
+            if (type == "error")
+                Assert.Fail("unexpected error: " + doc.RootElement.GetProperty("payload").ToString());
+            if (type == "text.delta")
+                preOpen.Add(doc.RootElement.GetProperty("payload").GetProperty("text").GetString() ?? "");
+            else if (type == "session.entries")
+            {
+                var payload = doc.RootElement.GetProperty("payload");
+                Assert.True(payload.TryGetProperty("streaming", out var s) && s.ValueKind != JsonValueKind.Null,
+                    "expected a streaming snapshot for the in-flight turn");
+                snapshot = s.GetProperty("text").GetString() ?? "";
+            }
+        }
+        Assert.True(snapshot.Length > 0, "snapshot must carry the in-flight text");
+
+        for (var i = 0; i < 5; i++)
+            await StreamEventAsync(_ctx!, "s1", "text-delta", $"x{i} ");
+        await StreamEventAsync(_ctx!, "s1", "model-completed");
+
+        var postOpen = new List<string>();
+        string? completed = null;
+        while (completed is null)
+        {
+            var msg = await ReceiveMessageAsync(ws);
+            Assert.NotNull(msg);
+            using var doc = JsonDocument.Parse(msg!);
+            var type = doc.RootElement.GetProperty("type").GetString();
+            if (type == "error")
+                Assert.Fail("unexpected error: " + doc.RootElement.GetProperty("payload").ToString());
+            if (type == "text.delta")
+                postOpen.Add(doc.RootElement.GetProperty("payload").GetProperty("text").GetString() ?? "");
+            else if (type == "text.completed")
+                completed = doc.RootElement.GetProperty("payload").GetProperty("text").GetString();
+        }
+
+        var total = string.Concat(preOpen) + snapshot + string.Concat(postOpen);
+        for (var i = 0; i < 20; i++)
+            Assert.True(total.Split($"wq{i}z ").Length == 2,
+                $"wq{i}z delivered more than once: {total}");
+        for (var i = 0; i < 5; i++)
+            Assert.True(total.Split($"x{i} ").Length == 2,
+                $"x{i} delivered more than once: {total}");
+        Assert.Equal(total, completed);
+    }
+
+    [Fact]
     public async Task SessionOpen_NoInFlightTurn_NoStreamingField()
     {
         // Empty-store connect (no bootstrap replay), then seed.

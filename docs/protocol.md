@@ -96,12 +96,20 @@ search response carries `query` in its payload and is the one to await.
   model turn inside the same assistant message.
 - **The client never treats `assistant.completed` as idle** — `agent.state` is
   the only idle signal.
-- **Outbound fan-out is concurrent** (§11a F): one non-reading client cannot
-  stall the others. Each delivery is gated by a token linked to the client
-  lifetime + the operation + a bounded send timeout (`DeliveryTimeoutMs` = 5 s),
-  so a dead client times out instead of holding the send. Per-client ordering
-  is preserved by the per-socket write gate (`_sendGate` in `Client`); a dropped
-  delivery resyncs on the next full broadcast.
+- **Outbound fan-out is concurrent** (§11a F, astra-2): one non-reading client
+  cannot stall the others. Every client-directed send is enqueued to that client's
+  unbounded outbox (O(1), never blocks the publisher), and a SINGLE writer per
+  connection drains it in FIFO order — so per-client wire order equals enqueue
+  order, independent of task scheduling (the old per-socket `_sendGate` only
+  serialized writes, it did not order them; two fire-and-forget fan-out tasks
+  could take it out of emission order — the captured `text.completed`-before-
+  `text.delta` flake). Each send is gated by a token linked to the client
+  lifetime + a bounded delivery timeout (`DeliveryTimeoutMs` = 5 s), so a dead
+  client times out instead of holding the queue. Dropped deliveries resync on
+  the next full broadcast. DRAIN ORDERING: delta flushes enqueue their events
+  while holding the per-session batcher gate, and boundary events flush
+  synchronously on the publishing thread — so every `text.delta` of a drain
+  precedes the `text.completed` a boundary emits next, on every client.
 - **Reloaded services re-resolve**: after a plugin reload completes the Web
   surface re-resolves runner/agent/catalog/steering/compaction (`RefreshReloadableServices`),
   because the host registry removes the old generation's services. Consumers of
@@ -112,7 +120,9 @@ search response carries `query` in its payload and is the one to await.
   subsequent event from a non-owning run is dropped — a stale/cancelled run's
   tail cannot bleed into a new run's stream.
 - **Per-client ordering survives concurrent fan-out** because each `Client`
-  serializes its own writes; concurrency is across clients, never within one.
+  owns a FIFO outbox drained by one writer (astra-2); concurrency is across
+  clients, never within one. Drains and boundary events enqueue in gate order,
+  so the wire is deltas-then-completed even when two tasks publish.
 - **A disabled direct-cloud deployment is rejected BEFORE inference** (astra-2 §11.2): the runner asks the trusted policy source (`deployments`) for the model's execution mode; a `DirectCloud` deployment recorded as disabled refuses the request with an actionable note and the provider is never called — no paid call even while the local queues are full. The same gate is enforced at the provider by the `cloud-gate` reservation: a direct-cloud model no team's budget policy claims has no budget, so the reservation is denied before the request goes on the wire.
 - **Full capacity is an accepted queue, not a rejection** (astra-2 §13/§16): a `chat.send` that cannot admit a lane persists a durable `Queued` assignment and ACKs — it never fails with "all concurrent runs busy". The `Queued` row is the source of truth the UI reads (tab badge via `agents.state`/`agent.updated`); the run executes NOTHING until the lane scheduler admits it from the queue, and a queued record is cancelable by `agent.cancel` (runner + lane queue purged) before it ever starts. Only validation/policy/queue-limit errors surface as `error` frames.
 - **The Work panel reads, never drives** (astra-2 §12): `GET /api/activity/*` are presentation-only query surfaces on the Activity plugin's own Kestrel port; the only stateful surface is `POST /api/activity/agents/{id}/cancel`, which delegates to the orchestration contract (subtree semantics) with a legacy runner fallback.

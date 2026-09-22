@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
+using System.Threading.Channels;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -142,7 +143,16 @@ internal sealed class WebApp : IAsyncDisposable
     {
         public readonly object Gate = new();
         public readonly System.Collections.Generic.Dictionary<string, System.Text.StringBuilder> Buffers = new();
+        /// <summary>The 20 ms delayed flush owning the current window, or null.</summary>
         public Task? Pending;
+        /// <summary>The CTS behind <see cref="Pending"/> — every drain path cancels it
+        /// so at most ONE drain (timer or forced) ever captures a buffer.</summary>
+        public CancellationTokenSource? PendCts;
+        /// <summary>A drain (timer or forced boundary) is MID-WAY — buffer captured,
+        /// events enqueued, not yet released. A snapshot polling under the gate sees
+        /// this and waits until the release, so the same text is delivered exactly
+        /// once across snapshot + live frames (folded OR enqueued — never both).</summary>
+        public bool Draining;
     }
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DeltaBatcher> _batchers = new();
 
@@ -721,7 +731,20 @@ internal sealed class WebApp : IAsyncDisposable
                     var kind = S(e.Payload.Value, "kind");
                     if (kind == "model-started")
                     {
-                        _batchers.TryRemove(key, out _);
+                        // model-started opens a NEW turn: discard the previous run's
+                        // buffered/accumulated text so a cancelled or dropped run's
+                        // tail never bleeds into the new turn's stream.
+                        if (_batchers.TryRemove(key, out var stale))
+                        {
+                            lock (stale.Gate)
+                            {
+                                if (stale.PendCts is { } pd) { try { pd.Cancel(); } catch { } }
+                                stale.Pending = null;
+                                stale.PendCts = null;
+                                stale.Buffers.Clear();
+                                stale.Draining = false;
+                            }
+                        }
                         _completedText.TryRemove(key, out _);
                         _activeRun[key] = e.RunId;
                     }
@@ -974,6 +997,7 @@ internal sealed class WebApp : IAsyncDisposable
         finally
         {
             lock (_clientsLock) _clients.Remove(client);
+            client.CompleteOutbound();
             try
             {
                 if (ws.State is WebSocketState.Open or WebSocketState.CloseReceived)
@@ -1087,7 +1111,7 @@ internal sealed class WebApp : IAsyncDisposable
                         var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
                         await SendAsync(c, "session.updated", await ToVisibleSessionJsonAsync(info, ct), asid, ct);
                         object? bootStreaming = null;
-                        var bInFlight = InFlightText(asid);
+                        var bInFlight = await InFlightTextAsync(asid);
                         if (bInFlight is not null)
                             bootStreaming = new { text = bInFlight, maxSequence = entries.Count > 0 ? entries[^1].Sequence : beforeSeq };
                         await SendAsync(c, "session.entries",
@@ -1109,7 +1133,7 @@ internal sealed class WebApp : IAsyncDisposable
                         var beforeSeq = entries.Count > 0 ? entries[0].Sequence : 0;
                         await SendAsync(c, "session.updated", await ToVisibleSessionJsonAsync(info, ct), last.Id, ct);
                         object? bootStreaming = null;
-                        var bInFlight = InFlightText(last.Id);
+                        var bInFlight = await InFlightTextAsync(last.Id);
                         if (bInFlight is not null)
                             bootStreaming = new { text = bInFlight, maxSequence = entries.Count > 0 ? entries[^1].Sequence : beforeSeq };
                         await SendAsync(c, "session.entries",
@@ -2073,12 +2097,14 @@ internal sealed class WebApp : IAsyncDisposable
         // text that any pre-snapshot deltas would have delivered).
         // astra-1 F: reconstruct the in-flight assistant message. If a turn is
         // streaming, InFlightText() merges the flushed portion with the unflushed
-        // batcher buffer (and folds that buffer into the accumulator so the next
-        // flush doesn't re-emit it). The maxSequence cursor is the highest
+        // astra-2: InFlightTextAsync() merges the flushed portion with the unflushed
+        // batcher buffer (folding it into the accumulator so no later flush re-emits
+        // it) and, while a drain is mid-way, waits for it to settle (bounded) —
+        // so the snapshot is stable: every text byte is delivered exactly once
+        // across snapshot + live frames. The maxSequence cursor is the highest
         // persisted entry — the reconcile point for any live event arriving
         // during replay.
-        var key = sid ?? "";
-        var inFlight = InFlightText(sid);
+        var inFlight = await InFlightTextAsync(sid);
         object? streaming = null;
         if (inFlight is not null)
         {
@@ -2483,20 +2509,30 @@ internal sealed class WebApp : IAsyncDisposable
         List<Client> snapshot;
         lock (_clientsLock) snapshot = _clients.ToList();
         // §11a (F): fan out concurrently — one non-reading client must not stall the
-        // others (each SendSafeAsync is internally bounded). Per-client order is
-        // preserved by the per-socket gate; durable events are replayed on resync.
+        // others (each SendSafeAsync is internally bounded). Per-client wire
+        // order is the client's outbox FIFO (astra-2); durable events are replayed
+        // on resync.
         await ConcurrentDeliverAsync(snapshot.Select(c => (Func<CancellationToken, Task>)(t => c.SendSafeAsync(json, t))), ct);
     }
 
     private const int DeltaFlushMs = 20;
 
+    /// <summary>astra-2: how long an in-flight-turn snapshot (session.open / bootstrap)
+    /// waits for a draining delta flush to settle before answering — the drain
+    /// mid-way is the one window where the batch buffer is empty but its text is
+    /// not yet in the accumulator. Bounded: an idle snapshot never pays more.</summary>
+    public const int SnapshotDrainWaitMs = 50;
+
     /// <summary>PLAN §39: buffer a delta; a pending flush is scheduled for the
-    /// next ~20ms window (≈ one browser frame).</summary>
+    /// next ~20ms window (≈ one browser frame). The pending timer is a REAL task
+    /// (Task.Delay + ContinueWith) whose CTS every drain path cancels, so at most
+    /// ONE drain (timer OR forced) ever captures a given buffer — the snapshot
+    /// path relies on that for its single-delivery guarantee.</summary>
     private void EnqueueDelta(string? sid, string lane, string text)
     {
         if (string.IsNullOrEmpty(text)) return;
-        var b = _batchers.GetOrAdd(sid ?? "", _ => new DeltaBatcher());
-        bool schedule;
+        var key = sid ?? "";
+        var b = _batchers.GetOrAdd(key, _ => new DeltaBatcher());
         lock (b.Gate)
         {
             if (!b.Buffers.TryGetValue(lane, out var buf))
@@ -2505,54 +2541,83 @@ internal sealed class WebApp : IAsyncDisposable
                 b.Buffers[lane] = buf;
             }
             buf.Append(text);
-            schedule = b.Pending is null;
+            if (b.Pending is null)
+            {
+                var cts = new CancellationTokenSource();
+                b.PendCts = cts;
+                b.Pending = Task.Delay(DeltaFlushMs, cts.Token)
+                    .ContinueWith(_ => FlushDeltas(sid, cts), System.Threading.Tasks.TaskScheduler.Default);
+            }
         }
-        if (!schedule) return;
-        b.Pending = Task.Delay(DeltaFlushMs).ContinueWith(_ => FlushDeltas(sid),
-            System.Threading.Tasks.TaskScheduler.Default);
     }
 
-    /// <summary>asta-1 F: the currently streaming assistant text for <paramref name="sid"/>,
-    /// merging the already-flushed portion (<c>_completedText</c>) with the deltas still
-    /// sitting in the unflushed batcher buffer. Only an OPEN turn is in flight — a
-    /// completed turn's text already went out as <c>text.completed</c> and was removed
-    /// from <c>_completedText</c>, so a stale entry can never re-emit here. Under the
-    /// batcher's gate so the merge is consistent with an in-flight flush; the pending
-    /// delayed-flush task is cancelled so the consumed text is never emitted twice.</summary>
-    private string? InFlightText(string? sid)
+    /// <summary>asta-1 F / astra-2: the currently streaming assistant text for
+    /// <paramref name="sid"/>, merging the already-flushed portion
+    /// (<c>_completedText</c>) with the deltas still sitting in the unflushed
+    /// batcher buffer. Only an OPEN turn is in flight — a completed turn's text
+    /// already went out as <c>text.completed</c> and was removed from
+    /// <c>_completedText</c>, so a stale entry can never re-emit here.
+    /// The fold happens under the batcher's gate; a drain MID-WAY (buffer already
+    /// captured, events enqueued, accumulator not yet updated) is signalled by
+    /// <see cref="DeltaBatcher.Draining"/> — the caller (snapshot paths) re-polls
+    /// until it releases, so the text is delivered exactly once across snapshot +
+    /// live frames: either folded here OR enqueued by that drain, never both.
+    /// A pending timer that is only WAITING (not yet draining) is harmless: its
+    /// buffer has already been folded+cleared, so when it fires it is a no-op;
+    /// model-completed / model-started always cancel it explicitly.
+    /// <paramref name="stable"/> is false while a drain is mid-way — the caller must
+    /// re-poll.</summary>
+    private bool InFlightText(string? sid, out string text)
     {
-        if (sid is null || !_assistantOpen.ContainsKey(sid)) return null;
+        text = string.Empty;
+        if (sid is null || !_assistantOpen.ContainsKey(sid)) return false;
         var key = sid;
         string flushed = _completedText.TryGetValue(key, out var t) ? t : string.Empty;
+        bool stable = true;
         if (_batchers.TryGetValue(key, out var b))
         {
             lock (b.Gate)
             {
+                // Consume: the snapshot carries this text, so fold it into the
+                // running accumulator now and clear the buffer (a late timer is
+                // then a no-op — it finds nothing to emit).
                 if (b.Buffers.TryGetValue("text", out var buf) && buf.Length > 0)
                 {
-                    // Consume: the snapshot carries this text, so fold it into the
-                    // running accumulator now and clear the buffer.
                     flushed += buf.ToString();
                     _completedText[key] = flushed;
                     buf.Clear();
                 }
-                // The pending delayed flush (if any) is harmless now: the text lane
-                // is already consumed, so a late flush finds nothing to emit. Null it
-                // (don't dispose — a Task.Delay still in the waiting state cannot be
-                // disposed); this mirrors FlushDeltas' own "we drained" cancellation.
-                b.Pending = null;
+                // A drain mid-way owns the just-cleared text until it releases —
+                // answer again once it settles (the next poll re-folds any fresh text).
+                stable = !b.Draining;
             }
         }
-        return string.IsNullOrEmpty(flushed) ? null : flushed;
+        text = flushed;
+        return stable;
     }
 
-    /// <summary>PLAN §39: drain all buffered lanes for a session now
-    /// (window elapsed, or a boundary event forced the flush).</summary>
+    /// <summary>asta-2: bounded snapshot wait for <see cref="InFlightText"/> —
+    /// re-polls while a drain is mid-way (≤ <see cref="SnapshotDrainWaitMs"/>), so
+    /// session.open / bootstrap never answers while batch text is in flight.
+    /// Returns the merged in-flight text, or null when no open turn is streaming.</summary>
+    private async Task<string?> InFlightTextAsync(string? sid)
+    {
+        if (sid is null || !_assistantOpen.ContainsKey(sid)) return null;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            if (InFlightText(sid, out var text)) return string.IsNullOrEmpty(text) ? null : text;
+            if (sw.ElapsedMilliseconds >= SnapshotDrainWaitMs)
+                return string.IsNullOrEmpty(text) ? null : text;
+            await Task.Delay(2);
+        }
+    }
+
     /// <summary>Synchronous drain: emit every buffered lane now (no 120 ms delay),
     /// returning the drained "text" lane (the completed assistant text), or null.
     /// Boundary events (thinking.completed, model-completed, ...) force this so the
     /// wire order is deltas-then-completed.</summary>
-    private string? FlushDeltas(string? sid)
+    private string? FlushDeltas(string? sid, CancellationTokenSource? timer = null)
     {
         if (sid is null) return null;
         var key = sid ?? "";
@@ -2560,28 +2625,50 @@ internal sealed class WebApp : IAsyncDisposable
         List<(string lane, string text)> drained;
         lock (b.Gate)
         {
-            b.Pending = null; // cancel the delayed flush — we are draining now
+            // The timer path proves it is still THE pending flush: a concurrent
+            // forced drain cancelled its CTS under the gate, so its identity no
+            // longer matches — a stale timer then never re-drains a buffer a
+            // boundary drain already handed to its own events (or a snapshot
+            // already folded).
+            if (timer is not null && b.PendCts != timer) return null;
+            if (b.PendCts is { } p) { try { p.Cancel(); } catch { } }
+            b.Pending = null;
+            b.PendCts = null;
             if (b.Buffers.Count == 0)
                 return null;
+            // Announce the drain BEFORE clearing: a concurrent snapshot polling
+            // under the same gate sees Draining=true and waits until this release,
+            // so the same text is delivered exactly once across snapshot + live
+            // frames (enqueued here OR folded by a snapshot — never both).
+            b.Draining = true;
             drained = b.Buffers
                 .Select(kv => (kv.Key, kv.Value.ToString()))
                 .Where(x => x.Item2.Length > 0)
                 .ToList();
             b.Buffers.Clear();
-        }
-        foreach (var (lane, text) in drained)
-        {
-            if (lane == "thinking")
-                SendEvent("thinking.delta", new { text }, sid);
-            else if (lane == "text")
+            // astra-2: enqueue the drained events WHILE STILL HOLDING THE GATE.
+            // Drains are now fully serialized per session: a later drain (or the
+            // boundary event a thread emits right after its forced drain returned)
+            // can only enqueue AFTER this drain's events left the outbox, so
+            // text.delta always precedes the text.completed that follows it on the
+            // wire — on every client. Enqueue is O(1) (SendEvent no longer does
+            // I/O); the actual socket I/O belongs to each client's single writer.
+            foreach (var (lane, text) in drained)
             {
-                SendEvent("text.delta", new { text }, sid);
-                _completedText.AddOrUpdate(sid ?? "", text, (_, old) => old + text);
+                if (lane == "thinking")
+                    SendEvent("thinking.delta", new { text }, sid);
+                else if (lane == "text")
+                {
+                    SendEvent("text.delta", new { text }, sid);
+                    _completedText.AddOrUpdate(key, text, (_, old) => old + text);
+                }
+                else if (lane.StartsWith("args:"))
+                    SendEvent("tool.args", new { id = lane[5..], args = text }, sid);
             }
-            else if (lane.StartsWith("args:"))
-                SendEvent("tool.args", new { id = lane[5..], args = text }, sid);
+            b.Draining = false;
+            if (b.Buffers.Count == 0)
+                _batchers.TryRemove(key, out _);
         }
-        _batchers.TryRemove(key, out _);
         var textLane = drained.FirstOrDefault(x => x.lane == "text");
         return string.IsNullOrEmpty(textLane.text) ? null : textLane.text;
     }
@@ -2607,16 +2694,21 @@ internal sealed class WebApp : IAsyncDisposable
         _activeRun.TryRemove(key, out _);
     }
 
-    private void SendEvent(string type, object payload, string? sid) =>
-        _ = Task.Run(async () =>
-        {
-            var json = Envelope(type, null, sid, payload);
-            List<Client> snapshot;
-            lock (_clientsLock) snapshot = _clients.ToList();
-            // §11a (F): concurrent + bounded fan-out (the ~20 ms delta path is the
-            // hot one); a single non-reading client can no longer stall the others.
-            await ConcurrentDeliverAsync(snapshot.Select(c => (Func<CancellationToken, Task>)(t => c.SendSafeAsync(json, t))), CancellationToken.None);
-        });
+    /// <summary>astra-2: synchronous — every envelope is enqueued to each
+    /// client's outbox INLINED (O(1) per client). Holding the emission order on
+    /// the publishing thread is what makes drain-vs-boundary wire order a
+    /// structural guarantee: a boundary event's completed-frame enqueue lands in
+    /// every outbox before any later drain may enqueue its deltas.
+    /// Delivery itself is owned by each client's single writer (bounded sends,
+    /// per-client resync) — PLAN §11a (F).</summary>
+    private void SendEvent(string type, object payload, string? sid)
+    {
+        var json = Envelope(type, null, sid, payload);
+        List<Client> snapshot;
+        lock (_clientsLock) snapshot = _clients.ToList();
+        foreach (var c in snapshot)
+            c.SendSafeAsync(json, CancellationToken.None);
+    }
 
     private async Task SendAsync(Client c, string type, object payload, string? sid, CancellationToken ct)
     {
@@ -2658,46 +2750,84 @@ internal sealed class WebApp : IAsyncDisposable
 
     private sealed class Client
     {
-        private readonly SemaphoreSlim _sendGate = new(1, 1);
+        // astra-2: the per-socket gate serialized writes but did NOT ORDER them —
+        // two fire-and-forget fan-out tasks could take the gate out of emission
+        // order and race the wire (captured flake: text.completed ahead of the
+        // timer flush's text.delta). A FIFO outbox owned by ONE writer fixes the
+        // ordering structurally: wire order == enqueue order, independent of task
+        // scheduling. Enqueue is O(1) and non-blocking; a non-reading client grows
+        // its outbox, and its bounded send drops the delivery (resync) without
+        // stalling other clients — PLAN §11a (F).
+        private readonly Channel<string> _outbox = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+        private readonly CancellationTokenSource _writerCts = new();
 
         public Client(WebSocket ws, CancellationToken ct)
         {
             Ws = ws;
             Ct = ct;
+            _writer = Task.Run(() => RunWriterAsync());
         }
 
         public WebSocket Ws { get; }
         public CancellationToken Ct { get; }
+        private readonly Task _writer;
 
         /// <summary>
-        /// Serialize all writes on this socket (WebSocket is not thread-safe) and
-        /// never let a dead / non-reading client stall the caller: a send is gated
-        /// by BOTH the client-lifetime token (a disconnect aborts it) and a bounded
-        /// delivery timeout, linked with the caller's operation token — PLAN §11a (F)
-        /// outbound backpressure: "One connected non-reading client should not stall
-        /// updates for every other client ... bounded sends with explicit resync".
-        /// Ordering per client is preserved by the gate; a timed-out / cancelled
-        /// delivery is dropped (the client resyncs on its next full broadcast).
+        /// Enqueue one envelope for this client — the ONLY client-directed send
+        /// path. Non-blocking (O(1)); the single writer delivers in FIFO order
+        /// with per-send boundedness: a send is gated by the client-lifetime token
+        /// AND a bounded delivery timeout, so a dead / non-reading client times out
+        /// instead of holding the queue (PLAN §11a (F) outbound backpressure:
+        /// "One connected non-reading client should not stall updates for every
+        /// other client ... bounded sends with explicit resync"). Per-client wire
+        /// order is the outbox's FIFO order — a timed-out / cancelled delivery is
+        /// dropped (the client resyncs on its next full broadcast). Returns a
+        /// completed Task; the returned token is preserved for caller convenience.
         /// </summary>
-        public async Task SendSafeAsync(string json, CancellationToken operation)
+        public Task SendSafeAsync(string json, CancellationToken operation)
         {
-            using var delivery = WebApp.CreateDeliveryCancellationToken(Ct, operation, DeliveryTimeoutMs);
-            try
+            // Enqueue, do not await: the single writer delivers it in FIFO order.
+            // The returned task is always completed — cancellation of the CALLER'S
+            // operation never tears down the client's outbox (a cancelled command
+            // must not drop a queued ack the connection is still alive to receive).
+            _ = _outbox.Writer.TryWrite(json);
+            return Task.CompletedTask;
+        }
+
+        /// <summary>Complete the outbox so the writer drains remaining envelopes and
+        /// exits. Called once from the connection loop's finally (idempotent).</summary>
+        public void CompleteOutbound()
+        {
+            _outbox.Writer.TryComplete();
+            try { _writerCts.Cancel(); } catch { }
+        }
+
+        /// <summary>The single writer: reads the outbox FIFO and writes to the socket
+        /// in that exact order. Exits on outbox completion + writer cancellation.
+        /// A dead socket (send exception) drops the client — the connection loop's
+        /// read side terminates it independently.</summary>
+        private async Task RunWriterAsync()
+        {
+            while (true)
             {
-                await _sendGate.WaitAsync(delivery.Token);
+                string json;
                 try
                 {
-                    if (Ws.State == WebSocketState.Open)
-                        await Ws.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)),
-                            WebSocketMessageType.Text, true, delivery.Token);
+                    if (!await _outbox.Reader.WaitToReadAsync(_writerCts.Token)) break; // completed
                 }
-                finally
+                catch (OperationCanceledException) { break; }
+                while (_outbox.Reader.TryRead(out json))
                 {
-                    _sendGate.Release();
+                    using var delivery = WebApp.CreateDeliveryCancellationToken(Ct, CancellationToken.None, DeliveryTimeoutMs);
+                    try
+                    {
+                        if (Ws.State == WebSocketState.Open)
+                            await Ws.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)),
+                                WebSocketMessageType.Text, true, delivery.Token);
+                    }
+                    catch { /* client gone */ break; }
                 }
             }
-            catch (OperationCanceledException) { }
-            catch { /* client gone */ }
         }
     }
 
