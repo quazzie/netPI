@@ -251,6 +251,77 @@ public sealed class CloudBudgetGateTests : IDisposable
         Assert.Null((await store.GetAsync(id))?.Mode);
     }
 
+
+    // ---- regression: legacy mode (NO policy source) must not deny ------------
+    //      The "deployments" service is registered ONLY by the lanes plugin in
+    //      enabled mode. With lanes disabled the policy source is absent, so NO
+    //      model is a known DirectCloud deployment — the gate's step-(1)
+    //      posture ("no policy known -> legacy direct -> not a paid request")
+    //      must return the None sentinel (proceed WITHOUT accounting), not a
+    //      denial. Before the fix, the residency check was skipped and every
+    //      model fell through to the team lookup, where a no-cloudBudgets host
+    //      denied EVERY model with "no cloud budget policy".
+    [Fact]
+    public async Task Gate_NoPolicySource_LegacyDirect_ProceedsWithNoAccounting()
+    {
+        var store = NewStore();
+        var cfg = Config("{}"); // no teams at all (a lanes-disabled host)
+        var gate = new ConfigCloudExecutionGate(store, cfg, new NullLogger(), () => null);
+
+        var res = await gate.AuthorizeAsync("qwen3.8-27b", null, 1000, "run-legacy");
+        // The None sentinel: not admitted-as-reserved, but NO reason —
+        // the request executes without a reservation (not a failure).
+        Assert.False(res.Admitted);
+        Assert.Null(res.Reason);
+        Assert.Equal(CloudReservationResult.None, res);
+
+        // ...and the provider must treat it as "execute without accounting":
+        // the wire IS reached, the run succeeds, and nothing is concluded
+        // (no reservation id exists to settle).
+        var handler = new CountingHandler();
+        handler.SetBody("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n");
+        var http = new HttpClient(handler) { BaseAddress = new Uri("http://test") };
+        var provider = new AiProxyProvider(http, "http://test", new NullLogger(), wire: "chat", cloudGate: gate);
+        var events = new List<ModelEvent>();
+        await foreach (var ev in provider.RunAsync(
+            new ModelRequest { ModelId = "qwen3.8-27b", MaxTokens = 100, RunId = "run-legacy" },
+            CancellationToken.None))
+            events.Add(ev);
+        Assert.True(handler.RequestsSent == 1, $"expected the wire to be reached, sent {handler.RequestsSent}");
+        Assert.Contains(events, e => e is ModelCompleted);
+        Assert.DoesNotContain(events, e => e is ModelFailed);
+        Assert.Empty(await store.UsageAsync(CancellationToken.None)); // no accounting at all
+    }
+
+    // ---- regression: WITH a policy source, the direct-cloud deny stays ------
+    //      (the astra-2 parity behavior that must NOT be regressed by the
+    //      legacy-mode fix above: a DirectCloud model no team covers is still
+    //      denied before any paid call; a pooled model stays None.)
+    [Fact]
+    public async Task Gate_PolicyPresent_DirectCloudNoTeamCovers_StillDenied()
+    {
+        var store = NewStore();
+        var policy = new FakePolicy(
+            new DeploymentPolicy("m-cloud", DeploymentExecutionMode.DirectCloud, null, "dep-cloud"));
+        var cfg = Config("""{"teams":[{"teamId":"team-a","limit":100,"models":["other-model"]}]}""");
+        var gate = new ConfigCloudExecutionGate(store, cfg, new NullLogger(), () => policy);
+
+        var res = await gate.AuthorizeAsync("m-cloud", "dep-cloud", 1000, "run-1");
+        Assert.False(res.Admitted);
+        Assert.NotNull(res.Reason);
+        Assert.Contains("no cloud budget policy", res.Reason!, StringComparison.OrdinalIgnoreCase);
+
+        // ...and the pooled case WITH a policy source stays None (lane-governed,
+        // not a paid cloud request) — the provider proceeds without a reservation.
+        var pooledPolicy = new FakePolicy(
+            new DeploymentPolicy("m-pooled", DeploymentExecutionMode.Pooled, "pool-a", "dep-pooled"));
+        var gate2 = new ConfigCloudExecutionGate(NewStore(), Config("{}"), new NullLogger(), () => pooledPolicy);
+        var res2 = await gate2.AuthorizeAsync("m-pooled", "dep-pooled", 1000, "run-p");
+        Assert.False(res2.Admitted);
+        Assert.Null(res2.Reason);
+        Assert.Equal(CloudReservationResult.None, res2);
+    }
+
     // ---- fakes -----------------------------------------------------------------
     private sealed class DeniedGate : ICloudExecutionGate
     {
@@ -265,10 +336,15 @@ public sealed class CloudBudgetGateTests : IDisposable
     private sealed class CountingHandler : HttpMessageHandler
     {
         public int RequestsSent { get; private set; }
+        private string? _body;
+        public void SetBody(string body) => _body = body;
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             RequestsSent++;
-            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+            var resp = new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+            if (_body is not null)
+                resp.Content = new StringContent(_body, System.Text.Encoding.UTF8, "application/json");
+            return Task.FromResult(resp);
         }
     }
 }

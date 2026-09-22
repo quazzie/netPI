@@ -402,7 +402,15 @@ public sealed class ParityGapTests : IDisposable
         MakeGate(string dir, string config)
     {
         var store = NewBudgetStore(dir);
-        var gate = new ConfigCloudExecutionGate(store, JsonDocument.Parse(config).RootElement, new NullLogger());
+        // These scenarios verify cloud-budget accounting for a direct-cloud
+        // model, so the gate gets the trusted policy source (a fresh
+        // lanes-enabled host registers it): "cloud-m" is a DirectCloud
+        // deployment. (With no policy source the gate returns the None
+        // sentinel — legacy direct, no accounting — and would skip the
+        // budget entirely.)
+        var policy = new FakePolicy(
+            new DeploymentPolicy("cloud-m", DeploymentExecutionMode.DirectCloud, null, "dep-cloud-m"));
+        var gate = new ConfigCloudExecutionGate(store, JsonDocument.Parse(config).RootElement, new NullLogger(), () => policy);
         return (gate, store);
     }
 

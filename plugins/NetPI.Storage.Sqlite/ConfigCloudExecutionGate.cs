@@ -137,12 +137,21 @@ public sealed class ConfigCloudExecutionGate : ICloudExecutionGate
         // plugin and can be reloaded (new generation/instance) — caching it
         // here would pin a dead generation.
         var policy = EffectivePolicy(_policyFactory);
-        if (policy is not null)
+        if (policy is null)
         {
-            var dep = policy.PolicyFor(modelId ?? "");
-            if (dep is null || dep.Mode != DeploymentExecutionMode.DirectCloud)
-                return CloudReservationResult.None; // not a paid cloud request
+            // Legacy mode (lanes disabled or not loaded): the "deployments"
+            // service is not registered, so NO model is a known DirectCloud
+            // deployment. That is exactly the step-(1) posture above — "no
+            // policy known -> legacy direct -> not a paid request" — so the
+            // request proceeds WITHOUT cloud accounting (the provider treats
+            // None as "no reservation, execute, no conclude"). Denying here
+            // instead would block every model on a lanes-disabled host,
+            // regressing pre-astra-2 behavior this gate must not introduce.
+            return CloudReservationResult.None;
         }
+        var dep = policy.PolicyFor(modelId ?? "");
+        if (dep is null || dep.Mode != DeploymentExecutionMode.DirectCloud)
+            return CloudReservationResult.None; // not a paid cloud request
 
         // 2) Team policy: which allowance pays for this model.
         var team = !string.IsNullOrEmpty(modelId) && _models.TryGetValue(modelId, out var t) ? t

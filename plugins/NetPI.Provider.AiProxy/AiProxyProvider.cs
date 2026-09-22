@@ -380,15 +380,21 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         }
 
         var authorization = await gate.AuthorizeAsync(request.ModelId, request.DeploymentId, request.MaxTokens, request.RunId, cancellationToken);
-        if (!authorization.Admitted)
+        if (authorization.Reason is not null)
         {
             // 16: "Cloud disabled or team disallows cloud -> No paid provider
             // call" / "exhausted budget -> checkpoint or block, never a hidden
-            // fallback". The run fails with the actionable reason; the retry
-            // plugin's attempts each re-consult the gate (fresh reservation).
-            yield return new ModelFailed(request.ModelId, authorization.Reason ?? "Cloud budget authorization was denied.");
+            // fallback". A non-null Reason is the gate's denial signal — the run
+            // fails with the actionable reason; the retry plugin's attempts each
+            // re-consult the gate (fresh reservation).
+            yield return new ModelFailed(request.ModelId, authorization.Reason);
             yield break;
         }
+        // A null Reason with Admitted=false is the CloudReservationResult.None
+        // sentinel: "no accounting was applied" (a pooled model admitted by the
+        // lane runner, or legacy direct with no cloud policy) — the request
+        // proceeds WITHOUT a reservation and must NOT be concluded.
+        string? reservationId = authorization.ReservationId;
 
         bool contentSeen = false;
         var usage = (0, 0, 0, 0); // prompt, completion, total, cached
@@ -418,9 +424,16 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             if (!concluded)
             {
                 concluded = true;
-                double actual = usage.Item3; // total tokens (0 when no usage was reported)
-                try { await gate.ConcludeAsync(authorization.ReservationId!, contentSeen, actual, CancellationToken.None); }
-                catch (Exception ex) { _log.Warning($"cloud budget conclude failed for {request.RunId ?? request.ModelId}: {ex.Message}"); }
+                if (reservationId is null)
+                {
+                    // None sentinel: no accounting was applied — nothing to conclude.
+                }
+                else
+                {
+                    double actual = usage.Item3; // total tokens (0 when no usage was reported)
+                    try { await gate.ConcludeAsync(reservationId, contentSeen, actual, CancellationToken.None); }
+                    catch (Exception ex) { _log.Warning($"cloud budget conclude failed for {request.RunId ?? request.ModelId}: {ex.Message}"); }
+                }
             }
         }
         yield break;
