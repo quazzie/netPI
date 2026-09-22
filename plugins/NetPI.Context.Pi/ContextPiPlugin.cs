@@ -290,6 +290,17 @@ public sealed class SystemPromptProvider : ISystemPromptProvider
                 sb.AppendLine(section.Content.Trim());
             }
 
+        // Custom sections appended by plugins (order-preserving) — e.g. the
+        // astra-2 §10 orchestrate-mode coordinator guidance contributed by the
+        // agent runner. Empty by default, so the chat-mode prompt is unchanged.
+        foreach (var section in inputs.CustomSections)
+            if (!string.IsNullOrWhiteSpace(section.Content))
+            {
+                sb.AppendLine();
+                sb.AppendLine($"## {section.Title}");
+                sb.AppendLine(section.Content.Trim());
+            }
+
         if (inputs.ToolGuidelines is { Count: > 0 })
         {
             sb.AppendLine();

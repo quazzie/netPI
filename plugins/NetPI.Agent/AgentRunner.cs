@@ -660,7 +660,11 @@ public sealed class AgentRunner : IAgentRunner
 
             var workspace = string.IsNullOrEmpty(request.WorkspacePath)
                 ? Environment.CurrentDirectory : request.WorkspacePath;
-            var systemText = await BuildSystemPromptAsync(workspace);
+            // astra-2 §10: the session's persisted mode is runtime/prompt policy
+            // (not another scheduler): an orchestrate-mode session gets the
+            // coordinator guidance section, the default chat mode gets nothing.
+            var sessionMode = await ResolveSessionModeAsync(sessionId, cts.Token);
+            var systemText = await BuildSystemPromptAsync(workspace, sessionMode);
 
         // astra-1 A (message identity): the run's user message reuses the EXACT
         // message StartRunAsync persisted — same ID and timestamp — instead of
@@ -852,7 +856,47 @@ public sealed class AgentRunner : IAgentRunner
 
 
 
-    private async Task<string> BuildSystemPromptAsync(string workspace)
+    /// <summary>
+    /// astra-2 §10: resolve the session's mode at run start. This is prompt
+    /// policy, not a scheduler: absent store, unknown session, or a
+    /// null/whitespace mode all resolve to the default "chat". Best-effort —
+    /// a store failure logs and falls back to chat (the mode only shapes the
+    /// system prompt, never admission).
+    /// </summary>
+    private async Task<string> ResolveSessionModeAsync(string? sessionId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return "chat";
+        try
+        {
+            var store = Resolve<ISessionStore>("sessions");
+            if (store is null) return "chat";
+            var info = await store.GetAsync(sessionId, ct);
+            var mode = info?.Mode?.Trim().ToLowerInvariant();
+            return mode is { Length: > 0 } ? mode : "chat";
+        }
+        catch (Exception ex)
+        {
+            _ctx.Log.Warning($"Session mode resolution failed: {ex.Message}");
+            return "chat";
+        }
+    }
+
+    /// <summary>
+    /// astra-2 §10: the concise coordinator guidance appended to the system
+    /// prompt of ORCHESTRATE-mode sessions only — the four guidance points of
+    /// §10 compressed, plus the local-coordinator yield rule (a local
+    /// coordinator with two workers running holds no local lane and makes no
+    /// planning calls; it wakes only on its chosen wait condition).
+    /// </summary>
+    private static readonly SystemPromptSection CoordinatorGuidanceSection = new("Orchestration mode",
+        "You are coordinating a pool of local workers in this session.\n" +
+        "- Define concrete deliverables, dependencies, workspaces, and acceptance checks before delegating.\n" +
+        "- Delegate bounded, independent tasks; record ownership on the task board.\n" +
+        "- Yield while your workers run; review their summaries and request specific follow-ups.\n" +
+        "- Integrate the workers' artifacts and verify the combined result before declaring completion.\n" +
+        "- When two local workers occupy every lane, you hold no lane and make no planning calls — you wake only when your chosen wait condition is met and capacity is available.");
+
+    private async Task<string> BuildSystemPromptAsync(string workspace, string sessionMode)
     {
         try
         {
@@ -860,6 +904,14 @@ public sealed class AgentRunner : IAgentRunner
             var provider = Resolve<ISystemPromptProvider>("system-prompt");
             if (builder is null || provider is null) return string.Empty;
             var inputs = await builder.BuildAsync(workspace, CancellationToken.None);
+            // astra-2 §10: orchestrate-mode sessions get the concise coordinator
+            // section; the default chat mode (and any unknown mode) adds nothing,
+            // so chat-mode prompt bytes stay byte-identical to the pre-§10 prompt.
+            if (sessionMode == "orchestrate")
+                inputs = inputs with
+                {
+                    CustomSections = [.. inputs.CustomSections, CoordinatorGuidanceSection]
+                };
             var tools = Resolve<IToolRegistry>("tools");
             var allTools = tools?.All() ?? [];
             var toolDefs = allTools.Select(t => new ToolDefinition(t.Name, t.Description, t.Parameters)).ToList();
