@@ -263,6 +263,69 @@ public class WorkPanelDataTests
         finally { await app.StopAsync(CancellationToken.None); }
     }
 
+    // ---- §16: panel has running, queued, waiting, suspended agents — all
+    //      visible across sessions, newest-created first, stable; a terminal
+    //      row never appears in the live list; waiting/suspended reasons are
+    //      exposed on the row.
+    [Fact]
+    public async Task Agents_AllNonterminalLifecyclesVisible_TerminalHidden_ReasonsExposed()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var rows = new[]
+        {
+            new AgentAssignmentRow("a-running", "agent-a", null, "s1", null,
+                AgentAssignmentLifecycle.Running, AgentState.CallingModel,
+                DeploymentExecutionMode.Pooled, "pool-1", "lane-1", "dep-1", "m1", "running title",
+                now.AddMinutes(-9), now.AddMinutes(-9), null, null),
+            new AgentAssignmentRow("a-queued", "agent-q", null, "s2", null,
+                AgentAssignmentLifecycle.Queued, AgentState.Idle,
+                DeploymentExecutionMode.Pooled, "pool-1", null, "dep-1", "m1", "queued title",
+                now.AddMinutes(-8), null, null, "pool full"),
+            new AgentAssignmentRow("a-waiting", "agent-w", null, "s3", null,
+                AgentAssignmentLifecycle.Waiting, AgentState.Idle,
+                DeploymentExecutionMode.Pooled, "pool-1", "lane-1", "dep-1", "m1", "waiting title",
+                now.AddMinutes(-7), now.AddMinutes(-7), null, "delegated"),
+            new AgentAssignmentRow("a-suspended", "agent-s", null, "s4", null,
+                AgentAssignmentLifecycle.Suspended, AgentState.Idle,
+                DeploymentExecutionMode.DirectCloud, null, null, "cloud", "m-cloud", "suspended title",
+                now.AddMinutes(-6), now.AddMinutes(-6), null, "recovery-required"),
+            new AgentAssignmentRow("a-done", "agent-d", null, "s5", null,
+                AgentAssignmentLifecycle.Completed, AgentState.Idle,
+                DeploymentExecutionMode.Pooled, "pool-1", null, "dep-1", "m1", "done title",
+                now.AddMinutes(-10), now.AddMinutes(-10), now.AddMinutes(-1), null),
+        };
+        var reg = new FakeRegistry();
+        reg.Add("orchestration", new FakeOrch(rows));
+        var (app, url) = await MakeAsync(reg);
+        try
+        {
+            var d = await GetJsonAsync(url + "/api/activity/agents");
+            var agents = d.GetProperty("agents");
+            Assert.Equal(4, agents.GetArrayLength());
+            var lifecycles = new List<string>();
+            foreach (var row in agents.EnumerateArray())
+                lifecycles.Add(row.GetProperty("lifecycle").GetString()!);
+            Assert.Contains("running", lifecycles);
+            Assert.Contains("queued", lifecycles);
+            Assert.Contains("waiting", lifecycles);
+            Assert.Contains("suspended", lifecycles);
+            Assert.DoesNotContain("completed", lifecycles);
+            // Newest-created first: -6m, -7m, -8m, -9m.
+            Assert.Equal("a-suspended", agents[0].GetProperty("assignmentId").GetString());
+            Assert.Equal("a-waiting", agents[1].GetProperty("assignmentId").GetString());
+            Assert.Equal("a-queued", agents[2].GetProperty("assignmentId").GetString());
+            Assert.Equal("a-running", agents[3].GetProperty("assignmentId").GetString());
+            var waiting = agents.EnumerateArray()
+                .Single(r => r.GetProperty("lifecycle").GetString() == "waiting");
+            Assert.Equal("delegated", waiting.GetProperty("reason").GetString());
+            var suspended = agents.EnumerateArray()
+                .Single(r => r.GetProperty("lifecycle").GetString() == "suspended");
+            Assert.Equal("recovery-required", suspended.GetProperty("reason").GetString());
+            Assert.Equal("cloud-direct", suspended.GetProperty("executionMode").GetString());
+        }
+        finally { await app.StopAsync(CancellationToken.None); }
+    }
+
     [Fact]
     public async Task Agents_RevisionMonotonic_AndHistoryBounded()
     {
