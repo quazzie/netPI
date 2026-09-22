@@ -268,7 +268,7 @@ open session, the drawer starts a fresh one in the same workspace),
 `plugin.reloaded/Failed`, `plugin.scanned` (`loaded` = ids newly scanned in), `ack`, `error`.
 
 Bootstrap on WS connect: `agent.state`, `models.*`, `plugins.state`,
-`session.list`, then replay of the active session's **latest 200 entries**.
+`ui.panels`, `session.list`, then replay of the active session's **latest 200 entries**.
 
 Invariants worth knowing (see commit history for the fixes behind these):
 - `assistant.completed` is emitted when the assistant **turn** closes — after
@@ -367,8 +367,9 @@ dotnet test NetPI.sln        # 332 tests (agent runtime scenarios, session
 cd web/netpi-web && npx svelte-check --tsconfig ./tsconfig.app.json
 ```
 
-Known pre-existing svelte-check errors in `Composer.svelte` (implicit `any`)
-exist on master and are unrelated to UI work.
+svelte-check: 0 errors; 10 pre-existing warnings (SessionTabs, AssistantMessage,
+ToolCallBlock, ThinkingBlock, Composer implicit-`any`, App) — unrelated to recent
+UI work; don't chase them in a feature change.
 
 ## Git discipline
 
@@ -398,6 +399,7 @@ exist on master and are unrelated to UI work.
   `.artifacts/plugins/<id>/<buildId>/` or `plugins/<name>/` directly. Publishing a new
   build only flips `plugins/<id>/current.json`; a `plugin.reload` re-resolves the pointer
   and snapshots the new bytes as the next attempt. Stale per-plugin snapshots are pruned
-  to the newest `MaxCachedGenerations` (default 2) once their ALCs are finalized;
-  ownership-aware prune (a `.owner` token) keeps one host from deleting another's cache.
+  to the newest `MaxCachedGenerations` (default 2) at each new snapshot; the
+  ownership-aware prune (a `.owner` claim token at the instance root) keeps one
+  host from deleting another's cache.
   (`NETPI_SKIP_CACHE` is gone — the snapshot copy is the hot-swap mechanism.)

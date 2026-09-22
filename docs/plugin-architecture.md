@@ -16,8 +16,11 @@
   (`IEventBus.Publish`/`Subscribe`) only. `src/NetPI.Abstractions` is the only
   shared surface.
 - **Service ownership is explicit.** `Register<T>(id, instance, owner)` stamps
-  the owning `PluginInstance`; there is no ambient-owner thread context — a
-  registration without an owner fails. On unload, `ServiceRegistry.RemoveAllFor(instance)`
+  the owning `PluginInstance` — no ambient-owner thread context (astra-1 P3:
+  the process-global `ServiceOwner` static is gone; a plugin always registers
+  through its scoped wrapper, which binds the real owning generation). The
+  host-side overload `Register<T>(id, instance)` (owner = null) exists only
+  for host-owned entries. On unload, `ServiceRegistry.RemoveAllFor(instance)`
   and `EventBus.RemoveAllFor(instance)` remove exactly that plugin's entries;
   other plugins' services and subscriptions survive a reload.
 
@@ -93,9 +96,10 @@ reload while an in-flight operation is live (the reload then waits, up to the
   (immutable once written). The ALC loads from that snapshot. Publishing a new
   build flips `current.json`; `plugin.reload` re-resolves and snapshots the
   next attempt. Stale per-plugin snapshots are pruned to
-  `MaxCachedGenerations` (default 2) once their ALCs are finalized; the prune
-  is ownership-aware (a `.owner` token) so one host instance never deletes
-  another's cache.
+  `MaxCachedGenerations` (default 2) **at each new snapshot** — the prune is
+  ownership-aware (this process must own the instance root) and any snapshot
+  still locked by a live ALC is simply left for the next prune, so one host
+  instance never deletes another's cache.
 - **Native libs**: a plugin DLL may carry native dependencies
   (`.deps.json` runtime assets). Before the ALC loads the managed entry
   assembly, the host locates native assets by name via the managed

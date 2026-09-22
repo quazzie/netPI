@@ -38,10 +38,10 @@ web/netpi-web: ws.ts "ui.panels" → store.webPanels → RightPanel.svelte tab l
 | `src/NetPI.Abstractions/WebUi.cs` | `WebPanelDefinition(Id, Title, Icon, EntryUrl, Order=0)`, `IWebPanelRegistry` |
 | `src/NetPI.Abstractions/IPluginContext.cs` | `IWebPanelRegistry WebPanels` property (the only registration surface) |
 | `src/NetPI.Host/Services/WebPanelRegistry.cs` | Global lock-guarded registry + `ScopedWebPanels` (generation-scoped view) |
-| `src/NetPI.Host/Plugins/PluginManager.cs` | Creates `ScopedWebPanels` per instance (:218); calls `Unload()` on every unload path (:437, :549, :699) |
-| `plugins/NetPI.Web/WebApp.cs` | `PanelJson()` (~:959); `ui.panels` broadcasts (:423 bootstrap, :691 after `plugin.reload`, :715 after `plugin.reloadAll`, :732 for `ui.panels.list`) |
-| `plugins/NetPI.Web/WebPlugin.cs` | Self-registers the "plugins" panel (see Reference implementation) |
-| `plugins/NetPI.Diagnostics/` | Registers the "diagnostics" panel with an **absolute** `EntryUrl` (`http://127.0.0.1:5274/panel/diagnostics`) — the page + API live on the Diagnostics plugin's own Kestrel port; the panel tab appears/disappears with the plugin generation |
+| `src/NetPI.Host/Plugins/PluginManager.cs` | Creates `ScopedWebPanels` per instance (~:430); calls `WebPanels?.Unload()` on every unload path (~:1007, ~:1405) |
+| `plugins/NetPI.Web/WebApp.cs` | `PanelJson()` (~:1861); `ui.panels` broadcast on bootstrap (~:829), on every plugin-state change via the runner (~:407), and for `ui.panels.list` (~:1447) |
+| `plugins/NetPI.Web/WebPlugin.cs` | Registers **no** panel — the former standalone "plugins" panel was folded into the Diagnostics plugin's "Plugins" sub-tab (see Reference implementation) |
+| `plugins/NetPI.Diagnostics/` | Registers the "diagnostics" panel with an **absolute** `EntryUrl` (`http://127.0.0.1:5274/panel/diagnostics`) — the page + API live on the Diagnostics plugin's own Kestrel port; the panel includes the former "Plugins" sub-tab; the tab appears/disappears with the plugin generation |
 | `plugins/NetPI.BackgroundTasks/` | Registers the "background" panel (`http://127.0.0.1:5275/panel/background`); the page lists background jobs and stops them via same-origin `/api/bg/*` endpoints (BgWebApp.cs) |
 | `plugins/NetPI.Activity/` | Registers the "activity" panel (`http://127.0.0.1:5276/panel/activity`); runs + managed processes via same-origin `/api/activity/*` endpoints (ActivityWebApp.cs, astra-1 H) |
 | `web/netpi-web/src/types.ts` | `WebPanelInfo` wire type |
@@ -103,21 +103,16 @@ Semantics (verified in code + tests):
 `WebApp.cs` sends `ui.panels { panels: [...] }` to **all connected WS clients**:
 
 - WS connect — bootstrap sequence (after `plugins.state`, before session replay)
-- after `plugin.reload` / `plugin.reloadAll` commands
+- on **every** plugin-update completion (astra-1 §F): `WebApp` subscribes to `PluginUpdateCompletedEvent` (`OnPluginUpdateCompleted`, ~:364) — for `reload` / `reloadAll` / `scan` it broadcasts `plugins.state` + `ui.panels` to all clients. The runner publishes the event for every completed update, whether triggered by a WS command, the CLI (`reload <id>` / `reloadall`), or a `plugin.scan` — so open UIs refresh either way.
 - on `ui.panels.list` request (available, but nothing in the frontend calls it today)
-
-There is **no push on other lifecycle events** — `WebApp` subscribes only to the
-`AgentEvent` bus. Consequence: a plugin reload triggered outside the Web UI
-(e.g. CLI) does not refresh open UIs; the catalog updates on next connect,
-next `plugin.reload*` command, or a manual `ui.panels.list`.
 
 ## Frontend rendering (`web/netpi-web`)
 
 - `RightPanel.svelte`: tabs are rendered **entirely** from `store.webPanels`
   (the `ui.panels` catalog) — the shell has no hardcoded tabs and no
   per-tab-id content branches; every tab renders through the same
-  `<iframe src={panel.entryUrl}>` path (NetPI.Web self-registers its
-  "plugins"/"diagnostics" panels, see below). Tab labels render the title in
+  `<iframe src={panel.entryUrl}>` path (the catalog today: Diagnostics,
+  Background, Activity — NetPI.Web registers none, see below). Tab labels
   `writing-mode: vertical-rl` (see `.vertical-tab*` in `app.css`; rail width is
   `--right-rail-width: 26px` in `:root` — the `26` in `App.svelte`'s
   `shellStyle` must stay in sync).
@@ -142,8 +137,9 @@ cross-origin.
 Gotchas:
 
 - **Same-origin SPA fallback**: under the host origin (`127.0.0.1:5173`), any
-  unmatched path serves the app's `index.html` via `MapFallback`
-  (`WebApp.cs:134-139`). A panel URL there only works if it matches an actual
+  unmatched path serves the app's `index.html` via a fallback route
+  (`WebApp.cs`, ~:256 — only when `staticRoot` is configured).
+  A panel URL there only works if it matches an actual
   static file in a served root.
 - **No bridge**: no `postMessage` protocol, no shared store access, no auth.
   What a panel page *can* do: serve its own static assets, open its own
@@ -155,36 +151,37 @@ Gotchas:
   — keep panel content cross-origin to preserve the isolation the design
   intends.
 
-## Reference implementation: self-panels
+## Reference implementation: the panel catalog today
 
-The "Plugins" tab is registered by the Web plugin; the "Diagnostics" tab by
-the Diagnostics plugin — the Svelte shell has zero hardcoded tabs:
+There are exactly **three** production panels — NetPI.Web registers **no** panel
+of its own (its former standalone "plugins" panel was folded into the
+Diagnostics plugin's "Plugins" sub-tab; `WebPlugin.cs` registers nothing):
 
-- `plugins/NetPI.Web/WebPlugin.cs` — `LoadAsync` registers
-  `("plugins", "Plugins", "◇", "/panel/plugins", 0)` **before** the Kestrel
-  app starts (so the first bootstrap already includes it); `StopAsync`
-  disposes the handles (the scoped registry would also clean up on unload).
 - `plugins/NetPI.Diagnostics/DiagnosticsPlugin.cs` — `LoadAsync` registers
   `("diagnostics", "Diagnostics", "◌", "http://127.0.0.1:{port}/panel/diagnostics", 10)`
   with an **absolute** entry URL because the page is served by the Diagnostics
   plugin's own Kestrel instance (default port 5274, `plugins.netpi.diagnostics.port`),
   not by NetPI.Web. The tab appears/disappears with the plugin generation.
-- `plugins/NetPI.Web/WebApp.cs` — `MapGet("/panel/plugins")` serves the page;
-  `PanelHtml(name)` loads it from an **embedded resource** in the plugin
-  assembly (csproj `<EmbeddedResource>`), so no extra staging files are needed.
-- `plugins/NetPI.Web/panels/plugins.html` — self-contained vanilla-JS page.
-  Opens its **own `/ws` connection** to the host, renders from broadcast
-  events (`plugins.state`, `plugin.state`, …) and sends commands
-  (`plugin.reload`, `plugin.reloadAll`). Renders **content only** — the
-  shell's iframe wrapper supplies the title row. On `/ws` close it
-  `location.reload()` after 2 s, self-healing across plugin reloads and host
-  restarts.
+- `plugins/NetPI.Web/` — `PanelJson()` (~:1861) builds the `ui.panels` catalog
+  from the global registry; `WebApp` broadcasts `ui.panels` on bootstrap
+  (~:829) and on **every** plugin-state change via the runner (~:407), so the
+  catalog refreshes whenever a plugin reloads or a scan loads new ids —
+  including a reload of netpi.web itself (the broadcast fires in the still-
+  alive generation before it is swapped).
 - `plugins/NetPI.Diagnostics/panels/diagnostics.html` — live panel served by
   the Diagnostics plugin's own Kestrel (`/panel/diagnostics` on :5274).
   Self-contained, polls its own same-origin `/api/diag/*` endpoints (overview,
   model-wire decisions, agent events, log tail with level/plugin filters,
-  sessions) every 4 s — no `/ws` connection, no cross-origin needed (page
-  and API share the 5274 origin).
+  sessions) every 4 s. Sub-tabs: **Overview / Wire / Plugins / Models /
+  Events / Logs / Sess** (deep-linkable via `#tab=…`). The **Plugins**
+  sub-tab — the former standalone NetPI.Web "plugins" panel — additionally
+  opens a cross-origin `ws://<host>:5173/ws` connection to the host hub for
+  live `plugins.state` / `plugin.state` / `plugin.reloaded` /
+  `plugin.scanned` events and drives `plugin.reload` / `plugin.reloadAll` /
+  `plugin.scan` from its "Reload all" / "Scan for new" buttons. It re-opens
+  that WS 3 s after any drop (`hostWs.onclose`), self-healing across plugin
+  reloads and host restarts; `#tab=plugins` deep-links straight to the former
+  plugins view.
 - `plugins/NetPI.BackgroundTasks/` — `LoadAsync` registers
   `("background", "Background", "▶", "http://127.0.0.1:{port}/panel/background", 5)`
   (absolute URL; default port 5275, `plugins.netpi.backgroundtasks.port`).
@@ -223,18 +220,20 @@ the reload snapshots the new bytes as generation N+1.
   up new bytes), prune-to-two with ALC collectibility.
 - Not covered: `ui.panels` broadcast behavior in `WebApp` (would be an
   integration test), and end-to-end iframe rendering.
-- The reference implementation is NetPI.Web's self-panels (above).
-  `plugins/NetPI.TestPlugin` (the reload/lease fixture) is the place to add a
-  *second*-plugin panel test if cross-plugin catalog behavior ever changes.
+- The reference implementation is the Diagnostics "Diagnostics" panel (above);
+  `plugins/NetPI.TestPlugin` (the reload/lease fixture, published only with
+  `-IncludeTestPlugin`) is the place to add a *second*-plugin panel test if
+  cross-plugin catalog behavior ever changes.
 - After any frontend change: `npx vite build` + reload the Web plugin or
   refresh the browser (hashed assets) — see AGENTS.md.
 
 ## Known gaps (TODO for future agents)
 
 1. No iframe reload on plugin reload (stale content if `entryUrl` is unchanged;
-   the self-panels mitigate this by reloading themselves when their `/ws`
-   drops, but the shell iframe is not keyed on plugin generation).
-2. `ui.panels` is not pushed on non-Web-UI plugin lifecycle events.
-3. No shell↔panel `postMessage` bridge protocol (panels open their own `/ws`).
-4. No integration-level test for the NetPI.Web self-panel routes
-   (`/panel/*`, `ui.panels` broadcasts) — registry mechanics are unit-tested.
+   the panel pages mitigate this by self-healing — the diagnostics page
+   re-opens its host WS 3 s after a drop, background/activity pages
+   `location.reload()` when their surface is unreachable — but the shell
+   iframe is not keyed on plugin generation).
+2. No shell↔panel `postMessage` bridge protocol (panels open their own `/ws`).
+3. No integration-level test for the `ui.panels` broadcast or the diagnostics
+   panel routes — registry mechanics are unit-tested.

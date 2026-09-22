@@ -3,8 +3,8 @@
   import { ui } from "../ui.svelte";
 
   // The tab list is entirely plugin-contributed (the ui.panels catalog) —
-  // the shell has no hardcoded tabs. NetPI.Web self-registers its
-  // "plugins"/"diagnostics" panels; see docs/web-panels.md.
+  // the shell has no hardcoded tabs. Panels today: Diagnostics (which folds
+  // in the former "Plugins" view), Background, Activity; see docs/web-panels.md.
   let selectedPanel = $derived(store.webPanels.find((p) => p.id === ui.rightTab));
 
   $effect(() => {

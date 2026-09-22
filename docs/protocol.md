@@ -83,9 +83,9 @@ entry/entries/older/compact.result/deleted`, `session.project.pending` /
 `plugin.state/reloaded/Failed/scanned`, `ack`, `error`.
 
 **Bootstrap on connect**: `agent.state`, `models.*`, `plugins.state`,
-`session.list` (queryless page 1), then replay of the active session's latest
-200 entries. The bootstrap's `session.list` is queryless — a search response
-carries `query` in its payload and is the one to await.
+`ui.panels`, `session.list` (queryless page 1), then replay of the active
+session's latest 200 entries. The bootstrap's `session.list` is queryless — a
+search response carries `query` in its payload and is the one to await.
 
 ## Invariants (and why)
 
