@@ -1,4 +1,4 @@
-# AGENTS.md — netPI
+# AGENTS.md — netPI (hub)
 
 Agent operating instructions for this repository. netPI is a small .NET 10
 agent harness: a permanently-loaded host loads **reloadable plugins** from
@@ -6,9 +6,21 @@ agent harness: a permanently-loaded host loads **reloadable plugins** from
 usually at `127.0.0.1:8090`), and serves a Svelte Web UI over WebSocket +
 static files on Kestrel `127.0.0.1:5173`.
 
-The authoritative design doc is `docs/archive/PLAN-v1.md` (2790 lines, §-numbered
-— cite sections when referring to behavior). Active plan: `docs/plans/responses-wire.md`.
-Web panels (plugin-contributed right-panel tabs): `docs/web-panels.md`.
+## Docs map
+
+| doc | what it covers |
+|---|---|
+| `docs/archive/PLAN-v1.md` | Authoritative design, §-numbered (2790 lines) — cite sections when referring to behavior |
+| `docs/plans/astra-1.md` | Completed hardening plan (P0–P6, A–F, G0–G3, H, I, 11a) |
+| `docs/plans/responses-wire.md` | Active plan: the responses wire |
+| `docs/protocol.md` | **Deep:** Web surface & WebSocket protocol — control boundary, envelope, command/event behavior, invariants with their *why* |
+| `docs/plugin-architecture.md` | **Deep:** ALC generations, lifecycle, reload policy, leases, snapshots, native pre-load, service-id map |
+| `docs/launch-and-publish.md` | **Deep:** publish → stage → launch → reload pipeline and its guarantees |
+| `docs/web-panels.md` | Plugin-contributed right-panel tabs (Diagnostics/BackgroundTasks/Activity surfaces) |
+
+AGENTS.md is the **hub**: quick orientation + the invariants you need every session;
+the `**Deep:**` docs carry the behavioral detail. Keep them in sync when a doc's
+behavior changes.
 
 ## Repo layout
 
@@ -88,6 +100,8 @@ Runtime home: `~/.netpi/` — `config.json`, `netpi.db` (SQLite), `logs/`,
 — the host loads from these, never from `.artifacts/` or `plugins/` directly), and
 `app-cache/` (host launch snapshots, P0). Env overrides: `NETPI_HOME`, `NETPI_PLUGINS`.
 
+_Publish → stage → launch → reload pipeline in depth: `docs/launch-and-publish.md`._
+
 ## Build & run (verified on this machine)
 
 ```bash
@@ -124,6 +138,9 @@ pwsh tools/launch-desktop.ps1          # builds first (default); -NoBuild stages
   DLLs, or `~/.netpi` state (all git-ignored).
 
 ## Plugin architecture (the core invariant)
+
+_Lifecycle, reload policy, leases, snapshots and native pre-load in depth:
+`docs/plugin-architecture.md`._
 
 - Lifecycle per generation: `LoadAsync → StartAsync … StopAsync → UnloadAsync`
   (`INetPiPlugin`). LoadAsync registers services/tools/commands and subscribes
@@ -187,6 +204,9 @@ Model-level wire kinds (`ModelEvents.cs`): `model-started`,
   snapshot (astra-1 D).
 
 ## Web surface / WebSocket protocol (PLAN §36, §38, §41)
+
+_Control boundary, command/event behavior and the invariants' why:
+`docs/protocol.md`._
 
 Kestrel on the configured port (5173): `/ws` (the hub), `/bootstrap` (health),
 `/api/file` (localhost-only file viewer for chat-embedded path links) and `/api/open`
