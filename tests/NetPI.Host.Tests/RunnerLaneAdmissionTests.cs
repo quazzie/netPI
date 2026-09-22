@@ -257,6 +257,51 @@ public class RunnerLaneAdmissionTests
         Assert.Contains(d.RunId, provider.StartedRunIds);
     }
 
+    // ---- §16: an ordinary user-created cloud session runs while BOTH local
+    //      lanes are occupied — it needs no lane, no agent setup flow, and never
+    //      changes the local owners' ownership.
+    [Fact]
+    public async Task CloudSession_RunsWhileBothLocalLanesOccupied_OwnershipUnchanged()
+    {
+        var scheduler = new NetPI.Lanes.LaneScheduler("gen-1", new NullLogger());
+        scheduler.RegisterPool("pool-1", "dep-1", "m-1", LaneCapacityMode.Manual, 2, true);
+        var policy = new FakePolicy(
+            new DeploymentPolicy("m-1", DeploymentExecutionMode.Pooled, "pool-1", "dep-1"),
+            new DeploymentPolicy("m-cloud", DeploymentExecutionMode.DirectCloud, null, "dep-cloud"));
+        var provider = new GateProvider();
+        var ctx = new AdmCtx();
+        ctx.Add("provider", provider);
+        ctx.Add("sessions", new NoopStore());
+        ctx.Add("deployments", policy);
+        var lanes = new CountingLanes(scheduler);
+        ctx.Add("lanes", lanes);
+        var runner = new AgentRunner(new AgentRuntime(ctx), ctx, maxConcurrentRuns: 8);
+
+        // Occupy BOTH local lanes.
+        var a = await runner.StartRunAsync(new AgentRunRequest("s-a", null, "m-1", "A work"));
+        var b = await runner.StartRunAsync(new AgentRunRequest("s-b", null, "m-1", "B work"));
+        Assert.Equal(RunDisposition.Admitted, a.Disposition);
+        Assert.Equal(RunDisposition.Admitted, b.Disposition);
+        await WaitUntil(() => provider.StartedRunIds.Count >= 2);
+        int acquiresWithBoth = lanes.AcquireCalls;
+
+        // A user-created cloud session: ordinary send, no setup flow. It must
+        // run while both local lanes are held and touch the scheduler never.
+        var c = await runner.StartRunAsync(new AgentRunRequest("s-cloud", null, "m-cloud", "cloud work"));
+        Assert.Equal(RunDisposition.Admitted, c.Disposition);
+        Assert.True(acquiresWithBoth == lanes.AcquireCalls, "the cloud session must not call AcquireAsync");
+        await WaitUntil(() => provider.StartedRunIds.Contains(c.RunId!));
+
+        // All three sessions visible; A/B retain their lanes throughout.
+        Assert.Equal(3, runner.ListRuns().Count(r => r.Outcome == RunState.Running));
+        Assert.Contains(a.RunId, provider.StartedRunIds);
+        Assert.Contains(b.RunId, provider.StartedRunIds);
+        Assert.Contains(c.RunId, provider.StartedRunIds);
+        var snaps = scheduler.Snapshots();
+        Assert.Equal(2, snaps[0].OwnedCount); // both local lanes still owned by A/B
+        Assert.Equal(0, snaps[0].QueueCount);
+    }
+
     [Fact]
     public async Task Disabled_DirectCloud_IsRejectedBeforeInference()
     {
