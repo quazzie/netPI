@@ -674,4 +674,84 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
             Guid.NewGuid().ToString("n"), type,
             DateTimeOffset.UtcNow, sid, null, runId), CancellationToken.None);
     }
+
+    // ---- astra-2 §13: agents.state / agent.updated / lanes.state WS forwarding ---
+    // A WS client must receive the orchestration state frames that WebApp forwards
+    // from the event bus — not just the panel HTTP endpoints. This test publishes
+    // an AgentLifecycleEvent and a LanesStateEvent on the real bus and asserts the
+    // WS client receives the expected frame shapes.
+    [Fact]
+    public async Task OrchestrationEvents_ForwardedToWsClient_AsAgentsStateAndLanesState()
+    {
+        var ws = await ConnectAsync();
+        // Wait for the first bootstrap frame — a frame can only be delivered to a
+        // REGISTERED client, so this deterministically proves the pipe is open
+        // before we publish (no timing window on the fan-out snapshot).
+        var bootstrapped = false;
+        while (!bootstrapped)
+        {
+            var probe = await ReceiveMessageAsync(ws);
+            if (probe is null) { DumpServerLog(); Assert.Fail("WS closed during bootstrap"); }
+            bootstrapped = true; // any frame means the client is registered
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var rows = new[]
+        {
+            new AgentAssignmentRow("a-1", "agent-1", null, "s1", null,
+                AgentAssignmentLifecycle.Running, AgentState.CallingModel,
+                DeploymentExecutionMode.Pooled, "pool-1", "lane-1", "dep-1", "m1", "row one",
+                now.AddMinutes(-5), now.AddMinutes(-5), null, null),
+            new AgentAssignmentRow("a-2", "agent-2", null, "s2", null,
+                AgentAssignmentLifecycle.Queued, AgentState.Idle,
+                DeploymentExecutionMode.Pooled, "pool-1", null, "dep-1", "m1", "row two",
+                now.AddMinutes(-3), null, null, "pool full"),
+        };
+
+        var pools = new[]
+        {
+            new AgentPoolSnapshot("pool-1", "dep-1", "m1", 1, 1, 2, true, null),
+        };
+
+        // Publish the lifecycle event (WebApp forwards agent.updated per row + agents.state).
+        await _ctx!.Bus.PublishAsync(
+            new AgentLifecycleEvent(AgentLifecycleEventKind.Batch, rows, null, now), CancellationToken.None);
+        // Publish the lanes state event (WebApp forwards lanes.state).
+        await _ctx.Bus.PublishAsync(
+            new LanesStateEvent(pools, now), CancellationToken.None);
+
+        // Give the fire-and-forget fan-out a beat to reach the client, then drain.
+        // Collect frames until we see BOTH agents.state and lanes.state.
+        var seen = new Dictionary<string, JsonElement>();
+        while (seen.Count < 2)
+        {
+            var msg = await ReceiveMessageAsync(ws);
+            if (msg is null) { DumpServerLog(); Assert.Fail("WS closed before agents.state/lanes.state"); }
+            using var doc = JsonDocument.Parse(msg);
+            var type = doc.RootElement.GetProperty("type").GetString()!;
+            if (type == "agents.state" && !seen.ContainsKey("agents.state"))
+                seen["agents.state"] = doc.RootElement.Clone();
+            else if (type == "lanes.state" && !seen.ContainsKey("lanes.state"))
+                seen["lanes.state"] = doc.RootElement.Clone();
+            else if (type == "error")
+                Assert.Fail("unexpected error: " + doc.RootElement.GetProperty("payload").ToString());
+        }
+
+        // agents.state: payload.agents[] with lifecycle + reason fields.
+        var agents = seen["agents.state"].GetProperty("payload").GetProperty("agents");
+        Assert.Equal(2, agents.GetArrayLength());
+        var first = agents[0];
+        Assert.Equal("a-1", first.GetProperty("assignmentId").GetString());
+        Assert.Equal("running", first.GetProperty("lifecycle").GetString());
+        Assert.Equal("pool full", agents[1].GetProperty("reason").GetString());
+
+        // lanes.state: payload.pools[] with pool fields.
+        var poolFrames = seen["lanes.state"].GetProperty("payload").GetProperty("pools");
+        Assert.Equal(1, poolFrames.GetArrayLength());
+        var p = poolFrames[0];
+        Assert.Equal("pool-1", p.GetProperty("poolId").GetString());
+        Assert.Equal(1, p.GetProperty("ownedCount").GetInt32());
+        Assert.Equal(1, p.GetProperty("queueCount").GetInt32());
+        Assert.Equal(2, p.GetProperty("targetCapacity").GetInt32());
+    }
 }
