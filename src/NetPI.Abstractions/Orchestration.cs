@@ -556,6 +556,16 @@ public interface IOrchestrationStore
     ValueTask<bool> HasToolBatchCheckpointAsync(string assignmentId, CancellationToken ct = default);
 
     /// <summary>
+    /// astra-2 §15: append-only lane-ownership journal. Records a state
+    /// transition (spawn/admit/release) for one assignment. The store owns the
+    /// <c>host_epoch</c> — a per-process identifier captured once at construction
+    /// (start-timestamp + short GUID) so that rows written by one host process
+    /// share an epoch, letting an operator identify the writer of any journal row
+    /// across restarts. Append-only: rows are never updated or deleted.
+    /// </summary>
+    ValueTask WriteLaneJournalAsync(string assignmentId, string? poolId, string? laneId, string state, CancellationToken ct = default);
+
+    /// <summary>
     /// astra-2 §7: durable Queued assignments in ready order, for one-time adoption
     /// after a restart/reload (the new generation re-enters them into the lane
     /// pipeline exactly once — no old callbacks, no lost work).

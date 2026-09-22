@@ -3,6 +3,7 @@ using System.Text.Json;
 using NetPI.Abstractions;
 using NetPI.Orchestration;
 using NetPI.Storage.Sqlite;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace NetPI.Host.Tests;
@@ -261,6 +262,74 @@ public sealed class OrchestrationPluginTests : IDisposable
             await Task.Delay(20);
         }
         return false;
+    }
+
+    [Fact]
+    public async Task LaneJournal_SpawnAdmitRelease_WrittenWithSharedEpoch()
+    {
+        var e = Make();
+        var dbPath = Path.Combine(e.DbDir, "test.db");
+        var root = await e.Store.EnsureRootAgentAsync("sess-journal", null, "root");
+        var spawned = await e.Store.SpawnChildAsync(
+            "op-journal", root.AgentId, null, "default", "pool-1", null, "child", "child");
+        var row = spawned.Agent is not null
+            ? await e.Store.GetAssignmentAsync(spawned.AssignmentId) : null;
+        Assert.NotNull(row);
+
+        // 1. spawn wrote a journal row (pool set, no lane yet).
+        var spawn = JournalRows(dbPath, row!.AssignmentId, "spawn");
+        Assert.Single(spawn);
+        Assert.Equal("pool-1", spawn[0].Pool);
+        Assert.Null(spawn[0].Lane);
+
+        // 2. grant a lane while Running -> admit row.
+        await e.Store.TransitionAsync(row.AssignmentId, row.Version,
+            AgentAssignmentLifecycle.Running, AgentState.CallingModel,
+            "pool-1", "lane-9", null, null, null);
+        var admit = JournalRows(dbPath, row.AssignmentId, "admit");
+        Assert.Single(admit);
+        Assert.Equal("lane-9", admit[0].Lane);
+
+        // 3. terminal (lane still set) -> release row.
+        var running = await e.Store.GetAssignmentAsync(row.AssignmentId);
+        await e.Store.TransitionAsync(row.AssignmentId, running!.Version,
+            AgentAssignmentLifecycle.Completed, AgentState.Idle,
+            "pool-1", "lane-9", null, null, null);
+        var release = JournalRows(dbPath, row.AssignmentId, "release");
+        Assert.Single(release);
+
+        // 4. one host process wrote every row (shared epoch) and time is non-decreasing.
+        var all = JournalAll(dbPath, row.AssignmentId);
+        Assert.Equal(3, all.Count);
+        Assert.Single(all.Select(r => r.Epoch).Distinct());
+        for (int i = 1; i < all.Count; i++)
+            Assert.True(all[i].CreatedAt >= all[i - 1].CreatedAt);
+    }
+
+    private static List<(string Epoch, string? Pool, string? Lane, string State, long CreatedAt)> JournalAll(string dbPath, string assignmentId)
+    {
+        using var conn = new SqliteConnection(JournalConnStr(dbPath));
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT host_epoch, pool_id, lane_id, state, created_at FROM agent_lane_journal WHERE assignment_id = $a ORDER BY seq;";
+        cmd.Parameters.AddWithValue("$a", assignmentId);
+        var list = new List<(string, string?, string?, string, long)>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            list.Add((r.GetString(0),
+                r.IsDBNull(1) ? null : r.GetString(1),
+                r.IsDBNull(2) ? null : r.GetString(2),
+                r.GetString(3), r.GetInt64(4)));
+        return list;
+    }
+
+    private static List<(string Epoch, string? Pool, string? Lane, string State, long CreatedAt)> JournalRows(string dbPath, string assignmentId, string state)
+        => JournalAll(dbPath, assignmentId).Where(x => x.State == state).ToList();
+
+    private static string JournalConnStr(string dbPath)
+    {
+        var s = new SqliteConnectionStringBuilder { DataSource = dbPath, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString();
+        return s;
     }
 
     // ---- fakes ---------------------------------------------------------------

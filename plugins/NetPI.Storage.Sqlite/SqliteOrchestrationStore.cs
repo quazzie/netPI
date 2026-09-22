@@ -20,7 +20,17 @@ public sealed class SqliteOrchestrationStore : IOrchestrationStore
     private const string Terminal = "'completed','failed','cancelled'";
 
     private readonly string _connStr;
-    public SqliteOrchestrationStore(string dbPath) => _connStr = SqliteSessionStore.BuildConnectionString(dbPath);
+    /// <summary>
+    /// astra-2 §15: per-process host epoch (start-timestamp + short GUID).
+    /// All journal rows written by this store instance share this epoch, so
+    /// an operator can identify the writer of any row across restarts.
+    /// </summary>
+    private readonly string _hostEpoch;
+    public SqliteOrchestrationStore(string dbPath)
+    {
+        _connStr = SqliteSessionStore.BuildConnectionString(dbPath);
+        _hostEpoch = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss") + "-" + Guid.NewGuid().ToString("N")[..8];
+    }
 
     private SqliteConnection OpenConnection()
     {
@@ -150,9 +160,17 @@ public sealed class SqliteOrchestrationStore : IOrchestrationStore
             // only owns the orchestration rows (session/agent/assignment), never the
             // transcript. So a restart sees the child agent + queued assignment, and
             // the runner re-persists the brief exactly once when it finally admits.
+            // astra-2 §15: durable lane-ownership journal row (spawn).
             await ExecAsync(conn, tx, """
-                UPDATE agent_lane_journal SET state = 'spawn' WHERE 0=1;
-                """, ct, null); // journal row (append-only) — the actual row is optional for now
+                INSERT INTO agent_lane_journal (host_epoch, assignment_id, pool_id, lane_id, state, created_at)
+                VALUES ($he, $a, $pool, NULL, 'spawn', $now);
+                """, ct, c =>
+                {
+                    c.Parameters.AddWithValue("$he", _hostEpoch);
+                    c.Parameters.AddWithValue("$a", assignmentId);
+                    c.Parameters.AddWithValue("$pool", (object?)poolId ?? DBNull.Value);
+                    c.Parameters.AddWithValue("$now", now);
+                });
             // A queued child starts Queued; admission (admitted-now vs still-queued)
             // is applied by the orchestrator via TransitionAsync, not here.
             var resultAgent = new AgentIdentity(agentId, teamId, parentAgentId, sessionId,
@@ -205,6 +223,17 @@ public sealed class SqliteOrchestrationStore : IOrchestrationStore
         string? poolId, string? laneId, string? deploymentId, string? reason, string? checkpointRef, CancellationToken ct = default)
     {
         await using var conn = OpenConnection();
+
+        // astra-2 §15: fetch the pre-transition lane for journal admit/release.
+        string? oldLane = null;
+        await using (var sel = conn.CreateCommand())
+        {
+            sel.CommandText = "SELECT lane_id FROM agent_assignments WHERE assignment_id = $a;";
+            sel.Parameters.AddWithValue("$a", assignmentId);
+            var raw = await sel.ExecuteScalarAsync(ct);
+            if (raw is not null and not DBNull) oldLane = Convert.ToString(raw);
+        }
+
         await using var cmd = conn.CreateCommand();
         // Compare-and-swap on version: returns 0 rows when expectedVersion no
         // longer matches (a concurrent transition won), so callers re-read.
@@ -230,12 +259,43 @@ public sealed class SqliteOrchestrationStore : IOrchestrationStore
         cmd.Parameters.AddWithValue("$now", Now());
         var affected = await cmd.ExecuteNonQueryAsync(ct);
         if (affected == 0) return false;
+
+        // astra-2 §15: lane-ownership journal (admit / release).
+        // Admit: a pooled run gains a lane (new lane while it held none).
+        // Release: a lane-holding row loses its lane (terminal, or lane nulled).
+        string? journalState = null;
+        bool isTerminal = lifecycle is AgentAssignmentLifecycle.Completed
+            or AgentAssignmentLifecycle.Failed or AgentAssignmentLifecycle.Cancelled;
+        if (lifecycle == AgentAssignmentLifecycle.Running && laneId is not null && oldLane is null)
+            journalState = "admit";
+        else if (oldLane is not null && (isTerminal || laneId is null))
+            journalState = "release";
+        if (journalState is not null)
+            await ExecJournalAsync(conn, assignmentId, poolId, laneId, journalState, ct);
+
         // Terminal transitions wake any durable waiters (astra-2 §6.2: exactly one resume).
-        if (AgentAssignmentLifecycleNames.Name(lifecycle) is "completed" or "failed" or "cancelled")
+        if (isTerminal)
         {
             await NoteTerminalForWaitsCoreAsync(conn, assignmentId, ct);
         }
         return true;
+    }
+
+    /// <summary>astra-2 §15: append one lane-ownership journal row (caller owns the connection).</summary>
+    private async ValueTask ExecJournalAsync(SqliteConnection conn, string assignmentId, string? poolId, string? laneId, string state, CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO agent_lane_journal (host_epoch, assignment_id, pool_id, lane_id, state, created_at)
+            VALUES ($he, $a, $pool, $lane, $st, $now);
+            """;
+        cmd.Parameters.AddWithValue("$he", _hostEpoch);
+        cmd.Parameters.AddWithValue("$a", assignmentId);
+        cmd.Parameters.AddWithValue("$pool", (object?)poolId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$lane", (object?)laneId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$st", state);
+        cmd.Parameters.AddWithValue("$now", Now());
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public async ValueTask<AgentAssignmentRow?> GetAssignmentAsync(string assignmentId, CancellationToken ct = default)
@@ -449,6 +509,14 @@ string? createdAssignmentId = null;
         r.IsDBNull(17) ? null : ToUtc(r.GetString(17)),
         r.IsDBNull(18) ? null : r.GetString(18))
         { CheckpointRef = r.IsDBNull(20) ? null : r.GetString(20), Version = r.GetInt32(19) };
+
+    // ---- lane-ownership journal (astra-2 §15) ---------------------------
+
+    public async ValueTask WriteLaneJournalAsync(string assignmentId, string? poolId, string? laneId, string state, CancellationToken ct = default)
+    {
+        await using var conn = OpenConnection();
+        await ExecJournalAsync(conn, assignmentId, poolId, laneId, state, ct);
+    }
 
     // ---- in-flight tool-batch checkpoint (astra-2 §15.D) ---------------
 

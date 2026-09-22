@@ -176,6 +176,7 @@ public sealed class WebProjectCommandTests : IAsyncLifetime
         public ValueTask MarkToolBatchInFlightAsync(string assignmentId, string agentId, string sessionId, int transcriptCursor, string? toolCallIdsJson, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask ClearToolBatchCheckpointAsync(string assignmentId, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask<bool> HasToolBatchCheckpointAsync(string assignmentId, CancellationToken ct = default) => ValueTask.FromResult(false);
+        public ValueTask WriteLaneJournalAsync(string assignmentId, string? poolId, string? laneId, string state, CancellationToken ct = default) => ValueTask.CompletedTask;
         public ValueTask<AgentAssignmentRow?> GetByRunIdAsync(string runId, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask<string?> GetRunIdAsync(string assignmentId, CancellationToken ct = default) => throw new NotImplementedException();
         public ValueTask<IReadOnlyList<AgentAssignmentRow>> ListSubtreeAsync(string agentId, CancellationToken ct = default) => throw new NotImplementedException();
