@@ -83,13 +83,17 @@ function Get-FileSha256([string]$path) {
 
 # Exact C# ComputeBuildId algorithm: sha256 over "path\nsha256\n" lines,
 # sorted by path Ordinal, first 12 hex lower.
-function Get-BuildId([string[]]$files, [string]$rootDir) {
+function Get-BuildId([string[]]$files, [string]$rootDir, [string]$contract = '') {
   $lines = foreach ($f in $files) {
     $rel = $f.Substring($rootDir.Length).TrimStart('\','/').Replace('\','/')
     "$rel`n$(Get-FileSha256 $f)`n"
   }
   $sorted = $lines | Sort-Object { $_.Substring(0, $_.LastIndexOf("`n")) }   # sort by path
-  $blob = -join $sorted
+  # The shared-contract id is part of the build identity: an artifact built
+  # against netPI.Abstractions X is not interchangeable with one built against
+  # Y even if every payload byte is identical, so a host-side contract change
+  # must force a fresh artifact instead of reusing a stale pin.
+  $blob = "contract`n$contract`n" + (-join $sorted)
   $sha = [System.Security.Cryptography.SHA256]::Create()
   $hash = [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($blob))) -replace '-',''
   $hash.ToLower().Substring(0, 12)
@@ -227,13 +231,20 @@ if ($discovered.Count -eq 0) { throw "no plugin projects discovered under $plugi
 
 # Compatibility token: hash of the netPI.Abstractions.dll bytes (first 12 hex),
 # the exact form of the manifest's abstractionsBuildId field.
+# The host loads netPI.Abstractions.dll from ITS OWN output directory and the
+# host's contract check (PluginManager.ValidateContract) hashes that same file
+# (src/NetPI.Host/Plugins/PluginManager.cs) — and tools/keep-alive-host.ps1
+# stages from exactly that directory. Hash THAT copy, never a search over
+# src/: a plugin-scoped `dotnet publish` rebuilds netPI.Abstractions.dll into
+# the abstractions PROJECT's bin (different bytes) while the host bin keeps
+# the solution-build bytes, so a search-based hash can pin an id the host
+# never runs (every plugin then fails the contract check at load).
 $abstractionsId = ''
-$abstractionsDll = Get-ChildItem (Join-Path $root 'src') -Recurse -Filter 'netPI.Abstractions.dll' -File -ErrorAction SilentlyContinue |
-  Where-Object { $_.FullName -notmatch '\\obj\\' } | Sort-Object Length -Descending | Select-Object -First 1
-if ($abstractionsDll) {
-  $abstractionsId = (Get-FileHash -Path $abstractionsDll.FullName -Algorithm SHA256).Hash.ToLower().Substring(0, 12)
+$hostAbstractions = Join-Path (Join-Path (Join-Path $root 'src') 'NetPI.Host') "bin\$Configuration\net10.0\netPI.Abstractions.dll"
+if (Test-Path $hostAbstractions) {
+  $abstractionsId = (Get-FileHash -Path $hostAbstractions -Algorithm SHA256).Hash.ToLower().Substring(0, 12)
 } else {
-  Write-Warning "netPI.Abstractions.dll not found — run 'dotnet build NetPI.sln -c $Configuration' first; manifest will carry an empty abstractionsBuildId"
+  Write-Warning "netPI.Abstractions.dll not found in the host output ($hostAbstractions) — run 'dotnet build NetPI.sln -c $Configuration' first; manifest will carry an empty abstractionsBuildId"
 }
 
 # --- per-plugin publication --------------------------------------------------------
@@ -286,7 +297,7 @@ foreach ($id in $discovered) {
     # 3) buildId over every staged file (relative posix path + sha256)
     $payload = @(Get-ChildItem -Path $staging -Recurse -File)
     if ($payload.Count -eq 0) { throw "publish produced no files in $staging" }
-    $buildId = Get-BuildId -files $payload.FullName -rootDir $staging
+    $buildId = Get-BuildId -files $payload.FullName -rootDir $staging -contract $abstractionsId
 
     # 4) finalize the immutable artifact dir (.artifacts/plugins/<id>/<buildId>/)
     $artifactDir = Join-Path $artifacts "plugins\$id\$buildId"
