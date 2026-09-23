@@ -219,9 +219,19 @@ public sealed record PluginManifest
     public required string RuntimeIdentifier { get; init; }
 
     /// <summary>
-    /// Compatibility token for the shared contract: the netPI.Abstractions build
-    /// id that the plugin was compiled against. The host uses it to warn on a
-    /// contract mismatch rather than silently load an incompatible plugin.
+    /// Compatibility token for the shared contract: the PUBLIC API surface id
+    /// (NetPI.Abstractions.ContractId) of the netPI.Abstractions the plugin was
+    /// compiled against. Depends only on visible types/members — not on the
+    /// git commit, the assembly version, or the PDB — so a commit that does not
+    /// change the API never invalidates the pin; a real contract change does.
+    /// </summary>
+    [JsonPropertyName("abstractionsApiId")]
+    public string AbstractionsApiId { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Legacy: byte hash of the netPI.Abstractions.dll the plugin was compiled
+    /// against. Kept for artifacts published before the API id; a host that
+    /// cannot compare API ids falls back to this exact-byte comparison.
     /// </summary>
     [JsonPropertyName("abstractionsBuildId")]
     public string AbstractionsBuildId { get; init; } = string.Empty;

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AssemblyName>netpi-apiid</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Compile the SAME source file the Abstractions project ships, so the
+         publisher's contract id and the host's can never drift apart. -->
+    <Compile Include="..\..\src\NetPI.Abstractions\ContractId.cs" Link="ContractId.cs" />
+  </ItemGroup>
+</Project>

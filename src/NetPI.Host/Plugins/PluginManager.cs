@@ -188,7 +188,10 @@ public sealed class PluginManager
         /// <summary>astra-1 P4: the entry assembly (top-level file name) that must be loaded.</summary>
         public string? EntryAssembly { get; init; }
 
-        /// <summary>astra-1 P4: abstractions build id the artifact was compiled against.</summary>
+        /// <summary>astra-1 P4: abstractions PUBLIC API id the artifact was compiled against.</summary>
+        public string? AbstractionsApiId { get; init; }
+
+        /// <summary>astra-1 P4 (legacy): abstractions dll BYTE hash — fallback when no API id.</summary>
         public string? AbstractionsBuildId { get; init; }
 
         /// <summary>Reason <see cref="Kind"/> is not a loadable source (diagnostics only).</summary>
@@ -232,7 +235,7 @@ public sealed class PluginManager
                     sources.Add(new PluginSource { Id = id, Directory = sub, Kind = SourceKind.Invalid, BuildId = manifest.BuildId, Note = verr });
                     continue;
                 }
-                sources.Add(new PluginSource { Id = id, Directory = sub, Kind = SourceKind.Published, ArtifactDir = artifact, BuildId = manifest.BuildId, EntryAssembly = manifest.EntryAssembly, AbstractionsBuildId = manifest.AbstractionsBuildId });
+                sources.Add(new PluginSource { Id = id, Directory = sub, Kind = SourceKind.Published, ArtifactDir = artifact, BuildId = manifest.BuildId, EntryAssembly = manifest.EntryAssembly, AbstractionsApiId = manifest.AbstractionsApiId, AbstractionsBuildId = manifest.AbstractionsBuildId });
                 continue;
             }
 
@@ -545,34 +548,59 @@ public sealed class PluginManager
     }
 
     /// <summary>
-    /// astra-1 P4: the shared contract must be compatible BEFORE activation —
-    /// the artifact's abstractions build id (content hash of the
-    /// netPI.Abstractions.dll the plugin was compiled against) must equal the
-    /// host's loaded abstractions build. An empty artifact token (pre-P4
-    /// legacy manifest) degrades to a warning.
+    /// astra-1 P4, astra-2 contract id: the shared contract must be compatible
+    /// BEFORE activation. Primary check: the artifact's abstractions PUBLIC API
+    /// id (NetPI.Abstractions.ContractId — the visible type/member surface) must
+    /// equal the host's loaded Abstractions API id. The id covers only the API
+    /// surface, so a commit that does not change the contract (git HEAD string,
+    /// PDB, version stamps) does NOT invalidate the pin; a real contract change
+    /// does. Fallback (legacy artifacts / pre-API-id hosts): compare the
+    /// abstractions dll BYTE hashes — exact bytes. An artifact with neither
+    /// token (pre-P4) degrades to a warning.
     /// </summary>
     private string? ValidateContract(PluginSource source)
     {
-        if (source.AbstractionsBuildId is null or { Length: 0 })
-        {
-            _logger.LogWarning("{Plugin}: no abstractionsBuildId available — contract check skipped", source.Id);
-            return null;
-        }
-        string hostToken;
+        string? hostApi = null;
         try
         {
-            var path = Path.Combine(Path.GetDirectoryName(typeof(INetPiPlugin).Assembly.Location)!,
-                typeof(INetPiPlugin).Assembly.GetName().Name! + ".dll");
-            hostToken = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)))[..12].ToLowerInvariant();
+            hostApi = NetPI.Abstractions.ContractId.Compute(typeof(INetPiPlugin).Assembly);
         }
-        catch
+        catch (Exception ex)
         {
-            return "host netPI.Abstractions build could not be hashed — refusing to load (contract unverifiable)";
+            _logger.LogWarning("Could not compute the host abstractions API id: {Err}", ex.Message);
         }
-        if (!string.Equals(source.AbstractionsBuildId, hostToken, StringComparison.OrdinalIgnoreCase))
-            return $"contract mismatch: plugin built against netPI.Abstractions {source.AbstractionsBuildId}, host runs {hostToken}";
+
+        // Primary: API-surface id (both sides must carry it).
+        if (hostApi is not null && source.AbstractionsApiId is { Length: > 0 })
+        {
+            if (!string.Equals(source.AbstractionsApiId, hostApi, StringComparison.OrdinalIgnoreCase))
+                return $"contract mismatch: plugin built against netPI.Abstractions API {source.AbstractionsApiId}, host runs {hostApi}";
+            return null;
+        }
+
+        // Fallback: legacy byte-hash comparison (or an API-id-less artifact).
+        if (source.AbstractionsBuildId is { Length: > 0 })
+        {
+            string hostToken;
+            try
+            {
+                var path = Path.Combine(Path.GetDirectoryName(typeof(INetPiPlugin).Assembly.Location)!,
+                    typeof(INetPiPlugin).Assembly.GetName().Name! + ".dll");
+                hostToken = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)))[..12].ToLowerInvariant();
+            }
+            catch
+            {
+                return "host netPI.Abstractions build could not be hashed — refusing to load (contract unverifiable)";
+            }
+            if (!string.Equals(source.AbstractionsBuildId, hostToken, StringComparison.OrdinalIgnoreCase))
+                return $"contract mismatch: plugin built against netPI.Abstractions {source.AbstractionsBuildId}, host runs {hostToken}";
+            return null;
+        }
+
+        _logger.LogWarning("{Plugin}: no abstractions contract id available — contract check skipped", source.Id);
         return null;
     }
+
 
     /// <summary>
     /// astra-1 P4: load the plugin's native libraries for the CURRENT RID only —

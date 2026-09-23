@@ -53,6 +53,8 @@ $root       = Split-Path $PSScriptRoot -Parent
 
 $pluginsDir = Join-Path $root 'plugins'
 $artifacts  = Join-Path $root '.artifacts'
+$toolsDir   = Join-Path $root 'tools'
+$apiidDir   = Join-Path (Join-Path $toolsDir 'apiid') 'bin\Release\net10.0'
 
 $env:DOTNET_ROOT = $env:DOTNET_ROOT ?? (Join-Path $env:USERPROFILE '.dotnet')
 $env:PATH = "$env:DOTNET_ROOT;$env:PATH"
@@ -247,6 +249,23 @@ if (Test-Path $hostAbstractions) {
   Write-Warning "netPI.Abstractions.dll not found in the host output ($hostAbstractions) — run 'dotnet build NetPI.sln -c $Configuration' first; manifest will carry an empty abstractionsBuildId"
 }
 
+# The PRIMARY contract token is the shared-contract PUBLIC API id (visible
+# types/members) computed by the apiid tool — the SAME source file the host
+# compiles in (src/NetPI.Abstractions/ContractId.cs), so the publisher and the
+# host can never disagree. Unlike the byte hash, it does NOT depend on the
+# git commit, the assembly version, or the PDB, so a commit that does not
+# change the API does not invalidate the pin (astra-2 contract id).
+$abstractionsApiId = ''
+if (Test-Path $hostAbstractions) {
+  if (-not (Test-Path (Join-Path $apiidDir 'netpi-apiid.dll'))) {
+    Run-DotNet @('build', (Join-Path $toolsDir 'apiid\apiid.csproj'), '-c', 'Release', '--nologo', '-v', 'q')
+  }
+  $apiidExe = Join-Path $apiidDir 'netpi-apiid.dll'
+  $abstractionsApiId = (& dotnet $apiidExe $hostAbstractions 2>&1 | Select-Object -Last 1).Trim()
+  if ($abstractionsApiId -match '^[0-9a-f]{12}$') { Write-Host "    contract API id: $abstractionsApiId" }
+  else { Write-Warning "apiid tool produced no valid id ('$abstractionsApiId') — manifest will carry an empty abstractionsApiId (host falls back to byte hash)" ; $abstractionsApiId = '' }
+}
+
 # --- per-plugin publication --------------------------------------------------------
 foreach ($id in $discovered) {
   $csproj = (Get-ChildItem -Path (Join-Path $pluginsDir $id) -Filter '*.csproj' -File | Select-Object -First 1).FullName
@@ -297,7 +316,8 @@ foreach ($id in $discovered) {
     # 3) buildId over every staged file (relative posix path + sha256)
     $payload = @(Get-ChildItem -Path $staging -Recurse -File)
     if ($payload.Count -eq 0) { throw "publish produced no files in $staging" }
-    $buildId = Get-BuildId -files $payload.FullName -rootDir $staging -contract $abstractionsId
+    $contractToken = if ($abstractionsApiId) { $abstractionsApiId } else { $abstractionsId }
+    $buildId = Get-BuildId -files $payload.FullName -rootDir $staging -contract $contractToken
 
     # 4) finalize the immutable artifact dir (.artifacts/plugins/<id>/<buildId>/)
     $artifactDir = Join-Path $artifacts "plugins\$id\$buildId"
@@ -326,6 +346,7 @@ foreach ($id in $discovered) {
         buildId             = $buildId
         targetFramework     = 'net10.0'
         runtimeIdentifier   = 'win-x64'
+        abstractionsApiId   = $abstractionsApiId
         abstractionsBuildId = $abstractionsId
         files               = @($files | Sort-Object { $_.path })
       }
