@@ -299,7 +299,10 @@ public static class ShellTests
             var ctx = new FakePluginContext(dir);
             var plugin = new ShellPlugin();
             await plugin.StartAsync(ctx, default);
-            Check.Equal("bash,pwsh,process_list,process_output,process_kill", string.Join(",", ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
+            var expectedTools = ShellLocator.FindPwsh(null, out _) is null
+                ? "bash,process_list,process_output,process_kill"      // pwsh is only offered when PowerShell exists
+                : "bash,pwsh,process_list,process_output,process_kill";
+            Check.Equal(expectedTools, string.Join(",", ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
             var bash = ctx.ToolsFake.Get("bash")!;
             res = await bash.ExecuteAsync(T.Ctx(dir), T.Args(new { command = "sleep 30", background = true }), default);
             var pid = T.D(res).Int("pid");
@@ -351,7 +354,7 @@ public static class ShellTests
                 var d = t.Definition;
                 Check.Equal("shell", d.Category);
                 Check.True(d.Label is { Length: > 0 });
-                Check.True(d.PromptGuidelines is { Count: > 0 });
+                Check.True(d.PromptGuidelines is not null); // deduplicated: some tools have none
                 Check.Equal(d.Name is "process_list" or "process_output", d.ReadOnly, d.Name);
             }
         });

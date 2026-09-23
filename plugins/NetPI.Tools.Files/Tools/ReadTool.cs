@@ -26,9 +26,8 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
             ("limit", Schema.Int($"Maximum number of lines to return (default and max {MaxLines})."), false)),
         PromptGuidelines =
         [
-            "Use read (not cat/head/tail in the shell) to look at files; always read a file before editing it.",
-            $"read returns at most {MaxLines} lines / {MaxBytes / 1024}KB: when the output ends with a 'Use offset=N to continue' footer, call read again with that offset if you need more.",
-            "Line endings are normalized to \\n in read output; the edit and write tools preserve each file's original CRLF/LF style automatically.",
+            "Read a file (with read, not cat) before editing it; page large files with offset/limit.",
+            "Line endings (CRLF/LF), encodings and BOMs are handled automatically by the file tools; never convert them yourself.",
         ],
     };
 

@@ -29,6 +29,9 @@ public sealed class RetryOptions
     public TimeSpan FirstEventTimeout { get; init; } = TimeSpan.FromSeconds(600);
     /// <summary>Max silence between two stream events.</summary>
     public TimeSpan StallTimeout { get; init; } = TimeSpan.FromSeconds(180);
+    /// <summary>Stop retrying once this much time has passed since the first attempt (AiProxy alone may hold a
+    /// request for 2 minutes per attempt when a backend is down).</summary>
+    public TimeSpan MaxTotal { get; init; } = TimeSpan.FromSeconds(300);
 
     public static RetryOptions From(ISettings? s)
     {
@@ -41,6 +44,7 @@ public sealed class RetryOptions
             MaxDelay = TimeSpan.FromMilliseconds(Math.Max(0, Get(s, "retry.maxDelayMs", 30_000.0))),
             FirstEventTimeout = Seconds(Get(s, "retry.firstEventTimeoutSeconds", 600.0)),
             StallTimeout = Seconds(Get(s, "retry.stallTimeoutSeconds", 180.0)),
+            MaxTotal = Seconds(Get(s, "retry.maxTotalSeconds", 300.0)),
         };
     }
 

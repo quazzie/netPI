@@ -25,8 +25,13 @@ public sealed class ShellPlugin : INetPiPlugin
         _registry = new ProcessRegistry(context.Events);
         var service = new ShellService(_registry, context.Settings);
         _ = Task.Run(service.CleanupTempFiles, CancellationToken.None);
+        var hasPwsh = ShellLocator.FindPwsh(context.Settings, out _) is not null;
         foreach (var tool in CreateTools(service))
+        {
+            // don't offer the model a shell that doesn't exist (setting shell.pwshAlways forces registration)
+            if (tool.Definition.Name == "pwsh" && !hasPwsh && !context.Settings.Get("shell.pwshAlways", false)) continue;
             context.Tools.Register(tool);
+        }
 
         var registry = _registry;
         context.Rpc.Register("processes.list", (_, _) =>

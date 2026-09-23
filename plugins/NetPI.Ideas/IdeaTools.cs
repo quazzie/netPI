@@ -156,8 +156,7 @@ public sealed class IdeaAddTool(IdeasStore store, IdeasLocator locator) : IdeaTo
             "Use it for work that is deferred, out of scope or not feasible right now. Put findings, plans and requirements into sections.",
         PromptGuidelines =
         [
-            "When research/plans are deferred or not feasible now, record them with idea_add instead of losing them (include what you found in sections).",
-            "Check idea_list before starting larger work: earlier research or plans may already exist.",
+            "Record deferred or not-yet-feasible research/plans with idea_add (put findings in sections); check idea_list before larger work.",
         ],
         Parameters = new JsonObject
         {

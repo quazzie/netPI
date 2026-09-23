@@ -28,8 +28,7 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
             ("multiline", Schema.Bool("Let the pattern span lines (use \\n in the pattern; (?s) makes . match newlines)."), false)),
         PromptGuidelines =
         [
-            "Use grep (not grep/rg in the shell) to search file contents; narrow with path and glob, and use outputMode=files to just locate files.",
-            "grep patterns are .NET regular expressions: escape regex characters like ( ) [ ] . * + ? or pass literal=true.",
+            "Use the grep/find/ls tools instead of their shell equivalents. grep takes .NET regexes (escape ( ) [ ] . * + ? or pass literal=true).",
         ],
     };
 
@@ -133,7 +132,7 @@ public sealed class FindTool(ISettings? settings = null) : FileToolBase(settings
             ("maxResults", Schema.Int($"Maximum results (default {DefaultMax})."), false)),
         PromptGuidelines =
         [
-            "Use find (not find/ls -R in the shell) to locate files by name or glob.",
+
         ],
     };
 
@@ -207,7 +206,7 @@ public sealed class LsTool(ISettings? settings = null) : FileToolBase(settings)
             ("all", Schema.Bool("Also show ignored entries (.git, node_modules, bin, gitignored files…)."), false)),
         PromptGuidelines =
         [
-            "Use ls to look at a directory and find to search a tree; avoid ls/dir in the shell.",
+
         ],
     };
 

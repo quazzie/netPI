@@ -27,6 +27,7 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
 
         var maxAttempts = Math.Max(1, o.MaxAttempts);
         var dirty = false; // something the consumer must discard was emitted since the last reset
+        var started = System.Diagnostics.Stopwatch.StartNew();
 
         for (var attempt = 1; ; attempt++)
         {
@@ -119,6 +120,12 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
             }
 
             var delay = Backoff(attempt, o);
+            if (o.MaxTotal != Timeout.InfiniteTimeSpan && started.Elapsed + delay > o.MaxTotal)
+            {
+                logger?.LogWarning("Model call failed after {Attempts} attempts in {Seconds:0}s (retry.maxTotalSeconds): {Reason}",
+                    attempt, started.Elapsed.TotalSeconds, reason);
+                ExceptionDispatchInfo.Capture(failure!).Throw();
+            }
             logger?.LogWarning("Model call to {Model} failed (attempt {Attempt}/{Max}): {Reason}. Retrying in {Delay} ms",
                 request.Model.Ref, attempt, maxAttempts, reason, (int)delay.TotalMilliseconds);
 

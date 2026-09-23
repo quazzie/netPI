@@ -17,7 +17,7 @@ public sealed class ContextPlugin : INetPiPlugin
         context.Services.Register<ISystemPromptBuilder>(builder);
         context.Services.Register<IPromptSection>(new IdentitySection(context.Settings));
         context.Services.Register<IPromptSection>(new EnvironmentSection());
-        context.Services.Register<IPromptSection>(new ToolsSection());
+        context.Services.Register<IPromptSection>(new ToolsSection(context.Settings));
         context.Services.Register<IPromptSection>(new GuidelinesSection());
         context.Services.Register<IPromptSection>(new SubagentSection());
         context.Services.Register<IPromptSection>(new AppendSection(context.Settings));

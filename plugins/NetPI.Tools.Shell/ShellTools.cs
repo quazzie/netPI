@@ -79,13 +79,12 @@ public sealed class ShellTool : ShellToolBase
         var win = OperatingSystem.IsWindows();
         var guidelines = new List<string>
         {
-            "Use bash to run programs, builds, tests, git and package managers. For files use read/edit/write/grep/find/ls instead of cat/sed/echo >/grep/find.",
-            "Each call starts a fresh non-interactive shell with stdin closed: cd and variables do not persist (use cwd or `cd dir && …`), pass --yes/-y style flags, and never start interactive programs (editors, pagers, `git rebase -i`, REPLs).",
-            "For servers, watchers and other long-running commands use background=true, then process_output / process_kill; do not append `&`.",
-            $"Output is the last {OutputFormat.ModelMaxLines} lines / {OutputFormat.ModelMaxBytes / 1024}KB; when truncated the full output is saved to a file you can read or grep.",
+            "Use bash for programs, builds, tests, git and package managers; use the file tools (not cat/sed/grep/find) for files.",
+            "Every shell call is fresh and non-interactive: cd/variables don't persist (use cwd or `cd dir && …`), pass -y style flags, never start editors, pagers or REPLs.",
+            "Servers/watchers: background=true, then process_output / process_kill (don't append `&`). Long output is truncated to its tail; the full output is saved to a file.",
         };
         if (win)
-            guidelines.Insert(1, "On Windows bash is Git Bash: use forward slashes (C:/Users/me or /c/Users/me), POSIX tools (ls, grep, sed) are available, cmd built-ins (dir, copy) are not; Windows programs (dotnet, npm, git, python) work normally. For Windows-specific tasks prefer the pwsh tool.");
+            guidelines.Insert(1, "bash is Git Bash: use forward slashes (C:/x or /c/x); POSIX tools work, cmd built-ins (dir, copy) don't; Windows programs (dotnet, npm, git) work normally.");
         return new ToolDefinition
         {
             Name = "bash",
@@ -114,8 +113,7 @@ public sealed class ShellTool : ShellToolBase
         Parameters = Parameters("The PowerShell script to run."),
         PromptGuidelines =
         [
-            "Use pwsh for Windows-specific work (registry, services, Windows paths, .NET APIs, cmdlets); prefer bash for general commands.",
-            "Each pwsh call is a fresh non-interactive process without profile: state does not persist; never use Read-Host or other prompts.",
+            "Use pwsh for Windows-specific work (registry, services, cmdlets, .NET APIs); prefer bash otherwise. Never prompt (Read-Host).",
         ],
     };
 }
@@ -130,7 +128,7 @@ public sealed class ProcessListTool(ProcessRegistry registry) : ShellToolBase
         ReadOnly = true,
         Description = "List background processes and recent shell commands with their status (running / exited N / killed / timeout).",
         Parameters = Schema.Object(),
-        PromptGuidelines = ["Use process_list to find the id of a background process you started earlier."],
+        PromptGuidelines = [],
     };
 
     internal override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
@@ -158,7 +156,7 @@ public sealed class ProcessOutputTool(ProcessRegistry registry) : ShellToolBase
         Parameters = Schema.Object(
             ("id", Schema.Str("Process id (proc_…) as returned by bash/pwsh with background=true."), true),
             ("tail", Schema.Int($"Number of trailing lines to return (default {DefaultTail}, max {OutputFormat.ModelMaxLines})."), false)),
-        PromptGuidelines = ["Check a background process with process_output instead of sleeping in the shell; call it again later to see new output."],
+        PromptGuidelines = ["Check background processes with process_output instead of sleeping in the shell; kill the ones you no longer need."],
     };
 
     internal override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
@@ -189,7 +187,7 @@ public sealed class ProcessKillTool(ProcessRegistry registry) : ShellToolBase
         SummaryArg = "id",
         Description = "Kill a background process and all of its child processes.",
         Parameters = Schema.Object(("id", Schema.Str("Process id (proc_…)."), true)),
-        PromptGuidelines = ["Stop background processes you started with process_kill once you no longer need them."],
+        PromptGuidelines = [],
     };
 
     internal override async Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)

@@ -37,10 +37,7 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
             ("replaceAll", Schema.Bool("Shorthand for a single edit: replace every occurrence."), false)),
         PromptGuidelines =
         [
-            "Prefer edit over write for changing existing files; read the file first and copy oldText verbatim from it (without line numbers).",
-            "Keep oldText small but unique: include 2-3 neighbouring lines when a line appears more than once. Use replaceAll for renames.",
-            "Batch several changes to the same file into one edit call with an edits array; it is all-or-nothing.",
-            "Whitespace/quote/indentation mismatches are tolerated as a fallback, but exact text is fastest and safest.",
+            "edit: copy oldText verbatim from read output; keep it small but unique (add neighbouring lines if needed); replaceAll for renames; batch changes to one file in a single call (all-or-nothing).",
         ],
     };
 

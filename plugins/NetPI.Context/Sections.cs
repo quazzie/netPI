@@ -100,7 +100,7 @@ internal sealed class EnvironmentSection : IPromptSection
 }
 
 /// <summary>One line per active tool plus each tool's prompt guidelines (order 200).</summary>
-internal sealed class ToolsSection : IPromptSection
+internal sealed class ToolsSection(ISettings settings) : IPromptSection
 {
     public string Id => "tools";
     public int Order => 200;
@@ -109,14 +109,23 @@ internal sealed class ToolsSection : IPromptSection
     {
         if (c.Tools.Count == 0) return ValueTask.FromResult<string?>(null);
         var sb = new StringBuilder("# Tools\n");
-        foreach (var t in c.Tools)
-            sb.Append("- ").Append(t.Name).Append(": ").Append(SectionUtil.Summary(t.Description)).Append('\n');
+        if (settings.Get("context.toolDescriptions", false))
+        {
+            foreach (var t in c.Tools)
+                sb.Append("- ").Append(t.Name).Append(": ").Append(SectionUtil.Summary(t.Description)).Append('\n');
+        }
+        else
+        {
+            // Descriptions and schemas are sent with the tool definitions; here only a compact index by category.
+            foreach (var g in c.Tools.GroupBy(t => string.IsNullOrWhiteSpace(t.Category) ? "general" : t.Category))
+                sb.Append("- ").Append(g.Key).Append(": ").Append(string.Join(", ", g.Select(t => t.Name))).Append('\n');
+        }
 
         var bullets = c.Tools.SelectMany(t => t.PromptGuidelines ?? []).Where(g => !string.IsNullOrWhiteSpace(g))
             .Select(g => g.Trim()).Distinct(StringComparer.Ordinal).ToList();
         if (bullets.Count > 0)
         {
-            sb.Append("\nTool guidelines:\n");
+            sb.Append('\n');
             foreach (var g in bullets) sb.Append("- ").Append(g).Append('\n');
         }
         return ValueTask.FromResult<string?>(sb.ToString().TrimEnd());
@@ -132,13 +141,7 @@ internal sealed class GuidelinesSection : IPromptSection
     public ValueTask<string?> RenderAsync(PromptContext c, CancellationToken ct)
     {
         var sb = new StringBuilder("# Guidelines\n");
-        if (SectionUtil.Has(c, "read") && SectionUtil.Has(c, "edit"))
-            sb.Append("- Read a file before editing it. Prefer `edit` for changes to existing files")
-              .Append(SectionUtil.Has(c, "write") ? "; use `write` only for new files or complete rewrites.\n" : ".\n");
-        sb.Append("- Line endings, encodings and BOMs are preserved automatically by the file tools; never convert them yourself.\n");
         sb.Append("- Use absolute paths or paths relative to the working directory.\n");
-        if (SectionUtil.Has(c, "grep") || SectionUtil.Has(c, "find"))
-            sb.Append("- Prefer the `grep`/`find`/`ls` tools over shell commands for searching and listing files.\n");
         sb.Append("- Verify your work when practical (build, run tests) and say what you verified.\n");
         sb.Append("- When you are done, summarize briefly what you changed or found.\n");
 

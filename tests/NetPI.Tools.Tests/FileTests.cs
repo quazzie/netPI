@@ -569,7 +569,7 @@ public static class FileTests
                 var d = t.Definition;
                 Check.True(d.Label is { Length: > 0 }, d.Name);
                 Check.Equal("files", d.Category);
-                Check.True(d.PromptGuidelines is { Count: > 0 }, d.Name);
+                Check.True(d.PromptGuidelines is not null, d.Name); // guidelines are deduplicated across tools; some have none
                 Check.Equal(d.Name is "read" or "grep" or "find" or "ls", d.ReadOnly, d.Name);
                 Check.True(d.Parameters["properties"] is not null, d.Name);
             }

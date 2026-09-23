@@ -54,7 +54,7 @@ public static class IdeasTests
             Check.Equal("idea_add,idea_get,idea_list,idea_remove,idea_update", string.Join(",", env.Ctx.ToolsFake.Tools.Select(t => t.Definition.Name).Order()));
             Check.True(env.Ctx.ToolsFake.Tools.All(t => t.Definition.Category == "ideas"));
             Check.True(env.Tool("idea_list").Definition.ReadOnly && env.Tool("idea_get").Definition.ReadOnly);
-            Check.Contains(string.Join(" ", env.Tool("idea_add").Definition.PromptGuidelines!), "record them with idea_add instead of losing them");
+            Check.Contains(string.Join(" ", env.Tool("idea_add").Definition.PromptGuidelines!), "with idea_add");
             foreach (var m in new[] { "ideas.list", "ideas.get", "ideas.add", "ideas.update", "ideas.delete", "ideas.reorder", "ideas.toPrompt", "ideas.quickAdd" })
                 Check.True(env.Ctx.RpcFake.Exists(m), m);
             var tab = env.Ctx.UiFake.TabList.Single();

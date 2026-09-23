@@ -125,7 +125,7 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
     // Tool-specific tips only: the context plugin's guidelines section explains lanes and delegation in general.
     protected static readonly string[] SpawnGuidelines =
     [
-        "agent_spawn: the task must be complete and self-contained (goal, paths, constraints, what to report): the subagent does not see your conversation. Pick the model/pool with lanes_list when several are available.",
+        "Pick a subagent's model/pool with lanes_list when several are available.",
     ];
 }
 
@@ -246,7 +246,7 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
         Label = "Wait for agents",
         Description = "Wait for subagents to finish and return their final reports. While waiting your lane is released (yielded) so other agents, typically the ones you wait for, can use it; afterwards you resume with priority. Without ids it waits for all of your running subagents. A new user message interrupts the wait.",
         Category = "agents",
-        PromptGuidelines = ["agent_wait yields your lane while waiting: prefer one agent_wait for all workers over several short waits."],
+        PromptGuidelines = [],
         Parameters = Schema(new JsonObject
         {
             ["ids"] = StringArray("Agent ids (or names) to wait for. Default: all of your running subagents."),

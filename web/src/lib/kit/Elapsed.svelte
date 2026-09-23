@@ -11,7 +11,7 @@
   });
 </script>
 
-{#if ms != null}<span class="np-elapsed {cls}">{duration(ms < 60_000 ? Math.floor(ms / 1000) * 1000 : ms)}</span>{/if}
+{#if ms != null}<span class="np-elapsed {cls}">{ms < 1000 ? '0s' : duration(ms < 60_000 ? Math.floor(ms / 1000) * 1000 : ms)}</span>{/if}
 
 <style>
   .np-elapsed {

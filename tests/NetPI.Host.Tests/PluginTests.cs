@@ -156,7 +156,7 @@ public static class PluginTests
                 Check.Equal("running", plugins[id].State, $"{id}: {plugins[id].Error}");
             }
             var tools = server.Kernel.Tools.All.Select(t => t.Definition.Name).ToHashSet();
-            foreach (var t in new[] { "read", "write", "edit", "grep", "find", "ls", "bash", "pwsh", "process_list" })
+            foreach (var t in new[] { "read", "write", "edit", "grep", "find", "ls", "bash", "process_list" })
                 Check.True(tools.Contains(t), $"tool {t} registered");
             Check.True(server.Kernel.Tools.Registrations.Where(t => t.Tool.Definition.Name == "read").All(t => t.PluginId == "netpi.tools.files"));
             var providers = server.Models.Providers.Select(p => p.Id).ToHashSet();

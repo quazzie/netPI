@@ -47,10 +47,9 @@ public static class ContextTests
         Check.Contains(prompt, "- Model: fake/local (context window 100,000 tokens)");
         Check.Contains(prompt, "- Shells: `bash`");
         Check.Contains(prompt, "Date: ");
-        Check.Contains(prompt, "- read: Fake tool read.");
-        Check.Contains(prompt, "- agent_spawn: ");
+        Check.True(System.Text.RegularExpressions.Regex.IsMatch(prompt, @"- \w+: .*\bread\b"), "compact tool index lists read");
+        Check.Contains(prompt, "agent_spawn");
         Check.Contains(prompt, "Use edit for testing.");
-        Check.Contains(prompt, "Prefer `edit` for changes");
         Check.Contains(prompt, "## Lanes and subagents");
         Check.Contains(prompt, "agent_wait");
         Check.Contains(prompt, "You are \"w1\", a subagent.");

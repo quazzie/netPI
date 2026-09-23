@@ -178,7 +178,11 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             }
             catch (Exception ex)
             {
-                Ctx.Logger.LogWarning(ex, "Model call failed ({Model}, session {Session})", model.Ref, SessionId);
+                // expected provider errors: one line without a stack trace; anything else with the full exception
+                if (ex is ModelException or HttpRequestException or IOException)
+                    Ctx.Logger.LogWarning("Model call failed ({Model}, session {Session}): {Error}", model.Ref, SessionId, ex.Message);
+                else
+                    Ctx.Logger.LogWarning(ex, "Model call failed ({Model}, session {Session})", model.Ref, SessionId);
                 ModelErrorDecision? decision = null;
                 foreach (var hook in rt.Hooks())
                 {
@@ -212,7 +216,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             var calls = assistant.ToolCalls.ToList();
             if (after?.Action == TurnAction.Stop)
             {
-                foreach (var c in calls) PersistResult(c, NotExecutedStop, isError: true, publishEnd: false);
+                foreach (var c in calls) PersistResult(c, NotExecutedStop, isError: true, publishEnd: false, skipped: "stopped");
                 break;
             }
 
@@ -689,7 +693,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                     {
                         for (var j = i + 1; j < calls.Count; j++)
                         {
-                            PersistResult(calls[j], SkippedBySteering, isError: true, publishEnd: false);
+                            PersistResult(calls[j], SkippedBySteering, isError: true, publishEnd: false, skipped: "steer");
                             done.Add(calls[j].Id);
                         }
                         break;
@@ -700,7 +704,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             foreach (var c in calls)
-                if (!done.Contains(c.Id)) PersistResult(c, NotExecutedAbort, isError: true, publishEnd: started.Contains(c.Id));
+                if (!done.Contains(c.Id)) PersistResult(c, NotExecutedAbort, isError: true, publishEnd: started.Contains(c.Id), skipped: "aborted");
             throw;
         }
         finally
@@ -870,10 +874,15 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         }
     }
 
-    /// <summary>Persist a synthetic result for a call that did not run (skipped/stopped/aborted).</summary>
-    private void PersistResult(ToolCallPart call, string content, bool isError, bool publishEnd)
+    /// <summary>Persist a result for a call that did not (fully) run. <paramref name="skipped"/> (steer | aborted | stopped)
+    /// is stored as <c>details.skipped</c> so the UI can show it as skipped rather than as a failure.</summary>
+    private void PersistResult(ToolCallPart call, string content, bool isError, bool publishEnd, string? skipped = null)
     {
-        Persist(new ToolResultPart { CallId = call.Id, Name = call.Name, Content = content, IsError = isError, DurationMs = 0 });
+        Persist(new ToolResultPart
+        {
+            CallId = call.Id, Name = call.Name, Content = content, IsError = isError, DurationMs = 0,
+            Details = skipped is null ? null : new JsonObject { ["skipped"] = skipped },
+        });
         if (publishEnd)
             rt.Emit(EventTypes.ToolEnd, new JsonObject
             {
@@ -882,6 +891,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 ["name"] = call.Name,
                 ["isError"] = isError,
                 ["durationMs"] = 0,
+                ["skipped"] = skipped,
             }, SessionId);
     }
 }

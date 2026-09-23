@@ -34,7 +34,20 @@ public sealed class LanesPlugin : INetPiPlugin
         context.Events.Subscribe(EventTypes.ModelsChanged, _ => scheduler.Refresh());
         context.Events.Subscribe(EventTypes.UsageRecorded, usage.Record);
 
-        context.Logger.LogInformation("Lanes: {Pools}", string.Join(", ", scheduler.Snapshot().Select(p => $"{p.Key} {p.Busy}/{p.Capacity}")));
+        // Pools come from the model catalog: make sure it gets listed soon after startup so lanes.list isn't empty.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await context.Models.ListAsync(false, context.Stopping).ConfigureAwait(false);
+                scheduler.Refresh();
+                var pools = scheduler.Snapshot();
+                if (pools.Count > 0)
+                    context.Logger.LogInformation("Lanes: {Pools}", string.Join(", ", pools.Select(p => $"{p.Key} {p.Busy}/{p.Capacity}")));
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { context.Logger.LogDebug(ex, "Initial model listing for lanes failed"); }
+        }, CancellationToken.None);
         return Task.CompletedTask;
     }
 

@@ -24,11 +24,24 @@
     const a = app.agents.get(chat.id);
     return a?.status === 'running' && typeof a.activity === 'string' && /^tool:/.test(a.activity) && a.activity.includes(call.name);
   });
+  // calls that never ran (steering skipped them, the run was aborted/stopped) are not failures
+  const skipped = $derived(
+    !result
+      ? null
+      : (result.details?.skipped ??
+          (/^Skipped:/.test(result.content ?? '')
+            ? 'steer'
+            : /^(Aborted:|Not executed)/.test(result.content ?? '')
+              ? 'aborted'
+              : null)),
+  );
   const status = $derived(
     result
-      ? result.isError
-        ? 'error'
-        : 'ok'
+      ? skipped
+        ? 'skipped'
+        : result.isError
+          ? 'error'
+          : 'ok'
       : lt
         ? lt.status === 'running'
           ? 'running'
@@ -85,7 +98,7 @@
       {#if status === 'running'}
         <span class="np-spinner"></span>
       {:else}
-        <Icon name={status === 'error' ? 'circle-x' : status === 'cancelled' ? 'ban' : meta.icon} size={14} />
+        <Icon name={status === 'error' ? 'circle-x' : status === 'cancelled' || status === 'skipped' ? 'ban' : meta.icon} size={14} />
       {/if}
     </span>
     <span class="label">{meta.label}</span>
@@ -101,7 +114,8 @@
     {/if}
     {#if status === 'pending'}<span class="state">queued</span>{/if}
     {#if status === 'cancelled'}<span class="state">no result</span>{/if}
-    {#if dur != null}<span class="dur np-mono">{duration(dur)}</span>{/if}
+    {#if status === 'skipped'}<span class="state">{skipped === 'steer' ? 'skipped · new message' : skipped === 'stopped' ? 'not run' : 'aborted'}</span>{/if}
+    {#if dur != null && status !== 'skipped'}<span class="dur np-mono">{duration(dur)}</span>{/if}
     <span class="chev" class:open><Icon name="chevron-right" size={12} /></span>
   </button>
 
@@ -174,6 +188,8 @@
     color: var(--err);
   }
   .tool[data-status='cancelled'] .label,
+  .tool[data-status='skipped'] .label,
+  .tool[data-status='skipped'] .ic,
   .tool[data-status='pending'] .label {
     color: var(--fg-dim);
   }

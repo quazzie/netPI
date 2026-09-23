@@ -851,11 +851,24 @@ internal sealed class AgentRuntime : IAgentRuntime
             yielded = lease;
             lease.Dispose();
         }
-        var activity = $"waiting for {tasks.Count} agent{(tasks.Count == 1 ? "" : "s")}";
+        static string WaitingFor(int n) => $"waiting for {n} agent{(n == 1 ? "" : "s")}";
+        var activity = WaitingFor(tasks.Count);
         if (caller is not null)
         {
             if (yielded is not null) SetStatus(caller, AgentStatus.Yielded, activity);
             else SetActivity(caller, activity);
+        }
+        // keep the caller's activity current ("waiting for 2 agents" → "waiting for 1 agent") as workers finish
+        var remaining = tasks.Count;
+        var waiting = 1;
+        if (caller is not null && tasks.Count > 1)
+        {
+            foreach (var task in tasks)
+                _ = task.ContinueWith(_ =>
+                {
+                    var n = Interlocked.Decrement(ref remaining);
+                    if (n > 0 && Volatile.Read(ref waiting) == 1) SetActivity(caller, WaitingFor(n));
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, steer);
@@ -870,6 +883,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
         finally
         {
+            Volatile.Write(ref waiting, 0);
             if (caller is not null && !ct.IsCancellationRequested)
             {
                 if (yielded is not null && run is not null && model is not null)

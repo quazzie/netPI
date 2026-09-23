@@ -21,8 +21,7 @@ public sealed class WriteTool(ISettings? settings = null) : FileToolBase(setting
             ("content", Schema.Str("The complete new file content."), true)),
         PromptGuidelines =
         [
-            "Use write only to create new files or to completely rewrite small files; for changes to existing files prefer edit.",
-            "Do not worry about CRLF vs LF when writing: the file's existing line-ending style is kept.",
+            "Use write for new files or complete rewrites of small files; change existing files with edit.",
         ],
     };
 
