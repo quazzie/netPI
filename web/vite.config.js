@@ -28,7 +28,8 @@ export default defineConfig(({ mode }) => {
       alias: { '@netpi/kit': path.join(webDir, 'src/lib/kit/index.js') },
     },
     build: {
-      outDir: path.join(repoRoot, 'artifacts/app/wwwroot'),
+      // committed build output: `dotnet build` copies it to <app>/wwwroot, so Node is only needed to change the UI
+      outDir: path.join(webDir, 'dist'),
       emptyOutDir: true,
       target: 'es2022',
       sourcemap: false,

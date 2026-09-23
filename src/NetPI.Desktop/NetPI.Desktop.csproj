@@ -31,6 +31,8 @@
   <ItemGroup>
     <ProjectReference Include="../NetPI.Host/NetPI.Host.csproj" />
     <ProjectReference Include="../NetPI.Abstractions/NetPI.Abstractions.csproj" />
+    <!-- Build order only: netpi-server (same output folder) also copies the web UI into wwwroot. -->
+    <ProjectReference Include="../NetPI.Server/NetPI.Server.csproj" ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
 
   <ItemGroup>

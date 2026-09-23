@@ -4,8 +4,6 @@ artifacts/
 node_modules/
 .vs/
 *.user
-plugins/*/wwwroot/ui.js
-plugins/*/wwwroot/ui.js.map
 web/mock/**/wwwroot/
 web/mock/screenshots/
 tests/NetPI.E2E/screenshots/

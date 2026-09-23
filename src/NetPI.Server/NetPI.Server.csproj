@@ -17,4 +17,5 @@
     <ProjectReference Include="../NetPI.Host/NetPI.Host.csproj" />
     <ProjectReference Include="../NetPI.Abstractions/NetPI.Abstractions.csproj" />
   </ItemGroup>
+  <Import Project="$(RepoRoot)build/WebRoot.targets" />
 </Project>

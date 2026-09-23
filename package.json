@@ -6,7 +6,7 @@
   "description": "NetPI web UI (Svelte 5 + Vite) and plugin UI build pipeline",
   "scripts": {
     "build": "npm run build:web && npm run build:plugins",
-    "build:web": "vite build --config web/vite.config.js",
+    "build:web": "vite build --config web/vite.config.js && node web/scripts/sync-dist.mjs",
     "build:plugins": "node web/scripts/build-plugins.mjs",
     "dev": "vite --config web/vite.config.js",
     "mock": "node web/scripts/build-plugins.mjs --only web/mock/sample-plugin && node web/mock/server.mjs",

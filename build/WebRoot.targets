@@ -1,0 +1,22 @@
+<Project>
+  <!--
+    Copies the prebuilt web UI (web/dist, produced by `npm run build:web` and committed) into <OutDir>/wwwroot.
+    The folder is replaced as a whole so stale hashed assets from older builds don't accumulate.
+  -->
+  <PropertyGroup>
+    <NetPiWebDist>$(RepoRoot)web/dist/</NetPiWebDist>
+  </PropertyGroup>
+
+  <Target Name="NetPiCopyWebRoot" AfterTargets="Build" Condition="Exists('$(NetPiWebDist)index.html')">
+    <ItemGroup>
+      <_NetPiWebFile Include="$(NetPiWebDist)**/*" />
+    </ItemGroup>
+    <RemoveDir Directories="$(OutDir)wwwroot" ContinueOnError="true" />
+    <Copy SourceFiles="@(_NetPiWebFile)" DestinationFiles="@(_NetPiWebFile->'$(OutDir)wwwroot/%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="false" Retries="3" RetryDelayMilliseconds="200" />
+  </Target>
+
+  <Target Name="NetPiWarnNoWeb" AfterTargets="Build" Condition="!Exists('$(NetPiWebDist)index.html')">
+    <Warning Text="web/dist is missing: the UI is not bundled. Run `npm ci` and `npm run build` in the repository root." />
+  </Target>
+</Project>
