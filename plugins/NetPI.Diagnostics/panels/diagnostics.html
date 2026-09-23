@@ -199,9 +199,9 @@ async function loadOverview() {
 }
 
 // ---- plugins ----------------------------------------------------------------
-// Data: /api/diag/overview (seed + polling on this port) refined by the host's
-// plugin.* WS events (ws://<host>:5173/ws). The former netPI.Web "plugins" panel
-// is folded in here: state pill, version, leases, last error, per-plugin reload.
+// Data: /api/diag/overview (polling on this port, same origin). Control actions
+// (reload / reload-all / scan / model refresh) are same-origin POSTs to this
+// surface — the panel never connects to the host's cross-origin WebSocket.
 const pluginState = new Map();
 
 function renderPlugins(list) {
@@ -252,55 +252,35 @@ function renderPlugins(list) {
   }
 }
 
-// ---- host WS (plugin lifecycle events + reload commands) ----------------------
-let hostWs = null;
-function connectHostWs() {
-  try { hostWs = new WebSocket(`ws://${location.hostname}:5173/ws`); } catch { return; }
-  hostWs.onmessage = (e) => {
-    let m; try { m = JSON.parse(e.data); } catch { return; }
-    const p = m.payload || {};
-    switch (m.type) {
-      case "plugins.state":
-        pluginState.clear();
-        for (const pl of p.plugins || []) pluginState.set(pl.id, pl);
-        renderPlugins([...pluginState.values()]);
-        break;
-      case "plugin.state":
-        if (pluginState.has(p.pluginId)) pluginState.get(p.pluginId).state = p.state;
-        renderPlugins([...pluginState.values()]);
-        break;
-      case "plugin.reloaded":
-        if (pluginState.has(p.pluginId)) pluginState.get(p.pluginId).state = "Active";
-        renderPlugins([...pluginState.values()]);
-        break;
-      case "plugin.scanned": {
-        const loaded = p.loaded || [];
-        setScanStatus(loaded.length ? "scanned in: " + loaded.join(", ") : "nothing new on disk");
-        break;
-      }
-      case "plugin.reloadFailed":
-        if (pluginState.has(p.pluginId)) pluginState.get(p.pluginId).state = "Failed";
-        renderPlugins([...pluginState.values()]);
-        break;
-    }
-  };
-  hostWs.onclose = () => setTimeout(connectHostWs, 3000);
+// ---- control actions (same-origin POST — docs/plans/compaction-tool-history.md §6) ---
+// The panel is same-origin on this Kestrel, so it drives the control endpoints
+// directly. Each operation is ENQUEUED (deferred) by the host; the authoritative
+// state arrives on the next overview poll. These calls only confirm scheduling
+// (or an immediate rejection), so a self-reload never holds a request open.
+async function postControl(url) {
+  try {
+    const r = await fetch(url, { method: "POST" });
+    const body = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, body: body || {} };
+  } catch (e) { return { ok: false, status: 0, body: { error: String(e) } }; }
 }
 function reloadPlugin(id) {
   const cur = pluginState.get(id);
-  if (cur) { cur.state = "Draining"; renderPlugins([...pluginState.values()]); }
-  if (hostWs && hostWs.readyState === WebSocket.OPEN)
-    hostWs.send(JSON.stringify({ type: "plugin.reload", payload: { pluginId: id } }));
+  if (cur) { cur.state = "Loading"; renderPlugins([...pluginState.values()]); }
+  postControl("/api/diag/reload?pluginId=" + encodeURIComponent(id)).then(res => {
+    if (!res.ok && cur) { cur.state = "Failed"; renderPlugins([...pluginState.values()]); }
+  });
 }
-document.getElementById("reloadAll").onclick = () => {
-  if (hostWs && hostWs.readyState === WebSocket.OPEN)
-    hostWs.send(JSON.stringify({ type: "plugin.reloadAll", payload: {} }));
-};
+document.getElementById("reloadAll").onclick = () =>
+  postControl("/api/diag/reload-all").then(res => {
+    if (!res.ok) setScanStatus("reload-all rejected: " + (res.body.error || ("HTTP " + res.status)));
+  });
 document.getElementById("scanPlugins").onclick = () => {
   setScanStatus("scanning…");
-  if (hostWs && hostWs.readyState === WebSocket.OPEN)
-    hostWs.send(JSON.stringify({ type: "plugin.scan", payload: {} }));
-  else setScanStatus("host not connected");
+  postControl("/api/diag/scan").then(res =>
+    setScanStatus(res.ok
+      ? "scan scheduled (op " + String(res.body.operationId || "").slice(0, 8) + "…)"
+      : "scan rejected: " + (res.body.error || ("HTTP " + res.status))));
 };
 function setScanStatus(msg) {
   const b = document.getElementById("scanStatus");
@@ -330,10 +310,14 @@ async function loadModels() {
   } else m.append(el("div", "empty", "model catalog not registered"));
   document.getElementById("dot").classList.add("up");
 }
-document.getElementById("refreshModels").onclick = () => {
-  if (hostWs && hostWs.readyState === WebSocket.OPEN)
-    hostWs.send(JSON.stringify({ type: "models.refresh", payload: {} }));
-};
+document.getElementById("refreshModels").onclick = () =>
+  postControl("/api/diag/models/refresh").then(res => {
+    if (res.ok) loadModels();
+    else {
+      const box = document.getElementById("ovModels");
+      box.append(el("div", "err-line", "refresh failed: " + (res.body.error || ("HTTP " + res.status))));
+    }
+  });
 
 // ---- model wire ----------------------------------------------------------------
 async function loadModel() {
@@ -429,16 +413,25 @@ async function loadSession() {
   if (!d.entries || !d.entries.length) box.append(el("div", "empty", "no entries"));
 }
 
-// ---- loop -------------------------------------------------------------------
+// ---- poll loop (self-rescheduling; backs off on failure; stops on teardown) ----
+let pollTimer = null, failCount = 0;
+const BASE_MS = 4000, MAX_MS = 30000;
 async function refresh() {
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   const fns = {
     overview: loadOverview, plugins: () => loadOverview(), models: loadModels,
     model: loadModel, events: loadEvents, logs: loadLogs, sessions: loadSessionList,
   };
-  try { await fns[currentTab](); } catch (e) { /* dot stays red */ }
+  try { await fns[currentTab](); failCount = 0; } catch (e) { failCount++; /* dot stays red */ }
+  scheduleNext();
 }
-connectHostWs();
-setInterval(refresh, 4000);
+function scheduleNext() {
+  const d = Math.min(BASE_MS * Math.pow(2, failCount), MAX_MS);
+  pollTimer = setTimeout(() => { pollTimer = null; refresh(); }, d);
+}
+// Stop polling when the panel is torn down (page hidden/unloaded).
+window.addEventListener("pagehide", () => { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; } });
+
 // ?tab=… deep link (e.g. diagnostics#tab=plugins)
 const hashTab = location.hash.replace(/^#tab=/, "");
 if (hashTab && [...document.querySelectorAll("nav button")].some(b => b.dataset.tab === hashTab))

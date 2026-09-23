@@ -105,11 +105,10 @@
   }
 
   function newSession() {
-    ws.createSession({
-      workspace: store.session?.workspace || undefined,
-    })
-      .catch((e) => store.setError(String(e)))
-      .finally(onClose);
+    // Draft-first: instant local "New session" (captures the applied project /
+    // workspace, model, reasoning) — no database row until the first prompt.
+    store.startNewSession();
+    onClose();
   }
 
   function startRename(s: SessionInfo) {

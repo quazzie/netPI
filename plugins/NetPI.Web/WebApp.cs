@@ -172,7 +172,29 @@ internal sealed class WebApp : IAsyncDisposable
     private readonly HashSet<Client> _clients = [];
     private readonly object _clientsLock = new();
 
-    private int _promptTokens, _completionTokens, _totalTokens;
+    private int _promptTokens, _completionTokens, _totalTokens, _cachedTokens;
+
+    /// <summary>
+    /// Per-session end-of-turn metrics for the ACTIVE run (explicit timestamps,
+    /// not client guesses): token totals folded per model turn (the LAST
+    /// usage-updated of a turn wins), summed model windows
+    /// (model-started → model-completed), and tool count/wall time. Finalized
+    /// (persisted as a <c>run_metrics</c> metadata entry + live session.entry)
+    /// when the run reaches its terminal event — replay and live completion
+    /// therefore render the exact same status line.
+    /// </summary>
+    private sealed class RunMetricsAcc
+    {
+        public int Prompt, Completion, Cached;
+        public long ModelMs;
+        public int Tools;
+        public long ToolMs;
+        public DateTimeOffset Start;
+        public bool HasPending;
+        public int PendingPrompt, PendingCompletion, PendingCached;
+        public DateTimeOffset? ModelStartedAt;
+    }
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, RunMetricsAcc> _runAcc = new();
 
     public WebApp(IPluginContext ctx, int port, string staticRoot, int maxWsMessageBytes, IPluginLogger log)
     {
@@ -667,6 +689,10 @@ internal sealed class WebApp : IAsyncDisposable
         switch (e.Type)
         {
             case AgentEventType.AgentStarting:
+                // A fresh run on this session: start its metrics accumulator
+                // (explicit server timestamp — the client never guesses times).
+                if (sid is not null)
+                    _runAcc[sid] = new RunMetricsAcc { Start = e.At };
                 SendEvent("agent.state", new { state = "Preparing" }, sid);
                 break;
 
@@ -712,6 +738,7 @@ internal sealed class WebApp : IAsyncDisposable
                 {
                     SendEvent("tool.output", new { id, output = S(p, "toolOutput") ?? "", images = p.TryGetProperty("images", out var imageData) ? imageData : (JsonElement?)null, isError = B(p, "isError") }, sid);
                     SendEvent("tool.completed", new { id, durationMs = durMs }, sid);
+                    NoteRunTool(sid, durMs);
                 }
                 break;
             }
@@ -819,7 +846,11 @@ internal sealed class WebApp : IAsyncDisposable
             case AgentEventType.AgentCancelled:
             case AgentEventType.AgentFailed:
                 // Final turns have no tool batch, so close them here.
+                // Finalize the run metrics BEFORE the terminal agent.state, so
+                // the run_metrics entry reaches the client before completeRun
+                // marks the transcript's endOfRun block.
                 CompleteAssistantTurn(sid);
+                FinalizeRunMetrics(sid, e.At);
                 SendEvent("agent.state", new { state = "Idle" }, sid);
                 break;
 
@@ -880,6 +911,9 @@ internal sealed class WebApp : IAsyncDisposable
                 // astra-1 F/#11: this run is now the session's active streaming run.
                 // A delayed event from an older run (a different RunId) is dropped below.
                 _activeRun[key] = runId;
+                // Run metrics: open the model window (closed at model-completed).
+                if (sid is not null && _runAcc.TryGetValue(sid, out var acc0))
+                    acc0.ModelStartedAt = DateTimeOffset.UtcNow;
                 SendEvent("assistant.started", new { model = S(w, "modelId") }, sid);
                 break;
             }
@@ -914,16 +948,44 @@ internal sealed class WebApp : IAsyncDisposable
                 _promptTokens = I(w, "promptTokens");
                 _completionTokens = I(w, "completionTokens");
                 _totalTokens = I(w, "totalTokens");
+                _cachedTokens = I(w, "cachedTokens");
+                if (sid is not null && _runAcc.TryGetValue(sid, out var acc1))
+                {
+                    // The LAST usage-updated of a turn is authoritative; it
+                    // folds into the run totals at turn close (model-completed).
+                    acc1.HasPending = true;
+                    acc1.PendingPrompt = _promptTokens;
+                    acc1.PendingCompletion = _completionTokens;
+                    acc1.PendingCached = _cachedTokens;
+                }
                 SendEvent("usage.updated", new
                 {
                     promptTokens = _promptTokens,
                     completionTokens = _completionTokens,
                     totalTokens = _totalTokens,
+                    cachedTokens = _cachedTokens > 0 ? _cachedTokens : (int?)null,
                 }, sid);
                 break;
             case "model-completed":
             {
                 FlushDeltas(sid);
+                // Run metrics: close the model window and fold this turn's
+                // usage into the run totals.
+                if (sid is not null && _runAcc.TryGetValue(sid, out var acc2))
+                {
+                    if (acc2.ModelStartedAt is { } windowStart)
+                    {
+                        acc2.ModelMs += (long)Math.Max(0, (DateTimeOffset.UtcNow - windowStart).TotalMilliseconds);
+                        acc2.ModelStartedAt = null;
+                    }
+                    if (acc2.HasPending)
+                    {
+                        acc2.Prompt += acc2.PendingPrompt;
+                        acc2.Completion += acc2.PendingCompletion;
+                        acc2.Cached += acc2.PendingCached;
+                        acc2.HasPending = false;
+                    }
+                }
                 // This closes the model stream, not necessarily the assistant UI
                 // turn: tool calls/results still belong to this same turn.
                 var finalText = _completedText.TryRemove(sid ?? "", out var t) ? t : string.Empty;
@@ -1987,6 +2049,11 @@ internal sealed class WebApp : IAsyncDisposable
         var reasoning = S(p, "reasoning");
         var sessionId = S(p, "sessionId");
         var payloadWorkspace = S(p, "workspace");
+        // Draft first-prompt: the client's local New Session carries the
+        // APPLIED project it captured (a pending switch is never inherited).
+        // The session is created with that project attached BEFORE the run
+        // starts (see below).
+        var projectId = S(p, "projectId");
         // astra-1 §11a (F/A): a stable client operationId makes retries idempotent.
         // Absent/blank operationId is a NON-idempotent legacy send (behaviour unchanged).
         var operationId = S(p, "operationId");
@@ -2006,15 +2073,53 @@ internal sealed class WebApp : IAsyncDisposable
         }
 
         // Ensure a session exists (the runner persists the initial user entry).
+        // A send with no sessionId CREATES the session here; when a projectId
+        // travels with it (the client's draft first-prompt), the project is
+        // attached ATOMICALLY with creation — resolve the project + instruction
+        // snapshot FIRST (an unknown project rejects the send before any row
+        // exists: no orphan sessions), then SetProjectAsync through the same
+        // machinery session.project uses. The run starts only after the
+        // project is in place — the model never runs once with an empty
+        // project and gets it attached afterwards.
         string? sid = sessionId;
         SessionInfo? info = null;
         if (!string.IsNullOrEmpty(sid))
             info = await Store.GetAsync(sid, ct);
         if (info is null)
         {
-            info = await Store.CreateAsync(payloadWorkspace, ct);
-            sid = info.Id;
-            await SendAsync(c, "session.created", ToSessionJson(info), sid, ct);
+            ProjectInfo? proj = null;
+            ProjectContextSnapshot? snapshot = null;
+            if (!string.IsNullOrEmpty(projectId))
+            {
+                var projectStore = Resolve<IProjectStore>("projects");
+                proj = projectStore is null ? null : await projectStore.GetAsync(projectId, ct);
+                if (proj is null)
+                {
+                    await SendErrorAsync(c, requestId, "unknown project", ct);
+                    return;
+                }
+                var resolver = Resolve<IInstructionContextResolver>("instruction-context");
+                snapshot = resolver is null
+                    ? new ProjectContextSnapshot(proj.Id, proj.Name, proj.WorkspacePath,
+                        Array.Empty<string>(), string.Empty, string.Empty, DateTimeOffset.UtcNow)
+                    : await resolver.ResolveAsync(proj.Id, proj.Name, proj.WorkspacePath, ct);
+                if (string.IsNullOrEmpty(payloadWorkspace))
+                    payloadWorkspace = proj.WorkspacePath;
+            }
+            // This branch runs with info null (a new session).
+            var created = await Store.CreateAsync(payloadWorkspace, ct);
+            sid = created.Id;
+            if (proj is not null && snapshot is not null)
+            {
+                await Store.SetProjectAsync(new ProjectChangeRequest(
+                    string.IsNullOrEmpty(operationId) ? Guid.NewGuid().ToString("n") : operationId!,
+                    sid, proj.Id, snapshot), ct);
+                created = await Store.GetAsync(sid, ct) ?? created;
+            }
+            info = created;
+            // The created session is announced WITH its project/compaction
+            // (the client's draft adoption renders the header immediately).
+            await SendAsync(c, "session.created", await ToVisibleSessionJsonAsync(created, ct), sid, ct);
         }
 
         // First send on a session with no title: name it after the message
@@ -2469,6 +2574,23 @@ internal sealed class WebApp : IAsyncDisposable
                 var mroot = JsonDocument.Parse(mdp.ToString()).RootElement;
                 if (S(mroot, "kind") == "system_note")
                     outEntries.Add(new { type = "system_note", text = S(mroot, "text") } as object);
+                else if (S(mroot, "kind") == "run_metrics")
+                {
+                    // End-of-turn metrics (persisted at the run's terminal
+                    // event): replayed so an reopened session renders the same
+                    // status line as the live run did.
+                    outEntries.Add(new
+                    {
+                        type = "run_metrics",
+                        promptTokens = I(mroot, "promptTokens"),
+                        completionTokens = I(mroot, "completionTokens"),
+                        cachedTokens = (mroot.TryGetProperty("cachedTokens", out var ctok) && ctok.ValueKind == JsonValueKind.Number) ? (int?)ctok.GetInt32() : null,
+                        runElapsedMs = I(mroot, "runElapsedMs"),
+                        modelElapsedMs = I(mroot, "modelElapsedMs"),
+                        toolCount = mroot.TryGetProperty("toolCount", out var tct) && tct.ValueKind == JsonValueKind.Number ? (int?)tct.GetInt32() : null,
+                        toolElapsedMs = mroot.TryGetProperty("toolElapsedMs", out var tms) && tms.ValueKind == JsonValueKind.Number ? (int?)tms.GetInt32() : null,
+                    } as object);
+                }
             }
         }
         return outEntries;
@@ -2736,17 +2858,88 @@ internal sealed class WebApp : IAsyncDisposable
 
         SendEvent("assistant.completed", new
         {
-            usage = _totalTokens > 0 ? new
+            usage = _totalTokens > 0 || _cachedTokens > 0 ? new
             {
                 promptTokens = _promptTokens,
                 completionTokens = _completionTokens,
                 totalTokens = _totalTokens,
+                cachedTokens = _cachedTokens > 0 ? _cachedTokens : (int?)null,
             } : (object?)null,
         }, sid);
-        _promptTokens = _completionTokens = _totalTokens = 0;
+        _promptTokens = _completionTokens = _totalTokens = _cachedTokens = 0;
         // astra-1 F/#11: the owner of this turn is gone — a delayed stream event
         // from it (or an even older run) must not open a new owner claim.
         _activeRun.TryRemove(key, out _);
+    }
+
+    /// <summary>Tool wall-time into the active run's metrics (the real
+    /// per-tool duration the client already sees on tool.completed).</summary>
+    private void NoteRunTool(string? sid, long durMs)
+    {
+        if (sid is null || durMs < 0) return;
+        if (_runAcc.TryGetValue(sid, out var acc))
+        {
+            acc.Tools += 1;
+            acc.ToolMs += durMs;
+        }
+    }
+
+    /// <summary>
+    /// Finalize the active run's metrics at its terminal event: persist a
+    /// <c>run_metrics</c> metadata entry (transcript replay carries them, so
+    /// live completion and reopened sessions render the same status line) and
+    /// broadcast it as a live <c>session.entry</c>. Fire-and-forget persist —
+    /// the event path must not block; a persist failure only loses the
+    /// historical copy, never the live one.
+    /// </summary>
+    private void FinalizeRunMetrics(string? sid, DateTimeOffset end)
+    {
+        if (sid is null) return;
+        if (!_runAcc.TryRemove(sid, out var acc) || acc is null) return;
+
+        // A last turn whose model-completed never arrived (a failed model
+        // request) still owns a pending usage reading — count it.
+        if (acc.HasPending)
+        {
+            acc.Prompt += acc.PendingPrompt;
+            acc.Completion += acc.PendingCompletion;
+            acc.Cached += acc.PendingCached;
+        }
+        if (acc.ModelStartedAt is { } openWindow)
+            acc.ModelMs += (long)Math.Max(0, (end - openWindow).TotalMilliseconds);
+        var runElapsedMs = (long)Math.Max(0, (end - acc.Start).TotalMilliseconds);
+        var payload = new
+        {
+            kind = "run_metrics",
+            promptTokens = acc.Prompt,
+            completionTokens = acc.Completion,
+            cachedTokens = acc.Cached,
+            runElapsedMs,
+            modelElapsedMs = acc.ModelMs,
+            toolCount = acc.Tools,
+            toolElapsedMs = acc.ToolMs,
+        };
+
+        SendEvent("session.entry", new { entry = payload as object }, sid);
+
+        using var lease = AcquireStoreLease();
+        var store = lease?.Value;
+        if (store is null) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var entry = new SessionEntry(
+                    Guid.NewGuid().ToString("n"), sid, EntryKind.Metadata, null,
+                    JsonSerializer.SerializeToElement(payload, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }),
+                    DateTimeOffset.UtcNow);
+                await store.AppendAsync(entry, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _log.Warning($"run_metrics persist failed ({sid}): {ex.Message}");
+            }
+        });
     }
 
     /// <summary>astra-2: synchronous — every envelope is enqueued to each

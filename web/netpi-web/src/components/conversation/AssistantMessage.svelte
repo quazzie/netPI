@@ -2,7 +2,7 @@
   import { marked } from "marked";
   import DOMPurify from "dompurify";
   import { store } from "../../store.svelte";
-  import type { AssistantBlock, ToolCall } from "../../types";
+  import type { AssistantBlock, ToolCall, RunMetrics } from "../../types";
   import ThinkingBlock from "./ThinkingBlock.svelte";
   import ToolCallBlock from "./ToolCallBlock.svelte";
 
@@ -227,6 +227,34 @@
     }
   });
 
+  // ---- end-of-turn status line (turn performance, live + replay identical) --
+  // Rendered on the run's final assistant block (endOfRun). Values come from
+  // the persisted run_metrics entry (runElapsedMs / modelElapsedMs are the
+  // server's explicit timestamps; tok/s = completionTokens / modelElapsed —
+  // observed output throughput), so a live turn and the same session reopened
+  // show the exact same line.
+  function fmtTokens(n: number): string {
+    return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(n);
+  }
+  function formatRunMetrics(m: RunMetrics): string {
+    const parts: string[] = [];
+    parts.push(`${(m.runElapsedMs / 1000).toFixed(1)}s`);
+    if (m.modelElapsedMs > 0 && m.completionTokens > 0)
+      parts.push(`${Math.max(1, Math.round(m.completionTokens / (m.modelElapsedMs / 1000)))} tok/s`);
+    if (m.promptTokens > 0) parts.push(`${fmtTokens(m.promptTokens)} in`);
+    if (m.completionTokens > 0) parts.push(`${fmtTokens(m.completionTokens)} out`);
+    if (m.cachedTokens && m.promptTokens > 0)
+      parts.push(`${Math.round((m.cachedTokens / m.promptTokens) * 100)}% cached`);
+    if (m.toolCount) parts.push(`${m.toolCount} tools`);
+    return parts.join(" · ");
+  }
+  let runMetrics = $derived(block.endOfRun ? block.metrics : null);
+  let metricsLine = $derived(runMetrics ? formatRunMetrics(runMetrics) : "");
+  let metricsTip = $derived(runMetrics
+    ? `run ${(runMetrics.runElapsedMs / 1000).toFixed(1)}s · model ${(runMetrics.modelElapsedMs / 1000).toFixed(1)}s` +
+      (runMetrics.toolCount ? ` · tools ${((runMetrics.toolElapsedMs ?? 0) / 1000).toFixed(1)}s` : "")
+    : "");
+
   function artifactPath(call: ToolCall): string | null {
     if (call.result === undefined || call.isError) return null;
     if (call.name !== "write" && call.name !== "edit" && call.name !== "replace") return null;
@@ -292,6 +320,12 @@
           <ToolCallBlock call={call} />
         {/each}
       </div>
+    {/if}
+
+    {#if block.endOfRun && block.metrics}
+      <!-- End-of-turn status: belongs to THIS assistant run (the context
+           meter stays in the prompt panel). Tooltip carries the timings. -->
+      <div class="run-metrics" title={metricsTip}>{metricsLine}</div>
     {/if}
 
     {#if block.endOfRun && artifacts.length}

@@ -95,10 +95,9 @@ export async function navigateToPanelSession(sessionId: string): Promise<void> {
     }
     return;
   }
-  // The open landed; if the drawer doesn't know the session yet it will be
-  // upserted by the session.updated/created events. Give the tab a home.
-  if (!known && !store.openTabIds.includes(sessionId)) {
-    store.openTab(sessionId);
-  }
+  // The open landed (or, for a deleted/unknown id, the store already trimmed
+  // the tab through sessionNotFound and moved to the nearest valid selection);
+  // the session.updated/created events upsert the drawer row. selectSession
+  // (inside ws.openSession) already registered the tab.
   store.setPanelNavNotice(null);
 }

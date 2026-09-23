@@ -493,7 +493,13 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                 bool contentSeen = false;
                 bool hardFailed = false;
                 var pending = new List<ModelEvent>();
-                var chained = request.SessionId is not null && GetChainHead(request.SessionId, request.ModelId) is not null;
+                // §5.2: the ACTUAL request mode, decided once — a head existing is
+                // not enough; the payload chains only when the head covers the
+                // transcript prefix. Used for diagnostics AND recovery eligibility.
+                var (willChain, chainReason) = ResolveChainMode(
+                    request, request.SessionId is null ? null : GetChainHead(request.SessionId, request.ModelId));
+                var mode = willChain ? "chained" : "reset";
+                var reason = attempt > 0 ? "stale-reference-recovered" : chainReason;
 
                 await foreach (var ev in RunResponsesAsync(request, cancellationToken))
                 {
@@ -528,11 +534,15 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
 
                 if (!hardFailed)
                 {
-                    await PublishDiagnosticsAsync(request, "responses", true, chained, false, null, cancellationToken);
+                    await PublishDiagnosticsAsync(request, "responses", true, willChain, false, null, mode, reason, cancellationToken);
                     yield break;
                 }
 
-                if (attempt == 0 && chainKey is not null && IsStaleChainFailure(failReason)
+                // §5.3: the one-shot stale-chain retry is eligible only when THIS
+                // request actually referenced a prior response (was chained) and
+                // emitted no content. A reset request cannot have a stale-reference
+                // failure, and malformed history (invalid_tool_history) never does.
+                if (attempt == 0 && chainKey is not null && willChain && IsStaleChainFailure(failReason)
                     && _chainHeads.TryRemove(chainKey, out _))
                 {
                     _log.Information(
@@ -540,7 +550,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                         "dropped, re-anchoring via reset on the responses wire");
                     continue; // same wire, reset shape: no previous_response_id
                 }
-                await PublishDiagnosticsAsync(request, "responses", true, chained, false, failReason, cancellationToken);
+                await PublishDiagnosticsAsync(request, "responses", true, willChain, false, failReason, mode, reason, cancellationToken);
                 yield return new ModelFailed(request.ModelId, failReason);
                 yield break;
             }
@@ -550,19 +560,20 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
 
         // Chat completions is selected only when the configured wire is chat or
         // capability negotiation did not select Responses.
-        await PublishDiagnosticsAsync(request, "chat", false, false, false, null, cancellationToken);
+        await PublishDiagnosticsAsync(request, "chat", false, false, false, null, "chat", null, cancellationToken);
 
         await foreach (var ev in RunChatCompletionsAsync(request, cancellationToken))
             yield return ev;
         yield break;
     }
 
-    /// <summary>PLAN §47: publish the wire-decision record; diagnostics must never break a run.</summary>
-    private async ValueTask PublishDiagnosticsAsync(ModelRequest request, string served, bool wanted, bool chained, bool fallback, string? failure, CancellationToken cancellationToken)
+    /// <summary>PLAN §47 + docs/plans/compaction-tool-history.md §5.4: publish the
+    /// wire-decision record with the ACTUAL mode/reason; diagnostics never break a run.</summary>
+    private async ValueTask PublishDiagnosticsAsync(ModelRequest request, string served, bool wanted, bool chained, bool fallback, string? failure, string mode, string? reason, CancellationToken cancellationToken)
     {
         if (_bus is null) return;
         var ev = new ModelRequestDiagnostics(
-            request.SessionId, request.ModelId, _wire, wanted ? "responses" : "chat", served, chained, fallback, failure);
+            request.SessionId, request.ModelId, _wire, wanted ? "responses" : "chat", served, chained, fallback, failure, mode, reason);
         try { await _bus.PublishAsync(ev, CancellationToken.None); }
         catch { /* publish is best-effort */ }
     }
@@ -1022,11 +1033,11 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         // NOT be resent. Anything else (first run, compaction, equal-length
         // retry after failure) is a reset: full input, new head on success.
         var chainHead = !string.IsNullOrEmpty(request.SessionId) ? GetChainHead(request.SessionId, request.ModelId) : null;
-        if (chainHead is { } head && cur.Count > head.Covered.Count
-            && cur.Take(head.Covered.Count).SequenceEqual(head.Covered))
+        var (chain, _) = ResolveChainMode(request, chainHead);
+        if (chain && chainHead is not null)
         {
-            covered = head.Covered;
-            for (var i = head.Covered.Count; i < request.Messages.Count; i++)
+            covered = chainHead.Covered;
+            for (var i = chainHead.Covered.Count; i < request.Messages.Count; i++)
                 BuildItemsForMessage(request.Messages[i], input, out _);
         }
         else
@@ -1059,9 +1070,8 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             ["store"] = true,
             ["input"] = input,
         };
-        if (chainHead is { } head2 && cur.Count > head2.Covered.Count
-            && cur.Take(head2.Covered.Count).SequenceEqual(head2.Covered))
-            payload["previous_response_id"] = head2.ResponseId;
+        if (chain && chainHead is not null)
+            payload["previous_response_id"] = chainHead.ResponseId;
         if (instructions is not null) payload["instructions"] = instructions;
 
         var tools = request.Tools.Count > 0
@@ -1144,6 +1154,10 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     /// part's kind and identifying payload. Message ids are stable for the
     /// lifetime of an in-memory transcript; compaction rebuilds with new ids,
     /// which is exactly the signal a chain head must reset on.
+    /// docs/plans/compaction-tool-history.md §5.5: a tool call's NAME and
+    /// ARGUMENTS are part of the wire history, so they are fingerprinted too —
+    /// otherwise a same-id call with a corrected name/arguments would not change
+    /// the fingerprint and the head would chain onto an obsolete prefix.
     /// </summary>
     private static string Fingerprint(AgentMessage m)
     {
@@ -1156,7 +1170,9 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             {
                 case TextPart t: b.Append(t.Text); break;
                 case ThinkingPart th: b.Append(th.Text); break;
-                case ToolCallPart tc: b.Append(tc.Id); break;
+                case ToolCallPart tc:
+                    b.Append(tc.Id).Append('\u0004').Append(tc.Name).Append('\u0005').Append(tc.Arguments.GetRawText());
+                    break;
                 case ToolResultPart tr:
                     b.Append(tr.ToolCallId);
                     foreach (var nested in tr.Parts)
@@ -1178,6 +1194,25 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
 
     private ChainHead? GetChainHead(string sessionId, string modelId)
         => _chainHeads.TryGetValue(ChainKey(sessionId, modelId), out var head) ? head : null;
+
+    /// <summary>
+    /// docs/plans/compaction-tool-history.md §5.2: the ACTUAL request mode, computed
+    /// ONCE and used for serialization, diagnostics AND recovery eligibility — never
+    /// inferred from the mere existence of a chain head. A request chains only when
+    /// the head still covers a matching transcript prefix (the exact prefix check the
+    /// payload builder uses); anything else is a reset (full input, no prior id).
+    /// Returns the mode plus a bounded reason: "prefix-match" (chained),
+    /// "prefix-changed" or "no-chain-head" (reset), "no-session" (reset, no session).
+    /// </summary>
+    private static (bool Chain, string Reason) ResolveChainMode(ModelRequest request, ChainHead? head)
+    {
+        if (string.IsNullOrEmpty(request.SessionId)) return (false, "no-session");
+        if (head is null) return (false, "no-chain-head");
+        var cur = MessageFingerprints(request.Messages);
+        if (cur.Count > head.Covered.Count && cur.Take(head.Covered.Count).SequenceEqual(head.Covered))
+            return (true, "prefix-match");
+        return (false, "prefix-changed");
+    }
 
     private static bool HasUserQuery(IEnumerable<AgentMessage> messages) => messages.Any(m =>
         m.Role == MessageRole.User && m.Parts.Any(p => p is ImagePart || p is TextPart t && !string.IsNullOrWhiteSpace(t.Text)));
@@ -1307,12 +1342,20 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     /// <summary>
     /// True when a responses-wire pre-content failure means the referenced
     /// previous_response_id is no longer stored by the server — ninfer's 404
-    /// code <c>response_not_found</c>, forwarded verbatim by AiProxy.
+    /// code <c>response_not_found</>, forwarded verbatim by AiProxy.
+    /// docs/plans/compaction-tool-history.md §5.3: classify on the STRUCTURED
+    /// code (not a bare 404 status or a broad substring). Malformed history
+    /// (HTTP 400 <c>invalid_tool_history</c>) is our own input bug — never a
+    /// cache miss — and must surface, not be retried as stale state.
     /// </summary>
-    private static bool IsStaleChainFailure(string reason) =>
-        reason.Contains("response_not_found", StringComparison.OrdinalIgnoreCase)
-        || (reason.Contains("input must provide a user query", StringComparison.OrdinalIgnoreCase)
-            && reason.Contains("no previous response contains one", StringComparison.OrdinalIgnoreCase));
+    private static bool IsStaleChainFailure(string reason)
+    {
+        if (reason.Contains("invalid_tool_history", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return reason.Contains("response_not_found", StringComparison.OrdinalIgnoreCase)
+            || (reason.Contains("input must provide a user query", StringComparison.OrdinalIgnoreCase)
+                && reason.Contains("no previous response contains one", StringComparison.OrdinalIgnoreCase));
+    }
 
     private static bool ContainsImages(IEnumerable<AgentMessage> messages) => messages.Any(m =>
         m.Parts.Any(p => p is ImagePart || p is ToolResultPart tr && tr.Parts.Any(r => r is ImagePart)));

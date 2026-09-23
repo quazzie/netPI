@@ -105,10 +105,20 @@ public sealed record ModelRequestDiagnostics(
     string WireServed,
     bool Chained,
     bool Fallback,
-    string? FailureReason)
+    string? FailureReason,
+    /// <summary>
+    /// docs/plans/compaction-tool-history.md §5: the ACTUAL request mode, computed
+    /// once where the payload is built and used for serialization, diagnostics
+    /// AND recovery eligibility (no inference from the existence of a head):
+    /// "chained" (previous_response_id sent), "reset" (full input, no prior id)
+    /// or "chat" (chat completions wire — no chaining).
+    /// </summary>
+    string Mode = "chat",
+    /// <summary>Bounded reason for the mode (e.g. "prefix-changed", "stale-reference-recovered").</summary>
+    string? Reason = null)
 {
     /// <summary>Single-line human-readable summary for logs and dashboards.</summary>
     public string Summary =>
-        $"{ModelId} wire={WireServed}{(Chained ? " chained" : "")}" +
+        $"{ModelId} wire={WireServed} mode={Mode}" +
         (Fallback ? $" (fallback from {WireRequested}: {FailureReason ?? "unknown"})" : "");
 }

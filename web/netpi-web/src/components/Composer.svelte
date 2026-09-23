@@ -243,6 +243,11 @@
     const sentImages = [...images];
     const sentSid = store.session?.id ?? null;
     const sentKey = sentSid ?? "new";
+    // Draft-first: a send with no visible session creates the server session
+    // on the FIRST prompt — the draft's applied project + workspace travel
+    // with it (the server creates + attaches the project before the run, so
+    // the model never starts with an empty project).
+    const sentDraft = store.newDraft;
 
     if (t.startsWith("/") && !sentImages.length) {
       handleCommand(t);
@@ -261,6 +266,7 @@
     // astra-1 G3: if the send is REJECTED, the optimistic user block must not
     // look accepted — put the text back in the draft and retract it.
     const onSendError = (e: unknown) => {
+      store.draftSendPending = false; // the creating send never landed
       if ((store.session?.id ?? null) === sentSid) {
         store.retractLastUser(t);
         text = t;
@@ -272,13 +278,15 @@
       store.setError(e instanceof Error ? e.message : String(e));
     };
 
+    if (!sentSid) store.draftSendPending = true;
     try {
       if (kind === "sent") {
         await ws.request("chat.send", {
           text: t,
           images: sentImages,
           sessionId: store.session?.id,
-          workspace: store.session?.workspace || undefined,
+          workspace: store.session?.workspace ?? sentDraft?.workspace ?? undefined,
+          projectId: sentDraft?.projectId ?? undefined,
           model: store.currentModel || undefined,
           reasoning: store.reasoningLevel || undefined,
           // astra-1 §11a (F/A): a stable operationId names this send, so a retry of the
@@ -322,8 +330,9 @@
     const [name, ...rest] = t.split(" ");
     switch (name) {
       case "/new":
-        // astra-1 F: explicit navigation — the created session becomes visible.
-        ws.createSession({ workspace: store.session?.workspace || undefined }).catch((e) => store.setError(String(e)));
+        // Draft-first: instant local "New session" — captures the applied
+        // project/workspace, creates nothing server-side.
+        store.startNewSession();
         break;
       case "/plugins":
         ui.setRightTab("diagnostics", true);

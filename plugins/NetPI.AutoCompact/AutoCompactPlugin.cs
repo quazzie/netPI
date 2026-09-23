@@ -139,7 +139,7 @@ public sealed class AutoCompactService : ICompaction
             : null;
         int oldRetainedFrom = oldPayload?.RetainedFromSequence ?? 0;
         var entries = oldPayload is not null && oldRetainedFrom > 0
-            ? await store.ReadAfterAsync(request.SessionId, oldRetainedFrom - 1, _config.MaxContextMessages, cancellationToken)
+            ? await ReadFullActiveRangeAsync(store, request.SessionId, oldRetainedFrom - 1, cancellationToken)
             : await store.ReadRecentAsync(request.SessionId, _config.MaxContextMessages, cancellationToken);
 
         var messages = entries
@@ -181,15 +181,41 @@ public sealed class AutoCompactService : ICompaction
         int summarizedThrough = FirstMessageSeqBefore(entries, retainedFrom);
 
         // ---- summarize (tools disabled, PLAN §33) -------------------------
-        var freshSummary = await SummarizeAsync(provider, request.ModelId, toSummarize, cancellationToken);
-        // Carry the previous summary forward so a second checkpoint does not
-        // lose the first compaction's text.
-        string summary = oldPayload is not null && !string.IsNullOrWhiteSpace(oldPayload.Summary)
-            ? oldPayload.Summary + "\n\n" + freshSummary
-            : freshSummary;
+        // docs/plans/compaction-tool-history.md §4.3: do NOT concatenate the
+        // previous summary onto the fresh one — it grows without bound across
+        // repeated compactions. When a prior summary exists, fold it into the
+        // material being summarized so the model returns ONE bounded summary of
+        // everything (old + new), replacing the old rather than appending to it.
+        var previous = oldPayload is not null && !string.IsNullOrWhiteSpace(oldPayload.Summary)
+            ? oldPayload.Summary
+            : null;
+        string summary;
+        if (previous is null)
+            summary = await SummarizeAsync(provider, request.ModelId, toSummarize, cancellationToken);
+        else
+        {
+            var material = new List<AgentMessage>(toSummarize.Count + 1)
+            {
+                new("prior-summary", MessageRole.User,
+                    [new TextPart("Carry this summary of earlier work forward:\n" + previous)],
+                    DateTimeOffset.UtcNow),
+            };
+            material.AddRange(toSummarize);
+            summary = await SummarizeAsync(provider, request.ModelId, material, cancellationToken);
+        }
 
         // ---- reconstruct active context (PLAN §31/§33) ---------------------
         var activeContext = BuildActiveContext(retained, summary);
+        // docs/plans/compaction-tool-history.md §3.5: the SAME normalization
+        // policy that protects run-start reconstruction also protects the
+        // compaction RETURN — a boundary that straddled a tool exchange would
+        // otherwise leave a dangling call in the rebuilt context.
+        var normalizedActive = TranscriptSanitizer.Normalize(activeContext);
+        if (normalizedActive.Report.ValidationFailure is { } validationFailure)
+            throw new InvalidOperationException($"compacted transcript cannot be repaired: {validationFailure}");
+        if (normalizedActive.Report.AnyRepairs)
+            LogRepairs(normalizedActive.Report);
+        activeContext = normalizedActive.Messages.ToList();
 
         // ---- persist compaction entry (PLAN §31) ---------------------------
         var payload = new CompactionEntryPayload
@@ -247,8 +273,7 @@ public sealed class AutoCompactService : ICompaction
             // entry's own sequence — and the read also covers everything appended
             // after the checkpoint. Reading from the checkpoint's own sequence
             // would silently drop the retained tail.
-            entries = await store.ReadAfterAsync(
-                sessionId, payload.RetainedFromSequence - 1, _config.MaxContextMessages, cancellationToken);
+            entries = await ReadFullActiveRangeAsync(store, sessionId, payload.RetainedFromSequence - 1, cancellationToken);
         }
         else
         {
@@ -264,10 +289,28 @@ public sealed class AutoCompactService : ICompaction
             .ToList();
         if (messages.Count == 0) return [];
 
-        // PLAN §46: a run that died mid-batch leaves tool calls without results;
-        // the provider rejects such history ("function_call_output must contain a
-        // non-empty call_id"). Repair it before it is ever sent to a model.
-        messages = TranscriptSanitizer.Sanitize(messages).ToList();
+        // docs/plans/compaction-tool-history.md §3.3: a legacy (pre-§2) checkpoint
+        // may have set RetainedFromSequence in the MIDDLE of a tool exchange —
+        // the assistant call summarized, its result(s) retained — so the tail
+        // leads with an orphan result. Recover the owning call from durable
+        // history when it is still there, so the exchange is whole instead of
+        // degrading to a recovery note. Only the checkpoint path (the tail starts
+        // at a boundary); a no-checkpoint recent read has no such boundary.
+        if (payload is not null && payload.RetainedFromSequence > 0)
+            messages = await RecoverBoundaryCallsAsync(
+                store, sessionId, messages, payload.RetainedFromSequence, cancellationToken);
+
+        // PLAN §46 / docs/plans/compaction-tool-history.md §3: a run that died
+        // mid-batch leaves tool calls without results; the provider rejects such
+        // history. Normalize it with the one shared policy before it is sent to a
+        // model; an irreparable transcript is a local validation failure (the
+        // runner fails the run rather than shipping a broken transcript).
+        var sanitized = TranscriptSanitizer.Normalize(messages);
+        if (sanitized.Report.ValidationFailure is { } validationFailure)
+            throw new InvalidOperationException($"transcript cannot be repaired: {validationFailure}");
+        if (sanitized.Report.AnyRepairs)
+            LogRepairs(sanitized.Report);
+        messages = sanitized.Messages.ToList();
 
         if (payload is null)
             return messages; // no compaction yet → recent history
@@ -284,6 +327,15 @@ public sealed class AutoCompactService : ICompaction
     /// Walk backwards from the newest message, accumulating estimated tokens,
     /// until the keep budget is reached; return the seq of the first message to
     /// retain (everything at or after that seq is kept intact, PLAN §32).
+    ///
+    /// Batch-aware (docs/plans/compaction-tool-history.md §2.2): the token
+    /// candidate may land INSIDE a tool exchange (its assistant call is kept
+    /// but its result is summarized, or vice-versa). A complete exchange — the
+    /// assistant call message plus its contiguous matching result messages — is
+    /// an INDIVISIBLE retention unit, so the boundary is moved backward to the
+    /// exchange's start whenever it would split one. The keep-recent token target
+    /// is soft; transcript validity (a whole exchange on one side of every cut)
+    /// takes precedence.
     /// </summary>
     private static int ChooseRetainedFrom(IReadOnlyList<SessionEntry> entries, int keepRecentTokens)
     {
@@ -301,6 +353,14 @@ public sealed class AutoCompactService : ICompaction
             running += TokenEstimator.Estimate(e.Message!);
             if (running >= budget) break;
         }
+
+        // Never let the retained tail straddle a tool exchange: if the candidate
+        // split one, step the boundary back to that exchange's first message so
+        // the whole call/result batch is retained together.
+        var splitting = TranscriptExchanges.Splitting(TranscriptExchanges.Group(entries), retainedFrom);
+        if (splitting is not null)
+            retainedFrom = splitting.Headless ? splitting.FirstResultSequence : splitting.CallSequence;
+
         return retainedFrom;
     }
 
@@ -316,6 +376,128 @@ public sealed class AutoCompactService : ICompaction
         var before = entries.Where(e => e.Kind == EntryKind.Message && e.Sequence > 0 && e.Sequence < boundary).ToList();
         return before.Count == 0 ? 0 : before.Max(e => e.Sequence);
     }
+
+    /// <summary>
+    /// docs/plans/compaction-tool-history.md §4.1: read the COMPLETE active range
+    /// after a sequence. <c>ReadAfterAsync</c> is an ASCENDING LIMIT, so a single
+    /// bounded call would silently replace current history with its oldest bounded
+    /// portion and DROP the newest entries — exactly the ones compaction (and the
+    /// retained tail) needs. Page forward until a short page signals the end.
+    /// </summary>
+    private async Task<IReadOnlyList<SessionEntry>> ReadFullActiveRangeAsync(
+        ISessionStore store, string sessionId, int afterSequence, CancellationToken ct)
+    {
+        var all = new List<SessionEntry>();
+        var pageSize = Math.Max(256, _config.MaxContextMessages);
+        var cursor = afterSequence;
+        while (true)
+        {
+            var page = await store.ReadAfterAsync(sessionId, cursor, pageSize, ct);
+            if (page.Count == 0) break;
+            all.AddRange(page);
+            if (page.Count < pageSize) break;           // short page → reached the end
+            var next = page[^1].Sequence;
+            if (next <= cursor) break;                  // non-advancing cursor (safety)
+            cursor = next;
+        }
+        return all;
+    }
+
+    /// <summary>
+    /// docs/plans/compaction-tool-history.md §3.3: for legacy damaged history,
+    /// recover a boundary call from durable history when possible. An old
+    /// (pre-§2) checkpoint may have set RetainedFromSequence in the MIDDLE of a
+    /// tool exchange — the assistant call landed in the summarized region and its
+    /// result(s) in the retained tail — so the reconstructed tail leads with an
+    /// orphan result whose call id is absent from the tail. When that call is
+    /// still in durable history just before the boundary, re-include it (filtered
+    /// to the recovered call parts) so the exchange is whole again instead of
+    /// degrading to a recovery note.
+    ///
+    /// Bounded and safe:
+    /// - Only the LEADING run of tool messages at the very start of the tail is
+    ///   inspected — an orphan can only exist before the first assistant-with-
+    ///   calls message, which re-opens a valid exchange.
+    /// - The look-back is bounded; if the owning call is not found, the tail is
+    ///   returned unchanged and the shared sanitizer degrades the orphan to a
+    ///   note (the §3 fallback). No assistant call is ever manufactured.
+    /// - The recovered assistant message keeps only the call parts that match
+    ///   the leading orphans (original order preserved); its other, summarized
+    ///   calls are dropped so they are never faked into synthetic interrupts.
+    ///   §3.4: a recovered call may overlap the checkpoint's summary — a
+    ///   documented, bounded compatibility behavior that never re-executes.
+    /// - A clean checkpoint (no leading orphan) returns the input unchanged.
+    /// </summary>
+    private async Task<List<AgentMessage>> RecoverBoundaryCallsAsync(
+        ISessionStore store, string sessionId, List<AgentMessage> messages,
+        int retainedFrom, CancellationToken ct)
+    {
+        // Call ids issued by any assistant message within the tail — a result is
+        // only an orphan when its call id is not issued here.
+        var issuedInTail = new HashSet<string>(
+            messages.Where(m => m.Role == MessageRole.Assistant)
+                    .SelectMany(m => m.Parts.OfType<ToolCallPart>())
+                    .Where(c => !string.IsNullOrEmpty(c.Id))
+                    .Select(c => c.Id));
+
+        // Leading orphan result call ids: the leading run of tool messages at the
+        // very start of the tail, whose result call id is not issued within it.
+        var leading = new List<string>();
+        foreach (var m in messages)
+        {
+            if (m.Role != MessageRole.Tool) break;
+            foreach (var part in m.Parts.OfType<ToolResultPart>())
+                if (!string.IsNullOrEmpty(part.ToolCallId) && !issuedInTail.Contains(part.ToolCallId))
+                    leading.Add(part.ToolCallId);
+        }
+        if (leading.Count == 0) return messages;
+
+        // Bounded look-back: the messages just before the retained boundary.
+        const int Lookback = 16;
+        var before = (await store.ReadBeforeAsync(sessionId, retainedFrom, Lookback, ct))
+            .Where(e => e.Kind == EntryKind.Message && e.Message is not null)
+            .Select(e => e.Message!)
+            .ToList();
+
+        // The assistant message(s) whose calls own the leading orphans — the
+        // boundary fell between them and their retained results. Reconstruct
+        // each, keeping its non-call parts plus ONLY the recovered call parts.
+        var recovered = new List<AgentMessage>();
+        foreach (var a in before)
+        {
+            if (a.Role != MessageRole.Assistant) continue;
+            var ownsAnOrphan = a.Parts.OfType<ToolCallPart>()
+                .Any(c => !string.IsNullOrEmpty(c.Id) && leading.Contains(c.Id));
+            if (!ownsAnOrphan) continue;
+            var parts = a.Parts
+                .Where(p => p is not ToolCallPart || leading.Contains(((ToolCallPart)p).Id))
+                .ToList();
+            recovered.Add(new AgentMessage(
+                MessageIdentity.DeterministicId("boundary", a.Id),
+                MessageRole.Assistant, parts, a.CreatedAt));
+        }
+        if (recovered.Count == 0) return messages; // call not in the bounded window → the sanitizer notes it
+
+        _ctx.Log.Information(
+            $"AutoCompact: recovered {recovered.Count} boundary call(s) into session {sessionId} " +
+            $"(orphan result(s) at the retainedFrom={retainedFrom} boundary); overlap with the " +
+            $"prior summary tolerated, no re-execution.");
+
+        var combined = new List<AgentMessage>(recovered.Count + messages.Count);
+        combined.AddRange(recovered);
+        combined.AddRange(messages);
+        return combined;
+    }
+
+    /// <summary>
+    /// docs/plans/compaction-tool-history.md §3.6: log repair category and counts
+    /// with session identity — but never dump full tool output (the recovery note
+    /// already bounds any preserved output). Clean transcripts produce no noise.
+    /// </summary>
+    private void LogRepairs(TranscriptRepairReport r) =>
+        _ctx.Log.Information(
+            $"AutoCompact: transcript repaired — synthetic={r.SyntheticResults} " +
+            $"orphans={r.OrphanResults} duplicates={r.DuplicateResults} misplaced={r.MisplacedResults}");
 
     private static List<AgentMessage> BuildActiveContext(List<AgentMessage> retained, string summary)
     {

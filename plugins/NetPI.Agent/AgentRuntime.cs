@@ -666,6 +666,20 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                             var rebuilt = new List<AgentMessage>(active);
                             if (transcript.Count > 0 && transcript[0].Role == MessageRole.System)
                                 rebuilt.Insert(0, transcript[0]);
+                            // docs/plans/compaction-tool-history.md §4.2: the retained
+                            // tail carries Message entries only — the durable project
+                            // snapshot (a ProjectContext entry) is not in it. Reconstruct
+                            // it exactly from its persisted entry, as run-start does, so
+                            // an in-run compaction does not silently drop the active
+                            // project context. Deterministic id → never a duplicate.
+                            if (store is not null)
+                            {
+                                var sid = options.SessionId ?? Current.SessionId ?? string.Empty;
+                                var projectEntry = await store.ActiveProjectContextAsync(sid, ct);
+                                var projectMsg = projectEntry is null ? null : ProjectContextProjection.Project(projectEntry);
+                                if (projectMsg is not null)
+                                    rebuilt.Add(projectMsg);
+                            }
                             transcript = rebuilt;
                             await PublishAsync(AgentEventType.ContextBuilt, options, null, ct);
                         }

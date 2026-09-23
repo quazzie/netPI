@@ -157,7 +157,7 @@ public sealed class AutoCompactTriggerTests : IDisposable
     }
 
     [Fact]
-    public async Task SecondCompaction_SummarizesOnlyNewerMessages_CarriesForwardOldSummary()
+    public async Task SecondCompaction_SummarizesOnlyNewerMessages_FoldsPriorSummaryIntoBoundedReSummary()
     {
         using var store = Store();
         var provider = new FakeProvider();
@@ -193,23 +193,311 @@ public sealed class AutoCompactTriggerTests : IDisposable
 
         var secondRequest = provider.Requests[1];
         var convo = secondRequest.Messages[1].Parts.OfType<TextPart>().First().Text;
-        // Only the messages NEWER than the first checkpoint's retained tail went
-        // to the model: m12 (inside no earlier summary) and m13 — not m11 or
-        // anything older, which the first summary already folded.
-        Assert.Equal(2, convo.Split('\n').Count(l => l.Length > 0));
-        Assert.Contains("MARK-13", convo);
-        Assert.DoesNotContain("MARK-11", convo);
+        // docs/plans/compaction-tool-history.md §4.3: the prior summary is FOLDED
+        // into the material being summarized (not concatenated onto the output).
+        // The model sees the prior summary PLUS only the messages newer than the
+        // first checkpoint's retained tail (m12, m13) — not m11 or anything older.
+        Assert.Contains("Carry this summary of earlier work forward", convo);
+        Assert.Contains("SUMMARY", convo);          // the old summary, folded in as input
+        Assert.Contains("MARK-13", convo);          // the new material
+        Assert.DoesNotContain("MARK-11", convo);    // older material is not re-sent
 
-        // The old summary text is carried forward into the new checkpoint.
+        // The checkpoint's summary is the model's single bounded replacement
+        // (the fake's output for this call) — NOT old + new concatenated.
         var secondPl = JsonSerializer.Deserialize<CompactionEntryPayload>(
             (await store.LatestCompactionAsync(info.Id))!.Payload!.Value.GetRawText(),
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
         Assert.NotNull(secondPl);
-        Assert.Contains("SUMMARY", secondPl!.Summary);
-        Assert.Contains("SUMMARY-2", secondPl.Summary);
+        Assert.Equal("SUMMARY-2", secondPl!.Summary);
         Assert.Equal(14, secondPl.SummarizedThroughSequence);
         Assert.Equal(15, secondPl.RetainedFromSequence);
         Assert.Equal(6_000, secondPl.EstimatedTokensBefore);
+    }
+
+    [Fact]
+    public async Task RetainedTail_BoundaryIsBatchAware_KeepsTheCompleteToolExchange()
+    {
+        using var store = Store();
+        var provider = new FakeProvider();
+        var svc = Service(new FakeContext(store, provider, null));
+        var info = await store.CreateAsync(null);
+        for (int i = 1; i <= 8; i++)
+            await store.AppendAsync(new SessionEntry("f" + i, info.Id, EntryKind.Message,
+                new AgentMessage("filler" + i, MessageRole.User,
+                    [new TextPart(new string('a', 400))], DateTimeOffset.UtcNow),
+                null, DateTimeOffset.UtcNow, Sequence: 0));
+        // The incident shape (docs/plans/compaction-tool-history.md §1): an assistant
+        // tool call (seq 9) immediately followed by its result (seq 10).
+        await store.AppendAsync(new SessionEntry("call", info.Id, EntryKind.Message,
+            new AgentMessage("assistant-call", MessageRole.Assistant,
+                [new ToolCallPart("call_incident", "bash",
+                    JsonSerializer.SerializeToElement(new { }))],
+                DateTimeOffset.UtcNow), null, DateTimeOffset.UtcNow, Sequence: 0));
+        await store.AppendAsync(new SessionEntry("result", info.Id, EntryKind.Message,
+            new AgentMessage("tool-result", MessageRole.Tool,
+                [new ToolResultPart("call_incident", "bash",
+                    [new TextPart(new string('b', 400))], false)],
+                DateTimeOffset.UtcNow), null, DateTimeOffset.UtcNow, Sequence: 0));
+
+        var result = await svc.CompactAsync(new CompactionRequest
+        {
+            SessionId = info.Id,
+            ModelId = "test-model",
+            LastPromptTokens = 5_000,
+            LastUsageMessageCount = 10,
+        });
+
+        Assert.True(result.Performed);
+        var active = result.ActiveContext!;
+        // The COMPLETE exchange is retained: the assistant call AND its result both
+        // survive (the per-message boundary used to keep only the result, seq 10,
+        // and summarize the call, seq 9 — the provider then rejected the transcript).
+        var ids = active.Select(m => m.Id).ToList();
+        Assert.Equal(3, active.Count);
+        Assert.Contains("assistant-call", ids);
+        Assert.Contains("tool-result", ids);
+        Assert.True(ids.IndexOf("assistant-call") < ids.IndexOf("tool-result"),
+            "the call must precede its result in the retained tail");
+
+        var pl = JsonSerializer.Deserialize<CompactionEntryPayload>(
+            (await store.LatestCompactionAsync(info.Id))!.Payload!.Value.GetRawText(),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase })!;
+        Assert.Equal(9, pl.RetainedFromSequence);   // the CALL, not the result (10)
+        Assert.Equal(8, pl.SummarizedThroughSequence);
+    }
+
+    [Fact]
+    public async Task RetainedTail_KeepsAMultiCallBatchWhole()
+    {
+        using var store = Store();
+        var provider = new FakeProvider();
+        var svc = Service(new FakeContext(store, provider, null));
+        var info = await store.CreateAsync(null);
+        for (int i = 1; i <= 6; i++)
+            await store.AppendAsync(new SessionEntry("f" + i, info.Id, EntryKind.Message,
+                new AgentMessage("filler" + i, MessageRole.User,
+                    [new TextPart(new string('a', 400))], DateTimeOffset.UtcNow),
+                null, DateTimeOffset.UtcNow, Sequence: 0));
+        // seq 7: assistant issuing TWO calls; seq 8 + 9: the two results (separate messages).
+        var emptyArgs = JsonSerializer.SerializeToElement(new { });
+        await store.AppendAsync(new SessionEntry("call", info.Id, EntryKind.Message,
+            new AgentMessage("assistant-call", MessageRole.Assistant,
+                [new ToolCallPart("call_x", "bash", emptyArgs),
+                 new ToolCallPart("call_y", "grep", emptyArgs)],
+                DateTimeOffset.UtcNow), null, DateTimeOffset.UtcNow, Sequence: 0));
+        await store.AppendAsync(new SessionEntry("r8", info.Id, EntryKind.Message,
+            new AgentMessage("tool-result-x", MessageRole.Tool,
+                [new ToolResultPart("call_x", "bash", [new TextPart(new string('b', 400))], false)],
+                DateTimeOffset.UtcNow), null, DateTimeOffset.UtcNow, Sequence: 0));
+        await store.AppendAsync(new SessionEntry("r9", info.Id, EntryKind.Message,
+            new AgentMessage("tool-result-y", MessageRole.Tool,
+                [new ToolResultPart("call_y", "grep", [new TextPart(new string('c', 400))], false)],
+                DateTimeOffset.UtcNow), null, DateTimeOffset.UtcNow, Sequence: 0));
+
+        var result = await svc.CompactAsync(new CompactionRequest
+        {
+            SessionId = info.Id,
+            ModelId = "test-model",
+            LastPromptTokens = 5_000,
+            LastUsageMessageCount = 10,
+        });
+
+        Assert.True(result.Performed);
+        var active = result.ActiveContext!;
+        var ids = active.Select(m => m.Id).ToList();
+        // The whole batch (call + both results) is retained together.
+        Assert.Contains("assistant-call", ids);
+        Assert.Contains("tool-result-x", ids);
+        Assert.Contains("tool-result-y", ids);
+        Assert.True(ids.IndexOf("assistant-call") < ids.IndexOf("tool-result-x")
+                 && ids.IndexOf("tool-result-x") < ids.IndexOf("tool-result-y"));
+
+        var pl = JsonSerializer.Deserialize<CompactionEntryPayload>(
+            (await store.LatestCompactionAsync(info.Id))!.Payload!.Value.GetRawText(),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase })!;
+        Assert.Equal(7, pl.RetainedFromSequence);
+    }
+
+    [Fact]
+    public async Task ActiveRangeLargerThanReadCap_StillRetainsTheNewestEntries()
+    {
+        using var store = Store();
+        var provider = new FakeProvider();
+        // MaxContextMessages=3: a real store session whose active range exceeds the
+        // read page. On the old single bounded ReadAfterAsync (ascending LIMIT) the
+        // NEWEST entries were silently dropped; the paging read must keep them.
+        var svc = new AutoCompactService(new FakeContext(store, provider, null),
+            new AutoCompactConfig(true, 4096, 10, 8192, 3));
+        var info = await store.CreateAsync(null);
+        for (int i = 1; i <= 6; i++)
+            await store.AppendAsync(new SessionEntry("s" + i, info.Id, EntryKind.Message,
+                Msg(i), null, DateTimeOffset.UtcNow, Sequence: 0));
+        Assert.True((await svc.CompactAsync(new CompactionRequest
+        {
+            SessionId = info.Id, ModelId = "test-model",
+            LastPromptTokens = 5_000, LastUsageMessageCount = 10,
+        })).Performed);
+
+        // Four more messages push the active range past the 3-entry read cap.
+        for (int i = 7; i <= 10; i++)
+            await store.AppendAsync(new SessionEntry("s" + i, info.Id, EntryKind.Message,
+                Tagged(i), null, DateTimeOffset.UtcNow, Sequence: 0));
+
+        var r2 = await svc.CompactAsync(new CompactionRequest
+        {
+            SessionId = info.Id, ModelId = "test-model",
+            LastPromptTokens = 5_000, LastUsageMessageCount = 10,
+        });
+        Assert.True(r2.Performed);
+
+        // The newest message survives into the retained tail — the bounded-ascend bug
+        // would have truncated the range at m7 and lost m10.
+        var ids = r2.ActiveContext!.Select(m => m.Id).ToList();
+        Assert.Contains("m10", ids);
+        Assert.Equal("m10", ids[^1]);
+    }
+
+    [Fact]
+    public async Task LegacyCheckpointThatSplitAnExchange_RecoverTheBoundaryCallFromDurableHistory()
+    {
+        using var store = Store();
+        var provider = new FakeProvider();
+        var svc = Service(new FakeContext(store, provider, null));
+        var info = await store.CreateAsync(null);
+        // Filler (seq 1-6), then the incident exchange: assistant call (seq 7) and
+        // its result (seq 8). A LEGACY (pre-§2) boundary set RetainedFromSequence
+        // to the RESULT, leaving the CALL in the summarized region.
+        for (int i = 1; i <= 6; i++)
+            await store.AppendAsync(new SessionEntry("f" + i, info.Id, EntryKind.Message,
+                new AgentMessage("filler" + i, MessageRole.User,
+                    [new TextPart(new string('a', 400))], DateTimeOffset.UtcNow),
+                null, DateTimeOffset.UtcNow, Sequence: 0));
+        await store.AppendAsync(new SessionEntry("call", info.Id, EntryKind.Message,
+            new AgentMessage("assistant-call", MessageRole.Assistant,
+                [new TextPart("Let me run the build."),
+                 new ToolCallPart("call_leg", "bash",
+                    JsonSerializer.SerializeToElement(new { }))],
+                DateTimeOffset.UtcNow), null, DateTimeOffset.UtcNow, Sequence: 0));
+        await store.AppendAsync(new SessionEntry("result", info.Id, EntryKind.Message,
+            new AgentMessage("tool-result", MessageRole.Tool,
+                [new ToolResultPart("call_leg", "bash",
+                    [new TextPart(new string('b', 400))], false)],
+                DateTimeOffset.UtcNow), null, DateTimeOffset.UtcNow, Sequence: 0));
+        // The legacy checkpoint: summarize through the CALL (7), retain from the
+        // RESULT (8) — the exact split that produced invalid_tool_history.
+        var payload = new CompactionEntryPayload
+        {
+            Summary = "SUMMARY",
+            SummarizedThroughSequence = 7,
+            RetainedFromSequence = 8,
+            EstimatedTokensBefore = 5_000,
+            EstimatedTokensAfter = 100,
+            ModelId = "test-model",
+        };
+        var payloadElement = JsonSerializer.SerializeToElement(payload,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        await store.AppendAsync(new SessionEntry(
+            MessageIdentity.DeterministicId("checkpoint", payloadElement.GetRawText()),
+            info.Id, EntryKind.Compaction, null, payloadElement,
+            DateTimeOffset.UtcNow, Sequence: 0));
+
+        // Resuming reconstructs the active context. The orphan result leading the
+        // tail must have its boundary call recovered from durable history — the
+        // exchange is whole again: no recovery note, no validation failure, no
+        // synthetic interrupt.
+        var active = await svc.BuildActiveContextAsync(info.Id);
+
+        Assert.Equal(3, active.Count);                          // summary + call + result
+        Assert.Equal(MessageRole.System, active[0].Role);
+        Assert.Contains("SUMMARY", active[0].Parts.OfType<TextPart>().First().Text);
+
+        var call = active[1];
+        Assert.Equal(MessageRole.Assistant, call.Role);
+        var callPart = Assert.Single(call.Parts.OfType<ToolCallPart>());
+        Assert.Equal("call_leg", callPart.Id);
+
+        // The result survives as a real tool message — not degraded to a note.
+        var result = Assert.Single(active, m => m.Id == "tool-result");
+        Assert.Equal(MessageRole.Tool, result.Role);
+        Assert.Single(result.Parts.OfType<ToolResultPart>());
+        Assert.DoesNotContain("[historical-recovery]",
+            string.Join(" ", active.SelectMany(m => m.Parts.OfType<TextPart>().Select(p => p.Text))));
+    }
+
+    [Fact]
+    public async Task CleanCheckpointBoundary_IsNotTouchedByBoundaryRecovery()
+    {
+        using var store = Store();
+        var provider = new FakeProvider();
+        var svc = Service(new FakeContext(store, provider, null));
+        var info = await store.CreateAsync(null);
+        for (int i = 1; i <= 6; i++)
+            await store.AppendAsync(new SessionEntry("f" + i, info.Id, EntryKind.Message,
+                new AgentMessage("filler" + i, MessageRole.User,
+                    [new TextPart(new string('a', 400))], DateTimeOffset.UtcNow),
+                null, DateTimeOffset.UtcNow, Sequence: 0));
+        await store.AppendAsync(new SessionEntry("call", info.Id, EntryKind.Message,
+            new AgentMessage("assistant-call", MessageRole.Assistant,
+                [new ToolCallPart("call_ok", "bash",
+                    JsonSerializer.SerializeToElement(new { }))],
+                DateTimeOffset.UtcNow), null, DateTimeOffset.UtcNow, Sequence: 0));
+        await store.AppendAsync(new SessionEntry("result", info.Id, EntryKind.Message,
+            new AgentMessage("tool-result", MessageRole.Tool,
+                [new ToolResultPart("call_ok", "bash",
+                    [new TextPart(new string('b', 400))], false)],
+                DateTimeOffset.UtcNow), null, DateTimeOffset.UtcNow, Sequence: 0));
+        // A clean checkpoint: RetainedFromSequence is the CALL (seq 7), so the tail
+        // starts with the assistant turn — no leading orphan, recovery is a no-op.
+        var payload = new CompactionEntryPayload
+        {
+            Summary = "SUMMARY",
+            SummarizedThroughSequence = 6,
+            RetainedFromSequence = 7,
+            EstimatedTokensBefore = 5_000,
+            EstimatedTokensAfter = 100,
+            ModelId = "test-model",
+        };
+        var payloadElement = JsonSerializer.SerializeToElement(payload,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        await store.AppendAsync(new SessionEntry(
+            MessageIdentity.DeterministicId("checkpoint", payloadElement.GetRawText()),
+            info.Id, EntryKind.Compaction, null, payloadElement,
+            DateTimeOffset.UtcNow, Sequence: 0));
+
+        var active = await svc.BuildActiveContextAsync(info.Id);
+        var ids = active.Select(m => m.Id).ToList();
+        Assert.Equal(3, active.Count);   // summary + call + result — no spurious message
+        Assert.Contains("assistant-call", ids);
+        Assert.Contains("tool-result", ids);
+        Assert.True(ids.IndexOf("assistant-call") < ids.IndexOf("tool-result"));
+    }
+
+    [Fact]
+    public async Task SummaryFailure_LeavesNoCheckpoint_AndOriginalTranscriptIntact()
+    {
+        using var store = Store();
+        var provider = new FakeProvider { Fail = true };
+        var svc = Service(new FakeContext(store, provider, null));
+        var info = await SeedAsync(store, 12);
+
+        // A request that WOULD trigger compaction, but the summarization model fails.
+        var request = new CompactionRequest
+        {
+            SessionId = info.Id, ModelId = "test-model",
+            LastPromptTokens = 5_000, LastUsageMessageCount = 10,
+        };
+
+        // docs/plans/compaction-tool-history.md §4.4: the summarization failure
+        // throws BEFORE the checkpoint is appended, so no broken checkpoint is
+        // ever persisted — the original transcript stays intact for the next try.
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await svc.CompactAsync(request);
+        });
+
+        Assert.Null(await store.LatestCompactionAsync(info.Id));
+        var recent = await store.ReadRecentAsync(info.Id, 50);
+        Assert.Equal(12, recent.Count(e => e.Kind == EntryKind.Message));
     }
 
     // ---- fakes -----------------------------------------------------------------
@@ -220,10 +508,17 @@ public sealed class AutoCompactTriggerTests : IDisposable
         private readonly List<ModelRequest> _requests = [];
         public IReadOnlyList<ModelRequest> Requests => _requests;
         public string NextSummary { get; set; } = "SUMMARY";
+        /// <summary>When true, the summarization run fails (yields a ModelFailed event).</summary>
+        public bool Fail { get; set; }
 
         public async IAsyncEnumerable<ModelEvent> RunAsync(ModelRequest request, CancellationToken ct)
         {
             _requests.Add(request);
+            if (Fail)
+            {
+                yield return new ModelFailed(request.ModelId, "synthetic summarization failure");
+                yield break;
+            }
             yield return new ModelCompleted(new AgentMessage(
                 Guid.NewGuid().ToString("n"), MessageRole.Assistant,
                 [new TextPart(NextSummary)], DateTimeOffset.UtcNow));

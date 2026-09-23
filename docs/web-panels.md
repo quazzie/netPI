@@ -146,11 +146,14 @@ Gotchas:
 - **Navigation bridge (astra-2 §12.3)**: a panel may ask the shell to open a
   session, but only through the versioned `postMessage` envelope below — the shell
   validates the *frame* (`event.source` + `event.origin`) and the *shape* (type,
-  version, bounded session id). See "Shell↔panel navigation bridge". The page still
-  serves its own static assets and may open its own `ws://127.0.0.1:5173/ws`
-  connection and speak the §41 protocol (as before); the bridge is the *only*
-  panel→shell command channel and it is navigation-only (select/open a session —
-  never spawn, resume, cancel, or change lanes).
+  version, bounded session id). See "Shell↔panel navigation bridge". A cross-origin
+  panel may serve its own static assets from its own port, but it does **not** open
+  a `ws://127.0.0.1:5173/ws` connection: the host's control boundary rejects
+  foreign-origin upgrades (docs/protocol.md), so a panel is navigation-only via the
+  bridge below and drives any host operations through same-origin endpoints on its
+  own port. The bridge is the *only* panel→shell command channel and it is
+  navigation-only (select/open a session — never spawn, resume, cancel, or change
+  lanes).
 - A same-origin panel page can read the shell's `localStorage` (`netpi.ui.v2`)
   — keep panel content cross-origin to preserve the isolation the design
   intends.
@@ -230,14 +233,19 @@ NetPI.BackgroundTasks no longer registers one either (astra-2 §12.1):
   model-wire decisions, agent events, log tail with level/plugin filters,
   sessions) every 4 s. Sub-tabs: **Overview / Wire / Plugins / Models /
   Events / Logs / Sess** (deep-linkable via `#tab=…`). The **Plugins**
-  sub-tab — the former standalone NetPI.Web "plugins" panel — additionally
-  opens a cross-origin `ws://<host>:5173/ws` connection to the host hub for
-  live `plugins.state` / `plugin.state` / `plugin.reloaded` /
-  `plugin.scanned` events and drives `plugin.reload` / `plugin.reloadAll` /
-  `plugin.scan` from its "Reload all" / "Scan for new" buttons. It re-opens
-  that WS 3 s after any drop (`hostWs.onclose`), self-healing across plugin
-  reloads and host restarts; `#tab=plugins` deep-links straight to the former
-  plugins view.
+  sub-tab — the former standalone NetPI.Web "plugins" panel — drives
+  `plugin.reload` / `plugin.reloadAll` / `plugin.scan` from its "↻" / "Reload all" /
+  "Scan for new" buttons and model refresh via narrowly scoped **same-origin POST
+  endpoints on the Diagnostics port** (`POST /api/diag/reload?pluginId=`,
+  `/reload-all`, `/scan`, `/models/refresh`). Each is loopback-Host + same-origin-
+  validated (GET → 405), resolves the host plugin-facade / catalog contracts through
+  the service registry, and ENQUEUES the operation (deferred) — the outcome surfaces
+  on the next overview poll, never from the request, so a self-reload does not hold
+  the request open. It never opens a cross-origin host WebSocket: the host's :5173
+  control boundary rejects foreign-origin upgrades (docs/protocol.md), so plugin
+  state arrives purely from the same-origin `/api/diag/overview` poll, which backs
+  off on failure and stops on teardown. `#tab=plugins` deep-links straight to the
+  former plugins view.
 - `plugins/NetPI.BackgroundTasks/` — **registers no panel** (astra-2 §12.1).
   `BgWebApp.cs` still serves the embedded `panels/background.html` plus
   `GET /api/bg/jobs`, `GET /api/bg/{id}/output?chars=` (tail of the bounded

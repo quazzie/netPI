@@ -10,9 +10,12 @@ import type {
   SessionInfo,
   RunStats,
   Usage,
+  RunMetrics,
   WebPanelInfo,
   ProjectInfo,
 } from "./types";
+import type { NavState, NewDraftMeta } from "./nav-state";
+import * as nav from "./nav-state";
 
 let counter = 0;
 export function uid(prefix = "b"): string {
@@ -69,6 +72,14 @@ export class NetPIStore {
   openTabIds = $state<string[]>(
     typeof localStorage === "undefined" ? [] : NetPIStore.loadTabs().tabs,
   );
+  /** "New Session" draft — the ONLY non-tab selection. Set by startNewSession,
+   *  cleared when a real session becomes visible (open or adopt). A draft is
+   *  LOCAL: no database session exists until the first prompt (chat.send with
+   *  no sessionId + the draft's projectId) creates one server-side. */
+  newDraft = $state<NewDraftMeta | null>(null);
+  /** A draft first-prompt (chat.send without sessionId) is in flight; its
+   *  session.created is what adopts the draft into a real tab (ws-side flag). */
+  draftSendPending = $state(false);
   /** Per-session run state (all sessions, not just the visible one). */
   busySessions = $state<Record<string, AgentState>>({});
   /** Tabs that received activity while not selected. */
@@ -168,22 +179,110 @@ export class NetPIStore {
     map[id] = value;
   }
 
-  openTab(id: string | null | undefined): void {
-    if (!id) return;
-    if (!this.openTabIds.includes(id))
-      this.openTabIds = [...this.openTabIds, id];
+  // ----------------------------------------------------------------------
+  // Session/tab transitions — the ONE place open-tab/selection state moves.
+  // Every method applies a pure nav-state transition (src/nav-state.ts,
+  // unit-tested) and returns the id whose transcript must be fetched via an
+  // explicit session.open (null = nothing to fetch: already visible,
+  // background-only change, or the new-session draft).
+  // ----------------------------------------------------------------------
+
+  private navState(): NavState {
+    return { openIds: this.openTabIds, selected: this.session?.id ?? null, draft: this.newDraft };
+  }
+
+  /** Apply a transition result: sync tab ids + draft, resolve the selected
+   *  session from the loaded global list (a placeholder until the open's
+   *  session.updated lands the authoritative info), reset the transcript
+   *  when the visible session actually changes. */
+  private applyNavState(n: NavState): void {
+    const selChanged = (this.session?.id ?? null) !== n.selected;
+    this.openTabIds = [...n.openIds];
+    this.newDraft = n.draft ? { ...n.draft } : null;
+    this.session = n.selected
+      ? this.sessions.find((s) => s.id === n.selected) ??
+        { id: n.selected, title: "", workspace: "", createdAt: 0, updatedAt: 0 }
+      : null;
+    if (selChanged) this.resetTranscript();
     this.persistTabs();
   }
 
-  closeTab(id: string): void {
-    this.openTabIds = this.openTabIds.filter((x) => x !== id);
+  /** The draft context captured from a session: its APPLIED project (a pending,
+   *  not-yet-effective switch is never inherited) and the project root as the
+   *  first prompt's workspace. */
+  private draftFrom(s: SessionInfo | null): NewDraftMeta {
+    return {
+      workspace: s?.project?.rootPath ?? s?.workspace ?? null,
+      projectId: s?.project?.id ?? null,
+      projectName: s?.project?.name ?? null,
+    };
+  }
+
+  /** Explicit navigation to an existing session (tab click, picker row,
+   *  post-restore open). Opens/keeps the tab, selects it, drops any draft;
+   *  the transcript is re-fetched by ws.openSession's session.open. */
+  selectSession(id: string): void {
+    const [n] = nav.openTab(this.navState(), id);
+    this.applyNavState(n);
+  }
+
+  /** Close a tab (view operation — NOT a cancel, NOT a delete). When the
+   *  closed tab was selected: select the nearest remaining tab (right
+   *  neighbor, else left), or enter New Session mode when none remain.
+   *  Returns the id to open next (null = nothing / draft). */
+  closeSession(id: string): string | null {
+    const lost = this.session?.id === id ? this.session : null;
+    const [n, action] = nav.closeTab(this.navState(), id);
+    if (n.draft && lost) n.draft = this.draftFrom(lost);
+    this.applyNavState(n);
     delete this.unreadTabs[id];
-    // Closing a tab is NOT cancelling a run or deleting the session — the run
-    // keeps going server-side and the session stays in the global list.
-    if (this.session?.id === id) {
-      this.session = null;
-      this.resetTranscript();
-    }
+    return action.kind === "open" ? action.id : null;
+  }
+
+  /** Explicit "New Session": instant local draft (see newDraft). Idempotent —
+   *  hammering it never creates server sessions or resets an active draft. */
+  startNewSession(): void {
+    const from = this.session ? this.draftFrom(this.session) : (this.newDraft ?? { workspace: null, projectId: null, projectName: null });
+    const [n] = nav.startNew(this.navState(), from);
+    this.applyNavState(n);
+  }
+
+  /** The visible session (or an open tab) was deleted server-side: same
+   *  transition as closing the tab — returns the id to open next. */
+  sessionDeleted(id: string): string | null {
+    this.sessions = this.sessions.filter((s) => s.id !== id);
+    if (this.sessionSearch) this.sessionSearch = this.sessionSearch.filter((s) => s.id !== id);
+    return this.closeSession(id);
+  }
+
+  /** A persisted/open tab id no longer exists server-side (stale restore or a
+   *  failed open): trim it; if it was the selection, run the same transition.
+   *  Returns the id to open next. */
+  sessionNotFound(id: string): string | null {
+    this.sessions = this.sessions.filter((s) => s.id !== id);
+    const lost = this.session?.id === id ? this.session : null;
+    const [n, action] = nav.sessionNotFound(this.navState(), id);
+    if (n.draft && lost) n.draft = this.draftFrom(lost);
+    this.applyNavState(n);
+    return action.kind === "open" ? action.id : null;
+  }
+
+  /** The client's own draft first-prompt just created the server session:
+   *  replace the local placeholder with the real tab. The ONLY path by which
+   *  a server-created session becomes visible. The transcript is NOT reset —
+   *  the optimistic user block from the send is already there. */
+  adoptCreatedSession(info: SessionInfo): void {
+    const [n] = nav.adoptCreated(this.navState(), info.id);
+    this.upsertSession(info);
+    this.openTabIds = [...n.openIds];
+    this.newDraft = null;
+    this.draftSendPending = false;
+    this.session = info;
+    this.clearUnread(info.id);
+    if (info.compaction !== undefined) this.compactionPolicy = info.compaction;
+    if (info.modelId) this.setModel(info.modelId, false);
+    if (info.reasoningLevel) this.setReasoning(info.reasoningLevel, false);
+    else if (info.modelId) this.syncReasoning();
     this.persistTabs();
   }
 
@@ -556,6 +655,19 @@ export class NetPIStore {
     if (last?.kind === "assistant" && last.done) last.endOfRun = true;
   }
 
+  /**
+   * Attach a run's end-of-turn metrics (run_metrics entry, live or replayed)
+   * to the run's final assistant block — the status line renders from
+   * `block.metrics` on the endOfRun block, identically live and after replay.
+   */
+  attachRunMetrics(m: RunMetrics): void {
+    for (let i = this.blocks.length - 1; i >= 0; i--)
+      if (this.blocks[i].kind === "assistant") {
+        (this.blocks[i] as AssistantBlock).metrics = m;
+        return;
+      }
+  }
+
   resetAssistantForRetry(): void {
     if (!this.activeAssistantId) return;
     const i = this.blocks.findIndex((x) => x.id === this.activeAssistantId);
@@ -665,13 +777,16 @@ export class NetPIStore {
     }
   }
 
+  /**
+   * Metadata refresh for the VISIBLE session only (session.updated for the
+   * selected session). This NEVER opens or selects a tab — server events are
+   * metadata; navigation happens only through selectSession/adoptCreatedSession
+   * (explicit UI operations).
+   */
   applySession(info: SessionInfo): void {
+    if (this.session?.id !== info.id) return;
     this.session = info;
     if (info.compaction !== undefined) this.compactionPolicy = info.compaction;
-    // astra-1 G1: making a session visible registers it as an open tab and
-    // clears its unread marker (a run completing must never move a tab).
-    this.openTab(info.id);
-    this.clearUnread(info.id);
     if (info.modelId) this.setModel(info.modelId, false);
     if (info.reasoningLevel) this.setReasoning(info.reasoningLevel, false);
     else if (info.modelId) this.syncReasoning();

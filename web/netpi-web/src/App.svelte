@@ -91,7 +91,7 @@
     {/if}
 
 
-    <HarnessHeader onSessions={() => (pickerOpen = true)} onProjects={() => (projectPickerOpen = true)} />
+    <HarnessHeader onSessions={() => (pickerOpen = true)} onProjects={() => (projectPickerOpen = true)} onNew={() => store.startNewSession()} />
     <SessionTabs />
     <ConversationViewport />
     <Composer />

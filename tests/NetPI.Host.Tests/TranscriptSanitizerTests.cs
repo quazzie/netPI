@@ -38,7 +38,7 @@ public class TranscriptSanitizerTests
             Assist("a1", Call("call_1", "bash")),
         };
 
-        var clean = TranscriptSanitizer.Sanitize(msgs);
+        var clean = TranscriptSanitizer.Normalize(msgs).Messages;
 
         // the transcript grew by exactly one tool message, directly after the
         // assistant turn (adjacency matters to the provider wires).
@@ -61,7 +61,7 @@ public class TranscriptSanitizerTests
             ToolResult("call_1", "bash", "ok"),
         };
 
-        var clean = TranscriptSanitizer.Sanitize(msgs);
+        var clean = TranscriptSanitizer.Normalize(msgs).Messages;
 
         // no change → same list instance, same count
         Assert.Same(msgs, clean);
@@ -78,7 +78,7 @@ public class TranscriptSanitizerTests
             ToolResult("call_a", "bash", "done"),   // call_b was never executed
         };
 
-        var clean = TranscriptSanitizer.Sanitize(msgs);
+        var clean = TranscriptSanitizer.Normalize(msgs).Messages;
 
         // The synthetic result is inserted right after the assistant turn (the
         // wires expect each tool message to follow its call), ahead of the
@@ -100,7 +100,7 @@ public class TranscriptSanitizerTests
             Assist("a1", Call("x", "bash"), Call("y", "grep")),
         };
 
-        var clean = TranscriptSanitizer.Sanitize(msgs);
+        var clean = TranscriptSanitizer.Normalize(msgs).Messages;
 
         Assert.Equal(2, clean.Count);
         var parts = clean[1].Parts.OfType<ToolResultPart>().ToList();
@@ -117,17 +117,129 @@ public class TranscriptSanitizerTests
             Assist("a1", Call("call_1", "bash")),
         };
 
-        var once = TranscriptSanitizer.Sanitize(msgs).ToList();
-        var twice = TranscriptSanitizer.Sanitize(once);
+        var once = TranscriptSanitizer.Normalize(msgs).Messages.ToList();
+        var twice = TranscriptSanitizer.Normalize(once);
 
         Assert.Equal(2, once.Count);
-        Assert.Same(once, twice); // second pass sees the synthetic result → no change
+        Assert.Same(once, twice.Messages); // second pass sees the synthetic result → no change
     }
 
     [Fact]
     public void Empty_Transcript_ReturnsUnchanged()
     {
         var msgs = new List<AgentMessage>();
-        Assert.Same(msgs, TranscriptSanitizer.Sanitize(msgs));
+        Assert.Same(msgs, TranscriptSanitizer.Normalize(msgs).Messages);
+    }
+
+    [Fact]
+    public void CleanTranscript_ProducesNoRepairNoise()
+    {
+        var msgs = new List<AgentMessage>
+        {
+            User("u1", "go"),
+            Assist("a1", Call("call_1", "bash")),
+            ToolResult("call_1", "bash", "ok"),
+        };
+
+        var r = TranscriptSanitizer.Normalize(msgs);
+
+        Assert.False(r.Changed);
+        Assert.False(r.Report.AnyRepairs);
+        Assert.Null(r.Report.ValidationFailure);
+    }
+
+    [Fact]
+    public void DuplicateResult_IsRemovedOnce_AndPreservedAsANote()
+    {
+        var msgs = new List<AgentMessage>
+        {
+            Assist("a1", Call("call_1", "bash")),
+            ToolResult("call_1", "bash", "ok"),
+            ToolResult("call_1", "bash", "ok-again"), // same id, already consumed
+        };
+
+        var r = TranscriptSanitizer.Normalize(msgs);
+
+        Assert.Equal(1, r.Report.DuplicateResults);
+        // The duplicate is NOT replayed as a structured result: exactly one
+        // result part for call_1 remains, plus a labeled user note (not a tool msg).
+        var toolMsgs = r.Messages.Where(m => m.Role == MessageRole.Tool).ToList();
+        Assert.Single(toolMsgs);
+        Assert.Equal("call_1", Assert.IsType<ToolResultPart>(toolMsgs[0].Parts.Single()).ToolCallId);
+        var note = Assert.Single(r.Messages.Where(m =>
+            m.Parts.OfType<TextPart>().Any(t => t.Text.StartsWith(TranscriptSanitizer.RecoveryNotePrefix))));
+        Assert.Equal(MessageRole.User, note.Role);
+    }
+
+    [Fact]
+    public void OrphanResult_CalledNowhere_IsRemoved_AndPreservedAsANote()
+    {
+        var msgs = new List<AgentMessage>
+        {
+            Assist("a1", Call("call_1", "bash")),
+            ToolResult("call_1", "bash", "ok"),
+            User("u2", "later"),
+            ToolResult("call_9", "bash", "stray"), // its call was never issued
+        };
+
+        var r = TranscriptSanitizer.Normalize(msgs);
+
+        Assert.Equal(1, r.Report.OrphanResults);
+        Assert.DoesNotContain(r.Messages, m =>
+            m.Role == MessageRole.Tool && m.Parts.OfType<ToolResultPart>().Any(p => p.ToolCallId == "call_9"));
+        Assert.Contains(r.Messages, m =>
+            m.Parts.OfType<TextPart>().Any(t => t.Text.StartsWith(TranscriptSanitizer.RecoveryNotePrefix)));
+    }
+
+    [Fact]
+    public void MisplacedResult_CallFromAnotherExchange_IsRemoved()
+    {
+        var msgs = new List<AgentMessage>
+        {
+            Assist("a1", Call("call_1", "bash")),
+            ToolResult("call_1", "bash", "ok"),
+            User("u2", "next turn"),            // closes the exchange
+            ToolResult("call_1", "bash", "late"), // call belongs to the earlier exchange
+        };
+
+        var r = TranscriptSanitizer.Normalize(msgs);
+
+        Assert.Equal(1, r.Report.MisplacedResults);
+        Assert.DoesNotContain(r.Messages, m =>
+            m.Role == MessageRole.Tool && m.Parts.OfType<ToolResultPart>().Any(p => p.ToolCallId == "call_1"
+                && p.Parts.OfType<TextPart>().Any(t => t.Text == "late")));
+    }
+
+    [Fact]
+    public void EmptyCallId_IsAnActionableValidationFailure_NotARepair()
+    {
+        var msgs = new List<AgentMessage>
+        {
+            Assist("a1", Call("", "bash")),
+        };
+
+        var r = TranscriptSanitizer.Normalize(msgs);
+
+        Assert.NotNull(r.Report.ValidationFailure);
+    }
+
+    [Fact]
+    public void Repairs_AreIdempotent_IncludingNotes()
+    {
+        var msgs = new List<AgentMessage>
+        {
+            Assist("a1", Call("call_1", "bash")),
+            ToolResult("call_9", "bash", "stray"), // orphan → note
+        };
+
+        var once = TranscriptSanitizer.Normalize(msgs);
+        var twice = TranscriptSanitizer.Normalize(once.Messages);
+
+        // Second pass: the note is a plain user message (no structured result), so
+        // nothing new is removed and the output is identical.
+        Assert.Equal(once.Messages.Count, twice.Messages.Count);
+        Assert.Equal(once.Messages.Select(m => (m.Id, m.Role, m.Parts.Count)).ToList(),
+                     twice.Messages.Select(m => (m.Id, m.Role, m.Parts.Count)).ToList());
+        Assert.False(twice.Changed);
     }
 }

@@ -80,7 +80,12 @@
 
   function close(e: Event, id: string) {
     e.stopPropagation();
-    store.closeTab(id);
+    // One store transition: drop the tab; if it was selected, the nearest
+    // remaining tab (right, else left) is selected, or New Session when none
+    // remain. Fetch that tab's transcript; a dead id trims + follows through
+    // the same path (sessionNotFound inside openSession).
+    const next = store.closeSession(id);
+    if (next) ws.openSession(next).catch((err) => store.setError(String(err)));
   }
 
   function onKey(e: KeyboardEvent) {

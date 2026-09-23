@@ -113,6 +113,26 @@ public class ResponsesIdentityTests
         Assert.Equal(FpOf(sameTextA), FpOf(again));
     }
 
+    /// <summary>docs/plans/compaction-tool-history.md §5.5: a tool call's NAME and
+    /// ARGUMENTS are part of the wire history and must be fingerprinted — a same-id
+    /// call with corrected name/args must NOT reuse an obsolete chain prefix.</summary>
+    [Fact]
+    public void Fingerprint_CoversToolCallNameAndArguments()
+    {
+        string FpOf(AgentMessage m) => (string)Fp.Invoke(null, [m])!;
+        ToolCallPart Call(string name, string args) =>
+            new("call_1", name, JsonDocument.Parse(args).RootElement.Clone());
+
+        var same = new AgentMessage("a1", MessageRole.Assistant, [Call("bash", "{\"cmd\":\"ls\"}")], DateTimeOffset.UtcNow);
+        var sameAgain = new AgentMessage("a1", MessageRole.Assistant, [Call("bash", "{\"cmd\":\"ls\"}")], DateTimeOffset.UtcNow);
+        var diffName = new AgentMessage("a1", MessageRole.Assistant, [Call("powershell", "{\"cmd\":\"ls\"}")], DateTimeOffset.UtcNow);
+        var diffArgs = new AgentMessage("a1", MessageRole.Assistant, [Call("bash", "{\"cmd\":\"pwd\"}")], DateTimeOffset.UtcNow);
+
+        Assert.Equal(FpOf(same), FpOf(sameAgain));
+        Assert.NotEqual(FpOf(same), FpOf(diffName));  // same id, different tool name
+        Assert.NotEqual(FpOf(same), FpOf(diffArgs));  // same id, different arguments
+    }
+
     private sealed class ThrowingHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)

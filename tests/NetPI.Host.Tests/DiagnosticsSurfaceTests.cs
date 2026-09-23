@@ -73,12 +73,18 @@ public class DiagnosticsSurfaceTests
 
     private sealed class FakeFacade : IPluginManagerFacade
     {
+        public int ReloadEnqueued, ReloadAllEnqueued, ScanEnqueued;
+        public string? LastReloadPluginId;
         public IReadOnlyList<PluginStatusSnapshot> GetStatus() => new List<PluginStatusSnapshot>
         {
             new("netpi.test", "Test Plugin", "0.1.0", "Active", 2, null, "PluginIdle", 0, null),
         };
         public ValueTask<bool> ReloadAsync(string pluginId, CancellationToken ct = default) => ValueTask.FromResult(true);
         public ValueTask<int> ReloadAllAsync(CancellationToken ct = default) => ValueTask.FromResult(1);
+        public string EnqueueReload(string pluginId, string? requestedBuildId, CancellationToken ct = default)
+        { ReloadEnqueued++; LastReloadPluginId = pluginId; return "op-reload-" + pluginId; }
+        public string EnqueueReloadAll(CancellationToken ct = default) { ReloadAllEnqueued++; return "op-reloadall"; }
+        public string EnqueueScan(CancellationToken ct = default) { ScanEnqueued++; return "op-scan"; }
     }
 
     private sealed class FakeCatalog : IModelCatalog
@@ -286,6 +292,85 @@ public class DiagnosticsSurfaceTests
         catch (HttpRequestException)
         {
             // expected: server stopped, connection refused
+        }
+        finally
+        {
+            try { Directory.Delete(tempRoot, true); } catch { }
+        }
+    }
+
+    // ---- control endpoints + origin gate (docs/plans/compaction-tool-history.md §6) ----
+
+    private static async Task<HttpResponseMessage> Post(string baseUrl, string path, string? origin = null, string? host = null)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, baseUrl + path);
+        if (origin is not null) req.Headers.Add("Origin", origin);
+        if (host is not null) req.Headers.Host = host;
+        return await Http.SendAsync(req);
+    }
+
+    private static async Task<HttpResponseMessage> Get(string baseUrl, string path, string? origin = null, string? host = null)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get, baseUrl + path);
+        if (origin is not null) req.Headers.Add("Origin", origin);
+        if (host is not null) req.Headers.Host = host;
+        return await Http.SendAsync(req);
+    }
+
+    [Fact]
+    public async Task ControlEndpoints_OriginGate_Deferral_And_GetRejected()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "netpi-diag-ctl-" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var (app, _, reg) = MakeApp(tempRoot);
+            await app.StartAsync(CancellationToken.None);
+            var facade = (FakeFacade)reg.Resolve<IPluginManagerFacade>("plugins");
+            var baseUrl = app.BoundUrl!.TrimEnd('/');
+            var port = new Uri(baseUrl).Port;
+            var sameOrigin = $"http://127.0.0.1:{port}";
+
+            try
+            {
+                // Same-origin POST is accepted and ENQUEUES (deferred) the reload.
+                var ok = await Post(baseUrl, "/api/diag/reload?pluginId=netpi.test", origin: sameOrigin);
+                Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+                var okBody = JsonDocument.Parse(await ok.Content.ReadAsStringAsync());
+                Assert.Equal("op-reload-netpi.test", okBody.RootElement.GetProperty("operationId").GetString());
+                Assert.True(okBody.RootElement.GetProperty("scheduled").GetBoolean());
+                Assert.Equal("netpi.test", facade.LastReloadPluginId);
+                Assert.Equal(1, facade.ReloadEnqueued);
+
+                // Originless on a loopback Host is the CLI path — also allowed.
+                var cli = await Post(baseUrl, "/api/diag/scan");
+                Assert.Equal(HttpStatusCode.OK, cli.StatusCode);
+                Assert.Equal(1, facade.ScanEnqueued);
+
+                // Reload-all + model refresh succeed same-origin.
+                Assert.Equal(HttpStatusCode.OK, (await Post(baseUrl, "/api/diag/reload-all", origin: sameOrigin)).StatusCode);
+                Assert.Equal(1, facade.ReloadAllEnqueued);
+                var mf = await Post(baseUrl, "/api/diag/models/refresh", origin: sameOrigin);
+                Assert.Equal(HttpStatusCode.OK, mf.StatusCode);
+
+                // GET is rejected for every mutation (405) — a stray link/iframe can't trigger one.
+                Assert.Equal(HttpStatusCode.MethodNotAllowed, (await Get(baseUrl, "/api/diag/reload", origin: sameOrigin)).StatusCode);
+                Assert.Equal(HttpStatusCode.MethodNotAllowed, (await Get(baseUrl, "/api/diag/reload-all")).StatusCode);
+                Assert.Equal(HttpStatusCode.MethodNotAllowed, (await Get(baseUrl, "/api/diag/scan")).StatusCode);
+                Assert.Equal(HttpStatusCode.MethodNotAllowed, (await Get(baseUrl, "/api/diag/models/refresh")).StatusCode);
+
+                // Foreign Origin, wrong-port Origin, and non-loopback Host are all rejected (403).
+                Assert.Equal(HttpStatusCode.Forbidden, (await Post(baseUrl, "/api/diag/reload?pluginId=x", origin: "http://evil.example.com")).StatusCode);
+                Assert.Equal(HttpStatusCode.Forbidden, (await Post(baseUrl, "/api/diag/reload?pluginId=x", origin: $"http://127.0.0.1:{port + 1}")).StatusCode);
+                Assert.Equal(HttpStatusCode.Forbidden, (await Post(baseUrl, "/api/diag/reload?pluginId=x", host: "evil.example.com")).StatusCode);
+                // A rejected reload must not have been enqueued.
+                Assert.Equal(1, facade.ReloadEnqueued);
+            }
+            finally
+            {
+                await app.StopAsync(CancellationToken.None);
+                await Task.Delay(50);
+            }
         }
         finally
         {

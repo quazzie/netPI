@@ -986,11 +986,21 @@ public sealed class AgentRunner : IAgentRunner
                 // consecutive user messages are legitimate).
                 for (var i = context.Count - 1; i >= 0; i--)
                     if (context[i].Id == userMessageId) context.RemoveAt(i);
-                // PLAN §46: a run that died mid-batch (crash/restart) leaves tool
-                // calls without results — the provider rejects the transcript
-                // ("function_call_output must contain a non-empty call_id"). Repair
-                // the history with synthetic interrupted results before it is sent.
-                context = TranscriptSanitizer.Sanitize(context).ToList();
+                // PLAN §46 / docs/plans/compaction-tool-history.md §3: a run that
+                // died mid-batch (crash/restart) leaves tool calls without results
+                // — the provider rejects the transcript. Normalize it with the one
+                // shared policy before it is sent. An irreparable transcript is a
+                // local validation failure (the catch below fails the run rather
+                // than shipping a broken transcript to the model).
+                var sanitized = TranscriptSanitizer.Normalize(context);
+                if (sanitized.Report.ValidationFailure is { } validationFailure)
+                    throw new InvalidOperationException(
+                        $"transcript validation failure (session {request.SessionId}): {validationFailure}");
+                if (sanitized.Report.AnyRepairs)
+                    _ctx.Log.Warning(
+                        $"context normalized (session {request.SessionId}): synthetic={sanitized.Report.SyntheticResults} " +
+                        $"orphans={sanitized.Report.OrphanResults} duplicates={sanitized.Report.DuplicateResults} misplaced={sanitized.Report.MisplacedResults}");
+                context = sanitized.Messages.ToList();
                 transcript.AddRange(context);
                 // astra-1 D: the ACTIVE project snapshot is a ProjectContext entry,
                 // which the compaction tail never carries (it filters

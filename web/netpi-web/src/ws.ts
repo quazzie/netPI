@@ -1,4 +1,5 @@
 import { store, NetPIStore, REVEAL_INITIAL, REVEAL_STEP } from "./store.svelte";
+import * as nav from "./nav-state";
 import type {
   AssistantBlock,
   AgentAssignment,
@@ -8,6 +9,7 @@ import type {
   SessionInfo,
   ProjectInfo,
   Usage,
+  RunMetrics,
 } from "./types";
 
 /**
@@ -30,35 +32,50 @@ class NetPIWebSocket {
    *  Server-pushed session.updated for OTHER sessions refresh global
    *  metadata only — they never replace the visible session. */
   private targetSession: string | null = null;
-  /** astra-1 F: reconnect window — the server replays the active session on
-   *  bootstrap; that replay (agent.state + session.updated/entries) is
-   *  treated as navigation until the replay lands or the window expires. */
-  private reconnectNav = false;
-  private reconnectNavUntil = 0;
+  /** True after the first successful connect: later opens are RECONNECTS,
+   *  which re-sync the visible session instead of re-restoring persisted
+   *  tabs (the in-memory state is the source of truth by then). */
+  private restoredOnce = false;
 
-  /** astra-1 F: explicit navigation — replace the visible session with id. */
+  /**
+   * Explicit navigation — replace the visible session with id. The store
+   * applies the tab/selection transition synchronously (immediate UI); the
+   * server round-trip then lands the transcript (session.updated +
+   * session.entries) for the target. A "session not found" rejection trims
+   * the stale tab and follows the store's transition to the next valid one.
+   */
   openSession(id: string): Promise<unknown> {
     this.targetSession = id;
-    this.reconnectNav = false;
-    return this.request("session.open", { sessionId: id });
+    store.selectSession(id);
+    return this.request("session.open", { sessionId: id }).catch((e) => {
+      this.targetSession = null;
+      if (String(e).includes("session not found")) {
+        const next = store.sessionNotFound(id);
+        if (next) return this.openSession(next);
+      }
+      throw e;
+    });
   }
 
-  /** astra-1 F: explicit navigation — a new session becomes visible.
-   *  (session.created events always navigate, so no target is needed.) */
-  createSession(payload: Record<string, unknown> = {}): Promise<unknown> {
-    this.reconnectNav = false;
-    return this.request("session.create", payload);
-  }
-
-  /** astra-1 G1: last-selected tab to restore after the bootstrap replay lands. */
-  private restoreTab: string | null = null;
-
-  /** G1: a session became visible — register it as an open tab (ordered,
-   *  de-duped) and clear its unread marker. */
-  private navToTab(eid: string | null): void {
-    if (!eid) return;
-    store.openTab(eid);
-    store.clearUnread(eid);
+  /**
+   * Deterministic post-connect restoration: load the persisted {openIds,
+   * selectedId} ONCE and explicitly open the selected tab (the first valid
+   * one, chasing stale ids through sessionNotFound). Bootstrap events
+   * (session.list/agent.state/session.updated/entries replay) hydrate
+   * metadata and run badges ONLY — the server's choice of replayed session
+   * never decides what the UI looks at.
+   */
+  private restoreSelection(): void {
+    const { tabs, selected } = NetPIStore.loadTabs();
+    const order = nav.restoreOrder(tabs, selected);
+    const step = (i: number): void => {
+      if (i >= order.length) {
+        store.startNewSession(); // no tabs survived — New Session state
+        return;
+      }
+      this.openSession(order[i]).catch(() => {});
+    };
+    step(0);
   }
 
   connect(): void {
@@ -72,14 +89,19 @@ class NetPIWebSocket {
 
     ws.onopen = () => {
       this.retries = 0;
-      this.reconnectNav = true;
-      this.reconnectNavUntil = Date.now() + 10000;
-      // astra-1 G1: remember the last-selected tab so the post-bootstrap
-      // navigation can return to it (restored sessions are re-opened below).
-      const restored = NetPIStore.loadTabs();
-      this.restoreTab = restored.tabs.length ? restored.selected : null;
       store.connection = "open";
       store.setError(null);
+      if (this.restoredOnce) {
+        // Reconnect: re-sync whatever the UI is already looking at (the
+        // server's bootstrap replay may target a DIFFERENT session and is
+        // treated as background data). A failed open of a since-deleted
+        // session resolves through sessionNotFound in openSession.
+        const sid = store.session?.id;
+        if (sid) this.openSession(sid).catch(() => {});
+      } else {
+        this.restoredOnce = true;
+        this.restoreSelection();
+      }
     };
 
     ws.onmessage = (ev) => this.onMessage(ev);
@@ -185,24 +207,21 @@ class NetPIWebSocket {
 
     // astra-1 F: events carry the session they belong to. Transcript and
     // streaming events are scoped: a background session never mutates the
-    // visible chat. Events without a sessionId are global.
+    // visible chat. Events without a sessionId are global. Server events
+    // never navigate: only an explicit session.open (targetSession) or an
+    // already-selected session is applied as visible state.
     const sid = (msg.sessionId ?? null) as string | null;
     const isCurrent = (sid2: string | null | undefined) =>
       sid2 == null || sid2 === (store.session?.id ?? null);
-    const nav = (sid2: string | null) =>
-      this.reconnectNav &&
-      Date.now() < this.reconnectNavUntil &&
-      sid2 != null &&
-      (this.targetSession == null || this.targetSession === sid2);
 
     switch (msg.type) {
       case "agent.state":
-        // Per-session state; during a reconnect the bootstrap state of the
-        // active run may arrive before the session replay lands.
+        // Per-session state; a background run's state is a tab badge, not a
+        // navigation.
         store.setBusySession(sid, p.state as AgentState);
         if (!isCurrent(sid) && (p.state as AgentState) !== "Idle")
           store.markUnread(sid);
-        if (isCurrent(sid) || nav(sid)) {
+        if (isCurrent(sid)) {
           if ((p.state as AgentState) === "Idle") store.completeRun();
           store.applyAgentState(p.state as AgentState);
         }
@@ -248,30 +267,23 @@ class NetPIWebSocket {
 
       case "session.created":
       case "session.updated": {
-        // astra-1 F: global metadata always refreshes; the VISIBLE session is
-        // replaced only for explicit navigation (open/create) or the bootstrap
-        // replay — everything else is a background metadata update.
+        // Metadata always refreshes. A session becomes VISIBLE only through:
+        //  (a) an explicit open (targetSession — tab click / restore), or
+        //  (b) the client's own draft first-prompt that just created it
+        //      (draftSendPending → adopt). A bootstrap replay of the
+        //      server-chosen session is background data: it must never open
+        //      a tab or steal the selection.
         const info = p as SessionInfo;
         const eid = sid ?? info.id ?? null;
-        const navigates =
-          msg.type === "session.created" ||
-          eid === this.targetSession ||
-          isCurrent(eid) ||
-          nav(eid);
-        if (navigates) {
+        if (msg.type === "session.created" && store.draftSendPending && eid && !store.sessions.some((s) => s.id === eid) && !store.openTabIds.includes(eid)) {
+          store.adoptCreatedSession(info);
+          break;
+        }
+        if (eid === this.targetSession || isCurrent(eid)) {
           store.applySession(info);
-          this.navToTab(eid);
-          if (eid === this.targetSession) this.targetSession = null;
-          if (eid != null) {
-            this.reconnectNav = false;
-            // G1: return to the last-selected tab once the bootstrap replay
-            // has landed (the server always replays the active/most-recent
-            // session first — this restores the user's tab choice on top).
-            if (this.restoreTab && this.restoreTab !== eid) {
-              const target = this.restoreTab;
-              this.restoreTab = null;
-              this.openSession(target).catch(() => {});
-            }
+          if (eid === this.targetSession) {
+            this.targetSession = null;
+            store.clearUnread(eid);
           }
         } else {
           store.upsertSession(info);
@@ -317,19 +329,12 @@ class NetPIWebSocket {
       case "session.deleted": {
         const deletedId = p.sessionId as string | undefined;
         const wasVisible = !!deletedId && store.sessions.some((s) => s.id === deletedId);
-        store.sessions = store.sessions.filter((s) => s.id !== deletedId);
-        // astra-1 G1: a deleted session drops its tab (the run stays in
-        // Activity; the tab is a view, not the session).
-        if (deletedId) store.closeTab(deletedId);
-        if (deletedId && store.session?.id === deletedId) {
-          // The open session vanished: clear the viewport and start fresh
-          // in the same workspace.
-          const workspace = store.session.workspace;
-          store.session = null;
-          store.resetTranscript();
-          // astra-1 F: explicit navigation — the fallback session becomes visible.
-          this.createSession(workspace ? { workspace } : {}).catch(() => {});
-        }
+        // The transition (drop the tab row; if it was selected, nearest
+        // remaining tab, else New Session) is ONE store operation — the run
+        // keeps going in the Work panel; the session is simply gone.
+        let nextToOpen: string | null = null;
+        if (deletedId) nextToOpen = store.sessionDeleted(deletedId);
+        if (nextToOpen) this.openSession(nextToOpen).catch(() => {});
         // A visible row shrank the loaded page — pull the next page so older
         // sessions surface instead of the list silently staying short.
         if (wasVisible && store.sessionRemaining > 0) this.loadMoreSessions();
@@ -368,9 +373,11 @@ class NetPIWebSocket {
         break;
 
       case "session.entries":
-        // A replace replay for a session we do not view is ignored unless it
-        // is the navigation target (open) or the bootstrap replay (reconnect).
-        if (!isCurrent(sid) && !nav(sid)) break;
+        // A replace replay for a session we do not view is ignored: the
+        // bootstrap replay of the server's chosen session is background data,
+        // and the visible transcript only ever flows from an explicit open
+        // (session.open) or live events for the selected session.
+        if (!isCurrent(sid)) break;
         this.ingestEntries(p, true);
         if (p.replace) store.revealTail(REVEAL_INITIAL);
         // astra-1 F: reconstruct the in-flight assistant message. The server
@@ -571,6 +578,24 @@ class NetPIWebSocket {
           if (prepend) store.prependSystem(e.text ?? "");
           else store.appendSystem(e.text ?? "");
           break;
+        // End-of-turn metrics for the run that just closed (persisted
+        // Metadata entry, kind "run_metrics"): attached to the run's final
+        // assistant block. Live, it arrives right after the terminal
+        // events; on replay it lands in transcript order (after the last
+        // assistant entry of the run) — either way the last assistant
+        // block is the run's final one.
+        case "run_metrics": {
+          store.attachRunMetrics({
+            promptTokens: Number(e.promptTokens ?? 0),
+            completionTokens: Number(e.completionTokens ?? 0),
+            cachedTokens: e.cachedTokens == null ? undefined : Number(e.cachedTokens),
+            runElapsedMs: Number(e.runElapsedMs ?? 0),
+            modelElapsedMs: Number(e.modelElapsedMs ?? 0),
+            toolCount: e.toolCount == null ? undefined : Number(e.toolCount),
+            toolElapsedMs: e.toolElapsedMs == null ? undefined : Number(e.toolElapsedMs),
+          });
+          break;
+        }
         // astra-1 D: project-change events (server entry type `project_context`)
         // are a distinct transcript block — provenance is the application, not
         // the model (rendered by ProjectContextBlock, never as a user message).

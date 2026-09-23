@@ -35,6 +35,10 @@ public sealed class DiagApp
     private readonly IPluginLogger _log;
     private readonly int _port;
     private readonly string _runtimeDir;
+    /// <summary>The port the Kestrel listener actually bound (honors port 0 → random).
+    /// docs/plans/compaction-tool-history.md §6.3: the control endpoints' same-origin
+    /// check compares against THIS, so a port-0 deployment validates correctly.</summary>
+    private int _boundPort;
     private WebApplication? _app;
     /// <summary>Actual bound URL (populated after <see cref="StartAsync"/>; honors port 0).</summary>
     public string? BoundUrl => _boundUrl;
@@ -156,10 +160,64 @@ public sealed class DiagApp
             else await c.Response.WriteAsync(JsonSerializer.Serialize(payload, DiagJson));
         });
 
+        // ---- control endpoints (docs/plans/compaction-tool-history.md §6) ----------
+        // Narrowly scoped, same-origin, POST-only mutations. The panel is served from
+        // THIS Kestrel (same origin), so it drives them directly — it never uses the
+        // cross-origin host WebSocket (the host's :5173 control boundary rejects it, and
+        // protocol.md forbids a cross-origin panel from connecting to it). Every mutation
+        // is loopback-Host + same-origin-validated (matching the established control-
+        // boundary policy), GET is rejected (405), and the operation is ENQUEUED (deferred):
+        // the outcome arrives on the next overview poll, never from this request — so
+        // reloading Diagnostics itself does not hold the request open while its own
+        // generation drains.
+        app.MapGet("/api/diag/reload", () => Results.StatusCode(405));
+        app.MapPost("/api/diag/reload", async (HttpContext c) =>
+        {
+            if (!ControlOriginOk(c, out var why)) { await RejectOriginAsync(c, why); return; }
+            var pluginId = c.Request.Query["pluginId"];
+            if (string.IsNullOrEmpty(pluginId)) { c.Response.StatusCode = 400; await c.Response.WriteAsync("{\"error\":\"pluginId required\"}"); return; }
+            var facade = TryResolve<IPluginManagerFacade>("plugins");
+            if (facade is null) { c.Response.StatusCode = 503; await c.Response.WriteAsync("{\"error\":\"plugin manager unavailable\"}"); return; }
+            var opId = facade.EnqueueReload(pluginId, null, c.RequestAborted); // deferred — no build id = reload to current pointer
+            await WriteJsonAsync(c, new { operationId = opId, scheduled = true });
+        });
+        app.MapGet("/api/diag/reload-all", () => Results.StatusCode(405));
+        app.MapPost("/api/diag/reload-all", async (HttpContext c) =>
+        {
+            if (!ControlOriginOk(c, out var why)) { await RejectOriginAsync(c, why); return; }
+            var facade = TryResolve<IPluginManagerFacade>("plugins");
+            if (facade is null) { c.Response.StatusCode = 503; await c.Response.WriteAsync("{\"error\":\"plugin manager unavailable\"}"); return; }
+            var opId = facade.EnqueueReloadAll(c.RequestAborted);
+            await WriteJsonAsync(c, new { operationId = opId, scheduled = true });
+        });
+        app.MapGet("/api/diag/scan", () => Results.StatusCode(405));
+        app.MapPost("/api/diag/scan", async (HttpContext c) =>
+        {
+            if (!ControlOriginOk(c, out var why)) { await RejectOriginAsync(c, why); return; }
+            var facade = TryResolve<IPluginManagerFacade>("plugins");
+            if (facade is null) { c.Response.StatusCode = 503; await c.Response.WriteAsync("{\"error\":\"plugin manager unavailable\"}"); return; }
+            var opId = facade.EnqueueScan(c.RequestAborted);
+            await WriteJsonAsync(c, new { operationId = opId, scheduled = true });
+        });
+        app.MapGet("/api/diag/models/refresh", () => Results.StatusCode(405));
+        app.MapPost("/api/diag/models/refresh", async (HttpContext c) =>
+        {
+            if (!ControlOriginOk(c, out var why)) { await RejectOriginAsync(c, why); return; }
+            var catalog = TryResolve<IModelCatalog>("catalog");
+            if (catalog is null) { c.Response.StatusCode = 503; await c.Response.WriteAsync("{\"error\":\"model catalog unavailable\"}"); return; }
+            try
+            {
+                var models = await catalog.RefreshAsync(c.RequestAborted);
+                await WriteJsonAsync(c, new { ok = true, count = models.Count });
+            }
+            catch (Exception ex) { c.Response.StatusCode = 502; await WriteJsonAsync(c, new { ok = false, error = ex.Message }); }
+        });
+
         // Statement-bodied handlers only — the /api/file ALC gotcha (PLAN §41):
         // method-group / pass-through async delegates degrade to empty 200s.
         await app.StartAsync(ct);
         _boundUrl = app.Urls.FirstOrDefault();
+        _boundPort = ParsePort(_boundUrl) ?? _port;
         _log.Information($"Diagnostics surface listening on {_boundUrl ?? $"http://127.0.0.1:{_port}"}");
     }
 
@@ -491,5 +549,56 @@ public sealed class DiagApp
     {
         try { return _ctx.Services.Resolve<T>(id); }
         catch { return default; }
+    }
+
+    // ---- control boundary (docs/plans/compaction-tool-history.md §6.3) --------
+
+    /// <summary>
+    /// docs/plans/compaction-tool-history.md §6.3: the same local-control-boundary
+    /// predicate the host uses for its mutating routes — the loopback listener is NOT
+    /// browser-origin validation, so a malicious page in ANY browser can still open a
+    /// request to 127.0.0.1:port. The Host must be a loopback name AND, when an Origin
+    /// is present, it must be the same http:// loopback host:port (the local app, i.e.
+    /// THIS surface). An absent Origin is allowed ONLY on a loopback Host (the
+    /// originless CLI path); a present-but-wrong Origin is rejected. No permissive CORS
+    /// and no origin allowlisting — the panel is same-origin, so its own Origin passes.
+    /// </summary>
+    private bool ControlOriginOk(HttpContext c, out string reason)
+    {
+        var host = c.Request.Host.Host;
+        if (!IsLoopbackHost(host)) { reason = $"host is not loopback ({host})"; return false; }
+        var origin = c.Request.Headers.Origin.ToString();
+        if (string.IsNullOrWhiteSpace(origin)) { reason = ""; return true; } // originless CLI, loopback host
+        Uri u;
+        try { u = new Uri(origin, UriKind.Absolute); }
+        catch { reason = "unparseable Origin"; return false; }
+        if (u.Scheme != Uri.UriSchemeHttp) { reason = "Origin scheme is not http"; return false; }
+        if (u.Port != _boundPort) { reason = $"Origin port {u.Port} != bound port {_boundPort}"; return false; }
+        if (!IsLoopbackHost(u.Host)) { reason = $"Origin host is not loopback ({u.Host})"; return false; }
+        reason = "";
+        return true;
+    }
+
+    private static bool IsLoopbackHost(string host) =>
+        host is "127.0.0.1" or "localhost" or "::1" or "[::1]";
+
+    private static async Task RejectOriginAsync(HttpContext c, string reason)
+    {
+        c.Response.StatusCode = 403;
+        c.Response.ContentType = "application/json; charset=utf-8";
+        await c.Response.WriteAsync($"{{\"error\":\"control origin rejected: {reason}\"}}");
+    }
+
+    private static async Task WriteJsonAsync(HttpContext c, object payload)
+    {
+        c.Response.ContentType = "application/json; charset=utf-8";
+        await c.Response.WriteAsync(JsonSerializer.Serialize(payload, DiagJson));
+    }
+
+    private static int? ParsePort(string? url)
+    {
+        if (string.IsNullOrEmpty(url)) return null;
+        try { return new Uri(url, UriKind.Absolute).Port; }
+        catch { return null; }
     }
 }

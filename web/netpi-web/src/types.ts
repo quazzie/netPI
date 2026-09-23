@@ -125,6 +125,27 @@ export interface Usage {
   totalTokens?: number;
   reasoningTokens?: number;
   cacheHit?: number;
+  /** Cached-input tokens of the last model turn (Responses-API `cached_tokens`;
+   *  the wire previously dropped it — usage.updated now carries it). */
+  cachedTokens?: number;
+}
+
+/**
+ * End-of-turn metrics for one agent run, persisted with the transcript
+ * (`run_metrics` metadata entry) so live completion and transcript replay
+ * render the exact same status line. Observed values, not estimates:
+ * - `runElapsedMs`   AgentStarting → terminal run event (explicit server timestamps)
+ * - `modelElapsedMs` sum of model-started → model-completed windows (model work only)
+ * - `toolElapsedMs`  sum of the per-tool wall durations (tool.completed durationMs)
+ */
+export interface RunMetrics {
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens?: number;
+  runElapsedMs: number;
+  modelElapsedMs: number;
+  toolCount?: number;
+  toolElapsedMs?: number;
 }
 
 export interface RunStats {
