@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- read / write / edit / grep / find / ls tools + files.search / files.list RPC. -->
+  <PropertyGroup>
+    <Description>NetPI file tools (CRLF/LF agnostic read, write, edit, grep, find, ls).</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPI.Tools.Tests" />
+  </ItemGroup>
+</Project>

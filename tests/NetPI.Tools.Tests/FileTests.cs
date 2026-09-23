@@ -1,0 +1,602 @@
+using System.Text;
+using System.Text.Json;
+using NetPI.Tools.Files;
+
+namespace NetPI.Tools.Tests;
+
+public static class FileTests
+{
+    private static readonly ReadTool Read = new();
+    private static readonly WriteTool Write = new();
+    private static readonly EditTool Edit = new();
+
+    public static void Register(TestRunner r)
+    {
+        // ------------------------------------------------ codec
+        r.Add("codec: EOL detection (majority, tie, none)", () =>
+        {
+            Check.Equal<EolStyle?>(EolStyle.CrLf, TextCodec.DetectEol("a\r\nb\r\nc\n"));
+            Check.Equal<EolStyle?>(EolStyle.Lf, TextCodec.DetectEol("a\nb\nc\r\n"));
+            Check.Equal<EolStyle?>(EolStyle.Lf, TextCodec.DetectEol("a\r\nb\n"), "tie → LF");
+            Check.Equal<EolStyle?>(null, TextCodec.DetectEol("no breaks"));
+            var s = TextCodec.CountEol("a\r\nb\nc\rd");
+            Check.Equal(1, s.CrLf); Check.Equal(1, s.Lf); Check.Equal(1, s.Cr); Check.True(s.Mixed);
+            Check.Equal("a\nb\nc\nd", TextCodec.NormalizeToLf("a\r\nb\nc\rd"));
+            Check.Equal("a\r\nb\r\n", TextCodec.ToEol("a\nb\r\n", EolStyle.CrLf));
+        });
+
+        r.Add("codec: BOM, UTF-16, Latin-1 round trip, binary sniffing", () =>
+        {
+            var bom = TextCodec.Decode([0xEF, 0xBB, 0xBF, (byte)'h', (byte)'i', (byte)'\r', (byte)'\n']);
+            Check.True(bom.Bom); Check.Equal("hi\n", bom.Text); Check.Equal<EolStyle?>(EolStyle.CrLf, bom.DetectedEol);
+            var re = TextCodec.Encode(bom, EolStyle.Lf);
+            Check.Equal("EF-BB-BF-68-69-0D-0A", BitConverter.ToString(re));
+
+            byte[] utf16 = [0xFF, 0xFE, .. Encoding.Unicode.GetBytes("héllo\r\n")];
+            Check.False(TextCodec.IsBinary(utf16), "UTF-16 with BOM is text");
+            var d16 = TextCodec.Decode(utf16);
+            Check.Equal("héllo\n", d16.Text);
+            Check.Equal(BitConverter.ToString(utf16), BitConverter.ToString(TextCodec.Encode(d16, EolStyle.Lf)));
+
+            byte[] latin = [(byte)'c', (byte)'a', (byte)'f', 0xE9, (byte)'\n']; // "café" in Windows-1252
+            var dl = TextCodec.Decode(latin);
+            Check.True(dl.Legacy);
+            Check.Equal(BitConverter.ToString(latin), BitConverter.ToString(TextCodec.Encode(dl, EolStyle.Lf)));
+
+            Check.True(TextCodec.IsBinary([1, 2, 0, 3]));
+            Check.False(TextCodec.IsBinary(Encoding.UTF8.GetBytes("plain ✓ text")));
+        });
+
+        // ------------------------------------------------ edit: EOL handling
+        r.Add("edit: CRLF file edited with LF oldText keeps CRLF", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "a.cs", "class A\r\n{\r\n    int x = 1;\r\n    int y = 2;\r\n}\r\n");
+            var res = await T.Run(Edit, dir, new { path = "a.cs", oldText = "    int x = 1;\n    int y = 2;", newText = "    int x = 10;\n    int y = 20;\n    int z = 30;" });
+            Check.Ok(res);
+            var raw = T.ReadRaw(f);
+            Check.Equal("class A\r\n{\r\n    int x = 10;\r\n    int y = 20;\r\n    int z = 30;\r\n}\r\n", raw);
+            var d = T.D(res);
+            Check.Equal(3, d.Int("added")); Check.Equal(2, d.Int("removed")); Check.Equal("crlf", d.Str("eol"));
+            Check.Contains(res.Content, "Applied 1 edit to a.cs (+3 −2)");
+            Check.Contains(res.Content, "@@ -1,5 +1,6 @@");
+        });
+
+        r.Add("edit: LF file edited with CRLF oldText/newText stays LF", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "a.txt", "one\ntwo\nthree\n");
+            var res = await T.Run(Edit, dir, new { path = "a.txt", oldText = "one\r\ntwo", newText = "uno\r\ndos" });
+            Check.Ok(res);
+            Check.Equal("uno\ndos\nthree\n", T.ReadRaw(f));
+        });
+
+        r.Add("edit: mixed EOL file is written with the majority style", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "m.txt", "a\r\nb\r\nc\nd\r\n");
+            var res = await T.Run(Edit, dir, new { path = "m.txt", oldText = "c\nd", newText = "C\nD" });
+            Check.Ok(res);
+            Check.Equal("a\r\nb\r\nC\r\nD\r\n", T.ReadRaw(f));
+            Check.Contains(res.Content, "mixed line endings");
+        });
+
+        r.Add("edit: UTF-8 BOM is preserved", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "b.txt", "hello\r\nworld\r\n", bom: true);
+            Check.Ok(await T.Run(Edit, dir, new { path = "b.txt", oldText = "world", newText = "there" }));
+            var bytes = File.ReadAllBytes(f);
+            Check.Equal("EF-BB-BF", BitConverter.ToString(bytes, 0, 3));
+            Check.Equal("hello\r\nthere\r\n", Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3));
+            Check.True(T.D(await T.Run(Read, dir, new { path = "b.txt" })).Bool("bom"));
+        });
+
+        // ------------------------------------------------ edit: semantics
+        r.Add("edit: multi-edit applies sequentially", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "s.txt", "alpha\nbeta\ngamma\n");
+            var res = await T.Run(Edit, dir, new
+            {
+                path = "s.txt",
+                edits = new object[]
+                {
+                    new { oldText = "alpha", newText = "ALPHA" },
+                    new { oldText = "ALPHA\nbeta", newText = "ALPHA\nBETA" }, // depends on the first edit
+                },
+            });
+            Check.Ok(res);
+            Check.Equal("ALPHA\nBETA\ngamma\n", T.ReadRaw(f));
+            Check.Equal(2, T.D(res).Int("edits"));
+        });
+
+        r.Add("edit: multi-edit is all-or-nothing", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var original = "alpha\nbeta\ngamma\n";
+            var f = T.WriteText(dir, "s.txt", original);
+            var res = await T.Run(Edit, dir, new
+            {
+                path = "s.txt",
+                edits = new object[] { new { oldText = "alpha", newText = "ALPHA" }, new { oldText = "delta", newText = "DELTA" } },
+            });
+            Check.Error(res, "Edit 2 of 2 failed");
+            Check.Contains(res.Content, "not changed");
+            Check.Equal(original, T.ReadRaw(f));
+        });
+
+        r.Add("edit: ambiguous match reports count and line numbers; replaceAll replaces all", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "d.txt", "x = 1\nfoo()\ny = 2\nz = 3\nfoo()\n");
+            var res = await T.Run(Edit, dir, new { path = "d.txt", oldText = "foo()", newText = "bar()" });
+            Check.Error(res, "matches 2 locations");
+            Check.Contains(res.Content, "lines 2, 5");
+            Check.Contains(res.Content, "replaceAll");
+            res = await T.Run(Edit, dir, new { path = "d.txt", oldText = "foo()", newText = "bar()", replaceAll = true });
+            Check.Ok(res);
+            Check.Equal("x = 1\nbar()\ny = 2\nz = 3\nbar()\n", T.ReadRaw(f));
+            Check.Contains(res.Content, "replaced 2 occurrences");
+        });
+
+        r.Add("edit: aliases old_string/new_string, replace_all as string, edits as JSON string", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "a.txt", "a a a\n");
+            Check.Ok(await T.Run(Edit, dir, new { file_path = "a.txt", old_string = "a", new_string = "b", replace_all = "true" }));
+            Check.Equal("b b b\n", T.ReadRaw(f));
+            Check.Ok(await T.Run(Edit, dir, "{\"filePath\":\"a.txt\",\"edits\":\"[{\\\"oldText\\\":\\\"b b b\\\",\\\"newText\\\":\\\"c\\\"}]\"}"));
+            Check.Equal("c\n", T.ReadRaw(f));
+        });
+
+        r.Add("edit: fuzzy (a) trailing whitespace", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "t.py", "def f():   \n    return 1  \n\nprint(f())\n");
+            var res = await T.Run(Edit, dir, new { path = "t.py", oldText = "def f():\n    return 1", newText = "def f():\n    return 2" });
+            Check.Ok(res);
+            Check.Equal("def f():\n    return 2\n\nprint(f())\n", T.ReadRaw(f));
+            var fz = T.D(res).GetProperty("fuzzy")[0];
+            Check.Equal("trailing-whitespace", fz.Str("strategy"));
+            Check.Equal(1, fz.Int("line"));
+        });
+
+        r.Add("edit: fuzzy (b) unicode quotes/dashes/NBSP", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "u.md", "Title\nHe said “hello” — it’s fine.\nEnd\n");
+            var res = await T.Run(Edit, dir, new { path = "u.md", oldText = "He said \"hello\" - it's fine.", newText = "He said goodbye." });
+            Check.Ok(res);
+            Check.Equal("Title\nHe said goodbye.\nEnd\n", T.ReadRaw(f));
+            Check.Equal("unicode", T.D(res).GetProperty("fuzzy")[0].Str("strategy"));
+        });
+
+        r.Add("edit: fuzzy (c) indentation re-indents newText", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "i.cs", "class C\n{\n        void M()\n        {\n            Run();\n        }\n}\n");
+            // Model dropped the base indentation.
+            var res = await T.Run(Edit, dir, new { path = "i.cs", oldText = "void M()\n{\n    Run();\n}", newText = "void M()\n{\n    Run();\n    Stop();\n}" });
+            Check.Ok(res);
+            Check.Equal("class C\n{\n        void M()\n        {\n            Run();\n            Stop();\n        }\n}\n", T.ReadRaw(f));
+            Check.Equal("indentation", T.D(res).GetProperty("fuzzy")[0].Str("strategy"));
+
+            // Tabs in the file, spaces in oldText.
+            var g = T.WriteText(dir, "tab.go", "func main() {\n\tif ok {\n\t\tgo()\n\t}\n}\n");
+            res = await T.Run(Edit, dir, new { path = "tab.go", oldText = "    if ok {\n        go()\n    }", newText = "    if ok {\n        go()\n        done()\n    }" });
+            Check.Ok(res);
+            Check.Equal("func main() {\n\tif ok {\n\t\tgo()\n\t\tdone()\n\t}\n}\n", T.ReadRaw(g));
+
+            // Unit-level: a new, deeper level converts spaces to the file's tabs.
+            var re = EditMatcher.Reindent(["if x {", "    if y {", "        z()", "    }", "}"], ["if x {", "}"], ["\tif x {", "\t}"]);
+            Check.Equal("\tif x {|\t\tif y {|\t\t\tz()|\t\t}|\t}", string.Join("|", re));
+        });
+
+        r.Add("edit: errors (empty oldText, identical, not found with hint, missing file, binary)", async () =>
+        {
+            var dir = T.TempDir("edit");
+            T.WriteText(dir, "e.txt", "public void Start()\n{\n}\n");
+            Check.Error(await T.Run(Edit, dir, new { path = "e.txt", oldText = "", newText = "x" }), "oldText is empty");
+            Check.Error(await T.Run(Edit, dir, new { path = "e.txt", oldText = "{", newText = "{" }), "identical");
+            var nf = await T.Run(Edit, dir, new { path = "e.txt", oldText = "public void Stop()", newText = "x" });
+            Check.Error(nf, "not found");
+            Check.Contains(nf.Content, "most similar line is 1: `public void Start()`");
+            Check.Error(await T.Run(Edit, dir, new { path = "missing.txt", oldText = "a", newText = "b" }), "write tool");
+            T.WriteBytes(dir, "bin.dat", [1, 2, 0, 4]);
+            Check.Error(await T.Run(Edit, dir, new { path = "bin.dat", oldText = "a", newText = "b" }), "binary");
+            Check.Error(await T.Run(Edit, dir, new { path = "e.txt" }), "Missing edits");
+        });
+
+        r.Add("edit: empty file + empty oldText acts as write", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var f = T.WriteText(dir, "empty.txt", "");
+            Check.Ok(await T.Run(Edit, dir, new { path = "empty.txt", oldText = "", newText = "first line\n" }));
+            Check.Equal("first line\n", T.ReadRaw(f));
+        });
+
+        r.Add("edit: diff has line numbers and 3 lines of context", async () =>
+        {
+            var dir = T.TempDir("edit");
+            var lines = Enumerable.Range(1, 20).Select(i => $"line {i}").ToList();
+            T.WriteText(dir, "n.txt", string.Join("\n", lines) + "\n");
+            var res = await T.Run(Edit, dir, new { path = "n.txt", oldText = "line 10\n", newText = "line ten\n" });
+            Check.Ok(res);
+            var diff = T.D(res).Str("diff");
+            Check.Contains(diff, "--- a/n.txt\n+++ b/n.txt\n@@ -7,7 +7,7 @@\n line 7\n line 8\n line 9\n-line 10\n+line ten\n line 11\n line 12\n line 13\n");
+            Check.Equal(10, T.D(res).Int("firstChangedLine"));
+        });
+
+        // ------------------------------------------------ write
+        r.Add("write: new file uses files.newFileEol (lf default, crlf, auto) and creates parents", async () =>
+        {
+            var dir = T.TempDir("write");
+            var res = await T.Run(Write, dir, new { path = "sub/deep/new.txt", content = "a\r\nb\n" });
+            Check.Ok(res);
+            Check.Equal("a\nb\n", T.ReadRaw(Path.Combine(dir, "sub/deep/new.txt")));
+            var d = T.D(res);
+            Check.True(d.Bool("created")); Check.Equal(2, d.Int("lines")); Check.Equal(4, d.Int("bytes")); Check.False(d.Has("diff"));
+
+            var settings = new FakeSettings();
+            settings.Set("files.newFileEol", "crlf");
+            Check.Ok(await T.Run(new WriteTool(settings), dir, new { path = "crlf.txt", content = "a\nb\n" }));
+            Check.Equal("a\r\nb\r\n", T.ReadRaw(Path.Combine(dir, "crlf.txt")));
+
+            settings.Set("files.newFileEol", "auto");
+            Check.Ok(await T.Run(new WriteTool(settings), dir, new { path = "auto.txt", content = "a\nb\n" }));
+            Check.Equal(OperatingSystem.IsWindows() ? "a\r\nb\r\n" : "a\nb\n", T.ReadRaw(Path.Combine(dir, "auto.txt")));
+        });
+
+        r.Add("write: existing CRLF+BOM file keeps style; diff vs old content", async () =>
+        {
+            var dir = T.TempDir("write");
+            var f = T.WriteText(dir, "x.txt", "one\r\ntwo\r\n", bom: true);
+            var res = await T.Run(Write, dir, new { path = "x.txt", content = "one\n2\nthree\n" });
+            Check.Ok(res);
+            var bytes = File.ReadAllBytes(f);
+            Check.Equal("EF-BB-BF", BitConverter.ToString(bytes, 0, 3));
+            Check.Equal("one\r\n2\r\nthree\r\n", Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3));
+            var d = T.D(res);
+            Check.False(d.Bool("created"));
+            Check.Contains(d.Str("diff"), "-two\n+2\n+three");
+            Check.Equal(2, d.Int("added")); Check.Equal(1, d.Int("removed"));
+            // Same content again: no change
+            Check.Contains((await T.Run(Write, dir, new { path = "x.txt", content = "one\n2\nthree\n" })).Content, "No changes");
+        });
+
+        r.Add("write: atomic (no temp files), keeps unix mode, missing args", async () =>
+        {
+            var dir = T.TempDir("write");
+            var f = T.WriteText(dir, "run.sh", "#!/bin/sh\necho hi\n");
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(f, (UnixFileMode)Convert.ToInt32("755", 8));
+            Check.Ok(await T.Run(Write, dir, new { path = "run.sh", content = "#!/bin/sh\necho bye\n" }));
+            Check.Equal(1, Directory.GetFiles(dir).Length, "no temp files left");
+            if (!OperatingSystem.IsWindows()) Check.True((File.GetUnixFileMode(f) & UnixFileMode.UserExecute) != 0, "executable bit kept");
+            Check.Error(await T.Run(Write, dir, new { path = "x.txt" }), "content");
+            Check.Error(await T.Run(Write, dir, new { content = "x" }), "path");
+            Check.Error(await T.Run(Write, dir, new { path = ".", content = "x" }), "directory");
+        });
+
+        // ------------------------------------------------ read
+        r.Add("read: truncation footer, offset/limit, negative offset, past end", async () =>
+        {
+            var dir = T.TempDir("read");
+            T.WriteText(dir, "big.txt", string.Join("\r\n", Enumerable.Range(1, 5230).Select(i => $"row {i}")) + "\r\n");
+            var res = await T.Run(Read, dir, new { path = "big.txt" });
+            Check.Ok(res);
+            Check.Contains(res.Content, "[Showing lines 1-2000 of 5230. Use offset=2001 to continue.]");
+            Check.NotContains(res.Content, "\r");
+            Check.True(res.Content.StartsWith("row 1\nrow 2\n"), "no line number prefixes");
+            var d = T.D(res);
+            Check.Equal(1, d.Int("startLine")); Check.Equal(2000, d.Int("endLine")); Check.Equal(5230, d.Int("totalLines"));
+            Check.True(d.Bool("truncated")); Check.Equal("crlf", d.Str("eol"));
+
+            res = await T.Run(Read, dir, new { path = "big.txt", offset = "5229", limit = 10 });
+            Check.Equal("row 5229\nrow 5230", res.Content);
+            Check.False(T.D(res).Bool("truncated"));
+
+            res = await T.Run(Read, dir, new { path = "big.txt", offset = 10, limit = 2 });
+            Check.Contains(res.Content, "row 10\nrow 11\n\n[Showing lines 10-11 of 5230. Use offset=12 to continue.]");
+
+            res = await T.Run(Read, dir, new { path = "big.txt", offset = -2 });
+            Check.Equal("row 5229\nrow 5230", res.Content);
+
+            Check.Error(await T.Run(Read, dir, new { path = "big.txt", offset = 6000 }), "past the end");
+        });
+
+        r.Add("read: 50KB cap, huge single line, empty file", async () =>
+        {
+            var dir = T.TempDir("read");
+            T.WriteText(dir, "wide.txt", string.Join("\n", Enumerable.Range(1, 300).Select(i => new string('x', 500))) + "\n");
+            var res = await T.Run(Read, dir, new { path = "wide.txt" });
+            var d = T.D(res);
+            Check.True(d.Int("endLine") < 300 && d.Int("endLine") >= 90, $"byte cap applied (endLine={d.Int("endLine")})");
+            Check.Contains(res.Content, $"Use offset={d.Int("endLine") + 1} to continue");
+            Check.True(Encoding.UTF8.GetByteCount(res.Content) < ReadTool.MaxBytes + 200);
+
+            T.WriteText(dir, "min.js", new string('y', 200_000));
+            res = await T.Run(Read, dir, new { path = "min.js" });
+            Check.Contains(res.Content, "[Line 1 is");
+            Check.True(res.Content.Length < 60_000);
+
+            T.WriteText(dir, "empty.txt", "");
+            Check.Equal("(empty file)", (await T.Run(Read, dir, new { path = "empty.txt" })).Content);
+        });
+
+        r.Add("read: directory, missing file suggestion, binary, images", async () =>
+        {
+            var dir = T.TempDir("read");
+            Directory.CreateDirectory(Path.Combine(dir, "sub"));
+            Check.Error(await T.Run(Read, dir, new { path = "sub" }), "ls");
+            T.WriteText(dir, "Program.cs", "x");
+            Check.Error(await T.Run(Read, dir, new { path = "Progam.cs" }), "Did you mean");
+            T.WriteBytes(dir, "blob.bin", [0x7F, 0x45, 0x4C, 0x46, 0, 0, 1]);
+            Check.Error(await T.Run(Read, dir, new { path = "blob.bin" }), "binary");
+
+            byte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0];
+            T.WriteBytes(dir, "pic.png", png);
+            var vision = new ModelInfo { Provider = "p", Id = "m", InputModalities = ["text", "image"] };
+            var res = await T.Run(Read, dir, new { path = "pic.png" }, vision);
+            Check.Ok(res);
+            Check.Equal(1, res.Images!.Count);
+            Check.Equal("image/png", res.Images[0].MediaType);
+            Check.Equal(Convert.ToBase64String(png), res.Images[0].Data);
+            res = await T.Run(Read, dir, new { path = "pic.png" }, new ModelInfo { Provider = "p", Id = "t" });
+            Check.Ok(res);
+            Check.True(res.Images is null);
+            Check.Contains(res.Content, "cannot view images");
+        });
+
+        // ------------------------------------------------ diff
+        r.Add("diff: Myers edit script reconstructs both sides (randomized)", () =>
+        {
+            var rnd = new Random(42);
+            for (var iter = 0; iter < 300; iter++)
+            {
+                var a = Enumerable.Range(0, rnd.Next(0, 30)).Select(_ => ((char)('a' + rnd.Next(5))).ToString()).ToList();
+                var b = Enumerable.Range(0, rnd.Next(0, 30)).Select(_ => ((char)('a' + rnd.Next(5))).ToString()).ToList();
+                var at = string.Join("\n", a) + (a.Count > 0 && rnd.Next(2) == 0 ? "\n" : "");
+                var bt = string.Join("\n", b) + (b.Count > 0 && rnd.Next(2) == 0 ? "\n" : "");
+                var script = LineDiff.Compute(at, bt);
+                var oldSide = script.Where(l => l.Op != DiffOp.Insert).Select(l => l.Text).ToList();
+                var newSide = script.Where(l => l.Op != DiffOp.Delete).Select(l => l.Text).ToList();
+                Check.Equal(string.Join("|", TextCodec.SplitLines(at)), string.Join("|", oldSide), $"old side (iter {iter})");
+                Check.Equal(string.Join("|", TextCodec.SplitLines(bt)), string.Join("|", newSide), $"new side (iter {iter})");
+            }
+            var u = LineDiff.Unified("a\nb", "a\nb\n", "f");
+            Check.Contains(u.Text, "-b\n\\ No newline at end of file\n+b\n");
+            Check.Equal("", LineDiff.Unified("same\n", "same\n").Text);
+        });
+
+        r.Add("diff: large files stay fast", () =>
+        {
+            var a = string.Join("\n", Enumerable.Range(0, 20000).Select(i => $"line {i}"));
+            var b = string.Join("\n", Enumerable.Range(0, 20000).Select(i => $"LINE {i}"));
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var d = LineDiff.Unified(a, b, "big", maxLines: 100);
+            Check.True(sw.ElapsedMilliseconds < 5000, $"took {sw.ElapsedMilliseconds}ms");
+            Check.Equal(20000, d.Added); Check.Equal(20000, d.Removed); Check.True(d.Truncated);
+        });
+
+        // ------------------------------------------------ glob / ignore
+        r.Add("glob: *, **, ?, {a,b}, [..], name-only, negation, SplitBase", () =>
+        {
+            Check.True(new Glob("*.cs").IsMatch("src/deep/File.cs"));
+            Check.False(new Glob("*.cs").IsMatch("src/File.csx"));
+            Check.True(new Glob("**/*.cs").IsMatch("File.cs"));
+            Check.True(new Glob("**/*.cs").IsMatch("a/b/File.cs"));
+            Check.True(new Glob("src/**/test_?.py").IsMatch("src/test_1.py"));
+            Check.True(new Glob("src/**/test_?.py").IsMatch("src/a/b/test_x.py"));
+            Check.False(new Glob("src/**/test_?.py").IsMatch("lib/test_1.py"));
+            Check.False(new Glob("src/*.py").IsMatch("src/a/x.py"));
+            Check.True(new Glob("*.{ts,tsx}").IsMatch("ui/App.tsx"));
+            Check.True(new Glob("{src,lib}/**/*.{js,mjs}").IsMatch("lib/x/y.mjs"));
+            Check.True(new Glob("file[0-9].txt").IsMatch("file7.txt"));
+            Check.False(new Glob("file[!0-9].txt").IsMatch("file7.txt"));
+            Check.True(new Glob("!*.log").Negated);
+            Check.Equal(("src/a", "**/*.cs"), Glob.SplitBase("src/a/**/*.cs"));
+            Check.Equal(("", "*.cs"), Glob.SplitBase("*.cs"));
+            var filter = new GlobFilter(["*.cs *.md", "!**/obj/**"]);
+            Check.True(filter.IsMatch("a/b.cs"));
+            Check.True(filter.IsMatch("README.md"));
+            Check.False(filter.IsMatch("x/obj/y.cs"));
+            Check.False(filter.IsMatch("x.txt"));
+        });
+
+        r.Add("ignore: .gitignore rules (anchored, dir-only, negation, nested) + built-in skips", () =>
+        {
+            var dir = MakeTree();
+            var files = FileWalker.Walk(dir, new WalkOptions { IncludeDirs = false }).Select(e => e.RelPath).ToList();
+            var joined = string.Join(",", files);
+            Check.True(files.Contains("src/app.cs"), joined);
+            Check.True(files.Contains("src/keep.log"), "negated rule re-includes: " + joined);
+            Check.False(files.Contains("debug.log"), joined);
+            Check.False(files.Contains("root-only.txt"), "anchored rule: " + joined);
+            Check.True(files.Contains("src/root-only.txt"), "anchored rule applies to root only: " + joined);
+            Check.False(files.Any(f => f.StartsWith("out/")), "dir-only rule: " + joined);
+            Check.True(files.Contains("docs/out"), "dir-only rule does not match files: " + joined);
+            Check.False(files.Contains("src/gen/x.g.cs"), "nested .gitignore: " + joined);
+            Check.False(files.Any(f => f.StartsWith("node_modules/") || f.StartsWith("bin/") || f.Contains("/obj/")), joined);
+            Check.True(files.Contains(".github/ci.yml"), "hidden files are searched: " + joined);
+        });
+
+        // ------------------------------------------------ grep
+        r.Add("grep: content mode format, ignore rules, CRLF `$`, glob", async () =>
+        {
+            var dir = MakeTree();
+            var grep = new GrepTool();
+            var res = await T.Run(grep, dir, new { pattern = "TODO" });
+            Check.Ok(res);
+            Check.Contains(res.Content, "src/app.cs:3:     // TODO: fix");
+            Check.Contains(res.Content, "src/crlf.txt:2: TODO crlf");
+            Check.NotContains(res.Content, "node_modules");
+            Check.NotContains(res.Content, "debug.log");
+            Check.NotContains(res.Content, "\r");
+
+            res = await T.Run(grep, dir, new { pattern = "crlf$" });
+            Check.Contains(res.Content, "src/crlf.txt:2: TODO crlf");
+
+            res = await T.Run(grep, dir, new { pattern = "todo", ignoreCase = true, glob = "*.cs" });
+            Check.Contains(res.Content, "src/app.cs:3:");
+            Check.NotContains(res.Content, "crlf.txt");
+            var d = T.D(res);
+            Check.Equal(1, d.Int("matches")); Check.Equal(1, d.Int("files"));
+
+            res = await T.Run(grep, dir, new { pattern = "nothing-here-xyz" });
+            Check.Ok(res);
+            Check.Contains(res.Content, "No matches");
+        });
+
+        r.Add("grep: files/count modes, context groups, literal, invalid regex, maxResults", async () =>
+        {
+            var dir = T.TempDir("grep");
+            T.WriteText(dir, "a.txt", string.Join("\n", Enumerable.Range(1, 30).Select(i => i is 5 or 7 or 25 ? $"hit {i}" : $"line {i}")) + "\n");
+            T.WriteText(dir, "b.txt", "hit (x)\n");
+            var grep = new GrepTool();
+            var res = await T.Run(grep, dir, new { pattern = "hit", outputMode = "files" });
+            Check.Equal("a.txt\nb.txt", res.Content);
+            res = await T.Run(grep, dir, new { pattern = "hit", output_mode = "count" });
+            Check.Equal("a.txt: 3\nb.txt: 1", res.Content);
+
+            res = await T.Run(grep, dir, new { pattern = "hit", path = "a.txt", context = 1 });
+            Check.Equal("a.txt-4- line 4\na.txt:5: hit 5\na.txt-6- line 6\na.txt:7: hit 7\na.txt-8- line 8\n--\na.txt-24- line 24\na.txt:25: hit 25\na.txt-26- line 26", res.Content);
+
+            res = await T.Run(grep, dir, new { pattern = "(x)", literal = true });
+            Check.Equal("b.txt:1: hit (x)", res.Content);
+            res = await T.Run(grep, dir, new { pattern = "hit (x" });
+            Check.Contains(res.Content, "searched for it literally");
+            Check.Contains(res.Content, "b.txt:1: hit (x)");
+
+            res = await T.Run(grep, dir, new { pattern = "line", maxResults = 5 });
+            Check.Contains(res.Content, "Results truncated at 5 matches");
+            Check.Equal(5, res.Content.Split('\n').Count(l => l.StartsWith("a.txt:")));
+            Check.True(T.D(res).Bool("truncated"));
+        });
+
+        r.Add("grep: multiline, binary skipped, single file path, path as glob", async () =>
+        {
+            var dir = T.TempDir("grep");
+            T.WriteText(dir, "m.cs", "void A()\r\n{\r\n    return;\r\n}\r\n");
+            T.WriteBytes(dir, "x.bin", [(byte)'v', (byte)'o', (byte)'i', (byte)'d', 0, 1]);
+            var grep = new GrepTool();
+            var res = await T.Run(grep, dir, new { pattern = @"A\(\)\n\{", multiline = true });
+            Check.Equal("m.cs:1: void A()\nm.cs:2: {", res.Content);
+            res = await T.Run(grep, dir, new { pattern = "void" });
+            Check.Equal("m.cs:1: void A()", res.Content);
+            res = await T.Run(grep, dir, new { pattern = "zzz-nothing" });
+            Check.Contains(res.Content, "1 binary file skipped");
+            res = await T.Run(grep, dir, new { pattern = "return", path = Path.Combine(dir, "m.cs") });
+            Check.Equal("m.cs:3:     return;", res.Content);
+            res = await T.Run(grep, dir, new { pattern = "return", path = "**/*.cs" });
+            Check.Equal("m.cs:3:     return;", res.Content);
+        });
+
+        // ------------------------------------------------ find / ls
+        r.Add("find: globs, dirs suffixed, ignore rules, maxResults", async () =>
+        {
+            var dir = MakeTree();
+            var find = new FindTool();
+            var res = await T.Run(find, dir, new { pattern = "**/*.cs" });
+            Check.Equal("src/app.cs", res.Content);
+            res = await T.Run(find, dir, new { pattern = "*.{txt,yml}" });
+            Check.Equal(".github/ci.yml\nsrc/crlf.txt\nsrc/root-only.txt", res.Content);
+            res = await T.Run(find, dir, new { pattern = "src" });
+            Check.Equal("src/", res.Content);
+            res = await T.Run(find, dir, new { pattern = "src/*" });
+            Check.Contains(res.Content, "src/app.cs");
+            res = await T.Run(find, dir, new { pattern = "*", maxResults = 2 });
+            Check.Contains(res.Content, "Showing the first 2 results");
+            res = await T.Run(find, dir, new { pattern = Path.Combine(dir, "src").Replace('\\', '/') + "/*.cs" });
+            Check.Equal("src/app.cs", res.Content);
+            res = await T.Run(find, dir, new { pattern = "*.zzz" });
+            Check.Contains(res.Content, "No files matching");
+        });
+
+        r.Add("ls: dirs first, sizes, hidden ignored entries, all=true", async () =>
+        {
+            var dir = MakeTree();
+            var ls = new LsTool();
+            var res = await T.Run(ls, dir, new { });
+            Check.Ok(res);
+            var lines = res.Content.Split('\n');
+            Check.Equal(".github/", lines[0]);
+            Check.Contains(res.Content, "src/");
+            Check.NotContains(res.Content, "node_modules");
+            Check.Contains(res.Content, ".gitignore");
+            Check.Contains(res.Content, "ignored entries hidden");
+            var d = T.D(res);
+            Check.True(d.Int("hidden") >= 4, $"hidden={d.Int("hidden")}");
+            res = await T.Run(ls, dir, new { all = true });
+            Check.Contains(res.Content, "node_modules/");
+            Check.Contains(res.Content, "debug.log");
+            Check.True(new LsTool().Definition.ReadOnly);
+        });
+
+        // ------------------------------------------------ RPC
+        r.Add("rpc: files.search fuzzy ranking and files.list", async () =>
+        {
+            var dir = MakeTree();
+            var ctx = new FakePluginContext(dir);
+            var plugin = new FilesPlugin();
+            await plugin.StartAsync(ctx, CancellationToken.None);
+            Check.Equal("read,write,edit,grep,find,ls", string.Join(",", ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
+
+            var hits = (List<FileIndex.SearchHit>)(await ctx.RpcFake.InvokeAsync("files.search", new { query = "app" }))!;
+            Check.Equal("src/app.cs", hits[0].Rel);
+            Check.False(hits[0].IsDir);
+            hits = (List<FileIndex.SearchHit>)(await ctx.RpcFake.InvokeAsync("files.search", new { query = "srcrlf", cwd = dir, limit = 5 }))!;
+            Check.Equal("src/crlf.txt", hits[0].Rel);
+            hits = (List<FileIndex.SearchHit>)(await ctx.RpcFake.InvokeAsync("files.search", new { query = "" }))!;
+            Check.True(hits.Count > 0 && !hits[0].Rel.Contains('/'));
+
+            var list = (FileIndex.ListResult)(await ctx.RpcFake.InvokeAsync("files.list", new { dir = "" }))!;
+            Check.Equal("", list.Dir);
+            Check.True(list.Entries[0].IsDir);
+            Check.True(list.Entries.Any(e => e.Name == "node_modules" && e.Ignored == true));
+            Check.False(list.Entries.Any(e => e.Name == ".git"));
+            list = (FileIndex.ListResult)(await ctx.RpcFake.InvokeAsync("files.list", new { dir = "src" }))!;
+            Check.Equal("src", list.Dir);
+            Check.True(list.Entries.Any(e => e.Rel == "src/app.cs" && e.Size > 0 && e.Mtime is not null));
+            var json = NetPiJson.Serialize(list);
+            Check.Contains(json, "\"isDir\":");
+        });
+
+        r.Add("tool definitions: labels, categories, read-only flags, guidelines", () =>
+        {
+            foreach (var t in FilesPlugin.CreateTools(null))
+            {
+                var d = t.Definition;
+                Check.True(d.Label is { Length: > 0 }, d.Name);
+                Check.Equal("files", d.Category);
+                Check.True(d.PromptGuidelines is { Count: > 0 }, d.Name);
+                Check.Equal(d.Name is "read" or "grep" or "find" or "ls", d.ReadOnly, d.Name);
+                Check.True(d.Parameters["properties"] is not null, d.Name);
+            }
+        });
+    }
+
+    /// <summary>A small repository-like tree with ignore rules.</summary>
+    private static string MakeTree()
+    {
+        var dir = T.TempDir("tree");
+        Directory.CreateDirectory(Path.Combine(dir, ".git"));
+        T.WriteText(dir, ".git/config", "TODO inside git");
+        T.WriteText(dir, ".gitignore", "*.log\n!keep.log\n/root-only.txt\nout/\n");
+        T.WriteText(dir, "debug.log", "TODO in log");
+        T.WriteText(dir, "root-only.txt", "TODO root only");
+        T.WriteText(dir, "src/root-only.txt", "fine");
+        T.WriteText(dir, "src/keep.log", "kept");
+        T.WriteText(dir, "src/app.cs", "class App\n{\n    // TODO: fix\n}\n");
+        T.WriteText(dir, "src/crlf.txt", "first\r\nTODO crlf\r\nlast\r\n");
+        T.WriteText(dir, "src/gen/.gitignore", "*.g.cs\n");
+        T.WriteText(dir, "src/gen/x.g.cs", "TODO generated");
+        T.WriteText(dir, "out/result.txt", "TODO out");
+        T.WriteText(dir, "docs/out", "a file named out");
+        T.WriteText(dir, "node_modules/pkg/index.js", "TODO module");
+        T.WriteText(dir, "bin/Debug/x.txt", "TODO bin");
+        T.WriteText(dir, "src/obj/y.txt", "TODO obj");
+        T.WriteText(dir, ".github/ci.yml", "on: push");
+        return dir;
+    }
+}

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- bash (Git Bash on Windows) / pwsh tools, background process registry + processes.* RPC. -->
+  <PropertyGroup>
+    <Description>NetPI shell tools (bash, pwsh, background processes).</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPI.Tools.Tests" />
+  </ItemGroup>
+</Project>

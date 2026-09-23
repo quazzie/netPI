@@ -1,0 +1,5 @@
+{
+  "id": "netpi.providers.anthropic",
+  "name": "Anthropic provider",
+  "description": "Claude models through the Anthropic Messages API (API key, extended/adaptive thinking, prompt caching)."
+}

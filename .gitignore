@@ -1,0 +1,9 @@
+bin/
+obj/
+artifacts/
+node_modules/
+.vs/
+*.user
+plugins/*/wwwroot/ui.js
+plugins/*/wwwroot/ui.js.map
+web/mock/**/wwwroot/

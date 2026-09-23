@@ -1,0 +1,25 @@
+<Project>
+  <!-- Every project under plugins/ is a hot-reloadable NetPI plugin. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <IsNetPiPlugin>true</IsNetPiPlugin>
+    <OutDir>$(AppOutDir)plugins/$(MSBuildProjectName)/</OutDir>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <RootNamespace>$(MSBuildProjectName)</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Contracts live in the host's default load context: never copy them next to the plugin. -->
+    <ProjectReference Include="$(RepoRoot)src/NetPI.Abstractions/NetPI.Abstractions.csproj" Private="false" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Plugin UI bundle (built by `npm run build:plugins`) and optional manifest. -->
+    <Content Include="wwwroot/**" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="plugin.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('plugin.json')" />
+    <None Remove="ui/**" />
+    <Compile Remove="ui/**" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,67 @@
+using Microsoft.Extensions.Logging;
+
+namespace NetPI.Tools.Files;
+
+/// <summary>
+/// File tools: read, write, edit, grep, find, ls (+ files.search / files.list RPC).
+/// Settings: <c>files.newFileEol</c> ("lf" | "crlf" | "auto").
+/// </summary>
+[NetPiPlugin("netpi.tools.files", Name = "File tools", Description = "read, write, edit (CRLF/LF agnostic), grep, find, ls", Order = 20)]
+public sealed class FilesPlugin : INetPiPlugin
+{
+    private readonly FileIndex _index = new();
+
+    public static IReadOnlyList<IAgentTool> CreateTools(ISettings? settings) =>
+    [
+        new ReadTool(settings),
+        new WriteTool(settings),
+        new EditTool(settings),
+        new GrepTool(settings),
+        new FindTool(settings),
+        new LsTool(settings),
+    ];
+
+    public Task StartAsync(IPluginContext context, CancellationToken ct)
+    {
+        foreach (var tool in CreateTools(context.Settings))
+            context.Tools.Register(tool);
+
+        context.Rpc.Register("files.search", async (req, token) =>
+        {
+            var root = ResolveRoot(context, req);
+            return await _index.SearchAsync(root, req.Str("query") ?? req.Str("q"), req.Int("limit") ?? 50, token).ConfigureAwait(false);
+        }, "Fuzzy file-name search for @ mentions: { sessionId?, cwd?, query, limit? } → { path, rel, isDir }[]");
+
+        context.Rpc.Register("files.list", (req, token) =>
+        {
+            var root = ResolveRoot(context, req);
+            return Task.FromResult<object?>(_index.List(root, req.Str("dir")));
+        }, "List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries: { name, rel, isDir, size?, mtime?, ignored? }[] }");
+
+        context.Logger.LogDebug("File tools registered");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Root directory for an RPC call: explicit cwd, else the session's cwd, else the default workspace.</summary>
+    internal static string ResolveRoot(IPluginContext context, RpcRequest req)
+    {
+        var cwd = req.Str("cwd");
+        if (!string.IsNullOrWhiteSpace(cwd))
+        {
+            var full = Path.GetFullPath(cwd);
+            if (Directory.Exists(full)) return full;
+            throw new RpcException("not_found", $"Directory not found: {full}");
+        }
+        var sessionId = req.Str("sessionId");
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            var session = context.Sessions?.GetSession(sessionId);
+            if (session is not null)
+            {
+                var sc = context.Sessions!.GetCwd(session);
+                if (!string.IsNullOrWhiteSpace(sc)) return sc;
+            }
+        }
+        return context.Paths.DefaultWorkspace;
+    }
+}

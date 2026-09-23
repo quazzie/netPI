@@ -1,0 +1,5 @@
+{
+  "id": "netpi.providers.aiproxy",
+  "name": "AiProxy provider",
+  "description": "OpenAI-compatible model provider for AiProxy (Responses + Chat Completions transports) and any extra OpenAI-compatible endpoints listed in providers.openaiCompatible."
+}

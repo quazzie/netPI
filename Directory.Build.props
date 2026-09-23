@@ -1,0 +1,20 @@
+<Project>
+  <!-- Shared build settings for every NetPI project. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RepoRoot>$(MSBuildThisFileDirectory)</RepoRoot>
+    <!-- Everything runnable lands in artifacts/app: executables, wwwroot and plugins/<Name>/ -->
+    <AppOutDir>$(RepoRoot)artifacts/app/</AppOutDir>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <NoWarn>$(NoWarn);CS1591;CA2255</NoWarn>
+    <Version>0.1.0</Version>
+    <Authors>NetPI</Authors>
+    <Deterministic>true</Deterministic>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+</Project>

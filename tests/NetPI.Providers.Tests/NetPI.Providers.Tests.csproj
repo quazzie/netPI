@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Console test runner for the provider plugins (no xunit: NuGet is unavailable). Run the built exe: bin/Debug/NetPI.Providers.Tests -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>NetPI.Providers.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Providers.Anthropic/NetPI.Providers.Anthropic.csproj" />
+  </ItemGroup>
+</Project>

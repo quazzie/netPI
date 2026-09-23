@@ -1,0 +1,351 @@
+using System.Diagnostics;
+using System.Text;
+using NetPI.Tools.Shell;
+
+namespace NetPI.Tools.Tests;
+
+public static class ShellTests
+{
+    private static (ShellService Service, ProcessRegistry Registry, FakeBus Bus) NewService(ISettings? settings = null)
+    {
+        var bus = new FakeBus();
+        var registry = new ProcessRegistry(bus);
+        return (new ShellService(registry, settings, Path.Combine(T.TempDir("shell"), "tmp")), registry, bus);
+    }
+
+    private static ShellTool Bash(ShellService s) => new("bash", s);
+
+    private static bool ProcessAlive(int pid)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            try { return !Process.GetProcessById(pid).HasExited; } catch { return false; }
+        }
+        var stat = $"/proc/{pid}/stat";
+        if (!File.Exists(stat)) return false;
+        try
+        {
+            var text = File.ReadAllText(stat);
+            var state = text[(text.LastIndexOf(')') + 2)..].Split(' ')[0];
+            return state != "Z" && state != "X"; // zombies are dead (just not reaped by pid 1 in containers)
+        }
+        catch { return false; }
+    }
+
+    public static void Register(TestRunner r)
+    {
+        r.Add("shell: locator finds bash, never WSL; git-derived Git Bash path", () =>
+        {
+            var bash = ShellLocator.FindBash(null);
+            Check.True(bash is not null && File.Exists(bash), "bash found");
+            var derived = ShellLocator.BashFromGit(Path.Combine("X", "Git", "cmd", "git.exe")).ToList();
+            Check.Equal(Path.Combine("X", "Git", "bin", "bash.exe"), derived[0]);
+            derived = ShellLocator.BashFromGit(Path.Combine("X", "Git", "mingw64", "bin", "git.exe")).ToList();
+            Check.Equal(Path.Combine("X", "Git", "bin", "bash.exe"), derived[0]);
+            if (OperatingSystem.IsWindows()) Check.True(ShellLocator.IsWslBash(@"C:\Windows\System32\bash.exe"));
+            var settings = new FakeSettings();
+            settings.Set("shell.bashPath", bash);
+            Check.Equal(bash, ShellLocator.FindBash(settings));
+        });
+
+        r.Add("shell: ANSI stripping (split sequences, OSC, C1) and carriage returns", () =>
+        {
+            var s = new AnsiStripper();
+            var outp = s.Process("\x1b[31mre") + s.Process("d\x1b[") + s.Process("0m ok\x1b]0;title\a!\x1b[?25l\n");
+            Check.Equal("red ok!\n", outp);
+            Check.Equal("ab", AnsiStripper.Strip("a\x1b(Bb"));
+            Check.Equal("tab\there", AnsiStripper.Strip("tab\there\a"));
+            Check.Equal("c\nnext", OutputFormat.ResolveCarriageReturns("a\rb\rc\r\nnext"));
+        });
+
+        r.Add("shell: output tail formatting (lines, bytes, giant line)", () =>
+        {
+            var text = string.Join("\n", Enumerable.Range(1, 3000));
+            var (tail, truncated, total, shown) = OutputFormat.TailLines(text, 2000, 30 * 1024);
+            Check.True(truncated); Check.Equal(3000, total);
+            Check.True(tail.EndsWith("\n3000"));
+            Check.Equal(shown, tail.Split('\n').Length);
+            Check.True(Encoding.UTF8.GetByteCount(tail) <= 30 * 1024);
+            var (small, t2, _, _) = OutputFormat.TailLines("a\nb\n", 2000, 30 * 1024);
+            Check.Equal("a\nb", small); Check.False(t2);
+            var (giant, t3, _, _) = OutputFormat.TailLines(new string('z', 100_000) + "END", 2000, 1000);
+            Check.True(t3 && giant.EndsWith("END") && giant.Length <= 1001);
+        });
+
+        r.Add("shell: timeout argument resolution", () =>
+        {
+            var settings = new FakeSettings();
+            var (svc, _, _) = NewService(settings);
+            Check.Equal<int?>(120, svc.ResolveTimeout(new ToolArgs(T.Args(new { })), false));
+            Check.Equal<int?>(null, svc.ResolveTimeout(new ToolArgs(T.Args(new { })), true));
+            Check.Equal<int?>(30, svc.ResolveTimeout(new ToolArgs(T.Args(new { timeout = "30" })), false));
+            Check.Equal<int?>(120, svc.ResolveTimeout(new ToolArgs(T.Args(new { timeout = 120000 })), false)); // milliseconds heuristic
+            Check.Equal<int?>(5, svc.ResolveTimeout(new ToolArgs(T.Args(new { timeout_ms = 4500 })), false));
+            Check.Equal<int?>(1800, svc.ResolveTimeout(new ToolArgs(T.Args(new { timeout = 3000 })), false));
+            settings.Set("shell.timeoutSeconds", 7);
+            Check.Equal<int?>(7, svc.ResolveTimeout(new ToolArgs(T.Args(new { })), false));
+        });
+
+        r.Add("bash: foreground output, stderr merged, exit code, cwd, live streaming", async () =>
+        {
+            var (svc, registry, bus) = NewService();
+            var dir = T.TempDir("bash");
+            Directory.CreateDirectory(Path.Combine(dir, "sub"));
+            var chunks = new List<string>();
+            var ctx = T.Ctx(dir, output: c => { lock (chunks) chunks.Add(c); });
+            var res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "echo out; echo err >&2; pwd; echo ünïcödé ✓" , cwd = "sub" }), default);
+            Check.Ok(res);
+            // stderr is merged into stdout at the source: exact ordering.
+            Check.True(res.Content.StartsWith("out\nerr\n"), Check.Show(res.Content));
+            Check.True(res.Content.Replace('\\', '/').EndsWith("/sub\nünïcödé ✓"), Check.Show(res.Content));
+            Check.NotContains(res.Content, "[exit code");
+            var d = T.D(res);
+            Check.Equal(0, d.Int("exitCode")); Check.Equal("bash", d.Str("shell")); Check.False(d.Bool("background"));
+            Check.False(d.Bool("truncated"));
+            Check.True(d.Str("processId").StartsWith("proc_"));
+            lock (chunks) Check.Contains(string.Concat(chunks), "out");
+
+            res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "echo before; exit 3" }), default);
+            Check.False(res.IsError, "non-zero exit is not an error");
+            Check.Contains(res.Content, "before\n[exit code 3]");
+            Check.Equal(3, T.D(res).Int("exitCode"));
+
+            res = await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "true" }), default);
+            Check.Equal("(no output)", res.Content);
+
+            Check.Error(await Bash(svc).ExecuteAsync(ctx, T.Args(new { command = "ls", cwd = "nope" }), default), "does not exist");
+            Check.Error(await Bash(svc).ExecuteAsync(ctx, T.Args(new { }), default), "command");
+
+            // Foreground runs are recorded and published.
+            Check.True(registry.List().Count >= 3);
+            Check.True(registry.List().All(p => !p.IsRunning));
+            Check.True(bus.OfType(EventTypes.ProcessStarted).Count >= 3);
+            Check.True(bus.OfType(EventTypes.ProcessExited).Count >= 3);
+        });
+
+        r.Add("bash: ANSI codes and progress carriage returns are cleaned", async () =>
+        {
+            var (svc, _, _) = NewService();
+            var res = await T.Run(Bash(svc), T.TempDir("bash"), new { command = @"printf '\033[1;32mgreen\033[0m\n'; printf 'p 10%%\rp 50%%\rp 100%%\n'" });
+            Check.Equal("green\np 100%", res.Content);
+        });
+
+        r.Add("bash: timeout kills the whole process tree", async () =>
+        {
+            var (svc, _, _) = NewService();
+            var dir = T.TempDir("bash");
+            var sw = Stopwatch.StartNew();
+            var res = await T.Run(Bash(svc), dir, new { command = "sleep 60 & echo $! > child.pid; echo started; sleep 60; echo never", timeout = 1 });
+            sw.Stop();
+            Check.True(sw.Elapsed < TimeSpan.FromSeconds(8), $"returned after {sw.Elapsed}");
+            Check.Error(res, "[timed out after 1s");
+            Check.Contains(res.Content, "started");
+            Check.NotContains(res.Content, "never");
+            var d = T.D(res);
+            Check.Equal("timeout", d.Str("status"));
+            Check.True(d.Bool("timedOut"));
+            var childPid = int.Parse(File.ReadAllText(Path.Combine(dir, "child.pid")).Trim());
+            await Task.Delay(300);
+            Check.False(ProcessAlive(childPid), $"background child {childPid} must be killed");
+        });
+
+        r.Add("bash: cancellation (abort) kills the process tree", async () =>
+        {
+            var (svc, _, _) = NewService();
+            var dir = T.TempDir("bash");
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(700));
+            var sw = Stopwatch.StartNew();
+            var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "sleep 30 & echo $! > c.pid; sleep 30" }), cts.Token);
+            Check.True(sw.Elapsed < TimeSpan.FromSeconds(8));
+            Check.Error(res, "[aborted");
+            var pid = int.Parse(File.ReadAllText(Path.Combine(dir, "c.pid")).Trim());
+            await Task.Delay(300);
+            Check.False(ProcessAlive(pid));
+        });
+
+        r.Add("bash: orphaned background child holding the pipe does not block", async () =>
+        {
+            var (svc, _, _) = NewService();
+            var dir = T.TempDir("bash");
+            var sw = Stopwatch.StartNew();
+            var res = await T.Run(Bash(svc), dir, new { command = "(sleep 20; echo late) & echo $! > o.pid; echo quick" });
+            Check.True(sw.Elapsed < TimeSpan.FromSeconds(6), $"took {sw.Elapsed}");
+            Check.Contains(res.Content, "quick");
+            try { Process.GetProcessById(int.Parse(File.ReadAllText(Path.Combine(dir, "o.pid")).Trim())).Kill(true); } catch { }
+        });
+
+        r.Add("bash: output truncation keeps the tail and spills the full output", async () =>
+        {
+            var (svc, _, _) = NewService();
+            var res = await T.Run(Bash(svc), T.TempDir("bash"), new { command = "seq 1 5000" });
+            Check.Ok(res);
+            Check.Contains(res.Content, "[Output truncated: showing the last");
+            Check.True(res.Content.EndsWith("\n5000"), "tail kept");
+            Check.NotContains(res.Content, "\n1\n2\n");
+            var d = T.D(res);
+            Check.True(d.Bool("truncated"));
+            var path = d.Str("fullOutputPath");
+            Check.Contains(res.Content, path);
+            var lines = File.ReadAllLines(path);
+            Check.Equal(5000, lines.Length);
+            Check.Equal("1", lines[0]);
+
+            // > 1MB: spill file is written while the command runs.
+            res = await T.Run(Bash(svc), T.TempDir("bash"), new { command = "for i in $(seq 1 60000); do echo \"line $i of a long output stream\"; done" });
+            d = T.D(res);
+            var big = File.ReadAllLines(d.Str("fullOutputPath"));
+            Check.Equal(60000, big.Length);
+            Check.Equal("line 1 of a long output stream", big[0]);
+            Check.True(res.Content.EndsWith("line 60000 of a long output stream"));
+            Check.True(Encoding.UTF8.GetByteCount(res.Content) < 32 * 1024);
+        });
+
+        r.Add("bash: Windows-style invocation (env + eval) preserves quoting and backslashes", async () =>
+        {
+            var bash = ShellLocator.FindBash(null)!;
+            var dir = T.TempDir("bash");
+            var command = "x='a\\\\b \"q\"'; printf '%s|%s\\n' \"$x\" 'C:\\Users\\me'\ncat <<'EOF'\nline $HOME \\n\nEOF\necho \"$0\" >/dev/null; echo ${NETPI_COMMAND:-unset}";
+            async Task<string> RunSpec(LaunchSpec spec)
+            {
+                var cap = new OutputCapture();
+                var mp = ManagedProcess.Start(Ids.New("proc"), spec, command, dir, cap);
+                await mp.Completion;
+                return cap.Snapshot();
+            }
+            var unix = await RunSpec(ShellLaunch.Bash(bash, command, dir, windowsStyle: false));
+            var win = await RunSpec(ShellLaunch.Bash(bash, command, dir, windowsStyle: true));
+            Check.Equal("a\\\\b \"q\"|C:\\Users\\me\nline $HOME \\n\nunset\n", unix);
+            Check.Equal(unix, win);
+        });
+
+        r.Add("bash: very long commands go through a temp script", async () =>
+        {
+            var (svc, _, _) = NewService();
+            var sb = new StringBuilder("total=0\n");
+            for (var i = 0; i < 4000; i++) sb.Append("total=$((total + 1)) # padding padding\n");
+            sb.Append("echo total=$total");
+            Check.True(sb.Length > ShellLaunch.MaxInlineCommand);
+            var res = await T.Run(Bash(svc), T.TempDir("bash"), new { command = sb.ToString() });
+            Check.Equal("total=4000", res.Content);
+            Check.Equal(0, Directory.GetFiles(svc.TempDir, "cmd-*").Length, "temp script deleted");
+        });
+
+        r.Add("background: lifecycle (start, list, output, kill, events)", async () =>
+        {
+            var (svc, registry, bus) = NewService();
+            var dir = T.TempDir("bg");
+            var sw = Stopwatch.StartNew();
+            var res = await T.Run(Bash(svc), dir, new { command = "for i in 1 2 3; do echo tick $i; sleep 0.2; done; sleep 30 & wait", background = true });
+            Check.True(sw.Elapsed < TimeSpan.FromSeconds(3), "returns immediately");
+            Check.Ok(res);
+            var d = T.D(res);
+            var id = d.Str("processId");
+            Check.Contains(res.Content, $"Started background process {id}");
+            Check.True(d.Bool("background"));
+            Check.Equal("running", d.Str("status"));
+
+            var list = await T.Run(new ProcessListTool(registry), dir, new { });
+            Check.Contains(list.Content, $"{id}  running");
+            Check.Contains(list.Content, "bg  bash:");
+
+            await Task.Delay(900);
+            var outRes = await T.Run(new ProcessOutputTool(registry), dir, new { id });
+            Check.Contains(outRes.Content, "tick 1\ntick 2\ntick 3");
+            Check.Contains(outRes.Content, "running");
+            Check.True(bus.OfType(EventTypes.ProcessOutput).Count > 0, "process.output events for background processes");
+
+            var kill = await T.Run(new ProcessKillTool(registry), dir, new { id });
+            Check.Ok(kill);
+            Check.Contains(kill.Content, "Killed");
+            var p = registry.Get(id)!;
+            Check.Equal("killed", p.Status);
+            Check.Contains((await T.Run(new ProcessListTool(registry), dir, new { })).Content, $"{id}  killed");
+            Check.Contains((await T.Run(new ProcessKillTool(registry), dir, new { id })).Content, "not running");
+
+            var started = bus.OfType(EventTypes.ProcessStarted).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
+            Check.True(started.Process.Background);
+            var exited = bus.OfType(EventTypes.ProcessExited).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
+            Check.Equal("killed", exited.Process.Status);
+            Check.Error(await T.Run(new ProcessOutputTool(registry), dir, new { id = "proc_nope" }), "No process");
+        });
+
+        r.Add("background: immediate exit is reported; timeout kills; StopAsync kills all", async () =>
+        {
+            var (svc, registry, _) = NewService();
+            var dir = T.TempDir("bg");
+            var res = await T.Run(Bash(svc), dir, new { command = "echo oops; exit 2", background = true });
+            Check.Contains(res.Content, "exited immediately with code 2");
+            Check.Contains(res.Content, "oops");
+
+            res = await T.Run(Bash(svc), dir, new { command = "sleep 30", background = true, timeout = 1 });
+            var id = T.D(res).Str("processId");
+            await registry.Get(id)!.Completion.WaitAsync(TimeSpan.FromSeconds(8));
+            Check.Equal("timeout", registry.Get(id)!.Status);
+
+            // Plugin-level: StopAsync kills running background processes.
+            var ctx = new FakePluginContext(dir);
+            var plugin = new ShellPlugin();
+            await plugin.StartAsync(ctx, default);
+            Check.Equal("bash,pwsh,process_list,process_output,process_kill", string.Join(",", ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
+            var bash = ctx.ToolsFake.Get("bash")!;
+            res = await bash.ExecuteAsync(T.Ctx(dir), T.Args(new { command = "sleep 30", background = true }), default);
+            var pid = T.D(res).Int("pid");
+            var procs = (System.Collections.IEnumerable)(await ctx.RpcFake.InvokeAsync("processes.list"))!;
+            Check.True(procs.Cast<ProcessInfo>().Any(p => p.Status == "running"));
+            await plugin.StopAsync(default);
+            await Task.Delay(200);
+            Check.False(ProcessAlive(pid), "killed on plugin stop");
+            var output = (string)(await ctx.RpcFake.InvokeAsync("processes.output", new { id = T.D(res).Str("processId") }))!;
+            Check.Equal("", output);
+        });
+
+        r.Add("pwsh: encoding helpers; tool reports absence clearly or runs when present", async () =>
+        {
+            var script = ShellLaunch.PwshScript("Write-Output 'hé'");
+            Check.True(script.StartsWith("$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.Encoding]::UTF8;"));
+            Check.Equal(script, Encoding.Unicode.GetString(Convert.FromBase64String(ShellLaunch.EncodePwsh(script))));
+            var spec = ShellLaunch.Pwsh("pwsh", "Get-Date", T.TempDir("pwsh"));
+            Check.Equal("-NoLogo,-NoProfile,-NonInteractive", string.Join(",", spec.Arguments.Take(3)));
+            Check.True(spec.Arguments.Contains("-EncodedCommand"));
+
+            var (svc, _, _) = NewService();
+            var pwsh = new ShellTool("pwsh", svc);
+            Check.Equal("pwsh", pwsh.Definition.Name);
+            var found = ShellLocator.FindPwsh(null, out _);
+            var res = await T.Run(pwsh, T.TempDir("pwsh"), new { command = "Write-Output 'hi ✓'; cmd_that_does_not_exist_xyz 2>$null; exit 3" });
+            if (found is null)
+            {
+                Check.Error(res, "PowerShell was not found");
+                Console.WriteLine("        (pwsh not installed: absence path verified)");
+            }
+            else
+            {
+                Check.Contains(res.Content, "hi ✓");
+                Check.Contains(res.Content, "[exit code 3]");
+                Check.Equal("pwsh", T.D(res).Str("shell"));
+            }
+            // Configured path that does not exist falls back to discovery (still absent or found consistently).
+            var settings = new FakeSettings();
+            settings.Set("shell.pwshPath", "/definitely/not/here/pwsh");
+            Check.Equal(found, ShellLocator.FindPwsh(settings, out _));
+        });
+
+        r.Add("shell tool definitions: labels, categories, read-only flags", () =>
+        {
+            var (svc, _, _) = NewService();
+            foreach (var t in ShellPlugin.CreateTools(svc))
+            {
+                var d = t.Definition;
+                Check.Equal("shell", d.Category);
+                Check.True(d.Label is { Length: > 0 });
+                Check.True(d.PromptGuidelines is { Count: > 0 });
+                Check.Equal(d.Name is "process_list" or "process_output", d.ReadOnly, d.Name);
+            }
+        });
+    }
+
+    private sealed class ProcEvt
+    {
+        public ProcessInfo Process { get; set; } = null!;
+    }
+}
