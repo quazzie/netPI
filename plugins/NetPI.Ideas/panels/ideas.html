@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>netPI — Ideas</title>
+<style>
+  :root {
+    --bg: #0d0f13; --panel: #14171c; --panel2: #1a1e25; --line: #262b34;
+    --text: #cfd3dc; --muted: #7d8494; --accent: #3ddc97; --warn: #e8b44a;
+    --danger: #e06565; --pill: #232936;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.45 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header { display: flex; align-items: center; gap: 8px; padding: 9px 10px; }
+  header h1 {
+    font-size: 12.5px; margin: 0; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--muted); flex: 1; min-width: 0;
+  }
+  header h1 .count { color: var(--text); }
+  input, textarea, select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font: inherit; outline: none; width: 100%;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+  .wsrow { display: flex; gap: 6px; align-items: center; padding: 0 10px 8px; }
+  .wsrow input { flex: 1; min-width: 0; font-size: 12px; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: rgba(61,220,151,.12); border-color: var(--accent); color: var(--accent); }
+  button.danger:hover { border-color: var(--danger); color: var(--danger); }
+  button:disabled { opacity: .45; cursor: default; }
+  button:disabled:hover { border-color: var(--line); color: var(--text); }
+  .iconbtn {
+    width: 28px; height: 28px; padding: 0; display: inline-flex;
+    align-items: center; justify-content: center; flex: none; font-size: 12.5px;
+  }
+  #file {
+    padding: 0 10px 8px; font-size: 10.5px; color: var(--muted);
+    word-break: break-all; border-bottom: 1px solid var(--line);
+  }
+  #filters { display: flex; gap: 5px; padding: 8px 10px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+  #filters button { padding: 2.5px 8px; font-size: 11px; flex: none; }
+  #filters button.active { background: rgba(61,220,151,.14); border-color: var(--accent); color: var(--accent); }
+  main { flex: 1; overflow-y: auto; padding: 8px 10px 40px; }
+  .empty { color: var(--muted); padding: 24px 8px; text-align: center; font-size: 12.5px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
+  /* Narrow-first header row: pill + title only. Actions live in the expanded body. */
+  .card-head { display: flex; align-items: center; gap: 7px; padding: 8px 9px; cursor: pointer; }
+  .card-head .title {
+    flex: 1; min-width: 0; font-weight: 600; font-size: 13px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .pill {
+    flex: none; font-size: 10px; line-height: 1.6; padding: 1px 7px; border-radius: 9px;
+    background: var(--pill); color: var(--muted); white-space: nowrap;
+  }
+  .pill.idea { color: var(--muted); }
+  .pill.planned { color: #8ab4e8; }
+  .pill.in-progress { color: var(--warn); }
+  .pill.done { color: var(--accent); }
+  .pill.dropped { color: var(--muted); text-decoration: line-through; }
+  .chev { flex: none; color: var(--muted); font-size: 9px; width: 10px; text-align: center; }
+  .card-body { padding: 8px 9px 10px; border-top: 1px solid var(--line); }
+  .actgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 4px; }
+  .actgrid .wide { grid-column: 1 / -1; }
+  .actgrid button { width: 100%; font-size: 12px; padding: 5.5px 8px; }
+  .sec { margin-top: 9px; }
+  .sec h4 { margin: 0 0 3px; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+  .sec pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--text); font: 12.5px/1.45 inherit; }
+  .tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 9px; }
+  .tags span { font-size: 10px; color: var(--muted); background: var(--pill); border-radius: 5px; padding: 1px 6px; }
+  .meta { margin-top: 8px; font-size: 10.5px; color: var(--muted); word-break: break-all; }
+  .field { margin-top: 8px; }
+  .field label { display: block; font-size: 10.5px; color: var(--muted); margin-bottom: 3px; }
+  .field textarea, .field input { font-size: 12px; }
+  .btnrow { display: flex; gap: 6px; margin-top: 10px; }
+  .btnrow button { flex: 1; }
+  #newform { display: none; background: var(--panel); border: 1px solid var(--accent); border-radius: 8px; padding: 9px; margin-bottom: 8px; }
+  #newform.open { display: block; }
+  #toast {
+    position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 10;
+    background: var(--panel2); border: 1px solid var(--accent); border-radius: 8px;
+    padding: 9px 11px; font-size: 12px; color: var(--text);
+    box-shadow: 0 4px 18px rgba(0,0,0,.5); display: none;
+  }
+  #toast.show { display: block; }
+  #toast.err { border-color: var(--danger); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Ideas <span class="count" id="count"></span></h1>
+    <button class="iconbtn" id="newbtn" title="New idea">+</button>
+  </header>
+  <div class="wsrow">
+    <input id="ws" placeholder="project path (default: host project)" spellcheck="false">
+    <button class="iconbtn" id="refresh" title="Refresh">↻</button>
+  </div>
+  <div id="file">…</div>
+  <div id="filters"></div>
+
+  <div id="newform">
+    <div class="field"><label>Title</label><input id="nf-title" placeholder="one-line idea"></div>
+    <div class="field"><label>Idea (what &amp; why)</label><textarea id="nf-body" rows="3"></textarea></div>
+    <div class="field"><label>Tags (comma separated)</label><input id="nf-tags" placeholder="lanes, aiproxy"></div>
+    <div class="btnrow">
+      <button class="primary" id="nf-save">Store</button>
+      <button id="nf-cancel">Cancel</button>
+    </div>
+  </div>
+
+  <main id="list"></main>
+  <div id="toast"></div>
+
+<script>
+"use strict";
+// ---- state ------------------------------------------------------------------
+let ideas = [];
+let filter = "all";
+let expanded = new Set();
+let editingId = null;
+let workspace = "";
+let lastWorkspace = "";
+let shellOrigin = null;
+
+const $ = (id) => document.getElementById(id);
+const LS_KEY = "netpi.ideas.v1";
+
+try { workspace = localStorage.getItem(LS_KEY) || ""; } catch (e) {}
+$("ws").value = workspace;
+
+// ---- shell bridge (astra-2 §12.3: init handshake; navigation-only) -----------
+window.addEventListener("message", (e) => {
+  const d = e.data;
+  if (d && d.type === "netpi.panel.init" && d.version === 1) shellOrigin = e.origin;
+});
+function openShellSession(sid) {
+  if (!shellOrigin) { toast("Bridge not ready — the session may not open automatically", true); return false; }
+  window.parent.postMessage({ type: "netpi.panel.openSession", version: 1, payload: { sessionId: sid } }, shellOrigin);
+  return true;
+}
+
+// ---- data ---------------------------------------------------------------------
+async function api(path, opts) {
+  const r = await fetch("/api/ideas" + path, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok && !j.error) j.error = "HTTP " + r.status;
+  if (!r.ok) throw new Error(j.error || "request failed");
+  return j;
+}
+
+async function load() {
+  if (editingId) return; // don't clobber an open editor
+  try {
+    const j = await api("?workspace=" + encodeURIComponent(workspace), { headers: { Accept: "application/json" } });
+    if (document.hidden && lastWorkspace === (j.workspace || "")) return;
+    lastWorkspace = j.workspace || "";
+    ideas = j.ideas || [];
+    $("file").textContent = (j.workspace ? j.workspace : "(default)") + " · " + (j.file || "");
+    render();
+  } catch (e) {
+    $("file").textContent = String(e.message || e);
+    if (!$("list").children.length) $("list").innerHTML = '<div class="empty">' + esc(String(e.message || e)) + "</div>";
+  }
+}
+
+function render() {
+  const visible = filter === "all" ? ideas : ideas.filter((i) => i.status === filter);
+  $("count").textContent = "(" + visible.length + "/" + ideas.length + ")";
+  renderFilters();
+  const list = $("list");
+  list.innerHTML = "";
+  if (!visible.length) {
+    list.innerHTML = '<div class="empty">' + (ideas.length ? "No " + filter + " ideas." : "No ideas yet — press +, or ask the agent to store one (“store it in ideas”).") + "</div>";
+    return;
+  }
+  for (const i of visible) list.appendChild(renderCard(i));
+}
+
+function renderFilters() {
+  const statuses = ["all", ...["idea", "planned", "in-progress", "done", "dropped"]];
+  const el = $("filters");
+  el.innerHTML = "";
+  for (const s of statuses) {
+    const n = s === "all" ? ideas.length : ideas.filter((i) => i.status === s).length;
+    const b = document.createElement("button");
+    b.textContent = s + " " + n;
+    b.className = filter === s ? "active" : "";
+    b.onclick = () => { filter = s; render(); };
+    el.appendChild(b);
+  }
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function renderCard(i) {
+  const card = document.createElement("div");
+  card.className = "card";
+  const open = expanded.has(i.id) || editingId === i.id;
+
+  // Header: status pill + title (ellipsized). Compact enough that nothing
+  // squeezes the title away at ~350px.
+  const head = document.createElement("div");
+  head.className = "card-head";
+  const chev = document.createElement("span");
+  chev.className = "chev";
+  chev.textContent = open ? "▾" : "▸";
+  const pill = document.createElement("span");
+  pill.className = "pill " + i.status;
+  pill.textContent = i.status;
+  const title = document.createElement("span");
+  title.className = "title";
+  title.textContent = i.title;
+  head.appendChild(chev);
+  head.appendChild(pill);
+  head.appendChild(title);
+  head.onclick = () => {
+    if (editingId) return; // editing happens in the body, not by collapsing
+    if (expanded.has(i.id)) expanded.delete(i.id); else expanded.add(i.id);
+    render();
+  };
+  card.appendChild(head);
+
+  if (open) card.appendChild(editingId === i.id ? renderEdit(i) : renderBody(i));
+  return card;
+}
+
+function renderBody(i) {
+  const b = document.createElement("div");
+  b.className = "card-body";
+
+  // Action grid first — the primary interactions, two across, full width.
+  const grid = document.createElement("div");
+  grid.className = "actgrid";
+  grid.innerHTML =
+    '<button class="primary" data-a="do">▶ Do now</button>' +
+    '<button data-a="insert">⤴ Insert into chat</button>' +
+    '<button data-a="edit">✎ Edit</button>' +
+    '<button data-a="copy">⧉ Copy</button>' +
+    '<button class="danger wide" data-a="del">✕ Delete idea</button>';
+  grid.onclick = async (e) => {
+    const a = e.target && e.target.dataset ? e.target.dataset.a : null;
+    e.stopPropagation();
+    if (a === "do") return doNow(i);
+    if (a === "insert") return insert(i);
+    if (a === "copy") return copy(i);
+    if (a === "edit") { editingId = i.id; render(); return; }
+    if (a === "del") return del(i);
+  };
+  b.appendChild(grid);
+
+  const sec = (h, txt) => txt ? '<div class="sec"><h4>' + esc(h) + '</h4><pre>' + esc(txt) + "</pre></div>" : "";
+  const body = document.createElement("div");
+  body.innerHTML =
+    sec("Idea", i.body) +
+    sec("Notes", i.notes) +
+    sec("Plan", i.plan) +
+    (i.tags && i.tags.length ? '<div class="tags">' + i.tags.map((t) => "<span>" + esc(t) + "</span>").join("") + "</div>" : "") +
+    '<div class="meta">id ' + esc(i.id) + " · updated " + esc((i.updatedAt || "").replace("T", " ").slice(0, 16)) + "</div>";
+  b.appendChild(body);
+  return b;
+}
+
+function renderEdit(i) {
+  const b = document.createElement("div");
+  b.className = "card-body";
+  b.innerHTML =
+    '<div class="field"><label>Title</label><input data-f="title" value="' + esc(i.title) + '"></div>' +
+    '<div class="field"><label>Idea</label><textarea data-f="body" rows="3">' + esc(i.body) + "</textarea></div>" +
+    '<div class="field"><label>Notes</label><textarea data-f="notes" rows="3">' + esc(i.notes) + "</textarea></div>" +
+    '<div class="field"><label>Plan</label><textarea data-f="plan" rows="3">' + esc(i.plan) + "</textarea></div>" +
+    '<div class="field"><label>Tags (comma separated)</label><input data-f="tags" value="' + esc((i.tags || []).join(", ")) + '"></div>' +
+    '<div class="field"><label>Status</label><select data-f="status">' +
+    ["idea", "planned", "in-progress", "done", "dropped"].map((s) =>
+      '<option' + (i.status === s ? " selected" : "") + ">" + s + "</option>").join("") +
+    "</select></div>" +
+    '<div class="btnrow"><button class="primary" data-save>Save</button><button data-cancel>Cancel</button></div>';
+  b.querySelector("[data-save]").onclick = async () => {
+    const g = (f) => b.querySelector('[data-f="' + f + '"]').value;
+    try {
+      await api("/" + encodeURIComponent(i.id) + "/update", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspace, title: g("title"), body: g("body"), notes: g("notes"), plan: g("plan"),
+          tags: g("tags").split(",").map((t) => t.trim()).filter(Boolean), status: g("status"),
+        }),
+      });
+      editingId = null;
+      toast("Idea updated");
+      load();
+    } catch (e) { toast(String(e.message || e), true); }
+  };
+  b.querySelector("[data-cancel]").onclick = () => { editingId = null; render(); };
+  return b;
+}
+
+// ---- actions ------------------------------------------------------------------
+async function doNow(i) {
+  try {
+    const r = await api("/" + encodeURIComponent(i.id) + "/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace }),
+    });
+    if (r.disposition === "queued") toast("Queued — the local pool is full; it will start when a lane frees up");
+    else toast("Started — the agent is working on “" + i.title + "”" + (r.createdSession ? " (new session)" : ""));
+    if (r.sessionId) openShellSession(r.sessionId);
+    load();
+  } catch (e) { toast(String(e.message || e), true); }
+}
+
+async function insert(i) {
+  try {
+    await api("/" + encodeURIComponent(i.id) + "/prefill", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace }),
+    });
+    toast("Sent to the composer — the chat prompt now contains the idea");
+  } catch (e) { toast(String(e.message || e), true); }
+}
+
+async function copy(i) {
+  try {
+    const r = await api("/" + encodeURIComponent(i.id) + "/text?workspace=" + encodeURIComponent(workspace));
+    await navigator.clipboard.writeText(r.text);
+    toast("Copied — paste it into the composer");
+  } catch (e) { toast(String(e.message || e), true); }
+}
+
+async function del(i) {
+  if (!confirm('Delete the idea "' + i.title + '"?')) return;
+  try {
+    const r = await api("/" + encodeURIComponent(i.id) + "/remove", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace }),
+    });
+    toast(r.ok ? "Idea deleted" : "Nothing was deleted");
+    load();
+  } catch (e) { toast(String(e.message || e), true); }
+}
+
+// ---- new idea form ---------------------------------------------------------------
+$("newbtn").onclick = () => {
+  const f = $("newform");
+  f.classList.toggle("open");
+  if (f.classList.contains("open")) $("nf-title").focus();
+};
+$("nf-cancel").onclick = () => $("newform").classList.remove("open");
+$("nf-save").onclick = async () => {
+  const title = $("nf-title").value.trim();
+  if (!title) { toast("A title is required", true); return; }
+  try {
+    await api("", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        workspace, title, body: $("nf-body").value.trim(),
+        tags: $("nf-tags").value.split(",").map((t) => t.trim()).filter(Boolean),
+      }),
+    });
+    $("nf-title").value = ""; $("nf-body").value = ""; $("nf-tags").value = "";
+    $("newform").classList.remove("open");
+    toast("Idea stored");
+    load();
+  } catch (e) { toast(String(e.message || e), true); }
+};
+
+// ---- chrome ---------------------------------------------------------------------
+$("refresh").onclick = () => load();
+let wsTimer = null;
+$("ws").addEventListener("change", () => {
+  clearTimeout(wsTimer);
+  wsTimer = setTimeout(() => {
+    workspace = $("ws").value.trim();
+    try { localStorage.setItem(LS_KEY, workspace); } catch (e) {}
+    load();
+  }, 250);
+});
+
+let toastTimer = null;
+function toast(msg, err) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "show" + (err ? " err" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = ""; }, 4000);
+}
+
+load();
+setInterval(() => { if (!document.hidden) load(); }, 4000);
+</script>
+</body>
+</html>

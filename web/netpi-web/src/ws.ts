@@ -235,6 +235,16 @@ class NetPIWebSocket {
         break;
       }
 
+      case "chat.prefill": {
+        // Ideas panel "insert into chat": append to the named session's draft
+        // (the visible one when absent) and focus the composer (store side).
+        const text = (p as { text?: string }).text;
+        const pSid = (p as { sessionId?: string }).sessionId;
+        if (typeof text === "string" && text.length)
+          store.prefill(text, typeof pSid === "string" && pSid ? pSid : null);
+        break;
+      }
+
 
       case "session.created":
       case "session.updated": {

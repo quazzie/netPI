@@ -15,6 +15,7 @@ scratch/
 *.scratch
 # local runtime state
 *.log
+ideas.json
 .DS_Store
 *.dll
 *.pdb

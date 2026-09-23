@@ -22,6 +22,7 @@
     <ProjectReference Include="..\..\plugins\NetPI.Diagnostics\NetPI.Diagnostics.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.BackgroundTasks\NetPI.BackgroundTasks.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Activity\NetPI.Activity.csproj" />
+    <ProjectReference Include="..\..\plugins\NetPI.Ideas\NetPI.Ideas.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Lanes\NetPI.Lanes.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Nudge\NetPI.Nudge.csproj" />
     <ProjectReference Include="..\..\plugins\NetPI.Web\NetPI.Web.csproj" />

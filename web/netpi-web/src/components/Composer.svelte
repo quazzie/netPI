@@ -71,6 +71,19 @@
     if (sid) store.setDraft(sid, text);
     else newDraft = text;
   }
+  $effect(() => {
+    // Ideas panel "insert into chat": the store already appended the idea to
+    // this session's draft (chat.prefill) — pull it into the local text (the
+    // session-switch effect above won't re-run, the id didn't change) and put
+    // the caret back in the prompt.
+    const tick = store.prefillTick;
+    if (!tick) return;
+    const sid = store.session?.id ?? null;
+    if (sid && (store.drafts[sid] ?? "") !== text) {
+      text = store.getDraft(sid);
+      queueMicrotask(() => el?.focus({ preventScroll: true }));
+    }
+  });
   let menu = $state<null | "commands" | "model" | "reasoning" | "at" | "attach">(null);
   $effect(() => {
     if (!menu) return;

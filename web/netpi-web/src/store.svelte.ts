@@ -242,6 +242,24 @@ export class NetPIStore {
     this.boundedPut(this.drafts, sid, text);
   }
 
+  /** Monotonic "composer was prefilled" counter — the Composer focuses on bump. */
+  prefillTick = $state(0);
+
+  /**
+   * Apply a panel-initiated composer prefill (`chat.prefill` from the Ideas
+   * panel's "insert into chat"): append to the target session's draft (the
+   * visible session when no id is given) and, for the VISIBLE session, bump
+   * the tick so the composer takes focus. A prefill aimed at another session
+   * still lands in that session's draft — it must not steal focus here.
+   */
+  prefill(text: string, sessionId: string | null): void {
+    const sid = sessionId || this.session?.id;
+    if (!sid) return;
+    const existing = this.drafts[sid] ?? "";
+    this.setDraft(sid, existing ? existing + "\n\n" + text : text);
+    if (sid === this.session?.id) this.prefillTick += 1;
+  }
+
   setScrollStick(sid: string | null, stick: boolean): void {
     if (!sid) return;
     this.boundedPut(this.scrollStick, sid, stick);

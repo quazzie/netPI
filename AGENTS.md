@@ -73,6 +73,13 @@ plugins/                  One folder per plugin; each now holds only a `current.
                             local lanes following AiProxy capacity (§4/§5.3/§5.4); polls the
                             provider capacity source; registers the trusted model→policy
                             resolver "deployments". Config: pools + deployments (Follow AiProxy).
+                            NetPI.Ideas          per-project "do later" memory bank: ideas.json in the session
+                            workspace; idea.add/list/get/update/remove agent tools; "Ideas" panel on its own
+                            :5277 Kestrel (own page + API, 4 s poll). Panel actions: insert-into-chat
+                            publishes ChatPrefillEvent (Web forwards `chat.prefill`; the panel is
+                            cross-origin so the bridge stays navigation-only) and "do now" starts a run
+                            on the project's session via the runner contract (queued when the pool
+                            is full, like any chat send). No services registered.
                             NetPI.TestPlugin    reload/lease test fixture
 web/netpi-web/            Svelte 5 + Vite frontend (pnpm). Built into dist/ (git-ignored).
 tests/NetPI.Host.Tests/   xunit suite; the integration surface.
@@ -290,7 +297,12 @@ snapshot in `session.updated`/bootstrap carries the active `project`),
 `session.deleted` (client removed the session from the store; if it was the
 open session, the drawer starts a fresh one in the same workspace),
 `models.updated/refreshFailed`, `plugins.state`, `plugin.state`,
-`plugin.reloaded/Failed`, `plugin.scanned` (`loaded` = ids newly scanned in), `ack`, `error`.
+`plugin.reloaded/Failed`, `plugin.scanned` (`loaded` = ids newly scanned in), `chat.prefill`
+(Ideas panel "insert into chat": `{text, sessionId?}` — the Ideas plugin publishes a
+`ChatPrefillEvent`, WebApp forwards it to all clients, and each shell appends the text to its
+own visible session's draft and focuses the composer; a cross-origin panel cannot touch the
+composer directly — this event is the sanctioned path, the shell↔panel bridge stays
+navigation-only), `ack`, `error`.
 
 Bootstrap on WS connect: `agent.state`, `models.*`, `plugins.state`,
 `ui.panels`, `session.list`, then replay of the active session's **latest 200 entries**.
@@ -376,6 +388,7 @@ assistant block of a completed run, not after each tool batch.
 | `netpi.testplugin` | `loadFail`, `generation`, `register` |
 | `netpi.backgroundtasks` | `port` (5275) |
 | `netpi.activity` | `port` (5276) |
+| `netpi.ideas` | `port` (5277 — the Ideas panel Kestrel; the bank file is always `<workspace>/ideas.json`) |
 | `netpi.orchestration` | `maxDelegationDepth` (3), `maxOutstandingMessagesPerAgent` |
 | `netpi.lanes` | astra-2: `enabled` (false = legacy, no pools), `deployments[]` (`id`, optional `modelId`, `enabled` — a disabled deployment is recorded so its requests are REJECTED before inference, never rerouted), `pools[]`: `id`, `enabled`, `deploymentIds[]`, `capacity`: `mode` (`provider` = Follow AiProxy, default / `manual`), `maxAgents` (positive cap; manual mode without it falls back to provider mode and logs) |
 | `netpi.nudge` | `enabled` (default true), `maxNudges` (2), `nudgeText` |

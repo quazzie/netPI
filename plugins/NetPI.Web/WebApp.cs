@@ -212,6 +212,10 @@ internal sealed class WebApp : IAsyncDisposable
         // astra-2 section 13: assignment/lane lifecycle (NetPI.Orchestration + lanes publish these).
         _subs.Add(_ctx.Events.Subscribe<AgentLifecycleEvent>(OnAgentLifecycleEvent));
         _subs.Add(_ctx.Events.Subscribe<LanesStateEvent>(OnLanesStateEvent));
+        // Ideas panel "insert into chat": the panel is cross-origin (own Kestrel),
+        // so it reaches the composer through this event (the bridge stays
+        // navigation-only). Each client applies it to its own visible session.
+        _subs.Add(_ctx.Events.Subscribe<ChatPrefillEvent>(OnChatPrefill));
 
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -2535,6 +2539,21 @@ internal sealed class WebApp : IAsyncDisposable
             });
         }
         return list;
+    }
+
+    /// <summary>
+    /// Forward a ChatPrefillEvent (Ideas panel "insert into chat") to all
+    /// clients as <c>chat.prefill</c>; the shell appends the text to the named
+    /// session's draft (or the visible session) and focuses the composer.
+    /// Fire-and-forget: the event bus dispatch is synchronous and bounded.
+    /// </summary>
+    private void OnChatPrefill(ChatPrefillEvent ev)
+    {
+        _ = Task.Run(async () =>
+        {
+            try { await BroadcastAsync("chat.prefill", new { text = ev.Text, sessionId = ev.SessionId }, ev.SessionId, CancellationToken.None); }
+            catch { /* surface stopped or all clients gone */ }
+        });
     }
 
     // ---- send / broadcast ---------------------------------------------------

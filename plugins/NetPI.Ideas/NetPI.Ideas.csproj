@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>NetPI.Ideas</RootNamespace>
+    <AssemblyName>netPI.Ideas</AssemblyName>
+    <Description>Ideas plugin: a per-project "do later" memory bank (ideas.json in the project root). Agent tools idea.add/list/get/update/remove, and the "Ideas" right-panel tab (own Kestrel port) with insert-into-chat (ChatPrefillEvent) and "do now" (starts an agent run via the runner contract).</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\..\src\NetPI.Abstractions\NetPI.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Panel page served from the plugin assembly (mirrors NetPI.Activity). -->
+    <EmbeddedResource Include="panels\ideas.html" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>NetPI.Host.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>
