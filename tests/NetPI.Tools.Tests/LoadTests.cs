@@ -35,6 +35,8 @@ public static class LoadTests
                 await plugin.StartAsync(ctx, CancellationToken.None);
                 Check.Equal(expectedTools, ctx.ToolsFake.Tools.Count);
                 Check.True(ctx.RpcFake.Handlers.Count >= 2);
+                if (project == "NetPI.Tools.Files")
+                    Check.True(ctx.UiFake.Tabs.Any(t => t.Id == "files" && t.Panel == UiPanel.Left), "files tab registered");
                 await plugin.StopAsync(CancellationToken.None);
                 alc.Unload();
             });

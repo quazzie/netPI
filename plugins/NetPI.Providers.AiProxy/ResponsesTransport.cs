@@ -161,8 +161,12 @@ internal static class ResponsesTransport
     }
 }
 
-/// <summary>Parses the Responses API event stream into the assembler.</summary>
-internal sealed class ResponsesStreamParser(MessageAssembler asm, string provider) : IOpenAiStreamParser
+/// <summary>
+/// Parses the Responses API event stream into the assembler. With <paramref name="parseThinkTags"/> (setting
+/// <c>parseThinkTags</c>, default on) inline <c>&lt;think&gt;…&lt;/think&gt;</c> in message text becomes thinking, as on the
+/// Chat Completions transport (backends without a reasoning parser, e.g. Qwen on llama.cpp).
+/// </summary>
+internal sealed class ResponsesStreamParser(MessageAssembler asm, string provider, bool parseThinkTags = true) : IOpenAiStreamParser
 {
     private sealed class Item
     {
@@ -174,6 +178,9 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
         public ToolCallPart? Call;
         public int? SummaryIndex;
         public bool Done;
+        /// <summary>Message text as received (think tags included), for catching up from "done" events.</summary>
+        public readonly StringBuilder Raw = new();
+        public ThinkTagSplitter? Split;
     }
 
     private readonly Dictionary<string, Item> _byId = new(StringComparer.Ordinal);
@@ -201,7 +208,45 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
 
     public void Finish()
     {
+        foreach (var it in _items) FlushText(it);
         if (!Finished) throw ProviderErrors.UnexpectedEnd(provider);
+    }
+
+    // ---------------------------------------------------------------- message text (optionally split at <think> tags)
+
+    private void MessageText(Item it, string? delta)
+    {
+        if (string.IsNullOrEmpty(delta)) return;
+        it.Raw.Append(delta);
+        if (!parseThinkTags)
+        {
+            it.Text ??= asm.BeginText();
+            asm.AppendText(it.Text, delta);
+            return;
+        }
+        (it.Split ??= new ThinkTagSplitter()).Process(delta, (thinking, text) => EmitSegment(it, thinking, text));
+    }
+
+    /// <summary>The complete text of a message item: stream whatever was not received as deltas.</summary>
+    private void MessageTextFull(Item it, string? full)
+    {
+        if (string.IsNullOrEmpty(full)) return;
+        var raw = it.Raw.ToString();
+        if (full.Length <= raw.Length || !full.StartsWith(raw, StringComparison.Ordinal)) return;
+        MessageText(it, full[raw.Length..]);
+    }
+
+    private void FlushText(Item it) => it.Split?.Flush((thinking, text) => EmitSegment(it, thinking, text));
+
+    private void EmitSegment(Item it, bool thinking, string text)
+    {
+        if (thinking)
+        {
+            asm.AddThinking(text);
+            return;
+        }
+        it.Text = asm.TextTarget(); // the trailing text part, or a new one after a thinking segment
+        asm.AppendText(it.Text, text);
     }
 
     private void HandleEvent(JsonElement e, string? sseEvent)
@@ -215,22 +260,12 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
 
             case "response.output_text.delta":
             case "response.refusal.delta":
-            {
-                var it = Resolve(e, "message");
-                it.Text ??= asm.BeginText();
-                asm.AppendText(it.Text, e.Str("delta"));
+                MessageText(Resolve(e, "message"), e.Str("delta"));
                 break;
-            }
             case "response.output_text.done":
             case "response.refusal.done":
-            {
-                var it = Resolve(e, "message");
-                var full = e.Str("text") ?? e.Str("refusal");
-                if (string.IsNullOrEmpty(full)) break;
-                it.Text ??= asm.BeginText();
-                asm.CatchUp(it.Text, full);
+                MessageTextFull(Resolve(e, "message"), e.Str("text") ?? e.Str("refusal"));
                 break;
-            }
 
             case "response.reasoning_text.delta":
             case "response.reasoning.delta":
@@ -375,9 +410,8 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
                 var sb = new StringBuilder();
                 foreach (var c in item.Prop("content").Items())
                     sb.Append(c.Str("text") ?? c.Str("refusal") ?? "");
-                if (sb.Length == 0) break;
-                it.Text ??= asm.BeginText();
-                asm.CatchUp(it.Text, sb.ToString());
+                MessageTextFull(it, sb.ToString());
+                FlushText(it);
                 break;
             }
             case "reasoning":

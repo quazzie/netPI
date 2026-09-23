@@ -19,6 +19,7 @@ npm run e2e              # Playwright walkthrough (starts its own mock on :7432)
                          # (uses a local or global `playwright` install; see web/mock/pw.mjs)
 node web/scripts/build-plugins.mjs --watch            # rebuild plugin UIs on change
 node web/scripts/build-plugins.mjs web/mock/sample-plugin   # plus extra plugin dirs
+node web/mock/fake-openai.mjs [port]  # scripted OpenAI-compatible model server for exercising the real host
 ```
 
 - **Against the real host:** start NetPI, then `npm run dev` and open `http://localhost:5173/?token=<token>`.
@@ -30,6 +31,10 @@ node web/scripts/build-plugins.mjs web/mock/sample-plugin   # plus extra plugin 
   agent three times faster. `--no-auth` and `--port N` are also available.
 - **Plugin UI hot reload:** `build:plugins` also copies each bundle to `artifacts/app/plugins/<P>/wwwroot/ui.js`.
   The host then bumps the tab `version` and emits `ui.changed`, and the tab remounts without a .NET build.
+- **Real host without a model:** start `node web/mock/fake-openai.mjs 7468`, then point the host at it with
+  `settings.set { path: "providers.aiproxy", value: { baseUrl: "http://127.0.0.1:7468", transport: "chat" } }`.
+  Sending `[demo] …` to a session produces real subagents (2 lane slots, so one queues), a background and a
+  foreground `bash`, usage and an `agent_wait`, which is enough to exercise every section of the Work tab.
 - In a normal browser, `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab` and `Ctrl+1…9` are taken by the browser. In WebView2 they
   reach the app. The command palette (`Ctrl+K`) and the `+` button do the same things.
 
@@ -69,8 +74,15 @@ web/
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker, Lightbox
   mock/
     server.mjs  store.mjs  agent.mjs  content.mjs    mock host (HTTP + WS + scripted agent)
+    work.mjs  ideas.mjs  diag.mjs                     mock lanes/processes/usage, ideas backlog, plugin manager
+    fake-openai.mjs                                  scripted model server for the real host
     sample-plugin/ui/{main.js,SampleTab.svelte}      example plugin UI (Svelte tab + vanilla tab)
     e2e.mjs  pw.mjs  screenshots/                    Playwright walkthrough
+plugins/<P>/ui/                  built-in plugin tab sources → plugins/<P>/wwwroot/ui.js
+  NetPI.Work/ui/                 WorkTab, LanePool, AgentNode, RecentAgent, ProcessRow, util.js
+  NetPI.Ideas/ui/                IdeasTab, IdeaCard, NewIdea, SectionEditor, model.js
+  NetPI.Diagnostics/ui/          DiagTab + Plugins/Tools/Rpc/Events/Logs/Context views
+  NetPI.Tools.Files/ui/          FilesTab (left panel)
 ```
 
 ## Architecture
@@ -221,6 +233,79 @@ ctx = {
 }
 ```
 
+### Built-in plugin tabs
+
+Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle
+sizes (minified; Svelte runtime and kit included): Work 86KB, Ideas 85KB, Diagnostics 96KB, Files 67KB.
+
+**Work** (`netpi.work`, right). One `work.snapshot` feeds four collapsible sections, each with a count. The
+open or closed state of each section is remembered (`storageKey`).
+
+- A summary line shows active agents, busy slots (+ queued), running processes and today's tokens.
+- **Lanes:** one row per pool with capacity pips (a bar when capacity is over 8), `busy/capacity`, a status pill
+  (`queued` `full` `busy` `idle` `offline` `stopped`), the pool's models with their load-status dot from
+  `models.list`, and the owners and waiters with elapsed time. Clicking an owner opens its session.
+- **Agents:** the active agents as a tree (subagents nest under their parent). Each row shows a status dot,
+  activity, elapsed time, the session title (or the task, for a subagent) and a one-line meta: model · turns ·
+  tools · tokens · lane. Clicking a row opens the session, and the stop button calls `agent.abort { sessionId }`.
+  Finished agents are listed below under **Recent** (result or error, TimeAgo), with **Show all** past 6.
+- **Processes:** running processes first, then **Recent**. Expanding a row fetches `processes.output` (tail
+  300 lines) and appends live `process.output` chunks. It falls back to polling every 2s when no chunk has
+  arrived for 3s, and fetches once more on `process.exited`. The kill button is a two-step `ConfirmButton`
+  that calls `processes.kill`.
+- **Usage today:** `usage.summary` per provider (input ↑, output ↓, cache read), plus a budget bar when
+  `budgetTokens` is set.
+- Updates: `agent.status`, `lanes.changed` and `process.started/exited` are applied in place, and a debounced
+  `work.snapshot` (250ms; 400ms after `usage.recorded`) reconciles them. A 30s timer refreshes the snapshot
+  while the tab is visible; while it is hidden, events only mark it dirty and it refreshes on show.
+
+**Ideas** (`netpi.ideas`, right). Shows the backlog of the active session's project (or the global file) with
+`ideas.list { sessionId }`.
+
+- The header shows the scope badge (project name or *global*), the file path and a **+** button.
+- Filters: search over title, summary, tags and sections; a status menu (**Active** = open, planned,
+  in-progress; **All**; or one status), each with counts; and tag chips (an idea matches when it has any of the selected tags).
+- Cards show a status pill (a menu that calls `ideas.update { patch: { status } }`), priority, tags, section
+  count, an agent icon for agent-created ideas, and the update time. Expanding a card renders the summary and
+  its sections as markdown.
+- Editing: title, summary, priority and tags inline; add, edit (kind, title, markdown; Ctrl+Enter saves) and
+  remove sections through `addSections`, `updateSections` and `removeSectionIds`; delete with the host confirm
+  dialog.
+- Reordering uses the grip (HTML5 drag with a drop indicator) or the up and down buttons, and sends the full
+  id order to `ideas.reorder`.
+- **Send to chat** calls `ideas.toPrompt` and `ctx.app.insertText`.
+- The list refetches on `ideas.changed` for the shown file and on `ctx.app.onChange`.
+
+**Diagnostics** (`netpi.diagnostics`, right). `diag.snapshot { events: 300 }` plus a runtime line (pid,
+framework, working set, threads, uptime). A segmented control switches views, and the last view is remembered.
+
+- **Plugins:** filter, state counts, failed plugins first with their error, a reload button
+  (`diag.reload { args: id }`), and a ⋯ menu with Reload, Enable/Disable (`plugins.setEnabled`), Copy id, Copy
+  folder and Reveal (desktop only). Expanding a row shows its folder, assembly, load time and count.
+- **Tools:** grouped by category, with read-only, shadowed, disabled and priority badges. A chip shows or
+  hides shadowed registrations.
+- **RPC:** methods grouped by prefix with the owning plugin; clicking copies the name.
+- **Events:** the snapshot's recent events, then live events from `ctx.on('*')`, batched per animation frame and
+  capped at 1000. Controls: type or session filter (`agent.*` prefixes work), hide `stream.delta`,
+  `tool.output` and `process.output` (on by default), pause and clear. Clicking a row shows its payload (live
+  events) or fetches it with `diag.event { seq }`.
+- **Logs:** `logs.recent { max: 400 }`, polled every 3s while visible, newest first, with a level filter
+  (All, Info+, Warn, Error, with counts). Exceptions expand.
+- **Context:** for the active session, `context.preview` (estimated tokens, system prompt size, tool count,
+  the system prompt with copy and expand, the tool list) and `agentsmd.list` (instruction files with scope
+  badges, copy path and reveal).
+
+**Files** (`netpi.tools.files`, left). A lazy tree of the active session's working folder.
+
+- `files.list { sessionId, dir }` runs per expanded folder. Ignored entries are dimmed and can be hidden.
+- The header shows the project name, the root path (shortened from the left), **collapse all** and **refresh**.
+- The filter box calls `files.search` (debounced 140ms, 200 results) and shows a flat list.
+- Clicking a file inserts `@rel/path ` into the composer (quoted when the path has spaces; folders end in `/`).
+- The context menu (right-click or ⋯) has Insert @mention, Insert path, Copy relative path, Copy absolute path,
+  Reveal in Explorer (desktop only) and Refresh folder.
+- Keyboard: ↑ ↓ move, → ← expand and collapse, Enter inserts, and the context-menu key opens the menu.
+- The tree reloads when the active session's project changes (`ctx.app.onChange`).
+
 ### Writing a tab in Svelte
 
 Layout: `plugins/<P>/ui/main.js` (or `main.ts`) plus components. The bundle is built to
@@ -289,30 +374,42 @@ Import from `@netpi/kit`. The build aliases it to `web/src/lib/kit/index.js`, an
 
 | component | props |
 |---|---|
-| `Section` | `title`, `actions` snippet, children |
+| `Section` | `title`, `count`, `actions` snippet, children, `collapsible`, `bind:open`, `storageKey` (remembers open/closed), `flush` |
 | `Badge` | `tone` (`ok` `warn` `err` `info` `accent`) |
 | `StatusDot` | `status` (see `.np-dot`) |
 | `TimeAgo` | `time` (ISO string or ms); updates every 30s |
+| `Elapsed` | `since`, `until?`; ticks every second while running |
 | `Empty` | `icon`, children |
 | `Button` | `variant` (`default` `primary` `ghost` `danger`), `size` (`md` `sm`), `icon`, `onclick`, `disabled`, `title` |
 | `IconButton` | `icon`, `title`, `size`, `pressed`, `onclick` |
+| `ConfirmButton` | `icon`, `label`, `confirmLabel`, `title`, `onconfirm`: the first click arms it for 2.5s, the second confirms |
+| `SearchInput` | `bind:value`, `placeholder`; Esc clears |
+| `Segmented` | `options` (`{ value, label, icon?, count?, title? }[]`), `bind:value`, `onchange` |
+| `Menu` | `items` (`{ label, icon?, hint?, checked?, danger?, disabled?, onclick }`, `{ divider }`, `{ header }`), `trigger` snippet `({ toggle, open })`; exported `openAt(x, y, items?)`, `openFor(el, items?)`, `close()` for context menus |
+| `Pips` | `busy`, `capacity`, `queued`, `max` (a bar instead of pips above `max`) |
 | `Collapsible` | `title` or `header` snippet, `bind:open` |
 | `Markdown` | `text`, `highlight` (default `true`) |
 | `Icon` | `name` (host icon set) or an inline `<svg>` string, `size`, `stroke` |
 | `Spinner` | `size` |
 
 The kit also exports the helpers `timeAgo`, `duration`, `tokens`, `bytes`, `relPath`, `basename`, `truncate`,
-`renderMarkdown` and `host`.
+`stamp`, `renderMarkdown` and `host`, plus:
 
-`Markdown` and `Icon` call **host services** on `globalThis.__netpiHost`, which the host sets in `main.js`:
-`renderMarkdown`, `highlight` and `icon`. Plugin bundles therefore do not include marked, DOMPurify,
-highlight.js or the icon set, and they share the host's caches.
+- `confirm({ title, message, confirmLabel, danger })`: the host's confirm dialog (a `Promise<boolean>`), or
+  `window.confirm` outside the host.
+- `copyText(text)`: clipboard with a textarea fallback; resolves to `true` on success.
+- `desktop`: `available` (running in WebView2), `revealPath(path)` and `openExternal(url)`.
+- `clockNow()` and `secondNow()`: shared reactive clocks (30s and 1s) for relative times.
+
+`Markdown`, `Icon`, `confirm` and `copyText` call **host services** on `globalThis.__netpiHost`, which the host
+sets in `main.js`: `renderMarkdown`, `highlight`, `icon`, `confirm` and `copyText`. Plugin bundles therefore do
+not include marked, DOMPurify, highlight.js or the icon set, and they share the host's caches.
 
 Icon names: `sessions folder folder-open plus x chevron-* arrow-* stop image paperclip at slash settings search
 terminal file file-text file-plus files pencil rename brain list-tree bot copy check alert alert-circle info
 refresh trash archive more external cpu branch clock sun moon puzzle work activity idea bug list zap layers
 message-circle steer queue panel-left panel-right command home corner-up drive sliders circle-check circle-x ban
-globe wrench kill history expand process sparkle keyboard link grip`. A `UiTabInfo.icon` can use any of these
+globe wrench kill history expand process sparkle keyboard link grip play pause`. A `UiTabInfo.icon` can use any of these
 names or an inline `<svg …>` string.
 
 ### CSS
@@ -330,9 +427,9 @@ names or an inline `<svg …>` string.
 | group | classes |
 |---|---|
 | layout | `np-scroll np-stack np-stack-sm np-hstack np-hstack-sm np-spacer np-toolbar np-divider` |
-| sections | `np-section np-section-title np-section-actions np-card` |
+| sections | `np-section np-section-title np-section-actions np-section-count np-section-toggle np-card` |
 | lists | `np-list np-row np-row-title np-row-sub np-kv np-table` |
-| controls | `np-btn np-btn-primary np-btn-ghost np-btn-danger np-btn-sm np-icon-btn np-input np-check np-seg` |
+| controls | `np-btn np-btn-primary np-btn-ghost np-btn-danger np-btn-sm np-icon-btn np-input np-check np-seg np-search np-chip[aria-pressed]` |
 | text | `np-mono np-muted np-dim np-small np-strong np-ellipsis np-kbd` |
 | status | `np-badge[data-tone] np-dot[data-status] np-empty np-spinner np-progress[style=--value]` |
 
@@ -341,8 +438,10 @@ names or an inline `<svg …>` string.
 - **Folder picker.** The page posts `window.chrome.webview.postMessage({ type: 'pickFolder', id, initial })`.
   The shell replies with a web message `{ type: 'pickFolderResult', id, path | null }`, as an object or as a
   JSON string. Without `chrome.webview`, a modal browses the host's folders with `fs.dirs`.
-- **External links.** Markdown links (`http(s)`) open with `target=_blank rel=noopener`. The shell should
-  handle `NewWindowRequested` and open them in the default browser.
+- **External links.** Markdown links (`http(s)`) open with `target=_blank rel=noopener`. The shell opens them in
+  the default browser. Plugins can also post `{ type: 'openExternal', url }` (kit `desktop.openExternal`).
+- **Reveal.** `{ type: 'revealPath', path }` (kit `desktop.revealPath`) shows a file or folder in Explorer. The
+  Files and Diagnostics tabs offer it only when `window.chrome.webview` exists.
 
 ## What the UI expects from the host (beyond PROTOCOL.md)
 
@@ -370,3 +469,6 @@ names or an inline `<svg …>` string.
 - `sessions.messages` has only `beforeSeq`. An `afterSeq` parameter would let the pruned window page forward;
   today it reloads the tail instead.
 - A `UiTabInfo.panel` sent as a number (enum without a string converter) is accepted: `0` is left, `1` is right.
+- The Work tab reads `usage.summary` providers' `budgetTokens` and `budgetUsed` (input + output + cache write),
+  `LanePool.status`, `LaneOwner.label`/`since`, and `ProcessInfo.outputBytes`/`background`/`agentId`.
+- The Ideas tab expects `ideas.changed { file }` after every write, including writes made by agents.

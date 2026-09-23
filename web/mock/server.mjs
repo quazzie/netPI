@@ -13,6 +13,9 @@ import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { store, seed, resetStore, MODELS, DEFAULT_MODEL, REPO, mkSession, pushMessage, agentFor, newId, text } from './store.mjs';
 import { createAgentRuntime } from './agent.mjs';
+import { createWork } from './work.mjs';
+import { createIdeas } from './ideas.mjs';
+import { createDiag, toolRows } from './diag.mjs';
 
 // ------------------------------------------------------------------------------------------ options
 const args = process.argv.slice(2);
@@ -25,9 +28,22 @@ const HOST = opt('host', '127.0.0.1');
 const TOKEN = opt('token', process.env.NETPI_TOKEN || 'dev');
 const NO_AUTH = args.includes('--no-auth');
 const WWWROOT = path.join(REPO, 'artifacts/app/wwwroot');
-const PLUGINS = {
-  'netpi.sample': path.join(REPO, 'web/mock/sample-plugin/wwwroot'),
-};
+// Plugin UI bundles the mock serves (built by `npm run build:plugins`); a tab is listed only when its bundle exists.
+const PLUGIN_UIS = [
+  { pluginId: 'netpi.work', dir: 'plugins/NetPI.Work/wwwroot', tabs: [{ id: 'work', title: 'Work', panel: 'right', icon: 'work', order: 10 }] },
+  { pluginId: 'netpi.ideas', dir: 'plugins/NetPI.Ideas/wwwroot', tabs: [{ id: 'ideas', title: 'Ideas', panel: 'right', icon: 'idea', order: 20 }] },
+  { pluginId: 'netpi.diagnostics', dir: 'plugins/NetPI.Diagnostics/wwwroot', tabs: [{ id: 'diagnostics', title: 'Diagnostics', panel: 'right', icon: 'bug', order: 90 }] },
+  { pluginId: 'netpi.tools.files', dir: 'plugins/NetPI.Tools.Files/wwwroot', tabs: [{ id: 'files', title: 'Files', panel: 'left', icon: 'files', order: 30 }] },
+  {
+    pluginId: 'netpi.sample',
+    dir: 'web/mock/sample-plugin/wwwroot',
+    tabs: [
+      { id: 'sample', title: 'Sample', panel: 'right', icon: 'puzzle', order: 95 },
+      { id: 'events', title: 'Events', panel: 'right', icon: 'activity', order: 96, export: 'mountEvents' },
+    ],
+  },
+];
+const PLUGINS = Object.fromEntries(PLUGIN_UIS.map((p) => [p.pluginId, path.join(REPO, p.dir)]));
 const VERSION = '0.1.0-mock';
 
 seed();
@@ -37,8 +53,8 @@ const clients = new Set();
 let seq = 0;
 const recent = [];
 
-function publish(type, d = {}, sid = null) {
-  const env = { t: 'ev', type, sid: sid ?? null, d, seq: ++seq, ts: Date.now() };
+function publish(type, d = {}, sid = null, source = 'mock') {
+  const env = { t: 'ev', type, sid: sid ?? null, d, seq: ++seq, ts: Date.now(), source };
   recent.push(env);
   if (recent.length > 300) recent.shift();
   const json = JSON.stringify(env);
@@ -48,9 +64,60 @@ function publish(type, d = {}, sid = null) {
   }
 }
 
-const agent = createAgentRuntime({ publish });
+// log ring for logs.recent / diagnostics
+const logs = [];
+function log(level, category, message, exception) {
+  logs.push({ time: new Date().toISOString(), level, category, message, ...(exception ? { exception } : {}) });
+  if (logs.length > 500) logs.shift();
+}
+
+const work = createWork({ publish, log });
+work.start();
+const ideas = createIdeas({ publish });
+ideas.seed();
+const diag = createDiag({ publish, log });
+diag.seed();
+const agent = createAgentRuntime({ publish, work, log });
 
 // ------------------------------------------------------------------------------------------ rpc
+const RPC_DOCS = {
+  'agent.send': 'Send a message to a session\'s agent: { sessionId, text, images?, mode? } → AgentInfo',
+  'agent.abort': 'Abort the current run of a session\'s agent: { sessionId } → bool',
+  'sessions.list': 'Sessions, newest first: { projectId?, search?, includeSubagents?, includeArchived?, limit?, offset? }',
+  'sessions.messages': 'Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore }',
+  'work.snapshot': 'Aggregated overview for the Work tab → { lanes, agents, processes, usage, time, errors? }',
+  'diag.snapshot': 'Diagnostics overview → { plugins, tools, rpc, events, logs, runtime, time }',
+  'ideas.list': 'Ideas of a project/session: { sessionId?, projectId? } → { file, scope, ideas, … }',
+  'files.list': 'List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries }',
+  'files.search': 'Fuzzy file-name search for @ mentions: { sessionId?, query, limit? } → { path, rel, isDir }[]',
+  'logs.recent': 'Recent log entries: { max? } → { time, level, category, message, exception? }[]',
+};
+const SYSTEM_PROMPT = (project, session) => `You are an expert coding agent running inside NetPI, a minimal agent harness on the user's own machine. You help the user with software engineering tasks by reading files, running commands, editing code and writing new files.
+
+Be concise and direct. Act, don't just describe: when something needs doing, do it with your tools and check the result.
+
+# Environment
+- Working directory: ${project?.path ?? path.join(os.homedir(), '.netpi', 'workspace')}${project ? ` (project "${project.name}")` : ''}
+- OS: ${os.type()} ${os.release()}
+- Date: ${new Date().toDateString()}
+- Model: ${session?.model ?? DEFAULT_MODEL}
+
+# Tools
+- Prefer read/grep/find/ls over shell commands for exploring files.
+- Use edit for small changes; include enough context for oldText to match exactly once.
+- Run the relevant build or tests before you say you're done.
+- When research or plans are deferred, record them with idea_add instead of losing them.
+
+# Project instructions (AGENTS.md)
+## ~/.netpi/AGENTS.md
+Keep answers short. Use British spelling in docs.
+${project ? `
+## ${project.path}/AGENTS.md
+- Build: \`dotnet build NetPI.slnx\`; web UI: \`npm run build\`.
+- Never run \`dotnet build\` while another agent owns the .NET build.
+- Plugins live under plugins/ and hot-reload from artifacts/app/plugins.
+` : ''}`;
+
 class RpcError extends Error {
   constructor(code, message) {
     super(message);
@@ -111,13 +178,15 @@ function sessionCwd(id) {
 
 function uiTabs() {
   const tabs = [];
-  const uiJs = path.join(PLUGINS['netpi.sample'], 'ui.js');
-  let version = '0';
-  try {
-    version = String(Math.floor(fs.statSync(uiJs).mtimeMs));
-  } catch {}
-  tabs.push({ id: 'sample', title: 'Sample', panel: 'right', icon: 'puzzle', module: 'ui.js', order: 50, pluginId: 'netpi.sample', version });
-  tabs.push({ id: 'events', title: 'Events', panel: 'right', icon: 'activity', module: 'ui.js', export: 'mountEvents', order: 60, pluginId: 'netpi.sample', version });
+  for (const p of PLUGIN_UIS) {
+    let version;
+    try {
+      version = String(Math.floor(fs.statSync(path.join(PLUGINS[p.pluginId], 'ui.js')).mtimeMs));
+    } catch {
+      continue; // bundle not built
+    }
+    for (const t of p.tabs) tabs.push({ module: 'ui.js', ...t, pluginId: p.pluginId, version });
+  }
   return tabs;
 }
 
@@ -227,8 +296,8 @@ const handlers = {
   'ui.tabs': () => uiTabs(),
   'ui.commands': () => [
     { name: 'compact', description: 'Summarize older messages to free context', rpc: 'compaction.run', pluginId: 'netpi.compaction' },
-    { name: 'idea', description: 'Capture an idea for later', rpc: 'ideas.add', argsHint: '<text>', pluginId: 'netpi.ideas' },
-    { name: 'reload', description: 'Rescan and reload plugins', rpc: 'plugins.rescan', pluginId: 'netpi.host' },
+    { name: 'idea', description: 'Add an idea to the backlog', rpc: 'ideas.quickAdd', argsHint: '<title>', pluginId: 'netpi.ideas' },
+    { name: 'reload', description: 'Hot-reload a plugin (or all plugins)', rpc: 'diag.reload', argsHint: '[pluginId]', pluginId: 'netpi.diagnostics' },
     { name: 'sample', description: 'Open the sample plugin tab', clientAction: 'openTab:netpi.sample/sample', pluginId: 'netpi.sample' },
   ],
   'ui.state.get': (p) => store.uiState.get(need(p, 'key')) ?? null,
@@ -237,16 +306,12 @@ const handlers = {
     return true;
   },
 
-  'plugins.list': () => [
-    { id: 'netpi.sample', name: 'Sample plugin', description: 'Mock plugin tab for UI development', version: '1.0.0', directory: path.join(REPO, 'web/mock/sample-plugin'), state: 'running', loadedAt: new Date().toISOString(), loadCount: 1, loadMs: 12, order: 100, enabled: true },
-    { id: 'netpi.tools.files', name: 'File tools', version: '0.1.0', directory: path.join(REPO, 'plugins/NetPI.Tools.Files'), state: 'running', loadCount: 1, loadMs: 48, order: 20, enabled: true },
-    { id: 'netpi.tools.shell', name: 'Shell tools', version: '0.1.0', directory: path.join(REPO, 'plugins/NetPI.Tools.Shell'), state: 'running', loadCount: 1, loadMs: 31, order: 20, enabled: true },
-  ],
-  'plugins.reload': () => {
-    publish('plugins.changed', {});
+  'plugins.list': () => diag.list(),
+  'plugins.reload': (p) => {
+    diag.reload(need(p, 'id'));
     return true;
   },
-  'plugins.setEnabled': () => true,
+  'plugins.setEnabled': (p) => diag.setEnabled(need(p, 'id'), !!p.enabled),
   'plugins.rescan': () => {
     publish('plugins.changed', {});
     publish('ui.changed', {});
@@ -286,13 +351,7 @@ const handlers = {
     return { path: dir, parent, dirs, roots: process.platform === 'win32' ? ['C:\\', 'D:\\'] : ['/'] };
   },
 
-  'tools.list': () => [
-    ['read', 'Read', 'files', true], ['write', 'Write', 'files', false], ['edit', 'Edit', 'files', false],
-    ['grep', 'Grep', 'files', true], ['find', 'Find', 'files', true], ['ls', 'List', 'files', true],
-    ['bash', 'Bash', 'shell', false], ['pwsh', 'PowerShell', 'shell', false],
-    ['agent_spawn', 'Spawn agent', 'agents', false], ['agent_wait', 'Wait for agents', 'agents', true],
-    ['agent_message', 'Message agent', 'agents', false],
-  ].map(([name, label, category, readOnly]) => ({ name, label, description: '', category, readOnly, pluginId: `netpi.tools.${category}`, active: true })),
+  'tools.list': () => toolRows(),
   'rpc.list': () => Object.keys(handlers).map((method) => ({ method, description: '', pluginId: 'mock' })),
   'events.recent': (p = {}) => recent.slice(-(p.max ?? 100)),
 
@@ -305,6 +364,13 @@ const handlers = {
   'agent.abort': (p) => agent.abort(need(p, 'sessionId')),
   'agent.queue': (p) => agent.queue(need(p, 'sessionId')),
   'agent.dequeue': (p) => agent.dequeue(need(p, 'sessionId'), need(p, 'id')),
+  'work.snapshot': () => ({
+    lanes: work.lanes(),
+    agents: [...store.agents.values()],
+    processes: work.procList(),
+    usage: work.usageSummary(),
+    time: new Date().toISOString(),
+  }),
   'agents.list': (p = {}) =>
     [...store.agents.values()].filter((a) => p.includeFinished || !['completed', 'failed', 'cancelled'].includes(a.status)),
   'agent.get': (p = {}) => (p.sessionId ? (store.agents.get(p.sessionId) ?? null) : ([...store.agents.values()].find((a) => a.id === p.id) ?? null)),
@@ -322,8 +388,47 @@ const handlers = {
     publish('message.added', { sessionId: sid, message: m }, sid);
     return `Compacted ${n} messages`;
   },
-  'ideas.add': (p) => (p.args ? `Idea saved: “${p.args}”` : 'Usage: /idea <text>'),
-  'context.preview': (p) => ({ systemPrompt: 'You are NetPI…', tools: [], estimatedTokens: store.sessions.get(p?.sessionId)?.contextTokens ?? 0 }),
+  ...ideas.api,
+  'diag.snapshot': (p = {}) => ({
+    plugins: diag.list(),
+    tools: toolRows(),
+    rpc: Object.keys(handlers)
+      .filter((m) => !m.startsWith('mock.'))
+      .sort()
+      .map((method) => ({ method, description: RPC_DOCS[method] ?? '', pluginId: method.split('.')[0] === 'ideas' ? 'netpi.ideas' : method.startsWith('diag') ? 'netpi.diagnostics' : method.startsWith('work') ? 'netpi.work' : 'host' })),
+    events: recent.slice(-(p.events ?? 200)).map((e) => ({ seq: e.seq, type: e.type, sessionId: e.sid ?? undefined, time: new Date(e.ts).toISOString(), source: e.source })),
+    logs: logs.slice(-200),
+    runtime: diag.runtime(),
+    time: new Date().toISOString(),
+  }),
+  'diag.event': (p) => {
+    const e = recent.find((x) => x.seq === Number(p?.seq));
+    if (!e) throw new RpcError('not_found', `Event ${p?.seq} is no longer in the buffer`);
+    return { seq: e.seq, type: e.type, sessionId: e.sid ?? undefined, time: new Date(e.ts).toISOString(), source: e.source, ui: true, data: e.d };
+  },
+  'diag.reload': (p = {}) => {
+    const id = (p.args ?? p.id ?? '').trim();
+    if (!id || id === 'all' || id === '*') {
+      for (const x of diag.list()) if (x.enabled) setTimeout(() => diag.reload(x.id), 50);
+      return `Reloading ${diag.list().filter((x) => x.enabled).length} plugins…`;
+    }
+    const pl = diag.reload(id);
+    return `Reloaded ${pl.name} (${pl.id})`;
+  },
+  'agentsmd.list': (p = {}) => {
+    const s = p.sessionId ? store.sessions.get(p.sessionId) : null;
+    const pr = s?.projectId ? store.projects.get(s.projectId) : null;
+    const out = [{ path: path.join(os.homedir(), '.netpi', 'AGENTS.md'), bytes: 1843, scope: 'global' }];
+    if (pr) out.push({ path: path.join(pr.path, 'AGENTS.md'), bytes: 4210, scope: 'project' }, { path: path.join(pr.path, 'web', 'AGENTS.md'), bytes: 612, scope: 'directory' });
+    return out;
+  },
+  'context.preview': (p) => {
+    const s = store.sessions.get(p?.sessionId);
+    const pr = s?.projectId ? store.projects.get(s.projectId) : null;
+    const systemPrompt = SYSTEM_PROMPT(pr, s);
+    const tools = toolRows().filter((t) => t.active && !t.disabled).map((t) => ({ name: t.name, description: t.description }));
+    return { systemPrompt, tools, estimatedTokens: Math.round(systemPrompt.length / 3.6) + tools.length * 140 + (s?.contextTokens ?? 0) };
+  },
   'files.search': async (p = {}) => {
     const root = p.cwd || sessionCwd(p.sessionId);
     const files = await listFiles(root);
@@ -338,29 +443,49 @@ const handlers = {
   'files.list': async (p = {}) => {
     const root = p.cwd || sessionCwd(p.sessionId);
     const dir = path.join(root, p.dir ?? '');
-    const entries = await fsp.readdir(dir, { withFileTypes: true });
-    return {
-      root,
-      dir: p.dir ?? '',
-      entries: entries
-        .filter((e) => e.name !== '.git')
-        .map((e) => ({ name: e.name, rel: path.posix.join(p.dir ?? '', e.name), isDir: e.isDirectory() }))
-        .sort((a, b) => b.isDir - a.isDir || a.name.localeCompare(b.name)),
-    };
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch (e) {
+      throw new RpcError('not_found', `Cannot list ${dir}: ${e.code}`);
+    }
+    const IGN = new Set(['node_modules', 'bin', 'obj', '.vs', '.idea', 'dist', 'build', 'artifacts', '__pycache__', '.venv', 'wwwroot']);
+    const out = [];
+    for (const e of entries) {
+      if (e.name === '.git') continue;
+      let st = null;
+      try {
+        st = await fsp.stat(path.join(dir, e.name));
+      } catch {}
+      const isDir = e.isDirectory();
+      out.push({
+        name: e.name,
+        rel: path.posix.join(p.dir ?? '', e.name),
+        isDir,
+        ...(isDir ? {} : { size: st?.size ?? 0 }),
+        ...(st ? { mtime: st.mtime.toISOString() } : {}),
+        ...(IGN.has(e.name) ? { ignored: true } : {}),
+      });
+    }
+    return { root, dir: p.dir ?? '', entries: out.sort((a, b) => b.isDir - a.isDir || a.name.localeCompare(b.name)) };
   },
-  'processes.list': () => [],
-  'lanes.list': () => [
-    { key: 'aiproxy', provider: 'aiproxy', capacity: 2, busy: [...store.agents.values()].filter((a) => a.status === 'running').length, queued: 0, models: ['qwen3.8-27b'], owners: [], waiters: [], source: 'catalog', status: 'ok' },
-  ],
+  'processes.list': () => work.procList(),
+  'processes.output': (p) => work.procOutputTail(need(p, 'id'), p.tail ?? 500),
+  'processes.kill': (p) => work.procKill(need(p, 'id')),
+  'lanes.list': () => work.lanes(),
+  'logs.recent': (p = {}) => logs.slice(-(p.max ?? 200)),
   // test helper: back to the seeded state
   'mock.reset': () => {
     for (const s of store.sessions.keys()) agent.abort(s);
     resetStore();
     seed();
+    work.start();
+    ideas.seed();
+    diag.seed();
     publish('plugins.changed', {});
     return true;
   },
-  'usage.summary': () => ({ day: new Date().toISOString().slice(0, 10), providers: [{ provider: 'aiproxy', inputTokens: 1_240_000, outputTokens: 86_000, cacheReadTokens: 910_000, calls: 412 }] }),
+  'usage.summary': () => work.usageSummary(),
 };
 
 async function dispatch(m, p) {
@@ -511,8 +636,8 @@ wss.on('connection', (ws) => {
   ws.on('close', () => clients.delete(client));
 });
 
-// hot reload of the sample plugin bundle
-fs.watchFile(path.join(PLUGINS['netpi.sample'], 'ui.js'), { interval: 500 }, () => publish('ui.changed', {}));
+// hot reload of plugin UI bundles (like the host: a changed wwwroot bumps the tab version)
+for (const p of PLUGIN_UIS) fs.watchFile(path.join(PLUGINS[p.pluginId], 'ui.js'), { interval: 500 }, () => publish('ui.changed', {}));
 
 server.listen(PORT, HOST, () => {
   const url = `http://${HOST}:${PORT}/${NO_AUTH ? '' : `?token=${TOKEN}`}`;

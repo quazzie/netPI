@@ -7,7 +7,7 @@ import { store, pushMessage, agentFor, newId, text, thinking, call, result, usag
 const SPEED = Number(process.env.MOCK_SPEED || 1) || 1;
 const ABORT = Symbol('abort');
 
-export function createAgentRuntime({ publish }) {
+export function createAgentRuntime({ publish, work, log = () => {} }) {
   const runs = new Map(); // sessionId -> { ac, turn }
 
   const sleep = (ms, run) =>
@@ -108,6 +108,7 @@ export function createAgentRuntime({ publish }) {
     const u = usage(14000 + a.turns * 1200, Math.round(((spec.text?.length ?? 0) + (spec.thinking?.length ?? 0)) / 4) + 40, 11000 + a.turns * 1000);
     a.inputTokens += u.inputTokens;
     a.outputTokens += u.outputTokens;
+    work?.recordUsage(provider, model, u);
     const m = append(sid, 'assistant', parts, {
       provider,
       model,
@@ -130,17 +131,25 @@ export function createAgentRuntime({ publish }) {
     publish('tool.start', { sessionId: sid, agentId: a.id, callId: tool.id, name: tool.name, label: tool.label ?? tool.name, arguments: JSON.stringify(tool.args) }, sid);
     let aborted = false;
     let collected = '';
+    // shell tools show up in the process registry (Work tab)
+    const procId = output && work ? work.procStart({ command: tool.args.command, sessionId: sid, agentId: a.id, cwd: details?.cwd }) : null;
     try {
       if (output) {
         for (const line of output) {
           await sleep(160, run);
           collected += line + '\n';
           publish('tool.output', { sessionId: sid, callId: tool.id, chunk: line + '\n' }, sid);
+          if (procId) work.procOutput(procId, line + '\n');
         }
       } else await sleep(duration, run);
     } catch (e) {
       if (e !== ABORT) throw e;
       aborted = true;
+    }
+    if (procId) {
+      if (aborted) work.procEnd(procId, { status: 'killed' });
+      else work.procEnd(procId, { exitCode: details?.exitCode ?? 0 });
+      if (details) details.processId = procId;
     }
     const durationMs = Date.now() - t0;
     a.toolCalls++;

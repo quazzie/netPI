@@ -163,6 +163,19 @@ public static class ShellTests
             Check.False(ProcessAlive(pid));
         });
 
+        // E2E regression: after a user abort, the next call of the batch still ran its command with the cancelled token.
+        r.Add("bash: an already-cancelled call does not start the command", async () =>
+        {
+            var (svc, _, _) = NewService();
+            var dir = T.TempDir("bash");
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "echo ran > ran.txt" }), cts.Token);
+            Check.Error(res, "[aborted before the command started");
+            await Task.Delay(200);
+            Check.False(File.Exists(Path.Combine(dir, "ran.txt")), "the command did not run");
+        });
+
         r.Add("bash: orphaned background child holding the pipe does not block", async () =>
         {
             var (svc, _, _) = NewService();

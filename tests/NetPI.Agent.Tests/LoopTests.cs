@@ -18,10 +18,12 @@ public static class LoopTests
         t.Add("loop: queued follow-ups one at a time", FollowUps);
         t.Add("loop: abort persists partial message", AbortPartial);
         t.Add("loop: abort during a tool call", AbortDuringTool);
+        t.Add("loop: abort during a tool that swallows cancellation stops the batch", AbortDuringSwallowingTool);
         t.Add("loop: unknown tool and invalid JSON arguments", ToolErrors);
         t.Add("loop: tool exceptions and result truncation", ToolExceptionAndTruncation);
         t.Add("loop: model error writes an error notice", ModelError);
         t.Add("loop: missing model writes an error notice", MissingModel);
+        t.Add("loop: default model resolved while the catalog is still loading (startup)", DefaultModelWhileCatalogLoads);
         t.Add("loop: max turns", MaxTurns);
         t.Add("loop: stream reset and notices", StreamResetAndNotice);
         t.Add("loop: model switched mid-run is used next turn", ModelSwitchMidRun);
@@ -357,6 +359,35 @@ public static class LoopTests
         Check.Equal(1, h.Catalog.Calls);
     }
 
+    // E2E regression: the shell tools do not throw on cancellation (they kill the process and return an "[aborted]"
+    // result), so after a user abort the runner went on to execute the remaining calls of the batch.
+    private static async Task AbortDuringSwallowingTool()
+    {
+        await using var h = await TestHost.StartAsync();
+        var started = new TaskCompletionSource();
+        var shell = new FakeTool("shellish", async (ctx, args, ct) =>
+        {
+            started.TrySetResult();
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { return ToolResult.Error("[aborted; the process tree was killed]"); }
+            return ToolResult.Ok("never");
+        });
+        h.AddTool(shell);
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.Tools(Reply.Call("shellish"), Reply.Call("shellish"), Reply.Call("shellish"));
+        await h.SendAsync(s.Id, "go");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await h.Runtime.AbortAsync(s.Id);
+        await h.IdleAsync(s.Id);
+        Check.Equal(1, shell.Calls, "only the first call ran");
+        var results = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).ToList();
+        Check.Equal(3, results.Count);
+        Check.Contains(results[0].Content, "[aborted");
+        Check.True(results.Skip(1).All(r => r.IsError && r.Content == AgentRunner.NotExecutedAbort), "the rest was not executed");
+        Check.Equal(1, h.Bus.OfType(EventTypes.ToolStart).Count, "no tool.start for the skipped calls");
+        Check.Equal(1, h.Catalog.Calls);
+    }
+
     private static async Task ToolErrors()
     {
         await using var h = await TestHost.StartAsync();
@@ -432,6 +463,25 @@ public static class LoopTests
         Check.Contains(last.Text, "ghost/model");
         Check.Equal(0, h.Catalog.Calls);
         Check.Contains(a.Error, "ghost/model");
+    }
+
+    // E2E regression: right after startup the host catalog cache is empty (the first listing is still running), so
+    // DefaultModelRef was null and the first message of a session without a model failed with "No model is configured".
+    private static async Task DefaultModelWhileCatalogLoads()
+    {
+        await using var h = await TestHost.StartAsync();
+        var s = h.NewSession();
+        var def = h.Catalog.DefaultModelRef;
+        h.Catalog.DefaultModelRef = null; // cache not populated yet
+        var listed = 0;
+        h.Catalog.OnList = () => { listed++; h.Catalog.DefaultModelRef = def; };
+        await h.SendAsync(s.Id, "hi");
+        var a = await h.IdleAsync(s.Id);
+        Check.True(listed >= 1, "the runner listed the models");
+        Check.Equal(MessageRole.Assistant, h.Messages(s.Id)[^1].Role);
+        Check.Equal("ok", h.Messages(s.Id)[^1].Text);
+        Check.Equal(def, a.Model);
+        Check.Equal(1, h.Catalog.Calls);
     }
 
     private static async Task MaxTurns()

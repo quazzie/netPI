@@ -80,6 +80,8 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
 
         var (spec, specError) = BuildSpec(shell, command);
         if (spec is null) return ToolResult.Error(specError!, new { command, shell, cwd, background });
+        if (ct.IsCancellationRequested)
+            return ToolResult.Error("[aborted before the command started; nothing was run]", new { command, shell, cwd, background, aborted = true });
 
         var id = Ids.New("proc");
         var capture = new OutputCapture(1024 * 1024, background ? null : Path.Combine(TempDir, $"{shell}-{id}.log"));

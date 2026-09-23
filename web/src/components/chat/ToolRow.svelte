@@ -8,6 +8,7 @@
   import GenericView from './tools/GenericView.svelte';
   import { parseArgs, toolMeta, toolSummary, toolBadge } from '../../lib/tools.js';
   import { duration } from '../../lib/format.js';
+  import { app } from '../../lib/state/app.svelte.js';
 
   /** step: { kind:'tool', key, call, result, resultMsg, msg } — `live` = the run is still in progress */
   let { step, chat, base, live = false } = $props();
@@ -17,6 +18,12 @@
   const args = $derived(parseArgs(call));
   const meta = $derived(toolMeta(call.name));
   const lt = $derived(chat.live.get(call.id));
+  // opened mid-run: tool.start was missed, but the agent's activity names the tool that is executing
+  const runningNow = $derived.by(() => {
+    if (!live || result || lt) return false;
+    const a = app.agents.get(chat.id);
+    return a?.status === 'running' && typeof a.activity === 'string' && /^tool:/.test(a.activity) && a.activity.includes(call.name);
+  });
   const status = $derived(
     result
       ? result.isError
@@ -28,12 +35,23 @@
           : lt.status === 'error'
             ? 'error'
             : 'ok'
-        : live && step.msg.stopReason !== 'aborted'
+        : runningNow
+          ? 'running'
+          : live && step.msg.stopReason !== 'aborted'
           ? 'pending'
           : 'cancelled',
   );
   const summary = $derived(toolSummary(call.name, args, base));
-  const badge = $derived(result ? toolBadge(call.name, result) : null);
+  const badge = $derived.by(() => {
+    const b = result ? toolBadge(call.name, result) : null;
+    // agent_spawn records the status at spawn time; prefer the subagent's live status when known
+    const d = result?.details;
+    if (b && call.name === 'agent_spawn' && d?.sessionId && typeof d.status === 'string') {
+      const s = app.agents.get(d.sessionId)?.status;
+      if (s && s !== d.status) return { ...b, text: s };
+    }
+    return b;
+  });
   const open = $derived(chat.expanded.get(step.key) ?? false);
 
   let now = $state(Date.now());

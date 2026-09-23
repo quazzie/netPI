@@ -448,7 +448,14 @@ public sealed class FakeCatalog(IServiceRegistry services) : IModelCatalog
 
     public IReadOnlyList<ModelInfo> Cached { get { lock (_gate) return [.. _models]; } }
 
-    public Task<IReadOnlyList<ModelInfo>> ListAsync(bool refresh = false, CancellationToken ct = default) => Task.FromResult(Cached);
+    /// <summary>Called by <see cref="ListAsync"/> (simulates a catalog that loads lazily).</summary>
+    public Action? OnList { get; set; }
+
+    public Task<IReadOnlyList<ModelInfo>> ListAsync(bool refresh = false, CancellationToken ct = default)
+    {
+        OnList?.Invoke();
+        return Task.FromResult(Cached);
+    }
 
     public Task<ModelInfo?> FindAsync(string modelRef, CancellationToken ct = default)
     {

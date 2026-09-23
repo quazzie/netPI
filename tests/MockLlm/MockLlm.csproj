@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Scripted mock model server for end-to-end tests and manual UI work. Emulates AiProxy (/v1/models, /v1/responses,
+       /v1/chat/completions, /health) and the Anthropic Messages API (/anthropic/v1/models, /anthropic/v1/messages).
+       Run:   dotnet tests/MockLlm/bin/Debug/MockLlm.dll [port 7479] [speed 1] [tiny-ctx 12000] (see Program.cs)
+       Docs:  docs/TESTING.md -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>NetPI.MockLlm</RootNamespace>
+    <AssemblyName>MockLlm</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+</Project>

@@ -81,7 +81,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
             // 1. session, model, project, cwd: re-read every turn (they can change mid-run)
             var session = Ctx.Sessions.GetSession(SessionId) ?? throw new RunFailedException("The session no longer exists.");
-            var modelRef = session.Model ?? Ctx.Models.DefaultModelRef;
+            var modelRef = session.Model ?? await DefaultModelRefAsync(ct).ConfigureAwait(false);
             ModelInfo? model = null;
             if (!string.IsNullOrWhiteSpace(modelRef))
             {
@@ -230,6 +230,19 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             if (TakeNextInput()) continue;
             break;
         }
+    }
+
+    /// <summary>
+    /// The default model. Without a <c>defaultModel</c> setting it is derived from the catalog cache, which is empty until
+    /// the first model listing finishes (right after startup, or after a provider reload): list once, then ask again.
+    /// </summary>
+    private async Task<string?> DefaultModelRefAsync(CancellationToken ct)
+    {
+        var modelRef = Ctx.Models.DefaultModelRef;
+        if (!string.IsNullOrWhiteSpace(modelRef)) return modelRef;
+        try { await Ctx.Models.ListAsync(refresh: Ctx.Models.Cached.Count == 0, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { Ctx.Logger.LogWarning(ex, "Listing models for the default model failed"); }
+        return Ctx.Models.DefaultModelRef;
     }
 
     private static string ModelErrorText(Exception ex) => ex switch
@@ -662,6 +675,9 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             {
                 for (var i = 0; i < calls.Count; i++)
                 {
+                    // Tools that handle cancellation themselves (the shell tools return an "[aborted]" result instead of
+                    // throwing) must not let an aborted run go on to execute the rest of the batch.
+                    ct.ThrowIfCancellationRequested();
                     var (p, changed) = await PrepareAsync(turn, calls[i], tools, ct).ConfigureAwait(false);
                     started.Add(calls[i].Id);
                     argsChanged |= changed;
@@ -758,6 +774,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         }
         else
         {
+            ct.ThrowIfCancellationRequested(); // never start a tool for a run that was aborted meanwhile
             using var output = new ToolOutputEmitter(Ctx.Events, SessionId, p.Call.Id);
             var context = new ToolContext
             {

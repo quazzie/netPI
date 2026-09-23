@@ -262,7 +262,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
             var asm = new MessageAssembler();
             IOpenAiStreamParser parser = chat
                 ? new ChatStreamParser(asm, DisplayName, mo.ParseThinkTags)
-                : new ResponsesStreamParser(asm, DisplayName);
+                : new ResponsesStreamParser(asm, DisplayName, mo.ParseThinkTags);
 
             var mediaType = resp.Content.Headers.ContentType?.MediaType;
             if (mediaType is "application/json")

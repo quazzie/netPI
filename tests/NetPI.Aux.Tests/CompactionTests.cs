@@ -304,6 +304,19 @@ public static class CompactionTests
             Check.True(CompactionHook.IsContextOverflow(new InvalidOperationException("x", new ModelException("y", false) { ContextOverflow = true })));
         });
 
+        // E2E regression: when the backend's real window is smaller than the advertised one, overflow compaction kept
+        // "the last keepRecent/2 tokens" of the advertised window, i.e. nearly everything, and the retry overflowed again.
+        r.Add("compaction: overflow when the real window is smaller than advertised still frees most of the context", async () =>
+        {
+            var env = new Env(window: 200_000);
+            env.Conversation(4); // ≈ 11k tokens: far below the advertised window, but the backend said "too long"
+            var before = CompactionPlanner.Estimate(env.Ctx.Sessions.GetContextMessages(env.Session.Id));
+            var d = await env.Hook.OnModelErrorAsync(env.Turn(index: 2), new ModelException("exceeds the available context size", false, 400) { ContextOverflow = true });
+            Check.True(d is { Retry: true }, "retry after compaction");
+            var after = CompactionPlanner.Estimate(env.Ctx.Sessions.GetContextMessages(env.Session.Id));
+            Check.True(after <= before * 6 / 10, $"messages shrank to at most 60%: {before} → {after}");
+        });
+
         r.Add("compaction: chunked (rolling) summaries when the transcript exceeds the summarizer window", async () =>
         {
             var env = new Env();

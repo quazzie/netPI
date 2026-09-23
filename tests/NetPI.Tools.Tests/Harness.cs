@@ -207,7 +207,8 @@ public sealed class FakePluginContext(string workspace) : IPluginContext
     public IRpcRegistry Rpc => RpcFake;
     public FakeTools ToolsFake { get; } = new();
     public IToolRegistry Tools => ToolsFake;
-    public IUiRegistry Ui => null!;
+    public FakeUi UiFake { get; } = new();
+    public IUiRegistry Ui => UiFake;
     public IHttpRegistry Http => null!;
     public FakeSettings SettingsFake { get; } = new();
     public ISettings Settings => SettingsFake;
@@ -216,6 +217,16 @@ public sealed class FakePluginContext(string workspace) : IPluginContext
     public IModelCatalog Models => null!;
     public CancellationToken Stopping => CancellationToken.None;
     public T Track<T>(T disposable) where T : IDisposable => disposable;
+}
+
+public sealed class FakeUi : IUiRegistry
+{
+    private readonly List<UiTabInfo> _tabs = [];
+    private readonly List<SlashCommandInfo> _commands = [];
+    public IDisposable AddTab(UiTabInfo tab) { _tabs.Add(tab); return new Disposer(() => _tabs.Remove(tab)); }
+    public IDisposable AddCommand(SlashCommandInfo command) { _commands.Add(command); return new Disposer(() => _commands.Remove(command)); }
+    public IReadOnlyList<UiTabInfo> Tabs => _tabs;
+    public IReadOnlyList<SlashCommandInfo> Commands => _commands;
 }
 
 public sealed class Disposer(Action action) : IDisposable

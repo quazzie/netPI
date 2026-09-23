@@ -16,6 +16,7 @@
  * Sections
  *   .np-section           padded block (12px) separated by a bottom border
  *   .np-section-title     small uppercase label; put .np-section-actions inside for right-aligned buttons
+ *   .np-section-toggle    button inside the title that collapses the section; .np-section-count = count pill
  *   .np-card              bordered, rounded box on --bg-2
  *
  * Lists
@@ -31,6 +32,9 @@
  *   .np-input             text input / textarea / select
  *   .np-check             checkbox + label row
  *   .np-seg               segmented control: <div class="np-seg"><button aria-pressed="true">…</button>…</div>
+ *                         (.np-seg-count = small count inside a segment)
+ *   .np-search            search box: <label class="np-search"><svg…/><input/></label>
+ *   .np-chip              toggle pill button (aria-pressed="true" = selected)
  *
  * Text & status
  *   .np-mono .np-muted .np-dim .np-ellipsis .np-small .np-strong
@@ -116,6 +120,12 @@
 .np-section:last-child {
   border-bottom: 0;
 }
+.np-section.np-section-collapsed {
+  padding-bottom: 6px;
+}
+.np-section-collapsed .np-section-title {
+  margin-bottom: 0;
+}
 .np-section-title {
   display: flex;
   align-items: center;
@@ -127,6 +137,40 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-dim);
+}
+.np-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 0 -3px;
+  padding: 2px 4px 2px 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.np-section-toggle:hover {
+  color: var(--fg-muted);
+  background: var(--bg-2);
+}
+.np-section-count {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--bg-3);
+  color: var(--fg-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0;
+  text-align: center;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
 }
 .np-section-title .np-section-actions {
   margin-left: auto;
@@ -387,6 +431,86 @@ select.np-input {
 .np-seg > button[aria-pressed='true'] {
   background: var(--bg-3);
   color: var(--fg);
+}
+.np-seg > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.np-seg-count {
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.np-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  min-width: 0;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg-dim);
+  cursor: text;
+}
+.np-search:focus-within {
+  border-color: var(--accent-line);
+}
+.np-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs);
+}
+.np-search input::placeholder {
+  color: var(--fg-dim);
+}
+.np-search-clear {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.np-search-clear:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.np-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.np-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+.np-chip[aria-pressed='true'] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 /* ------------------------------------------------------------------ text */

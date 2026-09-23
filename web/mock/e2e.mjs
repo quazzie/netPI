@@ -273,6 +273,181 @@ await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
 await page.waitForTimeout(200);
 await shot(page, '15-projects');
 
+// ------------------------------------------------------------------ built-in plugin tabs (Work, Ideas, Diagnostics, Files)
+/** Select a strip tab without toggling the panel closed when it is already the active one. */
+async function openStripTab(side, name) {
+  const t = page.locator(`.panel.${side} .strip-tab`, { hasText: name });
+  if ((await t.getAttribute('aria-selected')) !== 'true') await t.click();
+  if (!(await page.locator(`.panel.${side}.open`).count())) await t.click();
+}
+const right = page.locator('.panel.right > .body');
+const leftBody = page.locator('.panel.left > .body');
+const rpcCall = (method, params = {}) =>
+  fetch(`${BASE}/api/rpc/${method}`, { method: 'POST', headers: { 'X-NetPI-Token': 'dev', 'content-type': 'application/json' }, body: JSON.stringify(params) }).then((r) => r.json());
+await openStripTab('left', 'Sessions');
+await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
+await page.waitForTimeout(200);
+
+log('plugin tab: Work');
+{
+  await openStripTab('right', 'Work');
+  await page.waitForSelector('.plugin-root .work .pool', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  const qwen = page.locator('.work .pool', { hasText: 'aiproxy/qwen3.8-27b' }).first();
+  const nums = (await qwen.locator('.nums').innerText().catch(() => '')).replace(/\s+/g, '');
+  check('work: qwen pool 2/2 busy', nums.includes('2/2'), nums);
+  check('work: pool shows queued waiter', (await qwen.locator('.owner.waiting').count()) > 0);
+  const nodes = await page.locator('.work .node').count();
+  check('work: agent tree incl. subagents', nodes >= 3 && (await page.locator('.work .node .kids .node').count()) > 0, `${nodes} nodes`);
+  await shot(page, '25-work-tab');
+  // expand the foreground process and watch its output grow (processes.output + live process.output)
+  const proc = page.locator('.work .proc', { hasText: 'embed.py' }).first();
+  await proc.locator('.row').click();
+  await page.waitForSelector('.work .proc .out', { timeout: 5000 }).catch(() => {});
+  const len0 = (await proc.locator('.out').innerText().catch(() => '')).length;
+  await page.waitForTimeout(2200);
+  const len1 = (await proc.locator('.out').innerText().catch(() => '')).length;
+  check('work: process output tail + live chunks', len0 > 0 && len1 > len0, `${len0} → ${len1} chars`);
+  await right.screenshot({ path: path.join(OUT, '26-work-process.png') });
+  await proc.locator('.row').click();
+  // kill the background dev server (two-step confirm button)
+  const dev = page.locator('.work .proc', { hasText: 'npm run dev' }).first();
+  const kill = dev.locator('button[aria-label="Kill process tree"]');
+  await kill.click();
+  await kill.click();
+  await page.waitForTimeout(600);
+  const killed = ((await rpcCall('processes.list')) ?? []).find((p) => p.command?.includes('npm run dev'));
+  check('work: kill process (processes.kill)', killed?.status === 'killed', killed?.status);
+  // clicking an agent opens its session
+  await page.locator('.work .node .row', { hasText: 'surveyor' }).first().click();
+  await page.waitForTimeout(400);
+  check('work: agent click opens its session', (await page.locator('.topbar .tab.active[data-tab="ses_bg_explore"]').count()) > 0, await page.locator('.topbar .tab.active').innerText().catch(() => ''));
+  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
+}
+
+log('plugin tab: Ideas');
+{
+  await openStripTab('right', 'Ideas');
+  await page.waitForSelector('.plugin-root .ideas .card', { timeout: 10_000 });
+  const cards = () => page.locator('.ideas .card');
+  const n0 = await cards().count();
+  check('ideas: project backlog listed', n0 >= 4, `${n0} active ideas`);
+  await cards().first().locator('.main').click();
+  await page.waitForTimeout(250);
+  check('ideas: expanded idea renders sections', (await cards().first().locator('.sec').count()) > 0);
+  await shot(page, '27-ideas-tab');
+  // status via the pill menu
+  await cards().nth(1).locator('.status').click();
+  await page.locator('.np-menu .np-menu-item', { hasText: 'in-progress' }).click();
+  await page.waitForTimeout(500);
+  check('ideas: status change', /in-progress/.test(await cards().nth(1).locator('.status').innerText()));
+  // new idea (prepended + expanded), then add a section to it
+  await page.locator('.ideas .scope button[title="New idea"]').click();
+  await page.locator('.ideas .new input').first().fill('Keyboard shortcuts cheat sheet');
+  await page.locator('.ideas .new input.tags').fill('ui, docs');
+  await page.locator('.ideas .new button', { hasText: 'Add idea' }).click();
+  await page.waitForTimeout(500);
+  const first = cards().first();
+  check('ideas: new idea added on top', (await first.locator('.title').innerText()) === 'Keyboard shortcuts cheat sheet');
+  if ((await first.locator('.main').getAttribute('aria-expanded')) !== 'true') await first.locator('.main').click();
+  await first.locator('.actions button', { hasText: 'Section' }).click();
+  await first.locator('.sed select').selectOption('todo');
+  await first.locator('.sed textarea').fill('- [ ] list shortcuts\n- [ ] render a table');
+  await first.locator('.sed button', { hasText: 'Add section' }).click();
+  await page.waitForTimeout(500);
+  check('ideas: section added', (await first.locator('.sec').count()) === 1);
+  // send to chat → composer
+  await first.locator('.actions button', { hasText: 'Send to chat' }).click();
+  await page.waitForTimeout(300);
+  check('ideas: send to chat fills the composer', (await ta.inputValue()).includes('# Keyboard shortcuts cheat sheet'));
+  await ta.fill('');
+  // reorder, then delete through the host confirm dialog
+  await first.locator('.actions button[title="Move down"]').click();
+  await page.waitForTimeout(500);
+  check('ideas: move down (ideas.reorder)', (await cards().nth(1).locator('.title').innerText()) === 'Keyboard shortcuts cheat sheet');
+  await cards().nth(1).locator('.actions button[title="Delete idea"]').click();
+  await page.locator('.dialog button', { hasText: /^Delete$/ }).click();
+  await page.waitForTimeout(500);
+  check('ideas: delete with confirm', (await page.locator('.ideas .card', { hasText: 'Keyboard shortcuts cheat sheet' }).count()) === 0);
+  // tag filter + an external change (ideas.changed) refetches
+  await page.locator('.ideas .tags .np-chip', { hasText: '#aiproxy' }).click();
+  await page.waitForTimeout(200);
+  const nTag = await cards().count();
+  check('ideas: tag filter', nTag > 0 && nTag < n0, `${nTag} of ${n0}`);
+  await page.locator('.ideas .tags .np-chip', { hasText: '#aiproxy' }).click();
+  const projectId = (await rpcCall('projects.list')).find((p) => p.name === 'netpi')?.id;
+  if (projectId) await rpcCall('ideas.add', { projectId, idea: { title: 'Added over RPC', tags: ['rpc'] } });
+  await page.waitForSelector('.ideas .card:has-text("Added over RPC")', { timeout: 3000 }).catch(() => {});
+  check('ideas: refetch on ideas.changed', (await page.locator('.ideas .card', { hasText: 'Added over RPC' }).count()) > 0);
+}
+
+log('plugin tab: Diagnostics');
+{
+  await openStripTab('right', 'Diagnostics');
+  await page.waitForSelector('.plugin-root .diag', { timeout: 10_000 });
+  const view = (v) => page.locator('.diag .views button', { hasText: v }).click();
+  await view('Plugins');
+  await page.waitForTimeout(300);
+  check('diagnostics: failed plugin listed first with its error', /failed/.test(await page.locator('.diag .pl').first().innerText()) && (await page.locator('.diag .pl .error').count()) > 0);
+  await shot(page, '28-diagnostics-plugins');
+  const row = page.locator('.diag .pl', { hasText: 'netpi.retry' }).first();
+  const loads = async () => (await rpcCall('plugins.list')).find((p) => p.id === 'netpi.retry')?.loadCount;
+  const before = await loads();
+  await row.locator('button[title^="Reload"]').click();
+  await page.waitForTimeout(900);
+  check('diagnostics: reload plugin', (await loads()) === before + 1);
+  await view('Tools');
+  await page.waitForTimeout(200);
+  const shadowedRows = await page.locator('.diag .tool.shadowed').count();
+  await page.locator('.diag .np-chip', { hasText: 'shadowed' }).click();
+  check('diagnostics: shadowed tool registration (toggle hides it)', shadowedRows > 0 && (await page.locator('.diag .tool.shadowed').count()) === 0);
+  await page.locator('.diag .np-chip', { hasText: 'shadowed' }).click();
+  await view('RPC');
+  await page.waitForTimeout(200);
+  await view('Events');
+  await page.waitForTimeout(1500);
+  await page.locator('.diag .ev').first().click();
+  await page.locator('.diag .detail').waitFor({ timeout: 3000 }).catch(() => {});
+  check('diagnostics: live events + payload', (await page.locator('.diag .ev').count()) > 5 && (await page.locator('.diag .detail').count()) > 0);
+  await right.screenshot({ path: path.join(OUT, '29-diagnostics-events.png') });
+  await view('Logs');
+  await page.waitForTimeout(400);
+  check('diagnostics: logs', (await page.locator('.diag .log').count()) > 3);
+  await view('Context');
+  await page.waitForSelector('.diag .prompt', { timeout: 5000 }).catch(() => {});
+  check('diagnostics: context preview', (await page.locator('.diag .prompt').count()) > 0);
+  await right.screenshot({ path: path.join(OUT, '30-diagnostics-context.png') });
+  await view('Plugins');
+}
+
+log('plugin tab: Files');
+{
+  await openStripTab('left', 'Files');
+  await page.waitForSelector('.plugin-root .files .frow', { timeout: 10_000 });
+  const dir = async (name) => {
+    await page.locator('.files .frow .fname', { hasText: new RegExp(`^${name}$`) }).last().click();
+    await page.waitForTimeout(250);
+  };
+  await dir('web');
+  await dir('src');
+  await dir('lib');
+  await ta.fill('');
+  await page.locator('.files .frow .fname', { hasText: /^markdown\.js$/ }).click();
+  check('files: click inserts an @mention', (await ta.inputValue()) === '@web/src/lib/markdown.js ', await ta.inputValue());
+  await page.locator('.files .frow .fname', { hasText: /^icons\.js$/ }).click({ button: 'right' });
+  await page.waitForSelector('.np-menu', { timeout: 2000 }).catch(() => {});
+  check('files: context menu', (await page.locator('.np-menu .np-menu-item', { hasText: 'Copy relative path' }).count()) > 0);
+  await page.waitForTimeout(250); // menu fade-in
+  await shot(page, '31-files-tab');
+  await page.keyboard.press('Escape');
+  await page.locator('.files .np-search input').fill('chatitems');
+  await page.waitForTimeout(500);
+  check('files: search (files.search)', (await page.locator('.files .frow', { hasText: 'chatItems.js' }).count()) > 0);
+  await page.locator('.files .np-search input').fill('');
+  await ta.fill('');
+  await openStripTab('left', 'Sessions');
+}
+
 // ------------------------------------------------------------------ settings + light theme
 log('settings');
 await page.keyboard.press('Control+,');
@@ -397,10 +572,10 @@ check('project added', (await page.locator('.prow .pname', { hasText: 'web' }).c
 // ------------------------------------------------------------------ plugin hot reload + load error
 log('plugin tab hot reload / error');
 {
-  await page.locator('.panel.right .strip-tab', { hasText: 'Sample' }).click();
-  if (!(await page.locator('.panel.right.open').count())) await page.locator('.panel.right .strip-tab', { hasText: 'Sample' }).click();
+  await openStripTab('right', 'Sample');
   await page.waitForSelector('.plugin-root .sample');
-  await page.evaluate(() => (window.__e2eRoot = document.querySelector('.plugin-tab:not([hidden]) .plugin-root') ?? document.querySelector('.plugin-root')));
+  // several plugin tabs stay mounted (hidden); watch the sample's root
+  await page.evaluate(() => (window.__e2eRoot = document.querySelector('.plugin-root:has(.sample)')));
   const uiJs = path.join(repo, 'web/mock/sample-plugin/wwwroot/ui.js');
   const touch = () => {
     const t = new Date();
@@ -470,9 +645,9 @@ if (!EXTERNAL && !argv.includes('--no-dev')) {
     const rows = await dev.page.locator('.srow').count();
     const url = dev.page.url();
     check('dev server: proxied ws + ?token= auth', rows > 0 && !url.includes('token='), `${rows} sessions, url ${url}`);
-    // plugin bundles are fetched through the proxy with the dev cookie
-    await dev.page.waitForSelector('.plugin-root .sample', { timeout: 10_000 }).catch(() => {});
-    check('dev server: plugin tab loads through the proxy', (await dev.page.locator('.plugin-root .sample').count()) > 0);
+    // plugin bundles are fetched through the proxy with the dev cookie (whichever plugin tab the saved layout shows)
+    await dev.page.waitForSelector('.plugin-root > *', { timeout: 10_000 }).catch(() => {});
+    check('dev server: plugin tab loads through the proxy', (await dev.page.locator('.plugin-root > *').count()) > 0);
     const devErrors = dev.errors.filter((e) => !/favicon|\[vite\]/.test(e));
     check('dev server: no console errors', devErrors.length === 0, devErrors.slice(0, 3).join(' | '));
     await dev.browser.close();

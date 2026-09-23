@@ -310,6 +310,42 @@ await t.Run("responses: replayReasoning replays reasoning items (live settings)"
     finally { apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", false); }
 });
 
+// E2E regression: <think> tags in message text were split on the Chat transport only, so Qwen/Gemma behind a backend
+// without a reasoning parser leaked raw "<think>…</think>" text on the default (Responses) transport.
+await t.Run("responses: inline <think> tags in output_text become thinking (parseThinkTags), raw when off", () =>
+{
+    static AP.SseEvent Ev(object o) => new(null, System.Text.Json.JsonSerializer.Serialize(o));
+    string[] deltas = ["<thi", "nk>plan ", "it</think>\n\nAnswer ", "<b>x</b>"];
+    var full = string.Concat(deltas);
+    foreach (var split in new[] { true, false })
+    {
+        var asm = new AP.MessageAssembler();
+        var p = new AP.ResponsesStreamParser(asm, "T", split);
+        p.Handle(Ev(new { type = "response.output_item.added", output_index = 0, item = new { id = "msg_1", type = "message", content = Array.Empty<object>() } }));
+        foreach (var d in deltas) p.Handle(Ev(new { type = "response.output_text.delta", item_id = "msg_1", output_index = 0, content_index = 0, delta = d }));
+        p.Handle(Ev(new { type = "response.output_text.done", item_id = "msg_1", output_index = 0, content_index = 0, text = full }));
+        p.Handle(Ev(new { type = "response.output_item.done", output_index = 0, item = new { id = "msg_1", type = "message", content = new[] { new { type = "output_text", text = full } } } }));
+        p.Handle(Ev(new { type = "response.completed", response = new { status = "completed" } }));
+        p.Finish();
+        var msg = asm.Build("aiproxy", "m", null, 0);
+        if (split)
+        {
+            t.Eq("ThinkingPart,TextPart", string.Join(",", msg.Parts.Select(x => x.GetType().Name)), "parts");
+            t.Eq("plan it", ((ThinkingPart)msg.Parts[0]).Text, "thinking");
+            t.Eq("Answer <b>x</b>", msg.Text, "text without think tags (no duplication from .done events)");
+        }
+        else t.Eq(full, msg.Text, "parseThinkTags=false keeps the raw text");
+    }
+    // a server that only sends the finished item
+    var asm2 = new AP.MessageAssembler();
+    var p2 = new AP.ResponsesStreamParser(asm2, "T");
+    p2.Handle(Ev(new { type = "response.completed", response = new { status = "completed", output = new[] { new { id = "m", type = "message", content = new[] { new { type = "output_text", text = "<think>a</think>b" } } } } } }));
+    p2.Finish();
+    var m2 = asm2.Build("aiproxy", "m", null, 0);
+    t.Check(m2.Text == "b" && m2.Parts.OfType<ThinkingPart>().Single().Text == "a", "done-only output split");
+    return Task.CompletedTask;
+});
+
 await t.Run("responses: servers that only send .done events", async () =>
 {
     var events = await Collect(aiproxy, Req(M("aiproxy", "done-only")));
