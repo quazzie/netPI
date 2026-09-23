@@ -27,16 +27,19 @@
   header .badge { color: var(--muted); font-size: 11px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
   .dot.on { background: var(--green); }
-  main { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; }
-  section { border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+  /* The panel itself never scrolls: each section is an independent scroll
+     region (content-sized, shrinks + scrolls when it outgrows its share). */
+  main { flex: 1 1 auto; overflow: hidden; display: flex; flex-direction: column; }
+  section { border-bottom: 1px solid var(--border); flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   h2 {
     margin: 0; padding: 6px 12px; font-size: 11px; text-transform: uppercase;
     letter-spacing: .8px; color: var(--muted); background: var(--panel);
     display: flex; align-items: center; gap: 8px;
+    position: sticky; top: 0; z-index: 1; /* stays put while its section scrolls */
   }
   h2 button.toggle { all: unset; cursor: pointer; color: var(--muted); font-size: 10px; padding: 0 4px; }
   .row {
-    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    display: flex; align-items: center; gap: 6px; padding: 5px 8px;
     border-bottom: 1px solid #191c22; cursor: default;
   }
   .row:last-child { border-bottom: none; }
@@ -77,6 +80,20 @@
   .lane-blocked { color: var(--red); font-size: 11px; }
   .subhead { padding: 4px 12px; font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); background: #12151b; }
   .elapsed { color: var(--muted); font-size: 11px; font-family: var(--mono); flex: none; }
+  .state-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+  .state-dot.running, .state-dot.succeeded, .state-dot.completed, .state-dot.runningjob { background: var(--green); }
+  .state-dot.queued, .state-dot.waiting, .state-dot.cancelling { background: var(--amber); }
+  .state-dot.suspended { background: var(--purple); }
+  .state-dot.failed, .state-dot.killed { background: var(--red); }
+  .state-dot.cancelled, .state-dot.recovery-required { background: var(--muted); }
+  @media (max-width: 380px) {
+    header { padding: 7px 9px; }
+    section h2 { padding: 5px 9px; }
+    .row { gap: 4px; padding: 5px 7px; }
+    .meta { font-size: 10px; }
+    button.ctl { padding: 2px 6px; }
+    .lane-row { gap: 5px; padding: 4px 8px; flex-wrap: wrap; }
+  }
 </style>
 </head>
 <body>
@@ -85,7 +102,7 @@
     <span class="title">Work</span>
     <span class="badge" id="badge">connecting&hellip;</span>
     <span style="flex:1"></span>
-    <span class="badge">2 s &middot; visible only</span>
+    <span class="badge">event updates</span>
   </header>
   <main id="main">
     <section id="sec-lanes">
@@ -150,7 +167,7 @@
         window.parent.postMessage(
           { type: "netpi.panel.openSession", version: 1, payload: { sessionId } },
           shellOrigin);
-      } catch (_) { /* parent gone — the next poll refresh is enough */ }
+      } catch (_) { /* parent gone — events refresh the view when it returns */ }
     }
 
     // ---- DOM helpers ----------------------------------------------------------
@@ -166,10 +183,11 @@
     }
 
     const fmtNum = (n) => { const v = Number(n); if (!isFinite(v)) return "0"; return v >= 1000 ? v.toLocaleString() : String(Math.round(v * 1000) / 1000); };
+    const statusDot = (state, label = state) => `<span class="state-dot ${esc(state)}" title="${esc(label)}" aria-label="${esc(label)}"></span>`;
 
     /**
      * Reconcile a list container: rows are keyed by data-<key> and updated IN
-     * PLACE (text/badges) so scroll, focus and selection survive polls. Rows
+     * PLACE (text/badges) so scroll, focus and selection survive refreshes. Rows
      * are reordered (re-appended) only when the id sequence changed; focused
      * elements are re-focused by (row, part) after a reorder.
      */
@@ -219,7 +237,7 @@
     }
 
     function agentBadges(r) {
-      return `<span class="pill ${esc(r.lifecycle)}">${esc(r.lifecycle)}</span>` +
+      return statusDot(r.lifecycle) +
         `<span class="meta">${esc(r.phase || "")}</span>`;
     }
 
@@ -278,7 +296,7 @@
           <div class="t1">${esc(r.title || "—")} <span class="meta">${esc(r.sessionId || "")}</span></div>
           <div class="meta">${r.endedAt ? fmtTime(r.endedAt) : ""}${r.reason ? " · " + esc(r.reason) : ""}</div>
         </div>
-        <span class="pill ${esc(r.lifecycle)}">${esc(r.lifecycle)}</span>`;
+        ${statusDot(r.lifecycle)}`;
       return el;
     }
 
@@ -291,7 +309,7 @@
           <div class="t1 mono" title="${esc(j.command)}">${esc(j.command)}</div>
           <div class="meta">${j.shell ? esc(j.shell) + " · " : ""}${fmtTime(j.startedAt)} · ${dur}${j.exitCode != null ? " · exit " + j.exitCode : ""}${j.sessionId ? " · " + esc(j.sessionId) : ""}</div>
         </div>
-        <span class="pill ${stateCls}">${esc(j.state)}</span>
+        ${statusDot(stateCls, j.state)}
         <button class="ctl" data-part="out" data-id="${esc(j.id)}">${expandedBg.has(j.id) ? "hide output" : "output"}</button>
         ${j.state === "Running" ? `<button class="ctl danger" data-part="stop" data-id="${esc(j.id)}">stop</button>` : ""}
       `;
@@ -311,7 +329,14 @@
 
     function updateBgRow(el, j) {
       el.dataset.b = j.id;
+      const output = el.querySelector(".outbox");
+      const note = el.querySelector(".trunc-note");
       el.innerHTML = bgRowInner(j);
+      if (output) {
+        el.appendChild(output);
+        if (note) el.appendChild(note);
+        refreshOutput(j.id, output);
+      }
     }
 
     /**
@@ -363,7 +388,7 @@
           <div class="t1 mono" title="${esc(p.command)}">${esc(p.toolShellId || "")}: ${esc(p.command)}</div>
           <div class="meta">${p.processId ? "pid " + p.processId : ""}${p.workingDirectory ? " · " + esc(p.workingDirectory) : ""}${p.sessionId ? " · " + esc(p.sessionId) : ""} · ${fmtTime(p.startedAt)}</div>
         </div>
-        <span class="pill ${stateCls}">${state}</span>
+        ${statusDot(stateCls, state)}
         <span class="elapsed">${fmtDur((p.exitedAt ? new Date(p.exitedAt) : Date.now()) - new Date(p.startedAt))}</span>`;
     }
 
@@ -448,16 +473,28 @@
     function renderAgents(a) {
       const box = $("agents");
       const wrap = $("history-wrap");
-      if (a && a.agentsAvailable) {
+      // The live list is served by EITHER source: the orchestrator (assignment
+      // rows) or the runner (direct session runs merged in server-side). Only
+      // when BOTH are absent is the section unavailable.
+      if (a && (a.agentsAvailable || a.runsAvailable)) {
         const rows = (a.agents || []);
         reconcile(box, "a", rows, agentRow, updateAgentRow);
+        const emptyEl = box.querySelector(":scope > .empty");
+        if (!rows.length && !emptyEl) {
+          const d = document.createElement("div");
+          d.className = "empty";
+          d.textContent = "no active agents.";
+          box.appendChild(d);
+        } else if (rows.length && emptyEl) {
+          emptyEl.remove(); // a row arrived — the placeholder must not linger
+        }
         const hist = (a.history || []);
         wrap.hidden = hist.length === 0;
         if (hist.length)
           reconcile($("history"), "h", hist, historyRow, () => {}); // terminal rows are immutable
         $("agents-n").textContent = `(${rows.length} active${hist.length ? ` · ${hist.length} recent` : ""})`;
-      } else if (a && !a.agentsAvailable) {
-        sectionUnavailable(box, "agent orchestration unavailable — processes still work.");
+      } else if (a && !a.agentsAvailable && !a.runsAvailable) {
+        sectionUnavailable(box, "agent services unavailable — processes still work.");
         $("agents-n").textContent = "";
         wrap.hidden = true;
       }
@@ -468,7 +505,6 @@
       if (p && p.background && p.background.available) {
         const jobs = p.background.jobs || [];
         reconcile(box, "b", jobs, bgRow, updateBgRow);
-        for (const j of jobs) renderBgOutput(box.querySelector(`[data-b="${CSS.escape(j.id)}"]`), j.id);
         $("bg-n").textContent = `(${jobs.length})`;
       } else if (p && p.background && !p.background.available) {
         sectionUnavailable(box, "background tasks not loaded.");
@@ -501,15 +537,15 @@
       const part = b.dataset.part;
       if (part === "cancel") {
         b.disabled = true;
-        api.cancel(id, true).then(() => schedulePoll()).catch(() => {});
+        api.cancel(id, true).then(scheduleRefresh).catch(() => {});
       } else if (part === "stop") {
         b.disabled = true;
-        api.stop(id).then(() => schedulePoll()).catch(() => {});
+        api.stop(id).then(scheduleRefresh).catch(() => {});
       } else if (part === "out") {
         if (expandedBg.has(id)) expandedBg.delete(id); else expandedBg.add(id);
         const row = b.closest("[data-b]");
         if (row) renderBgOutput(row, id);
-        schedulePoll();
+        scheduleRefresh();
       }
     });
 
@@ -520,24 +556,14 @@
       $("fgrun").style.display = $("fgrecent").style.display = fgOpen ? "" : "none";
     });
 
-    // ---- polling: 2 s while visible, no overlap, backoff on failure -------------
-    let pollTimer = null, failures = 0, inFlight = false, pollPending = false;
-
-    function schedulePoll() {
-      pollPending = true; // the next tick runs early instead of at the normal cadence
-    }
-
-    async function tick(early = false) {
-      if (inFlight) { pollTimer = setTimeout(() => tick(false), 2000); return; }
-      if (document.visibilityState !== "visible") {
-        pollPending = false;
-        pollTimer = setTimeout(() => tick(false), 2000);
-        return;
-      }
+    // ---- event driven snapshots -------------------------------------------------
+    let inFlight = false, refreshPending = false, refreshTimer = null;
+    async function refresh() {
+      if (document.visibilityState !== "visible") return;
+      if (inFlight) { refreshPending = true; return; }
       inFlight = true;
       try {
         const d = await api.work();
-        failures = 0;
         $("dot").classList.add("on");
         $("badge").textContent = "live";
         renderLanes(d.lanes);
@@ -548,25 +574,26 @@
       } catch (_) {
         $("dot").classList.remove("on");
         $("badge").textContent = "reconnecting…";
-        failures += 1;
       } finally {
         inFlight = false;
-        const earlyNow = early || pollPending;
-        pollPending = false;
-        // backoff: 2 s → 4 s → 8 s → 15 s cap; reset on success; an early
-        // action (cancel/stop/output) polls in 300 ms instead
-        const wait = earlyNow ? 300 : Math.min(15000, 2000 * 2 ** Math.min(failures, 3));
-        pollTimer = setTimeout(() => tick(false), wait);
+        if (refreshPending) {
+          refreshPending = false;
+          scheduleRefresh();
+        }
       }
     }
-
+    function scheduleRefresh() {
+      if (refreshTimer !== null) return;
+      refreshTimer = setTimeout(() => { refreshTimer = null; refresh(); }, 60);
+    }
+    const events = new EventSource("/api/activity/events");
+    events.addEventListener("refresh", scheduleRefresh);
+    events.onopen = () => { $("badge").textContent = "connected"; scheduleRefresh(); };
+    events.onerror = () => { $("dot").classList.remove("on"); $("badge").textContent = "reconnecting…"; };
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && !inFlight && pollTimer == null) {
-        pollTimer = setTimeout(() => tick(false), 50);
-      }
+      if (document.visibilityState === "visible") scheduleRefresh();
     });
-
-    tick(false);
+    refresh();
   </script>
 </body>
 </html>

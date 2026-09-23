@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NetPI.Abstractions;
 using NetPI.Activity;
+using NetPI.Host.Events;
 using Xunit;
 
 namespace NetPI.Host.Tests;
@@ -64,15 +65,16 @@ public class ActivitySurfaceTests
         public IReadOnlyList<WebPanelDefinition> All() => Registered;
     }
 
-    private sealed class FakeContext(FakeRegistry services, IWebPanelRegistry? panels = null, JsonElement? config = null) : IPluginContext
+    private sealed class FakeContext(FakeRegistry services, IWebPanelRegistry? panels = null, JsonElement? config = null, IEventBus? events = null) : IPluginContext
     {
         private readonly IWebPanelRegistry _panels = panels ?? new FakePanels();
         private readonly JsonElement _config = config ?? JsonDocument.Parse("{}").RootElement.Clone();
+        private readonly IEventBus _events = events ?? new EventBus();
         public PluginInfo Info { get; } = new("netPI.Activity", "Activity Test", "0.1.0");
         public IServiceRegistry Services => services;
         public ICommandRegistry Commands => throw new NotSupportedException();
         public IWebPanelRegistry WebPanels => _panels;
-        public IEventBus Events => throw new NotSupportedException();
+        public IEventBus Events => _events;
         public JsonElement OwnConfig => _config;
         public IPluginLogger Log => new NullLogger();
         public IValueLease<object> LeaseSelf() => throw new NotSupportedException();
@@ -148,11 +150,24 @@ public class ActivitySurfaceTests
 
     // ---- harness ----------------------------------------------------------------
 
-    private static async Task<(ActivityWebApp app, string baseUrl)> MakeAsync(FakeRegistry reg)
+    private static async Task<(ActivityWebApp app, string baseUrl)> MakeAsync(FakeRegistry reg, IEventBus? events = null)
     {
-        var app = new ActivityWebApp(new FakeContext(reg), 0);
+        var app = new ActivityWebApp(new FakeContext(reg, events: events), 0);
         await app.StartAsync(CancellationToken.None);
         return (app, app.BoundUrl!);
+    }
+
+    private static async Task<(string? Event, string? Data)> ReadSseFrameAsync(StreamReader reader, CancellationToken ct)
+    {
+        string? eventName = null;
+        string? data = null;
+        while (true)
+        {
+            var line = await reader.ReadLineAsync(ct);
+            if (line is null || line.Length == 0) return (eventName, data);
+            if (line.StartsWith("event:", StringComparison.Ordinal)) eventName = line[6..].Trim();
+            else if (line.StartsWith("data:", StringComparison.Ordinal)) data = line[5..].Trim();
+        }
     }
 
     private static async Task<JsonElement> GetJsonAsync(string url)
@@ -170,6 +185,42 @@ public class ActivitySurfaceTests
     }
 
     // ---- tests ------------------------------------------------------------------
+
+    [Fact]
+    public async Task WorkEvents_SendInitialLifecycleAndProcessRefresh_ThenDisposeClosesStream()
+    {
+        var bus = new EventBus();
+        var (app, baseUrl) = await MakeAsync(new FakeRegistry(), bus);
+        using var response = await Http.GetAsync(baseUrl + "/api/activity/events", HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+        using var stream = await response.Content.ReadAsStreamAsync();
+        using var reader = new StreamReader(stream);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+
+        try
+        {
+            Assert.Equal(("refresh", "initial"), await ReadSseFrameAsync(reader, timeout.Token));
+            Assert.Equal(5, bus.SubscriptionCount());
+
+            await bus.PublishAsync(new AgentLifecycleEvent(
+                AgentLifecycleEventKind.Updated, Array.Empty<AgentAssignmentRow>()));
+            Assert.Equal(("refresh", "changed"), await ReadSseFrameAsync(reader, timeout.Token));
+
+            var job = new BackgroundJobInfo("job-1", "bash", "sleep 1", BackgroundJobState.Running,
+                DateTimeOffset.UtcNow, null, null, null);
+            await bus.PublishAsync(new BackgroundJobChangedEvent(job));
+            Assert.Equal(("refresh", "changed"), await ReadSseFrameAsync(reader, timeout.Token));
+
+            await app.StopAsync(CancellationToken.None);
+            Assert.Equal(0, bus.SubscriptionCount());
+            Assert.Null(await reader.ReadLineAsync(timeout.Token));
+        }
+        finally
+        {
+            app.Dispose();
+            await app.StopAsync(CancellationToken.None);
+        }
+    }
 
     [Fact]
     public async Task PanelServesPage_AndListsRunsFromEverySession()

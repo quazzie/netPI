@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NetPI.Abstractions;
 using NetPI.Activity;
+using NetPI.Host.Events;
 using Xunit;
 
 namespace NetPI.Host.Tests;
@@ -69,15 +70,16 @@ public class WorkPanelDataTests
         public IReadOnlyList<WebPanelDefinition> All() => Registered;
     }
 
-    private sealed class FakeContext(FakeRegistry services, IWebPanelRegistry? panels = null, JsonElement? config = null) : IPluginContext
+    private sealed class FakeContext(FakeRegistry services, IWebPanelRegistry? panels = null, JsonElement? config = null, IEventBus? events = null) : IPluginContext
     {
         private readonly IWebPanelRegistry _panels = panels ?? new FakePanels();
         private readonly JsonElement _config = config ?? JsonDocument.Parse("{}").RootElement.Clone();
+        private readonly IEventBus _events = events ?? new EventBus();
         public PluginInfo Info { get; } = new("netPI.Activity", "Activity Test", "0.1.0");
         public IServiceRegistry Services => services;
         public ICommandRegistry Commands => throw new NotSupportedException();
         public IWebPanelRegistry WebPanels => _panels;
-        public IEventBus Events => throw new NotSupportedException();
+        public IEventBus Events => _events;
         public JsonElement OwnConfig => _config;
         public IPluginLogger Log => new NullLogger();
         public IValueLease<object> LeaseSelf() => throw new NotSupportedException();

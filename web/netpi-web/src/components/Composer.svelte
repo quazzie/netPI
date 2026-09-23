@@ -4,9 +4,57 @@
   import { ui } from "../ui.svelte";
   import { ws } from "../ws";
   import ContextUsage from "./ContextUsage.svelte";
+  import type { ImageAttachment } from "../types";
 
   let text = $state("");
   let el: HTMLTextAreaElement | null = null;
+  let imagePicker: HTMLInputElement;
+  let composerRoot: HTMLDivElement | null = $state(null);
+  let imageDrafts = $state<Record<string, ImageAttachment[]>>({});
+  let newDraft = $state("");
+  let images = $derived(imageDrafts[store.session?.id ?? "new"] ?? []);
+  let processingImages = $state(false);
+  let supportsImages = $derived(store.currentModelInfo?.inputModalities.includes("image") ?? false);
+
+  async function attachImages(files: File[]) {
+    if (!supportsImages) { store.setError("Choose an image-capable model before attaching images."); return; }
+    const key = store.session?.id ?? "new";
+    if (processingImages) return;
+    processingImages = true;
+    try {
+      const next = [...(imageDrafts[key] ?? [])];
+      for (const file of files) {
+        if (next.length >= 4) throw new Error("Attach at most four images.");
+        if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type))
+          throw new Error("Use PNG, JPEG, GIF or WebP images.");
+        if (file.size > 20 * 1024 * 1024) throw new Error("Choose images smaller than 20 MiB.");
+        const bitmap = await createImageBitmap(file);
+        try {
+          const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+          const ctx = canvas.getContext("2d")!;
+          ctx.fillStyle = "white"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          let url = canvas.toDataURL("image/jpeg", 0.85);
+          for (let quality = 0.7; url.length > 195000 && quality >= 0.3; quality -= 0.15)
+            url = canvas.toDataURL("image/jpeg", quality);
+          if (url.length > 195000) throw new Error("Image is too large after resizing; crop it before attaching.");
+          next.push({ mimeType: "image/jpeg", data: url.split(",")[1] });
+        } finally { bitmap.close(); }
+      }
+      imageDrafts[key] = next;
+    } catch (error) { store.setError(error instanceof Error ? error.message : String(error)); }
+    finally { processingImages = false; }
+  }
+
+  function onPaste(event: ClipboardEvent) {
+    const files = Array.from(event.clipboardData?.items ?? [])
+      .filter(item => item.kind === "file" && item.type.startsWith("image/"))
+      .map(item => item.getAsFile()).filter((file): file is File => !!file);
+    if (files.length) { event.preventDefault(); void attachImages(files); }
+  }
 
   // astra-1 G1: drafts are per-session and survive tab switches (bounded in
   // the store). Load the draft whenever the visible session changes; save on
@@ -16,12 +64,32 @@
   let draftKey = $derived(store.session?.id ?? null);
   $effect(() => {
     const sid = draftKey;
-    text = store.getDraft(sid);
+    text = sid ? store.getDraft(sid) : newDraft;
   });
   function onInput() {
-    store.setDraft(store.session?.id ?? null, text);
+    const sid = store.session?.id ?? null;
+    if (sid) store.setDraft(sid, text);
+    else newDraft = text;
   }
   let menu = $state<null | "commands" | "model" | "reasoning" | "at" | "attach">(null);
+  $effect(() => {
+    if (!menu) return;
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !composerRoot?.contains(event.target)) menu = null;
+    };
+    const outsideClick = (event: MouseEvent) => {
+      if (event.target instanceof Node && !composerRoot?.contains(event.target)) menu = null;
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") menu = null; };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("click", outsideClick, true);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("click", outsideClick, true);
+      document.removeEventListener("keydown", escape);
+    };
+  });
   let atCursor = $state(0);
   let atFiles = $state<{ path: string; full: string; size: number }[]>([]);
   let serverCommands = $state<{ cmd: string; desc: string }[]>([]);
@@ -154,25 +222,40 @@
   // ---- submit ------------------------------------------------------------
   async function doSubmit() {
     const t = text.trim();
-    if (!t) return;
+    if ((!t && !images.length) || processingImages || store.requestPending) return;
+    if (images.length && (!supportsImages || store.busy)) {
+      store.setError(store.busy ? "Wait for the current run to finish before sending images." : "Choose an image-capable model before sending images.");
+      return;
+    }
+    const sentImages = [...images];
+    const sentSid = store.session?.id ?? null;
+    const sentKey = sentSid ?? "new";
 
-    if (t.startsWith("/")) {
+    if (t.startsWith("/") && !sentImages.length) {
       handleCommand(t);
       text = "";
-      store.setDraft(store.session?.id ?? null, "");
+      if (sentSid) store.setDraft(sentSid, "");
+      else newDraft = "";
       return;
     }
 
     store.beginSubmit();
-    const kind = store.submit(t);
+    const kind = store.submit(t, sentImages);
+    imageDrafts[sentKey] = [];
     text = "";
-    store.setDraft(store.session?.id ?? null, "");
+    if (sentSid) store.setDraft(sentSid, "");
+    else newDraft = "";
     // astra-1 G3: if the send is REJECTED, the optimistic user block must not
     // look accepted — put the text back in the draft and retract it.
     const onSendError = (e: unknown) => {
-      store.retractLastUser(t);
-      store.setDraft(store.session?.id ?? null, t);
-      text = t;
+      if ((store.session?.id ?? null) === sentSid) {
+        store.retractLastUser(t);
+        text = t;
+      }
+      if (sentSid) store.setDraft(sentSid, t);
+      else newDraft = t;
+      imageDrafts[sentKey] = sentImages;
+      store.requestFailed(e instanceof Error ? e.message : String(e));
       store.setError(e instanceof Error ? e.message : String(e));
     };
 
@@ -180,6 +263,7 @@
       if (kind === "sent") {
         await ws.request("chat.send", {
           text: t,
+          images: sentImages,
           sessionId: store.session?.id,
           workspace: store.session?.workspace || undefined,
           model: store.currentModel || undefined,
@@ -189,16 +273,16 @@
           // duplicate message / starting a duplicate run. Each deliberate tap makes a
           // fresh send(), hence a fresh id (identical text still gets a distinct id).
           operationId: globalThis.crypto?.randomUUID?.() ?? `op-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        }).catch(onSendError);
+        });
       } else {
         await ws.request("chat.steer", {
           text: t,
           sessionId: store.session?.id,
-        }).catch(onSendError);
+        });
       }
       store.requestAccepted();
     } catch (e) {
-      store.requestFailed(e instanceof Error ? e.message : String(e));
+      onSendError(e);
     }
   }
 
@@ -340,7 +424,7 @@
   });
 </script>
 
-<div class="composer-wrap">
+<div class="composer-wrap" bind:this={composerRoot}>
   {#if store.queuedSteer.length}
     <div class="queued">
       <div>Queued for next turn:</div>
@@ -351,12 +435,24 @@
   {/if}
 
   <div class="composer">
+    <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden bind:this={imagePicker}
+      onchange={() => { void attachImages(Array.from(imagePicker.files ?? [])); imagePicker.value = ""; }} />
+    {#if images.length}
+      <div class="prompt-images">
+        {#each images as image, index}
+          <div><img src={`data:${image.mimeType};base64,${image.data}`} alt={`Attachment ${index + 1}`} />
+            <button title="Remove image" onclick={() => { imageDrafts[store.session?.id ?? "new"] = images.filter((_, i) => i !== index); }}>×</button></div>
+        {/each}
+      </div>
+    {/if}
+    {#if processingImages}<small>Preparing images…</small>{/if}
     <textarea
       bind:this={el}
       bind:value={text}
       rows="1"
       placeholder="Message, / commands, @ files…"
       onkeydown={onKeyDown}
+      onpaste={onPaste}
      oninput={onInput}></textarea>
 
     <div class="toolbar">
@@ -390,7 +486,7 @@
       <button
         class="send-btn"
         onclick={() => void doSubmit()}
-        disabled={!text.trim()}
+        disabled={(!text.trim() && !images.length) || processingImages}
         title="Send"
       >↑</button>
       {/if}
@@ -400,6 +496,7 @@
   {#if menu === "attach"}
     <div class="menu-pop composer-left-menu">
       <div class="title">add context</div>
+      <button class="item" disabled={!supportsImages || processingImages} onclick={() => { imagePicker.click(); menu = null; }}>Attach image…</button>
       <button class="item" onclick={openAtPicker}>
         <span class="check">@</span>
         <span>Workspace file</span>
@@ -481,3 +578,10 @@
     </div>
   {/if}
 </div>
+
+<style>
+  .prompt-images { display:flex; gap:8px; padding:8px; }
+  .prompt-images div { position:relative; }
+  .prompt-images img { width:76px; height:60px; object-fit:cover; border-radius:5px; }
+  .prompt-images button { position:absolute; right:0; top:0; background:#222; color:white; border:0; border-radius:4px; cursor:pointer; }
+</style>

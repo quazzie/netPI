@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -20,7 +22,8 @@ namespace NetPI.Activity;
 ///                                                availability (astra-2 §12.2 data
 ///                                                contract; legacy `runs` kept)
 ///   GET  /api/activity/work                      the combined Work snapshot (agents +
-///                                                lanes + processes) for the panel poll
+///                                                lanes + processes)
+///   GET  /api/activity/events                    coalesced lifecycle change notifications
 ///   POST /api/activity/agents/{id}/cancel        cancel via the orchestration contract
 ///                                                (RunId + explicit subtree semantics;
 ///                                                queued/suspended cancellable); legacy
@@ -55,11 +58,13 @@ public sealed class ActivityWebApp
     private readonly int _port;
     private WebApplication? _app;
     private string? _boundUrl;
+    private readonly ConcurrentDictionary<Guid, Channel<bool>> _refreshClients = new();
+    private readonly List<IDisposable> _eventSubscriptions = new();
 
     /// <summary>
     /// Monotonic revision over the orchestration projection (astra-2 §12.2:
     /// "monotonic revision"). Bumped once per successful orchestrator query;
-    /// stays 0 while the service is unavailable (clients fall back to polling).
+    /// stays 0 while the service is unavailable.
     /// </summary>
     private long _revision;
 
@@ -70,6 +75,21 @@ public sealed class ActivityWebApp
     {
         _ctx = ctx;
         _port = port;
+        // Lifecycle and capacity changes are already published through the host
+        // event bus. Coalesce bursts: the panel only needs to know that its next
+        // snapshot is stale, not replay every intermediate transition.
+        _eventSubscriptions.Add(ctx.Events.Subscribe<AgentLifecycleEvent>(_ => SignalRefresh()));
+        _eventSubscriptions.Add(ctx.Events.Subscribe<LanesStateEvent>(_ => SignalRefresh()));
+        _eventSubscriptions.Add(ctx.Events.Subscribe<AgentEvent>(e =>
+        {
+            if (e.Type is AgentEventType.AgentStarting or AgentEventType.AgentCompleted
+                or AgentEventType.AgentFailed or AgentEventType.AgentCancelled
+                or AgentEventType.RunSuspended or AgentEventType.RunResumed
+                or AgentEventType.AssistantCompleted or AgentEventType.AfterToolBatch)
+                SignalRefresh();
+        }));
+        _eventSubscriptions.Add(ctx.Events.Subscribe<BackgroundJobChangedEvent>(_ => SignalRefresh()));
+        _eventSubscriptions.Add(ctx.Events.Subscribe<ForegroundProcessChangedEvent>(_ => SignalRefresh()));
     }
 
     public async ValueTask StartAsync(CancellationToken ct)
@@ -112,9 +132,9 @@ public sealed class ActivityWebApp
             await c.Response.WriteAsync(JsonSerializer.Serialize(payload, Json));
         });
 
-        // astra-2 §12.2: one combined snapshot for the panel's 2 s poll —
-        // agents + lanes + processes with per-section availability. The page
-        // polls this; the separate routes below stay for compatibility.
+        // astra-2 §12.2: one combined snapshot after a lifecycle notification —
+        // agents + lanes + processes with per-section availability. The separate
+        // routes below stay for compatibility.
         app.MapGet("/api/activity/work", async (HttpContext c) =>
         {
             var ct = c.RequestAborted;
@@ -131,6 +151,33 @@ public sealed class ActivityWebApp
                 processes,
                 ts = DateTimeOffset.UtcNow,
             }, Json));
+        });
+
+        app.MapGet("/api/activity/events", async (HttpContext c) =>
+        {
+            c.Response.Headers.CacheControl = "no-cache";
+            c.Response.Headers["X-Accel-Buffering"] = "no";
+            c.Response.ContentType = "text/event-stream";
+            var id = Guid.NewGuid();
+            var channel = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = false,
+            });
+            _refreshClients[id] = channel;
+            try
+            {
+                await c.Response.WriteAsync("event: refresh\ndata: initial\n\n", c.RequestAborted);
+                await c.Response.Body.FlushAsync(c.RequestAborted);
+                await foreach (var _ in channel.Reader.ReadAllAsync(c.RequestAborted))
+                {
+                    await c.Response.WriteAsync("event: refresh\ndata: changed\n\n", c.RequestAborted);
+                    await c.Response.Body.FlushAsync(c.RequestAborted);
+                }
+            }
+            catch (OperationCanceledException) { }
+            finally { _refreshClients.TryRemove(id, out _); }
         });
 
         // astra-2 §12.2: cancellation delegates through the orchestration
@@ -222,11 +269,28 @@ public sealed class ActivityWebApp
 
     public async ValueTask StopAsync(CancellationToken ct)
     {
+        // Complete SSE streams and unregister event handlers before Kestrel's
+        // graceful stop waits for active requests to drain.
+        Dispose();
         if (_app is null) return;
         var app = _app;
         _app = null;
         try { await app.StopAsync(ct); await app.DisposeAsync(); }
         catch { /* shutdown is best-effort */ }
+    }
+
+    private void SignalRefresh()
+    {
+        foreach (var client in _refreshClients.Values)
+            client.Writer.TryWrite(true);
+    }
+
+    public void Dispose()
+    {
+        foreach (var subscription in _eventSubscriptions) subscription.Dispose();
+        _eventSubscriptions.Clear();
+        foreach (var client in _refreshClients.Values) client.Writer.TryComplete();
+        _refreshClients.Clear();
     }
 
     // ---- lazy service resolution (missing plugin => null, never an error) ----
@@ -255,6 +319,14 @@ public sealed class ActivityWebApp
         catch (ServiceUnavailableException) { return null; }
     }
 
+    /// <summary>Session titles for the runner-run agent rows (null when the
+    /// storage plugin is absent — rows fall back to the run id).</summary>
+    private ISessionStore? Sessions()
+    {
+        try { return _ctx.Services.Resolve<ISessionStore>("sessions"); }
+        catch (ServiceUnavailableException) { return null; }
+    }
+
     private ICloudBudgetStore? Budgets()
     {
         try { return _ctx.Services.Resolve<ICloudBudgetStore>("cloud-budgets"); }
@@ -272,22 +344,28 @@ public sealed class ActivityWebApp
     /// <summary>
     /// The astra-2 §12.2 agents payload: lifecycle rows (the canonical
     /// projection from the orchestration service — ALL nonterminal assignments
-    /// across every session/team, newest createdAt first, stable id tiebreak),
-    /// bounded recent-terminal history, pool snapshots, a monotonic revision,
-    /// and EXPLICIT per-service availability. The legacy <c>runs</c> array is
-    /// kept from the runner's run-query so older clients keep working; when the
-    /// orchestrator is present it is the source of truth for the lifecycle
-    /// rows and <c>runs</c> stays empty-compatible (the runner may still be
-    /// absent — the two services fail independently).
+    /// across every session/team, newest createdAt first, stable id tiebreak)
+    /// PLUS the runner's live DIRECT session runs (nonterminal runs without an
+    /// assignment — the session's own running agent, which is otherwise
+    /// invisible to this section), bounded recent-terminal history, pool
+    /// snapshots, a monotonic revision, and EXPLICIT per-service availability.
+    /// The legacy <c>runs</c> array is kept from the runner's run-query so older
+    /// clients keep working; when the orchestrator is present it is the source
+    /// of truth for the assignment lifecycle rows and <c>runs</c> stays
+    /// empty-compatible (the runner may still be absent — the two services fail
+    /// independently).
     /// </summary>
     internal async ValueTask<object> AgentsPayloadAsync(CancellationToken ct)
     {
         var orch = Orchestrator();
-        var agents = Array.Empty<object>();
+        var live = new List<object>();
         var history = Array.Empty<object>();
         var runs = Array.Empty<object>();
         long revision = 0;
         bool agentsAvailable = false;
+        // Sessions that already have a live assignment row — a delegated run
+        // must not also surface as its own runner row (one row per session).
+        var assignedSessions = new HashSet<string>(StringComparer.Ordinal);
 
         if (orch is not null)
         {
@@ -301,12 +379,14 @@ public sealed class ActivityWebApp
                 // filter defensively; ListAssignmentsAsync is specified to return
                 // nonterminal rows, but a producer that returns all rows must
                 // not leak terminal assignments into the live section).
-                agents = rows
+                foreach (var r in rows
                     .Where(r => r.IsNonTerminal)
                     .OrderByDescending(r => r.CreatedAt)
-                    .ThenByDescending(r => r.AssignmentId, StringComparer.Ordinal)
-                    .Select(ToAgentRow)
-                    .ToArray();
+                    .ThenByDescending(r => r.AssignmentId, StringComparer.Ordinal))
+                {
+                    live.Add(ToAgentRow(r));
+                    assignedSessions.Add(r.SessionId);
+                }
                 history = rows
                     .Where(r => !r.IsNonTerminal)
                     .OrderByDescending(r => r.EndedAt ?? r.CreatedAt)
@@ -347,6 +427,36 @@ public sealed class ActivityWebApp
             {
                 runs = Array.Empty<object>();
             }
+
+            try
+            {
+                // Direct session runs (chat, no orchestration assignment) join
+                // the live list so a running agent is visible even when the
+                // orchestrator never saw it. Nonterminal = still Running or
+                // Suspended; queued-but-unstarted runs already surface through
+                // their durable Queued assignment (session deduped above).
+                var sessions = Sessions();
+                foreach (var r in runner.ListRuns()
+                    .Where(r => r.Outcome is RunState.Running or RunState.Suspended)
+                    .Where(r => !string.IsNullOrEmpty(r.SessionId)
+                        && !assignedSessions.Contains(r.SessionId!))
+                    .OrderByDescending(r => r.StartTime)
+                    .ThenByDescending(r => r.RunId, StringComparer.Ordinal))
+                {
+                    string? title = null;
+                    try
+                    {
+                        if (sessions is not null)
+                            title = (await sessions.GetAsync(r.SessionId!, ct)).Title;
+                    }
+                    catch { /* a title lookup failure degrades to the run id */ }
+                    live.Add(ToRunRow(r, title));
+                }
+            }
+            catch
+            {
+                // A failing run-query degrades the merge, not the view.
+            }
         }
 
         return new
@@ -358,7 +468,7 @@ public sealed class ActivityWebApp
             lanesAvailable = Lanes() is not null,
             runsAvailable = runner is not null,
             revision,
-            agents,
+            agents = live.ToArray(),
             history,
             runs,
             pools = LanesPayloadAsync().Pools,
@@ -583,6 +693,34 @@ public sealed class ActivityWebApp
         startedAt = r.StartedAt,
         endedAt = r.EndedAt,
         reason = r.Reason,
+    };
+
+    /// <summary>
+    /// One live DIRECT session run rendered as an agent row (same wire shape as
+    /// <see cref="ToAgentRow"/>): the run id doubles as the row/cancel key —
+    /// the cancel endpoint's runner fallback reaches the run exactly by it.
+    /// No pool/lane: direct runs hold none (the LANES section owns pool state).
+    /// </summary>
+    private static object ToRunRow(RunInfo r, string? title) => new
+    {
+        assignmentId = r.RunId,
+        agentId = (string?)null,
+        teamId = (string?)null,
+        sessionId = r.SessionId,
+        parentAgentId = (string?)null,
+        lifecycle = r.Outcome == RunState.Suspended ? "suspended" : "running",
+        nonTerminal = true,
+        phase = r.State.ToString(),
+        executionMode = (string?)null,
+        poolId = (string?)null,
+        laneId = (string?)null,
+        deploymentId = (string?)null,
+        modelId = r.ModelId,
+        title = title ?? r.RunId,
+        createdAt = r.StartTime,
+        startedAt = r.StartTime,
+        endedAt = (DateTimeOffset?)null,
+        reason = (string?)null,
     };
 }
 

@@ -737,7 +737,7 @@ Extend background-job metadata with optional `SessionId`, `RunId`, `ProjectId` a
 
 Include foreground shell processes too if the view is described as **all managed running processes**. Expose lightweight lifecycle information from the tools plugin; do not enumerate unrelated operating-system processes.
 
-Use event updates for agents. For processes, add lifecycle events or use modest polling while Activity is open. Stop polling when closed.
+Use event updates for agents and managed processes. The Work panel listens while mounted, coalesces changes, and requests a combined snapshot; returning to a visible panel triggers a resync.
 
 Keep process output bounded and cursor-based. The current `Slice` implementation copies the entire retained string before slicing; remove that unnecessary allocation before considering a more complex buffer.
 

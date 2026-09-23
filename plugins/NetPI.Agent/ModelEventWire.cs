@@ -22,6 +22,7 @@ public sealed record ModelEventWire
     public int? CachedTokens { get; init; }
     public string? Error { get; init; }
     public string? ToolOutput { get; init; }
+    public IReadOnlyList<ImagePart>? Images { get; init; }
     public bool? IsError { get; init; }
 
     public JsonElement? AssistantMessage { get; init; }

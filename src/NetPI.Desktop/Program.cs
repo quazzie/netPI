@@ -36,6 +36,14 @@ public static class Program
         private const int Port = 5173;
         private static readonly string Url = $"http://127.0.0.1:{Port}";
 
+        // Window geometry persistence: the shell reopens at the size the user
+        // last used (maximized state included). A saved size is clamped to the
+        // largest connected screen so a huge saved window can never restore
+        // entirely off every monitor.
+        private Size _lastWindowedSize = new(1200, 800);
+        private Size _appliedRestoredSize = new(1200, 800);
+        private bool _restoreClamped;
+
         /// <summary>Shown while the host boots; auto-navigates once /bootstrap answers.</summary>
         private static readonly string WaitingPage =
             @"""
@@ -58,6 +66,7 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(900, 640);
             Size = new Size(1200, 800);
+            RestoreWindowState();
 
             _view = new WebView2 { Dock = DockStyle.Fill };
             Controls.Add(_view);
@@ -99,6 +108,8 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
             // deadlocks WebView2's UI-context completion). Fire-and-forget.
             _ = InitWebViewAsync();
             FormClosed += (_, _) => KillHost();
+            FormClosing += (_, _) => SaveWindowStateOnClose();
+            SizeChanged += OnSizeChanged;
         }
 
         private void OnNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
@@ -536,6 +547,61 @@ setTimeout(()=>{clearInterval(t);document.querySelector('p').textContent='host i
                 catch { /* child pipe closed / process killed */ }
             });
             return (lines, done);
+        }
+
+        // ------------------------------------------------------------------
+        // Window geometry persistence (size + maximized state, per user) —
+        // the file format + clamping live in WindowGeometry (tested in
+        // scratch/window-geometry*, incl. a restore smoke test).
+        // ------------------------------------------------------------------
+
+        private void RestoreWindowState()
+        {
+            var saved = WindowGeometry.Load(WindowGeometry.DefaultFilePath);
+            if (saved is null) return;
+            var (size, clamped) = WindowGeometry.Fit(
+                new Size(saved.Width, saved.Height), MinimumSize, LargestWorkingArea());
+            _restoreClamped = clamped;
+            _appliedRestoredSize = size;
+            _lastWindowedSize = size;
+            Size = size; // fires SizeChanged → tracked as the windowed size
+            if (saved.Maximized) WindowState = FormWindowState.Maximized;
+        }
+
+        private void OnSizeChanged(object? sender, EventArgs e)
+        {
+            // The maximized bounds are a screen artifact, never the user's size:
+            // only track the geometry while the window is in its normal state.
+            if (WindowState == FormWindowState.Normal)
+                _lastWindowedSize = Size;
+        }
+
+        /// <summary>
+        /// Persist the geometry for the next launch. If the saved size had to be
+        /// clamped to fit this machine and the user never resized the window, the
+        /// clamped value would clobber the larger saved size — skip the write.
+        /// </summary>
+        private void SaveWindowStateOnClose()
+        {
+            if (_restoreClamped && _lastWindowedSize == _appliedRestoredSize) return;
+            WindowGeometry.Save(WindowGeometry.DefaultFilePath, new WindowGeometry
+            {
+                Width = _lastWindowedSize.Width,
+                Height = _lastWindowedSize.Height,
+                Maximized = WindowState == FormWindowState.Maximized,
+            });
+        }
+
+        /// <summary>The largest screen work area currently connected — a saved size
+        /// may exceed it (another machine's monitor set) but must never restore
+        /// beyond every screen at once.</summary>
+        private static Size LargestWorkingArea()
+        {
+            var best = Size.Empty;
+            foreach (var s in Screen.AllScreens)
+                if (s.WorkingArea.Width * s.WorkingArea.Height > best.Width * best.Height)
+                    best = s.WorkingArea.Size;
+            return best == Size.Empty ? new Size(1200, 800) : best;
         }
 
         private void KillHost()

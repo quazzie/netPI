@@ -177,7 +177,7 @@ a { color: var(--accent); }
   letter-spacing: .08em;
 }
 
-.msg-assistant { margin: 0 0 34px; }
+.msg-assistant { margin: 0 0 12px; }
 .assistant-content { min-width: 0; }
 
 .assistant-waiting { display: flex; gap: 5px; padding: 8px 0; }
@@ -314,8 +314,7 @@ a { color: var(--accent); }
   font-size: 12px;
   font-weight: 700;
 }
-.tool-summary,
-.tool-file {
+.tool-summary {
   min-width: 0;
   max-width: min(70%, 650px);
   overflow: hidden;
@@ -323,10 +322,8 @@ a { color: var(--accent); }
   white-space: nowrap;
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 11.5px;
+  color: #747e8e;
 }
-.tool-summary { color: #747e8e; }
-.tool-file { color: #8fb9fa; text-decoration: none; }
-.tool-file:hover { text-decoration: underline; }
 .tool-spacer { flex: 1; }
 .tool-state { flex:none; font-size:10.5px; font-weight:650; text-transform:uppercase; letter-spacing:.045em; }
 .tool-state.good { color: var(--green); }
@@ -992,7 +989,7 @@ a { color: var(--accent); }
   .composer-wrap { padding:9px 10px 12px; }
   .model-pick { max-width:120px; }
   .reason-pick { max-width:90px; }
-  .tool-summary, .tool-file { max-width:48vw; }
+  .tool-summary { max-width:48vw; }
   .overlay { padding:10px; }
   .plugin-row { grid-template-columns:1fr auto; }
   .plugin-row > :not(:first-child):not(:last-child) { display:none; }
@@ -1541,13 +1538,6 @@ body.panel-resizing .app-shell { transition: none; }
 }
 .tool-name { color: #9fa9b7; }
 .tool-summary { color: #727d8c; }
-.tool-file {
-  color: #9aa7b8;
-  text-decoration: underline dotted;
-  text-decoration-color: #596574;
-  text-underline-offset: 3px;
-}
-.tool-file:hover { color: #d4dbe5; text-decoration-color: currentColor; }
 .tool-detail {
   margin: 3px 0 5px 16px;
   padding: 9px 10px 10px;
@@ -1562,7 +1552,7 @@ body.panel-resizing .app-shell { transition: none; }
 /* DSH-inspired chat flow rows: compact process chrome, not dashboard cards. */
 .tool-stack {
   gap: 2px;
-  margin-top: 10px;
+  margin-top: 4px;
 }
 .tool-card {
   overflow: visible;
@@ -1649,8 +1639,7 @@ body.panel-resizing .app-shell { transition: none; }
   border-radius: 50%;
   background: #515967;
 }
-.tool-summary,
-.tool-file {
+.tool-summary {
   flex: 1 1 auto;
   min-width: 0;
   max-width: none;
@@ -1662,14 +1651,6 @@ body.panel-resizing .app-shell { transition: none; }
   font-size: 12.5px;
   line-height: 24px;
 }
-.tool-file {
-  text-decoration: none;
-  text-decoration-line: underline;
-  text-decoration-style: dotted;
-  text-decoration-color: #4d5868;
-  text-underline-offset: 3px;
-}
-.tool-file:hover { color: #aab7c9; text-decoration-color: #76859a; }
 .tool-spacer { flex: 0 0 8px; }
 .tool-running-label,
 .tool-duration {

@@ -907,10 +907,12 @@ view returns the latest requested tail, not the tail of only the first fetched
 chunk. Reuse a contract-level tail operation or correct paging; never reach into
 BackgroundJobManager's concrete type from Activity.
 
-Modest 2-second polling while mounted/visible is acceptable for the first version;
-no inference requests, no overlapping polls, backoff on failure, resync on return.
-Bound/page terminal history and output independently. Reuse revisions or events
-later if needed; UI polling does not advance the scheduler.
+The panel consumes event notifications while mounted and fetches one combined
+snapshot after each coalesced change. Lifecycle events cover agents and lanes;
+background and foreground process owners publish start/finish events. EventSource
+reconnects after disconnect, and returning to a visible panel triggers a resync.
+Bound/page terminal history and output independently. Snapshot reads do not
+advance the scheduler.
 
 ### 12.3 Reuse and harden the existing iframe bridge
 

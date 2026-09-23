@@ -251,7 +251,9 @@ NetPI.BackgroundTasks no longer registers one either (astra-2 §12.1):
   `ActivityWebApp.cs` serves the embedded `panels/activity.html` plus
   `GET /api/activity/agents` (lifecycle rows + pool snapshots + monotonic revision +
   per-service availability; legacy `runs` kept; each live row carries its `lifecycle` (lower-case wire string: running, queued, waiting, suspended, …), `executionMode` (`pooled` or `cloud-direct`), and `reason` (the waiting/suspended cause), and the response also carries a bounded `history` of recent TERMINAL rows — terminal assignments never appear in the live `agents` list),
-  combined poll), `POST /api/activity/agents/{id}/cancel` (orchestration contract
+  combined `GET /api/activity/work` snapshot plus the coalesced
+  `GET /api/activity/events` Server-Sent Events feed for agent, lane, and managed
+  process changes), `POST /api/activity/agents/{id}/cancel` (orchestration contract
   with subtree semantics; legacy runner fallback), `GET /api/activity/processes`
   (background jobs + foreground shell processes, newest-first — no running-first
   regrouping), `GET /api/activity/processes/background/{id}/output?chars=` (the
@@ -300,8 +302,8 @@ the reload snapshots the new bytes as generation N+1.
 
 1. The shell iframe is keyed on the panel `entryUrl`, so a plugin reload that
    keeps the SAME entry URL (a fixed port) does NOT force a frame reload; the
-   panel pages mitigate with self-healing (the Work page re-fetches on its 2 s
-   poll; diagnostics re-opens its host WS after a drop). A stale/unmounted frame
+   panel pages mitigate with self-healing (the Work page reconnects its event
+   feed and resyncs on visibility; diagnostics re-opens its host WS after a drop). A stale/unmounted frame
    is de-registered from the navigation bridge, so it can't navigate — but the
    frame itself is not keyed on plugin generation.
 2. No integration-level test for the `ui.panels` broadcast or the panel routes

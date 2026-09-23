@@ -286,7 +286,7 @@ public sealed class AgentRunner : IAgentRunner
     {
         // astra-1 A (run cleanup): no text → the send fails (never a silent
         // empty run), and the gate is never taken.
-        if (string.IsNullOrWhiteSpace(request.Text))
+        if (string.IsNullOrWhiteSpace(request.Text) && request.Images is not { Count: > 0 })
             return new AgentRunStart(request.SessionId, "Empty message — nothing to send.");
 
         // astra-1 D2 (slice 2): per-session gate — the send's critical
@@ -398,7 +398,7 @@ public sealed class AgentRunner : IAgentRunner
                 // id and dedupes exactly as before.
                 var userMessageId = MessageIdentity.DeterministicId("user", rec.RunId + "\u0000" + request.Text);
                 var user = new AgentMessage(userMessageId, MessageRole.User,
-                    [new TextPart(request.Text)], DateTimeOffset.UtcNow);
+                    [new TextPart(request.Text), .. request.Images ?? []], DateTimeOffset.UtcNow);
                 await store.AppendAsync(new SessionEntry(userMessageId,
                     request.SessionId, EntryKind.Message, user, null, DateTimeOffset.UtcNow), cancellationToken);
             }
@@ -1016,7 +1016,7 @@ public sealed class AgentRunner : IAgentRunner
         }
 
         transcript.Add(new AgentMessage(userMessageId, MessageRole.User,
-            [new TextPart(request.Text)], DateTimeOffset.UtcNow));
+            [new TextPart(request.Text), .. request.Images ?? []], DateTimeOffset.UtcNow));
         return transcript;
     }
 

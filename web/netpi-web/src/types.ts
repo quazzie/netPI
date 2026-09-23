@@ -38,7 +38,10 @@ export type Block =
   | ToolBlock
   | SystemBlock
   | ProjectContextBlock;
+export interface ImageAttachment { mimeType: string; data: string; }
+
 export interface UserBlock {
+  images?: ImageAttachment[];
   kind: "user";
   id: string;
   text: string;
@@ -55,6 +58,7 @@ export interface ThinkingBlock {
 }
 
 export interface ToolCall {
+  images?: ImageAttachment[];
   id: string;
   name: string;
   argsJson: string;
@@ -80,6 +84,8 @@ export interface AssistantBlock {
   text: string;
   toolCalls: ToolCall[];
   done: boolean;
+  /** True only when the agent run containing this block has ended. */
+  endOfRun?: boolean;
   usage?: Usage;
 }
 

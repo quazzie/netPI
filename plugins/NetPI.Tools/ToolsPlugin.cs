@@ -113,7 +113,7 @@ internal static class Args
 public sealed class ReadTool : IAgentTool, IFileTargetTool
 {
     public string Name => "read";
-    public string Description => "Read a text file (line-numbered, bounded). Relative paths resolve against the workspace. Use offset/limit to page large files; binary files return an error.";
+    public string Description => "Read a text file (line-numbered, bounded) or a PNG/JPEG/GIF/WebP image for visual inspection and display in chat. Relative paths resolve against the workspace. Use offset/limit to page large files; other binary files return an error.";
     public IReadOnlyList<string> Guidelines => [
         "Default is 200 lines, capped at 2000; 'Showing lines X-Y of Z' tells you when a file continues — pass offset=N to page.",
         "The file must exist; use grep or a shell command to locate it when the exact path is unknown.",
@@ -140,7 +140,15 @@ public sealed class ReadTool : IAgentTool, IFileTargetTool
             return Error($"File not found: {path}");
         try
         {
+            if (new FileInfo(path).Length > ImageContent.MaxBytes &&
+                new[] { ".png", ".jpg", ".jpeg", ".gif", ".webp" }.Contains(Path.GetExtension(path).ToLowerInvariant()))
+                return Error("Image exceeds the 10 MiB limit. Resize it before reading.");
             var bytes = await File.ReadAllBytesAsync(path, ct);
+            if (ImageContent.DetectMimeType(bytes) is { } mime)
+            {
+                if (bytes.Length > ImageContent.MaxBytes) return Error("Image exceeds the 10 MiB limit.");
+                return new ToolResult("tool", "read", [new TextPart($"Image: {path}"), new ImagePart(mime, bytes)]);
+            }
             if (IsBinary(bytes))
                 return Error($"Refusing to read binary file {path} ({bytes.Length} bytes). Convert it to text first or use the bash tool.");
             var offset = Math.Max(1, Args.Int(ctx.Arguments, "offset", 1));
@@ -583,6 +591,7 @@ public sealed class ToolsPlugin : INetPiPlugin
 
     public async ValueTask LoadAsync(IPluginContext context, CancellationToken cancellationToken)
     {
+        _tracker = new ForegroundProcessTracker(context.Events);
         // PLAN §23/§24: probe the backends ONCE at load (re-probed on reload).
         // Preference: config override → PATH/native → Git Bash → MSYS → WSL.
         var bash = await ShellDetector.DetectAsync("bash", context.OwnConfig, cancellationToken);
@@ -668,11 +677,15 @@ public sealed class ForegroundProcessTracker : IForegroundProcessTracker
     private readonly object _gate = new();
     private readonly List<ForegroundProcessInfo> _running = [];
     private readonly List<ForegroundProcessInfo> _recent = [];
+    private readonly IEventBus? _events;
+
+    public ForegroundProcessTracker(IEventBus? events = null) => _events = events;
 
     public void Started(string toolShellId, string command, string? workingDirectory, string? sessionId, int processId)
     {
         var info = new ForegroundProcessInfo(toolShellId, command, workingDirectory, sessionId, processId, DateTimeOffset.UtcNow, null, null);
         lock (_gate) _running.Add(info);
+        Publish(info);
     }
 
     public void Finished(int processId, int? exitCode)
@@ -690,6 +703,7 @@ public sealed class ForegroundProcessTracker : IForegroundProcessTracker
                 _running.RemoveAt(i);
                 _recent.Insert(0, done); // newest first
                 if (_recent.Count > MaxRecent) _recent.RemoveAt(_recent.Count - 1);
+                Publish(done);
                 return;
             }
             // no matching running process — a duplicate/late finish; ignore.
@@ -710,5 +724,11 @@ public sealed class ForegroundProcessTracker : IForegroundProcessTracker
             for (int i = 0; i < take; i++) outp[i] = _recent[i];
             return outp;
         }
+    }
+
+    private void Publish(ForegroundProcessInfo info)
+    {
+        try { if (_events is not null) _ = _events.PublishAsync(new ForegroundProcessChangedEvent(info)); }
+        catch { /* telemetry must not break process tracking */ }
     }
 }

@@ -706,7 +706,7 @@ internal sealed class WebApp : IAsyncDisposable
                 }
                 if (id is not null)
                 {
-                    SendEvent("tool.output", new { id, output = S(p, "toolOutput") ?? "", isError = B(p, "isError") }, sid);
+                    SendEvent("tool.output", new { id, output = S(p, "toolOutput") ?? "", images = p.TryGetProperty("images", out var imageData) ? imageData : (JsonElement?)null, isError = B(p, "isError") }, sid);
                     SendEvent("tool.completed", new { id, durationMs = durMs }, sid);
                 }
                 break;
@@ -781,11 +781,21 @@ internal sealed class WebApp : IAsyncDisposable
 
 
             case AgentEventType.TurnEmpty:
+            {
                 // Cut-off guard: a turn ended with no answer and no tool calls.
-                // Persist a notice for session replay + broadcast it live; the
-                // nudge plugin (if active) is already steering a continuation.
-                _ = EmitTurnEmptyNoticeAsync(sid);
+                // Decide the wording HERE, inline: the nudge plugin (priority
+                // 100) already ran synchronously in this same publish, so the
+                // steering queue reflects its nudge exactly right now — and
+                // the loop-top drain that CONSUMES it only happens after this
+                // publish returns, so an async re-check (however delayed) sees
+                // an already-drained queue and misreports "run ends here".
+                bool nudging = false;
+                var steering = Resolve<ISteeringQueue>("steering");
+                if (steering is not null)
+                    nudging = steering.PendingCount(sid) > 0;
+                _ = EmitTurnEmptyNoticeAsync(sid, nudging);
                 break;
+            }
 
             case AgentEventType.ProjectApplied when e.Payload is not null:
             {
@@ -818,19 +828,15 @@ internal sealed class WebApp : IAsyncDisposable
     /// replay, and broadcast the same notice live as a <c>session.entry</c>
     /// event. Fire-and-forget (the hot model path must not block); failures are
     /// logged. The nudge plugin separately persists the continuation user message.
+    /// <paramref name="nudging"/> was decided by the caller inline during the
+    /// TurnEmpty publish (before the loop-top drain can consume the nudge) — it
+    /// is deliberately NOT re-checked here, where the queue would already be
+    /// empty and the wording would lie.
     /// </summary>
-    private async Task EmitTurnEmptyNoticeAsync(string? sid)
+    private async Task EmitTurnEmptyNoticeAsync(string? sid, bool nudging)
     {
         if (sid is null) return;
 
-        // The nudge plugin (priority 100) handles TurnEmpty BEFORE this surface
-        // (priority 0) and enqueues its nudge synchronously; give the bus a beat
-        // so the pending count reflects a real nudge when one is in flight.
-        await Task.Delay(30);
-        bool nudging = false;
-        var steering = Resolve<ISteeringQueue>("steering");
-        if (steering is not null)
-            nudging = steering.PendingCount(sid) > 0;
         var text = "⚠ Model turn cut off (no answer, no tool call)" +
             (nudging ? " — nudge sent, continuing the run"
                      : " — no continuation, run ends here");
@@ -1934,6 +1940,31 @@ internal sealed class WebApp : IAsyncDisposable
         }
     }
 
+    internal static ImagePart[] ParsePromptImages(JsonElement payload)
+    {
+        if (!payload.TryGetProperty("images", out var value)) return [];
+        if (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() > 4)
+            throw new ArgumentException("Attach at most four images.");
+        var images = new List<ImagePart>();
+        var total = 0;
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object) throw new ArgumentException("Invalid image attachment.");
+            var data = S(item, "data");
+            if (data is null || data.Length > ImageContent.MaxPromptBytes * 4 / 3 + 4)
+                throw new ArgumentException("Image attachments exceed the 600 KiB prompt limit.");
+            byte[] bytes;
+            try { bytes = Convert.FromBase64String(data); }
+            catch (FormatException) { throw new ArgumentException("Invalid image encoding."); }
+            total += bytes.Length;
+            if (total > ImageContent.MaxPromptBytes) throw new ArgumentException("Image attachments exceed the 600 KiB prompt limit.");
+            var mime = ImageContent.DetectMimeType(bytes);
+            if (mime is null || mime != S(item, "mimeType")) throw new ArgumentException("Use PNG, JPEG, GIF or WebP images with matching content.");
+            images.Add(new ImagePart(mime, bytes));
+        }
+        return images.ToArray();
+    }
+
     private async Task ChatSendAsync(Client c, string? requestId, JsonElement p, CancellationToken ct)
     {
         if (_runner is null) { await SendErrorAsync(c, requestId, "agent runner unavailable", ct); return; }
@@ -1945,6 +1976,9 @@ internal sealed class WebApp : IAsyncDisposable
         if (Store is null) { await SendErrorAsync(c, requestId, "session store unavailable", ct); return; }
 
         var text = S(p, "text") ?? "";
+        ImagePart[] images;
+        try { images = ParsePromptImages(p); }
+        catch (ArgumentException ex) { await SendErrorAsync(c, requestId, ex.Message, ct); return; }
         var model = S(p, "model");
         var reasoning = S(p, "reasoning");
         var sessionId = S(p, "sessionId");
@@ -1960,7 +1994,7 @@ internal sealed class WebApp : IAsyncDisposable
             if (_sends.TryGet(operationId) is { SessionId: { } priorSid } prior)
             {
                 await SendAsync(c, "session.entry",
-                    new { entry = new { type = "user_message", text = prior.Text } as object },
+                    new { entry = new { type = "user_message", text = prior.Text, images = prior.Images } as object },
                     priorSid, ct);
                 await SendAckAsync(c, requestId, ct);
                 return;
@@ -2010,7 +2044,7 @@ internal sealed class WebApp : IAsyncDisposable
         // event reconciles against the durable assignment row). A non-idempotent
         // legacy send (no operation id) keeps the runner minting its own id.
         var started = await _runner.StartRunAsync(new AgentRunRequest(sid, workspace, model, text,
-            RunId: string.IsNullOrEmpty(operationId) ? null : operationId), ct);
+            ReasoningLevel: reasoning, RunId: string.IsNullOrEmpty(operationId) ? null : operationId, Images: images), ct);
         if (started.Disposition == RunDisposition.Queued)
         {
             // astra-2 §13/§16: a full local pool is an ACCEPTED queue, never a
@@ -2024,9 +2058,9 @@ internal sealed class WebApp : IAsyncDisposable
                 await SendErrorAsync(c, requestId, qe, ct); return;
             }
             await SendAsync(c, "session.entry",
-                new { entry = new { type = "user_message", text } as object }, sid, ct);
+                new { entry = new { type = "user_message", text, images } as object }, sid, ct);
             if (!string.IsNullOrEmpty(operationId))
-                _sends.Accept(operationId, new SendIdempotency.Accepted(sid, text, "queued", DateTimeOffset.UtcNow));
+                _sends.Accept(operationId, new SendIdempotency.Accepted(sid, text, "queued", DateTimeOffset.UtcNow, images));
             await SendAckAsync(c, requestId, ct);
             return;
         }
@@ -2040,14 +2074,14 @@ internal sealed class WebApp : IAsyncDisposable
         // echo arrives only after the runner accepted the turn, so a rejected
         // submission cannot look like work that silently vanished.
         await SendAsync(c, "session.entry",
-            new { entry = new { type = "user_message", text } as object }, sid, ct);
+            new { entry = new { type = "user_message", text, images } as object }, sid, ct);
         await SendAsync(c, "agent.state", new { state = "Preparing" }, sid, ct);
         // astra-1 §11a (F/A): stamp acceptance BEFORE the ack is delivered, so a
         // disconnect between acceptance and acknowledgement still lets a retry
         // replay the existing result instead of starting duplicate work.
         if (!string.IsNullOrEmpty(operationId))
             _sends.Accept(operationId, new SendIdempotency.Accepted(
-                sid, text, "accepted", DateTimeOffset.UtcNow));
+                sid, text, "accepted", DateTimeOffset.UtcNow, images));
         await SendAckAsync(c, requestId, ct);
     }
 
@@ -2382,7 +2416,7 @@ internal sealed class WebApp : IAsyncDisposable
                 {
                     case MessageRole.User:
                         lastAssistant = null;
-                        outEntries.Add(new { type = "user_message", text = TextOf(m) } as object);
+                        outEntries.Add(new { type = "user_message", text = TextOf(m), images = m.Parts.OfType<ImagePart>().ToArray() } as object);
                         break;
 
                     case MessageRole.Assistant:
@@ -2478,6 +2512,7 @@ internal sealed class WebApp : IAsyncDisposable
                     {
                         id = tr.ToolCallId,
                         output = string.Join("\n", tr.Parts.OfType<TextPart>().Select(x => x.Text)),
+                        images = tr.Parts.OfType<ImagePart>().ToArray(),
                         isError = tr.IsError,
                     });
                     break;
@@ -2495,6 +2530,7 @@ internal sealed class WebApp : IAsyncDisposable
             {
                 id = part.ToolCallId,
                 output = string.Join("\n", part.Parts.OfType<TextPart>().Select(x => x.Text)),
+                images = part.Parts.OfType<ImagePart>().ToArray(),
                 isError = part.IsError,
             });
         }

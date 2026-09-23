@@ -3,6 +3,7 @@
   import { store } from "../../store.svelte";
   import { ui } from "../../ui.svelte";
   import type { ToolCall } from "../../types";
+  import ImageAttachments from "./ImageAttachments.svelte";
 
   let { call }: { call: ToolCall } = $props();
 
@@ -24,7 +25,6 @@
   }
 
   let args = $derived(parsedArgs());
-  let linkedFile = $derived(filePath());
 
   /** astra-1 G3: explicit lifecycle — tool.completed/failed/interruption are
    *  the only signals; streamed output does not complete a call. Legacy
@@ -94,25 +94,6 @@
     store.setToolDisclosure(call.id, userOpen);
   }
 
-  function openInShell(e: MouseEvent, path: string) {
-    // astra-1 G3: always stop the enclosing disclosure toggle; plain click
-    // shell-opens, ctrl/meta/middle keeps the in-app /api/file viewer.
-    e.stopPropagation();
-    const modified = e.ctrlKey || e.metaKey || e.button !== 0;
-    if (modified) return; // let the anchor's href (the viewer) take over
-    e.preventDefault();
-    const params = new URLSearchParams({ path });
-    if (store.session?.id) params.set("sessionId", store.session.id);
-    // fetch does not reject on HTTP error statuses — check res.ok and
-    // surface the server's reason, otherwise a 404 would fail silently.
-    fetch(`/api/open?${params.toString()}`, { method: "POST" })
-      .then(async (res) => {
-        if (!res.ok)
-          store.setError(`Could not open ${path}: ${(await res.text().catch(() => "")) || res.statusText}`);
-      })
-      .catch((err) => store.setError(String(err)));
-  }
-
   function displayName(): string {
     switch (call.name.toLowerCase()) {
       case "bash": return "Bash";
@@ -163,12 +144,6 @@
 
     if (!call.argsJson) return "waiting for arguments…";
     return call.argsJson.replace(/\s+/g, " ").trim();
-  }
-
-  function fileHref(path: string): string {
-    const params = new URLSearchParams({ path });
-    if (store.session?.id) params.set("sessionId", store.session.id);
-    return `/api/file?${params.toString()}`;
   }
 
   function fmt(ms?: number): string {
@@ -228,9 +203,9 @@
     aria-expanded={expanded}
     onclick={toggle}
     onkeydown={(e) => {
-      // astra-1 G3: keyboard events on the nested file link are the link's —
-      // keydown bubbles from it here, so Enter/Space on the focused link must
-      // NOT also toggle the enclosing disclosure.
+      // Guard is defensive: a nested control's Enter/Space must not toggle
+      // the enclosing disclosure (no nested controls exist today — the file
+      // pill left; keep the guard if one ever returns).
       if (e.target !== e.currentTarget) return;
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
@@ -246,18 +221,10 @@
     <span class="tool-name">{displayName()}</span>
     <span class="tool-sep" aria-hidden="true"></span>
 
-    {#if linkedFile}
-      <a
-        class="tool-file"
-        href={fileHref(linkedFile)}
-        target="_blank"
-        rel="noopener"
-        title={`Open ${linkedFile} in its default application`}
-        onclick={(e) => openInShell(e, linkedFile)}
-      >{linkedFile}</a>
-    {:else}
-      <span class="tool-summary" title={summary()}>{summary()}</span>
-    {/if}
+    <!-- The file target stays plain text (the per-tool file pill is gone);
+         artifact pills for written/edited files live ONLY on the turn-
+         complete surface (AssistantMessage). -->
+    <span class="tool-summary" title={summary()}>{summary()}</span>
 
     <span class="tool-spacer"></span>
 
@@ -301,4 +268,7 @@
       {/if}
     </div>
   {/if}
+
+  <!-- Keep model-provided image results visible even while tool details are collapsed. -->
+  <ImageAttachments images={call.images ?? []} />
 </section>

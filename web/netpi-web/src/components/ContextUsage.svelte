@@ -10,6 +10,31 @@
 
   let open = $state(false);
   let compacting = $state(false);
+  let rootEl: HTMLElement | null = $state(null);
+  let triggerEl: HTMLButtonElement | null = $state(null);
+
+  $effect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && !rootEl?.contains(event.target)) open = false;
+    };
+    const onClick = (event: MouseEvent) => {
+      if (event.target instanceof Node && !rootEl?.contains(event.target)) open = false;
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      open = false;
+      triggerEl?.focus({ preventScroll: true });
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("click", onClick, true);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  });
 
   const window_ = $derived(store.currentModelInfo?.contextWindow ?? 0);
   const usage = $derived(
@@ -133,8 +158,9 @@
   }
 </script>
 
-<div class="ctx" class:unknown>
+<div bind:this={rootEl} class="ctx" class:unknown>
   <button
+    bind:this={triggerEl}
     class="ctx-circle"
     aria-label={
       unknown
@@ -159,8 +185,7 @@
   </button>
 
   {#if open}
-    <div class="ctx-popup" role="dialog" aria-label="Context usage" tabindex="-1"
-         onkeydown={(e) => { if (e.key === "Escape") open = false; }}>
+    <div class="ctx-popup" role="dialog" aria-label="Context usage" tabindex="-1">
       <div class="ctx-title">Context — {store.session?.title ?? "session"}</div>
       {#if unknown}
         <div class="ctx-row">

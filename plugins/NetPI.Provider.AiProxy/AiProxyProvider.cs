@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Security.Cryptography;
 using NetPI.Abstractions;
 
 namespace NetPI.Provider.AiProxy;
@@ -457,13 +458,24 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     {
         // Lazy wire negotiation (astra-2 §3.3): resolve the /v1/responses
         // capability on the owner's first real request — inside the run, never
-        // during a catalog refresh — and let a not-yet-probed auto/responses
-        // run fall back to chat.
+        // during a catalog refresh. Once selected, failures remain on Responses;
+        // chat is used only when configured/negotiated as the selected wire.
         var candidate = await EnsureWireCapabilityAsync(ModelById(request.ModelId), cancellationToken);
-        bool wantedResponses = UseResponsesWire(candidate);
+        if (ContainsImages(request.Messages) && candidate is { } imageModel
+            && !imageModel.InputModalities.Any(m => string.Equals(m, "image", StringComparison.OrdinalIgnoreCase)))
+        {
+            yield return new ModelFailed(request.ModelId, $"Model '{request.ModelId}' does not advertise image input support.");
+            yield break;
+        }
+        if (ContainsImages(request.Messages) && candidate is null)
+        {
+            yield return new ModelFailed(request.ModelId, $"Cannot verify image input support for model '{request.ModelId}'. Refresh the model catalog and select an image-capable model.");
+            yield break;
+        }
+        bool responseAvailable = UseResponsesWire(candidate);
         string failReason = "";
 
-        if (wantedResponses)
+        if (responseAvailable)
         {
             var chainKey = string.IsNullOrEmpty(request.SessionId) ? null : ChainKey(request.SessionId, request.ModelId);
 
@@ -472,15 +484,10 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             // response_not_found means the server no longer stores the
             // referenced previous_response_id (nInfer restart, workload swap,
             // response-store LRU eviction): this session's chain head is
-            // stale. We do NOT degrade to the chat wire for that — the head
-            // would keep referencing the dead id and every later turn would
-            // 404 again, re-sending the full transcript each time. Instead
-            // the stale head is dropped and the run is retried ONCE on the
-            // same wire as a reset (no previous_response_id, full input,
-            // store:true): a clean completion re-anchors the chain so every
-            // later turn chains on the new head again. Any OTHER pre-content
-            // failure still falls through to the transparent chat-completions
-            // fallback below (PLAN §47).
+            // stale. Drop it and retry ONCE on the same wire with a full reset.
+            // If compaction removed every user message, the reset gets a neutral
+            // wire-only user continuation anchor (see BuildResponsesPayload).
+            // Other failures surface to the retry policy without crossing wires.
             for (var attempt = 0; ; attempt++)
             {
                 bool contentSeen = false;
@@ -494,9 +501,8 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                     {
                         // A hard failure before any content (HTTP error,
                         // response.failed) is either healed as a stale chain
-                        // head (below) or falls through to the chat fallback;
-                        // after content it is surfaced and left to the retry
-                        // plugin.
+                        // head (below) or surfaced to the retry plugin. The
+                        // selected Responses wire is never changed mid-run.
                         if (!contentSeen) { hardFailed = true; failReason = ((ModelFailed)ev).Error; break; }
                         foreach (var p in pending) yield return p;
                         pending.Clear();
@@ -534,15 +540,17 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                         "dropped, re-anchoring via reset on the responses wire");
                     continue; // same wire, reset shape: no previous_response_id
                 }
-                break;
+                await PublishDiagnosticsAsync(request, "responses", true, chained, false, failReason, cancellationToken);
+                yield return new ModelFailed(request.ModelId, failReason);
+                yield break;
             }
-
-            _log.Warning($"responses wire failed before content for {request.ModelId} ({failReason}); retrying via chat completions — session chain disabled, full transcript re-sent every request");
+            // The only normal way out of the loop is the successful stream path
+            // above; hard failures were yielded immediately.
         }
 
-        // Wire decision: chat completions serves (either directly, or as the
-        // transparent fallback after a responses-wire failure — PLAN §47).
-        await PublishDiagnosticsAsync(request, "chat", wantedResponses, false, wantedResponses, wantedResponses ? failReason : null, cancellationToken);
+        // Chat completions is selected only when the configured wire is chat or
+        // capability negotiation did not select Responses.
+        await PublishDiagnosticsAsync(request, "chat", false, false, false, null, cancellationToken);
 
         await foreach (var ev in RunChatCompletionsAsync(request, cancellationToken))
             yield return ev;
@@ -1027,6 +1035,21 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
             foreach (var m in request.Messages)
                 if (m.Role != MessageRole.System)
                     BuildItemsForMessage(m, input, out _);
+            // Compaction may leave a system summary plus tool tail and no
+            // persisted user message. Responses requires a user query when a
+            // request starts a fresh response chain. This neutral continuation
+            // anchor exists only on the wire; it is deliberately excluded from
+            // `covered` so fingerprints still describe the persisted transcript.
+            if (!HasUserQuery(request.Messages))
+                input.Add(new Dictionary<string, object>
+                {
+                    ["type"] = "message", ["role"] = "user",
+                    ["content"] = new[] { new Dictionary<string, object>
+                    {
+                        ["type"] = "input_text",
+                        ["text"] = "Continue the task described in the conversation and context above.",
+                    } },
+                });
         }
 
         var payload = new Dictionary<string, object>
@@ -1070,11 +1093,12 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                 break;
 
             case MessageRole.User:
-                if (text.Length > 0)
+                var userContent = ResponsesContent(m.Parts, "input_text", "input_image");
+                if (userContent.Count > 0)
                     input.Add(new Dictionary<string, object>
                     {
                         ["type"] = "message", ["role"] = "user",
-                        ["content"] = new[] { new Dictionary<string, object> { ["type"] = "input_text", ["text"] = text } },
+                        ["content"] = userContent,
                     });
                 break;
 
@@ -1087,11 +1111,12 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                         ["type"] = "reasoning",
                         ["content"] = new[] { new Dictionary<string, object> { ["type"] = "reasoning_text", ["text"] = thinking.Text } },
                     });
-                if (text.Length > 0)
+                var assistantContent = ResponsesContent(m.Parts, "output_text", "input_image");
+                if (assistantContent.Count > 0)
                     input.Add(new Dictionary<string, object>
                     {
                         ["type"] = "message", ["role"] = "assistant",
-                        ["content"] = new[] { new Dictionary<string, object> { ["type"] = "output_text", ["text"] = text } },
+                        ["content"] = assistantContent,
                     });
                 foreach (var c in m.Parts.OfType<ToolCallPart>())
                     input.Add(new Dictionary<string, object>
@@ -1108,7 +1133,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                     input.Add(new Dictionary<string, object>
                     {
                         ["type"] = "function_call_output", ["call_id"] = res.ToolCallId,
-                        ["output"] = string.Join("\n", res.Parts.OfType<TextPart>().Select(p => p.Text)),
+                        ["output"] = ResponsesContent(res.Parts, "input_text", "input_image"),
                     });
                 break;
         }
@@ -1132,8 +1157,17 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                 case TextPart t: b.Append(t.Text); break;
                 case ThinkingPart th: b.Append(th.Text); break;
                 case ToolCallPart tc: b.Append(tc.Id); break;
-                case ToolResultPart tr: b.Append(tr.ToolCallId); break;
-                case ImagePart img: b.Append(img.MimeType); break;
+                case ToolResultPart tr:
+                    b.Append(tr.ToolCallId);
+                    foreach (var nested in tr.Parts)
+                    {
+                        b.Append('\u0003').Append(nested.Kind);
+                        if (nested is TextPart nestedText) b.Append(nestedText.Text);
+                        else if (nested is ImagePart nestedImage)
+                            b.Append(nestedImage.MimeType).Append(Convert.ToHexString(SHA256.HashData(nestedImage.Data)));
+                    }
+                    break;
+                case ImagePart img: b.Append(img.MimeType).Append(Convert.ToHexString(SHA256.HashData(img.Data))); break;
             }
         }
         return b.ToString();
@@ -1144,6 +1178,9 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
 
     private ChainHead? GetChainHead(string sessionId, string modelId)
         => _chainHeads.TryGetValue(ChainKey(sessionId, modelId), out var head) ? head : null;
+
+    private static bool HasUserQuery(IEnumerable<AgentMessage> messages) => messages.Any(m =>
+        m.Role == MessageRole.User && m.Parts.Any(p => p is ImagePart || p is TextPart t && !string.IsNullOrWhiteSpace(t.Text)));
 
     private static string ChainKey(string sessionId, string modelId) => $"{sessionId}|{modelId}";
 
@@ -1207,7 +1244,8 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
 
         if (role is "user" or "system" or "assistant")
         {
-            msg["content"] = string.Join("\n", textParts);
+            var multimodalContent = ChatContent(m.Parts);
+            msg["content"] = m.Parts.Any(p => p is ImagePart) ? multimodalContent : string.Join("\n", textParts);
             if (thinking is not null) msg["reasoning_content"] = thinking.Text;
         }
 
@@ -1230,7 +1268,10 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         if (m.Role == MessageRole.Tool)
         {
             // A single tool message can carry an entire result batch (PLAN §14c);
-            // the chat wire needs one message per tool_call_id, so emit them all.
+            // the chat wire needs one message per tool_call_id, so emit all text
+            // outputs first. Chat Completions tool-role content only accepts text;
+            // carry images in a synthetic user multimodal message after the full
+            // tool batch so no pending tool call is interrupted.
             var res = m.Parts.OfType<ToolResultPart>().ToList();
             if (res.Count == 0) yield break;
             foreach (var r in res)
@@ -1241,6 +1282,20 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                     ["tool_call_id"] = r.ToolCallId,
                     ["content"] = string.Join("\n", r.Parts.OfType<TextPart>().Select(p => p.Text)),
                 };
+            }
+            var images = res.SelectMany(r => r.Parts.OfType<ImagePart>().Select(image => (Result: r, Image: image))).ToList();
+            if (images.Count > 0)
+            {
+                var imageContent = new List<Dictionary<string, object>>
+                {
+                    new() { ["type"] = "text", ["text"] = "Images returned by tools (in result order):" },
+                };
+                foreach (var (result, image) in images)
+                {
+                    imageContent.Add(new Dictionary<string, object> { ["type"] = "text", ["text"] = $"Tool {result.ToolName} ({result.ToolCallId}):" });
+                    imageContent.AddRange(ChatContent([image]));
+                }
+                yield return new Dictionary<string, object> { ["role"] = "user", ["content"] = imageContent };
             }
         }
         else
@@ -1255,7 +1310,38 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     /// code <c>response_not_found</c>, forwarded verbatim by AiProxy.
     /// </summary>
     private static bool IsStaleChainFailure(string reason) =>
-        reason.Contains("response_not_found", StringComparison.Ordinal);
+        reason.Contains("response_not_found", StringComparison.OrdinalIgnoreCase)
+        || (reason.Contains("input must provide a user query", StringComparison.OrdinalIgnoreCase)
+            && reason.Contains("no previous response contains one", StringComparison.OrdinalIgnoreCase));
+
+    private static bool ContainsImages(IEnumerable<AgentMessage> messages) => messages.Any(m =>
+        m.Parts.Any(p => p is ImagePart || p is ToolResultPart tr && tr.Parts.Any(r => r is ImagePart)));
+
+    private static List<Dictionary<string, object>> ChatContent(IEnumerable<MessagePart> parts)
+    {
+        var content = new List<Dictionary<string, object>>();
+        var text = string.Join("\n", parts.OfType<TextPart>().Select(p => p.Text));
+        if (text.Length > 0) content.Add(new Dictionary<string, object> { ["type"] = "text", ["text"] = text });
+        foreach (var image in parts.OfType<ImagePart>())
+            content.Add(new Dictionary<string, object>
+            {
+                ["type"] = "image_url",
+                ["image_url"] = new Dictionary<string, object> { ["url"] = ImageDataUrl(image) },
+            });
+        return content;
+    }
+
+    private static List<Dictionary<string, object>> ResponsesContent(IEnumerable<MessagePart> parts, string textType, string imageType)
+    {
+        var content = new List<Dictionary<string, object>>();
+        var text = string.Join("\n", parts.OfType<TextPart>().Select(p => p.Text));
+        if (text.Length > 0) content.Add(new Dictionary<string, object> { ["type"] = textType, ["text"] = text });
+        foreach (var image in parts.OfType<ImagePart>())
+            content.Add(new Dictionary<string, object> { ["type"] = imageType, ["image_url"] = ImageDataUrl(image) });
+        return content;
+    }
+
+    private static string ImageDataUrl(ImagePart image) => $"data:{image.MimeType};base64,{Convert.ToBase64String(image.Data)}";
 
     private static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "…";
 }

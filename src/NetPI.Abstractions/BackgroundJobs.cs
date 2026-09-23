@@ -47,6 +47,9 @@ public sealed record BackgroundJobOutput(
     int NextOffset,
     bool Truncated);
 
+/// <summary>Published when a background job starts or reaches a terminal state.</summary>
+public sealed record BackgroundJobChangedEvent(BackgroundJobInfo Job);
+
 
 /// <summary>
 /// Manages long-running background processes independent of foreground shell

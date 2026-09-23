@@ -1,5 +1,6 @@
 import { store, NetPIStore, REVEAL_INITIAL, REVEAL_STEP } from "./store.svelte";
 import type {
+  AssistantBlock,
   AgentAssignment,
   AgentState,
   ModelInfo,
@@ -201,8 +202,10 @@ class NetPIWebSocket {
         store.setBusySession(sid, p.state as AgentState);
         if (!isCurrent(sid) && (p.state as AgentState) !== "Idle")
           store.markUnread(sid);
-        if (isCurrent(sid) || nav(sid))
+        if (isCurrent(sid) || nav(sid)) {
+          if ((p.state as AgentState) === "Idle") store.completeRun();
           store.applyAgentState(p.state as AgentState);
+        }
         break;
 
       // astra-2 §13: assignment/lane lifecycle events. The Work panel polls its
@@ -423,6 +426,7 @@ class NetPIWebSocket {
           p.output ?? "",
           p.isError ?? false,
           p.append === true,
+          p.images ?? [],
         );
         break;
       case "tool.completed":
@@ -535,7 +539,7 @@ class NetPIWebSocket {
       switch (e.type) {
         case "user_message": {
           if (prepend) {
-            store.prependUser(e.text ?? "");
+            store.prependUser(e.text ?? "", e.images ?? []);
             break;
           }
           const last = store.blocks[store.blocks.length - 1];
@@ -543,7 +547,7 @@ class NetPIWebSocket {
             !p.replace &&
             last?.kind === "user" &&
             (last.text ?? "") === (e.text ?? "");
-          if (!isEcho) store.appendUser(e.text ?? "");
+          if (!isEcho) store.appendUser(e.text ?? "", e.images ?? []);
           break;
         }
         case "assistant_message":
@@ -575,6 +579,21 @@ class NetPIWebSocket {
           break;
       }
     }
+
+    // Persisted tool batches replay as separate assistant blocks. Mark the
+    // last assistant block in each user-delimited turn as the artifact owner.
+    for (const b of store.blocks) if (b.kind === "assistant") b.endOfRun = false;
+    let lastAssistant = -1;
+    for (let i = 0; i < store.blocks.length; i++) {
+      const b = store.blocks[i];
+      if (b.kind === "assistant" && b.done) lastAssistant = i;
+      if (b.kind === "user" && lastAssistant >= 0) {
+        (store.blocks[lastAssistant] as AssistantBlock).endOfRun = true;
+        lastAssistant = -1;
+      }
+    }
+    if (lastAssistant >= 0 && store.agentState === "Idle")
+      (store.blocks[lastAssistant] as AssistantBlock).endOfRun = true;
   }
 
   private applyAssistantEntry(e: any, prepend = false): void {
@@ -603,7 +622,7 @@ class NetPIWebSocket {
     }
 
     for (const tr of e.toolResults ?? []) {
-      store.setToolResult(tr.id, tr.output ?? "", tr.isError ?? false);
+      store.setToolResult(tr.id, tr.output ?? "", tr.isError ?? false, false, tr.images ?? []);
       // astra-1 G3: replayed results are TERMINAL — the same live/replay
       // model means a persisted result implies completion. (Live output
       // chunks are append=true and never complete.)

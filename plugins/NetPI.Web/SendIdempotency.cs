@@ -21,7 +21,7 @@ public sealed class SendIdempotency
     /// <summary>The accepted outcome of a send: which session it landed in, the
     /// original text it carried (so a replay echoes the ORIGINAL bytes, not a
     /// mutated retry), and the status reported to the client.</summary>
-    public sealed record Accepted(string? SessionId, string Text, string Status, DateTimeOffset At);
+    public sealed record Accepted(string? SessionId, string Text, string Status, DateTimeOffset At, IReadOnlyList<NetPI.Abstractions.ImagePart>? Images = null);
 
     private readonly ConcurrentDictionary<string, Entry> _byId = new();
     private readonly int _maxEntries;

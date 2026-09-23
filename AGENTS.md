@@ -340,7 +340,10 @@ CoreWebView2.NewWindowRequested -- target=_blank / window.open intents never
 open a second window; /api/file viewer URLs are mapped to the referenced
 path (relative ones against the project root) and opened via the OS
 (default app, Explorer for folders); any other URL opens in the default
-browser.
+browser. Window size + maximized state persist in
+`%LOCALAPPDATA%\netPI.Desktop\window.json` — saved on close, restored on
+launch, clamped to the largest connected screen (a clamped restore the user
+never resized is not re-saved, so a big saved size survives small machines).
 Thinking blocks collapse
 by default; Settings → "Keep thinking open" expands them —
 including while streaming, replacing the one-liner. Tool calls are collapsed
@@ -349,6 +352,15 @@ by default (a manual toggle always wins; running shell calls no longer auto-expa
 `localStorage` (`netpi.ui.v2`) via `src/ui.svelte.ts`. `dist/` is git-ignored: after frontend
 changes run `npx vite build` and **reload the Web plugin** (Web UI → reload, or
 `plugin.reload` with id `netpi.web`) — no host restart needed.
+
+Image input: the composer supports paste/picker attachments for models advertising
+`image` input. Up to four compressed previews (600 KiB total decoded) travel via
+`chat.send.images`; the runner persists `ImagePart` with text, including queued
+runs. The existing `read` tool returns PNG/JPEG/GIF/WebP images (10 MiB maximum)
+for model inspection and chat display. See `docs/protocol.md` image attachments.
+Work panel lists refresh from SSE notifications backed by host events; sections
+scroll independently at narrow widths. Artifact pills aggregate at the final
+assistant block of a completed run, not after each tool batch.
 
 ## Config reference (`~/.netpi/config.json` → `plugins.<id>`)
 

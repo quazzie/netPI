@@ -126,3 +126,26 @@ search response carries `query` in its payload and is the one to await.
 - **A disabled direct-cloud deployment is rejected BEFORE inference** (astra-2 §11.2): the runner asks the trusted policy source (`deployments`) for the model's execution mode; a `DirectCloud` deployment recorded as disabled refuses the request with an actionable note and the provider is never called — no paid call even while the local queues are full. The same gate is enforced at the provider by the `cloud-gate` reservation: a direct-cloud model no team's budget policy claims has no budget, so the reservation is denied before the request goes on the wire.
 - **Full capacity is an accepted queue, not a rejection** (astra-2 §13/§16): a `chat.send` that cannot admit a lane persists a durable `Queued` assignment and ACKs — it never fails with "all concurrent runs busy". The `Queued` row is the source of truth the UI reads (tab badge via `agents.state`/`agent.updated`); the run executes NOTHING until the lane scheduler admits it from the queue, and a queued record is cancelable by `agent.cancel` (runner + lane queue purged) before it ever starts. Only validation/policy/queue-limit errors surface as `error` frames.
 - **The Work panel reads, never drives** (astra-2 §12): `GET /api/activity/*` are presentation-only query surfaces on the Activity plugin's own Kestrel port; the only stateful surface is `POST /api/activity/agents/{id}/cancel`, which delegates to the orchestration contract (subtree semantics) with a legacy runner fallback.
+
+
+### Image attachments
+
+`chat.send` accepts optional `images: [{mimeType, data}]`, where `data` is base64
+raster bytes. The Web boundary accepts at most four images, 600 KiB decoded in
+aggregate, validates PNG/JPEG/GIF/WebP signatures and MIME types, and requires the
+selected catalog model to advertise image input. Images are persisted as
+`ImagePart` alongside the user's text, including queued runs and history replay.
+An image-only prompt is valid. Images are sent on idle runs; text steering remains
+available while a run is active.
+
+The composer supports paste and an image picker, previews/removal, and per-session
+image drafts. It resizes attachments to at most 1600 pixels on the longest edge
+and compresses them to JPEG to fit the existing WebSocket message bound; animated
+images use a still frame. Failed sends restore the draft attachments.
+
+The existing Tools plugin's `read` tool returns raster images up to 10 MiB as
+`ImagePart` so an image-capable model can inspect them. `tool.output` and replayed
+`toolResults` carry `images` in the same MIME/base64 shape. The chat displays them
+even when tool details are collapsed. Both provider wires carry image content;
+image bytes participate in Responses transcript fingerprints. No additional
+plugin is required: shared contracts and storage already support images.

@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NetPI.Abstractions;
 using NetPI.Activity;
+using NetPI.Host.Events;
 using Xunit;
 
 namespace NetPI.Host.Tests;
@@ -25,7 +26,7 @@ namespace NetPI.Host.Tests;
 ///     — the rest of the panel still renders.
 /// </summary>
 public class WorkPanelBudgetsTests
-{
+    {
     private static readonly HttpClient Http = new();
 
     // ---- fake cloud budget store -------------------------------------------
@@ -90,13 +91,14 @@ public class WorkPanelBudgetsTests
         }
     }
 
-    private sealed class FakeContext(FakeRegistry services) : IPluginContext
+    private sealed class FakeContext(FakeRegistry services, IEventBus? events = null) : IPluginContext
     {
+        private readonly IEventBus _events = events ?? new EventBus();
         public PluginInfo Info { get; } = new("netPI.Activity", "Activity Test", "0.1.0");
         public IServiceRegistry Services => services;
         public ICommandRegistry Commands => throw new NotSupportedException();
         public IWebPanelRegistry WebPanels => throw new NotSupportedException();
-        public IEventBus Events => throw new NotSupportedException();
+        public IEventBus Events => _events;
         public JsonElement OwnConfig => JsonDocument.Parse("{}").RootElement.Clone();
         public IPluginLogger Log => new NullLogger();
         public IValueLease<object> LeaseSelf() => throw new NotSupportedException();

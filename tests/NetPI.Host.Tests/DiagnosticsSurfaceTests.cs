@@ -372,12 +372,12 @@ public class DiagnosticsSurfaceTests
     }
 
     [Fact]
-    public async Task ResponsesWireFailsBeforeContent_PublishesFallbackDiagnostic()
+    public async Task ResponsesWireFailsBeforeContent_PublishesFailureDiagnostic()
     {
-        // Probe succeeds (model supports responses) but the RUN stream fails
         // Probe succeeds (model supports responses) but the RUN stream ends
         // in response.failed before any content — the exact nInfer shape
-        // ("model name=… failed to load") → transparent chat fallback.
+        // ("model name=… failed to load") → the failure is surfaced to the
+        // retry policy on the responses wire (no chat fallback).
         const string RespFailed =
             "event: response.created\ndata: {\"response\":{\"id\":\"rf1\"},\"type\":\"response.created\"}\n" +
             "event: response.failed\ndata: {\"response\":{\"id\":\"rf1\",\"error\":{\"message\":\"model name=m failed to load\"}},\"type\":\"response.failed\"}\n";
@@ -405,8 +405,8 @@ public class DiagnosticsSurfaceTests
 
         Assert.Single(bus.ModelEvents);
         var d = bus.ModelEvents[0];
-        Assert.Equal("chat", d.WireServed);
-        Assert.True(d.Fallback);
+        Assert.Equal("responses", d.WireServed);
+        Assert.False(d.Fallback);
         Assert.False(d.Chained);
         Assert.NotNull(d.FailureReason);
     }

@@ -42,22 +42,28 @@
   let overflowHasBusy = $derived(overflowTabs.some((t) => t.running || t.unread || t.queued));
 
   $effect(() => {
-    // astra-1 G1: when keyboard/Home-End moves the selection into the
-    // overflowed region, open the list so the selected tab is visible.
-    if (overflowHasSelected && !overflowOpen) overflowOpen = true;
-  });
-
-  $effect(() => {
-    // Escape closes the overflow list (keyboard parity with other popups).
+    // Dismiss the overflow list outside the tab strip or with Escape.
     if (!overflowOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.target instanceof Node && !tablistEl?.contains(e.target)) overflowOpen = false;
+    };
+    const onClick = (e: MouseEvent) => {
+      if (e.target instanceof Node && !tablistEl?.contains(e.target)) overflowOpen = false;
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         overflowOpen = false;
         tablistEl?.focus({ preventScroll: true });
       }
     };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("click", onClick, true);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("click", onClick, true);
+      window.removeEventListener("keydown", onKey);
+    };
   });
 
   let tablistEl: HTMLElement | null = $state(null);

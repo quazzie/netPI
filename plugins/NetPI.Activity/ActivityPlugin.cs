@@ -68,6 +68,7 @@ public sealed class ActivityPlugin : INetPiPlugin
         _app = null;
         if (webApp is null) return;
         try { await webApp.StopAsync(cancellationToken); } catch { /* best-effort */ }
+        webApp.Dispose();
     }
 
     public ValueTask UnloadAsync(CancellationToken cancellationToken)

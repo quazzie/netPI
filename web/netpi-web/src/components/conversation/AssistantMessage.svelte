@@ -239,9 +239,20 @@
   }
 
   let artifacts = $derived.by(() => {
+    if (!block.endOfRun) return [];
+    const index = store.blocks.findIndex((item) => item.id === block.id);
+    let start = index;
+    while (start > 0 && store.blocks[start - 1].kind !== "user") start--;
+    const calls: ToolCall[] = [];
+    // One agent turn may persist tool batches as several assistant blocks,
+    // with system notices between them. Collect its file outputs together.
+    for (let i = start; i <= index; i++) {
+      const item = store.blocks[i];
+      if (item.kind === "assistant") calls.push(...item.toolCalls);
+    }
     const seen = new Set<string>();
     const result: { path: string; action: "created" | "modified" }[] = [];
-    for (const call of block.toolCalls) {
+    for (const call of calls) {
       const path = artifactPath(call);
       if (!path || seen.has(path)) continue;
       seen.add(path);
@@ -283,9 +294,8 @@
       </div>
     {/if}
 
-    {#if block.done && artifacts.length}
-      <!-- astra-1 G3: artifact pills are a done-state surface — during a run
-           the write/edit results may still be empty or changing. -->
+    {#if block.endOfRun && artifacts.length}
+      <!-- File artifacts belong to the final assistant block of an agent run. -->
       <div class="artifacts" aria-label="Artifacts">
         {#each artifacts as artifact (artifact.path)}
           <a

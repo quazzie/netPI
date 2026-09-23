@@ -38,6 +38,7 @@ internal sealed class BackgroundJob
     // Bounded output ring: oldest chars are discarded once the cap is hit.
     private readonly StringBuilder _output = new();
     private int _dropped; // chars discarded from the front
+    private long _lastOutputNotification;
 
     public void AppendOutput(string text)
     {
@@ -49,6 +50,18 @@ internal sealed class BackgroundJob
                 _dropped += _output.Length - MaxOutputChars;
                 _output.Remove(0, _output.Length - MaxOutputChars);
             }
+        }
+    }
+
+    /// <summary>Coalesce output notifications to at most ten per second per job.</summary>
+    public bool TryClaimOutputNotification()
+    {
+        var now = Stopwatch.GetTimestamp();
+        while (true)
+        {
+            var last = Volatile.Read(ref _lastOutputNotification);
+            if (last != 0 && now - last < Stopwatch.Frequency / 10) return false;
+            if (Interlocked.CompareExchange(ref _lastOutputNotification, now, last) == last) return true;
         }
     }
 
@@ -164,11 +177,15 @@ public sealed class BackgroundJobManager : IBackgroundJobManager
         var proc = new Process { StartInfo = psi };
         proc.OutputDataReceived += (_, e) =>
         {
-            if (e.Data is not null) job.AppendOutput(e.Data + Environment.NewLine);
+            if (e.Data is null) return;
+            job.AppendOutput(e.Data + Environment.NewLine);
+            PublishOutputChangedIfDue(job);
         };
         proc.ErrorDataReceived += (_, e) =>
         {
-            if (e.Data is not null) job.AppendOutput("[stderr] " + e.Data + Environment.NewLine);
+            if (e.Data is null) return;
+            job.AppendOutput("[stderr] " + e.Data + Environment.NewLine);
+            PublishOutputChangedIfDue(job);
         };
         proc.Start();
         proc.BeginOutputReadLine();
@@ -187,6 +204,7 @@ public sealed class BackgroundJobManager : IBackgroundJobManager
         job.JobLease = _ctx.LeaseSelf();
 
         lock (_gate) _jobs[job.JobId] = job;
+        PublishChanged(job);
         _ctx.Log.Information($"background start {job.JobId} [{shellId}] pid={proc.Id}: {command}");
         return job.ToInfo();
     }
@@ -213,6 +231,7 @@ public sealed class BackgroundJobManager : IBackgroundJobManager
         lock (_gate) job = _jobs.GetValueOrDefault(jobId);
         if (job is null) return ValueTask.FromResult(false);
         job.Kill();
+        PublishChanged(job);
         _ctx.Log.Information($"background kill {jobId}");
         return ValueTask.FromResult(true);
     }
@@ -276,6 +295,7 @@ public sealed class BackgroundJobManager : IBackgroundJobManager
         try { job.JobLease?.Dispose(); } catch { /* best-effort */ }
         job.JobLease = null;
         _ctx.Log.Information($"background {job.JobId} exited code={job.ExitCode}");
+        PublishChanged(job);
         PruneRetainedJobs();
     }
 
@@ -301,6 +321,17 @@ public sealed class BackgroundJobManager : IBackgroundJobManager
                     _ctx.Log.Debug($"background pruned completed job {j.JobId} (bounded retention)");
             }
         }
+    }
+
+    private void PublishChanged(BackgroundJob job)
+    {
+        try { _ = _ctx.Events.PublishAsync(new BackgroundJobChangedEvent(job.ToInfo())); }
+        catch { /* panel notifications must not interfere with process ownership */ }
+    }
+
+    private void PublishOutputChangedIfDue(BackgroundJob job)
+    {
+        if (job.TryClaimOutputNotification()) PublishChanged(job);
     }
 
     private IValueLease<IShellCommandResolver> AcquireResolver(string shellId)

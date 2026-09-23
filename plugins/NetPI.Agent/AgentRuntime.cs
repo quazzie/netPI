@@ -597,7 +597,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISteeringQueue
                             Kind = "tool-call-completed",
                             ToolCallId = call.Id,
                             ToolName = call.Name,
-                            ToolOutput = string.Join("", res.Parts.Select(x => x is TextPart t ? t.Text : x.ToString())),
+                            ToolOutput = string.Join("", res.Parts.OfType<TextPart>().Select(x => x.Text)),
+                            Images = res.Parts.OfType<ImagePart>().ToArray(),
                             IsError = res.IsError,
                         }, ct);
                 }

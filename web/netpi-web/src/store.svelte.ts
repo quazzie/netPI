@@ -1,5 +1,6 @@
 import type {
   AgentAssignment,
+  ImageAttachment,
   AgentState,
   Block,
   AssistantBlock,
@@ -349,9 +350,9 @@ export class NetPIStore {
   // Transcript mutation helpers. Only the active block mutates.
   // ----------------------------------------------------------------------
 
-  appendUser(text: string): string {
+  appendUser(text: string, images: ImageAttachment[] = []): string {
     const id = uid("u");
-    this.blocks.push({ kind: "user", id, text, createdAt: Date.now() });
+    this.blocks.push({ kind: "user", id, text, images, createdAt: Date.now() });
     return id;
   }
 
@@ -377,9 +378,9 @@ export class NetPIStore {
     return id;
   }
 
-  prependUser(text: string): string {
+  prependUser(text: string, images: ImageAttachment[] = []): string {
     const id = uid("u");
-    this.blocks.unshift({ kind: "user", id, text, createdAt: Date.now() });
+    this.blocks.unshift({ kind: "user", id, text, images, createdAt: Date.now() });
     return id;
   }
 
@@ -484,12 +485,13 @@ export class NetPIStore {
     if (c) c.argsJson += delta;
   }
 
-  setToolResult(id: string, output: string, isError: boolean, append = false): void {
+  setToolResult(id: string, output: string, isError: boolean, append = false, images: ImageAttachment[] = []): void {
     const a = this.active();
     const c = a?.toolCalls.find((t) => t.id === id);
     if (c) {
       c.result = append ? (c.result ?? "") + output : output;
       if (!append) {
+        c.images = images;
         c.isError = isError;
         // astra-1 G3: a terminal failure flagged by the (non-append) result
         // event ends "running" early; output chunks alone never do.
@@ -528,6 +530,12 @@ export class NetPIStore {
     this.activeAssistantId = null;
     this.drainSteering();
     if (this.agentState !== "Idle") this.activity = "Continuing…";
+  }
+
+  /** Mark the final assistant block when the agent run reaches its terminal state. */
+  completeRun(): void {
+    const last = [...this.blocks].reverse().find((b) => b.kind === "assistant");
+    if (last?.kind === "assistant" && last.done) last.endOfRun = true;
   }
 
   resetAssistantForRetry(): void {
@@ -591,14 +599,14 @@ export class NetPIStore {
   }
 
   /** Send when idle, steer when busy. */
-  submit(message: string): "sent" | "steered" {
+  submit(message: string, images: ImageAttachment[] = []): "sent" | "steered" {
     const text = message.trim();
-    if (!text) return "sent";
+    if (!text && !images.length) return "sent";
     if (this.busy) {
       this.queuedSteer.push({ id: uid("q"), text });
       return "steered";
     }
-    this.appendUser(text);
+    this.appendUser(text, images);
     return "sent";
   }
 

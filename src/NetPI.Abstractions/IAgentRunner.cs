@@ -12,7 +12,8 @@ public sealed record AgentRunRequest(
     string? ReasoningLevel = null,
     float? Temperature = null,
     IReadOnlyList<AgentMessage>? PriorMessages = null,
-    string? RunId = null)
+    string? RunId = null,
+    IReadOnlyList<ImagePart>? Images = null)
 {
     /// <summary>
     /// The caller-provided run identity (astra-2 §7): when present the runner uses

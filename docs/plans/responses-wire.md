@@ -169,6 +169,19 @@ calls order. One `function_call_output` item per `ToolResultPart` (and one
 tool message per `tool_call_id` on the chat wire). No `AgentRuntime`
 changes: the provider owns the head, keyed off the request `SessionId`.
 
+If a chained request fails before any content because the stored response is
+gone, netPI resets the chain and retries once on Responses with the full
+transcript. This handles both `response_not_found` and nInfer's
+`invalid_value` response when a delta has no user query because the previous
+response is no longer available. A successful reset establishes a new head;
+other pre-content failures retain the existing chat fallback.
+
+Image parts are sent as data URLs on either wire (`image_url` blocks on chat,
+`input_image` blocks on Responses), including images nested in tool results.
+Image requests are rejected before dispatch when the selected model does not
+advertise `image` in `input_modalities`; image bytes participate in chain
+fingerprints so changed attachments force a transcript reset.
+
 ## 8. Risks & mitigations
 
 | Risk | Mitigation |

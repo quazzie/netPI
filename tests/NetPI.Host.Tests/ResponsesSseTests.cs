@@ -274,21 +274,95 @@ public class ResponsesSseTests
     }
 
     [Fact]
-    public async Task Responses_HttpErrorBeforeContent_FallsThroughToChat()
+    public async Task Responses_HttpErrorBeforeContent_RemainsOnResponsesWire()
     {
-        // /v1/responses run returns 502 → ModelFailed before any content →
-        // the dispatcher transparently retries via /v1/chat/completions.
+        // Once Responses is selected, an inference failure must remain on that
+        // transport and surface to the normal retry policy.
         var (p, h) = MakeWire("responses", CatalogRoute(RespText, "probe", ChatText, respRunStatus: HttpStatusCode.BadGateway));
         await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
         var ev = await Collect(p, Req());
 
-        // Both endpoints were hit: the failed responses run and the chat retry.
         Assert.Contains(h.Sent, s => s.Method == "POST" && s.Url.EndsWith("/v1/responses", StringComparison.Ordinal) && IsResponsesRun(s.Body));
-        Assert.Contains(h.Sent, s => s.Method == "POST" && s.Url.EndsWith("/v1/chat/completions", StringComparison.Ordinal));
-        // No raw failure surfaces to the caller — the run completes via chat.
-        Assert.DoesNotContain(ev, e => e is ModelFailed);
-        var done = Assert.Single(ev.OfType<ModelCompleted>());
-        Assert.Equal("Hello world", done.Message.Parts.OfType<TextPart>().Single().Text);
+        Assert.DoesNotContain(h.Sent, s => s.Url.EndsWith("/v1/chat/completions", StringComparison.Ordinal));
+        Assert.Contains(ev.OfType<ModelFailed>(), e => e.Error.Contains("HTTP 502", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("chat")]
+    [InlineData("responses")]
+    public async Task ImageParts_AreSerializedForUserAndToolResults(string wire)
+    {
+        const string catalogWithImage = "{\"data\":[{\"id\":\"m\",\"input_modalities\":[\"text\",\"image\"]}]}";
+        var baseRoute = CatalogRoute(RespText, "probe", ChatText);
+        var (p, h) = MakeWire(wire, (req, body) => req.RequestUri!.ToString().EndsWith("/v1/models", StringComparison.Ordinal)
+            ? (HttpStatusCode.OK, catalogWithImage)
+            : baseRoute(req, body));
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
+
+        var image = new ImagePart("image/png", [1, 2, 3]);
+        var messages = new[]
+        {
+            new AgentMessage("u", MessageRole.User, [new TextPart("inspect"), image], DateTimeOffset.UtcNow),
+            new AgentMessage("tool", MessageRole.Tool,
+                [new ToolResultPart("call_1", "read", [new TextPart("captured"), image])], DateTimeOffset.UtcNow),
+        };
+        await Collect(p, new ModelRequest { ModelId = "m", Messages = messages });
+
+        var body = Body(h.Sent.Last(s => s.Method == "POST" && s.Url.EndsWith(wire == "chat" ? "/v1/chat/completions" : "/v1/responses", StringComparison.Ordinal)));
+        var dataUrl = "data:image/png;base64,AQID";
+        if (wire == "responses")
+        {
+            var input = body.GetProperty("input");
+            Assert.Equal("input_image", input[0].GetProperty("content")[1].GetProperty("type").GetString());
+            Assert.Equal(dataUrl, input[0].GetProperty("content")[1].GetProperty("image_url").GetString());
+            Assert.Equal(dataUrl, input[1].GetProperty("output")[1].GetProperty("image_url").GetString());
+        }
+        else
+        {
+            var messagesJson = body.GetProperty("messages");
+            Assert.Equal("image_url", messagesJson[0].GetProperty("content")[1].GetProperty("type").GetString());
+            Assert.Equal(dataUrl, messagesJson[0].GetProperty("content")[1].GetProperty("image_url").GetProperty("url").GetString());
+            Assert.Equal("tool", messagesJson[1].GetProperty("role").GetString());
+            Assert.Equal("user", messagesJson[2].GetProperty("role").GetString());
+            Assert.Equal(dataUrl, messagesJson[2].GetProperty("content")[2].GetProperty("image_url").GetProperty("url").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task ImageParts_RejectModelsWithoutImageInputSupport()
+    {
+        var (p, h) = MakeWire("chat", CatalogRoute(RespText, "probe", ChatText));
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
+
+        var req = new ModelRequest
+        {
+            ModelId = "m",
+            Messages = [new AgentMessage("u", MessageRole.User, [new ImagePart("image/png", [1])], DateTimeOffset.UtcNow)],
+        };
+        var ev = await Collect(p, req);
+
+        Assert.Contains(ev.OfType<ModelFailed>(), e => e.Error.Contains("does not advertise image input", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.Sent, s => s.Url.EndsWith("/v1/chat/completions", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Chain_ChangedImageBytes_ResetTranscriptCoverage()
+    {
+        const string catalogWithImage = "{\"data\":[{\"id\":\"m\",\"input_modalities\":[\"text\",\"image\"]}]}";
+        var baseRoute = CatalogRoute(RespText, "probe", ChatText);
+        var (p, h) = MakeWire("responses", (req, body) => req.RequestUri!.ToString().EndsWith("/v1/models", StringComparison.Ordinal)
+            ? (HttpStatusCode.OK, catalogWithImage)
+            : baseRoute(req, body));
+        await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
+
+        var original = new AgentMessage("u1", MessageRole.User, [new TextPart("inspect"), new ImagePart("image/png", [1])], DateTimeOffset.UtcNow);
+        await Collect(p, Sreq("s-image", original));
+        var changed = new AgentMessage("u1", MessageRole.User, [new TextPart("inspect"), new ImagePart("image/png", [2])], original.CreatedAt);
+        await Collect(p, Sreq("s-image", changed, User("u2", "next")));
+
+        var second = Body(ResponsesRun(h));
+        Assert.False(second.TryGetProperty("previous_response_id", out _));
+        Assert.Equal(2, second.GetProperty("input").GetArrayLength());
     }
 
     // ---- chain (PLAN §14c) -------------------------------------------------
@@ -360,12 +434,13 @@ public class ResponsesSseTests
 
         var u1 = User("u1", "hi");
         var ev = await Collect(p, Sreq("s1", u1));
-        // The pre-content failure is retried transparently via chat.
-        Assert.DoesNotContain(ev, e => e is ModelFailed);
-        Assert.Contains(ev, e => e is ModelCompleted);
+        // The Responses failure is surfaced to the retry policy (no chat
+        // fallback); the response head must not advance.
+        Assert.Contains(ev.OfType<ModelFailed>(), e => e.Error.Contains("boom", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.Sent, s => s.Url.EndsWith("/v1/chat/completions", StringComparison.Ordinal));
 
-        // Next turn over the same transcript: no head was advanced → reset with
-        // the full input and no previous_response_id.
+        // A later request over the same transcript can retry on Responses; no
+        // head was advanced so it resets with the full input.
         await Collect(p, Sreq("s1", u1, User("u2", "next")));
         var body = Body(ResponsesRun(h));
         Assert.False(body.TryGetProperty("previous_response_id", out _));
@@ -373,11 +448,12 @@ public class ResponsesSseTests
     }
 
     [Fact]
-    public async Task Chain_StaleHead_404ResponseNotFound_HealsWithResetOnSameWire()
+    public async Task Chain_StaleHead_InvalidValueMissingPriorUserQuery_HealsWithResetOnSameWire()
     {
         // The server's response store lost the stored chain (nInfer restart,
         // workload swap, LRU eviction): the pre-heal head (r1) is dead and
-        // 404s with response_not_found; reset runs mint fresh stored ids
+        // rejects the delta with invalid_value because the stored chain no
+        // longer contains its original user query; reset runs mint fresh stored ids
         // (r1 on turn 1, r2 on the healed reset), and chains on live ids
         // succeed.
         var mint = 0;
@@ -391,8 +467,8 @@ public class ResponsesSseTests
                 if (b.Contains("\"previous_response_id\"", StringComparison.Ordinal))
                 {
                     if (b.Contains("\"previous_response_id\":\"r1\""))
-                        return (HttpStatusCode.NotFound,
-                            "{\"error\":{\"code\":\"response_not_found\",\"message\":\"response 'r1' not found\",\"param\":\"previous_response_id\",\"type\":\"invalid_request_error\"}}");
+                        return (HttpStatusCode.BadRequest,
+                            "{\"error\":{\"code\":\"invalid_value\",\"message\":\"input must provide a user query when no previous response contains one\",\"param\":\"input\",\"type\":\"invalid_request_error\"}}");
                     return (HttpStatusCode.OK, RespText2); // r2 is stored
                 }
                 return (HttpStatusCode.OK, mint++ == 0 ? RespText : RespText2); // mint r1, then r2
@@ -440,11 +516,12 @@ public class ResponsesSseTests
     }
 
     [Fact]
-    public async Task Chain_OtherPreContentFailure_StillFallsBackToChat()
+    public async Task Chain_OtherPreContentFailure_StayOnResponsesWireWithoutDroppingHead()
     {
-        // A NON-404 pre-content failure (502 on the first chained run only)
-        // must keep the existing behavior: transparent chat fallback, and the
-        // (still-valid) head is NOT dropped — the next turn chains again.
+        // A NON-stale-chain pre-content failure (502 on the first chained run)
+        // must NOT fall back to chat: the failure surfaces to the retry policy,
+        // the responses head is preserved (only stale-chain failures drop it),
+        // and the next turn chains again on the same head.
         var mint2 = 0; var chainedFails = 0;
         var (p, h) = MakeWire("responses", (req, b) =>
         {
@@ -459,7 +536,6 @@ public class ResponsesSseTests
                         : (HttpStatusCode.OK, RespText2);
                 return (HttpStatusCode.OK, mint2++ == 0 ? RespText : RespText2);
             }
-            if (url.EndsWith("/v1/chat/completions", StringComparison.Ordinal)) return (HttpStatusCode.OK, ChatText);
             return (HttpStatusCode.NotFound, "{}");
         });
         await p.RefreshAsync(CancellationToken.None); await p.WaitForProbeAsync();
@@ -467,21 +543,21 @@ public class ResponsesSseTests
         var u1 = User("u1", "hi");
         var done = (await Collect(p, Sreq("s1", u1))).OfType<ModelCompleted>().Single();
 
-        // 502 on the chained turn → chat fallback serves it; head r1 survives.
+        // 502 on the chained turn → surfaced to the retry policy, no chat call,
+        // head r1 survives (the failure is not a stale-chain failure).
         var u2 = User("u2", "next");
         var ev = await Collect(p, Sreq("s1", u1, done.Message, u2));
-        Assert.DoesNotContain(ev, e => e is ModelFailed);
-        var chatDone = Assert.Single(ev.OfType<ModelCompleted>());
-        Assert.Contains(h.Sent, s => s.Url.EndsWith("/v1/chat/completions", StringComparison.Ordinal));
+        Assert.DoesNotContain(ev, e => e is ModelCompleted);
+        Assert.Contains(ev.OfType<ModelFailed>(), e => e.Error.Contains("HTTP 502", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.Sent, s => s.Url.EndsWith("/v1/chat/completions", StringComparison.Ordinal));
 
-        // Head survived: the next turn chains again on r1 with the delta
-        // since the stored head: u2 (1) + the chat-completed assistant turn
-        // (reasoning + message = 2) + u3 (1).
+        // The next turn chains AGAIN on r1 (head preserved) with the pending
+        // user messages since the head: u2 + u3 = 2.
         var u3 = User("u3", "again");
-        await Collect(p, Sreq("s1", u1, done.Message, u2, chatDone.Message, u3));
+        await Collect(p, Sreq("s1", u1, done.Message, u2, u3));
         var third = Body(ResponsesRun(h));
         Assert.Equal("r1", third.GetProperty("previous_response_id").GetString());
-        Assert.Equal(4, third.GetProperty("input").GetArrayLength());
+        Assert.Equal(2, third.GetProperty("input").GetArrayLength());
     }
 
     [Fact]

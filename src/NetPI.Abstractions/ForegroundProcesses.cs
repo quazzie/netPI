@@ -30,6 +30,9 @@ public sealed record ForegroundProcessInfo(
     public bool IsRunning => ExitedAt is null;
 }
 
+/// <summary>Published when a tracked foreground shell process starts or finishes.</summary>
+public sealed record ForegroundProcessChangedEvent(ForegroundProcessInfo Process);
+
 /// <summary>
 /// astra-1 H: lightweight lifecycle information for the foreground shell
 /// processes the Tools plugin is currently running (or just finished). Registered

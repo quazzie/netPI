@@ -172,7 +172,11 @@ public sealed class LanePlugin : INetPiPlugin
                             var model = PoolModel(snap.PoolId);
                             if (model is null) continue;
                             var obs = await source.ObserveAsync(model, boundCts.Token);
+                            var before = _scheduler.Snapshots();
                             _scheduler.UpdateProviderObservation(obs);
+                            var after = _scheduler.Snapshots();
+                            if (PoolProjectionChanged(before, after))
+                                await PublishLanesStateAsync(context, after, ct);
                         }
                         catch (OperationCanceledException) { /* bounded wait expired — retry next tick */ }
                         catch (Exception ex)
@@ -201,6 +205,37 @@ public sealed class LanePlugin : INetPiPlugin
         catch (ServiceUnavailableException) { return null; }
     }
 
+    private static bool PoolProjectionChanged(
+        IReadOnlyList<LanePoolSnapshot> before, IReadOnlyList<LanePoolSnapshot> after)
+    {
+        if (before.Count != after.Count) return true;
+        var oldById = before.ToDictionary(p => p.PoolId, StringComparer.Ordinal);
+        foreach (var p in after)
+        {
+            if (!oldById.TryGetValue(p.PoolId, out var old) ||
+                old.Enabled != p.Enabled || old.Draining != p.Draining ||
+                old.OwnedCount != p.OwnedCount || old.EffectiveCapacity != p.EffectiveCapacity ||
+                old.CapacityMode != p.CapacityMode || old.ProviderReportedConcurrency != p.ProviderReportedConcurrency ||
+                old.UserCap != p.UserCap || old.ProviderStatus != p.ProviderStatus ||
+                old.QueueCount != p.QueueCount || old.BlockedReason != p.BlockedReason)
+                return true;
+        }
+        return false;
+    }
+
+    private async ValueTask PublishLanesStateAsync(
+        IPluginContext context, IReadOnlyList<LanePoolSnapshot> snapshots, CancellationToken ct)
+    {
+        var pools = snapshots.Select(s =>
+        {
+            var binding = _policies.FirstOrDefault(p => string.Equals(p.PoolId, s.PoolId, StringComparison.Ordinal));
+            return new AgentPoolSnapshot(s.PoolId, binding?.DeploymentId ?? string.Empty,
+                binding?.ModelId ?? string.Empty, s.OwnedCount, s.QueueCount,
+                s.EffectiveCapacity, s.Enabled, s.BlockedReason);
+        }).ToArray();
+        await context.Events.PublishAsync(new LanesStateEvent(pools, DateTimeOffset.UtcNow), ct);
+    }
+
     public async ValueTask StartAsync(CancellationToken cancellationToken)
     {
         // One eager, bounded capacity refresh at startup so the first
@@ -221,7 +256,11 @@ public sealed class LanePlugin : INetPiPlugin
                         var model = PoolModel(snap.PoolId);
                         if (model is null) continue;
                         var obs = await source.ObserveAsync(model, cts.Token);
+                        var before = _scheduler.Snapshots();
                         _scheduler.UpdateProviderObservation(obs);
+                        var after = _scheduler.Snapshots();
+                        if (PoolProjectionChanged(before, after))
+                            await PublishLanesStateAsync(ctx, after, cancellationToken);
                     }
                 }
             }
