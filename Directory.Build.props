@@ -8,13 +8,12 @@
     <InvariantGlobalization>false</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <!-- Pin the assembly version explicitly. When the version is unset the SDK
-         auto-derives it and embeds a per-build/per-commit token into the assembly
-         metadata, so two builds of IDENTICAL source produce different bytes. The
-         plugin contract check (abstractionsBuildId) compares
-         netPI.Abstractions.dll BYTES, so a flipping version hash makes every
-         plugin fail that check after any rebuild ("contract mismatch" cascade,
-         host never binds a port). A stable version keeps the build deterministic;
-         any REAL source change still changes the bytes and is still detected. -->
+         auto-derives it and (with SourceLink) embeds the git HEAD into the
+         metadata, so two builds of identical source produce different bytes.
+         The plugin contract check now compares the PUBLIC API id, so this is no
+         longer load-bearing for plugin compatibility (astra-2 contract id);
+         the pin simply keeps the build reproducible for tooling that keys on
+         dll bytes (staging caches, diffing). -->
     <Version>0.1.0</Version>
     <AssemblyVersion>0.1.0.0</AssemblyVersion>
     <FileVersion>0.1.0.0</FileVersion>
