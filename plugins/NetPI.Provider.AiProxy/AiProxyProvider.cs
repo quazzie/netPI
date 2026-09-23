@@ -357,6 +357,19 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
     }
 
     /// <summary>
+    /// OpenAI wire function names are restricted to [A-Za-z0-9_-]{1,64}; internal
+    /// tools may carry namespace dots (agents.delegate). The proxy rejects any
+    /// other character (HTTP 400 on BOTH the responses and chat wires), so the
+    /// boundary rewrites dots to dashes OUT and back IN (dots never legitimately
+    /// occur in a model-authored name, so the mapping is lossless in practice).
+    /// </summary>
+    public static string WireToolName(string name) =>
+        name.Length == 0 ? name : name.Replace('.', '-');
+
+    public static string InternalToolName(string name) =>
+        name.Length == 0 ? name : name.Replace('-', '.');
+
+    /// <summary>
     /// astra-2 §11.2 (package F): the public run path. Before ANY bytes hit
     /// the wire for a cloud-capable request, the execution gate reserves the
     /// request's maximum cost against the team's shared allowance (the atomic
@@ -690,7 +703,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                     {
                         var cid = tc.TryGetProperty("id", out var i) ? i.GetString() : null;
                         var fn0 = tc.TryGetProperty("function", out var f0) ? f0 : default;
-                        var name = fn0.ValueKind == JsonValueKind.Object && fn0.TryGetProperty("name", out var nm0) ? nm0.GetString() : null;
+                        var name = fn0.ValueKind == JsonValueKind.Object && fn0.TryGetProperty("name", out var nm0) ? InternalToolName(nm0.GetString() ?? "") : null;
                         state = new ToolState(cid ?? $"call_{idx}", name ?? "");
                         tools[idx] = state;
                     }
@@ -698,8 +711,8 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                     {
                         if (fn.TryGetProperty("name", out var nm) && nm.ValueKind == JsonValueKind.String)
                         {
-                            var n2 = nm.GetString();
-                            if (n2 is { Length: > 0 }) state.Name = state.Name.Length == 0 ? n2 : state.Name;
+                            var n2 = nm.GetString() ?? "";
+                            if (n2 is { Length: > 0 }) state.Name = state.Name.Length == 0 ? InternalToolName(n2) : state.Name;
                         }
                         if (fn.TryGetProperty("arguments", out var args) && args.ValueKind == JsonValueKind.String)
                         {
@@ -880,7 +893,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                     if (itK == "function_call")
                     {
                         var cid = it.TryGetProperty("call_id", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString()! : "";
-                        var name = it.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() ?? "" : "";
+                        var name = InternalToolName(it.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() ?? "" : "");
                         var itemId = it.TryGetProperty("id", out var fi) && fi.ValueKind == JsonValueKind.String ? fi.GetString()! : "";
                         // plan §3C: the SEMANTIC output position (output_index) is
                         // what completion assembly orders by — capture it here, on
@@ -1031,7 +1044,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
         var tools = request.Tools.Count > 0
             ? request.Tools.Select(t => new Dictionary<string, object>
               {
-                  ["type"] = "function", ["name"] = t.Name, ["description"] = t.Description, ["parameters"] = t.Parameters,
+                  ["type"] = "function", ["name"] = WireToolName(t.Name), ["description"] = t.Description, ["parameters"] = t.Parameters,
               }).ToList()
             : null;
         if (tools is not null) payload["tools"] = tools;
@@ -1084,7 +1097,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                     input.Add(new Dictionary<string, object>
                     {
                         ["type"] = "function_call", ["call_id"] = c.Id,
-                        ["name"] = c.Name, ["arguments"] = c.Arguments.GetRawText(),
+                        ["name"] = WireToolName(c.Name), ["arguments"] = c.Arguments.GetRawText(),
                     });
                 break;
 
@@ -1151,7 +1164,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                   ["type"] = "function",
                   ["function"] = new Dictionary<string, object>
                   {
-                      ["name"] = t.Name,
+                      ["name"] = WireToolName(t.Name),
                       ["description"] = t.Description,
                       ["parameters"] = t.Parameters,
                   },
@@ -1208,7 +1221,7 @@ public sealed class AiProxyProvider : IModelProvider, IModelCatalog
                     ["type"] = "function",
                     ["function"] = new Dictionary<string, object>
                     {
-                        ["name"] = c.Name,
+                        ["name"] = WireToolName(c.Name),
                         ["arguments"] = c.Arguments.GetRawText(),
                     },
                 }).ToList();
