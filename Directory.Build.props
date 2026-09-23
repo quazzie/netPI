@@ -7,5 +7,17 @@
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <InvariantGlobalization>false</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Pin the assembly version explicitly. When the version is unset the SDK
+         auto-derives it and embeds a per-build/per-commit token into the assembly
+         metadata, so two builds of IDENTICAL source produce different bytes. The
+         plugin contract check (abstractionsBuildId) compares
+         netPI.Abstractions.dll BYTES, so a flipping version hash makes every
+         plugin fail that check after any rebuild ("contract mismatch" cascade,
+         host never binds a port). A stable version keeps the build deterministic;
+         any REAL source change still changes the bytes and is still detected. -->
+    <Version>0.1.0</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+    <InformationalVersion>0.1.0</InformationalVersion>
   </PropertyGroup>
 </Project>
