@@ -105,11 +105,13 @@ $childEnv = @{
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $childExe
 $psi.UseShellExecute = $false
-$psi.CreateNoWindow = $true
+# Deliberately NOT WindowStyle='Hidden'/CreateNoWindow: the shell's main window IS the app
+# window, and a hidden WindowStyle sets STARTUPINFO.wShowWindow=SW_HIDE, which suppresses
+# the process's main window (the netPI form is then created but never shown). The shell
+# writes no console output, so the streams are just closed below.
 $psi.RedirectStandardInput = $true
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
-$psi.WindowStyle = 'Hidden'
 foreach ($k in $childEnv.Keys) { $psi.EnvironmentVariables[$k] = $childEnv[$k] }
 $p = [System.Diagnostics.Process]::Start($psi)
 # No console output to drain: close the pipes immediately so the GUI app never
