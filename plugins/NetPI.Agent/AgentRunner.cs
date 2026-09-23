@@ -390,7 +390,13 @@ public sealed class AgentRunner : IAgentRunner
             try
             {
                 var store = _ctx.Services.Resolve<ISessionStore>("sessions");
-                var userMessageId = MessageIdentity.DeterministicId("user", request.Text);
+                // astra-2: scope the id to the RUN (runId + text), not just the
+                // text — a text-only id is a global session_entries.id collision
+                // the moment two runs (different sessions, or a retry of an
+                // identical send) carry the same text. Per-run it stays
+                // deterministic, so a send-retry for this run re-derives the same
+                // id and dedupes exactly as before.
+                var userMessageId = MessageIdentity.DeterministicId("user", rec.RunId + "\u0000" + request.Text);
                 var user = new AgentMessage(userMessageId, MessageRole.User,
                     [new TextPart(request.Text)], DateTimeOffset.UtcNow);
                 await store.AppendAsync(new SessionEntry(userMessageId,
@@ -666,12 +672,13 @@ public sealed class AgentRunner : IAgentRunner
             var sessionMode = await ResolveSessionModeAsync(sessionId, cts.Token);
             var systemText = await BuildSystemPromptAsync(workspace, sessionMode);
 
-        // astra-1 A (message identity): the run's user message reuses the EXACT
-        // message StartRunAsync persisted — same ID and timestamp — instead of
-        // reconstructing a fresh one with a different ID (identities participate
-        // in Responses fingerprints). Text-based tail de-duplication is gone:
-        // identical consecutive user messages are legitimate.
-        var userMessageId = MessageIdentity.DeterministicId("user", request.Text);
+        // astra-1 A + astra-2: the run's user message reuses the EXACT message
+        // StartRunAsync persisted (runId-scoped id + same text) — never a fresh
+        // text-only id (identities participate in Responses fingerprints).
+        // Run-scoped so identical text in DIFFERENT runs/sessions cannot
+        // collide on session_entries.id. Identical consecutive user messages
+        // remain legitimate (text-based tail de-duplication is gone).
+        var userMessageId = MessageIdentity.DeterministicId("user", run.RunId + "\u0000" + request.Text);
         var transcript = await BuildTranscriptAsync(request, systemText, userMessageId, cts.Token);
         // astra-2 §9/§15.D: resolve the run's logical ownership (assignment
         // + agent identity) ONCE per segment, before the runtime call.
