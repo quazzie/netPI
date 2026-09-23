@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Console test runner for the agent runtime plugins (no test framework: NuGet is not available).
+       Build the plugins first, then: dotnet build -p:BuildProjectReferences=false && dotnet bin/Debug/NetPI.Agent.Tests.dll [filter...] -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>NetPI.Agent.Tests</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Lanes/NetPI.Lanes.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Context/NetPI.Context.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.AgentsMd/NetPI.AgentsMd.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Agent/NetPI.Agent.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Tools.Agents/NetPI.Tools.Agents.csproj" />
+  </ItemGroup>
+</Project>

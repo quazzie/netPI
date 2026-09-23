@@ -1,0 +1,5 @@
+{
+  "id": "netpi.toolrepair",
+  "name": "Tool-call repair",
+  "description": "Turns tool calls that local models wrote as text (<tool_call>, <function=…>, Hermes JSON) into real tool calls."
+}

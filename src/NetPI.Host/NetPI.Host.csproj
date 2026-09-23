@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- NetPI host kernel: plugin manager, registries, event bus, SQLite, settings, session store, model catalog and
+       the Kestrel web/WebSocket server. Used in-process by both netpi-server and the desktop shell. -->
+  <PropertyGroup>
+    <RootNamespace>NetPI.Host</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../NetPI.Abstractions/NetPI.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPI.Host.Tests" />
+  </ItemGroup>
+</Project>

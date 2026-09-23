@@ -1,0 +1,281 @@
+using System.Net;
+using System.Runtime.CompilerServices;
+using NetPI.Retry;
+
+namespace NetPI.Aux.Tests;
+
+public static class RetryTests
+{
+    private static readonly ModelRequest Request = new() { Model = T.Model(), Messages = [T.User("hi")] };
+
+    private static RetryOptions Fast(int attempts = 4, int firstMs = 5000, int stallMs = 5000) => new()
+    {
+        MaxAttempts = attempts, BaseDelay = TimeSpan.FromMilliseconds(1), MaxDelay = TimeSpan.FromMilliseconds(5),
+        FirstEventTimeout = TimeSpan.FromMilliseconds(firstMs), StallTimeout = TimeSpan.FromMilliseconds(stallMs),
+    };
+
+    private static StreamCompleted Done(string text = "hello") =>
+        new(new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = text }], StopReason = "stop" });
+
+    /// <summary>A provider whose behaviour depends on the attempt number (1-based).</summary>
+    private sealed class Script(Func<int, CancellationToken, IAsyncEnumerable<ModelStreamEvent>> body)
+    {
+        public int Calls;
+        public ModelCallDelegate Next => (_, ct) => body(Interlocked.Increment(ref Calls), ct);
+    }
+
+    private static async Task<List<ModelStreamEvent>> Collect(IAsyncEnumerable<ModelStreamEvent> s, CancellationToken ct = default,
+        int consumerDelayMs = 0)
+    {
+        var list = new List<ModelStreamEvent>();
+        await foreach (var e in s.WithCancellation(ct))
+        {
+            list.Add(e);
+            if (consumerDelayMs > 0) await Task.Delay(consumerDelayMs);
+        }
+        return list;
+    }
+
+    private static async IAsyncEnumerable<ModelStreamEvent> Events(params ModelStreamEvent[] events)
+    {
+        foreach (var e in events) { await Task.Yield(); yield return e; }
+    }
+
+    private static async IAsyncEnumerable<ModelStreamEvent> Fail(Exception ex, params ModelStreamEvent[] before)
+    {
+        foreach (var e in before) { await Task.Yield(); yield return e; }
+        await Task.Yield();
+        throw ex;
+    }
+
+    private static async IAsyncEnumerable<ModelStreamEvent> Hang([EnumeratorCancellation] CancellationToken ct, bool honorToken = true, params ModelStreamEvent[] before)
+    {
+        foreach (var e in before) { await Task.Yield(); yield return e; }
+        if (honorToken) await Task.Delay(Timeout.Infinite, ct);
+        else await Task.Delay(Timeout.Infinite, CancellationToken.None);
+        yield break;
+    }
+
+    public static void Register(TestRunner r)
+    {
+        r.Add("retry: transient failure after partial output → reset, notice, success", async () =>
+        {
+            var script = new Script((n, _) => n == 1
+                ? Fail(new ModelException("backend_unavailable", true, 503), new TextDelta("hel"))
+                : Events(new TextDelta("hello"), Done()));
+            var mw = new RetryMiddleware(() => Fast());
+            var events = await Collect(mw.InvokeAsync(Request, script.Next, CancellationToken.None));
+            Check.Equal(2, script.Calls);
+            Check.Equal(5, events.Count, string.Join(", ", events));
+            Check.True(events[0] is TextDelta { Text: "hel" });
+            Check.True(events[1] is StreamReset);
+            var notice = events[2] as StreamNotice;
+            Check.True(notice is not null);
+            Check.Equal("warn", notice!.Level);
+            Check.Contains(notice.Text, "Connection lost (backend_unavailable). Retrying in ");
+            Check.Contains(notice.Text, "(attempt 2/4)");
+            Check.True(events[3] is TextDelta { Text: "hello" });
+            Check.True(events[4] is StreamCompleted);
+        });
+
+        r.Add("retry: failure before any output → notice only, no reset", async () =>
+        {
+            var script = new Script((n, _) => n < 3 ? Fail(new HttpRequestException("Connection refused")) : Events(Done()));
+            var events = await Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, script.Next, CancellationToken.None));
+            Check.Equal(3, script.Calls);
+            Check.False(events.Any(e => e is StreamReset));
+            Check.Equal(2, events.Count(e => e is StreamNotice));
+            Check.Contains(((StreamNotice)events[1]).Text, "(attempt 3/4)");
+            Check.True(events[^1] is StreamCompleted);
+        });
+
+        r.Add("retry: IOException and synchronous throw from next() are retried", async () =>
+        {
+            var calls = 0;
+            ModelCallDelegate next = (_, _) =>
+            {
+                calls++;
+                if (calls == 1) throw new IOException("reset by peer");
+                if (calls == 2) return Fail(new IOException("unexpected EOF"), new ThinkingDelta("hmm"));
+                return Events(Done());
+            };
+            var events = await Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, next, CancellationToken.None));
+            Check.Equal(3, calls);
+            Check.Equal(1, events.Count(e => e is StreamReset));
+            Check.True(events[^1] is StreamCompleted);
+        });
+
+        r.Add("retry: transient classification", () =>
+        {
+            Check.True(RetryMiddleware.IsTransient(new ModelException("x", true)));
+            Check.False(RetryMiddleware.IsTransient(new ModelException("x", false, 400)));
+            Check.False(RetryMiddleware.IsTransient(new ModelException("too long", true) { ContextOverflow = true }));
+            Check.True(RetryMiddleware.IsTransient(new HttpRequestException("down")));
+            Check.True(RetryMiddleware.IsTransient(new HttpRequestException("x", null, HttpStatusCode.BadGateway)));
+            Check.True(RetryMiddleware.IsTransient(new HttpRequestException("x", null, HttpStatusCode.TooManyRequests)));
+            Check.False(RetryMiddleware.IsTransient(new HttpRequestException("x", null, HttpStatusCode.Unauthorized)));
+            Check.True(RetryMiddleware.IsTransient(new IOException("eof")));
+            Check.True(RetryMiddleware.IsTransient(new TaskCanceledException("timeout", new TimeoutException())));
+            Check.False(RetryMiddleware.IsTransient(new OperationCanceledException()));
+            Check.False(RetryMiddleware.IsTransient(new InvalidOperationException("bug")));
+            Check.True(RetryMiddleware.IsTransient(new AggregateException(new IOException("x"))));
+        });
+
+        r.Add("retry: non-transient error is rethrown immediately", async () =>
+        {
+            var script = new Script((_, _) => Fail(new ModelException("invalid api key", false, 401), new TextDelta("x")));
+            var ex = await Check.ThrowsAsync<ModelException>(() => Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, script.Next, CancellationToken.None)));
+            Check.Equal("invalid api key", ex.Message);
+            Check.Equal(1, script.Calls);
+        });
+
+        r.Add("retry: context overflow is not retried", async () =>
+        {
+            var script = new Script((_, _) => Fail(new ModelException("prompt is too long", false, 400) { ContextOverflow = true }));
+            var ex = await Check.ThrowsAsync<ModelException>(() => Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, script.Next, CancellationToken.None)));
+            Check.True(ex.ContextOverflow);
+            Check.Equal(1, script.Calls);
+        });
+
+        r.Add("retry: gives up after maxAttempts and rethrows the last error", async () =>
+        {
+            var script = new Script((n, _) => Fail(new ModelException($"overloaded #{n}", true, 529)));
+            var notices = new List<ModelStreamEvent>();
+            var ex = await Check.ThrowsAsync<ModelException>(async () =>
+            {
+                await foreach (var e in new RetryMiddleware(() => Fast(attempts: 3)).InvokeAsync(Request, script.Next, CancellationToken.None))
+                    notices.Add(e);
+            });
+            Check.Equal("overloaded #3", ex.Message);
+            Check.Equal(3, script.Calls);
+            Check.Equal(2, notices.Count(e => e is StreamNotice));
+        });
+
+        r.Add("retry: stall before the first event (firstEventTimeout) is detected and retried", async () =>
+        {
+            var script = new Script((n, ct) => n == 1 ? Hang(ct) : Events(new TextDelta("ok"), Done()));
+            var events = await Collect(new RetryMiddleware(() => Fast(firstMs: 250, stallMs: 5000)).InvokeAsync(Request, script.Next, CancellationToken.None));
+            Check.Equal(2, script.Calls);
+            var notice = events.OfType<StreamNotice>().Single();
+            Check.Contains(notice.Text, "no response for");
+            Check.False(events.Any(e => e is StreamReset));
+            Check.True(events[^1] is StreamCompleted);
+        });
+
+        r.Add("retry: stall between events (stallTimeout) → reset + retry", async () =>
+        {
+            var script = new Script((n, ct) => n == 1 ? Hang(ct, true, new TextDelta("partial")) : Events(new TextDelta("full"), Done()));
+            var events = await Collect(new RetryMiddleware(() => Fast(firstMs: 5000, stallMs: 250)).InvokeAsync(Request, script.Next, CancellationToken.None));
+            Check.Equal(2, script.Calls);
+            Check.True(events[0] is TextDelta { Text: "partial" });
+            Check.True(events[1] is StreamReset { Reason: var reason } && reason.Contains("stalled"));
+            Check.Contains(((StreamNotice)events[2]).Text, "stream stalled");
+            Check.True(events[^1] is StreamCompleted);
+        });
+
+        r.Add("retry: stall is detected even when the provider ignores cancellation", async () =>
+        {
+            var script = new Script((n, ct) => n == 1 ? Hang(ct, honorToken: false) : Events(Done()));
+            var events = await Collect(new RetryMiddleware(() => Fast(firstMs: 150)).InvokeAsync(Request, script.Next, CancellationToken.None));
+            Check.Equal(2, script.Calls);
+            Check.True(events[^1] is StreamCompleted);
+        });
+
+        r.Add("retry: time spent by the consumer does not count as a stall", async () =>
+        {
+            var script = new Script((_, _) => Events(new TextDelta("a"), new TextDelta("b"), new TextDelta("c"), Done()));
+            var events = await Collect(new RetryMiddleware(() => Fast(firstMs: 300, stallMs: 300)).InvokeAsync(Request, script.Next, CancellationToken.None),
+                consumerDelayMs: 450);
+            Check.Equal(1, script.Calls);
+            Check.Equal(4, events.Count);
+        });
+
+        r.Add("retry: stall on the last attempt throws a transient 'stalled' ModelException", async () =>
+        {
+            var script = new Script((_, ct) => Hang(ct));
+            var ex = await Check.ThrowsAsync<ModelException>(() => Collect(new RetryMiddleware(() => Fast(attempts: 2, firstMs: 80)).InvokeAsync(Request, script.Next, CancellationToken.None)));
+            Check.Equal("stalled", ex.ErrorType);
+            Check.True(ex.Transient);
+            Check.Equal(2, script.Calls);
+        });
+
+        r.Add("retry: caller cancellation during a call is never retried", async () =>
+        {
+            using var cts = new CancellationTokenSource();
+            var script = new Script((_, ct) => Hang(ct, true, new TextDelta("x")));
+            var task = Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, script.Next, cts.Token), cts.Token);
+            await Task.Delay(100);
+            cts.Cancel();
+            await Check.ThrowsAsync<OperationCanceledException>(() => task);
+            Check.Equal(1, script.Calls);
+        });
+
+        r.Add("retry: caller cancellation during the backoff delay", async () =>
+        {
+            using var cts = new CancellationTokenSource();
+            var script = new Script((_, _) => Fail(new IOException("x")));
+            var o = new RetryOptions { MaxAttempts = 5, BaseDelay = TimeSpan.FromSeconds(10), MaxDelay = TimeSpan.FromSeconds(10) };
+            var seen = new List<ModelStreamEvent>();
+            var task = Task.Run(async () =>
+            {
+                await foreach (var e in new RetryMiddleware(() => o).InvokeAsync(Request, script.Next, cts.Token)) seen.Add(e);
+            });
+            await Task.Delay(150);
+            cts.Cancel();
+            await Check.ThrowsAsync<OperationCanceledException>(() => task);
+            Check.Equal(1, script.Calls);
+            var text = ((StreamNotice)seen.Single()).Text;
+            Check.True(text.Contains("Retrying in 8s") || text.Contains("Retrying in 9s") || text.Contains("Retrying in 10s")
+                       || text.Contains("Retrying in 11s") || text.Contains("Retrying in 12s"), text);
+            Check.Contains(text, "(attempt 2/5)");
+        });
+
+        r.Add("retry: a stream that ends without StreamCompleted is retried", async () =>
+        {
+            var script = new Script((n, _) => n == 1 ? Events(new TextDelta("cut")) : Events(Done()));
+            var events = await Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, script.Next, CancellationToken.None));
+            Check.Equal(2, script.Calls);
+            Check.True(events.Any(e => e is StreamReset));
+            Check.True(events[^1] is StreamCompleted);
+        });
+
+        r.Add("retry: disabled → pass-through, errors propagate", async () =>
+        {
+            var script = new Script((_, _) => Fail(new IOException("x"), new TextDelta("a")));
+            var mw = new RetryMiddleware(() => new RetryOptions { Enabled = false });
+            await Check.ThrowsAsync<IOException>(() => Collect(mw.InvokeAsync(Request, script.Next, CancellationToken.None)));
+            Check.Equal(1, script.Calls);
+        });
+
+        r.Add("retry: backoff doubles with jitter and is capped", () =>
+        {
+            var o = new RetryOptions { BaseDelay = TimeSpan.FromMilliseconds(1000), MaxDelay = TimeSpan.FromMilliseconds(30_000) };
+            for (var i = 0; i < 50; i++)
+            {
+                var d1 = RetryMiddleware.Backoff(1, o).TotalMilliseconds;
+                var d3 = RetryMiddleware.Backoff(3, o).TotalMilliseconds;
+                var d10 = RetryMiddleware.Backoff(10, o).TotalMilliseconds;
+                Check.True(d1 is >= 800 and <= 1200, $"attempt 1: {d1}");
+                Check.True(d3 is >= 3200 and <= 4800, $"attempt 3: {d3}");
+                Check.True(d10 is >= 24_000 and <= 30_000, $"attempt 10: {d10}");
+            }
+        });
+
+        r.Add("retry: settings are read per call", async () =>
+        {
+            var ctx = new FakePluginContext();
+            await new RetryPlugin().StartAsync(ctx, CancellationToken.None);
+            var mw = ctx.Services.Get<IModelMiddleware>();
+            Check.True(mw is RetryMiddleware);
+            Check.Equal(0, mw!.Order);
+            ctx.SettingsFake.Set("retry.maxAttempts", 2);
+            ctx.SettingsFake.Set("retry.baseDelayMs", 1);
+            var script = new Script((_, _) => Fail(new IOException("x")));
+            await Check.ThrowsAsync<IOException>(() => Collect(mw.InvokeAsync(Request, script.Next, CancellationToken.None)));
+            Check.Equal(2, script.Calls);
+            var o = RetryOptions.From(ctx.Settings);
+            Check.Equal(TimeSpan.FromSeconds(600), o.FirstEventTimeout);
+            Check.Equal(TimeSpan.FromSeconds(180), o.StallTimeout);
+        });
+    }
+}

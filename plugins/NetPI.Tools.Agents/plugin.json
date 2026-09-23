@@ -1,0 +1,5 @@
+{
+  "id": "netpi.tools.agents",
+  "name": "Agent tools",
+  "description": "Tools for orchestrating subagents: lanes_list, agent_spawn, agent_wait, agent_send, agent_list, agent_result, agent_cancel."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "netpi.context",
+  "name": "Context",
+  "description": "System prompt builder rendering all prompt sections (identity, environment, tools, guidelines, subagent role)."
+}

@@ -1,0 +1,389 @@
+// Per-session chat state: a window of messages (paged, capped), the in-progress stream, live tool output,
+// the input queue and transient notices. Stores are kept in a small LRU so recently used tabs switch
+// instantly; only the active session is rendered.
+import { SvelteMap } from 'svelte/reactivity';
+import { rpc } from '../rpc.svelte.js';
+import { nextFrame, flushNow } from '../frame.js';
+
+export const PAGE = 60;
+export const CAP = 200; // max messages kept in the window (≈ DOM cap)
+const SLACK = 20; // trim only when this far over the cap (avoids trimming on every message)
+const OUTPUT_CAP = 200_000; // live tool output kept per call (tail)
+const LRU_MAX = 5;
+
+/** Live state of a running (or just finished) tool call, fed by tool.start/output/end. */
+export class LiveTool {
+  output = $state('');
+  status = $state('running'); // running | done | error
+  durationMs = $state(null);
+  truncated = $state(false);
+  startedAt = Date.now();
+  name = '';
+  label = '';
+  #buf = '';
+  #flush = () => {
+    this.output = this.#buf;
+  };
+
+  constructor(d) {
+    this.name = d?.name ?? '';
+    this.label = d?.label ?? '';
+  }
+  append(chunk) {
+    this.#buf += chunk;
+    if (this.#buf.length > OUTPUT_CAP) {
+      // keep the tail, starting at a line boundary
+      let cut = this.#buf.length - OUTPUT_CAP;
+      const nl = this.#buf.indexOf('\n', cut);
+      if (nl > 0 && nl - cut < 2000) cut = nl + 1;
+      this.#buf = this.#buf.slice(cut);
+      this.truncated = true;
+    }
+    nextFrame(this.#flush);
+  }
+  end(d) {
+    flushNow(this.#flush);
+    this.status = d?.isError ? 'error' : 'done';
+    this.durationMs = d?.durationMs ?? Date.now() - this.startedAt;
+  }
+}
+
+/** The assistant message currently being streamed. */
+export class StreamState {
+  active = $state(false);
+  ended = $state(false);
+  text = $state('');
+  thinking = $state('');
+  tools = $state.raw([]); // [{ callId, name }]
+  model = $state(null);
+  agentId = null;
+  startedAt = $state(0);
+  thinkingStartedAt = $state(0);
+  thinkingEndedAt = $state(0);
+  #text = '';
+  #thinking = '';
+  #flush = () => {
+    this.text = this.#text;
+    this.thinking = this.#thinking;
+  };
+
+  start(d) {
+    this.clear();
+    this.active = true;
+    this.model = d?.model ?? null;
+    this.agentId = d?.agentId ?? null;
+    this.startedAt = Date.now();
+  }
+  delta(d) {
+    if (!this.active) this.start({});
+    if (d.kind === 'thinking') {
+      if (!this.thinkingStartedAt) this.thinkingStartedAt = Date.now();
+      this.#thinking += d.text ?? '';
+    } else {
+      if (this.thinkingStartedAt && !this.thinkingEndedAt) this.thinkingEndedAt = Date.now();
+      this.#text += d.text ?? '';
+    }
+    nextFrame(this.#flush);
+  }
+  tool(d) {
+    if (!this.active) this.start({});
+    if (this.thinkingStartedAt && !this.thinkingEndedAt) this.thinkingEndedAt = Date.now();
+    this.tools = [...this.tools, { callId: d.callId, name: d.name }];
+  }
+  reset() {
+    this.#text = '';
+    this.#thinking = '';
+    flushNow(this.#flush);
+    this.text = '';
+    this.thinking = '';
+    this.tools = [];
+    this.thinkingStartedAt = 0;
+    this.thinkingEndedAt = 0;
+  }
+  end() {
+    flushNow(this.#flush);
+    if (this.thinkingStartedAt && !this.thinkingEndedAt) this.thinkingEndedAt = Date.now();
+    this.ended = true;
+  }
+  clear() {
+    this.#text = '';
+    this.#thinking = '';
+    flushNow(this.#flush);
+    this.active = false;
+    this.ended = false;
+    this.text = '';
+    this.thinking = '';
+    this.tools = [];
+    this.model = null;
+    this.startedAt = 0;
+    this.thinkingStartedAt = 0;
+    this.thinkingEndedAt = 0;
+  }
+}
+
+export class ChatStore {
+  id;
+  messages = $state.raw([]);
+  hasMore = $state(false);
+  hasNewer = $state(false); // window does not reach the latest message (after "load earlier" past the cap)
+  newerCount = $state(0);
+  loading = $state(false);
+  loadingEarlier = $state(false);
+  error = $state(null);
+  loaded = $state(false);
+  stale = false;
+  stream = new StreamState();
+  live = new SvelteMap(); // callId -> LiveTool
+  queue = $state.raw([]);
+  notice = $state(null); // { level, text, ts }
+  pendingUser = $state.raw(null); // optimistic user message while agent.send is in flight
+  expanded = new SvelteMap(); // UI memory: item key -> boolean
+  // composer
+  draft = $state('');
+  images = $state.raw([]);
+  // scroll memory (restored when the tab is shown again)
+  scroll = null;
+
+  #endTimer = 0;
+  #noticeTimer = 0;
+  #loadSeq = 0;
+
+  constructor(id) {
+    this.id = id;
+    try {
+      this.draft = localStorage.getItem(`netpi.draft.${id}`) ?? '';
+    } catch {}
+  }
+
+  saveDraft() {
+    try {
+      if (this.draft) localStorage.setItem(`netpi.draft.${this.id}`, this.draft);
+      else localStorage.removeItem(`netpi.draft.${this.id}`);
+    } catch {}
+  }
+
+  async load() {
+    const seq = ++this.#loadSeq;
+    this.loading = true;
+    this.error = null;
+    try {
+      const res = await rpc('sessions.messages', { id: this.id, limit: PAGE });
+      if (seq !== this.#loadSeq) return;
+      this.messages = res?.messages ?? [];
+      this.hasMore = !!res?.hasMore;
+      this.hasNewer = false;
+      this.newerCount = 0;
+      this.loaded = true;
+      this.stale = false;
+      this.scroll = null;
+    } catch (e) {
+      if (seq === this.#loadSeq) this.error = e?.message ?? String(e);
+    } finally {
+      if (seq === this.#loadSeq) this.loading = false;
+    }
+    rpc('agent.queue', { sessionId: this.id }, { timeout: 8000 })
+      .then((items) => {
+        if (Array.isArray(items)) this.queue = items;
+      })
+      .catch(() => {});
+  }
+
+  async loadEarlier() {
+    if (this.loadingEarlier || !this.hasMore || !this.messages.length) return false;
+    this.loadingEarlier = true;
+    try {
+      const res = await rpc('sessions.messages', { id: this.id, beforeSeq: this.messages[0].seq, limit: PAGE });
+      const older = (res?.messages ?? []).filter((m) => m.seq < this.messages[0].seq);
+      let next = older.concat(this.messages);
+      if (next.length > CAP) {
+        next = next.slice(0, CAP);
+        this.hasNewer = true;
+      }
+      this.messages = next;
+      this.hasMore = !!res?.hasMore;
+      return older.length > 0;
+    } catch (e) {
+      this.error = e?.message ?? String(e);
+      return false;
+    } finally {
+      this.loadingEarlier = false;
+    }
+  }
+
+  /** Drop the window and reload the latest page (used when the window no longer reaches the tail). */
+  jumpToLatest() {
+    return this.load();
+  }
+
+  #append(msg) {
+    if (this.hasNewer) {
+      this.newerCount++;
+      return;
+    }
+    const msgs = this.messages;
+    const idx = findIndexById(msgs, msg.id);
+    let next;
+    if (idx >= 0) {
+      next = msgs.slice();
+      next[idx] = msg;
+    } else if (!msgs.length || msgs[msgs.length - 1].seq <= msg.seq) {
+      next = msgs.concat(msg);
+    } else {
+      next = msgs.concat(msg).sort((a, b) => a.seq - b.seq);
+    }
+    if (next.length > CAP + SLACK) {
+      next = next.slice(next.length - CAP);
+      this.hasMore = true;
+    }
+    this.messages = next;
+  }
+
+  /** Scoped event for this session. */
+  handle(type, d) {
+    switch (type) {
+      case 'message.added': {
+        const m = d.message;
+        if (!m) return;
+        this.#append(m);
+        if (m.role === 'assistant') {
+          clearTimeout(this.#endTimer);
+          this.stream.clear();
+        } else if (m.role === 'user' || (m.role === 'notice' && m.meta?.kind === 'steer')) {
+          this.pendingUser = null;
+        }
+        break;
+      }
+      case 'message.updated': {
+        const m = d.message;
+        if (!m) return;
+        const idx = findIndexById(this.messages, m.id);
+        if (idx >= 0) {
+          const next = this.messages.slice();
+          next[idx] = m;
+          this.messages = next;
+        }
+        break;
+      }
+      case 'messages.compacted': {
+        const upTo = d.upToSeq;
+        this.messages = this.messages.map((m) => (m.seq <= upTo && !m.compacted ? { ...m, compacted: true } : m));
+        break;
+      }
+      case 'stream.start':
+        clearTimeout(this.#endTimer);
+        this.stream.start(d);
+        // a transient notice (e.g. "retrying in 3s…") is stale once the model streams again
+        if (this.notice && this.notice.level !== 'error') {
+          clearTimeout(this.#noticeTimer);
+          this.#noticeTimer = setTimeout(() => (this.notice = null), 1500);
+        }
+        break;
+      case 'stream.delta':
+        this.stream.delta(d);
+        break;
+      case 'stream.tool':
+        this.stream.tool(d);
+        break;
+      case 'stream.reset':
+        this.stream.reset();
+        break;
+      case 'stream.end':
+        this.stream.end();
+        // the final message.added normally replaces the stream block right away
+        clearTimeout(this.#endTimer);
+        this.#endTimer = setTimeout(() => this.stream.ended && this.stream.clear(), 2500);
+        break;
+      case 'tool.start': {
+        let t = this.live.get(d.callId);
+        if (!t) {
+          t = new LiveTool(d);
+          this.live.set(d.callId, t);
+          if (this.live.size > 60) this.live.delete(this.live.keys().next().value);
+        }
+        break;
+      }
+      case 'tool.output': {
+        let t = this.live.get(d.callId);
+        if (!t) {
+          t = new LiveTool(d);
+          this.live.set(d.callId, t);
+        }
+        t.append(d.chunk ?? '');
+        break;
+      }
+      case 'tool.end':
+        this.live.get(d.callId)?.end(d);
+        break;
+      case 'agent.queue':
+        this.queue = d.items ?? [];
+        break;
+      case 'agent.notice':
+        this.notice = { level: d.level ?? 'info', text: d.text ?? '', ts: Date.now() };
+        clearTimeout(this.#noticeTimer);
+        this.#noticeTimer = setTimeout(() => (this.notice = null), d.level === 'error' ? 12_000 : 6_000);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /** The agent run ended: drop any leftover transient state. */
+  runEnded() {
+    if (this.stream.active && this.stream.ended) this.stream.clear();
+    if (this.notice && this.notice.level !== 'error') this.notice = null;
+    for (const t of this.live.values()) if (t.status === 'running') t.status = 'done';
+  }
+
+  dispose() {
+    clearTimeout(this.#endTimer);
+    clearTimeout(this.#noticeTimer);
+  }
+}
+
+function findIndexById(msgs, id) {
+  // new/updated messages are almost always near the end
+  for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].id === id) return i;
+  return -1;
+}
+
+// ------------------------------------------------------------------------------------------ LRU cache
+
+const cache = new Map();
+
+/** Get (or create) the store for a session and mark it most recently used. */
+export function getChat(id) {
+  let c = cache.get(id);
+  if (c) {
+    cache.delete(id);
+    cache.set(id, c);
+    return c;
+  }
+  c = new ChatStore(id);
+  cache.set(id, c);
+  if (cache.size > LRU_MAX) {
+    for (const [k, v] of cache) {
+      if (cache.size <= LRU_MAX) break;
+      if (k === id || v.stream.active) continue; // keep streaming sessions
+      v.dispose();
+      cache.delete(k);
+    }
+  }
+  return c;
+}
+
+/** Existing store or undefined (events for uncached sessions are ignored; they reload on open). */
+export function peekChat(id) {
+  return cache.get(id);
+}
+
+export function dropChat(id) {
+  const c = cache.get(id);
+  if (c) {
+    c.dispose();
+    cache.delete(id);
+  }
+}
+
+export function allChats() {
+  return cache.values();
+}

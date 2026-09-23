@@ -1,0 +1,5 @@
+{
+  "id": "netpi.retry",
+  "name": "Retry",
+  "description": "Retries model calls when the connection is lost or the stream stalls (backoff with jitter, stream reset + countdown notice)."
+}

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Headless NetPI server (netpi-server). Run with -h for options. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>netpi-server</AssemblyName>
+    <RootNamespace>NetPI.Server</RootNamespace>
+    <OutDir>$(AppOutDir)</OutDir>
+    <IsPackable>false</IsPackable>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../NetPI.Host/NetPI.Host.csproj" />
+    <ProjectReference Include="../NetPI.Abstractions/NetPI.Abstractions.csproj" />
+  </ItemGroup>
+</Project>

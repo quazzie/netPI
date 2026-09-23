@@ -1,0 +1,495 @@
+#!/usr/bin/env node
+// End-to-end walkthrough against the mock server: drives the UI with Playwright, takes screenshots
+// (1600×1000), and reports console errors + timings. By default it starts its own mock server on :7432
+// (MOCK_SPEED=3) so it can also test reconnects; pass --url to use a running server instead.
+//
+//   npm run build && npm run e2e
+//   node web/mock/e2e.mjs [--out dir] [--only shot,shot] [--url http://127.0.0.1:7431] [--no-dev]
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { openApp } from './pw.mjs';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repo = path.resolve(here, '../..');
+const argv = process.argv.slice(2);
+const argVal = (n) => (argv.indexOf(n) >= 0 ? argv[argv.indexOf(n) + 1] : null);
+const OUT = argVal('--out') ? path.resolve(argVal('--out')) : path.join(here, 'screenshots');
+const ONLY = argVal('--only') ? new Set(argVal('--only').split(',')) : null;
+const EXTERNAL = argVal('--url');
+const PORT = 7432;
+const BASE = EXTERNAL ?? `http://127.0.0.1:${PORT}`;
+fs.mkdirSync(OUT, { recursive: true });
+
+const results = [];
+const log = (...a) => console.log(...a);
+const shot = async (page, name) => {
+  if (ONLY && !ONLY.has(name)) return;
+  await page.screenshot({ path: path.join(OUT, `${name}.png`) });
+  log(`  📸 ${name}.png`);
+};
+function check(name, ok, detail = '') {
+  results.push({ name, ok, detail });
+  log(`  ${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`);
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ------------------------------------------------------------------ mock server lifecycle
+let server = null;
+async function startServer() {
+  server = spawn(process.execPath, [path.join(here, 'server.mjs'), '--port', String(PORT)], {
+    env: { ...process.env, MOCK_SPEED: process.env.MOCK_SPEED ?? '3' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  await new Promise((resolve, reject) => {
+    server.stdout.on('data', (d) => String(d).includes('mock server on') && resolve());
+    server.on('exit', (c) => reject(new Error(`mock server exited (${c})`)));
+  });
+}
+async function stopServer() {
+  if (!server) return;
+  const s = server;
+  server = null;
+  s.kill();
+  await new Promise((r) => s.once('exit', r));
+}
+if (!EXTERNAL) {
+  if (!fs.existsSync(path.join(repo, 'web/mock/sample-plugin/wwwroot/ui.js'))) {
+    log('building the sample plugin…');
+    await new Promise((r) => spawn(process.execPath, [path.join(repo, 'web/scripts/build-plugins.mjs'), '--only', 'web/mock/sample-plugin'], { cwd: repo, stdio: 'inherit' }).on('exit', r));
+  }
+  await startServer();
+}
+process.on('exit', () => server?.kill());
+
+// start from the seeded mock state and a clean UI state
+await fetch(`${BASE}/api/rpc/mock.reset`, { method: 'POST', headers: { 'X-NetPI-Token': 'dev' }, body: '{}' });
+const { browser, page, errors } = await openApp({ url: `${BASE}/?token=dev` });
+await page.evaluate(() => localStorage.clear());
+await page.goto(`${BASE}/`);
+await page.waitForSelector('.welcome .np-btn-primary', { timeout: 10_000 });
+await page.waitForTimeout(300);
+await shot(page, '01-welcome');
+
+// ------------------------------------------------------------------ long session: render time + pruning
+log('long session');
+let t0 = Date.now();
+await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
+await page.waitForSelector('.content .item[data-kind="text"]');
+const openMs = Date.now() - t0;
+const perf = await page.evaluate(async () => {
+  // time a full re-render of the list: switch away and back (store is cached → pure render cost)
+  const t = performance.now();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  return { items: document.querySelectorAll('.content .item').length, frame: performance.now() - t };
+});
+check('open long session', true, `${openMs}ms to first paint of 60 messages (${perf.items} items)`);
+await page.waitForTimeout(300);
+await shot(page, '02-long-session');
+
+// load earlier ×3 (60 → 240 messages; cap 200 → window drops the newest)
+for (let i = 0; i < 4; i++) {
+  const btn = page.locator('.earlier button', { hasText: 'Load earlier' });
+  if (!(await btn.count())) break;
+  // scroll to the top first (clicking the button would do it anyway), then measure the anchor
+  await page.locator('.scroller').evaluate((el) => (el.scrollTop = 0));
+  await page.waitForTimeout(80);
+  const before = await page.evaluate(() => {
+    const first = document.querySelector('.content .item');
+    return { key: first.dataset.key, top: first.getBoundingClientRect().top };
+  });
+  const renderMs = await page.evaluate(async (k) => {
+    const t = performance.now();
+    [...document.querySelectorAll('.earlier button')].find((b) => b.textContent.includes('Load earlier')).click();
+    await new Promise((r) => {
+      const tick = () => (document.querySelector('.content .item')?.dataset.key !== k ? r() : requestAnimationFrame(tick));
+      tick();
+    });
+    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    return performance.now() - t;
+  }, before.key);
+  await page.waitForTimeout(100);
+  const after = await page.evaluate((k) => {
+    const el = document.querySelector(`.content .item[data-key="${k}"]`);
+    return { top: el?.getBoundingClientRect().top ?? null, items: document.querySelectorAll('.content .item').length, msgs: document.querySelectorAll('.content .item').length };
+  }, before.key);
+  check(`load earlier #${i + 1}`, after.top != null && Math.abs(after.top - before.top) < 4, `${Math.round(renderMs)}ms (rpc + render), anchor moved ${after.top == null ? '?' : Math.round(after.top - before.top)}px, ${after.items} items in DOM`);
+}
+const hasNewer = await page.locator('.earlier button', { hasText: 'jump to latest' }).count();
+// render cost of the full (capped) window: switch to another session and back (the store is cached)
+const msgsInWindow = await page.locator('.content .item').count();
+await page.keyboard.press('Control+t');
+await page.waitForSelector('.intro');
+const switchMs = await page.evaluate(async () => {
+  const tab = [...document.querySelectorAll('.topbar .tab')].find((t) => t.textContent.includes('Lane scheduler'));
+  const t = performance.now();
+  tab.click();
+  await new Promise((r) => {
+    const tick = () => (document.querySelectorAll('.content .item').length > 80 ? r() : requestAnimationFrame(tick));
+    tick();
+  });
+  await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0))); // include style/layout/paint
+  return performance.now() - t;
+});
+check('re-render 200-message window on tab switch', switchMs < 400, `${Math.round(switchMs)}ms for ${msgsInWindow} items`);
+await page.locator('.topbar .tab', { hasText: 'New session' }).locator('.tab-close').click();
+check('window capped (newer messages dropped)', hasNewer > 0);
+await page.locator('.scroller').evaluate((el) => (el.scrollTop = 0));
+await page.waitForTimeout(150);
+await shot(page, '03-load-earlier');
+if (hasNewer) {
+  await page.locator('.earlier button', { hasText: 'jump to latest' }).click();
+  await page.waitForTimeout(400);
+}
+const domCount = await page.locator('.content .item').count();
+check('back to latest', !(await page.locator('.earlier button', { hasText: 'jump to latest' }).count()), `${domCount} items`);
+
+// ------------------------------------------------------------------ new session + streaming
+log('new session + agent run');
+await page.keyboard.press('Control+t');
+await page.waitForSelector('.intro');
+const ta = page.locator('.composer textarea');
+await ta.fill('Why does the lane scheduler throw when a pool is missing? Make it fail with a clear message.');
+await ta.press('Enter');
+await page.waitForSelector('.streaming .thinking', { timeout: 5000 });
+await page.waitForTimeout(700);
+await shot(page, '04-streaming-thinking');
+await page.waitForSelector('.tool[data-status="ok"]', { timeout: 15000 });
+
+// steer + queue while running
+await ta.fill('Also make Release() return early for unknown pools.');
+await ta.press('Enter');
+await ta.fill('Afterwards, write a one-line changelog entry.');
+await ta.press('Alt+Enter');
+await page.waitForSelector('.queue .chip', { timeout: 3000 }).catch(() => {});
+const chips = await page.locator('.queue .chip').count();
+check('queue chips while running', chips >= 1, `${chips} chip(s)`);
+await page.waitForSelector('.banner', { timeout: 8000 }).catch(() => {});
+await shot(page, '05-steer-queue-retry');
+const banner = await page.locator('.banner').count();
+check('retry banner (agent.notice)', banner > 0);
+
+// live bash output
+await page.locator('.tool[data-status="running"]', { hasText: 'Bash' }).waitFor({ timeout: 20000 }).catch(() => {});
+await page.locator('.tool .tail').waitFor({ timeout: 3000 }).catch(() => {});
+await page.waitForTimeout(250);
+await shot(page, '06-live-bash');
+const tail = await page.locator('.tool .tail').count();
+check('live tool output tail', tail > 0 || (await page.locator('.tool[data-status="ok"]', { hasText: 'Bash' }).count()) > 0);
+
+// wait for the run (and queued follow-up) to finish
+await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 90_000 });
+await page.waitForTimeout(600);
+await shot(page, '07-run-finished');
+check('retry banner cleared after run', (await page.locator('.banner').count()) === 0);
+const pinned = await page.locator('.scroller').evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+check('stayed pinned to bottom during run', pinned < 60, `${Math.round(pinned)}px from bottom`);
+const collapsed = await page.locator('.group.collapsible').count();
+check('finished steps group collapsed', collapsed > 0, `${collapsed} group(s)`);
+
+// expand group, thinking, diff, bash
+const closedGroups = page.locator('.group.collapsible .head[aria-expanded="false"]');
+for (let n = 0; n < 10 && (await closedGroups.count()); n++) await closedGroups.first().click();
+await page.waitForTimeout(150);
+for (const label of ['Edit', 'Bash']) {
+  const row = page.locator('.tool .line', { hasText: label }).last();
+  if (await row.count()) await row.click();
+}
+const think = page.locator('.thinking .line').first();
+if (await think.count()) await think.click();
+await page.waitForTimeout(300);
+const edit = page.locator('.tool', { has: page.locator('.label', { hasText: 'Edit' }) }).last();
+if (await edit.count()) await edit.scrollIntoViewIfNeeded();
+await page.waitForTimeout(200);
+await shot(page, '08-expanded-tools');
+check('diff view rendered', (await page.locator('.diff .dl.add').count()) > 0);
+
+// ------------------------------------------------------------------ showcase session (subagents, notices)
+log('showcase session');
+await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
+await page.waitForTimeout(400);
+await page.locator('.group.collapsible .head').first().click();
+await page.waitForTimeout(150);
+const spawnRow = page.locator('.tool .line', { hasText: 'Agent' }).first();
+if (await spawnRow.count()) await spawnRow.click();
+await page.locator('.srow .kids').first().click();
+await page.waitForTimeout(250);
+await shot(page, '09-subagents-notices');
+
+// ------------------------------------------------------------------ popups: model picker, commands, mentions
+log('composer popups');
+await page.locator('.composer .pick').first().click();
+await page.waitForTimeout(200);
+await shot(page, '10-model-picker');
+await page.keyboard.press('Escape');
+await ta.fill('');
+await ta.type('/');
+await page.waitForTimeout(150);
+await shot(page, '11-commands');
+check('command popup', (await page.locator('.popup .opt').count()) >= 7);
+await ta.fill('');
+await ta.type('Look at @Lane');
+await page.waitForSelector('.popup .file', { timeout: 4000 }).catch(() => {});
+await page.waitForTimeout(250);
+await shot(page, '12-mentions');
+check('mention popup (files.search)', (await page.locator('.popup .file').count()) > 0);
+await page.keyboard.press('Escape');
+await ta.fill('');
+
+// ------------------------------------------------------------------ tabs
+log('tabs');
+const tabsBefore = await page.locator('.topbar .tab').count();
+await page.keyboard.press('Control+Tab');
+await page.waitForTimeout(150);
+const firstTab = page.locator('.topbar .tab').first();
+await firstTab.click({ button: 'middle' });
+await page.waitForTimeout(150);
+const tabsAfter = await page.locator('.topbar .tab').count();
+check('middle-click closes tab', tabsAfter === tabsBefore - 1, `${tabsBefore} → ${tabsAfter}`);
+
+// ------------------------------------------------------------------ panels + plugin tabs
+log('panels + plugin tabs');
+await page.locator('.panel.right .strip-tab', { hasText: 'Events' }).click();
+await page.waitForTimeout(500);
+await shot(page, '13-plugin-events-tab');
+await page.locator('.panel.right .strip-tab', { hasText: 'Sample' }).click();
+await page.waitForTimeout(300);
+// resize right panel
+const handle = page.locator('.panel.right .resizer');
+const hb = await handle.boundingBox();
+await page.mouse.move(hb.x + 3, hb.y + 300);
+await page.mouse.down();
+await page.mouse.move(hb.x - 80, hb.y + 300, { steps: 5 });
+await page.mouse.up();
+const w = await page.locator('.panel.right .body').evaluate((el) => el.getBoundingClientRect().width);
+check('resize right panel', w > 400, `${Math.round(w)}px`);
+// collapse left panel by clicking the active strip tab
+await page.locator('.panel.left .strip-tab[aria-selected="true"]').click();
+await page.waitForTimeout(150);
+check('collapse left panel', (await page.locator('.panel.left.open').count()) === 0);
+await shot(page, '14-panels');
+await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
+await page.waitForTimeout(200);
+await shot(page, '15-projects');
+
+// ------------------------------------------------------------------ settings + light theme
+log('settings');
+await page.keyboard.press('Control+,');
+await page.waitForSelector('.dialog');
+await page.waitForTimeout(300);
+await shot(page, '16-settings');
+await page.locator('.nav button', { hasText: 'settings.json' }).click();
+await page.waitForSelector('.editor');
+await page.waitForTimeout(200);
+await shot(page, '17-settings-json');
+await page.locator('.nav button', { hasText: 'General' }).click();
+await page.locator('.np-seg button', { hasText: 'Light' }).click();
+await page.keyboard.press('Escape');
+await page.waitForTimeout(300);
+await shot(page, '18-light-theme');
+await page.keyboard.press('Control+,');
+await page.locator('.np-seg button', { hasText: 'Dark' }).click();
+await page.keyboard.press('Escape');
+
+// palette
+await page.keyboard.press('Control+k');
+await page.waitForSelector('.palette');
+await page.keyboard.type('lane');
+await page.waitForTimeout(300);
+await shot(page, '19-palette');
+await page.keyboard.press('Escape');
+
+// project picker (top bar chip), help, a server slash command
+await page.locator('.topbar .chip').click();
+await page.waitForSelector('.popover');
+await page.waitForTimeout(300);
+await shot(page, '19b-project-picker');
+await page.keyboard.press('Escape');
+await page.keyboard.press('Control+/');
+await page.waitForSelector('.dialog');
+await page.waitForTimeout(300);
+await shot(page, '19c-help');
+await page.keyboard.press('Escape');
+await ta.fill('/compact');
+await ta.press('Enter'); // accepts the popup entry
+await page.waitForTimeout(100);
+if ((await ta.inputValue()).startsWith('/compact')) await ta.press('Enter');
+await page.waitForSelector('.notice', { hasText: 'Summary' }).catch(() => {});
+await page.waitForTimeout(300);
+check('/compact (server rpc command) adds a summary', (await page.locator('.notice .label', { hasText: 'Summary' }).count()) > 0);
+
+// ------------------------------------------------------------------ tab drag & drop
+log('drag to reorder tabs');
+{
+  const titles = async () => page.locator('.topbar .tab .tab-title').allTextContents();
+  const before = await titles();
+  if (before.length >= 2) {
+    await page.locator('.topbar .tab').nth(1).dragTo(page.locator('.topbar .tab').nth(0), { targetPosition: { x: 5, y: 10 } });
+    await page.waitForTimeout(150);
+    const after = await titles();
+    check('drag reorders tabs', after[0] === before[1], `${before.join(' | ')} → ${after.join(' | ')}`);
+  }
+}
+
+// ------------------------------------------------------------------ abort
+log('abort');
+await page.keyboard.press('Control+t');
+await page.waitForSelector('.intro');
+await ta.fill('Why does the lane scheduler throw when a pool is missing?');
+await ta.press('Enter');
+await page.waitForSelector('.composer.running', { timeout: 5000 });
+await page.waitForSelector('.streaming', { timeout: 5000 });
+await page.waitForTimeout(400);
+await ta.press('Escape');
+await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 10_000 }).catch(() => {});
+await page.waitForTimeout(300);
+const aborted = (await page.locator('.status[data-reason="aborted"]').count()) + (await page.locator('.notice', { hasText: 'aborted' }).count());
+check('Esc aborts the run', aborted > 0);
+await shot(page, '20-aborted');
+
+// ------------------------------------------------------------------ image attachments
+log('images');
+{
+  // a 48×32 PNG (solid accent-ish color) generated on the fly
+  const png = await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 48;
+    c.height = 32;
+    const g = c.getContext('2d');
+    const grad = g.createLinearGradient(0, 0, 48, 32);
+    grad.addColorStop(0, '#7c93ff');
+    grad.addColorStop(1, '#4cc38a');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 48, 32);
+    return c.toDataURL('image/png').split(',')[1];
+  });
+  await page.locator('.composer input[type=file]').setInputFiles({ name: 'screenshot.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
+  await page.waitForSelector('.composer .thumb');
+  await ta.fill('Quick question about this screenshot — short answer please.');
+  await shot(page, '21-image-attached');
+  await ta.press('Enter');
+  await page.waitForSelector('.user .img img', { timeout: 5000 }).catch(() => {});
+  check('user message shows the image', (await page.locator('.user .img img').count()) > 0);
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 20_000 }).catch(() => {});
+}
+
+// ------------------------------------------------------------------ folder picker (fs.dirs) + add project
+log('projects: folder picker');
+await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
+if (!(await page.locator('.panel.left.open').count())) await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
+await page.locator('.panel.left .head .np-icon-btn[title="Add project"]').click();
+await page.locator('.card .pathrow .np-btn').first().click();
+await page.waitForSelector('.picker .bar input', { timeout: 5000 });
+await page.waitForTimeout(200);
+await page.locator('.picker .bar input').fill(repo);
+await page.locator('.picker .bar input').press('Enter');
+await page.waitForTimeout(300);
+await page.locator('.picker .dir', { hasText: 'web' }).first().click();
+await shot(page, '22-folder-picker');
+await page.locator('.dialog .np-btn-primary', { hasText: 'Select folder' }).click();
+const picked = await page.locator('.card .pathrow input').inputValue();
+check('folder picker fills the path', picked.endsWith('/web') || picked.endsWith('\\web'), picked);
+await page.locator('.card .np-btn-primary', { hasText: 'Add project' }).click();
+await page.waitForTimeout(300);
+check('project added', (await page.locator('.prow .pname', { hasText: 'web' }).count()) > 0);
+
+// ------------------------------------------------------------------ plugin hot reload + load error
+log('plugin tab hot reload / error');
+{
+  await page.locator('.panel.right .strip-tab', { hasText: 'Sample' }).click();
+  if (!(await page.locator('.panel.right.open').count())) await page.locator('.panel.right .strip-tab', { hasText: 'Sample' }).click();
+  await page.waitForSelector('.plugin-root .sample');
+  await page.evaluate(() => (window.__e2eRoot = document.querySelector('.plugin-tab:not([hidden]) .plugin-root') ?? document.querySelector('.plugin-root')));
+  const uiJs = path.join(repo, 'web/mock/sample-plugin/wwwroot/ui.js');
+  const touch = () => {
+    const t = new Date();
+    fs.utimesSync(uiJs, t, t);
+  };
+  {
+    // the mock polls the bundle's mtime (fs.watchFile, 500ms); touch again if a poll was missed
+    for (let i = 0; i < 2; i++) {
+      touch();
+      const ok = await page.waitForFunction(() => window.__e2eRoot && !window.__e2eRoot.isConnected, null, { timeout: 4000 }).then(() => true).catch(() => false);
+      if (ok) break;
+      await sleep(600);
+    }
+    await page.waitForSelector('.plugin-root .sample', { timeout: 5000 }).catch(() => {});
+    const remounted = await page.evaluate(() => !window.__e2eRoot.isConnected && !!document.querySelector('.plugin-root .sample'));
+    check('plugin tab remounts on new version (ui.changed)', remounted);
+
+    await page.route('**/plugins/netpi.sample/ui.js*', (r) => r.fulfill({ status: 500, body: 'boom' }));
+    await sleep(1100); // mtime has 1ms resolution but the watcher polls every 500ms
+    touch();
+    await page.waitForSelector('.plugin-tab .state.error', { timeout: 5000 }).catch(() => {});
+    check('plugin load error state', (await page.locator('.plugin-tab .state.error').count()) > 0);
+    await shot(page, '23-plugin-error');
+    await page.unroute('**/plugins/netpi.sample/ui.js*');
+    await page.locator('.plugin-tab .state.error button', { hasText: 'Retry' }).first().click();
+    await page.waitForSelector('.plugin-root .sample', { timeout: 5000 }).catch(() => {});
+    check('plugin retry after error', (await page.locator('.plugin-root .sample').count()) > 0);
+  }
+}
+
+// ------------------------------------------------------------------ reconnect
+if (!EXTERNAL) {
+  log('reconnect');
+  await page.locator('.panel.left .strip-tab', { hasText: 'Sessions' }).click();
+  await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
+  await page.waitForTimeout(300);
+  await stopServer();
+  await page.waitForSelector('.conn[data-status="reconnecting"]', { timeout: 5000 }).catch(() => {});
+  check('connection indicator shows reconnecting', (await page.locator('.conn[data-status="reconnecting"]').count()) > 0);
+  await shot(page, '24-reconnecting');
+  await startServer();
+  await page.waitForSelector('.conn[data-status="open"]', { timeout: 15_000 }).catch(() => {});
+  check('reconnects after the server restarts', (await page.locator('.conn[data-status="open"]').count()) > 0);
+  // the session is refetched and scoped events flow again (re-subscribed)
+  await ta.fill('Quick check after reconnect — short answer.');
+  await ta.press('Enter');
+  const streamed = await page.waitForSelector('.streaming, .composer.running', { timeout: 8000 }).then(() => true).catch(() => false);
+  check('events flow after reconnect (resubscribed)', streamed);
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 20_000 }).catch(() => {});
+}
+
+// ------------------------------------------------------------------ vite dev server (proxy + ?token=)
+if (!EXTERNAL && !argv.includes('--no-dev')) {
+  log('vite dev server');
+  const vite = spawn(process.execPath, [path.join(repo, 'node_modules/vite/bin/vite.js'), '--config', 'web/vite.config.js', '--port', '5199', '--strictPort', '--host', '127.0.0.1'], {
+    cwd: repo,
+    env: { ...process.env, NETPI_URL: BASE },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('vite did not start')), 20_000);
+      vite.stdout.on('data', (d) => /Local:|ready in/.test(String(d)) && (clearTimeout(t), resolve()));
+    });
+    const dev = await openApp({ url: 'http://127.0.0.1:5199/?token=dev' });
+    await dev.page.waitForSelector('.srow', { timeout: 15_000 }).catch(() => {});
+    const rows = await dev.page.locator('.srow').count();
+    const url = dev.page.url();
+    check('dev server: proxied ws + ?token= auth', rows > 0 && !url.includes('token='), `${rows} sessions, url ${url}`);
+    // plugin bundles are fetched through the proxy with the dev cookie
+    await dev.page.waitForSelector('.plugin-root .sample', { timeout: 10_000 }).catch(() => {});
+    check('dev server: plugin tab loads through the proxy', (await dev.page.locator('.plugin-root .sample').count()) > 0);
+    const devErrors = dev.errors.filter((e) => !/favicon|\[vite\]/.test(e));
+    check('dev server: no console errors', devErrors.length === 0, devErrors.slice(0, 3).join(' | '));
+    await dev.browser.close();
+  } catch (e) {
+    check('dev server', false, e.message);
+  } finally {
+    vite.kill();
+  }
+}
+
+// ------------------------------------------------------------------ summary
+// expected noise from the deliberate plugin 500 and the server restart
+const EXPECTED = /favicon|Failed to fetch dynamically imported module|failed to load tab|status of 500|WebSocket connection to|ERR_CONNECTION_REFUSED/;
+const bad = errors.filter((e) => !EXPECTED.test(e));
+check('no console errors', bad.length === 0, bad.slice(0, 5).join(' | '));
+await browser.close();
+await stopServer();
+const failed = results.filter((r) => !r.ok);
+log(`\n${results.length - failed.length}/${results.length} checks passed`);
+process.exit(failed.length ? 1 : 0);

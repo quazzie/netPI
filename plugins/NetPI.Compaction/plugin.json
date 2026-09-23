@@ -1,0 +1,5 @@
+{
+  "id": "netpi.compaction",
+  "name": "Compaction",
+  "description": "Summarizes older messages when the context window fills up (auto, on context overflow, and /compact)."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "netpi.nudge",
+  "name": "Nudge",
+  "description": "Auto-nudges a stalled agent: empty or cut-off responses, announced-but-not-taken actions and un-executed textual tool calls."
+}

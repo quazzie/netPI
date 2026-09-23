@@ -1,0 +1,118 @@
+// UI-only state: panel layout, preferences, modals, toasts and the composer bridge.
+import { load, persist, fetchRemote } from '../persist.js';
+
+const LAYOUT_KEY = 'netpi.layout';
+const PREFS_KEY = 'netpi.prefs';
+
+const defaultLayout = {
+  left: { width: 272, collapsed: false, active: 'core/sessions' },
+  right: { width: 360, collapsed: false, active: null },
+};
+const defaultPrefs = {
+  theme: 'dark', // dark | light | system
+  collapseSteps: true, // collapse finished step groups with > 3 steps
+  enterSends: true, // false → Ctrl+Enter sends, Enter = newline
+  expandThinking: false,
+};
+
+function merge(base, v) {
+  if (!v || typeof v !== 'object') return structuredClone(base);
+  return {
+    left: { ...base.left, ...(v.left ?? {}) },
+    right: { ...base.right, ...(v.right ?? {}) },
+  };
+}
+
+export const layout = $state(merge(defaultLayout, load(LAYOUT_KEY, null)));
+export const prefs = $state({ ...defaultPrefs, ...load(PREFS_KEY, {}) });
+
+export function saveLayout() {
+  persist(LAYOUT_KEY, $state.snapshot(layout));
+}
+export function savePrefs() {
+  persist(PREFS_KEY, $state.snapshot(prefs));
+  applyTheme();
+}
+
+/** Pull the host copies (used when local storage was empty, e.g. a fresh WebView profile). */
+export async function syncUiStateFromHost() {
+  if (load(LAYOUT_KEY, null) == null) {
+    const v = await fetchRemote(LAYOUT_KEY);
+    if (v) Object.assign(layout, merge(defaultLayout, v));
+  }
+  if (load(PREFS_KEY, null) == null) {
+    const v = await fetchRemote(PREFS_KEY);
+    if (v) {
+      Object.assign(prefs, { ...defaultPrefs, ...v });
+      applyTheme();
+    }
+  }
+}
+
+let mql = null;
+export function applyTheme() {
+  let t = prefs.theme;
+  if (t === 'system') {
+    mql ??= matchMedia('(prefers-color-scheme: light)');
+    t = mql.matches ? 'light' : 'dark';
+  }
+  document.documentElement.dataset.theme = t;
+}
+if (typeof window !== 'undefined') {
+  matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => {
+    if (prefs.theme === 'system') applyTheme();
+  });
+}
+
+export function togglePanel(side) {
+  layout[side].collapsed = !layout[side].collapsed;
+  saveLayout();
+}
+
+// ------------------------------------------------------------------------------------------ modals
+
+export const modals = $state({
+  settings: false,
+  palette: false,
+  help: false,
+  folder: null, // { initial, title, resolve }
+  confirm: null, // { title, message, confirmLabel, danger, resolve }
+  prompt: null, // { title, label, value, resolve }
+  lightbox: null, // { src }
+  projectPicker: null, // { sessionId, anchor }
+});
+
+export function confirmDialog({ title = 'Are you sure?', message = '', confirmLabel = 'Confirm', danger = false } = {}) {
+  return new Promise((resolve) => {
+    modals.confirm = { title, message, confirmLabel, danger, resolve };
+  });
+}
+
+export function promptDialog({ title, label = '', value = '', placeholder = '' }) {
+  return new Promise((resolve) => {
+    modals.prompt = { title, label, value, placeholder, resolve };
+  });
+}
+
+// ------------------------------------------------------------------------------------------ toasts
+
+export const toasts = $state([]);
+let toastId = 1;
+
+export function toast(text, level = 'info', { timeout } = {}) {
+  const id = toastId++;
+  toasts.push({ id, text: String(text), level });
+  if (toasts.length > 5) toasts.shift();
+  const ms = timeout ?? (level === 'error' ? 7000 : 3800);
+  if (ms > 0) setTimeout(() => dismissToast(id), ms);
+  return id;
+}
+export function dismissToast(id) {
+  const i = toasts.findIndex((t) => t.id === id);
+  if (i >= 0) toasts.splice(i, 1);
+}
+
+// ------------------------------------------------------------------------------------------ composer bridge
+
+/** The active composer registers itself here so plugins/commands can insert text or focus it. */
+export const composer = { insertText: null, focus: null, setText: null };

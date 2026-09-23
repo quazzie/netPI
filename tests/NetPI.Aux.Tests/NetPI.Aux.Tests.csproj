@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Console test runner for the auxiliary plugins (retry, nudge, tool repair, compaction, ideas, work, diagnostics).
+       No test framework (NuGet is not available). Run the built exe, optionally with test-name filters. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>NetPI.Aux.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Retry/NetPI.Retry.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Nudge/NetPI.Nudge.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.ToolRepair/NetPI.ToolRepair.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Compaction/NetPI.Compaction.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Ideas/NetPI.Ideas.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Work/NetPI.Work.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Diagnostics/NetPI.Diagnostics.csproj" />
+  </ItemGroup>
+</Project>

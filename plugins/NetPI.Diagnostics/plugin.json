@@ -1,0 +1,5 @@
+{
+  "id": "netpi.diagnostics",
+  "name": "Diagnostics",
+  "description": "Plugins, tools, RPC methods, recent bus events and logs; /reload to hot-reload plugins."
+}

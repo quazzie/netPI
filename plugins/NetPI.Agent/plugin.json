@@ -1,0 +1,5 @@
+{
+  "id": "netpi.agent",
+  "name": "Agent runtime",
+  "description": "Runs agents: the model/tool loop, steering and follow-up queues, subagents, waiting and agent-to-agent messaging."
+}

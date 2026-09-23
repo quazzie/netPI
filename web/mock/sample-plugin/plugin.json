@@ -1,0 +1,5 @@
+{
+  "id": "netpi.sample",
+  "name": "Sample plugin",
+  "description": "Example plugin UI (a Svelte tab and a vanilla JS tab) used by the mock server."
+}

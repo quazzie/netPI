@@ -1,0 +1,592 @@
+/*
+ * NetPI UI kit — utility classes shared by the host UI and plugin tabs.
+ * ---------------------------------------------------------------------------------------------
+ * Plugin tabs render inside the host DOM, so they can use these classes directly (they are global)
+ * and the design tokens from tokens.css (--bg, --bg-1..3, --border, --fg, --fg-muted, --fg-dim,
+ * --accent, --ok, --warn, --err, --info, --font-ui, --font-mono, --radius, --radius-sm …).
+ *
+ * Layout
+ *   .np-scroll            scroll container with thin scrollbars (overflow:auto)
+ *   .np-stack             vertical flex, gap 8px          (.np-stack-sm → 4px)
+ *   .np-hstack            horizontal flex, centered, gap 8px (.np-hstack-sm → 4px)
+ *   .np-spacer            flex:1 filler inside a hstack
+ *   .np-toolbar           compact header row: title left, actions right
+ *   .np-divider           1px horizontal rule
+ *
+ * Sections
+ *   .np-section           padded block (12px) separated by a bottom border
+ *   .np-section-title     small uppercase label; put .np-section-actions inside for right-aligned buttons
+ *   .np-card              bordered, rounded box on --bg-2
+ *
+ * Lists
+ *   .np-list              unstyled list container
+ *   .np-row               compact clickable row (hover background); .is-active / [aria-selected=true] highlight
+ *   .np-row-title / .np-row-sub   primary / secondary text in a row (ellipsized)
+ *   .np-kv                key/value grid (dt/dd or two spans per row)
+ *   .np-table             dense table (th dim, td mono-friendly)
+ *
+ * Controls
+ *   .np-btn               bordered button   (+ .np-btn-primary, .np-btn-ghost, .np-btn-danger, .np-btn-sm)
+ *   .np-icon-btn          square icon-only ghost button (use .np-btn-sm for 22px)
+ *   .np-input             text input / textarea / select
+ *   .np-check             checkbox + label row
+ *   .np-seg               segmented control: <div class="np-seg"><button aria-pressed="true">…</button>…</div>
+ *
+ * Text & status
+ *   .np-mono .np-muted .np-dim .np-ellipsis .np-small .np-strong
+ *   .np-kbd               keyboard key
+ *   .np-badge             small pill; tones via data-tone="ok|warn|err|info|accent" (or .np-badge-ok etc.)
+ *   .np-dot               6px status dot; data-status="running|queued|yielded|idle|unread|error|ok|warn|
+ *                         completed|failed|cancelled|loaded|unloaded|stopped|offline|available"
+ *   .np-empty             centered dim empty-state message (optionally with an svg icon inside)
+ *   .np-spinner           12px spinning ring
+ *   .np-progress          bar; set style="--value: 0.42" (0..1); data-tone="warn|err" for color
+ * ---------------------------------------------------------------------------------------------
+ */
+
+/* ------------------------------------------------------------------ layout */
+.np-scroll {
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+.np-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.np-scroll::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 10px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.np-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover);
+  background-clip: content-box;
+  border: 3px solid transparent;
+}
+.np-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.np-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.np-stack-sm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.np-hstack {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.np-hstack-sm {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.np-spacer {
+  flex: 1;
+}
+.np-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 10px;
+}
+.np-divider {
+  height: 1px;
+  background: var(--border);
+  border: 0;
+  margin: 6px 0;
+}
+
+/* ------------------------------------------------------------------ sections */
+.np-section {
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.np-section:last-child {
+  border-bottom: 0;
+}
+.np-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  margin: 0 0 6px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.np-section-title .np-section-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.np-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+
+/* ------------------------------------------------------------------ lists */
+.np-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.np-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  cursor: default;
+  min-width: 0;
+  user-select: none;
+}
+.np-row:hover {
+  background: var(--bg-2);
+}
+.np-row.is-active,
+.np-row[aria-selected='true'] {
+  background: var(--bg-3);
+}
+.np-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.np-row-sub {
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.np-kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 3px 12px;
+  font-size: var(--fs-sm);
+  margin: 0;
+}
+.np-kv > :nth-child(odd) {
+  color: var(--fg-dim);
+}
+.np-kv > :nth-child(even) {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.np-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.np-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.np-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.np-table tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ------------------------------------------------------------------ controls */
+.np-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--t-fast),
+    border-color var(--t-fast),
+    color var(--t-fast);
+}
+.np-btn:hover {
+  background: var(--bg-3);
+}
+.np-btn:active {
+  transform: translateY(0.5px);
+}
+.np-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
+.np-btn:focus-visible,
+.np-icon-btn:focus-visible,
+.np-input:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 1px;
+}
+.np-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 550;
+}
+.np-btn-primary:hover {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+.np-btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-muted);
+}
+.np-btn-ghost:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.np-btn-danger {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 40%, transparent);
+  background: var(--err-soft);
+}
+.np-btn-danger:hover {
+  background: color-mix(in srgb, var(--err) 22%, transparent);
+}
+.np-btn-sm {
+  height: 22px;
+  padding: 0 7px;
+  font-size: var(--fs-sm);
+  gap: 4px;
+}
+.np-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  flex: none;
+  transition:
+    background var(--t-fast),
+    color var(--t-fast);
+}
+.np-icon-btn:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.np-icon-btn.np-btn-sm {
+  width: 22px;
+  height: 22px;
+}
+.np-icon-btn[aria-pressed='true'] {
+  color: var(--accent);
+}
+.np-icon-btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.np-input {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs);
+  outline: none;
+  transition: border-color var(--t-fast);
+}
+.np-input::placeholder {
+  color: var(--fg-dim);
+}
+.np-input:focus {
+  border-color: var(--accent-line);
+}
+textarea.np-input {
+  height: auto;
+  padding: 7px 9px;
+  line-height: 1.45;
+  resize: vertical;
+}
+select.np-input {
+  padding-right: 4px;
+}
+.np-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: var(--fs);
+}
+.np-check input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+.np-seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.np-seg > button {
+  height: 22px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.np-seg > button:hover {
+  color: var(--fg);
+}
+.np-seg > button[aria-pressed='true'] {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+
+/* ------------------------------------------------------------------ text */
+.np-mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  font-variant-ligatures: none;
+}
+.np-muted {
+  color: var(--fg-muted);
+}
+.np-dim {
+  color: var(--fg-dim);
+}
+.np-small {
+  font-size: var(--fs-sm);
+}
+.np-strong {
+  font-weight: 600;
+}
+.np-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.np-kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 5px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg-2);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* ------------------------------------------------------------------ status */
+.np-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--bg-3);
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.np-badge[data-tone='ok'],
+.np-badge-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.np-badge[data-tone='warn'],
+.np-badge-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.np-badge[data-tone='err'],
+.np-badge-err {
+  background: var(--err-soft);
+  color: var(--err);
+}
+.np-badge[data-tone='info'],
+.np-badge-info {
+  background: var(--info-soft);
+  color: var(--info);
+}
+.np-badge[data-tone='accent'],
+.np-badge-accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.np-dot {
+  --dot: var(--fg-dim);
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dot);
+}
+.np-dot[data-status='running'] {
+  --dot: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent-line);
+  animation: np-pulse 1.6s var(--ease) infinite;
+}
+.np-dot[data-status='queued'] {
+  --dot: var(--warn);
+}
+.np-dot[data-status='yielded'] {
+  --dot: var(--info);
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--dot);
+}
+.np-dot[data-status='idle'],
+.np-dot[data-status='cancelled'] {
+  --dot: var(--fg-dim);
+  opacity: 0.55;
+}
+.np-dot[data-status='unread'] {
+  --dot: var(--accent);
+}
+.np-dot[data-status='error'],
+.np-dot[data-status='failed'],
+.np-dot[data-status='offline'] {
+  --dot: var(--err);
+}
+.np-dot[data-status='ok'],
+.np-dot[data-status='completed'],
+.np-dot[data-status='loaded'] {
+  --dot: var(--ok);
+}
+.np-dot[data-status='warn'],
+.np-dot[data-status='stopped'] {
+  --dot: var(--warn);
+}
+.np-dot[data-status='unloaded'],
+.np-dot[data-status='available'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--fg-dim);
+}
+@keyframes np-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--accent-line);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.np-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 28px 16px;
+  color: var(--fg-dim);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+.np-empty svg {
+  width: 22px;
+  height: 22px;
+  opacity: 0.7;
+}
+
+.np-spinner {
+  display: inline-block;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  animation: np-spin 0.8s linear infinite;
+}
+@keyframes np-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.np-progress {
+  --value: 0;
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.np-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(var(--value) * 100%);
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width var(--t);
+}
+.np-progress[data-tone='warn']::after {
+  background: var(--warn);
+}
+.np-progress[data-tone='err']::after {
+  background: var(--err);
+}
+.np-progress[data-tone='ok']::after {
+  background: var(--ok);
+}

@@ -1,0 +1,131 @@
+/*
+ * NetPI design tokens. Everything (host UI and plugin tabs) styles itself through these variables.
+ * Themes: <html data-theme="dark|light">. Dark is the default.
+ */
+:root {
+  --font-ui: 'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', Inter, system-ui, -apple-system,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'Cascadia Code', 'Cascadia Mono', 'JetBrains Mono', Consolas, ui-monospace, 'SF Mono', Menlo,
+    'DejaVu Sans Mono', monospace;
+
+  --fs: 13px; /* UI base */
+  --fs-sm: 12px;
+  --fs-xs: 11px;
+  --fs-chat: 14px; /* chat body */
+  --fs-mono: 12.5px;
+  --lh: 1.5;
+
+  --radius: 8px;
+  --radius-sm: 5px;
+  --radius-lg: 12px;
+
+  --topbar-h: 40px;
+  --strip-w: 34px;
+  --chat-max: 900px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --t-fast: 90ms;
+  --t: 160ms;
+
+  /* ---- dark (default) ---- */
+  --bg: #0c0d10;
+  --bg-1: #121418;
+  --bg-2: #181b20;
+  --bg-3: #21252c;
+  --border: #23272e;
+  --border-strong: #323843;
+  --fg: #e3e5e9;
+  --fg-muted: #a1a7b1;
+  --fg-dim: #6b727d;
+  --accent: #7c93ff;
+  --accent-fg: #0a0d18;
+  --accent-soft: rgba(124, 147, 255, 0.13);
+  --accent-line: rgba(124, 147, 255, 0.45);
+  --ok: #4cc38a;
+  --warn: #e3a54c;
+  --err: #ef6b73;
+  --info: #5ba9e6;
+
+  --ok-soft: rgba(76, 195, 138, 0.12);
+  --warn-soft: rgba(227, 165, 76, 0.13);
+  --err-soft: rgba(239, 107, 115, 0.12);
+  --info-soft: rgba(91, 169, 230, 0.12);
+
+  --code-bg: #101216;
+  --selection: rgba(124, 147, 255, 0.3);
+  --scrollbar: rgba(255, 255, 255, 0.1);
+  --scrollbar-hover: rgba(255, 255, 255, 0.2);
+  --shadow: 0 10px 30px -8px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --overlay: rgba(4, 5, 8, 0.6);
+
+  --diff-add: rgba(76, 195, 138, 0.12);
+  --diff-add-fg: #7fdcaa;
+  --diff-del: rgba(239, 107, 115, 0.12);
+  --diff-del-fg: #f59aa0;
+  --diff-hunk: rgba(91, 169, 230, 0.08);
+
+  /* syntax highlighting */
+  --hl-keyword: #c792ea;
+  --hl-string: #a5d6a7;
+  --hl-number: #f7b46a;
+  --hl-comment: #5f6773;
+  --hl-title: #82aaff;
+  --hl-attr: #ffcb8b;
+  --hl-type: #7fdbca;
+  --hl-meta: #89ddff;
+  --hl-var: #f07178;
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #ffffff;
+  --bg-1: #f6f7f9;
+  --bg-2: #eff1f4;
+  --bg-3: #e5e8ed;
+  --border: #e2e5ea;
+  --border-strong: #cbd0d8;
+  --fg: #1b1f26;
+  --fg-muted: #535b67;
+  --fg-dim: #8a919c;
+  --accent: #4a63e6;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(74, 99, 230, 0.1);
+  --accent-line: rgba(74, 99, 230, 0.45);
+  --ok: #1d9a5a;
+  --warn: #b4741a;
+  --err: #d2434f;
+  --info: #2a7bc0;
+
+  --ok-soft: rgba(29, 154, 90, 0.1);
+  --warn-soft: rgba(180, 116, 26, 0.1);
+  --err-soft: rgba(210, 67, 79, 0.09);
+  --info-soft: rgba(42, 123, 192, 0.09);
+
+  --code-bg: #f6f7f9;
+  --selection: rgba(74, 99, 230, 0.2);
+  --scrollbar: rgba(0, 0, 0, 0.14);
+  --scrollbar-hover: rgba(0, 0, 0, 0.26);
+  --shadow: 0 12px 32px -10px rgba(20, 25, 40, 0.25), 0 2px 6px rgba(20, 25, 40, 0.08);
+  --shadow-sm: 0 2px 8px rgba(20, 25, 40, 0.1);
+  --overlay: rgba(20, 24, 32, 0.35);
+
+  --diff-add: rgba(29, 154, 90, 0.1);
+  --diff-add-fg: #11703f;
+  --diff-del: rgba(210, 67, 79, 0.09);
+  --diff-del-fg: #a82d38;
+  --diff-hunk: rgba(42, 123, 192, 0.07);
+
+  --hl-keyword: #8e3fc2;
+  --hl-string: #2f7d32;
+  --hl-number: #b35c00;
+  --hl-comment: #8a919c;
+  --hl-title: #2d5bd3;
+  --hl-attr: #9a5b00;
+  --hl-type: #107a72;
+  --hl-meta: #1a73a8;
+  --hl-var: #c2303e;
+
+  color-scheme: light;
+}

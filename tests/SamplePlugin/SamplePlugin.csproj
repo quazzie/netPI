@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Test plugin for NetPI.Host.Tests, built in several variants (SampleVariant=v1|v2|fail) by the test runner.
+       Follows plugins/Directory.Build.props conventions by hand: contracts are referenced but never copied. -->
+  <PropertyGroup>
+    <SampleVariant Condition="'$(SampleVariant)' == ''">v1</SampleVariant>
+    <AssemblyName>SamplePlugin</AssemblyName>
+    <RootNamespace>SamplePlugin</RootNamespace>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <IsPackable>false</IsPackable>
+    <DefineConstants>$(DefineConstants);SAMPLE_$(SampleVariant.ToUpperInvariant())</DefineConstants>
+    <IntermediateOutputPath>obj/$(Configuration)/$(SampleVariant)/</IntermediateOutputPath>
+    <OutDir>$(RepoRoot)artifacts/tests/SamplePlugin/$(SampleVariant)/</OutDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" Private="false" ExcludeAssets="runtime" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="wwwroot/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

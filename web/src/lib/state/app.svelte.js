@@ -1,0 +1,475 @@
+// Global app state: sessions, projects, models, agents, open tabs, plugin tabs and commands.
+// Server events are routed here (broadcast events) and to the per-session ChatStores (scoped events).
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import { rpc, subscribe, onOpen, connect } from '../rpc.svelte.js';
+import { bus } from '../bus.js';
+import { load, persist, fetchRemote } from '../persist.js';
+import { getChat, peekChat, dropChat, allChats } from './chat.svelte.js';
+import { toast, syncUiStateFromHost, composer } from './ui.svelte.js';
+import { toolDefs } from '../tools.js';
+
+const TABS_KEY = 'netpi.openTabs';
+
+class AppState {
+  ready = $state(false);
+  info = $state.raw(null);
+  projects = $state.raw([]);
+  sessions = $state.raw([]); // all known sessions (incl. subagents), newest first
+  models = $state.raw([]);
+  defaultModel = $state(null);
+  agents = new SvelteMap(); // sessionId -> AgentInfo (latest)
+  context = new SvelteMap(); // sessionId -> { used, window }
+  unread = new SvelteSet();
+  errored = new SvelteSet(); // background tabs whose run ended with an error
+  openTabs = $state([]); // session ids
+  activeId = $state(null);
+  uiTabs = $state.raw([]); // plugin UiTabInfo[]
+  commands = $state.raw([]); // server SlashCommandInfo[]
+  settingsVersion = $state(0);
+
+  sessionsById = $derived(new Map(this.sessions.map((s) => [s.id, s])));
+  projectsById = $derived(new Map(this.projects.map((p) => [p.id, p])));
+  modelsByRef = $derived(new Map(this.models.map((m) => [m.ref ?? `${m.provider}/${m.id}`, m])));
+  activeSession = $derived(this.activeId ? (this.sessionsById.get(this.activeId) ?? null) : null);
+  activeProject = $derived(
+    this.activeSession?.projectId ? (this.projectsById.get(this.activeSession.projectId) ?? null) : null,
+  );
+}
+
+export const app = new AppState();
+
+// ------------------------------------------------------------------------------------------ helpers
+
+export function sessionModelRef(s) {
+  return s?.model || app.defaultModel || null;
+}
+export function modelFor(s) {
+  const ref = sessionModelRef(s);
+  return ref ? (app.modelsByRef.get(ref) ?? null) : null;
+}
+export function projectOf(s) {
+  return s?.projectId ? (app.projectsById.get(s.projectId) ?? null) : null;
+}
+
+const BUSY = new Set(['running', 'queued', 'yielded']);
+export function isBusy(sessionId) {
+  const a = app.agents.get(sessionId);
+  return !!a && BUSY.has(a.status);
+}
+
+/** Status for tab dots: running | queued | yielded | error | unread | idle */
+export function sessionStatus(sessionId) {
+  const a = app.agents.get(sessionId);
+  if (a) {
+    if (a.status === 'running') return 'running';
+    if (a.status === 'queued') return 'queued';
+    if (a.status === 'yielded') return 'yielded';
+    if (a.status === 'failed') return 'error';
+  }
+  if (app.errored.has(sessionId)) return 'error';
+  if (app.unread.has(sessionId)) return 'unread';
+  return 'idle';
+}
+
+function upsertSession(s) {
+  if (!s?.id) return;
+  const list = app.sessions;
+  const i = list.findIndex((x) => x.id === s.id);
+  if (i >= 0) {
+    const next = list.slice();
+    next[i] = s;
+    // keep newest-first order by updatedAt
+    if (i > 0 && Date.parse(s.updatedAt) > Date.parse(next[i - 1].updatedAt)) {
+      next.splice(i, 1);
+      next.unshift(s);
+    }
+    app.sessions = next;
+  } else {
+    app.sessions = [s, ...list];
+  }
+}
+
+function upsertProject(p) {
+  if (!p?.id) return;
+  const i = app.projects.findIndex((x) => x.id === p.id);
+  if (i >= 0) {
+    const next = app.projects.slice();
+    next[i] = p;
+    app.projects = next;
+  } else app.projects = [...app.projects, p];
+}
+
+function persistTabs() {
+  persist(TABS_KEY, { tabs: $state.snapshot(app.openTabs), active: app.activeId });
+}
+
+function resubscribe() {
+  subscribe(app.openTabs);
+}
+
+// ------------------------------------------------------------------------------------------ loading
+
+export async function loadSessions() {
+  const list = await rpc('sessions.list', { includeSubagents: true, limit: 300 });
+  const known = new Set(list.map((s) => s.id));
+  // keep open sessions that fell outside the page
+  const extra = app.sessions.filter((s) => !known.has(s.id) && app.openTabs.includes(s.id));
+  app.sessions = [...list, ...extra];
+}
+
+export async function loadProjects() {
+  app.projects = await rpc('projects.list');
+}
+
+export async function loadModels(refresh = false) {
+  try {
+    const res = await rpc('models.list', refresh ? { refresh: true } : {});
+    app.models = res?.models ?? [];
+    app.defaultModel = res?.defaultModel ?? null;
+  } catch (e) {
+    console.warn('models.list failed', e);
+  }
+}
+
+export async function loadUiRegistry() {
+  const [tabs, cmds] = await Promise.all([
+    rpc('ui.tabs').catch(() => []),
+    rpc('ui.commands').catch(() => []),
+  ]);
+  app.uiTabs = Array.isArray(tabs) ? tabs : [];
+  app.commands = Array.isArray(cmds) ? cmds : [];
+}
+
+async function loadAgents() {
+  try {
+    const list = await rpc('agents.list', { includeFinished: true }, { timeout: 8000 });
+    app.agents.clear();
+    for (const a of list ?? []) setAgent(a);
+  } catch {
+    /* agent plugin missing */
+  }
+}
+
+async function loadTools() {
+  try {
+    const list = await rpc('tools.list', {}, { timeout: 8000 });
+    toolDefs.clear();
+    for (const t of list ?? []) toolDefs.set(t.name, t);
+  } catch {}
+}
+
+async function fetchSession(id) {
+  try {
+    const s = await rpc('sessions.get', { id });
+    upsertSession(s);
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+async function loadAll({ reconnect }) {
+  try {
+    const [info] = await Promise.all([
+      rpc('app.info').catch(() => null),
+      loadProjects(),
+      loadSessions(),
+      loadModels(),
+      loadUiRegistry(),
+      loadAgents(),
+      loadTools(),
+    ]);
+    app.info = info;
+  } catch (e) {
+    toast(`Failed to load: ${e.message}`, 'error');
+  }
+
+  if (!reconnect) {
+    await syncUiStateFromHost();
+    let saved = load(TABS_KEY, null);
+    if (!saved) saved = await fetchRemote(TABS_KEY);
+    const tabs = (saved?.tabs ?? []).filter((id) => typeof id === 'string');
+    for (const id of tabs) if (!app.sessionsById.has(id)) await fetchSession(id);
+    app.openTabs = tabs.filter((id) => app.sessionsById.has(id));
+    const active = app.openTabs.includes(saved?.active) ? saved.active : (app.openTabs[0] ?? null);
+    app.activeId = active;
+    resubscribe();
+    if (active) getChat(active).load();
+  } else {
+    // we may have missed events: refresh the active chat, mark the others stale
+    resubscribe();
+    for (const c of allChats()) c.stale = true;
+    if (app.activeId) {
+      const c = getChat(app.activeId);
+      c.stale = false;
+      c.load();
+    }
+  }
+  app.ready = true;
+}
+
+// ------------------------------------------------------------------------------------------ actions
+
+export function activate(id) {
+  if (!id) {
+    app.activeId = null;
+    persistTabs();
+    return;
+  }
+  if (!app.openTabs.includes(id)) app.openTabs.push(id);
+  app.activeId = id;
+  app.unread.delete(id);
+  app.errored.delete(id);
+  const c = getChat(id);
+  if (!c.loaded || c.stale) c.load();
+  resubscribe();
+  persistTabs();
+}
+
+export async function openSession(id) {
+  if (!id) return;
+  if (!app.sessionsById.has(id)) {
+    const s = await fetchSession(id);
+    if (!s) {
+      toast('Session not found', 'error');
+      return;
+    }
+  }
+  activate(id);
+}
+
+export function closeTab(id) {
+  const i = app.openTabs.indexOf(id);
+  if (i < 0) return;
+  const chat = peekChat(id);
+  chat?.saveDraft();
+  app.openTabs.splice(i, 1);
+  if (app.activeId === id) {
+    const next = app.openTabs[i] ?? app.openTabs[i - 1] ?? null;
+    app.activeId = next;
+    if (next) {
+      const c = getChat(next);
+      if (!c.loaded || c.stale) c.load();
+    }
+  }
+  resubscribe();
+  persistTabs();
+}
+
+export function moveTab(id, toIndex) {
+  const from = app.openTabs.indexOf(id);
+  if (from < 0 || from === toIndex) return;
+  app.openTabs.splice(from, 1);
+  app.openTabs.splice(Math.max(0, Math.min(toIndex, app.openTabs.length)), 0, id);
+  persistTabs();
+}
+
+export function cycleTab(dir) {
+  const tabs = app.openTabs;
+  if (!tabs.length) return;
+  const i = tabs.indexOf(app.activeId);
+  activate(tabs[(i + dir + tabs.length) % tabs.length]);
+}
+
+export async function newSession(opts = {}) {
+  const projectId = opts.projectId !== undefined ? opts.projectId : (app.activeSession?.projectId ?? null);
+  try {
+    const params = {};
+    if (projectId) params.projectId = projectId;
+    if (opts.title) params.title = opts.title;
+    if (opts.model) params.model = opts.model;
+    const s = await rpc('sessions.create', params);
+    upsertSession(s);
+    activate(s.id);
+    queueMicrotask(() => composer.focus?.());
+    return s;
+  } catch (e) {
+    toast(`Could not create session: ${e.message}`, 'error');
+    return null;
+  }
+}
+
+export async function updateSession(id, patch) {
+  try {
+    const s = await rpc('sessions.update', { id, ...patch });
+    upsertSession(s);
+    return s;
+  } catch (e) {
+    toast(e.message, 'error');
+    return null;
+  }
+}
+
+export async function deleteSession(id) {
+  try {
+    await rpc('sessions.delete', { id });
+    removeSessionLocal(id);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function removeSessionLocal(id) {
+  if (app.openTabs.includes(id)) closeTab(id);
+  app.sessions = app.sessions.filter((s) => s.id !== id);
+  dropChat(id);
+}
+
+export async function setSessionProject(id, projectId) {
+  try {
+    const s = await rpc('sessions.setProject', { id, projectId: projectId ?? null });
+    upsertSession(s);
+    return s;
+  } catch (e) {
+    toast(e.message, 'error');
+    return null;
+  }
+}
+
+export async function createProject(p) {
+  const res = await rpc('projects.create', p);
+  upsertProject(res);
+  return res;
+}
+export async function updateProject(p) {
+  const res = await rpc('projects.update', p);
+  upsertProject(res);
+  return res;
+}
+export async function deleteProject(id) {
+  await rpc('projects.delete', { id });
+  app.projects = app.projects.filter((p) => p.id !== id);
+}
+
+/** Send user input to the session's agent. mode: auto | steer | queue */
+export async function sendMessage(sessionId, text, images, mode = 'auto') {
+  const chat = getChat(sessionId);
+  const optimistic = mode === 'auto' && !isBusy(sessionId);
+  if (optimistic) chat.pendingUser = { text, images: images ?? [], createdAt: new Date().toISOString() };
+  try {
+    const params = { sessionId, text, mode };
+    if (images?.length) params.images = images.map((i) => ({ mediaType: i.mediaType, data: i.data }));
+    const agent = await rpc('agent.send', params);
+    if (agent?.sessionId) setAgent(agent);
+    return true;
+  } catch (e) {
+    chat.pendingUser = null;
+    toast(`Send failed: ${e.message}`, 'error');
+    return false;
+  }
+}
+
+export async function abortAgent(sessionId) {
+  try {
+    await rpc('agent.abort', { sessionId });
+  } catch (e) {
+    toast(`Abort failed: ${e.message}`, 'error');
+  }
+}
+
+export async function dequeue(sessionId, id) {
+  try {
+    await rpc('agent.dequeue', { sessionId, id });
+    const c = peekChat(sessionId);
+    if (c) c.queue = c.queue.filter((q) => q.id !== id);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function setAgent(a) {
+  if (!a?.sessionId) return;
+  const prev = app.agents.get(a.sessionId);
+  app.agents.set(a.sessionId, a);
+  const wasBusy = prev && BUSY.has(prev.status);
+  const nowBusy = BUSY.has(a.status);
+  if (wasBusy && !nowBusy) {
+    peekChat(a.sessionId)?.runEnded();
+    if (a.sessionId !== app.activeId && app.openTabs.includes(a.sessionId)) app.unread.add(a.sessionId);
+  }
+}
+
+// ------------------------------------------------------------------------------------------ events
+
+const SCOPED = new Set([
+  'message.added',
+  'message.updated',
+  'messages.compacted',
+  'stream.start',
+  'stream.delta',
+  'stream.tool',
+  'stream.reset',
+  'stream.end',
+  'tool.start',
+  'tool.output',
+  'tool.end',
+  'agent.queue',
+  'agent.notice',
+]);
+
+let uiReloadTimer = 0;
+
+function onEvent(d, env) {
+  const type = env.type;
+  if (SCOPED.has(type)) {
+    const sid = env.sid ?? d?.sessionId;
+    if (!sid) return;
+    if (type === 'message.added' && sid !== app.activeId && app.openTabs.includes(sid)) {
+      const m = d?.message;
+      if (m && ((m.role === 'notice' && m.meta?.kind === 'error') || m.stopReason === 'error')) app.errored.add(sid);
+    }
+    const chat = peekChat(sid);
+    if (chat) chat.handle(type, d ?? {});
+    else if (type === 'message.added' && sid !== app.activeId && app.openTabs.includes(sid)) {
+      if (d?.message?.role === 'assistant') app.unread.add(sid);
+    }
+    return;
+  }
+  switch (type) {
+    case 'session.created':
+    case 'session.updated':
+      upsertSession(d.session);
+      break;
+    case 'session.deleted':
+      removeSessionLocal(d.id);
+      break;
+    case 'project.created':
+    case 'project.updated':
+      upsertProject(d.project);
+      break;
+    case 'project.deleted':
+      app.projects = app.projects.filter((p) => p.id !== d.id);
+      break;
+    case 'agent.status':
+      setAgent(d.agent);
+      break;
+    case 'session.context':
+      app.context.set(d.sessionId, { used: d.used, window: d.window });
+      break;
+    case 'models.changed':
+      loadModels();
+      break;
+    case 'ui.changed':
+    case 'plugins.changed':
+      clearTimeout(uiReloadTimer);
+      uiReloadTimer = setTimeout(() => {
+        loadUiRegistry();
+        loadTools();
+      }, 150);
+      break;
+    case 'settings.changed':
+      app.settingsVersion++;
+      break;
+    default:
+      break;
+  }
+}
+
+let started = false;
+export function startApp() {
+  if (started) return;
+  started = true;
+  bus.on('*', onEvent);
+  onOpen(loadAll);
+  connect();
+}

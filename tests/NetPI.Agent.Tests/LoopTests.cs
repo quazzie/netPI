@@ -1,0 +1,726 @@
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+namespace NetPI.Agent.Tests;
+
+public static class LoopTests
+{
+    public static void Register(TestRunner t)
+    {
+        t.Add("loop: simple text reply", SimpleReply);
+        t.Add("loop: stream deltas are coalesced", Coalescing);
+        t.Add("loop: tool loop with a fake tool", ToolLoop);
+        t.Add("loop: parallel read-only batch", ParallelReadOnly);
+        t.Add("loop: mixed batch runs sequentially", SequentialBatch);
+        t.Add("loop: steering mid-batch skips remaining tools", SteeringMidBatch);
+        t.Add("loop: queued follow-ups one at a time", FollowUps);
+        t.Add("loop: abort persists partial message", AbortPartial);
+        t.Add("loop: abort during a tool call", AbortDuringTool);
+        t.Add("loop: unknown tool and invalid JSON arguments", ToolErrors);
+        t.Add("loop: tool exceptions and result truncation", ToolExceptionAndTruncation);
+        t.Add("loop: model error writes an error notice", ModelError);
+        t.Add("loop: missing model writes an error notice", MissingModel);
+        t.Add("loop: max turns", MaxTurns);
+        t.Add("loop: stream reset and notices", StreamResetAndNotice);
+        t.Add("loop: model switched mid-run is used next turn", ModelSwitchMidRun);
+        t.Add("hooks: inject", HookInject);
+        t.Add("hooks: replace", HookReplace);
+        t.Add("hooks: stop", HookStop);
+        t.Add("hooks: before model call, retry on error, block tool, run start/end", HookMisc);
+        t.Add("middleware: model middleware wraps agent calls", Middleware);
+        t.Add("rpc: agent.send / queue / dequeue / get / list / abort", Rpcs);
+        t.Add("runtime: stopping the agent plugin cancels runs", PluginStop);
+    }
+
+    private static FakeTool Echo() => new("echo", (ctx, args, ct) =>
+        Task.FromResult(ToolResult.Ok("echo:" + (args.TryGetProperty("text", out var v) ? v.GetString() : ""), new { len = 3 })));
+
+    private static async Task SimpleReply()
+    {
+        await using var h = await TestHost.StartAsync();
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.Stream(Reply.Message(new ThinkingPart { Text = "hmm, let me think" }, new TextPart { Text = "Hello there!" }), async c => await Task.Delay(20, c));
+        await h.SendAsync(s.Id, "hi");
+        var a = await h.IdleAsync(s.Id);
+
+        var msgs = h.Messages(s.Id);
+        Check.Equal(2, msgs.Count, "messages");
+        Check.Equal(MessageRole.User, msgs[0].Role);
+        Check.Equal("hi", msgs[0].Text);
+        var m = msgs[1];
+        Check.Equal(MessageRole.Assistant, m.Role);
+        Check.Equal("Hello there!", m.Text);
+        Check.Equal("fake", m.Provider);
+        Check.Equal("local", m.Model);
+        Check.Equal("stop", m.StopReason);
+        Check.True(m.DurationMs is not null, "duration set");
+        Check.True(m.Parts.OfType<ThinkingPart>().Single().DurationMs is not null, "thinking duration set");
+        Check.Equal(a.Id, m.MetaString("agentId"));
+
+        Check.Equal(AgentStatus.Idle, a.Status);
+        Check.False(a.IsSubagent);
+        Check.Equal(1, a.Runs);
+        Check.Equal(1, a.Turns);
+        Check.Equal("Hello there!", a.Result);
+        Check.Equal(100L, a.InputTokens);
+        Check.Equal(10L, a.OutputTokens);
+        Check.Equal("fake/local", a.Model);
+        Check.Equal("fake/local", a.Pool);
+        Check.Equal(110L, h.Sessions.GetSession(s.Id)!.ContextTokens);
+
+        var req = h.Catalog.Requests.Single();
+        Check.Contains(req.SystemPrompt, "NetPI");
+        Check.Contains(req.SystemPrompt, "Working directory: " + h.Workspace);
+        Check.Equal(4096, req.MaxOutputTokens);
+        Check.Equal(s.Id, req.SessionId);
+        Check.Equal(a.Id, req.AgentId);
+        Check.True(req.Tools.Any(x => x.Name == "agent_spawn"), "agent tools offered");
+
+        var start = h.Bus.OfType(EventTypes.StreamStart).Single();
+        Check.Equal(s.Id, start.SessionId);
+        Check.Equal("fake/local", FakeBus.Data(start)["model"]!.GetValue<string>());
+        var text = string.Concat(h.Bus.OfType(EventTypes.StreamDelta).Select(FakeBus.Data).Where(d => (string?)d["kind"] == "text").Select(d => (string?)d["text"]));
+        Check.Equal("Hello there!", text);
+        var thinking = string.Concat(h.Bus.OfType(EventTypes.StreamDelta).Select(FakeBus.Data).Where(d => (string?)d["kind"] == "thinking").Select(d => (string?)d["text"]));
+        Check.Equal("hmm, let me think", thinking);
+        Check.Equal(1, h.Bus.OfType(EventTypes.StreamEnd).Count);
+        // stream.end precedes the assistant message.added
+        var all = h.Bus.All;
+        var endIdx = all.FindIndex(e => e.Type == EventTypes.StreamEnd);
+        var addIdx = all.FindLastIndex(e => e.Type == EventTypes.MessageAdded);
+        Check.True(endIdx < addIdx, "stream.end before message.added");
+
+        var usage = FakeBus.Data(h.Bus.OfType(EventTypes.UsageRecorded).Single());
+        Check.Equal("fake", (string?)usage["provider"]);
+        Check.Equal("local", (string?)usage["model"]);
+        Check.Equal(s.Id, (string?)usage["sessionId"]);
+        Check.Equal(a.Id, (string?)usage["agentId"]);
+        Check.Equal(100L, usage["usage"]!["inputTokens"]!.GetValue<long>());
+        var ctxEvt = h.Bus.OfType(EventTypes.SessionContext).Single();
+        Check.Equal(null, ctxEvt.SessionId); // broadcast
+        Check.Equal(110L, FakeBus.Data(ctxEvt)["used"]!.GetValue<long>());
+        Check.Equal("100000", FakeBus.Data(ctxEvt)["window"]!.ToJsonString());
+
+        var statuses = h.Bus.OfType(EventTypes.AgentStatus).Select(e => FakeBus.Data(e)["agent"]!["status"]!.GetValue<string>()).ToList();
+        Check.True(statuses.Contains("running"), "running published");
+        Check.Equal("idle", statuses[^1]);
+    }
+
+    private static async Task Coalescing()
+    {
+        await using var h = await TestHost.StartAsync();
+        var s = h.NewSession();
+        var text = string.Concat(Enumerable.Range(0, 200).Select(i => $"w{i} "));
+        h.Catalog.Handler = (r, ct) => Reply.Text(text); // 4-char chunks, no delays
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        var deltas = h.Bus.OfType(EventTypes.StreamDelta);
+        var chunks = (text.Length + 3) / 4;
+        Check.True(deltas.Count < chunks / 4, $"coalesced: {deltas.Count} events for {chunks} chunks");
+        Check.Equal(text, string.Concat(deltas.Select(d => (string?)FakeBus.Data(d)["text"])));
+        Check.True(deltas.All(d => d.SessionId == s.Id), "deltas are session scoped");
+    }
+
+    private static async Task ToolLoop()
+    {
+        await using var h = await TestHost.StartAsync();
+        var echo = Echo();
+        h.AddTool(echo);
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r)
+            ? Reply.Text("done: " + r.Messages[^1].ToolResults.Single().Content)
+            : Reply.Tool("echo", new { text = "abc" });
+        await h.SendAsync(s.Id, "use echo");
+        var a = await h.IdleAsync(s.Id);
+
+        var msgs = h.Messages(s.Id);
+        Check.Equal("User,Assistant,Tool,Assistant", string.Join(",", msgs.Select(m => m.Role)));
+        Check.Equal("tool_use", msgs[1].StopReason);
+        var call = msgs[1].ToolCalls.Single();
+        var result = msgs[2].ToolResults.Single();
+        Check.Equal(call.Id, result.CallId);
+        Check.Equal("echo", result.Name);
+        Check.Equal("echo:abc", result.Content);
+        Check.False(result.IsError);
+        Check.Equal(3, result.Details!["len"]!.GetValue<int>());
+        Check.True(result.DurationMs is not null);
+        Check.Equal("done: echo:abc", msgs[3].Text);
+        Check.Equal(1, echo.Calls);
+        Check.Equal(2, a.Turns);
+        Check.Equal(1, a.ToolCalls);
+
+        var ts = FakeBus.Data(h.Bus.OfType(EventTypes.ToolStart).Single());
+        Check.Equal(call.Id, (string?)ts["callId"]);
+        Check.Equal("ECHO", (string?)ts["label"]);
+        Check.Equal(a.Id, (string?)ts["agentId"]);
+        Check.Contains((string?)ts["arguments"], "abc");
+        var te = FakeBus.Data(h.Bus.OfType(EventTypes.ToolEnd).Single());
+        Check.Equal(false, te["isError"]!.GetValue<bool>());
+        Check.Equal(1, h.Bus.OfType(EventTypes.StreamTool).Count);
+    }
+
+    private static async Task ParallelReadOnly()
+    {
+        await using var h = await TestHost.StartAsync();
+        int current = 0, max = 0;
+        var peek = new FakeTool("peek", async (ctx, args, ct) =>
+        {
+            var c = Interlocked.Increment(ref current);
+            lock (h) max = Math.Max(max, c);
+            await Task.Delay(250, ct);
+            Interlocked.Decrement(ref current);
+            return ToolResult.Ok("peeked " + args.GetProperty("n").GetInt32());
+        }, readOnly: true);
+        h.AddTool(peek);
+        var s = h.NewSession();
+        var sw = new Stopwatch();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (Reply.HasToolResult(r)) return Reply.Text("all done");
+            sw.Start();
+            return Reply.Tools(Reply.Call("peek", new { n = 1 }), Reply.Call("peek", new { n = 2 }), Reply.Call("peek", new { n = 3 }));
+        };
+        await h.SendAsync(s.Id, "peek thrice");
+        await h.IdleAsync(s.Id);
+        Check.Equal(3, peek.Calls);
+        Check.True(max >= 2, $"ran concurrently (max {max})");
+        Check.True(sw.ElapsedMilliseconds < 700, $"parallel batch took {sw.ElapsedMilliseconds}ms");
+        var results = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Select(x => x.Content).OrderBy(x => x).ToList();
+        Check.Equal("peeked 1|peeked 2|peeked 3", string.Join("|", results));
+        // the model got all three results (normalized into one tool message)
+        var last = h.Catalog.Requests.Last();
+        Check.Equal(3, last.Messages[^1].ToolResults.Count());
+    }
+
+    private static async Task SequentialBatch()
+    {
+        await using var h = await TestHost.StartAsync();
+        int current = 0, max = 0;
+        Func<ToolContext, JsonElement, CancellationToken, Task<ToolResult>> body = async (ctx, args, ct) =>
+        {
+            var c = Interlocked.Increment(ref current);
+            lock (h) max = Math.Max(max, c);
+            await Task.Delay(60, ct);
+            Interlocked.Decrement(ref current);
+            return ToolResult.Ok("ok");
+        };
+        h.AddTool(new FakeTool("peek", body, readOnly: true));
+        h.AddTool(new FakeTool("poke", body, readOnly: false));
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r)
+            ? Reply.Text("done")
+            : Reply.Tools(Reply.Call("peek"), Reply.Call("poke"), Reply.Call("peek"));
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        Check.Equal(1, max, "sequential");
+        var order = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).Select(m => m.ToolResults.Single().CallId).ToList();
+        var calls = h.Messages(s.Id)[1].ToolCalls.Select(c => c.Id).ToList();
+        Check.Equal(string.Join(",", calls), string.Join(",", order), "results in call order");
+    }
+
+    private static async Task SteeringMidBatch()
+    {
+        await using var h = await TestHost.StartAsync();
+        var gate = new TaskCompletionSource();
+        var started = new TaskCompletionSource();
+        var work = new FakeTool("work", async (ctx, args, ct) =>
+        {
+            if (args.GetProperty("n").GetInt32() == 1)
+            {
+                started.TrySetResult();
+                await gate.Task.WaitAsync(ct);
+            }
+            return ToolResult.Ok("worked");
+        });
+        h.AddTool(work);
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) || Reply.LastUser(r) == "change of plans"
+            ? Reply.Text("ack")
+            : Reply.Tools(Reply.Call("work", new { n = 1 }), Reply.Call("work", new { n = 2 }), Reply.Call("work", new { n = 3 }));
+
+        await h.SendAsync(s.Id, "start");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var info = await h.SendAsync(s.Id, "change of plans");
+        Check.Equal(1, info.QueuedMessages);
+        var q = h.Runtime.GetQueue(s.Id);
+        Check.Equal(1, q.Count);
+        Check.Equal("steer", q[0].Mode);
+        Check.Equal("change of plans", q[0].Text);
+        await h.Bus.DrainAsync();
+        var qe = FakeBus.Data(h.Bus.OfType(EventTypes.AgentQueue).Last());
+        Check.Equal("steer", (string?)qe["items"]![0]!["mode"]);
+
+        gate.SetResult();
+        var a = await h.IdleAsync(s.Id);
+        Check.Equal(1, work.Calls, "only the running call executed");
+        var msgs = h.Messages(s.Id);
+        Check.Equal("User,Assistant,Tool,Tool,Tool,User,Assistant", string.Join(",", msgs.Select(m => m.Role)));
+        Check.Equal("worked", msgs[2].ToolResults.Single().Content);
+        Check.Contains(msgs[3].ToolResults.Single().Content, "Skipped");
+        Check.True(msgs[3].ToolResults.Single().IsError);
+        Check.Contains(msgs[4].ToolResults.Single().Content, "Skipped");
+        Check.Equal("change of plans", msgs[5].Text);
+        Check.Equal("steer", msgs[5].MetaString("delivery"));
+        Check.Equal("ack", msgs[6].Text);
+        Check.Equal("change of plans", Reply.LastUser(h.Catalog.Requests.Last()));
+        Check.Equal(0, h.Runtime.GetQueue(s.Id).Count);
+        Check.Equal(1, a.Runs);
+    }
+
+    private static async Task FollowUps()
+    {
+        await using var h = await TestHost.StartAsync();
+        var gate = new TaskCompletionSource();
+        var calls = 0;
+        h.Catalog.Handler = (r, ct) => Interlocked.Increment(ref calls) switch
+        {
+            1 => Reply.Text("first", c => gate.Task.WaitAsync(c)),
+            2 => Reply.Text("second"),
+            _ => Reply.Text("third"),
+        };
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 1, "first call");
+        await h.SendAsync(s.Id, "A", DeliveryMode.Queue);
+        var info = await h.SendAsync(s.Id, "B", DeliveryMode.Queue);
+        Check.Equal(2, info.QueuedMessages);
+        Check.Equal("queue,queue", string.Join(",", h.Runtime.GetQueue(s.Id).Select(x => x.Mode)));
+        gate.SetResult();
+        var a = await h.IdleAsync(s.Id);
+
+        var reqs = h.Catalog.Requests.ToList();
+        Check.Equal(3, reqs.Count);
+        Check.Equal("A", Reply.LastUser(reqs[1]));
+        Check.False(reqs[1].Messages.Any(m => m.Text == "B"), "B not yet delivered");
+        Check.Equal("B", Reply.LastUser(reqs[2]));
+        Check.Equal("go,first,A,second,B,third", string.Join(",", h.Messages(s.Id).Select(m => m.Text)));
+        Check.Equal("queue", h.Messages(s.Id)[2].MetaString("delivery"));
+        Check.Equal(1, a.Runs);
+        Check.Equal(0, a.QueuedMessages);
+    }
+
+    private static async IAsyncEnumerable<ModelStreamEvent> Hang([EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await Task.Yield();
+        yield return new ThinkingDelta("thinking...");
+        yield return new TextDelta("partial ");
+        yield return new TextDelta("answer");
+        await Task.Delay(Timeout.Infinite, ct);
+        yield return new StreamCompleted(Reply.Message(new TextPart { Text = "never" }));
+    }
+
+    private static async Task AbortPartial()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.Catalog.Handler = (r, ct) => Hang(ct);
+        var s = h.NewSession();
+        Check.False(await h.Runtime.AbortAsync(s.Id), "nothing to abort yet");
+        await h.SendAsync(s.Id, "go");
+        await Wait.Until(() => h.Bus.OfType(EventTypes.StreamDelta).Any(e => ((string?)FakeBus.Data(e)["text"])?.Contains("answer") == true), "partial streamed");
+        Check.True(await h.Runtime.AbortAsync(s.Id), "abort");
+        var a = await h.IdleAsync(s.Id);
+        Check.Equal(AgentStatus.Idle, a.Status);
+        var last = h.Messages(s.Id)[^1];
+        Check.Equal(MessageRole.Assistant, last.Role);
+        Check.Equal("aborted", last.StopReason);
+        Check.Equal("partial answer", last.Text);
+        Check.Equal("thinking...", last.Parts.OfType<ThinkingPart>().Single().Text);
+        Check.Equal(1, h.Bus.OfType(EventTypes.StreamEnd).Count);
+        Check.False(await h.Runtime.AbortAsync(s.Id), "already idle");
+        Check.Equal(0, h.Lanes!.Snapshot().Sum(p => p.Busy), "lane released");
+    }
+
+    private static async Task AbortDuringTool()
+    {
+        await using var h = await TestHost.StartAsync();
+        var started = new TaskCompletionSource();
+        var wait = new FakeTool("wait", async (ctx, args, ct) =>
+        {
+            started.TrySetResult();
+            await Task.Delay(Timeout.Infinite, ct);
+            return ToolResult.Ok("never");
+        });
+        h.AddTool(wait);
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.Tools(Reply.Call("wait"), Reply.Call("wait"));
+        await h.SendAsync(s.Id, "go");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await h.Runtime.AbortAsync(s.Id);
+        await h.IdleAsync(s.Id);
+        var results = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).ToList();
+        Check.Equal(2, results.Count);
+        Check.True(results.All(r => r.IsError && r.Content.StartsWith("Aborted")), "aborted results");
+        var ends = h.Bus.OfType(EventTypes.ToolEnd);
+        Check.Equal(1, ends.Count, "tool.end for the started call");
+        Check.Equal(1, h.Catalog.Calls);
+    }
+
+    private static async Task ToolErrors()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.AddTool(Echo());
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r)
+            ? Reply.Text("ok")
+            : Reply.Tools(Reply.Call("nope", new { }), Reply.Call("echo", "{\"text\": bad json"), Reply.Call("ECHO", new { text = "x" }));
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        var results = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).Select(m => m.ToolResults.Single()).ToList();
+        Check.Equal(3, results.Count);
+        Check.True(results[0].IsError);
+        Check.Contains(results[0].Content, "Unknown tool 'nope'");
+        Check.Contains(results[0].Content, "echo");
+        Check.True(results[1].IsError);
+        Check.Contains(results[1].Content, "Invalid JSON arguments for echo");
+        Check.False(results[2].IsError, "case-insensitive tool name");
+        Check.Equal("echo:x", results[2].Content);
+    }
+
+    private static async Task ToolExceptionAndTruncation()
+    {
+        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agent.maxToolResultChars", 1000));
+        h.AddTool(new FakeTool("boom", (ctx, args, ct) => throw new IOException("disk on fire")));
+        h.AddTool(new FakeTool("big", (ctx, args, ct) => Task.FromResult(ToolResult.Ok(new string('a', 3000) + new string('z', 2000)))));
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("ok") : Reply.Tools(Reply.Call("boom"), Reply.Call("big"));
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        var results = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).Select(m => m.ToolResults.Single()).ToList();
+        Check.True(results[0].IsError);
+        Check.Contains(results[0].Content, "disk on fire");
+        Check.False(results[1].IsError);
+        Check.Contains(results[1].Content, "characters omitted");
+        Check.True(results[1].Content.StartsWith("aaaa") && results[1].Content.EndsWith("zzzz"), "head and tail kept");
+        Check.True(results[1].Content.Length < 1400, $"truncated to ~1000 chars (got {results[1].Content.Length})");
+    }
+
+    private static async Task ModelError()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.Catalog.Handler = (r, ct) => Reply.Fail(new ModelException("backend exploded", transient: false, statusCode: 500));
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        var a = await h.IdleAsync(s.Id);
+        var last = h.Messages(s.Id)[^1];
+        Check.Equal(MessageRole.Notice, last.Role);
+        Check.Equal("error", last.MetaString("kind"));
+        Check.Contains(last.Text, "backend exploded");
+        Check.Contains(last.Text, "500");
+        Check.Equal(AgentStatus.Idle, a.Status);
+        Check.Contains(a.Error, "backend exploded");
+        Check.Equal(1, h.Bus.OfType(EventTypes.StreamEnd).Count);
+        Check.Equal(0, h.Lanes!.Snapshot().Sum(p => p.Busy), "lane released");
+
+        // the next message clears the error
+        h.Catalog.Handler = (r, ct) => Reply.Text("fine now");
+        await h.SendAsync(s.Id, "again");
+        a = await h.IdleAsync(s.Id);
+        Check.Equal(null, a.Error);
+        Check.Equal(2, a.Runs);
+    }
+
+    private static async Task MissingModel()
+    {
+        await using var h = await TestHost.StartAsync();
+        var s = h.NewSession(model: "ghost/model");
+        await h.SendAsync(s.Id, "go");
+        var a = await h.IdleAsync(s.Id);
+        var last = h.Messages(s.Id)[^1];
+        Check.Equal("error", last.MetaString("kind"));
+        Check.Contains(last.Text, "ghost/model");
+        Check.Equal(0, h.Catalog.Calls);
+        Check.Contains(a.Error, "ghost/model");
+    }
+
+    private static async Task MaxTurns()
+    {
+        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agent.maxTurns", 3));
+        h.AddTool(Echo());
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.Tool("echo", new { text = "again" });
+        await h.SendAsync(s.Id, "loop forever");
+        var a = await h.IdleAsync(s.Id);
+        Check.Equal(3, h.Catalog.Calls);
+        var last = h.Messages(s.Id)[^1];
+        Check.Equal("error", last.MetaString("kind"));
+        Check.Contains(last.Text, "agent.maxTurns");
+        Check.Contains(a.Error, "limit");
+    }
+
+    private static async IAsyncEnumerable<ModelStreamEvent> ResetThenAnswer([EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await Task.Yield();
+        yield return new TextDelta("garbage that will be discarded");
+        yield return new StreamNotice("retrying in 1s", "warn");
+        yield return new StreamReset("retry");
+        yield return new TextDelta("clean answer");
+        yield return new StreamCompleted(Reply.Message(new TextPart { Text = "clean answer" }));
+    }
+
+    private static async Task StreamResetAndNotice()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.Catalog.Handler = (r, ct) => ResetThenAnswer(ct);
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        Check.Equal(1, h.Bus.OfType(EventTypes.StreamReset).Count);
+        var notice = FakeBus.Data(h.Bus.OfType(EventTypes.AgentNotice).Single());
+        Check.Equal("warn", (string?)notice["level"]);
+        Check.Equal("retrying in 1s", (string?)notice["text"]);
+        // after the reset only the clean text streams
+        var all = h.Bus.All;
+        var resetIdx = all.FindIndex(e => e.Type == EventTypes.StreamReset);
+        var after = string.Concat(all.Skip(resetIdx).Where(e => e.Type == EventTypes.StreamDelta).Select(e => (string?)FakeBus.Data(e)["text"]));
+        Check.Equal("clean answer", after);
+        Check.Equal("clean answer", h.Messages(s.Id)[^1].Text);
+    }
+
+    private static async Task ModelSwitchMidRun()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.AddTool(Echo());
+        var s = h.NewSession(model: "fake/local");
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (Reply.HasToolResult(r)) return Reply.Text("answered by " + r.Model.Ref);
+            h.SetModel(s.Id, "cloud/big"); // user switches the model while the first call runs
+            return Reply.Tool("echo", new { text = "x" });
+        };
+        await h.SendAsync(s.Id, "go");
+        var a = await h.IdleAsync(s.Id);
+        var reqs = h.Catalog.Requests.ToList();
+        Check.Equal("fake/local", reqs[0].Model.Ref);
+        Check.Equal("cloud/big", reqs[1].Model.Ref);
+        Check.Equal("answered by cloud/big", h.Messages(s.Id)[^1].Text);
+        Check.Equal("cloud", a.Pool, "moved to the cloud provider's pool");
+        Check.Equal(0, h.Lanes!.Snapshot().Sum(p => p.Busy));
+    }
+
+    // ---------------------------------------------------------------- hooks
+
+    private sealed class Hook : IAgentHook
+    {
+        public int Order { get; init; }
+        public Func<AgentTurnContext, ValueTask>? BeforeModel;
+        public Func<AgentTurnContext, ChatMessage, TurnDecision?>? After;
+        public Func<AgentTurnContext, Exception, ModelErrorDecision?>? OnError;
+        public Func<ToolCallPart, ToolCallDecision?>? BeforeTool;
+        public List<string> Log { get; } = [];
+
+        public ValueTask OnRunStartAsync(AgentRunContext run) { lock (Log) Log.Add("start"); return ValueTask.CompletedTask; }
+        public ValueTask OnBeforeModelCallAsync(AgentTurnContext turn) => BeforeModel?.Invoke(turn) ?? ValueTask.CompletedTask;
+        public ValueTask<TurnDecision?> OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant) => ValueTask.FromResult(After?.Invoke(turn, assistant));
+        public ValueTask<ModelErrorDecision?> OnModelErrorAsync(AgentTurnContext turn, Exception error) => ValueTask.FromResult(OnError?.Invoke(turn, error));
+        public ValueTask<ToolCallDecision?> OnBeforeToolCallAsync(AgentTurnContext turn, ToolCallPart call) => ValueTask.FromResult(BeforeTool?.Invoke(call));
+        public ValueTask OnAfterToolCallAsync(AgentTurnContext turn, ToolCallPart call, ToolResultPart result) { lock (Log) Log.Add("tool:" + call.Name); return ValueTask.CompletedTask; }
+        public ValueTask OnRunEndAsync(AgentRunContext run) { lock (Log) Log.Add("end:" + run.Outcome); return ValueTask.CompletedTask; }
+    }
+
+    private static async Task HookInject()
+    {
+        await using var h = await TestHost.StartAsync();
+        var n = 0;
+        h.Services.Register<IAgentHook>(new Hook { After = (t, m) => Interlocked.Increment(ref n) == 1 ? TurnDecision.Inject("Please double-check your answer.", "nudge") : null });
+        var calls = 0;
+        h.Catalog.Handler = (r, ct) => Reply.Text(Interlocked.Increment(ref calls) == 1 ? "answer1" : "answer2");
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        var msgs = h.Messages(s.Id);
+        Check.Equal("User,Assistant,Notice,Assistant", string.Join(",", msgs.Select(m => m.Role)));
+        Check.Equal("nudge", msgs[2].MetaString("kind"));
+        Check.Equal("Please double-check your answer.", msgs[2].Text);
+        Check.Equal("answer2", msgs[3].Text);
+        Check.Contains(Reply.LastUser(h.Catalog.Requests.Last()), "<system-notice kind=\"nudge\">");
+    }
+
+    private static async Task HookReplace()
+    {
+        await using var h = await TestHost.StartAsync();
+        var echo = Echo();
+        h.AddTool(echo);
+        h.Services.Register<IAgentHook>(new Hook
+        {
+            After = (t, m) => m.Text.Contains("<tool>")
+                ? TurnDecision.Replace(new ChatMessage { Parts = [new TextPart { Text = "calling echo" }, Reply.Call("echo", new { text = "repaired" }, "call_rep")] })
+                : null,
+        });
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done") : Reply.Text("<tool>echo repaired</tool>");
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        var msgs = h.Messages(s.Id);
+        Check.Equal("User,Assistant,Tool,Assistant", string.Join(",", msgs.Select(m => m.Role)));
+        Check.Equal("calling echo", msgs[1].Text);
+        Check.Equal("tool_use", msgs[1].StopReason);
+        Check.Equal("call_rep", msgs[1].ToolCalls.Single().Id);
+        Check.True(h.Sessions.UpdateMessageCalls >= 1, "UpdateMessage called");
+        Check.Equal("echo:repaired", msgs[2].ToolResults.Single().Content);
+        Check.Equal(1, echo.Calls);
+        Check.True(h.Bus.OfType(EventTypes.MessageUpdated).Count >= 1);
+    }
+
+    private static async Task HookStop()
+    {
+        await using var h = await TestHost.StartAsync();
+        var echo = Echo();
+        h.AddTool(echo);
+        h.Services.Register<IAgentHook>(new Hook { After = (t, m) => TurnDecision.Stop() });
+        h.Catalog.Handler = (r, ct) => Reply.Tool("echo", new { text = "x" });
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        Check.Equal(1, h.Catalog.Calls);
+        Check.Equal(0, echo.Calls);
+        var last = h.Messages(s.Id)[^1];
+        Check.Equal(MessageRole.Tool, last.Role);
+        Check.Contains(last.ToolResults.Single().Content, "Not executed");
+    }
+
+    private static async Task HookMisc()
+    {
+        await using var h = await TestHost.StartAsync();
+        var echo = Echo();
+        h.AddTool(echo);
+        var hook = new Hook
+        {
+            Order = 5,
+            BeforeModel = t =>
+            {
+                t.SystemPrompt += "\nHOOKED";
+                return ValueTask.CompletedTask;
+            },
+            OnError = (t, e) => new ModelErrorDecision { Retry = true },
+            BeforeTool = c => c.Name == "echo" && c.Arguments.Contains("secret") ? new ToolCallDecision { Block = true, Reason = "no secrets" } : null,
+        };
+        // a second hook with a lower order runs first and is consulted first for decisions
+        var first = new Hook { Order = -1, BeforeTool = c => c.Arguments.Contains("fixme") ? new ToolCallDecision { Arguments = "{\"text\":\"fixed\"}" } : null };
+        h.Services.Register<IAgentHook>(hook);
+        h.Services.Register<IAgentHook>(first);
+        var calls = 0;
+        h.Catalog.Handler = (r, ct) => Interlocked.Increment(ref calls) switch
+        {
+            1 => Reply.Fail(new ModelException("context overflow", false) { ContextOverflow = true }),
+            2 => Reply.Tools(Reply.Call("echo", new { text = "secret" }), Reply.Call("echo", new { text = "fixme" })),
+            _ => Reply.Text("done"),
+        };
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        Check.Equal(3, h.Catalog.Calls, "one retry after the error");
+        Check.True(h.Catalog.Requests.All(r => r.SystemPrompt!.EndsWith("HOOKED")), "prompt modified");
+        var results = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).Select(m => m.ToolResults.Single()).ToList();
+        Check.True(results[0].IsError);
+        Check.Contains(results[0].Content, "no secrets");
+        Check.Equal("echo:fixed", results[1].Content);
+        var assistant = h.Messages(s.Id).First(m => m.Role == MessageRole.Assistant);
+        Check.Contains(assistant.ToolCalls.Last().Arguments, "fixed");
+        Check.False(h.Messages(s.Id).Any(m => m.MetaString("kind") == "error"), "no error notice after retry");
+        Check.Equal("start|tool:echo|tool:echo|end:completed", string.Join("|", hook.Log));
+    }
+
+    private sealed class CountingMiddleware : IModelMiddleware
+    {
+        public int Calls;
+        public int Order => 0;
+
+        public async IAsyncEnumerable<ModelStreamEvent> InvokeAsync(ModelRequest request, ModelCallDelegate next, [EnumeratorCancellation] CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);
+            yield return new StreamNotice("middleware says hi");
+            await foreach (var e in next(request, ct).WithCancellation(ct)) yield return e;
+        }
+    }
+
+    private static async Task Middleware()
+    {
+        await using var h = await TestHost.StartAsync();
+        var mw = new CountingMiddleware();
+        h.Services.Register<IModelMiddleware>(mw);
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        Check.Equal(1, mw.Calls);
+        Check.Equal("middleware says hi", (string?)FakeBus.Data(h.Bus.OfType(EventTypes.AgentNotice).Single())["text"]);
+    }
+
+    private static async Task Rpcs()
+    {
+        await using var h = await TestHost.StartAsync();
+        var gate = new TaskCompletionSource();
+        h.Catalog.Handler = (r, ct) => Reply.Text("reply to " + Reply.LastUser(r), c => gate.Task.WaitAsync(c));
+        var s = h.NewSession();
+        var sent = await h.Rpc.CallAsync("agent.send", new { sessionId = s.Id, text = "look", images = new[] { new { mediaType = "image/png", data = "iVBORw0KGgo=" } } });
+        Check.Equal(s.Id, (string?)sent!["sessionId"]);
+        var agentId = (string)sent["id"]!;
+        await Wait.Until(() => h.Catalog.Calls == 1, "model called");
+        var user = h.Messages(s.Id)[0];
+        Check.Equal("iVBORw0KGgo=", user.Parts.OfType<ImagePart>().Single().Data);
+
+        await h.Rpc.CallAsync("agent.send", new { sessionId = s.Id, text = "later", mode = "queue" });
+        var queue = (JsonArray)(await h.Rpc.CallAsync("agent.queue", new { sessionId = s.Id }))!;
+        Check.Equal(1, queue.Count);
+        Check.Equal("queue", (string?)queue[0]!["mode"]);
+        var removed = await h.Rpc.CallAsync("agent.dequeue", new { sessionId = s.Id, id = (string)queue[0]!["id"]! });
+        Check.Equal(true, removed!.GetValue<bool>());
+        Check.Equal(0, ((JsonArray)(await h.Rpc.CallAsync("agent.queue", new { sessionId = s.Id }))!).Count);
+
+        var byId = await h.Rpc.CallAsync("agent.get", new { id = agentId });
+        Check.Equal("running", (string?)byId!["status"]);
+        var bySession = await h.Rpc.CallAsync("agent.get", new { sessionId = s.Id });
+        Check.Equal(agentId, (string?)bySession!["id"]);
+        Check.Equal(null, await h.Rpc.CallAsync("agent.get", new { sessionId = "ses_none" }));
+        var active = (JsonArray)(await h.Rpc.CallAsync("agents.list", new { includeFinished = false }))!;
+        Check.Equal(1, active.Count);
+
+        var aborted = await h.Rpc.CallAsync("agent.abort", new { sessionId = s.Id });
+        Check.Equal(true, aborted!.GetValue<bool>());
+        await h.IdleAsync(s.Id);
+        Check.Equal(0, ((JsonArray)(await h.Rpc.CallAsync("agents.list", new { includeFinished = false }))!).Count);
+        Check.Equal(1, ((JsonArray)(await h.Rpc.CallAsync("agents.list", new { }))!).Count);
+
+        try
+        {
+            await h.Rpc.CallAsync("agent.send", new { sessionId = "ses_missing", text = "x" });
+            throw new AssertException("expected not_found");
+        }
+        catch (RpcException ex) { Check.Equal("not_found", ex.Code); }
+    }
+
+    private static async Task PluginStop()
+    {
+        var h = await TestHost.StartAsync();
+        try
+        {
+            h.Catalog.Handler = (r, ct) => Hang(ct);
+            var s = h.NewSession();
+            var sub = await h.Runtime.SpawnAsync(new SpawnRequest { Task = "hang around", Name = "hanger" });
+            await h.SendAsync(s.Id, "go");
+            await Wait.Until(() => h.Catalog.Calls == 2, "both running");
+            await Wait.Until(() => h.Bus.OfType(EventTypes.StreamDelta).Count(e => ((string?)FakeBus.Data(e)["text"])?.Contains("answer") == true) >= 2, "both streamed");
+            var runtime = h.Plugin<AgentPlugin>().Runtime!;
+            await h.StopPluginAsync("netpi.agent");
+            Check.Equal(null, h.Services.Get<IAgentRuntime>());
+            var main = runtime.GetBySession(s.Id)!;
+            Check.Equal(AgentStatus.Idle, main.Status);
+            var subInfo = runtime.Get(sub.Id)!;
+            Check.Equal(AgentStatus.Cancelled, subInfo.Status);
+            Check.Equal("plugin reloaded", subInfo.Error);
+            Check.Equal("aborted", h.Messages(s.Id)[^1].StopReason);
+            Check.Equal(0, h.Lanes!.Snapshot().Sum(p => p.Busy), "lanes released");
+            try
+            {
+                await runtime.SendAsync(s.Id, new UserInput { Text = "x" });
+                throw new AssertException("expected InvalidOperationException");
+            }
+            catch (InvalidOperationException) { }
+        }
+        finally
+        {
+            await h.DisposeAsync();
+        }
+    }
+}

@@ -112,15 +112,18 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `agent.get` | netpi.agent | `{ id? , sessionId? }` → `AgentInfo\|null` |
 | `lanes.list` | netpi.lanes | → `LanePoolInfo[]` |
 | `usage.summary` | netpi.lanes | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] }` |
-| `compaction.run` | netpi.compaction | `{ sessionId }` → `string` |
+| `compaction.run` | netpi.compaction | `{ sessionId, args? /* extra focus for the summary */ }` → `string` (error `busy` while the agent runs) |
 | `context.preview` | netpi.context | `{ sessionId }` → `{ systemPrompt, tools: {name, description}[], estimatedTokens }` |
 | `files.search` | netpi.tools.files | `{ sessionId?, query, limit? }` → `{ path, rel, isDir }[]` (for `@` mentions) |
 | `files.list` | netpi.tools.files | `{ sessionId?, dir? }` → `{ root, dir, entries: {name, rel, isDir, size?, mtime?}[] }` |
 | `processes.list` | netpi.tools.shell | → `ProcessInfo[]` |
 | `processes.output` | netpi.tools.shell | `{ id, tail? }` → `string` |
 | `processes.kill` | netpi.tools.shell | `{ id }` → `bool` |
-| `ideas.*` | netpi.ideas | see plugin |
-| `work.snapshot` | netpi.work | → `{ lanes, agents, processes, usage }` |
+| `ideas.list` `ideas.get` `ideas.add` `ideas.update` `ideas.delete` `ideas.reorder` `ideas.toPrompt` `ideas.quickAdd` | netpi.ideas | see `docs/PLUGIN-IDEAS.md` |
+| `work.snapshot` | netpi.work | → `{ lanes, agents, processes, usage, time, errors? }` (each part `null` when unavailable; see `docs/PLUGIN-WORK.md`) |
+| `diag.snapshot` | netpi.diagnostics | `{ events? }` → `{ plugins, tools, rpc, events, logs, runtime, time }` (see `docs/PLUGIN-DIAGNOSTICS.md`) |
+| `diag.event` | netpi.diagnostics | `{ seq }` → `{ seq, type, sessionId?, time, source?, ui, data }` |
+| `diag.reload` | netpi.diagnostics | `{ args?: pluginId }` → `string` (`/reload`; no id = all plugins) |
 
 ```ts
 interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?; agentId?; background: boolean;

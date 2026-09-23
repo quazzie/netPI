@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Console test runner for the NetPI host kernel (no test framework: NuGet is not available).
+       Build: dotnet build tests/NetPI.Host.Tests -p:BuildProjectReferences=false (after building src/NetPI.Host)
+       Run:   tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests [name filter...]
+       The runner builds tests/SamplePlugin (variants v1, v2, fail) into artifacts/tests/SamplePlugin/ itself. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>NetPI.Host.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
+    <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
+  </ItemGroup>
+</Project>
