@@ -155,5 +155,7 @@ public sealed class UserInput
     /// <summary>Persist as a notice instead of a user message (agent-to-agent, harness messages).</summary>
     public bool AsNotice { get; init; }
     public string? NoticeKind { get; init; }
+    /// <summary>Extra metadata merged into the persisted message's Meta (e.g. agentName, sessionId for agent notices).</summary>
+    public JsonObject? Meta { get; init; }
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
 }

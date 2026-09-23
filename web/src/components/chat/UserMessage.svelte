@@ -14,9 +14,9 @@
   const images = $derived(msg.images ?? (msg.parts ?? []).filter((p) => p.type === 'image'));
   const html = $derived(esc(text).replace(/(^|[\s(])(@[^\s@)]+)/g, '$1<span class="mention">$2</span>'));
   const tag = $derived(
-    msg.meta?.kind === 'steer' || msg.meta?.mode === 'steer'
+    msg.meta?.kind === 'steer' || msg.meta?.delivery === 'steer' || msg.meta?.mode === 'steer'
       ? 'steered'
-      : msg.meta?.kind === 'queued' || msg.meta?.mode === 'queue'
+      : msg.meta?.kind === 'queued' || msg.meta?.delivery === 'queue' || msg.meta?.mode === 'queue'
         ? 'queued'
         : msg.meta?.source && msg.meta.source !== 'user'
           ? msg.meta.source

@@ -359,8 +359,17 @@ internal sealed class AgentRuntime : IAgentRuntime
             m = new ChatMessage { Role = MessageRole.User, Parts = parts };
             var meta = new JsonObject();
             if (!string.Equals(input.Source, "user", StringComparison.Ordinal)) meta["source"] = input.Source;
-            if (delivery is not null) meta["delivery"] = delivery;
+            if (delivery is not null)
+            {
+                meta["delivery"] = delivery;
+                meta["kind"] = delivery == "queue" ? "queued" : delivery;
+            }
             if (meta.Count > 0) m.Meta = meta;
+        }
+        if (input.Meta is { Count: > 0 } extra)
+        {
+            m.Meta ??= new JsonObject();
+            foreach (var (k, v) in extra) m.Meta[k] = v?.DeepClone();
         }
         m.SessionId = s.Info.SessionId;
         m.CreatedAt = DateTimeOffset.UtcNow;
@@ -573,6 +582,11 @@ internal sealed class AgentRuntime : IAgentRuntime
             AsNotice = true,
             NoticeKind = "agent-result",
             Source = "agent:" + final.Id,
+            Meta = new JsonObject
+            {
+                ["agentId"] = final.Id, ["agentName"] = final.Name, ["sessionId"] = final.SessionId,
+                ["status"] = StatusName(final.Status),
+            },
         };
         lock (child.Gate) child.PendingNotificationId = input.Id;
         try
@@ -879,6 +893,11 @@ internal sealed class AgentRuntime : IAgentRuntime
             AsNotice = true,
             NoticeKind = "agent-message",
             Source = "agent:" + fromAgentId,
+            Meta = new JsonObject
+            {
+                ["agentId"] = fromAgentId, ["agentName"] = name,
+                ["sessionId"] = sender?.Info.SessionId,
+            },
         };
         await DeliverAsync(target, input, mode).ConfigureAwait(false);
         return true;

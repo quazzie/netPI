@@ -22,7 +22,7 @@
   // index of the user message that started the current run (steering input does not start a new one)
   const lastUserIdx = $derived.by(() => {
     for (let i = items.length - 1; i >= 0; i--)
-      if (items[i].kind === 'user' && items[i].msg.meta?.kind !== 'steer') return i;
+      if (items[i].kind === 'user' && items[i].msg.meta?.kind !== 'steer' && items[i].msg.meta?.delivery !== 'steer') return i;
     return -1;
   });
   const liveToolRunning = $derived.by(() => {

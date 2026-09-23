@@ -38,6 +38,9 @@ public sealed class FilesPlugin : INetPiPlugin
             return Task.FromResult<object?>(_index.List(root, req.Str("dir")));
         }, "List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries: { name, rel, isDir, size?, mtime?, ignored? }[] }");
 
+        // Left-panel file tree of the active session's workspace (UI in ui/main.js → wwwroot/ui.js).
+        context.Ui.AddTab(new UiTabInfo { Id = "files", Title = "Files", Panel = UiPanel.Left, Icon = "files", Order = 30, Module = "ui.js" });
+
         context.Logger.LogDebug("File tools registered");
         return Task.CompletedTask;
     }
