@@ -80,7 +80,9 @@ tools/publish-plugins.ps1 Publishes each plugin as an IMMUTABLE build (astra-1 P
                               marker-discovers `plugins/*/ *.csproj` (no hardcoded list;
                               TestPlugin excluded unless -IncludeTestPlugin), `dotnet publish`
                               → `.artifacts/plugins/<id>/<buildId>/` + `artifact.json`
-                              manifest (every file pinned by sha256+size) → validate →
+                              manifest (every file pinned by sha256+size; pins the
+                              contract's PUBLIC API id `abstractionsApiId` — see the
+                              gotcha on the contract check) → validate →
                               atomically flip `plugins/<id>/current.json`. Idempotent (same
                               bytes → same buildId → no rewrite). `-Reload` asks a running
                               host to swap the build and confirms the new buildId; `-NoBuild`
@@ -405,6 +407,22 @@ UI work; don't chase them in a feature change.
 - Push only when the user says to. Never `git push` on its own.
 
 ## Gotchas learned the hard way
+
+- The plugin contract check compares the shared contract by its **PUBLIC API
+  id** (`NetPI.Abstractions.ContractId` — visible types + member signatures),
+  NOT by raw `netPI.Abstractions.dll` bytes (astra-2 contract id, 02e3969).
+  The old byte-hash pin broke after **every commit**: the .NET SDK's
+  SourceLink (on by default) stamps the git HEAD into the assembly version
+  and the PDB, so identical source at a different commit → different bytes →
+  every plugin pin stale → "contract mismatch" cascade → host never bound a
+  port → the desktop shell timed out at 5173. The API id is commit/PDB/
+  version-free, so a commit that does not touch the contract's API never
+  invalidates pins (verified with an empty-commit probe: bytes drift, API id
+  stable). A real contract change still flips the id and loudly rejects the
+  stale plugins. Publisher computes the id via `tools/apiid` (compiles the
+  SAME `ContractId.cs` source, so host and publisher cannot drift); the
+  legacy `abstractionsBuildId` byte hash remains as a fallback for old
+  artifacts.
 
 - `plugins/NetPI.Web/WebApp.cs` has been edited without ever being compiled —
   **always `dotnet build`** after touching it (it was shipped with literal
