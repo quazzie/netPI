@@ -136,7 +136,7 @@ export function toolRows() {
     ['agent_list', 'Agents', 'agents', true, 'netpi.tools.agents'],
     ['agent_result', 'Agent result', 'agents', true, 'netpi.tools.agents'],
     ['agent_cancel', 'Cancel agent', 'agents', false, 'netpi.tools.agents'],
-    ['lanes_list', 'Lanes', 'agents', true, 'netpi.tools.agents'],
+    ['lanes_list', 'Lanes', 'agents', true, 'netpi.lanes'],
     ['idea_add', 'Add idea', 'ideas', false, 'netpi.ideas'],
     ['idea_list', 'Ideas', 'ideas', true, 'netpi.ideas'],
     ['idea_get', 'Idea', 'ideas', true, 'netpi.ideas'],

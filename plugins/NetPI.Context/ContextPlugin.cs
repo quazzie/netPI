@@ -3,8 +3,9 @@ using System.Text.Json.Nodes;
 namespace NetPI.Context;
 
 /// <summary>
-/// System prompt builder (<see cref="ISystemPromptBuilder"/>) that renders all <see cref="IPromptSection"/>s, plus the
-/// built-in sections: identity (0), environment (100), tools (200), guidelines (300), subagent role (800), append (900).
+/// System prompt builder (<see cref="ISystemPromptBuilder"/>) that renders all <see cref="IPromptSection"/>s, plus a bare
+/// base: identity (0), environment (100), the active tools' guidelines (200), subagent role (800), append (900).
+/// Feature guidance comes from the plugins that own the feature (their tools' guidelines or their own sections).
 /// <para>Settings: <c>context.customPrompt</c> (replaces the identity section), <c>context.appendPrompt</c>.</para>
 /// <para>RPC: <c>context.preview { sessionId }</c> → <c>{ systemPrompt, tools: [{name, description}], estimatedTokens }</c>.</para>
 /// </summary>
@@ -18,7 +19,6 @@ public sealed class ContextPlugin : INetPiPlugin
         context.Services.Register<IPromptSection>(new IdentitySection(context.Settings));
         context.Services.Register<IPromptSection>(new EnvironmentSection());
         context.Services.Register<IPromptSection>(new ToolsSection(context.Settings));
-        context.Services.Register<IPromptSection>(new GuidelinesSection());
         context.Services.Register<IPromptSection>(new SubagentSection());
         context.Services.Register<IPromptSection>(new AppendSection(context.Settings));
 

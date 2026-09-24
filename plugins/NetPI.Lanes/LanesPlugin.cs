@@ -6,7 +6,8 @@ namespace NetPI.Lanes;
 /// Lane scheduler (<see cref="ILaneScheduler"/>), daily usage and budgets.
 /// <para>Settings: <c>lanes.pools</c> <c>{ "&lt;key&gt;": { "capacity": 2, "models": ["aiproxy/qwen3.8-27b", "anthropic/*"] } }</c>,
 /// <c>lanes.cloudDefaultCapacity</c> (4), <c>lanes.localDefaultCapacity</c> (1), <c>lanes.budgets.&lt;provider&gt;.dailyTokens</c>.</para>
-/// <para>RPC: <c>lanes.list</c>, <c>usage.summary</c>. Events: <c>lanes.changed { pools }</c>.</para>
+/// <para>RPC: <c>lanes.list</c>, <c>usage.summary</c>. Events: <c>lanes.changed { pools }</c>. For agents: the <c>lanes_list</c>
+/// tool and a "Lanes" system prompt section (only for agents that can spawn subagents).</para>
 /// </summary>
 [NetPiPlugin("netpi.lanes", Name = "Lanes", Description = "Parallel lanes per model pool, priority queueing, usage and budgets", Order = 30)]
 public sealed class LanesPlugin : INetPiPlugin
@@ -24,6 +25,8 @@ public sealed class LanesPlugin : INetPiPlugin
         scheduler.Refresh();
 
         context.Services.Register<ILaneScheduler>(scheduler);
+        context.Tools.Register(new LanesListTool(scheduler));
+        context.Services.Register<IPromptSection>(new LanesPromptSection());
 
         context.Rpc.Register("lanes.list", (_, _) => Task.FromResult<object?>(scheduler.Snapshot()),
             "Lane pools with capacity, owners and waiters → LanePoolInfo[]");

@@ -14,8 +14,9 @@ headless for any browser.
 - **Lanes.** Every model belongs to a pool with N lanes (your local `qwen3.8-27b` via AiProxy reports
   `concurrency: 2` → 2 lanes; Claude gets its own pool). Agents hold a lane per run and queue when the pool is full.
   An orchestrator that waits for its workers **yields** its lane to them and resumes with only their final reports.
-- **Agents manage agents.** `agent_spawn`, `agent_wait`, `agent_send`, `agent_list`, `agent_result`, `agent_cancel`,
-  `lanes_list`; subagents get their own (viewable, steerable) sessions and report back automatically.
+- **Agents manage agents.** `agent_spawn`, `agent_wait`, `agent_send`, `agent_list`, `agent_result`, `agent_cancel`
+  (plus `lanes_list` from the lanes plugin); subagents get their own (viewable, steerable) sessions and report back
+  automatically.
 - **Steering and queueing.** While an agent runs, *Enter* steers it (delivered after the current tool call) and
   *Alt+Enter* queues a follow-up; *Esc* stops.
 - **Tools as plugins:** `read`, `write`, `edit` (multi-edit, replace-all), `grep`, `find`, `ls` — all CRLF/LF

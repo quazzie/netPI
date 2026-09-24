@@ -122,57 +122,17 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
         return model is null ? null : pools.FirstOrDefault(p => p.Models.Contains(model, StringComparer.OrdinalIgnoreCase));
     }
 
-    // Tool-specific tips only: the context plugin's guidelines section explains lanes and delegation in general.
+    // Delegation guidance lives with the tools (only agents that have them see it); the lanes plugin explains lanes.
     protected static readonly string[] SpawnGuidelines =
     [
-        "Pick a subagent's model/pool with lanes_list when several are available.",
+        "Delegate independent, well-scoped work (research, exploring code, separate modules) to subagents with agent_spawn. A subagent has its own session and does not see this conversation: give it a complete, self-contained task.",
+        "Subagents report back automatically when they finish (an <agent-result> notice); do not poll them, and don't delegate what you can do in a couple of tool calls.",
     ];
-}
 
-// ------------------------------------------------------------------ lanes_list
-
-internal sealed class LanesListTool(IPluginContext plugin) : AgentToolBase(plugin)
-{
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "lanes_list",
-        Label = "Lanes",
-        Description = "List the lane pools: each model pool has a fixed number of lanes (parallel agent slots). Shows busy/capacity, queued agents, the models of each pool and who holds its lanes. Use it before spawning subagents to pick a pool with free lanes.",
-        ReadOnly = true,
-        Category = "agents",
-        Parameters = Schema(new JsonObject()),
-    };
-
-    protected override Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
-    {
-        var scheduler = context.Services.Get<ILaneScheduler>();
-        if (scheduler is null)
-            return Task.FromResult(ToolResult.Ok("Lanes are not available (the lanes plugin is not loaded): agents run without lane limits."));
-        var pools = scheduler.Snapshot();
-        var me = runtime.Get(context.AgentId);
-        var names = runtime.List(true).ToDictionary(a => a.Id, a => a.Name);
-        string Who(LaneOwnerInfo o) => (names.TryGetValue(o.AgentId, out var n) ? n : o.Label ?? "?") + (o.AgentId == context.AgentId ? " (you)" : "");
-
-        var sb = new StringBuilder();
-        if (pools.Count == 0) sb.Append("No lane pools are known yet.");
-        else sb.Append("Lane pools (busy/capacity):\n");
-        foreach (var p in pools)
-        {
-            sb.Append("- ").Append(p.Key).Append(": ").Append(p.Busy).Append('/').Append(p.Capacity).Append(" busy");
-            if (p.Queued > 0) sb.Append(", ").Append(p.Queued).Append(" queued");
-            if (!string.IsNullOrEmpty(p.Status)) sb.Append(" [").Append(p.Status).Append(']');
-            if (p.Models.Count > 0)
-            {
-                var models = p.Models.Count > 8 ? string.Join(", ", p.Models.Take(8)) + $", … (+{p.Models.Count - 8})" : string.Join(", ", p.Models);
-                sb.Append("\n  models: ").Append(models);
-            }
-            if (p.Owners.Count > 0) sb.Append("\n  running: ").Append(string.Join(", ", p.Owners.Select(Who)));
-            if (p.Waiters.Count > 0) sb.Append("\n  waiting: ").Append(string.Join(", ", p.Waiters.Select(Who)));
-            sb.Append('\n');
-        }
-        if (me?.Pool is { } myPool) sb.Append("\nYou run on pool ").Append(myPool).Append('.');
-        return Task.FromResult(ToolResult.Ok(sb.ToString().TrimEnd(), new JsonObject { ["pools"] = NetPiJson.ToNode(pools) }));
-    }
+    protected static readonly string[] WaitGuidelines =
+    [
+        "Spawn all workers first, then call agent_wait once; you resume with only their final reports.",
+    ];
 }
 
 // ------------------------------------------------------------------ agent_spawn
@@ -246,7 +206,7 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
         Label = "Wait for agents",
         Description = "Wait for subagents to finish and return their final reports. While waiting your lane is released (yielded) so other agents, typically the ones you wait for, can use it; afterwards you resume with priority. Without ids it waits for all of your running subagents. A new user message interrupts the wait.",
         Category = "agents",
-        PromptGuidelines = [],
+        PromptGuidelines = WaitGuidelines,
         Parameters = Schema(new JsonObject
         {
             ["ids"] = StringArray("Agent ids (or names) to wait for. Default: all of your running subagents."),

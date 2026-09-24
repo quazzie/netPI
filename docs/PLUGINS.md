@@ -33,7 +33,8 @@ public sealed class MyPlugin : INetPiPlugin
         // a tool for agents
         ctx.Tools.Register(new WordCountTool());
 
-        // a section of the system prompt (ordered: 0 identity, 100 environment, 200 tools, 300 guidelines, 500 AGENTS.md)
+        // a section of the system prompt (ordered: 0 identity, 100 environment, 200 tool guidelines, 300 lanes,
+        // 500 AGENTS.md, 800 subagent role, 900 appended prompt)
         ctx.Services.Register<IPromptSection>(new MySection());
 
         // an RPC method for the UI (and for other plugins: ctx.Rpc.InvokeAsync("my.hello"))
@@ -83,6 +84,11 @@ sealed class MySection : IPromptSection
 
 Register a tool with the same name as an existing one and a higher priority (`ctx.Tools.Register(tool, priority: 10)`)
 to **replace** a built-in tool; `tools.disabled` in the settings hides tools.
+
+The context plugin only provides a bare base (who the agent is, the environment it runs in, how harness notices look).
+Guidance for a feature comes from the plugin that owns it, so it disappears with the plugin: tool tips as the tool's
+`PromptGuidelines` (listed under "# Tools" while the tool is active), anything else as the plugin's own section (the lanes
+plugin adds "# Lanes" for agents that can spawn subagents).
 
 Prompt sections are rendered for every model call and must give the same text on every turn of a session: no dates,
 times, counters or live status. The system prompt is the start of every request, so any change makes the backend

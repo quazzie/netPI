@@ -8,6 +8,7 @@ public static class ContextTests
     {
         t.Add("context: system prompt sections in order", PromptSections);
         t.Add("context: no date or time in the system prompt (identical on every turn)", NoDateOrTime);
+        t.Add("context: plugins add the guidance for what they own (lanes, agent tools)", PluginOwnedGuidance);
         t.Add("context: AGENTS.md discovery, order, caps and cache", AgentsMdDiscovery);
         t.Add("context: custom and appended prompt settings", CustomPrompt);
         t.Add("context: context.preview", Preview);
@@ -40,27 +41,46 @@ public static class ContextTests
         var identity = Idx("coding agent running in NetPI");
         var env = Idx("# Environment");
         var tools = Idx("# Tools");
-        var guide = Idx("# Guidelines");
+        var lanes = Idx("# Lanes");
         var role = Idx("# Your role");
-        Check.True(identity < env && env < tools && tools < guide && guide < role, "section order");
-        Check.Contains(prompt, $"- Working directory: {h.Workspace} (project: Demo)");
+        Check.True(identity < env && env < tools && tools < lanes && lanes < role, "section order");
+        Check.Contains(prompt, $"- Working directory: {h.Workspace} (project: Demo); relative paths resolve against it");
         Check.Contains(prompt, "- Model: fake/local, context window 100,000 tokens");
-        Check.Contains(prompt, "- Shells: bash");
         Check.Contains(prompt, "<system-notice>");
-        Check.True(System.Text.RegularExpressions.Regex.IsMatch(prompt, @"- \w+: .*\bread\b"), "compact tool index lists read");
-        Check.Contains(prompt, "agent_spawn");
         Check.Contains(prompt, "Use edit for testing.");
-        Check.Contains(prompt, "## Lanes and subagents");
-        Check.Contains(prompt, "agent_wait");
+        Check.Contains(prompt, "Delegate independent, well-scoped work");
+        Check.Contains(prompt, "call agent_wait once");
+        Check.Contains(prompt, "lanes_list shows the pools");
         Check.Contains(prompt, "You are \"w1\", a subagent.");
         Check.NotContains(prompt, "\n\n\n", "no empty sections");
 
-        // no project, no tools: no tool section, no lanes guidance
+        // no project, no tools: the bare base only
         var bare = await builder.BuildAsync(Ctx(h, h.NewSession(), []), CancellationToken.None);
         Check.Contains(bare, "(no project: the default workspace)");
         Check.NotContains(bare, "# Tools");
-        Check.NotContains(bare, "Lanes and subagents");
+        Check.NotContains(bare, "# Lanes");
         Check.NotContains(bare, "# Your role");
+    }
+
+    // The base prompt is bare; each plugin adds guidance for what it owns and it disappears with the plugin.
+    private static async Task PluginOwnedGuidance()
+    {
+        async Task<(string Prompt, List<ToolDefinition> Tools)> Build(TestHost.Plugins plugins)
+        {
+            await using var h = await TestHost.StartAsync(plugins: plugins);
+            var tools = h.Tools.All.Select(t => t.Definition).ToList();
+            return (await h.Services.Get<ISystemPromptBuilder>()!.BuildAsync(Ctx(h, h.NewSession(), tools), CancellationToken.None), tools);
+        }
+
+        var (noLanes, noLanesTools) = await Build(TestHost.Plugins.All & ~TestHost.Plugins.Lanes);
+        Check.False(noLanesTools.Any(t => t.Name == "lanes_list"), "lanes_list comes from the lanes plugin");
+        Check.Contains(noLanes, "Delegate independent, well-scoped work", "the agent tools still bring their tips");
+        Check.NotContains(noLanes, "# Lanes");
+        Check.NotContains(noLanes, "lane", "nothing about lanes without the lanes plugin");
+
+        var (noAgentTools, _) = await Build(TestHost.Plugins.All & ~TestHost.Plugins.AgentTools);
+        Check.NotContains(noAgentTools, "agent_spawn", "no delegation tips without the agent tools");
+        Check.NotContains(noAgentTools, "# Lanes", "no lanes section for an agent that cannot spawn");
     }
 
     // Real-model regression: the date line (to the minute) changed the prompt's first ~100 tokens every minute, so the
@@ -106,7 +126,7 @@ public static class ContextTests
         Check.Contains(prompt, "# Project instructions");
         Check.Contains(prompt, "## " + Path.Combine(root, "AGENTS.md"));
         Check.Contains(prompt, "(global)");
-        Check.True(prompt.IndexOf("# Guidelines", StringComparison.Ordinal) < prompt.IndexOf("# Project instructions", StringComparison.Ordinal), "after guidelines");
+        Check.True(prompt.IndexOf("# Environment", StringComparison.Ordinal) < prompt.IndexOf("# Project instructions", StringComparison.Ordinal), "after the environment");
 
         var list = (JsonArray)(await h.Rpc.CallAsync("agentsmd.list", new { sessionId = s.Id }))!;
         Check.Equal("global,project,project,project", string.Join(",", list.Select(x => (string?)x!["scope"])));
@@ -215,7 +235,7 @@ public static class ContextTests
             var prompt = h.Catalog.Requests.Single().SystemPrompt!;
             Check.Contains(prompt, "FROM A PLUGIN");
             Check.True(prompt.IndexOf("# Tools", StringComparison.Ordinal) < prompt.IndexOf("# Extra", StringComparison.Ordinal)
-                       && prompt.IndexOf("# Extra", StringComparison.Ordinal) < prompt.IndexOf("# Guidelines", StringComparison.Ordinal), "ordered by Order");
+                       && prompt.IndexOf("# Extra", StringComparison.Ordinal) < prompt.IndexOf("# Lanes", StringComparison.Ordinal), "ordered by Order");
         }
 
         // without the context plugin the runtime uses its minimal built-in prompt
@@ -227,6 +247,6 @@ public static class ContextTests
         Check.Contains(fallback, "NetPI");
         Check.Contains(fallback, "Working directory: " + h2.Workspace);
         Check.NotContains(fallback, DateTimeOffset.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), "no date in the built-in prompt");
-        Check.Equal(0, h2.Catalog.Requests.Single().Tools.Count);
+        Check.Equal("lanes_list", string.Join(",", h2.Catalog.Requests.Single().Tools.Select(t => t.Name)), "only the lanes plugin's tool");
     }
 }
