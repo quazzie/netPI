@@ -44,8 +44,25 @@ async function loadPlaywright() {
   throw new Error('Playwright not found (npm i -g playwright)');
 }
 
+/** Playwright's own Chromium, else an installed Edge/Chrome when that build is not downloaded (Edge ships with Windows). */
+async function launchBrowser(pw) {
+  try {
+    return await pw.chromium.launch();
+  } catch (e) {
+    if (!String(e?.message).includes("Executable doesn't exist")) throw e;
+    for (const channel of process.platform === 'win32' ? ['msedge', 'chrome'] : ['chrome', 'msedge']) {
+      try {
+        const b = await pw.chromium.launch({ channel });
+        console.log(`  browser: ${channel} (Playwright's Chromium build is not installed)`);
+        return b;
+      } catch {}
+    }
+    throw e;
+  }
+}
+
 const pw = await loadPlaywright();
-const browser = await pw.chromium.launch();
+const browser = await launchBrowser(pw);
 const errors = [];
 let exitCode = 0;
 try {
