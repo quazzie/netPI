@@ -41,9 +41,11 @@
   function onKeydown(e) {
     const mod = e.ctrlKey || e.metaKey;
     if (e.key === 'Escape' && !anyModalOpen() && app.activeId && isBusy(app.activeId) && !e.defaultPrevented) {
-      // Esc anywhere (outside popups) stops the running agent
+      // Esc anywhere (outside popups) stops the running agent — but not Esc that ends typing in another field (a title
+      // rename, the session search): the composer handles its own Esc
       const t = e.target;
-      if (!t.closest?.('.popover')) {
+      const otherField = t.closest?.('input, textarea, select, [contenteditable="true"]') && !t.closest?.('.composer');
+      if (!t.closest?.('.popover') && !otherField) {
         e.preventDefault();
         abortAgent(app.activeId);
       }

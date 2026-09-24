@@ -3,6 +3,7 @@ import { rpc } from './rpc.svelte.js';
 import { app, newSession, updateSession, abortAgent } from './state/app.svelte.js';
 import { modals, toast, composer, promptDialog } from './state/ui.svelte.js';
 import { openPanelTab } from './state/tabs.svelte.js';
+import { editGoal } from './goal.js';
 
 /**
  * @typedef {{ name: string, description: string, argsHint?: string, source: 'builtin'|string,
@@ -60,6 +61,13 @@ const BUILTIN = [
       if (ui?.openProjectPicker) ui.openProjectPicker();
       else modals.projectPicker = { sessionId, anchor: document.querySelector('[data-composer]') };
     },
+  },
+  {
+    name: 'goal',
+    description: 'Set a goal: the agent keeps going until it marks it complete (no text: edit it)',
+    argsHint: '[what must be true when done]',
+    source: 'builtin',
+    run: (args, { sessionId }) => editGoal(sessionId, args),
   },
   { name: 'settings', description: 'Open settings', source: 'builtin', run: () => (modals.settings = true) },
   { name: 'help', description: 'Commands and keyboard shortcuts', source: 'builtin', run: () => (modals.help = true) },

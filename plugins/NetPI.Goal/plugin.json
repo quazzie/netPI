@@ -1,0 +1,5 @@
+{
+  "id": "netpi.goal",
+  "name": "Goal",
+  "description": "Keeps the agent working on a goal until it marks it complete (/goal, goal_update)."
+}

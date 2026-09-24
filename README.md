@@ -19,6 +19,8 @@ headless for any browser.
   automatically.
 - **Steering and queueing.** While an agent runs, *Enter* steers it (delivered after the current tool call) and
   *Alt+Enter* queues a follow-up; *Esc* stops.
+- **Goals.** `/goal <what must be true>` keeps the agent working: after every run it is started again until it marks
+  the goal complete (`goal_update`) or needs you; stopping, a failure, runs without progress and limits pause it.
 - **Tools as plugins:** `read`, `write`, `edit` (multi-edit, replace-all), `grep`, `find`, `ls` — all CRLF/LF
   agnostic, preserving each file's line endings and BOM — plus `bash` (Git Bash on Windows), `pwsh` and background
   processes; `web_fetch` (pages as Markdown), `web_search` (SearXNG or Brave), `screenshot` (headless Edge/Chrome,
@@ -85,7 +87,7 @@ netpi-server (headless) ─────────┴─ NetPI.Host ─┤   Ne
    plugin manager · event bus · service/RPC/    │   NetPI.Context      system prompt (frozen per session), project notices
    tool/UI registries · SQLite · settings ·     │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md, announced as notices
    session store · model catalog                │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic, OpenRouter
-                                                │   NetPI.Tools.*      files, shell, agents, web, media, ssh · NetPI.Todo
+                                                │   NetPI.Tools.*      files, shell, agents, web, media, ssh · NetPI.Todo · NetPI.Goal
 NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Retry · NetPI.ToolRepair
 web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics
                                                 └─ ~/.netpi/plugins/ (your own)

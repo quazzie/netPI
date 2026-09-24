@@ -83,6 +83,32 @@
     prefs[k] = v;
     savePrefs();
   }
+
+  // desktop app: the WebView zoom (the desktop shell remembers it in window.json)
+  let zoom = $state(null);
+  $effect(() => {
+    if (!app.info?.desktop) return;
+    rpc('desktop.zoom', {})
+      .then((r) => (zoom = r?.factor ?? 1))
+      .catch(() => {});
+  });
+  async function setZoom(factor) {
+    const f = Math.round(Math.min(3, Math.max(0.5, factor)) * 100) / 100;
+    try {
+      zoom = (await rpc('desktop.zoom', { factor: f }))?.factor ?? f;
+    } catch (e) {
+      toast(`Zoom failed: ${e.message}`, 'error');
+    }
+  }
+
+  // settings.json changed elsewhere (another client, an editor, a plugin): show it unless there are unsaved edits here
+  let seenVersion = app.settingsVersion;
+  $effect(() => {
+    const v = app.settingsVersion;
+    if (v === seenVersion) return;
+    seenVersion = v;
+    if (original && raw === original && !saving && !loading) load();
+  });
 </script>
 
 <Modal title="Settings" width={760} padded={false} {onclose}>
@@ -110,13 +136,50 @@
               <button aria-pressed={!prefs.enterSends} onclick={() => setPref('enterSends', false)}>Ctrl+Enter</button>
             </div>
           </div>
+          <div class="row">
+            <div class="lbl">
+              <div>Steps</div>
+              <div class="np-dim np-small">
+                Thinking and tool calls. <b>Fold when done</b>: groups of more than 3 steps fold into “N steps · time” when the
+                run ends. <b>Folded</b>: they fold into one line from the start, which keeps the chat still while the agent works.
+              </div>
+            </div>
+            <div class="np-seg">
+              {#each [['open', 'Expanded'], ['done', 'Fold when done'], ['folded', 'Folded']] as [v, l] (v)}
+                <button aria-pressed={prefs.steps === v} onclick={() => setPref('steps', v)}>{l}</button>
+              {/each}
+            </div>
+          </div>
           <label class="row check">
-            <div class="lbl"><div>Collapse finished steps</div><div class="np-dim np-small">Groups of more than 3 thinking/tool steps fold into “N steps · time” once the run ends</div></div>
-            <input type="checkbox" checked={prefs.collapseSteps} onchange={(e) => setPref('collapseSteps', e.currentTarget.checked)} />
-          </label>
-          <label class="row check">
-            <div class="lbl"><div>Expand thinking</div><div class="np-dim np-small">Show reasoning blocks expanded by default</div></div>
+            <div class="lbl"><div>Expand thinking</div><div class="np-dim np-small">Show reasoning blocks expanded by default, also while they stream</div></div>
             <input type="checkbox" checked={prefs.expandThinking} onchange={(e) => setPref('expandThinking', e.currentTarget.checked)} />
+          </label>
+          <div class="row">
+            <div class="lbl"><div>Chat width</div><div class="np-dim np-small">How wide messages get on a large window</div></div>
+            <div class="np-seg">
+              {#each [['normal', 'Normal'], ['wide', 'Wide'], ['full', 'Full']] as [v, l] (v)}
+                <button aria-pressed={prefs.chatWidth === v} onclick={() => setPref('chatWidth', v)}>{l}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="row">
+            <div class="lbl">
+              <div>Zoom</div>
+              <div class="np-dim np-small">
+                {#if app.info?.desktop}Also Ctrl + mouse wheel, Ctrl + / − / 0; NetPI remembers it{:else}Use the browser's zoom (Ctrl + / −); it is remembered per site{/if}
+              </div>
+            </div>
+            {#if app.info?.desktop}
+              <div class="np-seg zoom">
+                <button title="Smaller" onclick={() => setZoom(zoom - 0.1)} disabled={zoom == null}>−</button>
+                <button title="Reset to 100%" onclick={() => setZoom(1)} disabled={zoom == null}>{zoom == null ? '…' : `${Math.round(zoom * 100)}%`}</button>
+                <button title="Larger" onclick={() => setZoom(zoom + 0.1)} disabled={zoom == null}>+</button>
+              </div>
+            {/if}
+          </div>
+          <label class="row check">
+            <div class="lbl"><div>Spellcheck</div><div class="np-dim np-small">Underline misspelled words in the message box</div></div>
+            <input type="checkbox" checked={prefs.spellcheck} onchange={(e) => setPref('spellcheck', e.currentTarget.checked)} />
           </label>
         </div>
       {:else if section === 'json'}
@@ -225,6 +288,10 @@
     accent-color: var(--accent);
     width: 16px;
     height: 16px;
+  }
+  .zoom button {
+    min-width: 34px;
+    font-variant-numeric: tabular-nums;
   }
   .lbl {
     flex: 1;

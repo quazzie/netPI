@@ -89,8 +89,9 @@ try {
 
   await ta.fill(TEXT);
   await ta.press('Enter');
-  const streamed = await page.waitForSelector('.streaming', { timeout: 10_000 }).then(() => true).catch(() => false);
-  check('streaming block shown', streamed);
+  // the streamed answer is drawn as the chat's own rows while it streams (web/src/lib/chatItems.js withStream)
+  const streamed = await page.waitForSelector('.item[data-stream], .thinking.live, .assistant.live, .tool[data-status="preparing"]', { timeout: 10_000 }).then(() => true).catch(() => false);
+  check('streaming rows shown', streamed);
   await shot(page, 'ui-02-streaming');
   const toolOk = await page.waitForSelector('.tool[data-status="ok"]', { timeout: 20_000 }).then(() => true).catch(() => false);
   check('tool row finished (data-status=ok)', toolOk);
@@ -103,7 +104,7 @@ try {
   const content = await page.locator('.scroller > .content').innerText().catch(() => '');
   check('final answer rendered', content.includes('TOOLS-DONE'), content.slice(-200).replace(/\s+/g, ' '));
   check('user message rendered', content.includes('Please edit the notes'));
-  check('no leftover streaming block', (await page.locator('.streaming').count()) === 0);
+  check('no leftover streaming rows', (await page.locator('.item[data-stream], .thinking.live, .assistant.live, .tool[data-status="preparing"]').count()) === 0);
 
   // expand collapsed step groups and the edit tool → diff
   const closed = page.locator('.group.collapsible .head[aria-expanded="false"]');

@@ -43,7 +43,7 @@ interface ChatMessage {
   provider?: string; model?: string; stopReason?: 'stop'|'tool_use'|'length'|'aborted'|'error'|'content_filter';
   usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; reasoningTokens: number };
   durationMs?: number; compacted: boolean;
-  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | tools | todo | nudge | agent-message | agent-result | steer | retry | error | compaction
+  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | tools | todo | goal | nudge | agent-message | agent-result | steer | retry | error | compaction
 }
 type Part =
   | { type: 'text'; text: string }
@@ -102,6 +102,7 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `events.recent` | `{ max? (200, up to 500) }` | `{ type, sid, d, seq, ts, source, ui }[]` recent bus events |
 | `logs.recent` | `{ max? (200, up to 2000) }` | `{ time, level, category, message, exception? }[]` |
 | `desktop.capture` | `{ maxWidth? (1600) }` | `{ mediaType, data /* base64 PNG */, width, height }`: the window as shown; registered by the desktop app only (the `screenshot` tool uses it) |
+| `desktop.zoom` | `{ factor? (0.5–3) }` | `{ factor }`: the window's zoom, set when `factor` is given; remembered in `window.json`; desktop app only |
 
 ## Plugin RPC methods
 
@@ -118,6 +119,10 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `agentsmd.list` | netpi.agentsmd | `{ sessionId }` or `{ projectId }` → `{ path, bytes, scope }[]` (instruction files for the session's working directory or the project folder; scope `global`, `project` or `extra`) |
 | `compaction.run` | netpi.compaction | `{ sessionId, args? /* extra focus for the summary */ }` → `string` (error `busy` while the agent runs) |
 | `context.preview` | netpi.context | `{ sessionId }` → `{ systemPrompt, frozen, tools: {name, description}[], estimatedTokens }` (`frozen`: the prompt stored at the session's first model call) |
+| `goal.get` | netpi.goal | `{ sessionId }` → `Goal\|null` (`meta.goal` unless cleared: `{ id, objective, status: active\|paused\|blocked\|complete, reason, tokenBudget, tokensUsed, continuations, noProgress, version, createdAt, updatedAt }`) |
+| `goal.set` | netpi.goal | `{ sessionId, objective (≤ 4000), tokenBudget? }` → `Goal` (a new goal; starts a run with a "goal" notice when the agent is idle; names an untitled session) |
+| `goal.edit` | netpi.goal | `{ sessionId, objective?, tokenBudget? }` → `Goal` (same goal; the model hears about it at its next call) |
+| `goal.pause` / `goal.resume` / `goal.clear` | netpi.goal | `{ sessionId }` → `Goal` (`clear` → `null`). Pause lets the current run finish; resume resets the counters and starts a run when idle (also for an active goal whose agent is idle) |
 | `files.search` | netpi.tools.files | `{ sessionId?, query, limit? }` → `{ path, rel, isDir }[]` (for `@` mentions) |
 | `files.open` | netpi.tools.files | `{ path, sessionId?, cwd? }` → `{ path, action: 'open'\|'edit'\|'reveal'\|'folder' }` (opens a path with the operating system; see `docs/TOOLS.md`) |
 | `files.list` | netpi.tools.files | `{ sessionId?, dir? }` → `{ root, dir, entries: {name, rel, isDir, size?, mtime?}[] }` |

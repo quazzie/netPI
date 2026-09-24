@@ -144,6 +144,38 @@ export function createItemBuilder() {
   };
 }
 
+/**
+ * The message being streamed, as render items laid out the way the finished message will be: thinking and tool calls
+ * are steps that join the open steps group, text is a text item. Tool steps carry their final key (c<callId>), so their
+ * rows stay in place when message.added replaces the stream; nothing changes height at that moment.
+ *   stream step  { kind:'thinking', key:'k.stream', part, msg:null, stream } | { kind:'tool', …, preparing:true }
+ *   stream text  { kind:'text', key:'t.stream', text, msg:null, last:true, stream }
+ */
+export function withStream(items, stream) {
+  if (!stream?.active || (!stream.thinking && !stream.text.trim() && !stream.tools.length)) return items;
+  const out = items.slice();
+  let group = out.at(-1)?.kind === 'steps' ? out.pop() : null;
+  let groups = 0; // groups the stream opens: thinking, then text, then tool calls makes two
+  const push = (step) => {
+    group = group
+      ? { ...group, steps: [...group.steps, step] }
+      : { kind: 'steps', key: `g.stream.${groups++}`, steps: [step], startMs: stream.startedAt, endMs: 0 };
+  };
+  const flush = () => {
+    if (group) out.push(group);
+    group = null;
+  };
+  if (stream.thinking) push({ kind: 'thinking', key: 'k.stream', part: { type: 'thinking', text: stream.thinking }, msg: null, stream });
+  if (stream.text.trim()) {
+    flush();
+    out.push({ kind: 'text', key: 't.stream', text: stream.text, msg: null, last: true, stream });
+  }
+  for (const t of stream.tools)
+    push({ kind: 'tool', key: `c${t.callId}`, call: { type: 'tool_call', id: t.callId, name: t.name }, result: null, resultMsg: null, msg: null, preparing: true });
+  flush();
+  return out;
+}
+
 /** Aggregate tool counts for a collapsed steps header: [{ name, count }] in first-seen order. */
 export function stepCounts(steps) {
   const map = new Map();

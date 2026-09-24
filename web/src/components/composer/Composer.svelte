@@ -6,6 +6,7 @@
   import ContextRing from './ContextRing.svelte';
   import QueueChips from './QueueChips.svelte';
   import TodoStrip from './TodoStrip.svelte';
+  import GoalStrip from './GoalStrip.svelte';
   import { app, isBusy, modelFor, sendMessage, abortAgent } from '../../lib/state/app.svelte.js';
   import { composer, modals, prefs, toast } from '../../lib/state/ui.svelte.js';
   import { allCommands, parseCommand } from '../../lib/commands.js';
@@ -22,6 +23,7 @@
   let popup = $state(null); // { type: 'command'|'mention', items, index, start, query, loading }
 
   const running = $derived(isBusy(session.id));
+  const sendKeys = $derived(prefs.enterSends ? 'Enter' : 'Ctrl+Enter'); // for the hints
   const model = $derived(modelFor(session));
   const ctxInfo = $derived(app.context.get(session.id));
   const used = $derived(ctxInfo?.used ?? session.contextTokens ?? 0);
@@ -313,6 +315,7 @@
       </div>
     {/if}
     {#if chat.queue.length}<QueueChips {chat} />{/if}
+    <GoalStrip {session} />
     <TodoStrip {session} />
 
     <div
@@ -393,8 +396,8 @@
         bind:this={ta}
         bind:value={chat.draft}
         rows="1"
-        placeholder={running ? 'Steer the agent — Enter to steer, Alt+Enter to queue' : 'Message — / commands, @ files'}
-        spellcheck="true"
+        placeholder={running ? `Steer the agent — ${sendKeys} to steer, Alt+Enter to queue` : 'Message — / commands, @ files'}
+        spellcheck={prefs.spellcheck ? 'true' : 'false'}
         oninput={onInput}
         onkeydown={onKeydown}
         onclick={updatePopup}
@@ -414,7 +417,7 @@
         <span class="spacer"></span>
         {#if running}
           <span class="keys np-dim"
-            ><span class="np-kbd">Enter</span> steer <span class="np-kbd">Alt+Enter</span> queue <span class="np-kbd">Esc</span> stop</span
+            ><span class="np-kbd">{sendKeys}</span> steer <span class="np-kbd">Alt+Enter</span> queue <span class="np-kbd">Esc</span> stop</span
           >
         {/if}
         {#if used || win}<ContextRing {used} window={win} />{/if}
@@ -426,7 +429,7 @@
           <button
             class="send"
             class:steer={running}
-            title={running ? 'Steer (Enter) — Alt+Enter to queue' : 'Send (Enter)'}
+            title={running ? `Steer (${sendKeys}) — Alt+Enter to queue` : `Send (${sendKeys})`}
             aria-label="Send"
             disabled={!canSend}
             onclick={() => submit('steer')}

@@ -24,9 +24,11 @@ const META = {
   ssh_edit: { label: 'SSH edit', icon: 'pencil', arg: 'path', view: 'edit' },
   ssh_copy: { label: 'SCP', icon: 'files', arg: 'from', view: 'generic' },
   ssh_hosts: { label: 'SSH hosts', icon: 'list', arg: null, view: 'generic' },
+  goal_update: { label: 'Goal', icon: 'target', arg: 'status', view: 'generic' },
+  goal_set: { label: 'Set goal', icon: 'target', arg: 'objective', view: 'generic' },
 };
 
-const CATEGORY_ICON = { files: 'file', shell: 'terminal', agents: 'bot', ideas: 'idea', web: 'globe', todo: 'list', media: 'image', ssh: 'terminal', general: 'wrench' };
+const CATEGORY_ICON = { files: 'file', shell: 'terminal', agents: 'bot', ideas: 'idea', web: 'globe', todo: 'list', media: 'image', ssh: 'terminal', goal: 'target', general: 'wrench' };
 const SUMMARY_KEYS = ['path', 'command', 'pattern', 'query', 'url', 'name', 'task', 'id', 'text', 'title'];
 
 /** Server tool definitions (from tools.list), filled by the app store. */
@@ -123,6 +125,10 @@ export function toolSummary(name, args, base) {
       const s = String(arg(args, 'source', 'path', 'url', 'file', 'src') ?? '');
       return s.startsWith('data:') ? 'data: URL' : truncate(relPath(s, base) || s, 160);
     }
+    case 'goal_update':
+      return truncate(`${arg(args, 'status') ?? '?'} · ${firstLine(String(arg(args, 'summary', 'reason') ?? ''))}`, 200);
+    case 'goal_set':
+      return truncate(firstLine(String(arg(args, 'objective', 'goal') ?? '')), 200);
     case 'todo_write': {
       const items = todoItems(args);
       const cur = items.find((i) => i.status === 'in_progress') ?? items.find((i) => i.status !== 'done');
@@ -215,6 +221,8 @@ export function toolBadge(name, result) {
     case 'screenshot':
       if (d.consoleErrors?.length) return { text: `${d.consoleErrors.length} console error${d.consoleErrors.length === 1 ? '' : 's'}`, tone: 'warn' };
       return d.width ? { text: `${d.width}×${d.height}` } : null;
+    case 'goal_update':
+      return d.goal?.status ? { text: d.goal.status, tone: d.goal.status === 'complete' ? 'ok' : d.goal.status === 'blocked' ? 'warn' : undefined } : null;
     case 'todo_write':
       return d.total ? { text: `${d.done}/${d.total}`, tone: d.done === d.total ? 'ok' : undefined } : null;
     case 'bash':

@@ -2,9 +2,9 @@
 
 ## Verified on Windows
 - The desktop shell builds and runs; Git Bash, pwsh, winsqlite3 and window placement work.
-- `.\build.ps1 -Test` (Release): Providers 41, Tools 54, Agent 60, Aux 96, Host 38, all passing.
+- `.\build.ps1 -Test` (Release): Providers 41, Tools 54, Agent 70, Aux 96, Host 38, all passing.
 - E2E suite: 55 tests / 703 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
-  (`npm run e2e`) 116/116.
+  (`npm run e2e`) 126/126.
 - Plugins hot-reload while NetPI runs (they load from shadow copies); only the host DLLs are locked. `build.ps1` then
   builds everything except the host, and a rebuild after a commit no longer reloads unchanged plugins.
 - Real model (AiProxy → nInfer `qwen3.8-27b`, 2 lanes): two concurrent agents, one spawning a subagent, the other
@@ -21,10 +21,19 @@
 - SSH tools, live on `nuc` and `server`: a script full of quoting traps came back byte for byte; write, read and edit
   (a path with a space, relative to `cwd`, and a 5 MB file); a 70 KB binary copied up and back unchanged; a timeout
   and an abort both ended the remote process group, background children included.
+- The chat no longer jumps while the agent works: in a mock run of 8 quick steps, with every frame recorded, the
+  chat moved down 11 times (520 px) before the fix and not once after, with steps expanded or folded.
+- Goals, with the real runner and a scripted model (Agent suite): the loop until `goal_update` complete, and the
+  pauses on stop, failure (also before the first model call), no progress, `goal.maxContinuations` and the token
+  budget; notices after edits, resumes and compaction. The UI mock covers `/goal`, the strip, pause and resume.
 - Numbers and details: `docs/archive/2026-09-24-windows-bringup.md`, `docs/archive/2026-09-24-agent-tools.md`,
-  `docs/archive/2026-09-24-ssh-tools.md`.
+  `docs/archive/2026-09-24-ssh-tools.md`, `docs/archive/2026-09-24-goals.md`.
 
 ## Not yet verified
+- Goals with a real model (only the scripted model so far): whether `qwen3.8-27b` follows the continuation
+  notices and calls `goal_update` at the right time.
+- The desktop zoom setting (`desktop.zoom`, zoom kept in `window.json`): built, but needs NetPI closed for
+  `.\build.ps1` and a restart.
 - The Anthropic provider was tested against a mock of the Messages API only (the adaptive-thinking request shape
   and the fallback model ids are best guesses; both are configurable).
 - Linux/macOS: the suites last ran in the Linux sandbox, before the Windows work, and have not been re-run since.

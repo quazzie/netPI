@@ -9,6 +9,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Tools.Shell` | `netpi.tools.shell` | `bash` `pwsh` `process_list` `process_output` `process_kill` | `processes.list`, `processes.output`, `processes.kill` |
 | `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `screenshot` | – |
 | `plugins/NetPI.Todo` | `netpi.todo` | `todo_write` | – |
+| `plugins/NetPI.Goal` | `netpi.goal` | `goal_update` `goal_set` | `goal.get`, `goal.set`, `goal.edit`, `goal.pause`, `goal.resume`, `goal.clear` |
 | `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
 | `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh_hosts` `ssh_run` `ssh_read` `ssh_write` `ssh_edit` `ssh_copy` | – |
 
@@ -332,6 +333,45 @@ the list from that result and changes it by sending the whole list again. When c
 
 ```ts
 details: { items: { text, status }[], done, total }
+```
+
+---
+
+## Goal (`category: "goal"`)
+
+`plugins/NetPI.Goal`. The user sets a goal for a session (`/goal`, `goal.set`); after every run the agent is started
+again with a "goal" notice until it calls `goal_update` with status complete (or blocked). Each continuation is a new
+run: a run holds its lane until it ends, and every run gets the per-run limits (`agent.maxTurns`). The state is the
+session's `meta.goal` (shown above the composer). The model hears about the goal only through appended notices
+(`kind: "goal"`, with `goalId`, `version` and `status` in their meta): when it is set (the notice starts a run when the
+agent is idle), on each continuation ("automatic continuation N", with the objective and short rules: work from
+evidence, check every part before calling it complete, blocked only when the user is needed), when the user edits,
+resumes, pauses or clears it, and again after compaction removed the earlier ones. The frozen system prompt is never
+touched.
+
+The runtime, not the model, stops the loop, pausing the goal with a reason:
+- stopping the run (Esc) → "Stopped.";
+- a failed run, also one that fails before its first model call → "The run failed: …";
+- `goal.noProgressLimit` (3) automatic runs in a row without a successful tool call (goal tools do not count);
+- `goal.maxContinuations` (100) automatic runs;
+- the goal's token budget (`goal.tokenBudget`, default none): input not read from the cache plus output.
+
+Resume resets the counters. Queued user input and a running subagent (whose report starts a run anyway) come before
+a continuation; a user message during a goal steers it and the goal continues after that run.
+
+### `goal_update` (summary arg `status`)
+
+`{ status: "complete" | "blocked" | "paused", summary }`. complete: every part done and checked, the summary says what
+was done and how it was verified; blocked: only the user can unblock it (access, a decision that is theirs); paused:
+only when the user asks. No active goal is an error.
+
+### `goal_set` (summary arg `objective`)
+
+`{ objective }`. Only when the user explicitly asks for a goal ("make this your goal", "keep going until …"). Fails
+while another goal is open; not for subagent sessions.
+
+```ts
+details: { goal: { id, objective, status, reason, tokenBudget, tokensUsed, continuations, version, … } }
 ```
 
 ---

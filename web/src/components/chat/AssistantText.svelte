@@ -1,13 +1,37 @@
 <script>
+  import { onDestroy } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import { renderMarkdown, highlight, copyText } from '../../lib/markdown.js';
   import { duration, tokens, stamp } from '../../lib/format.js';
 
-  /** item: { kind:'text', msg, text, last } */
+  /**
+   * item: { kind:'text', msg, text, last }, or while the answer streams { kind:'text', text, stream, msg:null }: then the
+   * markdown is re-rendered at most every 100ms, never highlighted, with a caret that takes no room, in the same box as
+   * the finished text so nothing moves when message.added replaces it.
+   */
   let { item } = $props();
-  const html = $derived(renderMarkdown(item.text));
+  const streaming = $derived(!!item.stream);
+  const html = $derived(streaming ? '' : renderMarkdown(item.text));
   const m = $derived(item.msg);
-  const u = $derived(m.usage);
+  const u = $derived(m?.usage);
+
+  let liveHtml = $state('');
+  let timer = 0;
+  let last = 0;
+  function render() {
+    timer = 0;
+    last = performance.now();
+    // the caret goes inside the last paragraph so it follows the text
+    liveHtml = renderMarkdown(item.text, { cache: false }).replace(/<\/p>\s*$/, '<span class="caret"></span></p>');
+  }
+  $effect(() => {
+    const t = item.text;
+    if (!streaming || !t || timer) return;
+    const wait = 100 - (performance.now() - last);
+    if (wait <= 0) render();
+    else timer = setTimeout(render, wait);
+  });
+  onDestroy(() => clearTimeout(timer));
 
   let copied = $state(false);
   async function copy() {
@@ -19,6 +43,11 @@
   }
 </script>
 
+{#if streaming}
+  <div class="assistant live">
+    <div class="md">{@html liveHtml}</div>
+  </div>
+{:else}
 <div class="assistant" class:compacted={m.compacted}>
   {#key html}
     <div class="md" use:highlight>{@html html}</div>
@@ -39,8 +68,33 @@
     </div>
   {/if}
 </div>
+{/if}
 
 <style>
+  /* a caret without width, so it never wraps a line the finished text would not wrap */
+  .live :global(.caret) {
+    position: relative;
+    display: inline-block;
+    width: 0;
+    height: 1.05em;
+    vertical-align: text-bottom;
+  }
+  .live :global(.caret)::after {
+    content: '';
+    position: absolute;
+    left: 2px;
+    top: 0;
+    width: 7px;
+    height: 100%;
+    border-radius: 1px;
+    background: var(--accent);
+    animation: blink 1s steps(2, start) infinite;
+  }
+  @keyframes blink {
+    to {
+      visibility: hidden;
+    }
+  }
   .assistant {
     position: relative;
     min-width: 0;

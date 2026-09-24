@@ -178,6 +178,14 @@ with their guidelines. The global file is `~/.netpi/AGENTS.md`.
 | `media.maxBytes` | `10000000` | largest image `show_image` shows |
 | `web.browserPath` | auto | Edge, Chrome or Chromium for `screenshot` (found in the usual install folders or on PATH) |
 
+## Goals
+
+| key | default | |
+|---|---|---|
+| `goal.maxContinuations` | `100` | automatic runs before the goal pauses (resume allows as many again) |
+| `goal.noProgressLimit` | `3` | automatic runs in a row without a successful tool call before the goal pauses |
+| `goal.tokenBudget` | `0` | token budget for goals set without one (0 = none); input not read from the cache plus output |
+
 ## SSH tools
 
 | key | default | |

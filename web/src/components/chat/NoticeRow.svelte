@@ -12,6 +12,7 @@
     instructions: { icon: 'file-text', tone: 'info', label: 'Instructions', expand: true },
     tools: { icon: 'wrench', tone: 'info', label: 'Tools changed', expand: true },
     todo: { icon: 'list', tone: 'info', label: 'Todo list', expand: true },
+    goal: { icon: 'target', tone: 'accent', label: 'Goal' },
     nudge: { icon: 'zap', tone: 'warn', label: 'Nudge' },
     'agent-message': { icon: 'message-circle', tone: 'accent', expand: true },
     'agent-result': { icon: 'bot', tone: 'ok', expand: true },

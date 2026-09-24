@@ -126,7 +126,7 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     return m;
   }
 
-  async function runTool(sid, run, tool, { content, details, isError = false, duration = 300, output = null, images = null, proc = true }) {
+  async function runTool(sid, run, tool, { content, details, isError = false, duration = 300, output = null, outputDelay = 160, images = null, proc = true }) {
     const a = agentFor(sid);
     setStatus(sid, { activity: `tool: ${tool.name}` });
     const t0 = Date.now();
@@ -138,7 +138,7 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     try {
       if (output) {
         for (const line of output) {
-          await sleep(160, run);
+          await sleep(outputDelay, run);
           collected += line + '\n';
           publish('tool.output', { sessionId: sid, callId: tool.id, chunk: line + '\n' }, sid);
           if (procId) work.procOutput(procId, line + '\n');
@@ -309,8 +309,110 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     await streamAssistant(sid, run, { text: 'nginx on **nuc** now listens on 8080. The error log is in `logs/nuc-error.log`; reload nginx when you are ready.' });
   }
 
+  /** "[fast]": quick steps (thinking, read/grep/bash/edit) with model latency between them, for layout stability. */
+  async function fastScript(sid, run) {
+    const cwd = projectPath(sid);
+    const file = 'src/NetPI.Host/Lanes/LaneScheduler.cs';
+    const steps = [
+      ['read', 'Read', { path: file }],
+      ['grep', 'Grep', { pattern: 'TryAcquire', path: 'src' }],
+      ['bash', 'Bash', { command: 'git status --short' }],
+      ['find', 'Find', { pattern: '**/*Lane*.cs' }],
+      ['bash', 'Bash', { command: 'dotnet build -v q' }],
+      ['edit', 'Edit', { path: file, edits: [{ oldText: 'slots--;', newText: 'slots = Math.Max(0, slots - 1);' }] }],
+      ['bash', 'Bash', { command: 'git diff --stat' }],
+      ['read', 'Read', { path: 'src/NetPI.Host/Lanes/Lane.cs' }],
+    ];
+    for (let i = 0; i < steps.length; i++) {
+      const [name, label, args] = steps[i];
+      const tool = { id: newId('call'), name, label, args };
+      await sleep(300, run); // time to first token
+      await streamAssistant(sid, run, { thinking: `Step ${i + 1}: ${label.toLowerCase()} next.`, text: i === 4 ? 'Found the lane files; building.' : undefined, fast: true, tools: [tool] });
+      const out = name === 'bash' ? ['M src/NetPI.Host/Lanes/LaneScheduler.cs', '?? notes.txt', 'done'] : null;
+      await runTool(sid, run, tool, {
+        content: out ? out.join('\n') : name === 'edit' ? `Applied 1 edit to ${file} (+1 −1)` : `(${name} result)`,
+        details:
+          name === 'bash'
+            ? { command: args.command, shell: 'bash', cwd, exitCode: 0, durationMs: 120, truncated: false, background: false }
+            : name === 'edit'
+              ? { path: path.join(cwd, file), diff: `--- a/${file}\n+++ b/${file}\n@@ -1,1 +1,1 @@\n-slots--;\n+slots = Math.Max(0, slots - 1);\n`, added: 1, removed: 1, firstChangedLine: 1 }
+              : null,
+        output: out,
+        outputDelay: 30,
+        duration: 60,
+      });
+    }
+    await sleep(300, run);
+    await streamAssistant(sid, run, { text: 'Done: the lane slot count can no longer go negative.', fast: true });
+  }
+
+  // ------------------------------------------------------------------ goals (plugins/NetPI.Goal)
+  const goalOf = (sid) => store.sessions.get(sid)?.meta?.goal ?? null;
+  function patchGoal(sid, patch) {
+    const s = store.sessions.get(sid);
+    if (!s?.meta?.goal) return null;
+    s.meta = { ...s.meta, goal: { ...s.meta.goal, ...patch, updatedAt: new Date().toISOString() } };
+    publish('session.updated', { session: s });
+    return s.meta.goal;
+  }
+
+  /**
+   * A goal notice starts each pass (the real host starts a new run per continuation); the first pass reads and stops
+   * without goal_update, the next one edits and calls goal_update complete. A pause lets the current pass finish.
+   */
+  async function runGoal(sid, what) {
+    if (runs.has(sid)) return;
+    const run = { ac: new AbortController(), turn: 0 };
+    runs.set(sid, run);
+    const a = agentFor(sid);
+    setStatus(sid, { status: 'running', startedAt: new Date().toISOString(), finishedAt: null, runs: a.runs + 1, activity: 'thinking', model: modelRef(sid) });
+    try {
+      for (let pass = 0; ; pass++) {
+        const g = goalOf(sid);
+        if (g?.status !== 'active') break;
+        const head =
+          pass > 0
+            ? `The goal is not done yet (automatic continuation ${g.continuations}). Keep working until it is fully done:`
+            : what === 'resumed'
+              ? 'The user resumed the goal. Continue until it is fully done:'
+              : 'The user set a goal for this session. Work on it until it is fully done:';
+        append(sid, 'notice', [text(`${head}\n<goal>\n${g.objective}\n</goal>`)], { meta: { kind: 'goal', goalId: g.id, status: 'active', source: 'system' } });
+        await sleep(300, run);
+        const file = 'web/src/App.svelte';
+        if (pass === 0) {
+          const read = { id: newId('call'), name: 'read', label: 'Read', args: { path: file } };
+          await streamAssistant(sid, run, { thinking: 'Look at the page first.', tools: [read] });
+          await runTool(sid, run, read, { content: '<script>\n  let count;\n</script>', details: { path: path.join(projectPath(sid), file), startLine: 1, endLine: 3, totalLines: 3, truncated: false }, duration: 1500 });
+          await streamAssistant(sid, run, { text: '`count` is read before it is set; that is the next thing to fix.', fast: true });
+        } else {
+          const edit = { id: newId('call'), name: 'edit', label: 'Edit', args: { path: file, edits: [{ oldText: 'let count;', newText: 'let count = $state(0);' }] } };
+          await streamAssistant(sid, run, { tools: [edit] });
+          await runTool(sid, run, edit, { content: `Applied 1 edit to ${file} (+1 −1)`, details: { path: path.join(projectPath(sid), file), diff: `--- a/${file}\n+++ b/${file}\n@@ -1,3 +1,3 @@\n <script>\n-  let count;\n+  let count = $state(0);\n </script>\n`, added: 1, removed: 1 }, duration: 120 });
+          const summary = 'The page renders: count starts at 0 (checked by loading the page).';
+          const done = { id: newId('call'), name: 'goal_update', label: 'Goal', args: { status: 'complete', summary } };
+          await streamAssistant(sid, run, { tools: [done] });
+          const finished = patchGoal(sid, { status: 'complete', reason: summary });
+          await runTool(sid, run, done, { content: 'Goal marked complete. It no longer restarts you; tell the user what was done.', details: { goal: finished }, duration: 20 });
+          await streamAssistant(sid, run, { text: 'Done: the demo page renders again.', fast: true });
+        }
+        const after = patchGoal(sid, { tokensUsed: (goalOf(sid)?.tokensUsed ?? 0) + 2400 });
+        if (after?.status !== 'active') break;
+        patchGoal(sid, { continuations: after.continuations + 1 });
+        await sleep(250, run);
+      }
+    } catch (e) {
+      if (e !== ABORT) throw e;
+      append(sid, 'notice', [text('Run aborted by the user.')], { meta: { kind: 'info' } });
+      if (goalOf(sid)?.status === 'active') patchGoal(sid, { status: 'paused', reason: 'Stopped.' });
+    } finally {
+      runs.delete(sid);
+      setStatus(sid, { status: 'idle', activity: null, finishedAt: new Date().toISOString() });
+    }
+  }
+
   async function script(sid, run, input) {
     if (/\[web\]/i.test(input)) return webScript(sid, run);
+    if (/\[fast\]/i.test(input)) return fastScript(sid, run);
     if (/\[ssh\]/i.test(input)) return sshScript(sid, run);
     const file = 'src/NetPI.Host/Lanes/LaneScheduler.cs';
     const cwd = projectPath(sid);
@@ -347,8 +449,9 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     const pid = 41000 + Math.floor(Math.random() * 999);
     await runTool(sid, run, bash, {
       content: out.join('\n'),
-      details: { command: bash.args.command, shell: 'bash', cwd, exitCode: 0, durationMs: out.length * 160, truncated: false, background: false, processId: newId('proc'), pid, status: 'exited' },
+      details: { command: bash.args.command, shell: 'bash', cwd, exitCode: 0, durationMs: out.length * 300, truncated: false, background: false, processId: newId('proc'), pid, status: 'exited' },
       output: out,
+      outputDelay: 300, // a build takes a few seconds: long enough for the live output preview (shown after 1 s)
     });
     await checkSteer(sid, run);
 
@@ -419,6 +522,9 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
 
   return {
     isRunning: (sid) => runs.has(sid),
+    runGoal: (sid, what) => {
+      runGoal(sid, what).catch((e) => console.error('[mock agent] goal failed', e));
+    },
     send(sid, p) {
       const mode = p.mode ?? 'auto';
       if (!runs.has(sid)) {

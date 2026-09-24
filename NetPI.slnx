@@ -13,6 +13,7 @@
     <Project Path="plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.csproj" />
     <Project Path="plugins/NetPI.Retry/NetPI.Retry.csproj" />
     <Project Path="plugins/NetPI.Todo/NetPI.Todo.csproj" />
+    <Project Path="plugins/NetPI.Goal/NetPI.Goal.csproj" />
     <Project Path="plugins/NetPI.ToolRepair/NetPI.ToolRepair.csproj" />
     <Project Path="plugins/NetPI.Tools.Agents/NetPI.Tools.Agents.csproj" />
     <Project Path="plugins/NetPI.Tools.Files/NetPI.Tools.Files.csproj" />

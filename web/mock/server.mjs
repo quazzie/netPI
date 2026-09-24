@@ -127,6 +127,15 @@ function getSession(id) {
   if (!s) throw notFound(`Session ${id}`);
   return s;
 }
+/** Apply a change to the session's goal (goal.* RPCs); `change` returns the fields to update. */
+function goalChange(p, change) {
+  const s = getSession(need(p, 'sessionId'));
+  const g = s.meta?.goal;
+  if (!g || g.status === 'cleared') throw new RpcError('bad_request', 'There is no goal.');
+  s.meta = { ...s.meta, goal: { ...g, ...change(g), updatedAt: new Date().toISOString() } };
+  publish('session.updated', { session: s });
+  return s.meta.goal;
+}
 
 let fileIndex = { root: null, at: 0, files: [] };
 async function listFiles(root) {
@@ -355,6 +364,46 @@ const handlers = {
     return agent.send(sid, p);
   },
   'agent.abort': (p) => agent.abort(need(p, 'sessionId')),
+
+  // --- goal plugin (plugins/NetPI.Goal): the goal lives in session.meta.goal
+  'goal.get': (p) => {
+    const g = getSession(need(p, 'sessionId')).meta?.goal;
+    return g && g.status !== 'cleared' ? g : null;
+  },
+  'goal.set': (p) => {
+    const sid = need(p, 'sessionId');
+    const s = getSession(sid);
+    const objective = String(p.objective ?? '').trim();
+    if (!objective) throw new RpcError('bad_request', 'The goal is empty: describe what should be done.');
+    const now = new Date().toISOString();
+    const goal = { id: newId('goal'), objective, status: 'active', reason: null, tokenBudget: p.tokenBudget ?? 0, tokensUsed: 0, continuations: 0, noProgress: 0, version: 1, createdAt: now, updatedAt: now };
+    s.meta = { ...(s.meta ?? {}), goal };
+    if (!s.title || s.title === 'New session') s.title = objective.split('\n')[0].slice(0, 60); // no user message to title it
+    publish('session.updated', { session: s });
+    if (!agent.isRunning(sid)) agent.runGoal(sid, 'set');
+    return goal;
+  },
+  'goal.edit': (p) => goalChange(p, (g) => {
+    if (!['active', 'paused', 'blocked'].includes(g.status)) throw new RpcError('bad_request', 'There is no goal to edit.');
+    return p.objective && p.objective !== g.objective ? { objective: String(p.objective).trim(), version: g.version + 1 } : {};
+  }),
+  'goal.pause': (p) => goalChange(p, (g) => {
+    if (g.status !== 'active') throw new RpcError('bad_request', `The goal is ${g.status}, not active.`);
+    return { status: 'paused', reason: 'Paused by the user.' };
+  }),
+  'goal.resume': (p) => {
+    const g = goalChange(p, (x) => {
+      if (x.status === 'active' && !agent.isRunning(p.sessionId)) return {}; // active but idle: start it again
+      if (!['paused', 'blocked'].includes(x.status)) throw new RpcError('bad_request', 'There is no paused goal.');
+      return { status: 'active', reason: null, continuations: 0, noProgress: 0 };
+    });
+    if (!agent.isRunning(p.sessionId)) agent.runGoal(p.sessionId, 'resumed');
+    return g;
+  },
+  'goal.clear': (p) => {
+    goalChange(p, () => ({ status: 'cleared' }));
+    return null;
+  },
   'agent.queue': (p) => agent.queue(need(p, 'sessionId')),
   'agent.dequeue': (p) => agent.dequeue(need(p, 'sessionId'), need(p, 'id')),
   'work.snapshot': () => ({

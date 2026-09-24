@@ -152,7 +152,7 @@ await page.waitForSelector('.intro');
 const ta = page.locator('.composer textarea');
 await ta.fill('Why does the lane scheduler throw when a pool is missing? Make it fail with a clear message.');
 await ta.press('Enter');
-await page.waitForSelector('.streaming .thinking', { timeout: 5000 });
+await page.waitForSelector('.thinking.live', { timeout: 5000 });
 await page.waitForTimeout(700);
 await shot(page, '04-streaming-thinking');
 await page.waitForSelector('.tool[data-status="ok"]', { timeout: 15000 });
@@ -690,7 +690,7 @@ await page.waitForSelector('.intro');
 await ta.fill('Why does the lane scheduler throw when a pool is missing?');
 await ta.press('Enter');
 await page.waitForSelector('.composer.running', { timeout: 5000 });
-await page.waitForSelector('.streaming', { timeout: 5000 });
+await page.waitForSelector('.thinking.live', { timeout: 5000 });
 await page.waitForTimeout(400);
 await ta.press('Escape');
 await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 10_000 }).catch(() => {});
@@ -733,10 +733,10 @@ log('web tools, todo plan, tools notice, file links');
   await ta.fill('[web] Why does the demo page break? Check the Svelte docs.');
   await ta.press('Enter');
   // thinking can be opened while it streams; later answers start open and their finished rows stay open
-  await page.waitForSelector('.streaming .tline', { timeout: 10_000 });
-  await page.locator('.streaming .tline').click();
-  await page.waitForSelector('.streaming .tbody', { timeout: 3000 }).catch(() => {});
-  check('streaming thinking opens while it streams', (await page.locator('.streaming .tbody').count()) === 1);
+  await page.waitForSelector('.thinking.live .line', { timeout: 10_000 });
+  await page.locator('.thinking.live .line').click();
+  await page.waitForSelector('.thinking.live .body', { timeout: 3000 }).catch(() => {});
+  check('streaming thinking opens while it streams', (await page.locator('.thinking.live .body').count()) === 1);
   await shot(page, '24b-live-thinking');
   await page.waitForSelector('.dock .strip', { timeout: 15_000 });
   await page.waitForTimeout(400);
@@ -822,6 +822,104 @@ log('ssh tools');
   await shot(page, '26c-ssh-tools');
 }
 
+// ------------------------------------------------------------------ fast steps: the chat never jumps while the agent works
+log('fast steps: layout stability');
+{
+  const size = page.viewportSize();
+  await page.setViewportSize({ width: 1280, height: 560 });
+  await page.keyboard.press('Control+t');
+  await page.waitForSelector('.intro');
+  // the new user message's position every frame: pinned to the bottom, it may only move up while the chat grows
+  const runFast = async (text) => {
+    await ta.fill(text);
+    await page.evaluate(() => {
+      const users = document.querySelectorAll('.item[data-kind="user"]').length;
+      const rec = (window.__rec = { frames: [], on: true });
+      (function tick() {
+        const all = document.querySelectorAll('.item[data-kind="user"]');
+        const u = all.length > users ? all[all.length - 1] : null;
+        rec.frames.push({ top: u ? u.getBoundingClientRect().top : null, busy: !!document.querySelector('.composer.running'), latest: document.querySelector('.group .latest')?.innerText ?? null });
+        if (rec.on) requestAnimationFrame(tick);
+      })();
+    });
+    await ta.press('Enter');
+    await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
+    await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 });
+    await page.waitForTimeout(500);
+    return page.evaluate(() => {
+      const f = window.__rec.frames;
+      window.__rec.on = false;
+      const downs = { run: [], end: [] };
+      let busySeen = false;
+      for (let i = 1; i < f.length; i++) {
+        const a = f[i - 1];
+        const b = f[i];
+        if (b.busy) busySeen = true;
+        if (a.top == null || b.top == null || b.top - a.top <= 1) continue;
+        (busySeen && !b.busy ? downs.end : downs.run).push(Math.round(b.top - a.top));
+      }
+      return { frames: f.length, downs, latest: [...new Set(f.map((x) => x.latest).filter(Boolean))] };
+    });
+  };
+  await runFast('[fast] Fill the chat first.');
+  const done = await runFast('[fast] Again, measured.');
+  check('fast steps never push the chat down while the agent works', done.frames > 30 && done.downs.run.length === 0, `${done.frames} frames; down: ${done.downs.run.join(', ') || 'none'}`);
+
+  await page.keyboard.press('Control+,');
+  await page.waitForSelector('.dialog');
+  await page.locator('.np-seg button', { hasText: 'Folded' }).click();
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  const folded = await runFast('[fast] Folded from the start.');
+  check('folded steps: nothing moves down, during the run or when it ends', folded.frames > 30 && folded.downs.run.length + folded.downs.end.length === 0, `run: ${folded.downs.run.join(', ') || 'none'}; end: ${folded.downs.end.join(', ') || 'none'}`);
+  check('folded steps: the line shows the latest step while the agent works', folded.latest.some((l) => /Bash|Read|Edit|Grep|Find|Thinking/.test(l)), folded.latest.slice(0, 4).join(' | '));
+  const lastRun = page.locator('.item[data-kind="steps"]');
+  check('folded steps: every group of this run is one line', (await page.locator('.group.collapsible .steps').count()) === 0 && (await lastRun.count()) > 0);
+  await shot(page, '27-folded-steps');
+  await page.keyboard.press('Control+,');
+  await page.waitForSelector('.dialog');
+  await page.locator('.np-seg button', { hasText: 'Fold when done' }).click();
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  await page.setViewportSize(size);
+}
+
+// ------------------------------------------------------------------ goals: /goal, the strip, pause, resume, achieved
+log('goals');
+{
+  await page.keyboard.press('Control+t');
+  await page.waitForSelector('.intro');
+  await ta.fill('/goal Make the demo page render again');
+  await ta.press('Enter');
+  await page.waitForSelector('.goal[data-status="active"]', { timeout: 5000 });
+  check('/goal sets the goal and the strip shows it', (await page.locator('.goal .obj').innerText()).includes('Make the demo page render again'));
+  await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
+  await page.locator('.goal .act[title^="Pause"]').click();
+  await page.waitForSelector('.goal[data-status="paused"]', { timeout: 5000 });
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 30_000 });
+  await page.waitForTimeout(400);
+  check(
+    'pausing lets the current pass finish and starts no new one',
+    (await page.locator('.notice', { hasText: 'automatic continuation' }).count()) === 0 && (await page.locator('.goal .reason').innerText()).includes('Paused by the user'),
+  );
+  await shot(page, '28-goal-paused');
+  await page.locator('.goal .act[title="Resume"]').click();
+  await page.waitForSelector('.goal[data-status="complete"]', { timeout: 30_000 });
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 30_000 });
+  await page.waitForTimeout(300);
+  const goalNotices = await page.locator('.notice', { has: page.locator('.label', { hasText: /^Goal$/ }) }).count();
+  check('goal notices: set, resumed, one automatic continuation', goalNotices === 3, String(goalNotices));
+  check('the goal_update row shows complete', (await page.locator('.tool .np-badge', { hasText: 'complete' }).count()) >= 1);
+  check(
+    'the strip says achieved, with the summary',
+    (await page.locator('.goal .state').innerText()) === 'Achieved' && (await page.locator('.goal .reason').innerText()).includes('The page renders'),
+  );
+  await shot(page, '29-goal-achieved');
+  await page.locator('.goal .act[title="Dismiss"]').click();
+  await page.waitForTimeout(300);
+  check('dismissing removes the strip', (await page.locator('.goal').count()) === 0);
+}
+
 // ------------------------------------------------------------------ folder picker (fs.dirs) + add project
 log('projects: folder picker');
 await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
@@ -904,7 +1002,7 @@ if (!EXTERNAL) {
   // the session is refetched and scoped events flow again (re-subscribed)
   await ta.fill('Quick check after reconnect — short answer.');
   await ta.press('Enter');
-  const streamed = await page.waitForSelector('.streaming, .composer.running', { timeout: 8000 }).then(() => true).catch(() => false);
+  const streamed = await page.waitForSelector('.composer.running', { timeout: 8000 }).then(() => true).catch(() => false);
   check('events flow after reconnect (resubscribed)', streamed);
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 20_000 }).catch(() => {});
 }

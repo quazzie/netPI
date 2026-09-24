@@ -10,10 +10,26 @@ const defaultLayout = {
 };
 const defaultPrefs = {
   theme: 'dark', // dark | light | system
-  collapseSteps: true, // collapse finished step groups with > 3 steps
+  // thinking/tool step groups: 'open' never fold · 'done' fold groups of more than 3 steps when the run ends ·
+  // 'folded' fold from the second step on, also while the agent works
+  steps: 'done',
+  chatWidth: 'normal', // normal (900px) | wide (1200px) | full
   enterSends: true, // false → Ctrl+Enter sends, Enter = newline
   expandThinking: false,
+  spellcheck: true, // spell checking in the composer
 };
+
+const CHAT_WIDTH = { normal: '900px', wide: '1200px', full: 'none' };
+
+function withDefaults(v) {
+  const saved = v && typeof v === 'object' ? v : {};
+  const p = { ...defaultPrefs, ...saved };
+  if (saved.steps == null && saved.collapseSteps === false) p.steps = 'open'; // saved before the steps choice existed
+  if (!['open', 'done', 'folded'].includes(p.steps)) p.steps = defaultPrefs.steps;
+  if (!(p.chatWidth in CHAT_WIDTH)) p.chatWidth = defaultPrefs.chatWidth;
+  delete p.collapseSteps;
+  return p;
+}
 
 function merge(base, v) {
   if (!v || typeof v !== 'object') return structuredClone(base);
@@ -24,7 +40,7 @@ function merge(base, v) {
 }
 
 export const layout = $state(merge(defaultLayout, load(LAYOUT_KEY, null)));
-export const prefs = $state({ ...defaultPrefs, ...load(PREFS_KEY, {}) });
+export const prefs = $state(withDefaults(load(PREFS_KEY, {})));
 
 export function saveLayout() {
   persist(LAYOUT_KEY, $state.snapshot(layout));
@@ -43,13 +59,14 @@ export async function syncUiStateFromHost() {
   if (load(PREFS_KEY, null) == null) {
     const v = await fetchRemote(PREFS_KEY);
     if (v) {
-      Object.assign(prefs, { ...defaultPrefs, ...v });
+      Object.assign(prefs, withDefaults(v));
       applyTheme();
     }
   }
 }
 
 let mql = null;
+/** Theme and the other prefs that live on the document (chat width). */
 export function applyTheme() {
   let t = prefs.theme;
   if (t === 'system') {
@@ -57,11 +74,13 @@ export function applyTheme() {
     t = mql.matches ? 'light' : 'dark';
   }
   document.documentElement.dataset.theme = t;
+  document.documentElement.style.setProperty('--chat-max', CHAT_WIDTH[prefs.chatWidth] ?? CHAT_WIDTH.normal);
 }
 if (typeof window !== 'undefined') {
   matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => {
     if (prefs.theme === 'system') applyTheme();
   });
+  applyTheme(); // before the first render: no flash of the default width
 }
 
 export function togglePanel(side) {
@@ -98,9 +117,10 @@ export function confirmDialog({ title = 'Are you sure?', message = '', confirmLa
   });
 }
 
-export function promptDialog({ title, label = '', value = '', placeholder = '' }) {
+/** A text prompt; resolves with the text, or null when cancelled. multiline: a text box (Ctrl+Enter confirms). */
+export function promptDialog({ title, label = '', value = '', placeholder = '', multiline = false, confirmLabel = 'OK', hint = '' }) {
   return new Promise((resolve) => {
-    modals.prompt = { title, label, value, placeholder, resolve };
+    modals.prompt = { title, label, value, placeholder, multiline, confirmLabel, hint, resolve };
   });
 }
 

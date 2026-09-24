@@ -61,6 +61,7 @@ web/
       pluginCtx.js             ctx object for plugin tabs
       folderPicker.js          WebView2 native picker or fs.dirs modal
       openFile.js              open a path with the OS (files.open): chat file links, "Open file", the file tree
+      goal.js                  goals: /goal and the goal strip (goal.* RPCs)
       state/app.svelte.js      sessions, projects, models, agents, tabs, event routing, actions
       state/chat.svelte.js     ChatStore (per session), StreamState, LiveTool, LRU cache
       state/ui.svelte.js       layout, prefs, modals, toasts, composer bridge
@@ -70,9 +71,9 @@ web/
       TopBar.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
       panels/  SidePanel, PluginTabHost, SessionsTab, ProjectsTab
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
-               ToolRow, NoticeRow, StatusRow, StreamingBlock, TodoList, ShownImage,
+               ToolRow, NoticeRow, StatusRow, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
-      composer/ Composer, ModelPicker, EffortPicker, ContextRing, QueueChips, TodoStrip
+      composer/ Composer, ModelPicker, EffortPicker, ContextRing, QueueChips, GoalStrip, TodoStrip
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
                Projects (the projects dialog), Lightbox
   mock/
@@ -174,7 +175,10 @@ into locals first, because after the parent clears the modal state or the row re
    `steps`, `notice`, `status` (error/aborted/length) and `images`. Consecutive thinking and tool_call parts,
    even across several assistant messages, form one **steps** group. Tool results from `tool` messages are
    paired with their calls by `callId`. Messages are immutable objects, and an item keeps its identity while
-   its inputs are unchanged, so the keyed `{#each}` only touches the items that changed.
+   its inputs are unchanged, so the keyed `{#each}` only touches the items that changed. The message being
+   streamed joins them through `withStream`, laid out the way it will be when it arrives: its thinking and tool
+   calls are steps in the open group (tool steps already carry their final key, `c<callId>`), its text is a text
+   item. So nothing changes height when `message.added` replaces the stream.
 3. **Components.** `ToolRow` renders one row: icon, label, summary argument, badge, duration and status. It
    expands to a specialised view: `DiffView` (edit/write), `ShellView` (bash/pwsh: command, live output, exit
    code), `ReadView` (path, line range, highlighted content), `SearchView` (grep/find/ls), `AgentView`
@@ -190,20 +194,31 @@ into locals first, because after the parent clears the modal state or the row re
      `done/total` and the current item, expanding to the checklist.
    - **Shown images.** A successful `show_image` result becomes its own `shown` item (`ShownImage`: the image, the
      caption, name · size), never folded into a steps group; a click opens the lightbox.
-   - **Live thinking.** The streaming block's thinking line is a toggle: open, it shows the thinking so far (markdown
-     at most every 150 ms, following its end). The choice is `chat.liveThinkingOpen`: later answers in that chat start
-     open, and their finished thinking rows are marked expanded when the message arrives.
+   - **Goal strip.** `GoalStrip` shows `meta.goal` (`plugins/NetPI.Goal`) unless it was cleared: the state (Goal,
+     Paused, Needs you, Achieved), the objective, automatic runs and tokens, and pause / resume / edit / clear; an
+     active goal with no run for 1.5 s also offers "continue". Why it paused, or the completion summary, shows
+     under it. `/goal [text]` sets it (asking before it replaces an open goal); a bare `/goal` edits it.
+   - **Live thinking.** A streaming thinking step is a `ThinkingRow` too: spinner, time so far and the latest line;
+     open, it shows the thinking so far (markdown at most every 150 ms, following its end). The choice is
+     `chat.liveThinkingOpen` (null: the "Expand thinking" preference): later answers in that chat start that way,
+     and their finished thinking rows keep it when the message arrives.
    - **Pinned to the bottom.** The list follows new content while it is pinned; only the user scrolling up unpins it.
      A view that shrinks (the plan strip or queue chips appearing) or content that grows never does: the resize
      observer re-pins.
-   - A **steps** group with more than 3 steps collapses to `▸ N steps · time · tool counts`, but only after its
-     run has finished. Steering input does not end a run. The user's choice to expand or collapse is kept per
-     group in `chat.expanded`.
+   - **Steps** groups fold by the Steps preference (`prefs.steps`): `done` (default) folds a group of more than 3
+     steps into `▸ N steps · time · tool counts` once its run has finished; `folded` folds from the second step on,
+     also while the agent works (a folded group is one line, like a single row, so the chat stays still), and the
+     group the agent is adding to shows its latest step on that line; `open` never folds. Steering input does not
+     end a run. The user's choice to expand or collapse is kept per group in `chat.expanded`.
+   - A running shell command shows its last output lines under its row once it has run for a second, so quick
+     commands don't flash open and shut.
+   - **Working line.** One fixed-height line under the chat shows the run's activity and time. It stays while tools
+     run and between steps, and its height stays reserved when the run ends, so it never moves the chat.
    - Thinking rows are collapsed by default.
 4. **Streaming.** `stream.delta` appends to plain strings inside `StreamState`; they reach `$state` at most once
-   per animation frame (`lib/frame.js`, with a 120ms timer fallback when the window is hidden). The streaming
-   block re-renders its markdown at most every 100ms and never highlights it. The final `message.added`
-   replaces the block. `tool.output` chunks go to `LiveTool` buffers, which keep the last 200KB, flushed the
+   per animation frame (`lib/frame.js`, with a 120ms timer fallback when the window is hidden). The streamed text
+   re-renders its markdown at most every 100ms, is never highlighted, and its caret takes no width. The final
+   `message.added` replaces the stream items with the message's own, which are laid out the same. `tool.output` chunks go to `LiveTool` buffers, which keep the last 200KB, flushed the
    same way.
 5. **Markdown** (`lib/markdown.js`). Parsing is marked (GFM) followed by DOMPurify, memoized by source text
    with an LRU of 600 entries. Code blocks get a header with the language and a copy button; one delegated
@@ -225,8 +240,9 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 
 - The textarea grows with its content.
 - **Enter** sends. While the agent runs, Enter **steers** and **Alt+Enter** **queues**. **Shift+Enter** inserts
-  a newline. **Esc** stops the run (`agent.abort`). Settings can switch sending to **Ctrl+Enter**.
-- `/` opens the commands popup: the built-ins `/new /rename /model /project /settings /help /abort`, plus
+  a newline. **Esc** stops the run (`agent.abort`); Esc in another field (a title rename, the session search) only
+  leaves that field. Settings can switch sending to **Ctrl+Enter**; the hints follow.
+- `/` opens the commands popup: the built-ins `/new /rename /model /project /goal /settings /help /abort`, plus
   commands from `ui.commands`. A command with `rpc` is called with `{ sessionId, args }`, and a string result
   is shown as a toast. A command with `clientAction` is handled by the client:
   `openTab:<pluginId/tabId>`, `insert:<text>` or `settings`.
@@ -239,6 +255,15 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 - The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`.
 - Queued inputs (`agent.queue`) appear as chips; the × on a chip calls `agent.dequeue`. `agent.notice` shows
   as a transient banner, which clears when the model streams again or the run ends.
+
+### Settings dialog
+
+**General** holds the UI preferences (`prefs` in `lib/state/ui.svelte.js`, kept in localStorage and the host's
+`ui.state`): theme, send key, Steps (expanded / fold when done / folded), expand thinking, chat width (normal 900px,
+wide 1200px, full; the `--chat-max` token), zoom and spellcheck in the message box. Zoom: in the desktop app the
+buttons call `desktop.zoom` and the shell remembers the factor (Ctrl + wheel and Ctrl + / − / 0 too); in a
+browser its own per-site zoom does that. **settings.json** edits the host settings as JSON and reloads when the
+file changes elsewhere while it has no unsaved edits.
 
 ## Plugin tabs
 
@@ -527,6 +552,8 @@ names or an inline `<svg …>` string.
   the default browser. Plugins can also post `{ type: 'openExternal', url }` (kit `desktop.openExternal`).
 - **Reveal.** `{ type: 'revealPath', path }` (kit `desktop.revealPath`) shows a file or folder in Explorer. The
   Files and Diagnostics tabs offer it only when `window.chrome.webview` exists.
+- **Zoom.** The WebView zooms with Ctrl + wheel and Ctrl + / − / 0; the shell saves the factor in `window.json`
+  (with the window placement) and restores it. `desktop.zoom { factor? }` reads or sets it (the Settings dialog).
 
 ## What the UI expects from the host (beyond PROTOCOL.md)
 

@@ -13,7 +13,10 @@
   import { duration } from '../../lib/format.js';
   import { app } from '../../lib/state/app.svelte.js';
 
-  /** step: { kind:'tool', key, call, result, resultMsg, msg } — `live` = the run is still in progress */
+  /**
+   * step: { kind:'tool', key, call, result, resultMsg, msg } — `live` = the run is still in progress.
+   * While the call streams (step.preparing, msg null) the row already sits where the finished call will be.
+   */
   let { step, chat, base, live = false } = $props();
 
   const call = $derived(step.call);
@@ -39,23 +42,25 @@
               : null)),
   );
   const status = $derived(
-    result
-      ? skipped
-        ? 'skipped'
-        : result.isError
-          ? 'error'
-          : 'ok'
-      : lt
-        ? lt.status === 'running'
-          ? 'running'
-          : lt.status === 'error'
+    step.preparing
+      ? 'preparing'
+      : result
+        ? skipped
+          ? 'skipped'
+          : result.isError
             ? 'error'
             : 'ok'
-        : runningNow
-          ? 'running'
-          : live && step.msg.stopReason !== 'aborted'
-          ? 'pending'
-          : 'cancelled',
+        : lt
+          ? lt.status === 'running'
+            ? 'running'
+            : lt.status === 'error'
+              ? 'error'
+              : 'ok'
+          : runningNow
+            ? 'running'
+            : live && step.msg?.stopReason !== 'aborted'
+              ? 'pending'
+              : 'cancelled',
   );
   const summary = $derived(toolSummary(call.name, args, base));
   // read / write / edit: open the file with the operating system
@@ -83,9 +88,10 @@
     result?.durationMs ?? lt?.durationMs ?? (status === 'running' && lt ? Math.max(0, now - lt.startedAt) : null),
   );
 
-  // collapsed running shell command: show the last few output lines under the row
+  // collapsed running shell command: show the last few output lines under the row, once it has run for a second (a
+  // quick command would flash them in and out)
   const tail = $derived.by(() => {
-    if (open || status !== 'running' || meta.view !== 'shell' || !lt?.output) return '';
+    if (open || status !== 'running' || meta.view !== 'shell' || !lt?.output || now - lt.startedAt < 1000) return '';
     const out = lt.output.replace(/\n+$/, '');
     let idx = out.length;
     for (let k = 0; k < 5 && idx > 0; k++) idx = out.lastIndexOf('\n', idx - 1);
@@ -98,9 +104,9 @@
 </script>
 
 <div class="tool" data-status={status} class:open>
-  <button class="line" onclick={toggle} aria-expanded={open}>
+  <button class="line" onclick={toggle} aria-expanded={open} disabled={status === 'preparing'}>
     <span class="ic">
-      {#if status === 'running'}
+      {#if status === 'running' || status === 'preparing'}
         <span class="np-spinner"></span>
       {:else}
         <Icon name={status === 'error' ? 'circle-x' : status === 'cancelled' || status === 'skipped' ? 'ban' : meta.icon} size={14} />
@@ -117,6 +123,7 @@
         <span class="np-badge" data-tone={badge.tone}>{badge.text}</span>
       {/if}
     {/if}
+    {#if status === 'preparing'}<span class="state">preparing…</span>{/if}
     {#if status === 'pending'}<span class="state">queued</span>{/if}
     {#if status === 'cancelled'}<span class="state">no result</span>{/if}
     {#if status === 'skipped'}<span class="state">{skipped === 'steer' ? 'skipped · new message' : skipped === 'stopped' ? 'not run' : 'aborted'}</span>{/if}

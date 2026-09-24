@@ -17,5 +17,6 @@
     <ProjectReference Include="../../plugins/NetPI.AgentsMd/NetPI.AgentsMd.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Agent/NetPI.Agent.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Agents/NetPI.Tools.Agents.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Goal/NetPI.Goal.csproj" />
   </ItemGroup>
 </Project>

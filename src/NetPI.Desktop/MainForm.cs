@@ -23,6 +23,8 @@ internal sealed class MainForm : Form
     private readonly Label _status;
     private NetPiServer? _server;
     private IDisposable? _captureRpc;
+    private IDisposable? _zoomRpc;
+    private double _zoom = 1;
     private EventWaitHandle? _activate;
     private RegisteredWaitHandle? _activateWait;
     private bool _closing;
@@ -82,6 +84,7 @@ internal sealed class MainForm : Form
     private void RestorePlacement()
     {
         var p = WindowPlacement.Load(_placementFile);
+        _zoom = p?.Zoom is >= 0.25 and <= 5 ? p.Zoom : 1;
         StartPosition = FormStartPosition.Manual;
         var bounds = p?.VisibleBounds();
         if (bounds is { } b)
@@ -110,6 +113,7 @@ internal sealed class MainForm : Form
             Width = normal.Width,
             Height = normal.Height,
             Maximized = WindowState == FormWindowState.Maximized,
+            Zoom = _zoom,
         }.Save(_placementFile);
     }
 
@@ -246,7 +250,40 @@ internal sealed class MainForm : Form
         _captureRpc ??= server.Rpc.Register("desktop.capture", (req, ct) => CaptureAsync(req.Int("maxWidth") ?? 1600, ct),
             "Screenshot of the NetPI window as the user sees it (desktop app only): { maxWidth? } → { mediaType, data, width, height }");
 
+        // zoom: remembered in window.json, whether it changes through Ctrl + wheel / Ctrl + ± or desktop.zoom
+        if (Math.Abs(_zoom - 1) > 0.001) _web.ZoomFactor = _zoom;
+        _web.ZoomFactorChanged += (_, _) =>
+        {
+            _zoom = _web.ZoomFactor;
+            SavePlacement();
+        };
+        _zoomRpc ??= server.Rpc.Register("desktop.zoom",
+            (req, _) => ZoomAsync(req.Prop("factor") is { ValueKind: System.Text.Json.JsonValueKind.Number } f ? f.GetDouble() : null),
+            "The desktop window's zoom (desktop app only): { factor? (0.5–3) } → { factor }");
+
         core.Navigate(server.LaunchUrl);
+    }
+
+    // ---------------------------------------------------------------- zoom (desktop.zoom)
+
+    /// <summary>Sets the WebView zoom when <paramref name="factor"/> is given; returns the current one. UI thread.</summary>
+    private Task<object?> ZoomAsync(double? factor)
+    {
+        var tcs = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    if (factor is { } f && double.IsFinite(f)) _web.ZoomFactor = Math.Clamp(f, 0.5, 3);
+                    tcs.TrySetResult(new { factor = Math.Round(_web.ZoomFactor, 2) });
+                }
+                catch (Exception ex) { tcs.TrySetException(ex); }
+            }));
+        }
+        catch (Exception ex) { tcs.TrySetException(ex); }
+        return tcs.Task;
     }
 
     // ---------------------------------------------------------------- window capture (desktop.capture)

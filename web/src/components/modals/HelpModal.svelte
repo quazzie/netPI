@@ -1,6 +1,7 @@
 <script>
   import Modal from './Modal.svelte';
   import { allCommands } from '../../lib/commands.js';
+  import { prefs } from '../../lib/state/ui.svelte.js';
   let { onclose } = $props();
 
   const keys = [
@@ -12,7 +13,7 @@
     ['Ctrl+Alt+B', 'Toggle right panel'],
     ['Ctrl+K', 'Command palette'],
     ['Ctrl+,', 'Settings'],
-    ['Enter', 'Send (steer while the agent runs)'],
+    [prefs.enterSends ? 'Enter' : 'Ctrl+Enter', 'Send (steer while the agent runs)'],
     ['Alt+Enter', 'Queue for after the current run'],
     ['Shift+Enter', 'New line'],
     ['Esc', 'Stop the running agent'],

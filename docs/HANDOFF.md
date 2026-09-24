@@ -24,9 +24,14 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 - **Agent tools:** `web_fetch`, `web_search` (SearXNG / Brave), `screenshot` and `todo_write` work live with `qwen3.8-27b`;
   tools that appear or disappear mid-session are announced with a notice. The `ssh_*` tools work against the hosts in
   `~/.ssh/config` (tested live on `nuc` and `server`).
+- **Goals** (`plugins/NetPI.Goal`, `/goal`): the agent is started again after every run until it marks the goal
+  complete; tested with a scripted model, not yet with a real one.
+- **Chat UI:** the streamed answer is laid out as the finished one will be, so nothing jumps between steps; a Steps
+  preference (expanded / fold when done / folded), chat width, zoom and spellcheck are in Settings.
 - **History:** the Windows bring-up, the first smoke tests and the prompt work are recorded in
   `docs/archive/2026-09-24-windows-bringup.md`; the agent tools and projects UI in `docs/archive/2026-09-24-agent-tools.md`;
-  the SSH tools in `docs/archive/2026-09-24-ssh-tools.md`.
+  the SSH tools in `docs/archive/2026-09-24-ssh-tools.md`; goals and the steady chat in
+  `docs/archive/2026-09-24-goals.md`.
 
 ## Decisions and preferences to keep
 
@@ -55,6 +60,9 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Suggested next steps
 
+0. **Goals with a real model.** Run a goal on `qwen3.8-27b` (a throwaway server or the user's NetPI): does it keep
+   working, call `goal_update` complete only when done, stay within the no-progress rule? Then consider an
+   independent check of "complete" (a verifier subagent) if it declares done too early.
 1. **Claude provider live test.** Needs an Anthropic API key (none available yet): thinking, tools, prompt caching, and the
    adaptive-thinking settings (`docs/SETTINGS.md`). Claude through OpenRouter (paid) would exercise OpenRouter's side of
    it (signed `reasoning_details`, `cache_control`), not the native provider.

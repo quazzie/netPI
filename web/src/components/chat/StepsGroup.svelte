@@ -4,21 +4,31 @@
   import ToolRow from './ToolRow.svelte';
   import { prefs } from '../../lib/state/ui.svelte.js';
   import { stepCounts } from '../../lib/chatItems.js';
-  import { toolMeta } from '../../lib/tools.js';
+  import { toolMeta, toolSummary, parseArgs } from '../../lib/tools.js';
   import { duration } from '../../lib/format.js';
 
   /**
-   * Consecutive thinking/tool rows. While the run is live they are always shown; once finished, groups
-   * with more than 3 steps collapse into a one-line summary (per-group override remembered in chat.expanded).
+   * Consecutive thinking/tool rows, folded by the "Steps" preference: 'open' never folds; 'done' (default) shows every
+   * row while the run is live and folds groups of more than 3 steps into "N steps · time" once it ends; 'folded' folds
+   * from the second step on, live too, so the chat does not grow row by row while the agent works (a folded group is one
+   * line, like a single row). Per-group overrides are remembered in chat.expanded. `active` = the group the agent is
+   * adding to right now: folded, its line shows the latest step.
    */
-  let { item, chat, base, live = false } = $props();
+  let { item, chat, base, live = false, active = false } = $props();
 
   const n = $derived(item.steps.length);
-  const collapsible = $derived(!live && prefs.collapseSteps && n > 3);
+  const collapsible = $derived(prefs.steps === 'folded' ? n > 1 : prefs.steps === 'done' ? !live && n > 3 : false);
   const open = $derived(collapsible ? (chat.expanded.get(item.key) ?? false) : true);
   const span = $derived(Number.isFinite(item.startMs) && item.endMs > item.startMs ? item.endMs - item.startMs : null);
   const counts = $derived(collapsible ? stepCounts(item.steps) : null);
   const failed = $derived(item.steps.reduce((a, s) => a + (s.kind === 'tool' && s.result?.isError ? 1 : 0), 0));
+  const latest = $derived.by(() => {
+    if (!active || !collapsible || open) return null;
+    const s = item.steps[n - 1];
+    if (s.kind === 'thinking') return { icon: 'brain', label: s.stream && !s.stream.thinkingEndedAt ? 'Thinking…' : 'Thinking', summary: '' };
+    const meta = toolMeta(s.call.name);
+    return { icon: meta.icon, label: meta.label, summary: s.preparing ? 'preparing…' : (toolSummary(s.call.name, parseArgs(s.call), base) ?? '') };
+  });
 </script>
 
 <div class="group" class:collapsible class:open>
@@ -27,17 +37,25 @@
       <span class="chev" class:open><Icon name="chevron-right" size={12} stroke={2} /></span>
       <span class="count">{n} steps</span>
       {#if span}<span class="np-dim">· {duration(span)}</span>{/if}
-      <span class="summary">
-        {#each counts.tools as t (t.name)}
-          <span class="cnt" title="{toolMeta(t.name).label} × {t.count}"
-            ><Icon name={toolMeta(t.name).icon} size={12} />{t.count}</span
-          >
-        {/each}
-        {#if counts.thinking}<span class="cnt" title="Thinking × {counts.thinking}"
-            ><Icon name="brain" size={12} />{counts.thinking}</span
-          >{/if}
-      </span>
-      {#if failed}<span class="failed">{failed} failed</span>{/if}
+      {#if latest}
+        <span class="latest">
+          <span class="np-spinner"></span>
+          <span class="lbl">{latest.label}</span>
+          {#if latest.summary}<span class="sum np-mono">{latest.summary}</span>{/if}
+        </span>
+      {:else}
+        <span class="summary">
+          {#each counts.tools as t (t.name)}
+            <span class="cnt" title="{toolMeta(t.name).label} × {t.count}"
+              ><Icon name={toolMeta(t.name).icon} size={12} />{t.count}</span
+            >
+          {/each}
+          {#if counts.thinking}<span class="cnt" title="Thinking × {counts.thinking}"
+              ><Icon name="brain" size={12} />{counts.thinking}</span
+            >{/if}
+        </span>
+        {#if failed}<span class="failed">{failed} failed</span>{/if}
+      {/if}
     </button>
   {/if}
   {#if open}
@@ -104,6 +122,27 @@
   }
   .failed {
     color: var(--err);
+    font-size: var(--fs-xs);
+  }
+  .latest {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    margin-left: 4px;
+    color: var(--fg-muted);
+  }
+  .latest .lbl {
+    flex: none;
+    color: var(--fg);
+    font-weight: 500;
+  }
+  .latest .sum {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--fg-dim);
     font-size: var(--fs-xs);
   }
   .steps {

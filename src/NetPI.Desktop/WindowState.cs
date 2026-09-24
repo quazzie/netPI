@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace NetPI.Desktop;
 
-/// <summary>Remembered window placement (~/.netpi/window.json).</summary>
+/// <summary>Remembered window placement and WebView zoom (~/.netpi/window.json).</summary>
 internal sealed class WindowPlacement
 {
     public int X { get; set; }
@@ -10,6 +10,8 @@ internal sealed class WindowPlacement
     public int Width { get; set; } = 1440;
     public int Height { get; set; } = 920;
     public bool Maximized { get; set; }
+    /// <summary>WebView zoom factor (Ctrl + wheel, Ctrl + / −, the Settings dialog).</summary>
+    public double Zoom { get; set; } = 1;
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 

@@ -6,9 +6,8 @@
   import StepsGroup from './StepsGroup.svelte';
   import NoticeRow from './NoticeRow.svelte';
   import StatusRow from './StatusRow.svelte';
-  import StreamingBlock from './StreamingBlock.svelte';
   import ShownImage from './ShownImage.svelte';
-  import { createItemBuilder } from '../../lib/chatItems.js';
+  import { createItemBuilder, withStream } from '../../lib/chatItems.js';
   import { app, isBusy, projectOf } from '../../lib/state/app.svelte.js';
   import { modals } from '../../lib/state/ui.svelte.js';
   import { duration } from '../../lib/format.js';
@@ -16,7 +15,9 @@
   let { chat, session } = $props();
 
   const build = createItemBuilder();
-  const items = $derived(build(chat.messages));
+  // the streaming answer is laid out like the finished one (thinking and tool calls join the open steps group), so the
+  // chat does not jump when message.added replaces it
+  const items = $derived(chat.hasNewer ? build(chat.messages) : withStream(build(chat.messages), chat.stream));
   const running = $derived(isBusy(session.id));
   const agent = $derived(app.agents.get(session.id));
   const base = $derived(projectOf(session)?.path ?? null);
@@ -25,10 +26,6 @@
     for (let i = items.length - 1; i >= 0; i--)
       if (items[i].kind === 'user' && items[i].msg.meta?.kind !== 'steer' && items[i].msg.meta?.delivery !== 'steer') return i;
     return -1;
-  });
-  const liveToolRunning = $derived.by(() => {
-    for (const t of chat.live.values()) if (t.status === 'running') return true;
-    return false;
   });
 
   let scroller = $state();
@@ -48,7 +45,7 @@
   }
 
   function onScroll() {
-    if (restoring) return;
+    if (restoring || !scroller) return;
     const top = scroller.scrollTop;
     const d = distanceFromBottom();
     // Only the user scrolling up unpins. Content that grew, or a view that shrank (the plan strip or queue chips
@@ -108,7 +105,8 @@
     ro.observe(scroller);
     return () => {
       ro.disconnect();
-      chat.scroll = { top: scroller.scrollTop, atBottom: stick };
+      // the element may already be gone here: keep the position the scroll handler last saw
+      chat.scroll = { top: lastTop, atBottom: stick };
     };
   });
 
@@ -168,13 +166,13 @@
     {/if}
 
     {#each items as item, i (item.key)}
-      <div class="item" data-key={item.key} data-kind={item.kind}>
+      <div class="item" data-key={item.key} data-kind={item.kind} data-stream={item.stream || item.key.startsWith('g.stream') ? '' : undefined}>
         {#if item.kind === 'user'}
           <UserMessage msg={item.msg} onimage={openImage} />
         {:else if item.kind === 'text'}
           <AssistantText {item} />
         {:else if item.kind === 'steps'}
-          <StepsGroup {item} {chat} {base} live={running && i > lastUserIdx} />
+          <StepsGroup {item} {chat} {base} live={running && i > lastUserIdx} active={running && i === items.length - 1} />
         {:else if item.kind === 'notice'}
           <NoticeRow msg={item.msg} {chat} />
         {:else if item.kind === 'status'}
@@ -202,16 +200,15 @@
           <Icon name="arrow-down" size={13} /> Newer messages{chat.newerCount ? ` (${chat.newerCount} new)` : ''} — jump to latest
         </button>
       </div>
-    {:else if chat.stream.active}
-      <div class="item"><StreamingBlock stream={chat.stream} {chat} /></div>
-    {:else if running && !liveToolRunning}
-      <div class="item working">
-        <span class="np-spinner"></span>
-        <span>{agent?.activity || (agent?.status === 'queued' ? 'Waiting for a free lane' : 'Working')}…</span>
-        {#if agent?.startedAt && now - Date.parse(agent.startedAt) >= 1000}<span class="np-dim">{duration(now - Date.parse(agent.startedAt))}</span>{/if}
-      </div>
     {/if}
-    <div class="tail"></div>
+    <!-- one fixed-height line for the whole run (also after it, empty): it never appears or disappears between steps -->
+    <div class="working" class:on={running}>
+      {#if running}
+        <span class="np-spinner"></span>
+        <span class="np-ellipsis">{agent?.activity || (agent?.status === 'queued' ? 'Waiting for a free lane' : 'Working')}…</span>
+        {#if agent?.startedAt && now - Date.parse(agent.startedAt) >= 1000}<span class="np-dim">{duration(now - Date.parse(agent.startedAt))}</span>{/if}
+      {/if}
+    </div>
   </div>
 </div>
 
@@ -308,12 +305,12 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 4px 2px;
+    height: 28px;
+    margin-top: 10px;
+    padding: 0 2px;
     color: var(--fg-muted);
     font-size: var(--fs-sm);
-  }
-  .tail {
-    height: 18px;
+    min-width: 0;
   }
   .jump {
     position: absolute;
