@@ -9,7 +9,7 @@ using OR = NetPI.Providers.OpenRouter;
 Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
 Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null);
 
-var t = new TestRunner();
+var t = new TestRunner(args);
 await using var mock = new MockServer();
 await mock.StartAsync();
 Console.WriteLine($"mock server: {mock.BaseUrl}");

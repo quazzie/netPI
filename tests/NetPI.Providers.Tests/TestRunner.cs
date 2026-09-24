@@ -3,10 +3,11 @@ using System.Runtime.CompilerServices;
 
 namespace NetPI.Providers.Tests;
 
-/// <summary>Tiny assertion/test harness (no test framework available offline).</summary>
-internal sealed class TestRunner
+/// <summary>Tiny assertion/test harness (no test framework available offline). Filters select tests whose name contains
+/// any of them (case-insensitive), like the other suites.</summary>
+internal sealed class TestRunner(string[] filters)
 {
-    private int _passedChecks, _failedChecks, _passedTests, _failedTests;
+    private int _passedChecks, _failedChecks, _passedTests, _failedTests, _skippedTests;
     private readonly List<string> _failures = [];
     private string _current = "";
 
@@ -26,6 +27,11 @@ internal sealed class TestRunner
 
     public async Task Run(string name, Func<Task> body)
     {
+        if (filters.Length > 0 && !filters.Any(f => name.Contains(f, StringComparison.OrdinalIgnoreCase)))
+        {
+            _skippedTests++;
+            return;
+        }
         _current = name;
         var before = _failedChecks;
         var sw = Stopwatch.StartNew();
@@ -47,7 +53,9 @@ internal sealed class TestRunner
     public int Summary()
     {
         Console.WriteLine();
-        Console.WriteLine($"Tests: {_passedTests} passed, {_failedTests} failed. Checks: {_passedChecks} passed, {_failedChecks} failed.");
+        var skipped = _skippedTests > 0 ? $" ({_skippedTests} skipped by the filter)" : "";
+        Console.WriteLine($"Tests: {_passedTests} passed, {_failedTests} failed{skipped}. Checks: {_passedChecks} passed, {_failedChecks} failed.");
+        if (_passedTests + _failedTests == 0) Console.WriteLine("No test matches the filter.");
         foreach (var f in _failures) Console.WriteLine("  - " + f);
         return _failedTests == 0 ? 0 : 1;
     }
