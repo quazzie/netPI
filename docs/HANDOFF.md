@@ -13,7 +13,7 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 | Model stack | AiProxy `http://127.0.0.1:8090` (AiSwitcher, `C:\AI\AiSwitcher`) → nInfer `:8080` (source `C:\AI\src\ninfer-windows`, AiSwitcher profile `quasar-v3`), serving `qwen3.8-27b` with concurrency 2 and 2 × 262k KV. See `docs/AIPROXY-AGENT-GUIDE.md` |
 | Claude | Anthropic Messages API with an API key (`providers.anthropic.apiKey` or `ANTHROPIC_API_KEY`). Only tested against a mock so far (no API key available) |
 | OpenRouter | `providers.openrouter.apiKey` or `OPENROUTER_API_KEY`; tested live with the free `stealth/space-bunny-alpha` |
-| Done plans | `docs/archive/`: one dated record per completed plan (what was done, results, commits) |
+| Plans | `docs/plans/`: active plans (open questions at the end); `docs/archive/`: one dated record per completed plan (what was done, results, commits) |
 
 ## Current state
 
@@ -53,6 +53,8 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Suggested next steps
 
+0. **SSH tools plugin** (`docs/plans/ssh-tools.md`): scripts and file contents to remote hosts through stdin instead of
+   shell arguments. Waiting for the answers to its open questions.
 1. **Claude provider live test.** Needs an Anthropic API key (none available yet): thinking, tools, prompt caching, and the
    adaptive-thinking settings (`docs/SETTINGS.md`). Claude through OpenRouter (paid) would exercise OpenRouter's side of
    it (signed `reasoning_details`, `cache_control`), not the native provider.
@@ -68,5 +70,5 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 - **Leave the user's live setup alone.** Don't modify `%USERPROFILE%\.netpi` data, and don't stop NetPI, AiSwitcher or nInfer without asking. The E2E suite and `netpi-server --home <temp>` use their own homes.
 - **Tests and docs with every change.** Every behaviour change gets a test in the owning suite (the console runners in `tests/`). Also update `docs/PROTOCOL.md`, `docs/SETTINGS.md`, `docs/TOOLS.md` or `docs/UI.md` as relevant.
 - **Commits.** Make small commits with descriptive messages.
-- **Plans.** When a plan is done, record it in `docs/archive/YYYY-MM-DD-<topic>.md` (what was done, results, commits)
+- **Plans.** Write a plan for larger work to `docs/plans/<topic>.md`. When a plan is done, record it in `docs/archive/YYYY-MM-DD-<topic>.md` (what was done, results, commits)
   and keep this page and `docs/STATUS.md` about the current state only.
