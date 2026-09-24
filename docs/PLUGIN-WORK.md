@@ -36,7 +36,9 @@ interface AgentInfo { id; sessionId; name; parentAgentId?; parentSessionId?; isS
   createdAt; startedAt?; finishedAt?; runs; turns; toolCalls; inputTokens; outputTokens; queuedMessages; task?; result?; error?; children: string[] }
 interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?; agentId?; background: boolean;
   status: 'running'|'exited'|'killed'|'timeout'; exitCode?; startedAt; endedAt?; outputBytes }
-interface UsageSummary { day; providers: { provider; inputTokens; outputTokens; cacheReadTokens; calls; budgetTokens? }[] }
+interface UsageSummary { day; providers: { provider; inputTokens; outputTokens; cacheReadTokens; calls; budgetTokens? }[];
+  budget: BudgetStatus /* budget.status */; models: { lane?; provider; model; calls; inputTokens; outputTokens; costUsd; unknownCost }[] /* this period */ }
+interface BudgetStatus { monthlyUsd?; dailyUsd?; warnPercent; resetDay; onLimit: 'stop'|'ask'; periodStart; periodEnd; spentUsd; todayUsd; warning; exhausted }
 ```
 
 `agents` includes finished agents (completed, failed and cancelled subagents), so the tab can show recent results. Use
@@ -54,6 +56,7 @@ Load `work.snapshot` when the tab is shown (`onShow`). Then patch the view from 
 | `process.started` | `{ process: ProcessInfo }` | upsert by `id` |
 | `process.exited` | `{ process: ProcessInfo }` | upsert by `id` |
 | `usage.recorded` | `{ provider, model, usage }` | re-fetch (or re-fetch only `usage.summary`) |
+| `usage.changed` | `BudgetStatus` | the ledger recorded calls (their cost): re-fetch `usage.summary` |
 
 `process.output` (`{ id, chunk }`, background processes only) can drive a live tail of an expanded process row. The full
 output is available through `processes.output { id, tail? }`.

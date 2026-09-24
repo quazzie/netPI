@@ -18,7 +18,7 @@
     {#each d.results ?? [] as r, i (i)}
       <div class="hit">
         <a class="t" href={r.url} target="_blank" rel="noopener noreferrer">{r.title || r.url}</a>
-        <div class="u np-mono">{r.url}{#if r.age}<span class="age"> · {r.age}</span>{/if}</div>
+        <div class="u np-mono">{r.url}{#if r.age}<span class="age">&nbsp;· {r.age}</span>{/if}</div>
         {#if r.snippet}<div class="s">{r.snippet}</div>{/if}
       </div>
     {:else}

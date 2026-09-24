@@ -414,6 +414,12 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     if (/\[web\]/i.test(input)) return webScript(sid, run);
     if (/\[fast\]/i.test(input)) return fastScript(sid, run);
     if (/\[ssh\]/i.test(input)) return sshScript(sid, run);
+    if (/\[budget\]/i.test(input)) {
+      // the budget stopped a paid call (budget.onLimit "ask"): the notice offers to let this chat go over
+      const text_ = 'The monthly budget ($50) is spent: $50.12 since 2026-09-01. Paid models stop until 2026-10-01; free and local models still work.';
+      append(sid, 'notice', [text(text_)], { meta: { kind: 'budget', canOverride: true } });
+      return;
+    }
     const file = 'src/NetPI.Host/Lanes/LaneScheduler.cs';
     const cwd = projectPath(sid);
     const isFollowUp = run.turn > 0;
@@ -522,6 +528,8 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
 
   return {
     isRunning: (sid) => runs.has(sid),
+    /** A harness notice in the chat (role notice, meta.kind). */
+    notice: (sid, body, meta) => append(sid, 'notice', [text(body)], { meta }),
     runGoal: (sid, what) => {
       runGoal(sid, what).catch((e) => console.error('[mock agent] goal failed', e));
     },

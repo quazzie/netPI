@@ -12,6 +12,20 @@ public sealed class CompactionPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "compaction", Title = "Compaction", Group = "Context", Order = 30,
+            Settings =
+            [
+                SettingInfo.Bool("compaction.enabled", "Compact long conversations", true),
+                SettingInfo.Number("compaction.thresholdPercent", "Compact at", 0.8, "Share of the context window.", 0.3, 0.95),
+                SettingInfo.Int("compaction.reserveTokens", "…or when fewer tokens are left", 16384, null, 0, null, "tokens"),
+                SettingInfo.Int("compaction.keepRecentTokens", "Recent tokens kept verbatim", 20000, null, 0, null, "tokens"),
+                SettingInfo.ModelRef("compaction.model", "Summarizer model", null, "the session's model"),
+                SettingInfo.Int("compaction.maxSummaryTokens", "Summary length", 8192, null, 256, null, "tokens"),
+                SettingInfo.Int("compaction.defaultContextWindow", "Context window when unknown", 131072, null, 1024, null, "tokens"),
+            ],
+        });
         var service = new CompactionService(context);
         context.Services.Register<IAgentHook>(new CompactionHook(service, context.Logger));
 

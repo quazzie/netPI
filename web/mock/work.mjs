@@ -6,7 +6,7 @@ import { store, agentFor, mkSession, pushMessage, newId, text, REPO } from './st
 const MIN = 60_000;
 const iso = (ms) => new Date(ms).toISOString();
 
-export function createWork({ publish, log }) {
+export function createWork({ publish, log, lanesView }) {
   // ------------------------------------------------------------------ lanes
   const pools = [
     { key: 'aiproxy/qwen3.8-27b', provider: 'aiproxy', capacity: 2, models: ['aiproxy/qwen3.8-27b'], owners: [], waiters: [], source: 'catalog' },
@@ -35,7 +35,8 @@ export function createWork({ publish, log }) {
     };
   }
   const lanes = () => pools.map(poolInfo);
-  const lanesChanged = () => publish('lanes.changed', { pools: lanes() });
+  // lanes.changed carries what lanes.list returns (the server adds the lanes set up in settings)
+  const lanesChanged = () => publish('lanes.changed', { pools: (lanesView ?? lanes)() });
 
   // ------------------------------------------------------------------ processes
   const procs = new Map(); // id -> { info, out }

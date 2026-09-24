@@ -144,7 +144,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             DrainSteering();
 
             // 4. turn context + hooks
-            var tools = ActiveTools();
+            var tools = ActiveTools(session);
             var defs = tools.Select(t => t.Definition).ToList();
             var prompt = await BuildPromptAsync(session, project, cwd, model, defs, ct).ConfigureAwait(false);
             AgentTurnContext turn = null!;
@@ -349,22 +349,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
     // ---------------------------------------------------------------- tools and prompt
 
-    private List<IAgentTool> ActiveTools()
-    {
-        var maxDepth = rt.IntSetting("agents.maxDepth", 3);
-        var allow = Info.ToolAllowlist;
-        var depth = Info.Depth;
-        List<IAgentTool> all;
-        try { all = [.. Ctx.Tools.All]; } catch { all = []; }
-        // Sorted by name: tool definitions are part of the request prefix, and registry order changes when a plugin reloads.
-        return all.Where(t =>
-        {
-            var d = t.Definition;
-            if (allow is not null && !allow.Contains(d.Name, StringComparer.OrdinalIgnoreCase)) return false;
-            if (depth >= maxDepth && d.Category == "agents" && d.Name != "agent_send") return false;
-            return true;
-        }).OrderBy(t => t.Definition.Name, StringComparer.Ordinal).ToList();
-    }
+    private List<IAgentTool> ActiveTools(SessionInfo session) => rt.ToolsFor(Info, session);
 
     private async Task<string> BuildPromptAsync(SessionInfo session, ProjectInfo? project, string cwd, ModelInfo model,
         IReadOnlyList<ToolDefinition> defs, CancellationToken ct)

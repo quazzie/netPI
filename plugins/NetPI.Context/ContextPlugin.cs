@@ -16,6 +16,16 @@ public sealed class ContextPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "context", Title = "System prompt", Group = "Context", Order = 10,
+            Settings =
+            [
+                new SettingInfo { Key = "context.appendPrompt", Type = "text", Label = "Custom instructions", Help = "Added to the end of every session's system prompt.", Applies = "new sessions" },
+                new SettingInfo { Key = "context.customPrompt", Type = "text", Label = "Identity", Help = "Replaces the opening section of the system prompt.", Placeholder = "built in", Applies = "new sessions" },
+                new SettingInfo { Key = "context.toolDescriptions", Type = "bool", Label = "Describe every tool in the prompt too", Default = System.Text.Json.Nodes.JsonValue.Create(false), Help = "They are always in the tool schemas.", Applies = "new sessions" },
+            ],
+        });
         var prompts = new PromptStore(context);
         prompts.Initialize();
         var builder = new SystemPromptBuilder(context, prompts);
@@ -57,7 +67,7 @@ public sealed class ContextPlugin : INetPiPlugin
         model ??= PlaceholderModel(modelRef);
 
         var agent = ctx.Services.Get<IAgentRuntime>()?.GetBySession(sessionId);
-        var tools = ActiveTools(ctx, agent);
+        var tools = ActiveTools(ctx, agent, session);
         var defs = tools.Select(t => t.Definition).ToList();
         var builder = ctx.Services.Get<ISystemPromptBuilder>() ?? fallback;
         var pc = new PromptContext
@@ -97,17 +107,21 @@ public sealed class ContextPlugin : INetPiPlugin
         return slash > 0 ? new ModelInfo { Provider = r[..slash], Id = r[(slash + 1)..] } : new ModelInfo { Provider = "none", Id = r };
     }
 
-    /// <summary>Same filtering and order as the agent runtime: allowlist, no orchestration tools at the maximum depth, by name.</summary>
-    internal static List<IAgentTool> ActiveTools(IPluginContext ctx, AgentInfo? agent)
+    /// <summary>
+    /// Same filtering and order as the agent runtime: allowlist, no orchestration tools at the maximum depth, not the tools
+    /// switched off for the session, by name.
+    /// </summary>
+    internal static List<IAgentTool> ActiveTools(IPluginContext ctx, AgentInfo? agent, SessionInfo? session = null)
     {
         var maxDepth = 3;
         try { maxDepth = ctx.Settings.Get("agents.maxDepth", 3); } catch { }
+        var off = SessionTools.Off(session);
         return ctx.Tools.All.Where(t =>
         {
             var d = t.Definition;
             if (agent?.ToolAllowlist is { } allow && !allow.Contains(d.Name, StringComparer.OrdinalIgnoreCase)) return false;
             if (agent is not null && agent.Depth >= maxDepth && d.Category == "agents" && d.Name != "agent_send") return false;
-            return true;
+            return !off.Contains(d.Name);
         }).OrderBy(t => t.Definition.Name, StringComparer.Ordinal).ToList();
     }
 }

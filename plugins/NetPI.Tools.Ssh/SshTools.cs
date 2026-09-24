@@ -15,6 +15,18 @@ public sealed class SshPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "ssh", Title = "SSH", Group = "Tools", Order = 50,
+            Settings =
+            [
+                SettingInfo.Int("ssh.timeoutSeconds", "Default ssh_run timeout", 120, null, 1, 1800, "s"),
+                SettingInfo.Int("ssh.connectTimeoutSeconds", "Connect timeout", 10, null, 2, 120, "s"),
+                SettingInfo.FilePath("ssh.config", "ssh config", "The host aliases come from here.", "~/.ssh/config"),
+                SettingInfo.FilePath("ssh.path", "ssh", null, "Windows OpenSSH (found automatically)"),
+                SettingInfo.FilePath("ssh.scpPath", "scp", null, "next to ssh"),
+            ],
+        });
         foreach (var tool in SshToolSet.Create(context, new ProcessLauncher())) context.Tools.Register(tool);
         return Task.CompletedTask;
     }

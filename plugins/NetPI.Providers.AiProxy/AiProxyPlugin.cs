@@ -46,6 +46,24 @@ public sealed class AiProxyPlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "aiproxy", Title = "AiProxy / nInfer", Group = "Models", Order = 30,
+            Settings =
+            [
+                SettingInfo.Str("providers.aiproxy.baseUrl", "Server URL", "http://127.0.0.1:8090", "A trailing /v1 is fine."),
+                SettingInfo.Choice("providers.aiproxy.transport", "Transport", "responses", ["responses", "chat"], "Responses API (/v1/responses) or Chat Completions."),
+                SettingInfo.Secret("providers.aiproxy.apiKey", "API key", "Sent as Bearer; env:NAME reads an environment variable.", "none"),
+                SettingInfo.Bool("providers.aiproxy.replayReasoning", "Send previous reasoning back", true, "Default: on for Responses, off for Chat."),
+                SettingInfo.Bool("providers.aiproxy.parseThinkTags", "Split <think> tags into thinking", true),
+                SettingInfo.Bool("providers.aiproxy.dumpFailedRequests", "Save failed requests", true, "Their bodies go to ~/.netpi/logs/failed-requests, for reproducing backend bugs."),
+                SettingInfo.Bool("providers.aiproxy.includeEncryptedReasoning", "Request encrypted reasoning", false, "OpenAI-hosted reasoning models only; nInfer rejects it."),
+                SettingInfo.Int("providers.aiproxy.defaultMaxOutputTokens", "Output limit when the catalog has none", 16384, null, 256, null, "tokens"),
+                SettingInfo.Int("providers.aiproxy.modelsCacheSeconds", "Model list cache", 10, null, 0, 3600, "s"),
+                SettingInfo.Bool("providers.aiproxy.local", "Local models", true, "Lanes take their size from the catalog's concurrency; local models are free."),
+                SettingInfo.Bool("providers.aiproxy.enabled", "Enabled", true),
+            ],
+        });
         _ctx = context;
         _http = HttpFactory.Create();
         _aiproxy = OpenAiCompatibleProvider.FromSettingsPath(context, _http, ProviderId, "AiProxy", SettingsPath,

@@ -24,7 +24,7 @@ public static class HookTests
             var result = run.Parts("tool_result").Single();
             Check.Equal(call.S("id"), result.S("callId"));
             Check.False(result.B("isError"));
-            Check.Contains(result.S("content"), "Lane pools");
+            Check.Contains(result.S("content"), "You run on lane");
             Check.True(run.OfType("message.updated").Any(e => e.D.P("message").P("meta").B("repaired")), "message.updated with the repaired message");
             Check.True(run.OfType("tool.start").Any(e => e.D.S("name") == "lanes_list"), "tool.start for the repaired call");
             Check.False(run.Role("notice").Any(), "no nudge for a repaired call");

@@ -20,6 +20,28 @@ public sealed class LanesPlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "budget", Title = "Budget", Group = "Models", Order = 20,
+            Settings =
+            [
+                SettingInfo.Number("budget.monthlyUsd", "Monthly budget", null, "Spend on paid models per month; empty = no limit. Free and local models don't count.", 0, null, "$"),
+                SettingInfo.Number("budget.dailyUsd", "Daily budget", null, "Empty = no daily limit.", 0, null, "$"),
+                SettingInfo.Int("budget.resetDay", "The month starts on day", 1, null, 1, 28),
+                SettingInfo.Int("budget.warnPercent", "Warn at", 80, "From here agents use paid lanes only when you asked.", 1, 100, "%"),
+                SettingInfo.Choice("budget.onLimit", "When the budget is spent", "stop", ["stop", "ask"], "stop: paid calls stop. ask: your chats stop with \"let this chat go over\"; subagents stop."),
+            ],
+        });
+        context.Services.Register(new SettingsSection
+        {
+            Id = "lanes", Title = "Lanes", Group = "Models", Order = 10,
+            Help = "A lane is a model with parallel slots. The lanes you set up (the table above) are the ones agents choose from; every other model gets an automatic lane.",
+            Settings =
+            [
+                SettingInfo.Int("lanes.localDefaultCapacity", "Automatic lanes: slots per local model", 1, "When the catalog doesn't say how many requests the model serves at once.", 1, 64),
+                SettingInfo.Int("lanes.cloudDefaultCapacity", "Automatic lanes: slots per cloud provider", 4, null, 1, 64),
+            ],
+        });
         var usage = new Ledger(context);
         usage.Initialize();
         var scheduler = new LaneScheduler(context, usage);

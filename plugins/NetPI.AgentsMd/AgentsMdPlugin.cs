@@ -18,6 +18,16 @@ public sealed class AgentsMdPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "agentsMd", Title = "AGENTS.md", Group = "Context", Order = 20,
+            Settings =
+            [
+                SettingInfo.List("agentsMd.fileNames", "Instruction file names", ["AGENTS.md", "CLAUDE.md"], "The first match per folder, from the root down to the working folder."),
+                SettingInfo.List("agentsMd.extraFiles", "Always include", [], "Paths of more instruction files."),
+                new SettingInfo { Key = "agentsMd.guidance", Type = "text", Label = "How agents use AGENTS.md", Placeholder = "built in", Help = "Replaces the built-in guidance.", Applies = "new sessions" },
+            ],
+        });
         var loader = new AgentsMdLoader(context);
         var notices = new InstructionNotices(context, loader);
         context.Services.Register<IAgentHook>(notices);

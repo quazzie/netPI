@@ -10,6 +10,15 @@ public sealed class NudgePlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "nudge", Title = "Nudge", Group = "Agents", Order = 30,
+            Settings =
+            [
+                SettingInfo.Bool("nudge.enabled", "Nudge stalled turns", true, "Says \"continue\" when a turn ends empty, is cut off, or announces an action without doing it."),
+                SettingInfo.Int("nudge.maxPerRun", "Nudges per run", 3, null, 0, 20),
+            ],
+        });
         var settings = context.Settings;
         context.Services.Register<IAgentHook>(new NudgeHook(() => settings));
         return Task.CompletedTask;

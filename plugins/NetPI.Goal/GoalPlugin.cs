@@ -13,6 +13,16 @@ public sealed class GoalPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "goals", Title = "Goals", Group = "Agents", Order = 20,
+            Settings =
+            [
+                SettingInfo.Int("goal.maxContinuations", "Automatic runs before a goal pauses", 100, "Resume allows as many again.", 1, 10000),
+                SettingInfo.Int("goal.noProgressLimit", "Runs without progress before a goal pauses", 3, "Automatic runs in a row without a successful tool call.", 1, 50),
+                SettingInfo.Int("goal.tokenBudget", "Default token budget of a goal", 0, "For goals set without one; 0 = none.", 0, null, "tokens"),
+            ],
+        });
         var goals = new Goals(context);
         context.Tools.Register(new GoalUpdateTool(goals));
         context.Tools.Register(new GoalSetTool(goals));

@@ -18,6 +18,6 @@ export { default as SearchInput } from './SearchInput.svelte';
 export { default as Segmented } from './Segmented.svelte';
 export { default as Menu } from './Menu.svelte';
 export { default as Pips } from './Pips.svelte';
-export { timeAgo, duration, tokens, bytes, relPath, basename, truncate, stamp } from '../format.js';
+export { timeAgo, duration, tokens, usd, bytes, relPath, basename, truncate, stamp } from '../format.js';
 export { host, renderMarkdown, confirm, copyText, desktop } from './host.js';
 export { clockNow, secondNow } from './ticker.svelte.js';

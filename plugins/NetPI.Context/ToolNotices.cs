@@ -5,7 +5,8 @@ using System.Text.Json.Nodes;
 namespace NetPI.Context;
 
 /// <summary>
-/// Tells the model when its tools change during a session (a plugin loaded, reloaded or disabled, <c>tools.disabled</c>).
+/// Tells the model when its tools change during a session (a plugin loaded, reloaded or disabled, <c>tools.disabled</c>, the
+/// session's own switches <c>meta.toolsOff</c>).
 /// Every request already carries the current tool definitions, but the frozen system prompt still has the guidelines of
 /// the first call and nothing in the conversation says what changed, so a "tools" notice names the added and removed
 /// tools and carries the new tools' guidelines. The baseline is the tool set of the session's first model call; each
@@ -46,7 +47,7 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
             var added = names.Where(n => !known.Contains(n)).ToList();
             var removed = known.Where(n => !names.Contains(n)).OrderBy(n => n, StringComparer.Ordinal).ToList();
             if (added.Count == 0 && removed.Count == 0) return false;
-            var notice = ChatMessage.NoticeText(Text(tools, added, removed), Kind);
+            var notice = ChatMessage.NoticeText(Text(tools, added, removed, SessionTools.Off(ctx.Sessions.GetSession(sessionId))), Kind);
             notice.Meta!["added"] = new JsonArray(added.Select(n => (JsonNode?)n).ToArray());
             notice.Meta["removed"] = new JsonArray(removed.Select(n => (JsonNode?)n).ToArray());
             ctx.Sessions.AppendMessage(sessionId, notice);
@@ -54,11 +55,16 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
         }
     }
 
-    internal static string Text(IReadOnlyList<ToolDefinition> tools, IReadOnlyList<string> added, IReadOnlyList<string> removed)
+    /// <summary>The notice text; tools in <paramref name="switchedOff"/> (the session's own switches) are named as switched off by the user.</summary>
+    internal static string Text(IReadOnlyList<ToolDefinition> tools, IReadOnlyList<string> added, IReadOnlyList<string> removed,
+        IReadOnlySet<string>? switchedOff = null)
     {
         var sb = new StringBuilder("Your tools changed.");
         if (added.Count > 0) sb.Append(" New: ").Append(string.Join(", ", added)).Append('.');
-        if (removed.Count > 0) sb.Append(" No longer available: ").Append(string.Join(", ", removed)).Append('.');
+        var byUser = removed.Where(n => switchedOff?.Contains(n) == true).ToList();
+        var gone = removed.Where(n => switchedOff?.Contains(n) != true).ToList();
+        if (byUser.Count > 0) sb.Append(" The user switched off for this session: ").Append(string.Join(", ", byUser)).Append('.');
+        if (gone.Count > 0) sb.Append(" No longer available: ").Append(string.Join(", ", gone)).Append('.');
         var guidelines = tools.Where(t => added.Contains(t.Name)).SelectMany(t => t.PromptGuidelines ?? [])
             .Where(g => !string.IsNullOrWhiteSpace(g)).Select(g => g.Trim()).Distinct(StringComparer.Ordinal).ToList();
         if (guidelines.Count > 0) sb.Append("\nGuidelines for the new tools:").Append(string.Concat(guidelines.Select(g => "\n- " + g)));

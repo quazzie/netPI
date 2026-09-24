@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import Icon from '../lib/kit/Icon.svelte';
   import IconButton from '../lib/kit/IconButton.svelte';
+  import BudgetPill from './BudgetPill.svelte';
   import { app, activate, closeTab, moveTab, newSession, sessionStatus, projectOf } from '../lib/state/app.svelte.js';
   import { modals } from '../lib/state/ui.svelte.js';
   import { conn, reconnectNow } from '../lib/rpc.svelte.js';
@@ -134,6 +135,7 @@
         <Icon name="chevron-down" size={12} />
       </button>
     {/if}
+    <BudgetPill />
     <button
       class="conn"
       data-status={conn.status}

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// NetPI mock server: serves the built UI (artifacts/app/wwwroot) and plugin UI bundles, and implements the
+// NetPI mock server: serves the built UI (web/dist) and plugin UI bundles, and implements the
 // WebSocket protocol from docs/PROTOCOL.md with in-memory data and a scripted fake agent.
 //
 //   npm run mock                      → http://127.0.0.1:7431/?token=dev
@@ -16,6 +16,7 @@ import { createAgentRuntime } from './agent.mjs';
 import { createWork } from './work.mjs';
 import { createIdeas } from './ideas.mjs';
 import { createDiag, toolRows } from './diag.mjs';
+import { SETTINGS_SCHEMA } from './settingsSchema.mjs';
 
 // ------------------------------------------------------------------------------------------ options
 const args = process.argv.slice(2);
@@ -27,8 +28,8 @@ const PORT = Number(opt('port', process.env.PORT || 7431));
 const HOST = opt('host', '127.0.0.1');
 const TOKEN = opt('token', process.env.NETPI_TOKEN || 'dev');
 const NO_AUTH = args.includes('--no-auth');
-// the app's copy when it has been built, else the committed build output
-const WWWROOT = [path.join(REPO, 'artifacts/app/wwwroot'), path.join(REPO, 'web/dist')].find((d) => fs.existsSync(path.join(d, 'index.html'))) ?? path.join(REPO, 'web/dist');
+// the build output itself (not the copy a running NetPI serves from artifacts/app/wwwroot)
+const WWWROOT = [path.join(REPO, 'web/dist'), path.join(REPO, 'artifacts/app/wwwroot')].find((d) => fs.existsSync(path.join(d, 'index.html'))) ?? path.join(REPO, 'web/dist');
 // Plugin UI bundles the mock serves (built by `npm run build:plugins`); a tab is listed only when its bundle exists.
 const PLUGIN_UIS = [
   { pluginId: 'netpi.work', dir: 'plugins/NetPI.Work/wwwroot', tabs: [{ id: 'work', title: 'Work', panel: 'right', icon: 'work', order: 10 }] },
@@ -72,7 +73,7 @@ function log(level, category, message, exception) {
   if (logs.length > 500) logs.shift();
 }
 
-const work = createWork({ publish, log });
+const work = createWork({ publish, log, lanesView: () => lanesWithConfigured() });
 work.start();
 const ideas = createIdeas({ publish });
 ideas.seed();
@@ -127,6 +128,56 @@ function getSession(id) {
   if (!s) throw notFound(`Session ${id}`);
   return s;
 }
+// ------------------------------------------------------------------------------------------ lanes you set up, budget
+const LANE_RESERVED = new Set(['pools', 'budgets', 'localDefaultCapacity', 'cloudDefaultCapacity']);
+/** Mock prices ($ per Mtok) for the cloud models; local models are free. */
+const MOCK_PRICES = { 'anthropic/claude-sonnet-4-6': [3, 15] };
+const MOCK_SPEND = [{ lane: 'anthropic', provider: 'anthropic', model: 'claude-sonnet-4-6', calls: 12, inputTokens: 180000, outputTokens: 9000, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.675, unknownCost: false }];
+function lanesWithConfigured() {
+  const pools = work.lanes();
+  const cfg = store.settings.lanes ?? {};
+  const configured = Object.entries(cfg)
+    .filter(([id, v]) => !LANE_RESERVED.has(id) && v && typeof v === 'object' && typeof v.model === 'string')
+    .map(([id, v]) => {
+      const m = MODELS.find((x) => x.ref === v.model);
+      const price = v.cost?.input != null ? [v.cost.input, v.cost.output ?? 0] : MOCK_PRICES[v.model] ?? (m?.isLocal ? [0, 0] : null);
+      return {
+        key: id, provider: v.model.split('/')[0], capacity: v.capacity ?? 1, busy: 0, queued: 0, models: [v.model], owners: [], waiters: [],
+        source: 'settings', status: 'idle', configured: true, model: v.model, use: v.use || null,
+        priceInput: price?.[0] ?? null, priceOutput: price?.[1] ?? null, priceSource: v.cost ? 'settings' : m?.isLocal ? 'local' : price ? 'catalog' : 'unknown',
+        free: !!price && price[0] === 0 && price[1] === 0, spentTodayUsd: 0, dailyLimitUsd: v.budget?.limitUsd ?? null,
+      };
+    });
+  const taken = new Set(configured.map((c) => c.model));
+  return [...configured, ...pools.filter((p) => !p.models.every((m) => taken.has(m)))];
+}
+function budgetStatus() {
+  const b = store.settings.budget ?? {};
+  const now = new Date();
+  const reset = Math.min(28, Math.max(1, b.resetDay ?? 1));
+  let start = new Date(now.getFullYear(), now.getMonth(), reset);
+  if (now < start) start = new Date(now.getFullYear(), now.getMonth() - 1, reset);
+  const end = new Date(start.getFullYear(), start.getMonth() + 1, reset);
+  const spent = MOCK_SPEND.reduce((a, m) => a + m.costUsd, 0);
+  const day = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const warnPercent = b.warnPercent ?? 80;
+  return {
+    monthlyUsd: b.monthlyUsd ?? null, dailyUsd: b.dailyUsd ?? null, warnPercent, resetDay: reset, onLimit: b.onLimit ?? 'stop',
+    periodStart: day(start), periodEnd: day(end), spentUsd: spent, todayUsd: 0.2,
+    warning: !!b.monthlyUsd && spent >= (b.monthlyUsd * warnPercent) / 100, exhausted: !!b.monthlyUsd && spent >= b.monthlyUsd,
+  };
+}
+
+/** agent.tools for a session: the tools its agent gets, each with its switch. */
+function sessionTools(s) {
+  const off = new Set((s.meta?.toolsOff ?? []).map((n) => n.toLowerCase()));
+  const tools = toolRows()
+    .filter((t) => t.active && !t.disabled)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(({ name, label, category, description, readOnly, pluginId }) => ({ name, label, category, description, readOnly, pluginId, on: !off.has(name) }));
+  return { sessionId: s.id, started: (s.messageCount ?? 0) > 0, contextTokens: s.contextTokens ?? 0, off: [...(s.meta?.toolsOff ?? [])], tools };
+}
+
 /** Apply a change to the session's goal (goal.* RPCs); `change` returns the fields to update. */
 function goalChange(p, change) {
   const s = getSession(need(p, 'sessionId'));
@@ -325,8 +376,10 @@ const handlers = {
     const keys = need(p, 'path').split('.');
     let o = store.settings;
     for (const k of keys.slice(0, -1)) o = o[k] ??= {};
-    o[keys.at(-1)] = p.value;
+    if (p.value == null) delete o[keys.at(-1)]; // null removes the key: the default applies again
+    else o[keys.at(-1)] = p.value;
     publish('settings.changed', {});
+    work.lanesChanged(); // like the host: lanes follow the settings
     return true;
   },
   'settings.replace': (p) => {
@@ -334,6 +387,7 @@ const handlers = {
     if (typeof s !== 'object' || Array.isArray(s)) throw new RpcError('bad_request', 'settings must be an object');
     store.settings = s;
     publish('settings.changed', {});
+    work.lanesChanged();
     return true;
   },
 
@@ -404,13 +458,28 @@ const handlers = {
     goalChange(p, () => ({ status: 'cleared' }));
     return null;
   },
+  // per-session tool switches (meta.toolsOff), like the agent plugin
+  'agent.tools': (p) => sessionTools(getSession(need(p, 'sessionId'))),
+  'agent.setTools': (p) => {
+    const s = getSession(need(p, 'sessionId'));
+    const off = new Map((s.meta?.toolsOff ?? []).map((n) => [n.toLowerCase(), n]));
+    for (const n of p.off ?? []) off.set(String(n).toLowerCase(), String(n));
+    for (const n of p.on ?? []) off.delete(String(n).toLowerCase());
+    s.meta = { ...(s.meta ?? {}) };
+    if (off.size) s.meta.toolsOff = [...off.values()].sort();
+    else delete s.meta.toolsOff;
+    s.updatedAt = new Date().toISOString();
+    publish('session.updated', { session: s });
+    return sessionTools(s);
+  },
   'agent.queue': (p) => agent.queue(need(p, 'sessionId')),
   'agent.dequeue': (p) => agent.dequeue(need(p, 'sessionId'), need(p, 'id')),
+  // like the Work plugin: lanes.list and usage.summary
   'work.snapshot': () => ({
-    lanes: work.lanes(),
+    lanes: lanesWithConfigured(),
     agents: [...store.agents.values()],
     processes: work.procList(),
-    usage: work.usageSummary(),
+    usage: { ...work.usageSummary(), budget: budgetStatus(), models: MOCK_SPEND },
     time: new Date().toISOString(),
   }),
   'agents.list': (p = {}) =>
@@ -524,7 +593,7 @@ const handlers = {
   'processes.list': () => work.procList(),
   'processes.output': (p) => work.procOutputTail(need(p, 'id'), p.tail ?? 500),
   'processes.kill': (p) => work.procKill(need(p, 'id')),
-  'lanes.list': () => work.lanes(),
+  'lanes.list': () => lanesWithConfigured(),
   'logs.recent': (p = {}) => logs.slice(-(p.max ?? 200)),
   // test helper: back to the seeded state
   'mock.reset': () => {
@@ -537,7 +606,22 @@ const handlers = {
     publish('plugins.changed', {});
     return true;
   },
-  'usage.summary': () => work.usageSummary(),
+  'usage.summary': () => ({ ...work.usageSummary(), budget: budgetStatus(), models: MOCK_SPEND }),
+  // one seeded chat used a paid model (with a subagent)
+  'usage.session': (p) => {
+    const s = getSession(need(p, 'sessionId'));
+    const paid = s.title === 'Lane scheduler hardening';
+    return { sessionId: s.id, costUsd: paid ? 0.42 : 0, calls: paid ? 7 : 0, withSubagentsUsd: paid ? 0.675 : 0, withSubagentsCalls: paid ? 12 : 0 };
+  },
+  'budget.status': () => budgetStatus(),
+  'budget.allow': (p) => {
+    const s = getSession(need(p, 'sessionId'));
+    s.meta = { ...(s.meta ?? {}), budgetAllowedFrom: budgetStatus().periodStart };
+    publish('session.updated', { session: s });
+    agent.notice(s.id, 'The user let this chat go over the budget until the budget period ends. Continue where you stopped.', { kind: 'budget' });
+    return budgetStatus();
+  },
+  'settings.schema': () => SETTINGS_SCHEMA,
 };
 
 async function dispatch(m, p) {

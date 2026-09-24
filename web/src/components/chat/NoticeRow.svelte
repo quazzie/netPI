@@ -2,6 +2,8 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import { renderMarkdown } from '../../lib/markdown.js';
   import { openSession } from '../../lib/state/app.svelte.js';
+  import { confirmDialog, toast } from '../../lib/state/ui.svelte.js';
+  import { rpc } from '../../lib/rpc.svelte.js';
   import { stamp, firstLine, truncate } from '../../lib/format.js';
 
   /** Harness notices (role notice) and compaction summaries (role summary) as slim dividers. */
@@ -13,6 +15,7 @@
     tools: { icon: 'wrench', tone: 'info', label: 'Tools changed', expand: true },
     todo: { icon: 'list', tone: 'info', label: 'Todo list', expand: true },
     goal: { icon: 'target', tone: 'accent', label: 'Goal' },
+    budget: { icon: 'dollar', tone: 'warn' },
     nudge: { icon: 'zap', tone: 'warn', label: 'Nudge' },
     'agent-message': { icon: 'message-circle', tone: 'accent', expand: true },
     'agent-result': { icon: 'bot', tone: 'ok', expand: true },
@@ -36,6 +39,26 @@
   const key = $derived(`n${msg.id}`);
   const open = $derived(chat.expanded.get(key) ?? false);
   const oneLine = $derived(truncate(firstLine(text).replace(/[*_`#>]/g, ''), 160));
+
+  // the budget stopped this chat and budget.onLimit is "ask": the latest such notice offers to let the chat go over
+  let allowed = $state(false);
+  const canAllow = $derived(
+    kind === 'budget' && msg.meta?.canOverride === true && !allowed && chat.messages.findLast((m) => m.meta?.kind === 'budget')?.id === msg.id,
+  );
+  async function allow() {
+    const ok = await confirmDialog({
+      title: 'Let this chat go over the budget?',
+      message: 'It may keep using paid models until the budget period ends, and it continues now. Other chats stay stopped.',
+      confirmLabel: 'Go over',
+    });
+    if (!ok) return;
+    try {
+      await rpc('budget.allow', { sessionId: msg.sessionId });
+      allowed = true;
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
 </script>
 
 <div class="notice" data-tone={k.tone} class:open>
@@ -52,6 +75,9 @@
     {#if !open && (!label || !k.expand) && oneLine}<span class="text">{oneLine}</span>{/if}
     {#if long}<span class="chev" class:open><Icon name="chevron-right" size={11} /></span>{/if}
   </button>
+  {#if canAllow}
+    <button class="link" onclick={allow}><Icon name="dollar" size={11} /> Let this chat go over</button>
+  {/if}
   {#if linkSession}
     <button class="link" onclick={() => openSession(linkSession)}><Icon name="external" size={11} /> open</button>
   {/if}

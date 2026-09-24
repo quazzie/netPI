@@ -14,6 +14,14 @@ public sealed class MediaPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "media", Title = "Images", Group = "Tools", Order = 40,
+            Settings =
+            [
+                SettingInfo.Int("media.maxBytes", "Largest image show_image shows", 10000000, null, 1000, null, "bytes"),
+            ],
+        });
         var http = context.Track(new HttpClient(new SocketsHttpHandler
         {
             AutomaticDecompression = DecompressionMethods.All,

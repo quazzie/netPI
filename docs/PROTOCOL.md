@@ -41,7 +41,7 @@ type Role = 'user' | 'assistant' | 'tool' | 'notice' | 'summary';
 interface ChatMessage {
   id: number; seq: number; sessionId: string; role: Role; parts: Part[]; createdAt: string;
   provider?: string; model?: string; stopReason?: 'stop'|'tool_use'|'length'|'aborted'|'error'|'content_filter';
-  usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; reasoningTokens: number };
+  usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; reasoningTokens: number; costUsd?: number /* as the provider reported it (OpenRouter) */ };
   durationMs?: number; compacted: boolean;
   meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | tools | todo | goal | budget | nudge | agent-message | agent-result | steer | retry | error | compaction
 }
@@ -52,7 +52,8 @@ type Part =
   | { type: 'tool_result'; callId: string; name: string; content: string; isError: boolean; details?: any; durationMs?: number; images?: ImagePart[] }
   | { type: 'image'; mediaType: string; data: string /* base64 */ };
 
-interface SessionInfo { id; title; projectId?; parentSessionId?; kind: 'chat'|'subagent'; model?; reasoning?; createdAt; updatedAt; archived; messageCount; contextTokens; meta? }
+interface SessionInfo { id; title; projectId?; parentSessionId?; kind: 'chat'|'subagent'; model?; reasoning?; createdAt; updatedAt; archived; messageCount; contextTokens;
+  meta?: { goal?: Goal; toolsOff?: string[] /* tools switched off for this chat */; budgetAllowedFrom?: string; agentId?; parentAgentId?; [k: string]: any } }
 interface ProjectInfo { id; name; path; createdAt; updatedAt; lastUsedAt? }
 interface ModelInfo { provider; id; ref /* "provider/id" */; displayName?; contextWindow?; maxOutputTokens?; concurrency?;
   inputModalities: string[]; reasoning?: { supported: boolean; efforts: string[]; default?: string }; status?; isLocal: boolean }
@@ -60,11 +61,17 @@ type AgentStatus = 'idle'|'queued'|'running'|'yielded'|'completed'|'failed'|'can
 interface AgentInfo { id; sessionId; name; parentAgentId?; parentSessionId?; isSubagent; depth; status: AgentStatus; model?; pool?;
   activity?; createdAt; startedAt?; finishedAt?; runs; turns; toolCalls; inputTokens; outputTokens; queuedMessages; task?; result?; error?; children: string[] }
 interface QueuedInput { id; text; mode: 'steer'|'queue'; source; createdAt }
-interface LanePoolInfo { key; provider?; capacity; busy; queued; models: string[]; owners: LaneOwner[]; waiters: LaneOwner[]; source; status? }
+interface LanePoolInfo { key; provider?; capacity; busy; queued; models: string[]; owners: LaneOwner[]; waiters: LaneOwner[]; source; status?;
+  configured: boolean /* a lane set up in settings (lanes.<id>) */; model?; use? /* the note on when to use it */;
+  priceInput?; priceOutput? /* $ per Mtok */; priceSource?: 'settings'|'catalog'|'local'|'unknown'; free: boolean; spentTodayUsd?; dailyLimitUsd? }
 interface LaneOwner { agentId; sessionId?; label?; since }
 interface UiTabInfo { id; title; panel: 'left'|'right'; icon?; module; export?; order; pluginId; version }
 interface SlashCommandInfo { name; description; rpc?; clientAction?; argsHint?; pluginId }
 interface PluginInfo { id; name; description?; version?; directory; state; error?; loadedAt?; loadCount; loadMs; order; enabled }
+// settings.schema: what the settings dialog renders as controls (the host's section first, then each plugin's)
+interface SettingsSection { id; title; group: 'General'|'Models'|'Agents'|'Context'|'Tools'; order; help?; settings: SettingInfo[] }
+interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'string'|'text'|'secret'|'choice'|'list'|'model'|'folder'|'file';
+  label; help?; default?; placeholder?; min?; max?; unit?; options?: string[]; applies?: 'restart'|'new sessions'|string }
 ```
 
 ## Core RPC methods (host)
@@ -95,6 +102,7 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `settings.get` | – | `{ path, settings: object }` |
 | `settings.set` | `{ path, value }` | `true` (dotted path; a null value removes the key) |
 | `settings.replace` | `{ settings: object }` | `true` |
+| `settings.schema` | – | `SettingsSection[]`: the settings the host and the loaded plugins declare, for the settings dialog |
 | `fs.dirs` | `{ path? }` | `{ path, parent, dirs: {name,path}[], roots: string[] }` (folder picker) |
 | `tools.list` | – | `{ name, label, description, category, readOnly, pluginId, active, disabled, priority }[]` |
 | `rpc.list` | – | `{ method, description, pluginId }[]` |
@@ -114,6 +122,8 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `agent.dequeue` | netpi.agent | `{ sessionId, id }` → `bool` |
 | `agents.list` | netpi.agent | `{ includeFinished? }` → `AgentInfo[]` |
 | `agent.get` | netpi.agent | `{ id? , sessionId? }` → `AgentInfo\|null` |
+| `agent.tools` | netpi.agent | `{ sessionId }` → `{ sessionId, started, contextTokens, off: string[], tools: { name, label, category, description, readOnly, pluginId, on }[] }`: the tools the session's agent can have, each with its switch |
+| `agent.setTools` | netpi.agent | `{ sessionId, off?: string[], on?: string[] }` → like `agent.tools`: switches tools off (or back on) for one session (`meta.toolsOff`); a started chat gets the change at its next model call, with a `tools` notice (the model re-reads the conversation once); subagents start with their parent's list |
 | `lanes.list` | netpi.lanes | → `LanePoolInfo[]` (also `configured`, `model`, `use`, `priceInput`/`priceOutput` ($ per Mtok), `priceSource`, `free`, `spentTodayUsd`, `dailyLimitUsd`) |
 | `usage.summary` | netpi.lanes | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] /* today */, budget: BudgetStatus, models: { lane, provider, model, calls, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unknownCost }[] /* this period */ }` |
 | `usage.session` | netpi.lanes | `{ sessionId }` → `{ sessionId, costUsd, calls, withSubagentsUsd, withSubagentsCalls }` |

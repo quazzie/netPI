@@ -2,8 +2,12 @@
 
 All settings live in `~/.netpi/settings.json` (Windows: `%USERPROFILE%\.netpi\settings.json`; override the folder
 with `NETPI_HOME`). The file is created with sensible defaults on first start, accepts `//` comments and trailing
-commas, and is watched: edits apply live (the ⚙ settings dialog in the app edits the same file). Keys are shown as
-dotted paths — `providers.aiproxy.baseUrl` means `{ "providers": { "aiproxy": { "baseUrl": … } } }`.
+commas, and is watched: edits apply live. Keys are shown as dotted paths — `providers.aiproxy.baseUrl` means
+`{ "providers": { "aiproxy": { "baseUrl": … } } }`.
+
+The ⚙ settings dialog edits the same file. Most settings are real controls there: the host and each plugin declare
+theirs (`settings.schema`, see `docs/PLUGINS.md`), and a control saves one key (`settings.set`; **Reset** removes the key
+so the default applies again). Lanes and the budget have their own page; the `settings.json` page edits the whole file.
 
 ## Core
 
@@ -16,7 +20,7 @@ dotted paths — `providers.aiproxy.baseUrl` means `{ "providers": { "aiproxy": 
 | `plugins.disabled` | `[]` | plugin ids not to load |
 | `plugins.enabled` | `[]` | turn on plugins whose `plugin.json` says `enabled: false` |
 | `plugins.dirs` | `[]` | extra plugin folders (besides `<app>/plugins` and `~/.netpi/plugins`) |
-| `tools.disabled` | `[]` | tool names hidden from agents (e.g. `["pwsh", "idea_remove"]`) |
+| `tools.disabled` | `[]` | tool names hidden from every chat (e.g. `["pwsh"]`); only in this file: the dialog switches whole plugins, and each chat switches its own tools (the composer's tools button, `meta.toolsOff`) |
 | `logging.level` | `Information` | host log level (`~/.netpi/logs/netpi-YYYYMMDD.log`) |
 | `database.sqlitePath` | – | explicit SQLite library (default: `winsqlite3.dll` on Windows, `libsqlite3` elsewhere; env `NETPI_SQLITE`) |
 

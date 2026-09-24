@@ -49,6 +49,14 @@ export function stamp(t) {
     : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/** Dollars: 50 → "$50", 12.4 → "$12.40", 0.675 → "$0.68", 0.0042 → "$0.0042", 0 → "$0". */
+export function usd(v) {
+  if (v == null || !Number.isFinite(v)) return '';
+  if (v === 0) return '$0';
+  if (v >= 1 && Math.abs(v - Math.round(v)) < 0.005) return `$${Math.round(v)}`;
+  return `$${v.toFixed(v >= 0.01 ? 2 : 4)}`;
+}
+
 /** 262144 → "262k", 1048576 → "1M", 1234 → "1.2k" */
 export function tokens(n) {
   if (n == null || !Number.isFinite(n)) return '';

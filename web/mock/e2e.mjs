@@ -624,6 +624,139 @@ log('projects dialog');
   await page.waitForTimeout(300);
 }
 
+// ------------------------------------------------------------------ settings as controls: fields, lanes, budget, tools
+log('settings: controls, lanes, budget, tools');
+{
+  await page.keyboard.press('Control+,');
+  await page.waitForSelector('.dialog');
+  await page.locator('.nav button', { hasText: 'Agents' }).click();
+  const turnsField = page.locator('.field', { hasText: 'Model calls per run' });
+  const turns = turnsField.locator('input');
+  check('an unset setting shows its default', (await turns.getAttribute('placeholder')) === '200');
+  await turns.fill('300');
+  await turns.press('Enter');
+  await page.waitForTimeout(300);
+  check('a changed field is saved (settings.set)', (await rpcCall('settings.get')).settings.agent?.maxTurns === 300);
+  await turnsField.locator('.reset').click();
+  await page.waitForTimeout(300);
+  check('Reset removes the setting again', (await rpcCall('settings.get')).settings.agent?.maxTurns === undefined);
+  await turns.fill('0');
+  await turns.press('Enter');
+  await page.waitForTimeout(200);
+  check('a number out of range is refused, not saved', (await turnsField.locator('.bad-msg').count()) === 1 && (await rpcCall('settings.get')).settings.agent?.maxTurns === undefined);
+
+  await page.locator('.nav button', { hasText: 'Lanes & budget' }).click();
+  await page.locator('.lanes .add select').selectOption('anthropic/claude-sonnet-4-6');
+  await page.locator('.lanes .add button').click();
+  await page.waitForSelector('.lane[data-lane="claude-sonnet-4-6"]', { timeout: 3000 }).catch(() => {});
+  const lane = page.locator('.lane[data-lane="claude-sonnet-4-6"]');
+  check('a lane is added for a model, with its price', (await lane.count()) === 1 && (await lane.locator('.facts').innerText()).includes('$3 / $15 per Mtok'));
+  await lane.locator('textarea.use').fill('Costs money: only for hard problems.');
+  await lane.locator('textarea.use').blur();
+  await page.waitForTimeout(300);
+  check('the lane note is saved', (await rpcCall('settings.get')).settings.lanes?.['claude-sonnet-4-6']?.use === 'Costs money: only for hard problems.');
+  const monthly = page.locator('.field', { hasText: 'Monthly budget' }).locator('input');
+  await monthly.fill('50');
+  await monthly.press('Enter');
+  await page.waitForTimeout(400);
+  check('the budget shows this month against the limit', (await page.locator('.dialog .budget').innerText()).includes('of $50'));
+  await shot(page, '40-settings-lanes');
+
+  await page.locator('.nav button', { hasText: 'Tools & plugins' }).click();
+  await page.waitForTimeout(300);
+  const shell = page.locator('.plugin[data-plugin="netpi.tools.shell"]');
+  check('each plugin lists the tools it brings', (await shell.count()) === 1 && (await shell.locator('.ptools').innerText()).includes('bash'));
+  check('no global switch per tool any more', (await page.getByRole('checkbox', { name: 'bash', exact: true }).count()) === 0);
+  await shot(page, '41-settings-plugins');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+}
+
+// ------------------------------------------------------------------ the tools of one chat
+log('chat tools: switched per session');
+{
+  await page.keyboard.press('Control+t');
+  await page.waitForTimeout(500);
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const btn = page.locator('button[aria-label="Tools for this chat"]');
+  await btn.click();
+  await page.waitForFunction(() => document.querySelector('.tools-pop .help')?.innerText.trim(), null, { timeout: 3000 }).catch(() => {});
+  check('a new chat: the menu says what switching off does', (await page.locator('.tools-pop .help').innerText()).includes('not sent to the agent'));
+  await page.locator('.tools-pop').getByRole('checkbox', { name: 'bash', exact: true }).uncheck();
+  await page.waitForTimeout(300);
+  check('a tool switched off is saved for this chat', ((await rpcCall('agent.tools', { sessionId: sid })).off ?? []).includes('bash'));
+  check('the button counts the tools that are off', (await btn.innerText()).includes('1 off'));
+  await shot(page, '42-chat-tools');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+
+  const ta = page.locator('.composer textarea');
+  await ta.fill('[fast] hello');
+  await ta.press('Enter');
+  await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 });
+  await btn.click();
+  await page.waitForFunction(() => document.querySelector('.tools-pop .help')?.innerText.includes('re-reads this chat'), null, { timeout: 3000 }).catch(() => {});
+  check('a started chat: the menu says a change re-reads the chat', (await page.locator('.tools-pop .help').innerText()).includes('re-reads this chat'), await page.locator('.tools-pop .help').innerText());
+  await page.locator('.tools-pop .foot button', { hasText: 'All on' }).click();
+  await page.waitForTimeout(300);
+  check('All on switches them back', ((await rpcCall('agent.tools', { sessionId: sid })).off ?? []).length === 0 && !(await btn.innerText()).includes('off'));
+  await page.keyboard.press('Escape');
+  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
+  await page.waitForTimeout(300);
+}
+
+// ------------------------------------------------------------------ what chats cost, the budget
+log('budget: chat cost, Work tab, a chat stopped by the budget');
+{
+  // the seeded chat that used a paid model (with a subagent) shows what it cost
+  await page.waitForSelector('.composer .cost', { timeout: 3000 }).catch(() => {});
+  const cost = page.locator('.composer .cost');
+  check('a chat shows what it cost, with its subagents', (await cost.count()) === 1 && (await cost.innerText()) === '$0.68', (await cost.count()) ? await cost.innerText() : 'none');
+  check('the cost tooltip splits the chat from its subagents', ((await cost.getAttribute('title')) ?? '').includes('with its subagents $0.68'));
+
+  // the Work tab: this month against the budget set above ($50)
+  await openStripTab('right', 'Work');
+  await page.waitForSelector('.work .usage.budget', { timeout: 5000 }).catch(() => {});
+  const wb = page.locator('.work .usage.budget');
+  check('the Work tab shows this month against the budget', (await wb.count()) === 1 && (await wb.innerText()).replace(/\u00a0/g, ' ').includes('$0.68 / $50'), (await wb.count()) ? await wb.innerText() : 'none');
+
+  // a chat the budget stopped (budget.onLimit "ask") offers to go over
+  await page.keyboard.press('Control+t');
+  await page.waitForTimeout(500);
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const ta = page.locator('.composer textarea');
+  await ta.fill('[budget] Summarize the repo with the paid model.');
+  await ta.press('Enter');
+  const go = page.locator('.notice button.link', { hasText: 'Let this chat go over' });
+  await go.waitFor({ timeout: 5000 }).catch(() => {});
+  check('a budget stop offers to let the chat go over', (await go.count()) === 1);
+  await shot(page, '43-budget-notice');
+  await go.click();
+  await page.locator('.dialog button', { hasText: /^Go over$/ }).click();
+  await page.waitForTimeout(500);
+  const allowed = (await rpcCall('sessions.get', { id: sid })).meta?.budgetAllowedFrom;
+  check('going over is recorded for the chat, and the offer goes', !!allowed && (await go.count()) === 0, String(allowed));
+  check('the chat is told to continue', (await page.locator('.notice', { hasText: 'go over the budget' }).count()) === 1);
+
+  // the top bar shows the budget once it needs attention, and opens its settings
+  const pill = page.locator('.budget-pill');
+  check('no budget pill below the warning level', (await pill.count()) === 0);
+  await rpcCall('settings.set', { path: 'budget.monthlyUsd', value: 0.5 });
+  await pill.waitFor({ timeout: 3000 }).catch(() => {});
+  check('a spent budget shows in the top bar', (await pill.count()) === 1 && ((await pill.getAttribute('class')) ?? '').includes('spent'));
+  await shot(page, '44-budget-pill');
+  await pill.click();
+  await page.waitForSelector('.dialog');
+  check('the pill opens the budget settings', (await page.locator('.nav button.active').innerText()).includes('Lanes & budget'));
+  await page.keyboard.press('Escape');
+  await rpcCall('settings.set', { path: 'budget.monthlyUsd', value: 50 });
+  await page.waitForTimeout(400);
+  check('under the warning level again, the pill goes', (await pill.count()) === 0);
+  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
+  await page.waitForTimeout(300);
+}
+
 // ------------------------------------------------------------------ settings + light theme
 log('settings');
 await page.keyboard.press('Control+,');

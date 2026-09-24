@@ -26,18 +26,28 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
   `~/.ssh/config` (tested live on `nuc` and `server`).
 - **Goals** (`plugins/NetPI.Goal`, `/goal`): the agent is started again after every run until it marks the goal
   complete; tested with a scripted model, not yet with a real one.
+- **Lanes, budget, settings** (built 2026-09-24, not yet deployed to the user's NetPI): a lane per model with slots, a
+  note on when to use it and a price (inferred, editable); agents pick one by id (`lanes_list`, `agent_spawn { lane }`).
+  Every model call is recorded with its cost against one monthly budget (paid calls stop or ask when it is spent).
+  The settings dialog renders the host's and every plugin's settings as controls; each chat switches its own tools.
 - **Chat UI:** the streamed answer is laid out as the finished one will be, so nothing jumps between steps; a Steps
   preference (expanded / fold when done / folded), chat width, zoom and spellcheck are in Settings.
 - **History:** the Windows bring-up, the first smoke tests and the prompt work are recorded in
   `docs/archive/2026-09-24-windows-bringup.md`; the agent tools and projects UI in `docs/archive/2026-09-24-agent-tools.md`;
   the SSH tools in `docs/archive/2026-09-24-ssh-tools.md`; goals and the steady chat in
-  `docs/archive/2026-09-24-goals.md`.
+  `docs/archive/2026-09-24-goals.md`; lanes, the budget and the settings dialog in
+  `docs/archive/2026-09-24-lanes-budget-settings.md`.
 
 ## Decisions and preferences to keep
 
 - **Everything is a runtime-reloadable plugin.** The host kernel stays small. Contracts in `src/NetPI.Abstractions` change additively only. Plugins never reference each other; they use services, RPC and events. See `docs/PLUGINS.md`.
 - **Never rewrite what was sent; only append.** A session's system prompt is frozen at its first model call and contains nothing session-dependent. State changes (project, working directory, AGENTS.md) are appended as notices by the plugin that owns them; the host stores data and publishes events but writes no model-facing text. Tools are sent sorted by name. The only exceptions are compaction and tool-call repair. See `docs/PLUGINS.md`, "Never rewrite what was sent".
 - **Tools stay live in running sessions.** A tool added or removed mid-session (plugin enabled, disabled or rebuilt) is sent from the next model call and announced with a "tools" notice; the backend re-reads the conversation once. The user prefers that to freezing the tool list per session (decided 2026-09-24).
+- **Tools are switched per chat; globally, whole plugins are.** The composer's tools button (`meta.toolsOff`); a change
+  in a started chat applies from the next model call with a notice, at the price of one re-read; subagents inherit it
+  (decided 2026-09-24).
+- **Lanes are models the user sets up, and one global budget guards the money.** Agents choose a lane by its note
+  and price; paid calls are recorded and stop (or ask) when the monthly budget is spent (decided 2026-09-24).
 - **The Responses transport is standard and stateless.** It sends `store:false` and the full input every call, and replays reasoning items (`reasoning` → `message` → `function_call`). No `previous_response_id` chaining.
 - **No workarounds that hide backend problems.** No retries or self-healing for backend failures.
   - Errors show up unchanged, with the server's `x-request-id` and response id.
@@ -60,9 +70,9 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Suggested next steps
 
-0. **Lanes you set up per model, and settings controls** (`docs/plans/lanes-and-settings.md`): a lane is a model
-   with a capacity, a note on when to use it and a budget (cost inferred); agents pick one by id from `lanes_list`;
-   real controls in the settings dialog. Simplified with the user; waiting for "go".
+0. **Deploy lanes, the budget and the settings dialog.** Close NetPI, `.\build.ps1`, restart. Then set up a lane for
+   the free stealth model and one for a paid model with a note, set a monthly budget, and watch a local agent pick
+   lanes (and a paid OpenRouter call's cost reach the ledger).
 1. **Goals with a real model.** Run a goal on `qwen3.8-27b` (a throwaway server or the user's NetPI): does it keep
    working, call `goal_update` complete only when done, stay within the no-progress rule? Then consider an
    independent check of "complete" (a verifier subagent) if it declares done too early.
@@ -71,8 +81,7 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
    it (signed `reasoning_details`, `cache_control`), not the native provider.
 3. **Per-turn cache reuse and TTFT** in the chat or the Work tab. Cached/prompt tokens are in each assistant message's
    `usage`; TTFT is not recorded yet (the agent runner could store the time to the first delta in the message meta).
-4. **OpenRouter follow-ups:** let the retry plugin honor `Retry-After` (an additive `ModelException` field), show the cost
-   stored in `meta.openrouter.cost`.
+4. **OpenRouter follow-up:** let the retry plugin honor `Retry-After` (an additive `ModelException` field).
 5. **Open items** in `docs/STATUS.md`, under "Known limitations / ideas".
 
 ## Working rules

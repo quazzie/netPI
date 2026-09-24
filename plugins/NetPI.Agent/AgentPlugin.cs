@@ -5,7 +5,8 @@ namespace NetPI.Agent;
 
 /// <summary>
 /// The agent runtime (<see cref="IAgentRuntime"/>) and its RPC methods: <c>agent.send</c>, <c>agent.abort</c>,
-/// <c>agent.queue</c>, <c>agent.dequeue</c>, <c>agents.list</c>, <c>agent.get</c>.
+/// <c>agent.queue</c>, <c>agent.dequeue</c>, <c>agents.list</c>, <c>agent.get</c>, and the per-session tool switches
+/// <c>agent.tools</c>, <c>agent.setTools</c>.
 /// <para>Settings: <c>agent.maxTurns</c> (200), <c>agent.defaultMaxOutputTokens</c> (16384), <c>agent.maxToolResultChars</c> (60000),
 /// <c>agent.parallelReadOnlyTools</c> (true), <c>agents.maxDepth</c> (3).</para>
 /// </summary>
@@ -18,6 +19,18 @@ public sealed class AgentPlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "agents", Title = "Agents", Group = "Agents", Order = 10,
+            Settings =
+            [
+                SettingInfo.Int("agent.maxTurns", "Model calls per run", 200, "A run stops after this many.", 1, 10000),
+                SettingInfo.Int("agents.maxDepth", "Subagent depth", 3, "How deep subagents may nest; the deepest get no orchestration tools.", 1, 10),
+                SettingInfo.Bool("agent.parallelReadOnlyTools", "Run read-only tools in parallel", true, "Several read-only calls of one turn at once."),
+                SettingInfo.Int("agent.maxToolResultChars", "Longest tool result", 60000, "Longer output is cut (its start and end are kept).", 1000, null, "chars"),
+                SettingInfo.Int("agent.defaultMaxOutputTokens", "Output limit for models without one", 16384, null, 256, null, "tokens"),
+            ],
+        });
         var runtime = new AgentRuntime(context);
         runtime.Initialize();
         _runtime = runtime;
@@ -66,6 +79,15 @@ public sealed class AgentPlugin : INetPiPlugin
             var info = id is not null ? runtime.Get(id) : sessionId is not null ? runtime.GetBySession(sessionId) : null;
             return Task.FromResult<object?>(info);
         }, "One agent: { id? , sessionId? } → AgentInfo | null");
+
+        context.Rpc.Register("agent.tools", (req, _) =>
+            Task.FromResult<object?>(SessionToolSwitches.Info(context, runtime, req.Required("sessionId"))),
+            "A session's tools with their switches: { sessionId } → { sessionId, started, contextTokens, off, tools: { name, label, category, description, readOnly, pluginId, on }[] }");
+
+        context.Rpc.Register("agent.setTools", (req, _) =>
+            Task.FromResult<object?>(SessionToolSwitches.Set(context, runtime, req.Required("sessionId"),
+                SessionToolSwitches.Names(req.Prop("off")), SessionToolSwitches.Names(req.Prop("on")))),
+            "Switch tools off or back on for one session, from its next model call: { sessionId, off?: string[], on?: string[] } → like agent.tools");
 
         context.Logger.LogInformation("Agent runtime started ({Count} recent agents)", runtime.List().Count);
         return Task.CompletedTask;

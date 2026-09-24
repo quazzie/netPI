@@ -105,6 +105,26 @@ internal sealed class AgentRuntime : IAgentRuntime
         catch { return []; }
     }
 
+    /// <summary>
+    /// The tools an agent is sent, sorted by name (tool definitions are part of the request prefix, and registry order
+    /// changes when a plugin reloads): the registry's tools, a subagent's allowlist, no orchestration tools at the maximum
+    /// depth, and not the tools switched off for the session (<see cref="SessionTools"/>) unless <paramref name="includeOff"/>.
+    /// </summary>
+    internal List<IAgentTool> ToolsFor(AgentInfo? agent, SessionInfo? session, bool includeOff = false)
+    {
+        var maxDepth = IntSetting("agents.maxDepth", 3);
+        var off = includeOff ? [] : SessionTools.Off(session);
+        List<IAgentTool> all;
+        try { all = [.. Ctx.Tools.All]; } catch { all = []; }
+        return all.Where(t =>
+        {
+            var d = t.Definition;
+            if (agent?.ToolAllowlist is { } allow && !allow.Contains(d.Name, StringComparer.OrdinalIgnoreCase)) return false;
+            if (agent is not null && agent.Depth >= maxDepth && d.Category == "agents" && d.Name != "agent_send") return false;
+            return !off.Contains(d.Name);
+        }).OrderBy(t => t.Definition.Name, StringComparer.Ordinal).ToList();
+    }
+
     // ---------------------------------------------------------------- registry
 
     internal AgentState? FindState(string? idOrSession)
@@ -681,8 +701,17 @@ internal sealed class AgentRuntime : IAgentRuntime
         if (parentInfo?.ToolAllowlist is { } parentAllow)
             allow = allow is null ? [.. parentAllow] : allow.Where(x => parentAllow.Contains(x, StringComparer.OrdinalIgnoreCase)).ToList();
 
-        var canMessage = allow is null || allow.Contains("agent_send", StringComparer.OrdinalIgnoreCase);
+        // the tools switched off for the parent's session stay off for its subagents
+        var off = SessionTools.Off(parentSession);
+        var canMessage = (allow is null || allow.Contains("agent_send", StringComparer.OrdinalIgnoreCase)) && !off.Contains("agent_send");
         var instructions = SubagentInstructions(id, name, parentInfo, request.Instructions, canMessage);
+        var meta = new JsonObject
+        {
+            ["agentId"] = id,
+            ["parentAgentId"] = parentInfo?.Id,
+            ["agentInstructions"] = instructions,
+        };
+        if (off.Count > 0) meta[SessionTools.MetaKey] = new JsonArray([.. off.Order(StringComparer.Ordinal).Select(n => (JsonNode?)n)]);
         var session = Ctx.Sessions.CreateSession(new SessionInfo
         {
             Title = name,
@@ -691,12 +720,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             ProjectId = request.ProjectId ?? parentSession?.ProjectId,
             Model = modelRef,
             Reasoning = reasoning,
-            Meta = new JsonObject
-            {
-                ["agentId"] = id,
-                ["parentAgentId"] = parentInfo?.Id,
-                ["agentInstructions"] = instructions,
-            },
+            Meta = meta,
         });
 
         var state = new AgentState(new AgentInfo

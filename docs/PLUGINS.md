@@ -46,6 +46,13 @@ public sealed class MyPlugin : INetPiPlugin
         // a tab in the right panel, a slash command
         ctx.Ui.AddTab(new UiTabInfo { Id = "hello", Title = "Hello", Panel = UiPanel.Right, Icon = "sparkle", Order = 50 });
         ctx.Ui.AddCommand(new SlashCommandInfo { Name = "hello", Description = "Say hello", Rpc = "my.hello" });
+
+        // its settings as controls in the settings dialog (on the page of its group; read them with ctx.Settings)
+        ctx.Services.Register(new SettingsSection
+        {
+            Id = "my.plugin", Title = "My plugin", Group = "Tools", Order = 100,
+            Settings = [SettingInfo.Int("my.maxWords", "Largest file", 100_000, "Longer files are refused.", 1, null, "words")],
+        });
         return Task.CompletedTask;
     }
 }
@@ -83,7 +90,8 @@ sealed class MySection : IPromptSection
 ```
 
 Register a tool with the same name as an existing one and a higher priority (`ctx.Tools.Register(tool, priority: 10)`)
-to **replace** a built-in tool; `tools.disabled` in the settings hides tools.
+to **replace** a built-in tool; `tools.disabled` in the settings hides tools from every chat, and a chat can switch off
+its own (`agent.setTools`, see `docs/TOOLS.md`).
 
 The context plugin only provides a bare base (who the agent is, the environment it runs in, how harness notices look).
 Guidance for a feature comes from the plugin that owns it, so it disappears with the plugin: tool tips as the tool's
@@ -108,8 +116,8 @@ Anthropic's prompt cache alike). So nothing that was sent is ever changed; new i
 - **Tools are sent sorted by name**, so a plugin reload does not reorder them. Every request carries the tools that are
   registered right now, so a tool from a plugin loaded mid-session is callable at the next model call. Its guidelines
   are not in the frozen prompt, so the context plugin appends a `tools` notice ("Your tools changed. New: …", with the
-  new tools' `PromptGuidelines`; removed tools are named too). Changing the tool set is the one change that re-prefills
-  once, because the definitions sit at the top of the request.
+  new tools' `PromptGuidelines`; removed tools are named too, and tools the user switched off for the chat as such).
+  Changing the tool set is the one change that re-prefills once, because the definitions sit at the top of the request.
 
 Exceptions by necessity: compaction replaces old messages with a summary when the context is nearly full, and tool-call
 repair turns a tool call the model wrote as text into a real call.
@@ -123,6 +131,7 @@ repair turns a tool call the model wrote as text into a real call.
 | `IModelMiddleware` | `ctx.Services.Register<IModelMiddleware>` | wrap every model call (retry, logging, budgets) |
 | `IAgentHook` | `ctx.Services.Register<IAgentHook>` | agent lifecycle: before/after model calls (compaction, nudge, tool repair), tool calls (permission gates), run start/end |
 | `IPromptSection` | `ctx.Services.Register<IPromptSection>` | system prompt sections |
+| `SettingsSection` | `ctx.Services.Register(new SettingsSection { … })` | the plugin's settings as controls in the settings dialog (`settings.schema`): `SettingInfo.Bool/Int/Number/Str/Text/Secret/Choice/List/ModelRef/Folder/FilePath`; `Group` picks the page (General, Models, Agents, Context, Tools); `Applies` says when a change takes effect (`"restart"`, `"new sessions"`) |
 | `ISystemPromptBuilder`, `ILaneScheduler`, `IAgentRuntime` | `ctx.Services.Register<…>(impl, priority)` | replace a core plugin's service |
 | RPC / events / HTTP | `ctx.Rpc`, `ctx.Events`, `ctx.Http` | UI and inter-plugin communication |
 | UI tabs / commands | `ctx.Ui` | left/right panel tabs, slash commands |
@@ -141,7 +150,8 @@ be anonymous objects, records or `JsonObject`s — but don't put your types insi
 A tab is an ES module in the plugin's `wwwroot` exporting `mount(el, ctx)` (see `docs/PROTOCOL.md` → "Plugin UI
 tabs" for the `ctx` API: `rpc`, `on`, `app.openSession`, `app.insertText`, …). Write it in Svelte next to the plugin
 (`plugins/MyPlugin/ui/main.js` + components, importing shared components from `@netpi/kit`) and run
-`npm run build:plugins` — it bundles `wwwroot/ui.js` and copies it into the running app, which reloads the tab.
+`npm run build:plugins` — it bundles `wwwroot/ui.js` and copies it into the running app, which reloads the tab
+(`node web/scripts/build-plugins.mjs --no-copy` leaves the running app alone).
 Plain JavaScript works too: just drop a `wwwroot/ui.js`. Style with the host CSS variables and the `np-*` classes
 (`web/src/styles/kit.css`). Details: `docs/UI.md`.
 

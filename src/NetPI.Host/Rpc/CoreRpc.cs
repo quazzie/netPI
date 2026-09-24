@@ -176,6 +176,15 @@ internal static class CoreRpc
             return true;
         });
 
+        Add("settings.schema", "The settings the dialog shows as controls → SettingsSection[] (host and plugins, by group and order)", _ =>
+        {
+            string[] groups = ["General", "Models", "Agents", "Context", "Tools"];
+            int Rank(string g) => Array.IndexOf(groups, g) is var i and >= 0 ? i : groups.Length;
+            return CoreSettings.Sections.Concat(k.Services.GetAll<SettingsSection>())
+                .OrderBy(s => Rank(s.Group)).ThenBy(s => s.Order).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        });
+
         // ------------------------------------------------------------ misc
         Add("fs.dirs", "Folder picker: { path? } → { path, parent, dirs: {name,path}[], roots }", req => ListDirectories(req.Str("path")));
 

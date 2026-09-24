@@ -13,6 +13,14 @@ public sealed class IdeasPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "ideas", Title = "Ideas", Group = "Tools", Order = 60,
+            Settings =
+            [
+                SettingInfo.Str("ideas.fileName", "Ideas file", "ideas.json", "In the project folder; ~/.netpi/ideas.json for sessions without a project."),
+            ],
+        });
         var store = context.Track(new IdeasStore(context.Events, context.Logger));
         var settings = context.Settings;
         var locator = new IdeasLocator(() => context.Sessions, context.Paths, () => settings);

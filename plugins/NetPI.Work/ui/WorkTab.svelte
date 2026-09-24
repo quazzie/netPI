@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { Section, Empty, IconButton, tokens } from '@netpi/kit';
+  import { Section, Empty, IconButton, tokens, usd } from '@netpi/kit';
   import LanePool from './LanePool.svelte';
   import AgentNode from './AgentNode.svelte';
   import RecentAgent from './RecentAgent.svelte';
@@ -109,7 +109,9 @@
         if (!visible) return void (dirty = true);
         processes = upsert(processes, d?.process);
       }),
+      // a turn's tokens, then the ledger's costs (coalesced into one refresh)
       ctx.on('usage.recorded', () => scheduleRefresh(400)),
+      ctx.on('usage.changed', () => scheduleRefresh(400)),
       ctx.on('models.changed', loadModels),
       ctx.on('session.created', (d) => setTitle(d?.session)),
       ctx.on('session.updated', (d) => setTitle(d?.session)),
@@ -170,7 +172,7 @@
     <span class="stats np-fit">
       <span class="stat" title="Active agents (running, queued or waiting)"><b>{active.length}</b> agents</span>
       <span class="stat" title="Busy lane slots{queuedSlots ? ` · ${queuedSlots} waiting for a slot` : ''}"
-        ><b>{busySlots}</b> slots{#if queuedSlots}<span class="warn"> +{queuedSlots}</span>{/if}</span
+        ><b>{busySlots}</b> slots{#if queuedSlots}<span class="warn">&nbsp;+{queuedSlots}</span>{/if}</span
       >
       <span class="stat" title="Running shell processes"><b>{running.length}</b> proc</span>
       <span class="stat" title="Input + output tokens today"><b>{tokens(todayTokens) || 0}</b> tok</span>
@@ -246,6 +248,25 @@
 
     <!-- ---------------------------------------------------------------- usage -->
     <Section title="Usage today" count={usage?.providers?.length || null} collapsible storageKey="work.usage">
+      {#if usage?.budget && (usage.budget.monthlyUsd || usage.budget.dailyUsd || usage.budget.spentUsd > 0)}
+        {@const b = usage.budget}
+        {@const frac = b.monthlyUsd ? Math.min(1, b.spentUsd / b.monthlyUsd) : null}
+        <div class="usage budget" title="Paid models since {b.periodStart}; the budget is set in Settings → Lanes & budget">
+          <div class="uline np-line">
+            <span class="uprov np-grow">This month</span>
+            <span class="np-mono" class:warn={b.warning && !b.exhausted} class:err={b.exhausted}
+              >{usd(b.spentUsd)}{#if b.monthlyUsd}<span class="np-dim">&nbsp;/ {usd(b.monthlyUsd)}</span>{/if}</span
+            >
+          </div>
+          <div class="umeta np-line">
+            <span class="np-grow">today {usd(b.todayUsd)}{#if b.dailyUsd}<span class="np-dim">&nbsp;/ {usd(b.dailyUsd)}</span>{/if}</span>
+            {#if b.exhausted}<span class="err">{b.onLimit === 'ask' ? 'spent · chats ask' : 'spent · paid calls stop'}</span>{/if}
+          </div>
+          {#if frac != null}
+            <div class="np-progress" style="--value: {frac}" data-tone={b.exhausted ? 'err' : b.warning ? 'warn' : undefined}></div>
+          {/if}
+        </div>
+      {/if}
       {#if !usage}
         <div class="na">Usage not available{errors.usage ? ` — ${errors.usage}` : ''}</div>
       {:else if !usage.providers?.length}

@@ -23,6 +23,14 @@ public sealed class FilesPlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "files", Title = "Files", Group = "Tools", Order = 10,
+            Settings =
+            [
+                SettingInfo.Choice("files.newFileEol", "Line endings of new files", "lf", ["lf", "crlf", "auto"], "Existing files keep theirs; auto = CRLF on Windows."),
+            ],
+        });
         foreach (var tool in CreateTools(context.Settings))
             context.Tools.Register(tool);
 

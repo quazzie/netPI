@@ -11,7 +11,7 @@
   import { modals } from '../../lib/state/ui.svelte.js';
 </script>
 
-{#if modals.settings}<SettingsModal onclose={() => (modals.settings = false)} />{/if}
+{#if modals.settings}<SettingsModal page={typeof modals.settings === 'string' ? modals.settings : 'general'} onclose={() => (modals.settings = false)} />{/if}
 {#if modals.help}<HelpModal onclose={() => (modals.help = false)} />{/if}
 {#if modals.palette}<CommandPalette onclose={() => (modals.palette = false)} />{/if}
 {#if modals.projectPicker}<ProjectPicker data={modals.projectPicker} onclose={() => (modals.projectPicker = null)} />{/if}

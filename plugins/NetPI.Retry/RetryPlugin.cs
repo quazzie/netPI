@@ -12,6 +12,20 @@ public sealed class RetryPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "retry", Title = "Retries", Group = "Models", Order = 60,
+            Settings =
+            [
+                SettingInfo.Bool("retry.enabled", "Retry lost connections and stalled streams", true),
+                SettingInfo.Int("retry.maxAttempts", "Attempts", 6, null, 1, 20),
+                SettingInfo.Int("retry.firstEventTimeoutSeconds", "Wait for the first token", 600, "A slow prefill of a long context can take minutes.", 10, 3600, "s"),
+                SettingInfo.Int("retry.stallTimeoutSeconds", "Silence between tokens", 180, null, 10, 3600, "s"),
+                SettingInfo.Int("retry.maxTotalSeconds", "Give up after", 300, null, 10, 7200, "s"),
+                SettingInfo.Int("retry.baseDelayMs", "First delay", 1000, "Exponential backoff with jitter.", 100, 60000, "ms"),
+                SettingInfo.Int("retry.maxDelayMs", "Longest delay", 30000, null, 100, 600000, "ms"),
+            ],
+        });
         var settings = context.Settings;
         context.Services.Register<IModelMiddleware>(new RetryMiddleware(() => RetryOptions.From(settings), context.Logger));
         return Task.CompletedTask;

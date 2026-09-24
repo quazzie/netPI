@@ -22,6 +22,17 @@ public sealed class ShellPlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "shell", Title = "Shell", Group = "Tools", Order = 20,
+            Settings =
+            [
+                SettingInfo.Int("shell.timeoutSeconds", "Default timeout", 120, null, 1, 1800, "s"),
+                SettingInfo.FilePath("shell.bashPath", "bash", "Git Bash on Windows, never WSL.", "Git Bash (found automatically)"),
+                SettingInfo.FilePath("shell.pwshPath", "PowerShell", null, "pwsh (found automatically)"),
+                SettingInfo.Bool("shell.pwshAlways", "Offer pwsh even when none was found", false),
+            ],
+        });
         _registry = new ProcessRegistry(context.Events);
         var service = new ShellService(_registry, context.Settings);
         _ = Task.Run(service.CleanupTempFiles, CancellationToken.None);

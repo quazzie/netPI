@@ -3,6 +3,8 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import ModelPicker from './ModelPicker.svelte';
   import EffortPicker from './EffortPicker.svelte';
+  import ToolsPicker from './ToolsPicker.svelte';
+  import ChatCost from './ChatCost.svelte';
   import ContextRing from './ContextRing.svelte';
   import QueueChips from './QueueChips.svelte';
   import TodoStrip from './TodoStrip.svelte';
@@ -414,12 +416,14 @@
         <span class="sep"></span>
         <ModelPicker {session} bind:open={modelOpen} />
         <EffortPicker {session} {model} bind:open={effortOpen} />
+        <ToolsPicker {session} />
         <span class="spacer"></span>
         {#if running}
           <span class="keys np-dim"
             ><span class="np-kbd">{sendKeys}</span> steer <span class="np-kbd">Alt+Enter</span> queue <span class="np-kbd">Esc</span> stop</span
           >
         {/if}
+        <ChatCost sessionId={session.id} />
         {#if used || win}<ContextRing {used} window={win} />{/if}
         {#if running && !canSend}
           <button class="send stop" title="Stop (Esc)" aria-label="Stop" onclick={() => abortAgent(session.id)}>

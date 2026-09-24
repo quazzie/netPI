@@ -11,6 +11,14 @@ public sealed class ToolRepairPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "toolRepair", Title = "Tool repair", Group = "Agents", Order = 40,
+            Settings =
+            [
+                SettingInfo.Bool("toolRepair.enabled", "Run tool calls written as text", true, "e.g. <tool_call>… in an answer instead of a real call."),
+            ],
+        });
         var settings = context.Settings;
         context.Services.Register<IAgentHook>(new ToolRepairHook(() => settings, context.Logger));
         return Task.CompletedTask;

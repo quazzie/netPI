@@ -15,6 +15,23 @@ public sealed class WebPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "web", Title = "Web", Group = "Tools", Order = 30,
+            Settings =
+            [
+                SettingInfo.Choice("web.search.provider", "Search with", "auto", ["auto", "searxng", "brave"], "auto: SearXNG when a URL is set, falling back to Brave."),
+                SettingInfo.Str("web.search.searxngUrl", "SearXNG URL", null, "The instance must allow format=json.", "e.g. http://192.168.1.3:8888"),
+                SettingInfo.Secret("web.search.braveApiKey", "Brave Search API key", "env:NAME reads an environment variable.", "env BRAVE_API_KEY"),
+                SettingInfo.Int("web.search.count", "Results per search", 8, null, 1, 20),
+                SettingInfo.Int("web.fetch.maxChars", "Characters per page part", 20000, "Longer pages continue with offset.", 1000, 200000),
+                SettingInfo.Int("web.fetch.timeoutSeconds", "Fetch timeout", 30, null, 1, 600, "s"),
+                SettingInfo.Int("web.fetch.maxBytes", "Download limit", 5000000, null, 10000, null, "bytes"),
+                SettingInfo.FilePath("web.browserPath", "Browser for screenshots", null, "Edge or Chrome (found automatically)"),
+                SettingInfo.Str("web.userAgent", "User agent", null, null, "Chrome-like, ending in NetPI/0.1"),
+                SettingInfo.Str("web.search.braveUrl", "Brave API URL", "https://api.search.brave.com/res/v1/web/search"),
+            ],
+        });
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         var http = context.Track(WebHttp.Create());
         var cache = new FetchCache();

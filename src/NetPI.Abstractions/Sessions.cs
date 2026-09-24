@@ -34,6 +34,25 @@ public sealed class SessionInfo
     public JsonObject? Meta { get; set; }
 }
 
+/// <summary>
+/// Tools switched off for one session: <c>meta.toolsOff</c> lists tool names its agent is not sent (the <c>agent.setTools</c>
+/// RPC; a subagent session starts with its parent's list). A change after the first model call applies from the next call.
+/// </summary>
+public static class SessionTools
+{
+    public const string MetaKey = "toolsOff";
+
+    /// <summary>The tool names switched off for the session (case-insensitive); empty when none.</summary>
+    public static HashSet<string> Off(SessionInfo? session)
+    {
+        var off = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (session?.Meta?[MetaKey] is JsonArray names)
+            foreach (var n in names)
+                if (n is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s)) off.Add(s.Trim());
+        return off;
+    }
+}
+
 public sealed class SessionQuery
 {
     public string? ProjectId { get; set; }

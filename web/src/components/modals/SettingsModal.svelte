@@ -1,13 +1,49 @@
 <script>
+  import { untrack } from 'svelte';
   import Modal from './Modal.svelte';
   import Icon from '../../lib/kit/Icon.svelte';
+  import SettingField from './SettingField.svelte';
+  import LanesEditor from './LanesEditor.svelte';
+  import BudgetView from './BudgetView.svelte';
+  import PluginSwitches from './PluginSwitches.svelte';
   import { prefs, savePrefs, toast } from '../../lib/state/ui.svelte.js';
   import { app } from '../../lib/state/app.svelte.js';
   import { rpc, conn } from '../../lib/rpc.svelte.js';
+  import { bus } from '../../lib/bus.js';
+  import { pagesOf } from '../../lib/settings.js';
 
-  let { onclose } = $props();
+  /** page: the page to open on (a page id such as 'lanes'; modals.settings may hold one). */
+  let { onclose, page: startPage = 'general' } = $props();
 
-  let section = $state('general');
+  let section = $state(untrack(() => startPage));
+
+  // host settings as controls: the schema (host + plugins), the document, the lanes as the scheduler sees them
+  let schema = $state([]);
+  let doc = $state({});
+  let lanesInfo = $state([]);
+  const layout = $derived(pagesOf(schema));
+  const page = $derived(layout.pages.find((p) => p.id === section) ?? null);
+  async function loadDoc() {
+    try {
+      doc = (await rpc('settings.get'))?.settings ?? {};
+    } catch {}
+  }
+  async function loadLanes() {
+    try {
+      lanesInfo = (await rpc('lanes.list')) ?? [];
+    } catch {
+      lanesInfo = [];
+    }
+  }
+  $effect(() => {
+    rpc('settings.schema')
+      .then((s) => (schema = s ?? []))
+      .catch(() => (schema = []));
+    loadDoc();
+    loadLanes();
+    const offs = [bus.on('lanes.changed', (d) => (lanesInfo = d?.pools ?? lanesInfo)), bus.on('plugins.changed', () => rpc('settings.schema').then((s) => (schema = s ?? [])))];
+    return () => offs.forEach((off) => off());
+  });
   let raw = $state('');
   let original = $state('');
   let path = $state('');
@@ -107,18 +143,56 @@
     const v = app.settingsVersion;
     if (v === seenVersion) return;
     seenVersion = v;
+    loadDoc();
     if (original && raw === original && !saving && !loading) load();
   });
 </script>
 
-<Modal title="Settings" width={760} padded={false} {onclose}>
+{#snippet sectionBlock(s)}
+  <section class="sec" data-section={s.id}>
+    <div class="sec-title">{s.title}</div>
+    {#if s.help}<div class="sec-help np-dim">{s.help}</div>{/if}
+    {#each s.settings as st (st.key)}<SettingField setting={st} {doc} />{/each}
+  </section>
+{/snippet}
+
+<Modal title="Settings" width={800} padded={false} {onclose}>
   <div class="layout">
     <nav class="nav">
       <button class:active={section === 'general'} onclick={() => (section = 'general')}><Icon name="sliders" size={14} /> General</button>
+      {#each layout.pages.filter((p) => p.sections.length || p.id === 'lanes' || p.id === 'Tools') as p (p.id)}
+        <button class:active={section === p.id} onclick={() => (section = p.id)}><Icon name={p.icon} size={14} /> {p.title}</button>
+      {/each}
+      <div class="nav-gap"></div>
       <button class:active={section === 'json'} onclick={() => (section = 'json')}><Icon name="file-text" size={14} /> settings.json</button>
       <button class:active={section === 'about'} onclick={() => (section = 'about')}><Icon name="info" size={14} /> About</button>
     </nav>
     <div class="content">
+      {#if page}
+        {#if page.id === 'lanes'}
+          <section class="sec">
+            <div class="sec-title">Your lanes</div>
+            <div class="sec-help np-dim">
+              A lane is a model agents may use, with parallel slots and a note on when to use it. Agents see the lanes, their
+              price and the budget in lanes_list and pick one for each subagent.
+            </div>
+            <LanesEditor {doc} lanes={lanesInfo} />
+          </section>
+          {#each page.sections.filter((s) => s.id === 'budget') as s (s.id)}
+            <section class="sec" data-section="budget">
+              <div class="sec-title">Budget</div>
+              <BudgetView />
+              {#each s.settings as st (st.key)}<SettingField setting={st} {doc} />{/each}
+            </section>
+          {/each}
+          {#each page.sections.filter((s) => s.id !== 'budget') as s (s.id)}{@render sectionBlock(s)}{/each}
+        {:else if page.id === 'Tools'}
+          <section class="sec"><PluginSwitches {doc} /></section>
+          {#each page.sections as s (s.id)}{@render sectionBlock(s)}{/each}
+        {:else}
+          {#each page.sections as s (s.id)}{@render sectionBlock(s)}{/each}
+        {/if}
+      {/if}
       {#if section === 'general'}
         <div class="group">
           <div class="row">
@@ -182,6 +256,7 @@
             <input type="checkbox" checked={prefs.spellcheck} onchange={(e) => setPref('spellcheck', e.currentTarget.checked)} />
           </label>
         </div>
+        {#each layout.general as s (s.id)}{@render sectionBlock(s)}{/each}
       {:else if section === 'json'}
         <div class="json">
           <div class="json-head">
@@ -266,6 +341,25 @@
     flex-direction: column;
     padding: 16px 18px;
     overflow: auto;
+  }
+  .nav-gap {
+    flex: 1;
+    min-height: 12px;
+  }
+  .sec {
+    margin-bottom: 22px;
+  }
+  .sec:first-child .sec-title {
+    margin-top: 0;
+  }
+  .sec-title {
+    margin: 10px 0 2px;
+    font-size: 13.5px;
+    font-weight: 600;
+  }
+  .sec-help {
+    margin-bottom: 6px;
+    font-size: var(--fs-sm);
   }
   .group {
     display: flex;

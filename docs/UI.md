@@ -68,14 +68,15 @@ web/
       state/tabs.svelte.js     side-panel tab registry (core + plugin tabs)
       kit/                     @netpi/kit: Svelte components shared with plugin tabs
     components/
-      TopBar.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
+      TopBar.svelte  BudgetPill.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
       panels/  SidePanel, PluginTabHost, SessionsTab, ProjectsTab
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
                ToolRow, NoticeRow, StatusRow, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
-      composer/ Composer, ModelPicker, EffortPicker, ContextRing, QueueChips, GoalStrip, TodoStrip
+      composer/ Composer, ModelPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing, QueueChips, GoalStrip, TodoStrip
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
-               Projects (the projects dialog), Lightbox
+               Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
+               SettingInfo), LanesEditor, BudgetView, PluginSwitches
   mock/
     server.mjs  store.mjs  agent.mjs  content.mjs    mock host (HTTP + WS + scripted agent)
     work.mjs  ideas.mjs  diag.mjs                     mock lanes/processes/usage, ideas backlog, plugin manager
@@ -252,11 +253,32 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 - The model picker groups models by provider and shows each one's status dot, context window and concurrency;
   choosing one calls `sessions.update { model }`. The effort picker offers "default" plus
   `model.reasoning.efforts` and calls `sessions.update { reasoning }`; `''` means the model default.
+- The tools button (a wrench; "N off" when tools are switched off) lists the chat's tools by category with a switch each
+  (`agent.tools`, `agent.setTools`): free before the first message; in a started chat it says that the next model call
+  re-reads the chat (with its size). **All on** undoes every switch.
+- What the chat cost on paid models (`usage.session`, with its subagents) shows next to the context ring once it is more
+  than nothing, refreshed on `usage.changed`; the tooltip splits the chat from its subagents.
 - The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`.
 - Queued inputs (`agent.queue`) appear as chips; the × on a chip calls `agent.dequeue`. `agent.notice` shows
   as a transient banner, which clears when the model streams again or the run ends.
 
 ### Settings dialog
+
+The pages: **General**, **Lanes & budget**, **Models**, **Agents**, **Context**, **Tools & plugins**, then
+**settings.json** and **About**. Host settings are controls rendered from `settings.schema` (the host's and each
+plugin's `SettingsSection`, placed on the page of its group; a plugin's section comes and goes with the plugin).
+`SettingField` renders one control per type (switch, number with unit and range, text, secret with an eye, choice,
+list, model, folder, file); a change saves that key alone (`settings.set`, on change or blur), **Reset** removes it so
+the default applies again (shown as the placeholder), a bad value is refused in place, and a badge says when a change
+applies (`restart`, `new sessions`).
+
+- **Lanes & budget:** `LanesEditor` has one card per lane (`lanes.<id>`: the model, slots, the note on when to use
+  it, price overrides and a daily cap; the price, context, local/cloud and today's spend come from `lanes.list`); "Add a
+  lane for a model…" starts one (the id is a slug of the model). `BudgetView` shows this period against the monthly
+  and daily budgets and what each model cost (`usage.summary`), above the budget settings.
+- **Tools & plugins:** `PluginSwitches` lists every plugin with a switch (`plugins.setEnabled`, confirmed) and the
+  tools it brings, and the names in `tools.disabled` when there are any (× shows one again). Single tools are switched
+  per chat (the composer's tools button).
 
 **General** holds the UI preferences (`prefs` in `lib/state/ui.svelte.js`, kept in localStorage and the host's
 `ui.state`): theme, send key, Steps (expanded / fold when done / folded), expand thinking, chat width (normal 900px,
@@ -359,10 +381,10 @@ open or closed state of each section is remembered (`storageKey`).
   300 lines) and appends live `process.output` chunks. It falls back to polling every 2s when no chunk has
   arrived for 3s, and fetches once more on `process.exited`. The kill button is a two-step `ConfirmButton`
   that calls `processes.kill`.
-- **Usage today:** `usage.summary` per provider (input ↑, output ↓, cache read), plus a budget bar when
-  `budgetTokens` is set.
+- **Usage today:** this month's spend on paid models against the budget (`usage.summary.budget`: a bar, today's spend,
+  "spent" when it is), then per provider input ↑, output ↓, cache read, plus a token budget bar when `budgetTokens` is set.
 - Updates: `agent.status`, `lanes.changed` and `process.started/exited` are applied in place, and a debounced
-  `work.snapshot` (250ms; 400ms after `usage.recorded`) reconciles them. A 30s timer refreshes the snapshot
+  `work.snapshot` (250ms; 400ms after `usage.recorded` and `usage.changed`) reconciles them. A 30s timer refreshes the snapshot
   while the tab is visible; while it is hidden, events only mark it dirty and it refreshes on show.
 
 **Ideas** (`netpi.ideas`, right). Shows the backlog of the active session's project (or the global file) with
@@ -501,7 +523,7 @@ Import from `@netpi/kit`. The build aliases it to `web/src/lib/kit/index.js`, an
 | `Icon` | `name` (host icon set) or an inline `<svg>` string, `size`, `stroke` |
 | `Spinner` | `size` |
 
-The kit also exports the helpers `timeAgo`, `duration`, `tokens`, `bytes`, `relPath`, `basename`, `truncate`,
+The kit also exports the helpers `timeAgo`, `duration`, `tokens`, `usd`, `bytes`, `relPath`, `basename`, `truncate`,
 `stamp`, `renderMarkdown` and `host`, plus:
 
 - `confirm({ title, message, confirmLabel, danger })`: the host's confirm dialog (a `Promise<boolean>`), or
@@ -568,7 +590,11 @@ names or an inline `<svg …>` string.
   `activity · elapsed`, computed from `startedAt`.
 - `message.added` for a **steering** input has `meta.kind: 'steer'` (and `'queued'` for a queued follow-up),
   so the UI can tag the input and keep the run's steps grouped. `meta.agentName` and `meta.sessionId` on
-  `agent-result` and `agent-message` notices enable the "open" link.
+  `agent-result` and `agent-message` notices enable the "open" link. A `budget` notice with `meta.canOverride` (the
+  budget stopped a paid call and `budget.onLimit` is `ask`) offers "Let this chat go over" while it is the chat's
+  latest budget notice; after a confirm it calls `budget.allow`. The top bar shows the budget (`BudgetPill`:
+  `budget.status`, then `usage.changed`) only once it needs attention, amber from `budget.warnPercent`, red when spent;
+  a click opens Settings on Lanes & budget (`modals.settings = 'lanes'`).
 - Assistant messages that stop with `stopReason: 'error'` may carry `meta.error`, which is shown in the error
   row.
 - `agent_*` tool results carry `details.sessionId` (and `name`, `status`) for the subagent link, or

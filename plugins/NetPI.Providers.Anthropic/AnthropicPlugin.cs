@@ -20,6 +20,21 @@ public sealed class AnthropicPlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "anthropic", Title = "Anthropic", Group = "Models", Order = 50,
+            Settings =
+            [
+                SettingInfo.Secret("providers.anthropic.apiKey", "API key", "env:NAME reads another environment variable.", "env ANTHROPIC_API_KEY"),
+                SettingInfo.Choice("providers.anthropic.thinking", "Thinking", "budget", ["budget", "adaptive", "off"], "budget: budget_tokens from the effort; adaptive: the model decides."),
+                SettingInfo.Bool("providers.anthropic.adaptiveEffort", "Send the effort with adaptive thinking", true),
+                SettingInfo.Bool("providers.anthropic.promptCaching", "Prompt caching", true),
+                SettingInfo.Int("providers.anthropic.defaultMaxOutputTokens", "Output limit", 32000, null, 256, null, "tokens"),
+                SettingInfo.List("providers.anthropic.betas", "anthropic-beta headers", []),
+                SettingInfo.Str("providers.anthropic.baseUrl", "Server URL", "https://api.anthropic.com"),
+                SettingInfo.Int("providers.anthropic.modelsCacheSeconds", "Model list cache", 600, null, 0, 86400, "s"),
+            ],
+        });
         _http = HttpFactory.Create();
         Provider = new AnthropicProvider(_http, () => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger, context.Events);
         context.Services.Register<IModelProvider>(Provider);

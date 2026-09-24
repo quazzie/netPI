@@ -20,6 +20,23 @@ public sealed class OpenRouterPlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "openrouter", Title = "OpenRouter", Group = "Models", Order = 40,
+            Settings =
+            [
+                SettingInfo.Secret("providers.openrouter.apiKey", "API key", "env:NAME reads another environment variable.", "env OPENROUTER_API_KEY"),
+                SettingInfo.List("providers.openrouter.include", "Models to offer", null, "Model ids or globs, e.g. stealth/*, anthropic/claude-*, *:free.", "all models with tool calls"),
+                SettingInfo.Int("providers.openrouter.maxOutputTokens", "Output limit", 32768, "Reasoning counts against it.", 256, null, "tokens"),
+                SettingInfo.Bool("providers.openrouter.promptCaching", "Prompt caching for anthropic/* models", true),
+                SettingInfo.Bool("providers.openrouter.replayReasoning", "Send reasoning_details back", true),
+                SettingInfo.Bool("providers.openrouter.parseThinkTags", "Split <think> tags into thinking", true),
+                SettingInfo.Bool("providers.openrouter.dumpFailedRequests", "Save failed requests", true),
+                SettingInfo.Str("providers.openrouter.baseUrl", "Server URL", "https://openrouter.ai/api"),
+                SettingInfo.Int("providers.openrouter.modelsCacheSeconds", "Model list cache", 600, null, 0, 86400, "s"),
+                SettingInfo.Bool("providers.openrouter.enabled", "Enabled", true),
+            ],
+        });
         _http = HttpFactory.Create();
         Provider = new OpenRouterProvider(_http, () => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger, context.Events, context.Paths.LogsDir);
         context.Services.Register<IModelProvider>(Provider);

@@ -10,6 +10,7 @@
 //   node web/scripts/build-plugins.mjs web/mock/sample-plugin   … plus extra plugin dirs
 //   node web/scripts/build-plugins.mjs --only <dir>…       only the given dirs
 //   node web/scripts/build-plugins.mjs --watch             rebuild on change
+//   node web/scripts/build-plugins.mjs --no-copy           leave artifacts/app alone (a running NetPI)
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +22,7 @@ const kit = path.join(repo, 'web/src/lib/kit/index.js');
 const argv = process.argv.slice(2);
 const watch = argv.includes('--watch');
 const only = argv.includes('--only');
+const noCopy = argv.includes('--no-copy');
 const extra = argv.filter((a) => !a.startsWith('--')).map((d) => path.resolve(d));
 
 function findEntry(dir) {
@@ -57,7 +59,7 @@ function copyToArtifacts(dir) {
       const src = path.join(dir, 'wwwroot/ui.js');
       const size = fs.existsSync(src) ? fs.statSync(src).size : 0;
       let note = '';
-      if (fs.existsSync(target)) {
+      if (!noCopy && fs.existsSync(target)) {
         fs.mkdirSync(path.join(target, 'wwwroot'), { recursive: true });
         fs.copyFileSync(src, path.join(target, 'wwwroot/ui.js'));
         note = ` → ${path.relative(repo, path.join(target, 'wwwroot/ui.js'))}`;

@@ -11,9 +11,14 @@ headless for any browser.
 
 - **Sessions first, projects switchable.** A session is the unit of work; a project is just a name + folder. Switch
   the project mid-session and the agent gets a short notice with its new working directory. Open sessions are tabs.
-- **Lanes.** Every model belongs to a pool with N lanes (your local `qwen3.8-27b` via AiProxy reports
-  `concurrency: 2` → 2 lanes; Claude gets its own pool). Agents hold a lane per run and queue when the pool is full.
-  An orchestrator that waits for its workers **yields** its lane to them and resumes with only their final reports.
+- **Lanes.** A lane is a model you set up for agents, with parallel slots and a note on when to use it ("free: research
+  and reading code", "costs money: only for hard problems"); agents pick one by its note and price for each subagent.
+  Every other model gets an automatic lane (your local `qwen3.8-27b` via AiProxy reports `concurrency: 2` → 2 slots).
+  Agents hold a slot per run and queue when the lane is full; an orchestrator that waits for its workers **yields** its
+  slot to them and resumes with only their final reports.
+- **A budget for paid models.** Every model call is recorded with its cost (OpenRouter reports it; otherwise tokens ×
+  price). Set a monthly budget: agents see it, each chat shows what it cost, and when it is spent paid calls stop, or
+  ask you first.
 - **Agents manage agents.** `agent_spawn`, `agent_wait`, `agent_send`, `agent_list`, `agent_result`, `agent_cancel`
   (plus `lanes_list` from the lanes plugin); subagents get their own (viewable, steerable) sessions and report back
   automatically.
@@ -26,8 +31,8 @@ headless for any browser.
   processes; `web_fetch` (pages as Markdown), `web_search` (SearXNG or Brave), `screenshot` (headless Edge/Chrome,
   or the NetPI window), `todo_write` (a checklist shown above the composer), `show_image` (the agent shows you an
   image) and `ssh_*` (scripts and files on the hosts in `~/.ssh/config`, sent through stdin, so nothing needs
-  quoting). Replace any tool by registering one with the same name. File links in the chat open with the operating
-  system.
+  quoting). Replace any tool by registering one with the same name. Each chat can switch tools off (the tools button
+  next to the model). File links in the chat open with the operating system.
 - **Providers:** AiProxy / any OpenAI-compatible server (Responses API by default, Chat Completions per model),
   Anthropic Claude (thinking, prompt caching) and OpenRouter (hundreds of hosted models, unified reasoning with replayed
   `reasoning_details`).
@@ -74,8 +79,9 @@ Headless: `artifacts\app\netpi-server.exe --open` (prints and opens a tokenized 
 | *Ctrl+T*, *Ctrl+W*, *Ctrl+Tab*, *Ctrl+1…9* | new, close, cycle, pick session tabs |
 | *Ctrl+B* / *Ctrl+Alt+B* | toggle left / right panel · *Ctrl+K* command palette |
 
-The model and reasoning-effort pickers and the context meter sit in the composer. The **Work** tab shows lanes
-(busy/capacity, queues), agents (active and recent) and processes (with live output and kill); **Diagnostics** shows
+The model, reasoning-effort and tools pickers, the chat's cost and the context meter sit in the composer. Settings
+(*Ctrl+,*) has real controls for the host's and every plugin's settings, lanes and the budget. The **Work** tab shows
+lanes (busy/capacity, queues), agents (active and recent), processes (with live output and kill) and this month's spend; **Diagnostics** shows
 plugins (reload/enable/disable), tools, RPC methods, the live event bus, logs and the exact system prompt.
 
 ## Architecture
@@ -83,7 +89,7 @@ plugins (reload/enable/disable), tools, RPC methods, the live event bus, logs an
 ```
 NetPI.exe (WinForms + WebView2) ─┐          ┌─ plugins/ (collectible load contexts, hot reload)
 netpi-server (headless) ─────────┴─ NetPI.Host ─┤   NetPI.Agent        agent loop, steering/queue, subagents, yield
-   Kestrel 127.0.0.1 + WebSocket (token auth)   │   NetPI.Lanes        lane pools, queueing, usage/budgets
+   Kestrel 127.0.0.1 + WebSocket (token auth)   │   NetPI.Lanes        lanes, queueing, the cost ledger, the budget
    plugin manager · event bus · service/RPC/    │   NetPI.Context      system prompt (frozen per session), project notices
    tool/UI registries · SQLite · settings ·     │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md, announced as notices
    session store · model catalog                │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic, OpenRouter

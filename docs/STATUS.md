@@ -2,9 +2,10 @@
 
 ## Verified on Windows
 - The desktop shell builds and runs; Git Bash, pwsh, winsqlite3 and window placement work.
-- `.\build.ps1 -Test` (Release): Providers 41, Tools 54, Agent 71, Aux 96, Host 38, all passing.
+- Unit suites (Debug, built into a scratch app folder while NetPI ran): Providers 41 (330 checks), Tools 54, Agent 79,
+  Aux 97, Host 38, all passing.
 - E2E suite: 55 tests / 703 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
-  (`npm run e2e`) 126/126.
+  (`npm run e2e`) 150/150.
 - Plugins hot-reload while NetPI runs (they load from shadow copies); only the host DLLs are locked. `build.ps1` then
   builds everything except the host, and a rebuild after a commit no longer reloads unchanged plugins.
 - Real model (AiProxy → nInfer `qwen3.8-27b`, 2 lanes): two concurrent agents, one spawning a subagent, the other
@@ -26,10 +27,18 @@
 - Goals, with the real runner and a scripted model (Agent suite): the loop until `goal_update` complete, and the
   pauses on stop, failure (also before the first model call), no progress, `goal.maxContinuations` and the token
   budget; notices after edits, resumes and compaction. The UI mock covers `/goal`, the strip, pause and resume.
+- Lanes, the budget and the settings dialog, with the real runner and a scripted model (Agent, Host and E2E suites)
+  and the UI mock: every model call recorded with its cost, the monthly, daily and per-lane stops, "ask" and going
+  over; `agent_spawn { lane }` from a local agent onto a cloud lane; settings saved and reset from the dialog; tools
+  switched per chat (before the first message, mid-chat with a notice, inherited by subagents).
 - Numbers and details: `docs/archive/2026-09-24-windows-bringup.md`, `docs/archive/2026-09-24-agent-tools.md`,
-  `docs/archive/2026-09-24-ssh-tools.md`, `docs/archive/2026-09-24-goals.md`.
+  `docs/archive/2026-09-24-ssh-tools.md`, `docs/archive/2026-09-24-goals.md`,
+  `docs/archive/2026-09-24-lanes-budget-settings.md`.
 
 ## Not yet verified
+- Lanes, the budget, the settings dialog and per-chat tools in the real app: the host and the contracts changed, so
+  they need NetPI closed, `.\build.ps1` and a restart. Then: costs from a paid OpenRouter model (`usage.cost`), and
+  whether `qwen3.8-27b` picks lanes by their notes and avoids the paid one.
 - Goals with a real model (only the scripted model so far): whether `qwen3.8-27b` follows the continuation
   notices and calls `goal_update` at the right time.
 - The desktop zoom setting (`desktop.zoom`, zoom kept in `window.json`): built, but needs NetPI closed for
@@ -39,19 +48,21 @@
 - Linux/macOS: the suites last ran in the Linux sandbox, before the Windows work, and have not been re-run since.
 
 ## Known limitations / ideas
-- OpenRouter: a 429 reports its `Retry-After`, but the retry plugin keeps its own backoff; each answer's cost is stored
-  (`meta.openrouter.cost`) but not shown yet; the catalog offers every tool-capable model (~390; narrow it with
+- OpenRouter: a 429 reports its `Retry-After`, but the retry plugin keeps its own backoff; the catalog offers every tool-capable model (~390; narrow it with
   `providers.openrouter.include`).
 - Per-turn cache reuse and TTFT are not shown in the UI (usage is in each assistant message; TTFT is not recorded).
 - Steering an orchestrator that is waiting on its workers makes it stop waiting, but it still needs a lane back;
   if its own workers hold every lane of the pool, the reply waits for one of them to finish.
 - Reloading the lanes plugin mid-run can briefly let a pool run more requests than its capacity.
-- Models with ≤ 8k context are impractical (system prompt + tool schemas ≈ 4k tokens).
-- Changing the tool set mid-session (a tool plugin enabled, disabled or reloaded with new tools; `tools.disabled`)
+- Small context windows are tight: with every plugin on, the system prompt and the 36 tool schemas take about 7k tokens.
+  Switch tools off per chat to make room; compaction keeps fewer recent messages when that overhead is large.
+- Changing the tool set mid-session (a tool plugin enabled, disabled or reloaded with new tools; `tools.disabled`; the
+  chat's own tool switches)
   changes the tool definitions, so the backend re-prefills once. A "tools" notice tells the model what changed and
   carries the new tools' guidelines.
 - `screenshot` without a url needs the desktop app's `desktop.capture` (a desktop shell built after 2026-09-24); in the
   headless server it asks for a url.
+- Not built from the lanes plan: a dollar budget for goals (`goal.budgetUsd`) and a "test" button per provider.
 - `sessions.messages` has no `afterSeq`: after paging far back, "jump to latest" reloads the newest page.
 - Projects live in the host (the store, the `projects.*` RPC and the Projects panel); only what the model is told about
   them comes from plugins. Moving projects entirely into a plugin was discussed on 2026-09-24 but not decided.

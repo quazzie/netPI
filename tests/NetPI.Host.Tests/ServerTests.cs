@@ -401,8 +401,27 @@ public static class ServerTests
             foreach (var m in new[] { "app.info", "projects.list", "projects.create", "projects.update", "projects.delete", "sessions.list", "sessions.create",
                          "sessions.get", "sessions.update", "sessions.delete", "sessions.setProject", "sessions.messages", "models.list", "ui.tabs",
                          "ui.commands", "ui.state.get", "ui.state.set", "plugins.list", "plugins.reload", "plugins.setEnabled", "plugins.rescan",
-                         "settings.get", "settings.set", "settings.replace", "fs.dirs", "tools.list", "rpc.list", "events.recent", "logs.recent" })
+                         "settings.get", "settings.set", "settings.replace", "settings.schema", "fs.dirs", "tools.list", "rpc.list", "events.recent", "logs.recent" })
                 Check.True(rpcs.Contains(m), "rpc " + m);
+
+            // settings.schema: the host's section first, plugins' sections while they are registered
+            static bool Has(JsonArray schema, string id) => schema.Any(s => s!["id"]!.GetValue<string>() == id);
+            var schema = (await Call("settings.schema"))!.AsArray();
+            Check.Equal("core", schema[0]!["id"]!.GetValue<string>());
+            var model = schema[0]!["settings"]!.AsArray().Single(s => s!["key"]!.GetValue<string>() == "defaultModel")!;
+            Check.Equal("model", model["type"]!.GetValue<string>());
+            using (server.Services.Register(new SettingsSection
+                   {
+                       Id = "sample", Title = "Sample", Group = "Tools", Settings = [SettingInfo.Int("sample.count", "Count", 3, null, 1, 9, "items")],
+                   }))
+            {
+                schema = (await Call("settings.schema"))!.AsArray();
+                var sample = schema.Single(s => s!["id"]!.GetValue<string>() == "sample")!["settings"]![0]!;
+                Check.Equal("int", sample["type"]!.GetValue<string>());
+                Check.Equal(3, sample["default"]!.GetValue<int>());
+                Check.Equal("items", sample["unit"]!.GetValue<string>());
+            }
+            Check.False(Has((await Call("settings.schema"))!.AsArray(), "sample"), "gone with its registration");
 
             var recent = (await Call("events.recent", new { max = 500 }))!.AsArray();
             Check.True(recent.Any(e => e!["type"]!.GetValue<string>() == "session.created"));

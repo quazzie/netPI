@@ -22,6 +22,22 @@ dotnet build tests/NetPI.Tools.Tests/NetPI.Tools.Tests.csproj -p:BuildProjectRef
 dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll [name-filter…]   # exit code 0 = all passed
 ```
 
+## Which tools an agent is sent
+
+Every request carries the active tools (the highest-priority registration per name), sorted by name, minus:
+
+- the tools of a disabled plugin (Settings → Tools & plugins), and names in `tools.disabled` (settings.json): every chat;
+- the tools switched off for the chat (the composer's tools button; `agent.setTools`, session `meta.toolsOff`). Before the
+  first message that is free. In a started chat the change applies from the next model call: tool definitions lead the
+  request, so the model re-reads the conversation once (slower on a local model, a full-price read on a paid one), and a
+  `tools` notice tells it ("The user switched off for this session: bash.");
+- for a subagent: its parent session's switched-off tools (copied to the subagent's session when it is spawned), the
+  `agent_spawn` `tools` list if one was given (it narrows, it cannot bring a tool back), and at the deepest level
+  (`agents.maxDepth`) the orchestration tools except `agent_send`.
+
+A tool that appears or disappears during a session (a plugin loaded, reloaded or disabled) is announced the same way.
+`context.preview` shows what a session is sent.
+
 ## Conventions
 
 - **Lenient arguments.** Names are matched ignoring case, `_` and `-` (`file_path` = `filePath` = `FilePath`), and common
