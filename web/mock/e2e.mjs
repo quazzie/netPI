@@ -297,6 +297,9 @@ log('plugin tab: Work');
   const nums = (await qwen.locator('.nums').innerText().catch(() => '')).replace(/\s+/g, '');
   check('work: qwen pool 2/2 busy', nums.includes('2/2'), nums);
   check('work: pool shows queued waiter', (await qwen.locator('.owner.waiting').count()) > 0);
+  const ownerNames = await qwen.locator('.owner .name').allInnerTexts();
+  check('work: a top-level lane owner shows its session title, not "main"',
+    ownerNames.includes('Index docs for semantic search') && !ownerNames.includes('main') && ownerNames.includes('surveyor'), ownerNames.join(' | '));
   const nodes = await page.locator('.work .node').count();
   check('work: agent tree incl. subagents', nodes >= 3 && (await page.locator('.work .node .kids .node').count()) > 0, `${nodes} nodes`);
   await shot(page, '25-work-tab');

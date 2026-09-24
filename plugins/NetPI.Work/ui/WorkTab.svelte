@@ -189,7 +189,7 @@
         <div class="na">Lanes not available{errors.lanes ? ` — ${errors.lanes}` : ''}</div>
       {:else}
         {#each lanes as pool (pool.key)}
-          <LanePool {pool} {agentById} {models} {ctx} />
+          <LanePool {pool} {agentById} {titles} {models} {ctx} />
         {:else}
           <div class="na">No lane pools yet — they appear with the first model call.</div>
         {/each}

@@ -2,10 +2,17 @@
   import { Pips, Elapsed, StatusDot } from '@netpi/kit';
   import { shortModel } from './util.js';
 
-  let { pool, agentById, models, ctx } = $props();
+  let { pool, agentById, titles, models, ctx } = $props();
 
   const TONE = { queued: 'warn', full: 'accent', busy: 'accent', idle: 'dim', offline: 'err', stopped: 'warn' };
-  const who = (o) => agentById.get(o.agentId)?.name ?? o.label ?? o.agentId;
+  // top-level agents are all called "main": their session title tells them apart; subagents go by their name
+  const who = (o) => {
+    const a = agentById.get(o.agentId);
+    const title = titles?.get(o.sessionId ?? a?.sessionId);
+    if (title && !a?.isSubagent) return title;
+    return a?.name ?? o.label ?? title ?? o.agentId;
+  };
+  const note = (o) => (o.label && o.label !== who(o) && o.label !== agentById.get(o.agentId)?.name ? o.label : '');
   const statusOf = (ref) => models.get(ref)?.status ?? models.get(`${pool.provider}/${ref}`)?.status ?? null;
   // "provider/model" pools read as "model provider" so truncation eats the provider, not the model
   const slash = $derived(pool.key.indexOf('/'));
@@ -34,10 +41,10 @@
     {/if}
   </div>
   {#each pool.owners ?? [] as o (o.agentId + o.since)}
-    <button class="owner np-line" title="{who(o)}{o.label && o.label !== who(o) ? ` — ${o.label}` : ''} (open session)" onclick={() => o.sessionId && ctx.app.openSession(o.sessionId)}>
+    <button class="owner np-line" title="{who(o)}{note(o) ? ` — ${note(o)}` : ''} (open session)" onclick={() => o.sessionId && ctx.app.openSession(o.sessionId)}>
       <span class="slot on"></span>
       <span class="name">{who(o)}</span>
-      <span class="label np-grow">{o.label && o.label !== who(o) ? o.label : ''}</span>
+      <span class="label np-grow">{note(o)}</span>
       <Elapsed since={o.since} class="np-mono el" />
     </button>
   {/each}

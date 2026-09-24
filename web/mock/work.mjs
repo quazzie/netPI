@@ -154,7 +154,7 @@ export function createWork({ publish, log }) {
     const pool = pools[0];
     pool.owners = [
       { agentId: e.id, sessionId: exp.id, label: 'surveyor', since: iso(now - 64_000) },
-      { agentId: ia.id, sessionId: idx.id, label: 'Index docs for semantic search', since: iso(now - 21_000) },
+      { agentId: ia.id, sessionId: idx.id, label: 'main', since: iso(now - 21_000) }, // the runtime labels owners with the agent name
     ];
     pool.waiters = [{ agentId: r.id, sessionId: rev.id, label: 'reviewer', since: iso(now - 7_000) }];
 
