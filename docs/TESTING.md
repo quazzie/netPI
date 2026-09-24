@@ -38,14 +38,18 @@ from a private copy of `artifacts/app`, so it is not affected by (and does not a
 
 ```bash
 dotnet tests/NetPI.Providers.Tests/bin/Debug/NetPI.Providers.Tests.dll   # AiProxy (Responses/Chat), Anthropic, OpenRouter against a scripted HTTP mock
-dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll           # read/write/edit/grep/find/ls, bash/pwsh, processes
-dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll           # agent loop, steering/queue/abort, subagents, lanes, persistence
-dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll               # retry, nudge, tool repair, compaction, ideas, work, diagnostics
+dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll           # read/write/edit/grep/find/ls, bash/pwsh, processes, files.open
+dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll           # agent loop, steering/queue/abort, subagents, lanes, persistence, context notices
+dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll               # retry, nudge, tool repair, compaction, ideas, work, diagnostics, todo, web tools
 tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests                        # kernel: SQLite, settings, bus, registries, sessions, catalog, server, plugins
 ```
 
 Every runner takes optional name filters (`… NetPI.Agent.Tests.dll abort lanes`) and exits with 0 when all selected
 tests pass. `NETPI_TEST_LOGS=1` shows host logs in the Host suite.
+
+The web tool tests serve pages and fake SearXNG / Brave endpoints from a local Kestrel server and never read your pi
+config or `BRAVE_API_KEY`. The `screenshot` test drives a real headless Edge/Chrome/Chromium; without one installed it
+checks everything except the page screenshots and says so.
 
 ## Mock model server (`tests/MockLlm`)
 

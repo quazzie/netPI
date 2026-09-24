@@ -21,7 +21,9 @@ headless for any browser.
   *Alt+Enter* queues a follow-up; *Esc* stops.
 - **Tools as plugins:** `read`, `write`, `edit` (multi-edit, replace-all), `grep`, `find`, `ls` — all CRLF/LF
   agnostic, preserving each file's line endings and BOM — plus `bash` (Git Bash on Windows), `pwsh` and background
-  processes. Replace any tool by registering one with the same name.
+  processes; `web_fetch` (pages as Markdown), `web_search` (SearXNG or Brave), `screenshot` (headless Edge/Chrome,
+  or the NetPI window) and `todo_write` (a checklist shown above the composer). Replace any tool by registering one
+  with the same name. File links in the chat open with the operating system.
 - **Providers:** AiProxy / any OpenAI-compatible server (Responses API by default, Chat Completions per model),
   Anthropic Claude (thinking, prompt caching) and OpenRouter (hundreds of hosted models, unified reasoning with replayed
   `reasoning_details`).
@@ -30,7 +32,8 @@ headless for any browser.
 - **Context that never rewrites history:** a bare system prompt that plugins and tools contribute to, rendered once per
   session; the working directory, project and instruction files (global `~/.netpi/AGENTS.md` + every
   `AGENTS.md`/`CLAUDE.md` from the file system root down to the project) arrive as notices when they apply or change,
-  so the backend's prompt cache survives a project switch or an edited AGENTS.md.
+  so the backend's prompt cache survives a project switch or an edited AGENTS.md. Tools from a plugin loaded mid-session
+  are announced the same way.
 - **Ideas backlog:** agents and you park research, plans and requirements in `ideas.json` in the project folder
   (tools `idea_*` + the Ideas tab); "send to chat" when it's time to implement.
 - **UI:** left and right panels with vertical, pluggable tabs (Sessions, Projects, Files | Work, Ideas,
@@ -80,7 +83,7 @@ netpi-server (headless) ─────────┴─ NetPI.Host ─┤   Ne
    plugin manager · event bus · service/RPC/    │   NetPI.Context      system prompt (frozen per session), project notices
    tool/UI registries · SQLite · settings ·     │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md, announced as notices
    session store · model catalog                │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic, OpenRouter
-                                                │   NetPI.Tools.*      files, shell, agents
+                                                │   NetPI.Tools.*      files, shell, agents, web · NetPI.Todo
 NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Retry · NetPI.ToolRepair
 web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics
                                                 └─ ~/.netpi/plugins/ (your own)

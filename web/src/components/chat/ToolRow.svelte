@@ -6,7 +6,10 @@
   import SearchView from './tools/SearchView.svelte';
   import AgentView from './tools/AgentView.svelte';
   import GenericView from './tools/GenericView.svelte';
-  import { parseArgs, toolMeta, toolSummary, toolBadge } from '../../lib/tools.js';
+  import WebView from './tools/WebView.svelte';
+  import TodoView from './tools/TodoView.svelte';
+  import { parseArgs, toolMeta, toolSummary, toolBadge, pathArg } from '../../lib/tools.js';
+  import { openFile } from '../../lib/openFile.js';
   import { duration } from '../../lib/format.js';
   import { app } from '../../lib/state/app.svelte.js';
 
@@ -55,6 +58,8 @@
           : 'cancelled',
   );
   const summary = $derived(toolSummary(call.name, args, base));
+  // read / write / edit: open the file with the operating system
+  const filePath = $derived(['read', 'write', 'edit'].includes(call.name) ? pathArg(args) : null);
   const badge = $derived.by(() => {
     const b = result ? toolBadge(call.name, result) : null;
     // agent_spawn records the status at spawn time; prefer the subagent's live status when known
@@ -128,6 +133,11 @@
       {#if result?.isError && meta.view !== 'shell'}
         <pre class="error np-mono">{result.content}</pre>
       {/if}
+      {#if filePath && !result?.isError}
+        <button class="openfile" title="Open {filePath} with its default app" onclick={() => openFile(filePath, chat.id)}>
+          <Icon name="external" size={12} /> Open file
+        </button>
+      {/if}
       {#if meta.view === 'shell'}
         <ShellView name={call.name} {args} {result} live={lt} />
       {:else if meta.view === 'edit' || meta.view === 'write'}
@@ -138,6 +148,10 @@
         {#if !result?.isError}<SearchView name={call.name} {result} />{/if}
       {:else if meta.view === 'agent'}
         <AgentView name={call.name} {args} {result} />
+      {:else if meta.view === 'web'}
+        {#if !result?.isError}<WebView name={call.name} {result} />{/if}
+      {:else if meta.view === 'todo'}
+        <TodoView {args} {result} />
       {:else}
         <GenericView {args} {result} />
       {/if}
@@ -282,5 +296,23 @@
     font-size: 12px;
     max-height: 240px;
     overflow: auto;
+  }
+  .openfile {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    align-self: flex-end;
+    float: right;
+    margin: 0 0 4px 8px;
+    padding: 2px 6px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--fg-dim);
+    font-size: var(--fs-xs);
+  }
+  .openfile:hover {
+    background: var(--bg-3);
+    color: var(--fg);
   }
 </style>

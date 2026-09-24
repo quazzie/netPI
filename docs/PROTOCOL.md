@@ -43,7 +43,7 @@ interface ChatMessage {
   provider?: string; model?: string; stopReason?: 'stop'|'tool_use'|'length'|'aborted'|'error'|'content_filter';
   usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; reasoningTokens: number };
   durationMs?: number; compacted: boolean;
-  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | nudge | agent-message | agent-result | steer | retry | error | compaction
+  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | tools | nudge | agent-message | agent-result | steer | retry | error | compaction
 }
 type Part =
   | { type: 'text'; text: string }
@@ -101,6 +101,7 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `services.list` | – | `{ type, implementation, priority, owner }[]` (registered services) |
 | `events.recent` | `{ max? (200, up to 500) }` | `{ type, sid, d, seq, ts, source, ui }[]` recent bus events |
 | `logs.recent` | `{ max? (200, up to 2000) }` | `{ time, level, category, message, exception? }[]` |
+| `desktop.capture` | `{ maxWidth? (1600) }` | `{ mediaType, data /* base64 PNG */, width, height }`: the window as shown; registered by the desktop app only (the `screenshot` tool uses it) |
 
 ## Plugin RPC methods
 
@@ -118,6 +119,7 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `compaction.run` | netpi.compaction | `{ sessionId, args? /* extra focus for the summary */ }` → `string` (error `busy` while the agent runs) |
 | `context.preview` | netpi.context | `{ sessionId }` → `{ systemPrompt, frozen, tools: {name, description}[], estimatedTokens }` (`frozen`: the prompt stored at the session's first model call) |
 | `files.search` | netpi.tools.files | `{ sessionId?, query, limit? }` → `{ path, rel, isDir }[]` (for `@` mentions) |
+| `files.open` | netpi.tools.files | `{ path, sessionId?, cwd? }` → `{ path, action: 'open'\|'edit'\|'reveal'\|'folder' }` (opens a path with the operating system; see `docs/TOOLS.md`) |
 | `files.list` | netpi.tools.files | `{ sessionId?, dir? }` → `{ root, dir, entries: {name, rel, isDir, size?, mtime?}[] }` |
 | `processes.list` | netpi.tools.shell | → `ProcessInfo[]` |
 | `processes.output` | netpi.tools.shell | `{ id, tail? }` → `string` |

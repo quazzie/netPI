@@ -10,9 +10,31 @@ const esc = (s) =>
 const COPY_SVG =
   '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
 
+/** A link target that names a local file (relative, absolute, file://) rather than a web address. */
+export function isFileHref(href) {
+  const h = String(href ?? '').trim();
+  if (!h) return false;
+  if (/^file:/i.test(h) || /^[a-zA-Z]:[\\/]/.test(h) || /^[a-zA-Z]:%5C/i.test(h)) return true;
+  return !(/^[a-z][a-z0-9+.-]*:/i.test(h) || h.startsWith('#') || h.startsWith('//') || h.startsWith('?'));
+}
+
+const decode = (s) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+
 const marked = new Marked({ gfm: true, breaks: false, async: false });
 marked.use({
   renderer: {
+    // links to files open with the OS (lib/openFile.js) instead of navigating the app
+    link({ href, tokens }) {
+      if (!isFileHref(href)) return false;
+      const path = decode(href);
+      return `<a href="#" class="file-link" data-path="${esc(path)}" title="Open ${esc(path)}">${this.parser.parseInline(tokens)}</a>`;
+    },
     code({ text, lang }) {
       const l = (lang || '').trim().split(/\s+/)[0].toLowerCase();
       const cls = l ? ` class="language-${esc(l)}"` : '';

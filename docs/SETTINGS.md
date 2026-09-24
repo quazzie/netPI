@@ -123,12 +123,14 @@ turned off; models without effort levels only get on/off. Free models are limite
 | `context.toolDescriptions` | `false` | also describe every tool in the system prompt (they are always in the tool schemas) |
 | `agentsMd.fileNames` | `["AGENTS.md", "CLAUDE.md"]` | first match per directory, from the file system root down to the working directory |
 | `agentsMd.extraFiles` | `[]` | always included |
+| `agentsMd.guidance` | built in | the "# Instruction files" prompt section: how agents use and keep AGENTS.md (lean, pointers to deeper docs, durable learnings as one line). Replaces the text; `""` drops the section |
 
 A session's system prompt is rendered once, at its first model call, and kept for the whole session (the cached prefix
-of the conversation depends on it), so the `context.*` settings apply to sessions started afterwards. The working
-directory, the project and the instruction files are not in the prompt: they reach the model as notices when they first
-apply and whenever they change (an edited AGENTS.md is announced on the next model call). The global file is
-`~/.netpi/AGENTS.md`.
+of the conversation depends on it), so the `context.*` and `agentsMd.guidance` settings apply to sessions started
+afterwards. The working directory, the project and the instruction files are not in the prompt: they reach the model as
+notices when they first apply and whenever they change (an edited AGENTS.md is announced on the next model call). Tools
+that appear or disappear during a session (a plugin loaded or disabled, `tools.disabled`) are announced the same way,
+with their guidelines. The global file is `~/.netpi/AGENTS.md`.
 
 ## Auto-compaction, nudge, retry, tool repair
 
@@ -159,3 +161,19 @@ apply and whenever they change (an edited AGENTS.md is announced on the next mod
 | `shell.pwshAlways` | `false` | offer `pwsh` even when no PowerShell was found |
 | `shell.timeoutSeconds` | `120` | default per command (max 1800) |
 | `ideas.fileName` | `ideas.json` | in the project folder (sessions without project: `~/.netpi/ideas.json`) |
+
+## Web tools
+
+| key | default | |
+|---|---|---|
+| `web.fetch.maxChars` | `20000` | characters per `web_fetch` part (1000–200000); longer pages continue with `offset` |
+| `web.fetch.timeoutSeconds` | `30` | per fetch |
+| `web.fetch.maxBytes` | `5000000` | download cap |
+| `web.userAgent` | a Chrome-like UA ending in `NetPI/0.1` | |
+| `web.search.provider` | `auto` | `auto` (SearXNG when a URL is set, falling back to Brave), `searxng` or `brave` |
+| `web.search.searxngUrl` | – | e.g. `http://192.168.1.3:8888` (the instance must allow `format=json`) |
+| `web.search.braveApiKey` | env `BRAVE_API_KEY` | Brave Search API key; `"env:NAME"` / `"$NAME"` read an environment variable |
+| `web.search.braveUrl` | `https://api.search.brave.com/res/v1/web/search` | |
+| `web.search.count` | `8` | results per search (max 20) |
+| `web.search.piConfig` | `~/.pi/agent/web-search.json` | pi's web search config: its `searxngBaseUrl` and `braveApiKey` fill in what the settings above leave unset; `""` turns this off |
+| `web.browserPath` | auto | Edge, Chrome or Chromium for `screenshot` (found in the usual install folders or on PATH) |

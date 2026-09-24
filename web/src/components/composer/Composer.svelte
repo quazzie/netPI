@@ -5,6 +5,7 @@
   import EffortPicker from './EffortPicker.svelte';
   import ContextRing from './ContextRing.svelte';
   import QueueChips from './QueueChips.svelte';
+  import TodoStrip from './TodoStrip.svelte';
   import { app, isBusy, modelFor, sendMessage, abortAgent } from '../../lib/state/app.svelte.js';
   import { composer, modals, prefs, toast } from '../../lib/state/ui.svelte.js';
   import { allCommands, parseCommand } from '../../lib/commands.js';
@@ -312,6 +313,7 @@
       </div>
     {/if}
     {#if chat.queue.length}<QueueChips {chat} />{/if}
+    <TodoStrip {session} />
 
     <div
       class="composer"

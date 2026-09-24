@@ -142,8 +142,20 @@
     else mention(e.rel, false);
   }
 
+  /** Open with the operating system (files.open): the default app, a folder in the file manager. */
+  async function openPath(e) {
+    try {
+      const r = await ctx.rpc('files.open', { ...loc(), path: e.rel });
+      if (r?.action === 'reveal') ctx.app.toast(`Shown in the file manager: ${r.path}`);
+    } catch (err) {
+      ctx.app.toast(err.message, 'error');
+    }
+  }
+
   function items(e) {
     return [
+      { label: e.isDir ? 'Open folder' : 'Open', icon: 'external', onclick: () => openPath(e) },
+      { divider: true },
       { label: 'Insert @mention', icon: 'at', onclick: () => mention(e.rel, e.isDir) },
       { label: 'Insert path', icon: 'file-text', onclick: () => ctx.app.insertText(e.rel + ' ') },
       { divider: true },

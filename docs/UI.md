@@ -60,6 +60,7 @@ web/
       commands.js              slash commands (built-ins + ui.commands)
       pluginCtx.js             ctx object for plugin tabs
       folderPicker.js          WebView2 native picker or fs.dirs modal
+      openFile.js              open a path with the OS (files.open): chat file links, "Open file", the file tree
       state/app.svelte.js      sessions, projects, models, agents, tabs, event routing, actions
       state/chat.svelte.js     ChatStore (per session), StreamState, LiveTool, LRU cache
       state/ui.svelte.js       layout, prefs, modals, toasts, composer bridge
@@ -69,8 +70,9 @@ web/
       TopBar.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
       panels/  SidePanel, PluginTabHost, SessionsTab, ProjectsTab
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
-               ToolRow, NoticeRow, StatusRow, StreamingBlock, tools/{Shell,Diff,Read,Search,Agent,Generic}View
-      composer/ Composer, ModelPicker, EffortPicker, ContextRing, QueueChips
+               ToolRow, NoticeRow, StatusRow, StreamingBlock, TodoList,
+               tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
+      composer/ Composer, ModelPicker, EffortPicker, ContextRing, QueueChips, TodoStrip
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
                Projects (the projects dialog), Lightbox
   mock/
@@ -176,7 +178,15 @@ into locals first, because after the parent clears the modal state or the row re
 3. **Components.** `ToolRow` renders one row: icon, label, summary argument, badge, duration and status. It
    expands to a specialised view: `DiffView` (edit/write), `ShellView` (bash/pwsh: command, live output, exit
    code), `ReadView` (path, line range, highlighted content), `SearchView` (grep/find/ls), `AgentView`
-   (`agent_*`, link to the subagent session) and `GenericView` (anything else).
+   (`agent_*`, link to the subagent session), `WebView` (`web_fetch` title and text, `web_search` results as links,
+   `screenshot` image and console errors), `TodoView` (the `todo_write` checklist) and `GenericView` (anything
+   else). `read`/`write`/`edit` rows get an "Open file" button (`lib/openFile.js` → `files.open`).
+   - **File links.** `renderMarkdown` marks links whose target is a local path (relative, `C:\…`, `file://`) as
+     `a.file-link[data-path]` with `href="#"`; one delegated click handler opens them with the operating system
+     through `files.open`, so a link never navigates the app. Web links keep `target="_blank"` (the desktop shell
+     opens them in the default browser).
+   - **Plan strip.** `TodoStrip` (in the composer dock) shows the session's `meta.todo` while any item is open:
+     `done/total` and the current item, expanding to the checklist.
    - A **steps** group with more than 3 steps collapses to `▸ N steps · time · tool counts`, but only after its
      run has finished. Steering input does not end a run. The user's choice to expand or collapse is kept per
      group in `chat.expanded`.

@@ -725,6 +725,55 @@ log('images');
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 20_000 }).catch(() => {});
 }
 
+// ------------------------------------------------------------------ web tools, todo plan, tools notice, file links
+log('web tools, todo plan, tools notice, file links');
+{
+  await page.keyboard.press('Control+t');
+  await page.waitForSelector('.intro');
+  await ta.fill('[web] Why does the demo page break? Check the Svelte docs.');
+  await ta.press('Enter');
+  await page.waitForSelector('.dock .strip', { timeout: 15_000 });
+  const bar = await page.locator('.dock .strip .bar').innerText();
+  check('the plan shows above the composer while the agent works', /\b\d\/3\b/.test(bar), bar.replace(/\s+/g, ' '));
+  await page.locator('.dock .strip .bar').click();
+  await page.waitForTimeout(250);
+  check('the plan opens as a checklist', (await page.locator('.dock .strip .todo li').count()) === 3);
+  await shot(page, '25-todo-strip');
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 });
+  await page.waitForTimeout(300);
+  check('the plan hides once every item is done', (await page.locator('.dock .strip').count()) === 0);
+  check('a tools notice says which tools are new', (await page.locator('.notice', { hasText: 'Tools changed' }).count()) === 1);
+
+  const closed = page.locator('.group.collapsible .head[aria-expanded="false"]');
+  for (let n = 0; n < 12 && (await closed.count()); n++) await closed.first().click();
+  await page.waitForTimeout(150);
+  for (const label of ['Web search', 'Fetch', 'Screenshot']) {
+    const row = page.locator('.tool .line', { hasText: label }).last();
+    if (await row.count()) await row.click();
+  }
+  await page.locator('.tool .line', { hasText: 'Todo' }).first().click();
+  await page.waitForTimeout(300);
+  check('web_search lists its results', (await page.locator('.tool .hits .hit').count()) === 3);
+  check('web_fetch shows the page title and text', (await page.locator('.tool .page .title', { hasText: '$state' }).count()) === 1 && (await page.locator('.tool .page .box').innerText()).includes('reactive state'));
+  check('screenshot shows the image and the console error', (await page.locator('.tool img.shot').count()) === 1 && (await page.locator('.tool .box', { hasText: 'count is undefined' }).count()) === 1);
+  check('todo_write shows a checklist', (await page.locator('.tool .todo li').count()) === 3);
+  const badges = await page.locator('.tool .np-badge').allInnerTexts();
+  check('badges: results, size, errors, progress', ['3 results', '1 console error', '0/3'].every((b) => badges.includes(b)), badges.join(' | '));
+  await page.locator('.tool', { has: page.locator('.label', { hasText: 'Screenshot' }) }).last().scrollIntoViewIfNeeded();
+  await shot(page, '26-web-tools');
+
+  // links to files open with the operating system, not inside the app
+  const links = page.locator('.md a.file-link');
+  check('file links in the answer are marked', (await links.count()) === 2, String(await links.count()));
+  const before = page.url();
+  await links.first().click();
+  await page.waitForTimeout(300);
+  const opened = await rpcCall('mock.filesOpened');
+  check('clicking a file link asks the host to open it', opened.some((p) => p.replace(/\\/g, '/').endsWith('web/src/App.svelte')), JSON.stringify(opened));
+  check('the app does not navigate away', page.url() === before && (await page.locator('.composer textarea').count()) === 1);
+  check('web links still open in a new window', (await page.locator('.md a[target="_blank"]', { hasText: 'docs' }).count()) === 1);
+}
+
 // ------------------------------------------------------------------ folder picker (fs.dirs) + add project
 log('projects: folder picker');
 await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();

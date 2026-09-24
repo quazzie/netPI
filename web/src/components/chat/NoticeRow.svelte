@@ -10,6 +10,7 @@
   const KINDS = {
     project: { icon: 'folder', tone: 'info' },
     instructions: { icon: 'file-text', tone: 'info', label: 'Instructions', expand: true },
+    tools: { icon: 'wrench', tone: 'info', label: 'Tools changed', expand: true },
     nudge: { icon: 'zap', tone: 'warn', label: 'Nudge' },
     'agent-message': { icon: 'message-circle', tone: 'accent', expand: true },
     'agent-result': { icon: 'bot', tone: 'ok', expand: true },

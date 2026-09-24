@@ -5,6 +5,7 @@ import { mount } from 'svelte';
 import { initToken } from './lib/auth.js';
 import { icons } from './lib/icons.js';
 import { renderMarkdown, highlight, installCodeCopy, copyText } from './lib/markdown.js';
+import { installFileLinks } from './lib/openFile.js';
 import { confirmDialog } from './lib/state/ui.svelte.js';
 import App from './App.svelte';
 
@@ -21,6 +22,7 @@ globalThis.__netpiHost = Object.freeze({
 });
 
 installCodeCopy();
+installFileLinks();
 
 const app = mount(App, { target: document.getElementById('app') });
 export default app;

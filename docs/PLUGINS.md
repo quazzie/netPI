@@ -105,7 +105,11 @@ Anthropic's prompt cache alike). So nothing that was sent is ever changed; new i
   new or removed files). Pattern: an `IAgentHook` whose `OnBeforeModelCallAsync` (Order above compaction's -100) compares
   the current state with the last notice still in `turn.Messages` and, if they differ, appends a notice and calls
   `turn.ReloadMessagesAsync()`; react to events (e.g. `session.project`) to announce right away.
-- **Tools are sent sorted by name**, so a plugin reload does not reorder them.
+- **Tools are sent sorted by name**, so a plugin reload does not reorder them. Every request carries the tools that are
+  registered right now, so a tool from a plugin loaded mid-session is callable at the next model call. Its guidelines
+  are not in the frozen prompt, so the context plugin appends a `tools` notice ("Your tools changed. New: …", with the
+  new tools' `PromptGuidelines`; removed tools are named too). Changing the tool set is the one change that re-prefills
+  once, because the definitions sit at the top of the request.
 
 Exceptions by necessity: compaction replaces old messages with a summary when the context is nearly full, and tool-call
 repair turns a tool call the model wrote as text into a real call.

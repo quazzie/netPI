@@ -93,6 +93,8 @@ const RPC_DOCS = {
   'files.search': 'Fuzzy file-name search for @ mentions: { sessionId?, query, limit? } → { path, rel, isDir }[]',
   'logs.recent': 'Recent log entries: { max? } → { time, level, category, message, exception? }[]',
 };
+const filesOpened = [];
+
 const SYSTEM_PROMPT = (project, session) => `You are a coding agent running in NetPI, an agent harness on the user's own machine. Work through the tools you have: act rather than describe, check the results and verify your work when practical. Ask only when a request is genuinely ambiguous or an action would be destructive. Be concise, and end with a short summary of what you did or found.
 
 # Environment
@@ -103,7 +105,11 @@ const SYSTEM_PROMPT = (project, session) => `You are a coding agent running in N
 - Prefer read/grep/find/ls over shell commands for exploring files.
 - Use edit for small changes; include enough context for oldText to match exactly once.
 - Run the relevant build or tests before you say you're done.
-- When research or plans are deferred, record them with idea_add instead of losing them.`;
+- When research or plans are deferred, record them with idea_add instead of losing them.
+
+# Instruction files
+AGENTS.md and CLAUDE.md files reach you as notices. They are the lean entry point for agents: the essentials, plus pointers to deeper docs. When your task touches something they point to, read that doc first.
+Keep them lean. When you learn something the next agent would otherwise have to rediscover (a non-obvious command, a pitfall, a convention), add one line to the most specific AGENTS.md, or put the details in the doc it points to and add a pointer there. Correct outdated lines instead of adding new ones next to them, and leave out what the code or git history already shows. Ask before creating an AGENTS.md where there is none.`;
 
 class RpcError extends Error {
   constructor(code, message) {
@@ -402,6 +408,15 @@ const handlers = {
     const pl = diag.reload(id);
     return `Reloaded ${pl.name} (${pl.id})`;
   },
+  'files.open': (p = {}) => {
+    const rel = need(p, 'path');
+    const s = p.sessionId ? store.sessions.get(p.sessionId) : null;
+    const pr = s?.projectId ? store.projects.get(s.projectId) : null;
+    const full = path.isAbsolute(rel) ? rel : path.join(pr?.path ?? REPO, rel.replace(/:\d+(:\d+)?$/, ''));
+    filesOpened.push(full);
+    return { path: full, action: 'open' };
+  },
+  'mock.filesOpened': () => filesOpened,
   'agentsmd.list': (p = {}) => {
     const s = p.sessionId ? store.sessions.get(p.sessionId) : null;
     const pr = p.projectId ? store.projects.get(p.projectId) : s?.projectId ? store.projects.get(s.projectId) : null;

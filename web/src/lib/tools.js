@@ -13,9 +13,13 @@ const META = {
   process_list: { label: 'Processes', icon: 'process', arg: null, view: 'process' },
   process_output: { label: 'Process output', icon: 'process', arg: 'id', view: 'process' },
   process_kill: { label: 'Kill process', icon: 'kill', arg: 'id', view: 'process' },
+  web_fetch: { label: 'Fetch', icon: 'globe', arg: 'url', view: 'web' },
+  web_search: { label: 'Web search', icon: 'search', arg: 'query', view: 'web' },
+  screenshot: { label: 'Screenshot', icon: 'image', arg: 'url', view: 'web' },
+  todo_write: { label: 'Todo', icon: 'list', arg: null, view: 'todo' },
 };
 
-const CATEGORY_ICON = { files: 'file', shell: 'terminal', agents: 'bot', ideas: 'idea', general: 'wrench' };
+const CATEGORY_ICON = { files: 'file', shell: 'terminal', agents: 'bot', ideas: 'idea', web: 'globe', todo: 'list', general: 'wrench' };
 const SUMMARY_KEYS = ['path', 'command', 'pattern', 'query', 'url', 'name', 'task', 'id', 'text', 'title'];
 
 /** Server tool definitions (from tools.list), filled by the app store. */
@@ -77,9 +81,31 @@ export function pathArg(args) {
 }
 
 /** One-line summary for the collapsed tool row. */
+/** todo_write arguments → [{ text, status }] (lenient like the tool: strings, other field names, status synonyms). */
+export function todoItems(args) {
+  const list = Array.isArray(args) ? args : (args?.items ?? args?.todos ?? args?.tasks ?? []);
+  if (!Array.isArray(list)) return [];
+  const norm = (s) => {
+    const v = String(s ?? '').toLowerCase().replace(/[- ]/g, '_');
+    if (['done', 'completed', 'complete', 'finished'].includes(v)) return 'done';
+    if (['in_progress', 'inprogress', 'active', 'doing', 'current', 'started'].includes(v)) return 'in_progress';
+    return 'pending';
+  };
+  return list
+    .map((x) => (typeof x === 'string' ? { text: x, status: 'pending' } : { text: x?.text ?? x?.content ?? x?.title ?? x?.task ?? '', status: norm(x?.status) }))
+    .filter((x) => x.text);
+}
+
 export function toolSummary(name, args, base) {
   const meta = toolMeta(name);
   switch (name) {
+    case 'screenshot':
+      return arg(args, 'url') ? truncate(String(arg(args, 'url')), 160) : 'NetPI window';
+    case 'todo_write': {
+      const items = todoItems(args);
+      const cur = items.find((i) => i.status === 'in_progress') ?? items.find((i) => i.status !== 'done');
+      return items.length ? truncate(cur?.text ?? 'all done', 160) : 'cleared';
+    }
     case 'read': {
       const p = relPath(pathArg(args), base);
       const off = arg(args, 'offset');
@@ -124,6 +150,8 @@ export function toolSummary(name, args, base) {
   return '';
 }
 
+const kchars = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k chars` : `${n} chars`);
+
 /** Short badge for a finished tool (e.g. "+5 −3", "exit 1", "42 matches"). */
 export function toolBadge(name, result) {
   const d = result?.details;
@@ -150,6 +178,18 @@ export function toolBadge(name, result) {
     case 'ls':
       if (d.entries != null) return { text: `${d.entries} entries` };
       return null;
+    case 'web_fetch':
+      if (d.image) return { text: 'image' };
+      if (d.status >= 400) return { text: `HTTP ${d.status}`, tone: 'warn' };
+      if (d.chars != null) return { text: `${kchars(d.end - d.offset)}${d.nextOffset != null ? ` of ${kchars(d.chars)}` : ''}` };
+      return null;
+    case 'web_search':
+      return d.results ? { text: `${d.results.length} results` } : null;
+    case 'screenshot':
+      if (d.consoleErrors?.length) return { text: `${d.consoleErrors.length} console error${d.consoleErrors.length === 1 ? '' : 's'}`, tone: 'warn' };
+      return d.width ? { text: `${d.width}×${d.height}` } : null;
+    case 'todo_write':
+      return d.total ? { text: `${d.done}/${d.total}`, tone: d.done === d.total ? 'ok' : undefined } : null;
     case 'bash':
     case 'pwsh':
       if (d.background && d.status === 'running') return { text: `bg ${d.processId ?? ''}`.trim(), tone: 'info' };

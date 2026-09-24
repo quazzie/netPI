@@ -21,8 +21,10 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 - **Real models:** runs on nInfer (`qwen3.8-27b`) and on OpenRouter behave: lanes and queueing, subagents, steering,
   and cache reuse across turns, project switches and AGENTS.md edits (every turn reuses the previous prompt + output).
 - **Not yet verified:** the Anthropic provider against the real API, and Linux/macOS since the Windows work.
+- **Agent tools:** `web_fetch`, `web_search` (SearXNG / Brave), `screenshot` and `todo_write` work live with `qwen3.8-27b`;
+  tools that appear or disappear mid-session are announced with a notice.
 - **History:** the Windows bring-up, the first smoke tests and the prompt work are recorded in
-  `docs/archive/2026-09-24-windows-bringup.md`.
+  `docs/archive/2026-09-24-windows-bringup.md`; the agent tools and projects UI in `docs/archive/2026-09-24-agent-tools.md`.
 
 ## Decisions and preferences to keep
 
