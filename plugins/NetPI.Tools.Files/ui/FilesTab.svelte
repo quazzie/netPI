@@ -271,13 +271,12 @@
       {/each}
     {/if}
   </div>
-  <div class="foot">
+  <div class="foot np-line">
     {#if results}
-      <span>{results.length}{results.length >= 200 ? '+' : ''} matches</span>
+      <span class="np-grow">{results.length}{results.length >= 200 ? '+' : ''} matches</span>
     {:else}
-      <span>click inserts <span class="np-mono">@path</span> · right-click for more</span>
+      <span class="np-grow" title="Click a file to insert @path into the composer; right-click for more">Click: <span class="np-mono">@path</span> · right-click: more</span>
     {/if}
-    <span class="np-spacer"></span>
     {#if ignoredCount && !results}
       <button class="lnk" onclick={() => (showIgnored = !showIgnored)} title="Entries skipped by .gitignore / built-in ignore rules">
         {showIgnored ? 'hide' : 'show'} ignored
@@ -336,7 +335,7 @@
     align-items: center;
     gap: 4px;
     height: 24px;
-    padding: 0 4px 0 calc(4px + var(--d) * 14px);
+    padding: 0 4px 0 calc(4px + var(--d) * var(--indent, 14px));
     border-radius: 4px;
     color: var(--fg);
     font-size: var(--fs);
@@ -357,7 +356,12 @@
   }
   .frow.loading {
     color: var(--fg-dim);
-    padding-left: calc(24px + var(--d) * 14px);
+    padding-left: calc(24px + var(--d) * var(--indent, 14px));
+  }
+  @container (max-width: 279px) {
+    .list {
+      --indent: 11px;
+    }
   }
   .chev {
     display: grid;
@@ -430,9 +434,7 @@
     color: var(--fg);
   }
   .foot {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    gap: 8px;
     padding: 6px 12px;
     border-top: 1px solid var(--border);
     font-size: var(--fs-xs);

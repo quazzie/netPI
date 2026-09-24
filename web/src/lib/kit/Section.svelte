@@ -40,11 +40,11 @@
       {#if collapsible}
         <button type="button" class="np-section-toggle" aria-expanded={open} onclick={toggle}>
           <span class="chev" class:open><Icon name="chevron-right" size={11} stroke={2.2} /></span>
-          <span>{title}</span>
+          <span class="np-section-label" title={title}>{title}</span>
           {#if count != null && count !== ''}<span class="np-section-count">{count}</span>{/if}
         </button>
       {:else}
-        <span>{title}</span>
+        <span class="np-section-label" title={title}>{title}</span>
         {#if count != null && count !== ''}<span class="np-section-count">{count}</span>{/if}
       {/if}
       {#if actions}<span class="np-section-actions">{@render actions()}</span>{/if}
@@ -59,6 +59,7 @@
     padding-right: 0;
   }
   .chev {
+    flex: none;
     display: inline-grid;
     transition: transform var(--t-fast);
   }

@@ -21,6 +21,12 @@
     return [...m].sort((a, b) => a[0].localeCompare(b[0]));
   });
   const shadowed = $derived((tools ?? []).filter((t) => !t.active).length);
+  // the owning plugin is shown under a tool only when several plugins register that name (else: tooltip)
+  const dupNames = $derived.by(() => {
+    const seen = new Map();
+    for (const t of tools ?? []) seen.set(t.name, (seen.get(t.name) ?? 0) + 1);
+    return new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
+  });
   function toggle(k) {
     const s = new Set(open);
     s.has(k) ? s.delete(k) : s.add(k);
@@ -45,7 +51,7 @@
       {#each arr as t (t.name + t.pluginId)}
         {@const k = t.name + '|' + t.pluginId}
         <div class="tool" class:shadowed={!t.active} class:disabled={t.disabled}>
-          <button class="row" onclick={() => toggle(k)} aria-expanded={open.has(k)}>
+          <button class="row" onclick={() => toggle(k)} aria-expanded={open.has(k)} title="{t.name} — {t.pluginId}">
             <span class="name np-mono">{t.name}</span>
             <span class="label">{t.label}</span>
             <span class="np-spacer"></span>
@@ -54,7 +60,7 @@
             {#if t.disabled}<span class="b err">disabled</span>{/if}
             {#if t.priority}<span class="b" title="priority">p{t.priority}</span>{/if}
           </button>
-          <div class="plug np-mono">{t.pluginId}</div>
+          {#if dupNames.has(t.name) || open.has(k)}<div class="plug np-mono">{t.pluginId}</div>{/if}
           {#if open.has(k)}<div class="desc">{t.description}</div>{/if}
         </div>
       {/each}
@@ -98,7 +104,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    width: 100%;
+    width: calc(100% + 6px);
     min-height: 22px;
     padding: 0 3px;
     margin: 0 -3px;

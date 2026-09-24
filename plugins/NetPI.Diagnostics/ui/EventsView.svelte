@@ -70,28 +70,27 @@
     }
   }
 
-  const time = (ts) => {
-    const d = new Date(ts);
-    return `${d.toLocaleTimeString('en-GB')}.${String(d.getMilliseconds()).padStart(3, '0')}`;
-  };
+  const time = (ts) => new Date(ts).toLocaleTimeString('en-GB');
+  const ms = (ts) => `.${String(new Date(ts).getMilliseconds()).padStart(3, '0')}`;
   const tone = (t) =>
     t.startsWith('agent.') ? 'accent' : t.startsWith('stream.') || t.startsWith('tool.') ? 'info' : t.startsWith('message') ? 'ok' : t.endsWith('.changed') ? 'warn' : '';
 </script>
 
 <div class="bar">
-  <SearchInput bind:value={q} placeholder="Filter type (agent.*) or session" />
+  <SearchInput bind:value={q} placeholder="Filter type or session" title="Event type (agent.* for a prefix) or session id" />
   <IconButton icon={paused ? 'play' : 'pause'} title={paused ? 'Resume' : 'Pause'} size="sm" pressed={paused} onclick={() => (paused = !paused)} />
   <IconButton icon="trash" title="Clear" size="sm" onclick={() => (rows = [])} />
 </div>
-<div class="opts">
-  <label class="np-check"><input type="checkbox" bind:checked={hideNoise} /> hide stream.delta / output ({noiseCount})</label>
-  <span class="np-spacer"></span>
-  <span class="np-dim">{paused ? 'paused' : 'live'} · newest first</span>
+<div class="opts np-line">
+  <label class="np-check np-grow" title="Hide stream.delta, tool.output and process.output events"
+    ><input type="checkbox" bind:checked={hideNoise} /> <span class="np-ellipsis">Hide output noise ({noiseCount})</span></label
+  >
+  <span class="state" class:paused title="Newest first">{paused ? 'paused' : 'live'}</span>
 </div>
 <div class="list np-mono">
   {#each shown as r (r.seq)}
     <button class="ev" class:open={open === r.seq} onclick={() => toggle(r)}>
-      <span class="t">{time(r.ts)}</span>
+      <span class="t">{time(r.ts)}<span class="ms">{ms(r.ts)}</span></span>
       <span class="ty" data-tone={tone(r.type)}>{r.type}</span>
       {#if r.sid}<span class="sid" title={r.sid}>{r.sid.slice(-6)}</span>{/if}
     </button>
@@ -118,15 +117,28 @@
     flex: 1;
   }
   .opts {
-    display: flex;
-    align-items: center;
-    gap: 8px;
     padding: 2px 12px 6px;
     font-size: var(--fs-xs);
   }
   .opts .np-check {
     font-size: var(--fs-xs);
     color: var(--fg-muted);
+    min-width: 0;
+  }
+  .state {
+    color: var(--ok);
+  }
+  .state.paused {
+    color: var(--warn);
+  }
+  .ms {
+    color: var(--fg-dim);
+    opacity: 0.7;
+  }
+  @container (max-width: 279px) {
+    .ms {
+      display: none;
+    }
   }
   .list {
     padding: 0 6px 10px;

@@ -1,5 +1,5 @@
 <script>
-  import { Icon, IconButton, Menu, Markdown, TimeAgo, Button, confirm } from '@netpi/kit';
+  import { Icon, IconButton, Menu, Markdown, TimeAgo, Button, confirm, copyText } from '@netpi/kit';
   import SectionEditor from './SectionEditor.svelte';
   import { STATUSES, PRIORITIES, STATUS_TONE, KIND_ICON, parseTags } from './model.js';
 
@@ -48,22 +48,32 @@
     if (r) editing = false;
   }
   async function remove() {
+    const id = idea.id; // the card can be gone (list refetched) by the time the dialog resolves
     const ok = await confirm({
       title: 'Delete idea?',
       message: `“${idea.title}” and its ${idea.sections?.length ?? 0} section(s) will be removed from the ideas file. Consider setting the status to done or rejected instead.`,
       confirmLabel: 'Delete',
       danger: true,
     });
-    if (ok) api.remove(idea.id);
+    if (ok) api.remove(id);
   }
+  const moreItems = $derived([
+    { label: 'Move up', icon: 'chevron-up', disabled: !canUp, onclick: () => api.move(idea.id, -1) },
+    { label: 'Move down', icon: 'chevron-down', disabled: !canDown, onclick: () => api.move(idea.id, 1) },
+    { divider: true },
+    { label: 'Copy id', icon: 'copy', onclick: () => copyText(idea.id) },
+    { divider: true },
+    { label: 'Delete idea…', icon: 'trash', danger: true, onclick: remove },
+  ]);
   async function saveSection(sec) {
     const patch = sec.id ? { updateSections: [sec] } : { addSections: [sec] };
     const r = await api.update(idea.id, patch);
     if (r) secEdit = null;
   }
   async function removeSection(sec) {
+    const id = idea.id;
     const ok = await confirm({ title: 'Remove section?', message: `“${sec.title || sec.kind}” will be removed.`, confirmLabel: 'Remove', danger: true });
-    if (ok) api.update(idea.id, { removeSectionIds: [sec.id] });
+    if (ok) api.update(id, { removeSectionIds: [sec.id] });
   }
 </script>
 
@@ -78,31 +88,28 @@
   {ondrop}
   role="listitem"
 >
-  <div class="head">
-    <span class="grip" draggable="true" {ondragstart} {ondragend} title="Drag to reorder" role="button" tabindex="-1">
-      <Icon name="grip" size={13} />
-    </span>
-    <button class="main" onclick={ontoggle} aria-expanded={open}>
-      <span class="title">{idea.title}</span>
-      {#if idea.summary && !open}<span class="summary">{idea.summary}</span>{/if}
-    </button>
-    <Menu items={statusItems} minWidth={150}>
+  <span class="grip" draggable="true" {ondragstart} {ondragend} title="Drag to reorder" role="button" tabindex="-1">
+    <Icon name="grip" size={12} />
+  </span>
+  <button class="main" onclick={ontoggle} aria-expanded={open} title={idea.title}>
+    <span class="title">{idea.title}</span>
+    {#if idea.summary && !open}<span class="summary">{idea.summary}</span>{/if}
+  </button>
+  <div class="meta np-line">
+    <Menu items={statusItems} minWidth={150} placement="bottom-start">
       {#snippet trigger({ toggle })}
-        <button class="status" data-tone={STATUS_TONE[idea.status]} onclick={toggle} title="Change status">
+        <button class="status" data-tone={STATUS_TONE[idea.status]} onclick={toggle} title="Status: {idea.status} (click to change)">
           {idea.status}<Icon name="chevron-down" size={10} />
         </button>
       {/snippet}
     </Menu>
-  </div>
-  <div class="meta">
-    <span class="prio" data-p={idea.priority}>
-      <Icon name={idea.priority === 'high' ? 'arrow-up' : idea.priority === 'low' ? 'arrow-down' : 'more'} size={11} />{idea.priority}
+    <span class="prio" data-p={idea.priority} title="Priority: {idea.priority}">
+      <Icon name={idea.priority === 'high' ? 'arrow-up' : idea.priority === 'low' ? 'arrow-down' : 'more'} size={11} /><span class="plabel">{idea.priority}</span>
     </span>
-    {#each idea.tags ?? [] as t (t)}<span class="tag">#{t}</span>{/each}
-    {#if idea.sections?.length}<span class="dim"><Icon name="layers" size={11} />{idea.sections.length}</span>{/if}
-    {#if agentMade}<span class="dim" title={idea.createdBy}><Icon name="bot" size={11} /></span>{/if}
-    <span class="np-spacer"></span>
-    <TimeAgo time={idea.updatedAt ?? idea.createdAt} class="dim" />
+    <span class="tags np-grow" title={(idea.tags ?? []).map((t) => `#${t}`).join(' ')}>{#each idea.tags ?? [] as t (t)}<span class="tag">#{t}</span>{/each}</span>
+    {#if idea.sections?.length}<span class="dim" title="{idea.sections.length} section(s)"><Icon name="layers" size={11} />{idea.sections.length}</span>{/if}
+    {#if agentMade}<span class="dim agent" title="Added by {idea.createdBy}"><Icon name="bot" size={11} /></span>{/if}
+    <TimeAgo time={idea.updatedAt ?? idea.createdAt} class="dim when" />
   </div>
 
   {#if open}
@@ -133,11 +140,10 @@
           <SectionEditor section={sec} onsave={saveSection} oncancel={() => (secEdit = null)} />
         {:else}
           <div class="sec">
-            <div class="sec-head">
+            <div class="sec-head np-line">
               <Icon name={KIND_ICON[sec.kind] ?? 'file-text'} size={12} />
               <span class="kind">{sec.kind}</span>
-              {#if sec.title}<span class="stitle">{sec.title}</span>{/if}
-              <span class="np-spacer"></span>
+              <span class="stitle np-grow" title={sec.title}>{sec.title ?? ''}</span>
               <span class="sec-acts">
                 <IconButton icon="pencil" title="Edit section" size="sm" onclick={() => (secEdit = sec.id)} />
                 <IconButton icon="trash" title="Remove section" size="sm" onclick={() => removeSection(sec)} />
@@ -151,16 +157,16 @@
         <SectionEditor section={null} onsave={saveSection} oncancel={() => (secEdit = null)} />
       {/if}
 
-      <div class="actions">
-        <Button variant="primary" size="sm" icon="steer" onclick={() => api.toPrompt(idea.id)} title="Insert a prompt for this idea into the composer">Send to chat</Button>
-        {#if secEdit !== 'new'}<Button size="sm" icon="plus" onclick={() => (secEdit = 'new')}>Section</Button>{/if}
-        <span class="np-spacer"></span>
+      <div class="actions np-line">
+        <Button variant="primary" size="sm" icon="steer" onclick={() => api.toPrompt(idea.id)} title="Insert a prompt for this idea into the composer">Send<span class="to-chat">to chat</span></Button>
+        {#if secEdit !== 'new'}<Button size="sm" icon="plus" onclick={() => (secEdit = 'new')} title="Add section"><span class="wide">Section</span></Button>{/if}
+        <span class="np-grow"></span>
         {#if !editing}<IconButton icon="pencil" title="Edit title, summary, priority, tags" size="sm" onclick={startEdit} />{/if}
-        <IconButton icon="chevron-up" title="Move up" size="sm" disabled={!canUp} onclick={() => api.move(idea.id, -1)} />
-        <IconButton icon="chevron-down" title="Move down" size="sm" disabled={!canDown} onclick={() => api.move(idea.id, 1)} />
-        <IconButton icon="trash" title="Delete idea" size="sm" onclick={remove} />
+        <Menu items={moreItems} minWidth={160}>
+          {#snippet trigger({ toggle })}<IconButton icon="more" title="More actions" size="sm" onclick={toggle} />{/snippet}
+        </Menu>
       </div>
-      <div class="info np-mono">{idea.id} · by {idea.createdBy ?? 'user'}{idea.sessionIds?.length ? ` · ${idea.sessionIds.length} session(s)` : ''}</div>
+      <div class="info np-mono np-ellipsis" title="{idea.id} · by {idea.createdBy ?? 'user'}">{idea.id} · by {idea.createdBy ?? 'user'}{idea.sessionIds?.length ? ` · ${idea.sessionIds.length} session(s)` : ''}</div>
     </div>
   {/if}
 </div>
@@ -203,32 +209,28 @@
   .card.drop-after::after {
     bottom: -5px;
   }
-  .head {
-    display: flex;
-    align-items: flex-start;
-    gap: 4px;
-    padding: 6px 6px 0 2px;
-  }
   .grip {
+    position: absolute;
+    left: 0;
+    top: 6px;
     display: grid;
     place-items: center;
-    width: 16px;
+    width: 12px;
     height: 20px;
     color: var(--fg-dim);
-    opacity: 0.35;
+    opacity: 0;
     cursor: grab;
-    flex: none;
+    transition: opacity var(--t-fast);
   }
   .card:hover .grip {
-    opacity: 1;
+    opacity: 0.8;
   }
   .main {
-    flex: 1;
-    min-width: 0;
+    width: 100%;
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 1px 0;
+    padding: 7px 10px 0 12px;
     border: 0;
     background: transparent;
     color: var(--fg);
@@ -240,6 +242,14 @@
     font-weight: 600;
     line-height: 1.35;
     overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .card.open .title {
+    display: block;
   }
   .summary {
     color: var(--fg-muted);
@@ -266,7 +276,6 @@
     font-weight: 600;
     white-space: nowrap;
     cursor: pointer;
-    flex: none;
   }
   .status[data-tone='info'] {
     background: var(--info-soft);
@@ -289,13 +298,29 @@
     color: var(--err);
   }
   .meta {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 3px 8px;
-    padding: 3px 8px 6px 20px;
+    gap: 6px;
+    padding: 4px 8px 7px 12px;
     font-size: var(--fs-xs);
     color: var(--fg-dim);
+  }
+  .meta :global(.np-menu-anchor) {
+    flex: none;
+  }
+  .meta :global(.when) {
+    flex: none;
+  }
+  .tags .tag + .tag {
+    margin-left: 6px;
+  }
+  /* narrow: keep status, priority arrow, section count and time; tags are in the filter menu and the tooltip */
+  @container (max-width: 279px) {
+    .meta .plabel,
+    .meta .dim.agent {
+      display: none;
+    }
+    .tags {
+      visibility: hidden;
+    }
   }
   .meta :global(.dim),
   .dim {
@@ -323,7 +348,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 2px 10px 8px 20px;
+    padding: 0 10px 8px 12px;
   }
   .full-summary {
     color: var(--fg-muted);
@@ -336,8 +361,6 @@
     padding: 0 0 0 10px;
   }
   .sec-head {
-    display: flex;
-    align-items: center;
     gap: 6px;
     min-height: 22px;
     color: var(--fg-dim);
@@ -369,10 +392,18 @@
     margin-bottom: 0.45em;
   }
   .actions {
-    display: flex;
-    align-items: center;
     gap: 4px;
     padding-top: 2px;
+  }
+  @container (max-width: 339px) {
+    .wide {
+      display: none;
+    }
+  }
+  @container (max-width: 279px) {
+    .to-chat {
+      display: none;
+    }
   }
   .info {
     font-size: 10px;
@@ -386,13 +417,15 @@
   }
   .erow {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
   }
   .erow .np-seg button {
     text-transform: capitalize;
   }
   .erow .np-input {
-    flex: 1;
+    flex: 1 1 130px;
+    min-width: 0;
     height: 26px;
   }
   .btns {

@@ -10,7 +10,7 @@
   let q = $state('');
   let index = $state(0);
 
-  const session = $derived(app.sessionsById.get(data.sessionId));
+  const session = $derived(data ? app.sessionsById.get(data.sessionId) : null);
   const items = $derived.by(() => {
     const query = q.trim().toLowerCase();
     const list = app.projects.filter((p) => !query || p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query));
@@ -18,9 +18,12 @@
   });
 
   async function choose(p) {
+    // read everything from props BEFORE closing: onclose() unmounts this popover and `data` becomes null
+    const sessionId = data?.sessionId;
+    const current = session?.projectId ?? null;
     onclose();
-    if ((session?.projectId ?? null) === p.id) return;
-    const s = await setSessionProject(data.sessionId, p.id);
+    if (!sessionId || current === p.id) return;
+    const s = await setSessionProject(sessionId, p.id);
     if (s) toast(p.id ? `Project: ${p.name}` : 'Project detached');
   }
 
@@ -41,7 +44,7 @@
   }
 </script>
 
-<Popover anchor={data.anchor} placement={data.anchor?.closest?.('[data-composer]') ? 'top-start' : 'bottom-end'} width={320} {onclose}>
+<Popover anchor={data?.anchor} placement={data?.anchor?.closest?.('[data-composer]') ? 'top-start' : 'bottom-end'} width={320} {onclose}>
   <div class="head">
     <Icon name="search" size={13} />
     <input placeholder="Attach project…" bind:value={q} onkeydown={onKey} use:focus spellcheck="false" />

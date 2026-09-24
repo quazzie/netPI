@@ -199,6 +199,7 @@
     flex-direction: column;
     min-height: 0;
     flex: 1;
+    container-type: inline-size;
   }
   .head {
     display: flex;
@@ -208,6 +209,7 @@
   }
   .search {
     flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -319,14 +321,22 @@
     position: absolute;
     right: 4px;
     top: 5px;
-    display: none;
+    display: flex;
     gap: 1px;
     padding: 1px;
     border-radius: 5px;
     background: var(--bg-2);
     box-shadow: -8px 0 8px var(--bg-2);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--t-fast);
   }
-  .prow:hover .actions {
-    display: flex;
+  .prow:hover .actions,
+  .prow:focus-within .actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .prow:focus-within {
+    background: var(--bg-2);
   }
 </style>

@@ -158,7 +158,7 @@
           <TimeAgo time={s.updatedAt} class="when" />
         </div>
         <div class="line2">
-          {#if projectName(s)}<span class="proj"><Icon name="folder" size={11} />{projectName(s)}</span>{/if}
+          {#if depth === 0 && projectName(s)}<span class="proj" title="Project {projectName(s)}"><Icon name="folder" size={11} /><span class="pn">{projectName(s)}</span></span>{/if}
           {#if depth === 0 && s.messageCount}<span class="count">{s.messageCount} msgs</span>{/if}
           {#if kids?.length}
             <button
@@ -170,7 +170,7 @@
               }}
             >
               <span class="chev" class:open={expanded.has(s.id)}><Icon name="chevron-right" size={11} /></span>
-              {kids.length} subagent{kids.length === 1 ? '' : 's'}
+              {kids.length}<span class="kl">&nbsp;subagent{kids.length === 1 ? '' : 's'}</span>
             </button>
           {/if}
         </div>
@@ -256,6 +256,7 @@
     flex-direction: column;
     min-height: 0;
     flex: 1;
+    container-type: inline-size;
   }
   .head {
     display: flex;
@@ -265,6 +266,7 @@
   }
   .search {
     flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -380,6 +382,8 @@
     min-width: 0;
     font-size: var(--fs-xs);
     color: var(--fg-dim);
+    white-space: nowrap;
+    overflow: hidden;
   }
   .line2:empty {
     display: none;
@@ -389,14 +393,26 @@
     align-items: center;
     gap: 4px;
     min-width: 0;
+    flex: 0 1 auto;
+  }
+  .proj :global(svg) {
+    flex: none;
+  }
+  .pn {
+    min-width: 0;
     overflow: hidden;
-    white-space: nowrap;
     text-overflow: ellipsis;
   }
   .count {
     flex: none;
   }
+  @container (max-width: 259px) {
+    .kl {
+      display: none;
+    }
+  }
   .kids {
+    flex: none;
     display: inline-flex;
     align-items: center;
     gap: 2px;
@@ -431,7 +447,10 @@
     position: absolute;
     right: 4px;
     top: 4px;
-    display: none;
+    display: flex;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--t-fast);
     gap: 1px;
     padding: 1px;
     border-radius: 5px;
@@ -442,8 +461,11 @@
     background: var(--bg-3);
     box-shadow: -8px 0 8px var(--bg-3);
   }
-  .srow:hover .actions {
-    display: flex;
+  .srow:hover .actions,
+  .srow:focus-within .actions,
+  .srow.active .actions {
+    opacity: 1;
+    pointer-events: auto;
   }
   .rename {
     height: 24px;

@@ -166,13 +166,14 @@
 
 <div class="work">
   <div class="summary">
-    <span class="stats">
-    <span class="stat" title="Active agents (running, queued or waiting)"><b>{active.length}</b> agents</span>
-    <span class="stat" title="Busy lane slots{queuedSlots ? ` · ${queuedSlots} waiting for a slot` : ''}"
-      ><b>{busySlots}</b> slots{#if queuedSlots}<span class="warn"> +{queuedSlots}</span>{/if}</span
-    >
-    <span class="stat" title="Running shell processes"><b>{running.length}</b> proc</span>
-    <span class="stat" title="Input + output tokens today"><b>{tokens(todayTokens) || 0}</b> tok</span>
+    <!-- stats that do not fit are dropped whole, least important last -->
+    <span class="stats np-fit">
+      <span class="stat" title="Active agents (running, queued or waiting)"><b>{active.length}</b> agents</span>
+      <span class="stat" title="Busy lane slots{queuedSlots ? ` · ${queuedSlots} waiting for a slot` : ''}"
+        ><b>{busySlots}</b> slots{#if queuedSlots}<span class="warn"> +{queuedSlots}</span>{/if}</span
+      >
+      <span class="stat" title="Running shell processes"><b>{running.length}</b> proc</span>
+      <span class="stat" title="Input + output tokens today"><b>{tokens(todayTokens) || 0}</b> tok</span>
     </span>
     <IconButton icon="refresh" title={updatedAt ? `Refresh (updated ${new Date(updatedAt).toLocaleTimeString()})` : 'Refresh'} size="sm" onclick={refresh} />
   </div>
@@ -254,20 +255,18 @@
           {@const used = u.budgetUsed ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0) + (u.cacheWriteTokens ?? 0)}
           {@const frac = u.budgetTokens ? Math.min(1, used / u.budgetTokens) : null}
           <div class="usage">
-            <div class="uline">
-              <span class="uprov">{u.provider}</span>
-              <span class="np-spacer"></span>
-              <span class="np-mono unums" title="input · output · cache read tokens">
+            <div class="uline np-line">
+              <span class="uprov np-grow">{u.provider}</span>
+              <span class="np-mono unums" title="{(u.inputTokens ?? 0).toLocaleString()} input · {(u.outputTokens ?? 0).toLocaleString()} output · {(u.cacheReadTokens ?? 0).toLocaleString()} cache read tokens">
                 {tokens(u.inputTokens) || 0}<span class="np-dim">↑</span>
                 {tokens(u.outputTokens) || 0}<span class="np-dim">↓</span>
-                {#if u.cacheReadTokens}<span class="np-dim">{tokens(u.cacheReadTokens)} cached</span>{/if}
+                {#if u.cacheReadTokens}<span class="np-dim cached">{tokens(u.cacheReadTokens)} cached</span>{/if}
               </span>
             </div>
-            <div class="umeta">
-              <span>{u.calls ?? 0} calls</span>
+            <div class="umeta np-line">
+              <span class="np-grow">{u.calls ?? 0} calls</span>
               {#if u.budgetTokens}
-                <span class="np-spacer"></span>
-                <span class:warn={frac >= 0.8 && frac < 1} class:err={frac >= 1}>{tokens(used)} / {tokens(u.budgetTokens)} budget</span>
+                <span class:warn={frac >= 0.8 && frac < 1} class:err={frac >= 1} title="Daily budget (input + output + cache write)">{tokens(used)} / {tokens(u.budgetTokens)}</span>
               {/if}
             </div>
             {#if u.budgetTokens}
@@ -289,20 +288,15 @@
   .summary {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 5px 6px 5px 12px;
+    gap: 6px;
+    padding: 4px 6px 4px 12px;
     border-bottom: 1px solid var(--border);
     font-size: var(--fs-sm);
     color: var(--fg-muted);
-    white-space: nowrap;
-    overflow: hidden;
   }
   .stats {
     flex: 1;
-    min-width: 0;
-    display: flex;
-    gap: 12px;
-    overflow: hidden;
+    column-gap: 11px;
   }
   .stat b {
     color: var(--fg);
@@ -348,9 +342,12 @@
   }
   .uline,
   .umeta {
-    display: flex;
-    align-items: baseline;
     gap: 8px;
+  }
+  @container (max-width: 259px) {
+    .cached {
+      display: none;
+    }
   }
   .uprov {
     font-weight: 600;

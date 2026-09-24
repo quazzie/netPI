@@ -72,33 +72,47 @@
   const failedPlugins = $derived((plugins ?? []).filter((p) => p.state === 'failed').length);
 
   const options = $derived([
-    { value: 'plugins', label: 'Plugins', count: failedPlugins || null, title: failedPlugins ? `${failedPlugins} failed` : undefined },
-    { value: 'tools', label: 'Tools', title: tools ? `${new Set(tools.map((t) => t.name)).size} tools` : undefined },
-    { value: 'rpc', label: 'RPC', title: rpcs ? `${rpcs.length} methods` : undefined },
-    { value: 'events', label: 'Events' },
-    { value: 'logs', label: 'Logs' },
-    { value: 'context', label: 'Context' },
+    {
+      value: 'plugins',
+      label: 'Plugins',
+      icon: 'puzzle',
+      count: failedPlugins || null,
+      tone: 'err',
+      title: failedPlugins ? `Plugins (${failedPlugins} failed)` : 'Plugins',
+    },
+    { value: 'tools', label: 'Tools', icon: 'wrench', title: tools ? `Tools (${new Set(tools.map((t) => t.name)).size})` : 'Tools' },
+    { value: 'rpc', label: 'RPC', icon: 'zap', title: rpcs ? `RPC methods (${rpcs.length})` : 'RPC methods' },
+    { value: 'events', label: 'Events', icon: 'activity', title: 'Live events' },
+    { value: 'logs', label: 'Logs', icon: 'list', title: 'Log' },
+    { value: 'context', label: 'Context', icon: 'layers', title: 'Context of the active session' },
   ]);
+  const rtTip = $derived(
+    rt
+      ? `pid ${rt.pid} · ${rt.framework ?? ''} · ${rt.os ?? ''}\nworking set ${rt.workingSetMb} MB · GC heap ${rt.gcHeapMb} MB · ${rt.threads} threads · up ${duration((rt.uptimeSeconds ?? 0) * 1000)}`
+      : undefined,
+  );
 </script>
 
 <div class="diag">
   <div class="rt">
-    {#if rt}
-      <span class="np-mono" title="process id">pid {rt.pid}</span>
-      <span title={rt.framework}>{rt.framework?.split(' (')[0]}</span>
-      <span title="working set (GC heap {rt.gcHeapMb} MB)">{rt.workingSetMb} MB</span>
-      <span title="threads">{rt.threads} thr</span>
-      <span title="uptime">up {duration((rt.uptimeSeconds ?? 0) * 1000)}</span>
-    {:else if error}
-      <span class="err">{error}</span>
-    {:else}
-      <span class="np-dim">loading…</span>
-    {/if}
-    <span class="np-spacer"></span>
+    <!-- items that do not fit are dropped whole (least important last); the tooltip has everything -->
+    <div class="np-fit facts" title={rtTip}>
+      {#if rt}
+        <span class="np-mono">pid {rt.pid}</span>
+        <span>{rt.workingSetMb} MB</span>
+        <span>up {duration((rt.uptimeSeconds ?? 0) * 1000)}</span>
+        <span>{rt.threads} thr</span>
+        <span>{rt.framework?.split(' (')[0]}</span>
+      {:else if error}
+        <span class="err">{error}</span>
+      {:else}
+        <span class="np-dim">loading…</span>
+      {/if}
+    </div>
     <IconButton icon="refresh" title="Refresh" size="sm" disabled={loading} onclick={refresh} />
   </div>
-  <div class="views np-scroll">
-    <Segmented {options} bind:value={view} class="seg" />
+  <div class="views">
+    <Segmented {options} bind:value={view} />
   </div>
 
   <div class="content">
@@ -129,35 +143,30 @@
   .rt {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 5px 6px 5px 12px;
+    gap: 6px;
+    padding: 4px 6px 4px 12px;
     font-size: var(--fs-xs);
     color: var(--fg-muted);
-    white-space: nowrap;
-    overflow: hidden;
     border-bottom: 1px solid var(--border);
+  }
+  .facts {
+    flex: 1;
+    column-gap: 9px;
   }
   .err {
     color: var(--err);
   }
   .views {
-    padding: 8px 10px 4px 12px;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .views :global(.seg) {
     display: flex;
-    width: max-content;
-    min-width: 100%;
+    padding: 8px 10px 4px 12px;
   }
-  .views :global(.seg > button) {
-    flex: 1;
+  .views :global(.np-seg) {
+    width: 100%;
+  }
+  .views :global(.np-seg > button) {
+    flex: 1 1 auto;
     justify-content: center;
     padding: 0 6px;
-  }
-  .views :global(.seg .np-seg-count) {
-    color: var(--err);
-    font-weight: 700;
   }
   .content {
     flex: 1;

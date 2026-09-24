@@ -19,10 +19,10 @@
     display: flex;
     align-items: center;
     gap: 7px;
-    width: 100%;
+    width: calc(100% + 8px);
     min-height: 24px;
-    padding: 0 3px;
-    margin: 0 -3px;
+    padding: 0 4px;
+    margin: 0 -4px;
     border: 0;
     border-radius: 4px;
     background: transparent;
@@ -37,6 +37,7 @@
     background: var(--bg-2);
   }
   .recent :global(svg) {
+    flex: none;
     color: var(--fg-dim);
   }
   .recent[data-status='completed'] :global(svg) {
@@ -47,6 +48,10 @@
   }
   .name {
     flex: none;
+    max-width: 55%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-weight: 500;
   }
   .detail {

@@ -72,45 +72,44 @@
   onDestroy(stopLive);
 
   async function kill() {
+    const id = proc.id; // the row moves to "Recent" (another instance) once the process exits
     try {
-      const ok = await ctx.rpc('processes.kill', { id: proc.id });
-      ctx.app.toast(ok ? `Killed ${proc.id}` : `${proc.id} was not running`, ok ? 'info' : 'warn');
+      const ok = await ctx.rpc('processes.kill', { id });
+      ctx.app.toast(ok ? `Killed ${id}` : `${id} was not running`, ok ? 'info' : 'warn');
     } catch (e) {
       ctx.app.toast(`Kill failed: ${e.message}`, 'error');
     }
   }
 </script>
 
-<div class="proc" data-tone={tone} class:open>
-  <div class="row" role="button" tabindex="0" onclick={toggle} onkeydown={(e) => e.key === 'Enter' && toggle()} aria-expanded={open}>
+<div class="proc np-hover-row" data-tone={tone} class:open>
+  <div class="row np-line" role="button" tabindex="0" onclick={toggle} onkeydown={(e) => e.key === 'Enter' && toggle()} aria-expanded={open} title={proc.command}>
     <span class="ic">{#if running}<span class="np-spinner"></span>{:else}<Icon name={icon} size={13} />{/if}</span>
-    <span class="shell">{proc.shell}</span>
-    <span class="cmd np-mono np-ellipsis" title={proc.command}>{proc.command}</span>
-    <span class="np-spacer"></span>
+    <span class="cmd np-mono np-grow">{proc.command}</span>
     {#if running}
       <Elapsed since={proc.startedAt} class="np-mono el" />
-      <ConfirmButton icon="kill" title="Kill process tree" confirmLabel="Kill?" onconfirm={kill} />
     {:else}
       <span class="res np-mono">{proc.status === 'exited' ? `exit ${proc.exitCode ?? '?'}` : proc.status}</span>
     {/if}
   </div>
-  <div class="meta">
-    <span>pid {proc.pid}</span>
-    {#if proc.background}<span class="bg">background</span>{/if}
-    {#if !running && dur != null}<span>{duration(dur)}</span>{/if}
-    {#if proc.outputBytes}<span>{bytes(proc.outputBytes)}</span>{/if}
-    <span class="cwd np-ellipsis" title={proc.cwd}>{proc.cwd}</span>
-    {#if !running && proc.endedAt}<span class="np-spacer"></span><TimeAgo time={proc.endedAt} />{/if}
+  <div class="line2 np-line">
+    <span class="np-meta np-grow" title="{proc.shell} · pid {proc.pid}{proc.background ? ' · background' : ''} · {proc.cwd}">
+      {#if proc.shell && proc.shell !== 'bash'}<span>{proc.shell}</span>{/if}<span>pid {proc.pid}</span>{#if proc.background}<span class="bg">bg</span>{/if}{#if !running && dur != null}<span>{duration(dur)}</span>{/if}{#if proc.outputBytes}<span>{bytes(proc.outputBytes)}</span>{/if}<span class="cwd">{proc.cwd}</span>
+    </span>
+    {#if !running && proc.endedAt}<TimeAgo time={proc.endedAt} class="when" />{/if}
   </div>
+  {#if running}
+    <span class="np-hover-actions"><ConfirmButton icon="kill" title="Kill process tree" confirmLabel="Kill?" onconfirm={kill} /></span>
+  {/if}
   {#if open}
     <div class="out-wrap">
       {#if loadingOut && !output}
         <div class="np-dim np-small">loading output…</div>
       {:else}
         <pre class="out np-mono np-scroll" bind:this={pre}>{output || '(no output)'}</pre>
-        <div class="out-foot">
+        <div class="out-foot np-line">
           {#if running}<span class="live"><span class="np-dot" data-status="running"></span>live</span>{/if}
-          <span class="np-spacer"></span>
+          <span class="np-grow"></span>
           <button class="lnk" onclick={() => copyText(proc.command)}>copy command</button>
           <button class="lnk" onclick={fetchTail}>reload</button>
         </div>
@@ -121,24 +120,27 @@
 
 <style>
   .proc {
-    padding: 3px 0;
+    padding: 3px 4px 4px;
+    margin: 0 -4px;
+    border-radius: var(--radius-sm);
   }
-  .proc + .proc {
-    border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  .proc:hover {
+    --row-bg: var(--bg-2);
+    background: var(--bg-2);
+  }
+  .proc.open {
+    --row-bg: var(--bg-2);
+    background: var(--bg-2);
   }
   .row {
-    display: flex;
-    align-items: center;
     gap: 7px;
-    min-height: 24px;
-    padding: 0 2px 0 3px;
-    margin: 0 -2px 0 -3px;
-    border-radius: 4px;
+    min-height: 22px;
     cursor: pointer;
-    min-width: 0;
+    outline: none;
   }
-  .row:hover {
-    background: var(--bg-2);
+  .row:focus-visible {
+    box-shadow: 0 0 0 2px var(--accent-line);
+    border-radius: 4px;
   }
   .ic {
     display: grid;
@@ -161,11 +163,6 @@
   [data-tone='err'] .res {
     color: var(--err);
   }
-  .shell {
-    flex: none;
-    font-size: var(--fs-xs);
-    color: var(--fg-dim);
-  }
   .cmd {
     font-size: 12px;
     color: var(--fg);
@@ -181,24 +178,25 @@
     color: var(--fg-dim);
     white-space: nowrap;
   }
-  .meta {
-    display: flex;
-    gap: 10px;
-    padding-left: 17px;
+  .line2 {
+    padding-left: 21px;
+    gap: 8px;
+  }
+  .line2 .np-meta {
+    font-size: 10.5px;
+  }
+  .line2 :global(.when) {
     font-size: 10.5px;
     color: var(--fg-dim);
-    min-width: 0;
-    white-space: nowrap;
   }
   .bg {
     color: var(--info);
   }
   .cwd {
     font-family: var(--font-mono);
-    min-width: 0;
   }
   .out-wrap {
-    margin: 5px 0 3px 17px;
+    margin: 5px 0 1px;
   }
   .out {
     margin: 0;
@@ -215,8 +213,6 @@
     overflow-wrap: anywhere;
   }
   .out-foot {
-    display: flex;
-    align-items: center;
     gap: 10px;
     padding-top: 3px;
     font-size: var(--fs-xs);

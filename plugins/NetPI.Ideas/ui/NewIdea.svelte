@@ -52,6 +52,7 @@
   }
   .row {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
     align-items: center;
   }
@@ -59,7 +60,8 @@
     text-transform: capitalize;
   }
   .tags {
-    flex: 1;
+    flex: 1 1 120px;
+    min-width: 0;
     height: 26px;
   }
   .btns {

@@ -60,10 +60,10 @@
   <Segmented
     bind:value={level}
     options={[
-      { value: 'all', label: 'All' },
-      { value: 'info', label: 'Info+' },
-      { value: 'warn', label: 'Warn', count: counts.wrn || null },
-      { value: 'error', label: 'Error', count: counts.err || null },
+      { value: 'all', label: 'All', icon: 'list', title: 'All levels' },
+      { value: 'info', label: 'Info+', icon: 'info', title: 'Information and above' },
+      { value: 'warn', label: 'Warn', icon: 'alert', count: counts.wrn || null, title: 'Warnings and errors' },
+      { value: 'error', label: 'Error', icon: 'circle-x', count: counts.err || null, tone: 'err', title: 'Errors' },
     ]}
   />
 </div>
@@ -75,16 +75,16 @@
   <div class="list">
     {#each shown as l, i (i + l.time + l.message.length)}
       {@const lv = norm(l.level)}
-      <div class="log" data-l={lv}>
-        <button class="row" onclick={() => (open = open === l ? null : l)} disabled={!l.exception}>
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+      <div class="log" data-l={lv} class:open={open === l} onclick={() => (open = open === l ? null : l)}>
+        <div class="row np-line">
           <span class="t np-mono">{time(l.time)}</span>
           <span class="lvl np-mono">{lv}</span>
-          <span class="cat np-mono" title={l.category}>{l.category}</span>
-        </button>
+          <span class="cat np-mono np-grow" title={l.category}>{l.category}</span>
+          {#if l.exception}<span class="x" title="Has an exception (click to show)">exception</span>{/if}
+        </div>
         <div class="msg">{l.message}</div>
-        {#if l.exception}
-          {#if open === l}<pre class="exc np-mono">{l.exception}</pre>{:else}<button class="lnk" onclick={() => (open = l)}>show exception</button>{/if}
-        {/if}
+        {#if l.exception && open === l}<pre class="exc np-mono">{l.exception}</pre>{/if}
       </div>
     {:else}
       <Empty>No log entries{q || level !== 'all' ? ' match the filter' : ''}</Empty>
@@ -103,22 +103,20 @@
     padding: 0 10px 10px 12px;
   }
   .log {
-    padding: 4px 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+    padding: 4px 4px;
+    margin: 0 -4px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .log:hover {
+    background: var(--bg-2);
   }
   .row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: default;
-    min-width: 0;
+    gap: 7px;
+  }
+  .x {
+    font-size: 10px;
+    color: var(--err);
   }
   .t {
     font-size: 10.5px;
@@ -156,6 +154,17 @@
     font-size: var(--fs-sm);
     line-height: 1.4;
     overflow-wrap: anywhere;
+    /* long messages: 3 lines until opened */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
+  }
+  .log.open .msg {
+    display: block;
+    -webkit-line-clamp: unset;
+    line-clamp: none;
   }
   [data-l='err'] .msg,
   [data-l='crt'] .msg {
@@ -176,13 +185,5 @@
     overflow-wrap: anywhere;
     max-height: 220px;
     overflow: auto;
-  }
-  .lnk {
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--accent);
-    font-size: var(--fs-xs);
-    cursor: pointer;
   }
 </style>

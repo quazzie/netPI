@@ -25,12 +25,11 @@
       <div class="grp">
         {#each arr as r (r.method)}
           <div class="rpc">
-            <div class="row">
-              <button class="m np-mono" title="Copy method name" onclick={() => copyText(r.method)}>{r.method}</button>
-              <span class="np-spacer"></span>
-              <span class="plug np-mono">{r.pluginId}</span>
+            <div class="row np-line">
+              <button class="m np-mono np-grow" title="{r.method} (click to copy)" onclick={() => copyText(r.method)}>{r.method}</button>
+              <span class="plug np-mono" title={r.pluginId}>{r.pluginId.replace(/^netpi\./, '')}</span>
             </div>
-            {#if r.description}<div class="d">{r.description}</div>{/if}
+            {#if r.description}<div class="d" title={r.description}>{r.description}</div>{/if}
           </div>
         {/each}
       </div>
@@ -55,11 +54,10 @@
     padding: 2px 0;
   }
   .row {
-    display: flex;
-    align-items: baseline;
     gap: 8px;
   }
   .m {
+    text-align: left;
     padding: 0;
     border: 0;
     background: transparent;
@@ -70,7 +68,11 @@
   .m:hover {
     text-decoration: underline;
   }
-  .plug {
+  .row > .plug {
+    flex: 0 1 auto;
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
     font-size: 10.5px;
     color: var(--fg-dim);
   }
@@ -79,5 +81,10 @@
     color: var(--fg-muted);
     line-height: 1.4;
     overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
   }
 </style>

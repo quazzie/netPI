@@ -193,6 +193,10 @@
     dropTarget = null;
   }
 
+  const tagItems = $derived([
+    ...(tagFilter.size ? [{ label: 'Clear tags', icon: 'x', onclick: () => (tagFilter = new Set()) }, { divider: true }] : []),
+    ...allTags.map(({ t, n }) => ({ label: `#${t}`, hint: String(n), checked: tagFilter.has(t), keepOpen: true, onclick: () => toggleTag(t) })),
+  ]);
   const statusItems = $derived([
     { label: `Active`, hint: String(counts.active), checked: statusFilter === 'active', onclick: () => (statusFilter = 'active') },
     { label: `All`, hint: String(counts.all), checked: statusFilter === 'all', onclick: () => (statusFilter = 'all') },
@@ -202,33 +206,42 @@
 </script>
 
 <div class="ideas">
-  <div class="scope">
-    <span class="badge" class:global={list?.scope !== 'project'}>
+  <div class="scope np-line">
+    <span class="badge" class:global={list?.scope !== 'project'} title={list?.scope === 'project' ? `Project ${list.projectName ?? ''}` : 'Global backlog'}>
       <Icon name={list?.scope === 'project' ? 'folder' : 'globe'} size={12} />
-      {list?.scope === 'project' ? (list.projectName ?? 'Project') : 'Global'}
+      <span class="np-ellipsis">{list?.scope === 'project' ? (list.projectName ?? 'Project') : 'Global'}</span>
     </span>
-    <span class="file np-mono" title={list?.file}><bdi>{list ? list.file : ''}</bdi></span>
+    <span class="file np-mono np-grow" title={list?.file}><bdi>{list ? list.file : ''}</bdi></span>
     <IconButton icon="plus" title="New idea" size="sm" pressed={adding} onclick={() => (adding = !adding)} />
   </div>
 
-  <div class="filters">
-    <SearchInput bind:value={q} placeholder="Search ideas" />
+  <div class="filters np-line">
+    <SearchInput bind:value={q} placeholder="Search ideas" class="np-grow" />
     <Menu items={statusItems} minWidth={170}>
       {#snippet trigger({ toggle, open })}
-        <button class="np-chip status-chip" aria-pressed={statusFilter !== 'active'} aria-expanded={open} onclick={toggle}>
-          {statusLabel}
+        <button class="np-chip fchip" aria-pressed={statusFilter !== 'active'} aria-expanded={open} onclick={toggle} title="Status filter">
+          <span class="cap">{statusLabel}</span>
           <span class="n">{counts[statusFilter] ?? 0}</span>
           <Icon name="chevron-down" size={11} />
         </button>
       {/snippet}
     </Menu>
+    {#if allTags.length}
+      <Menu items={tagItems} minWidth={160}>
+        {#snippet trigger({ toggle, open })}
+          <button class="np-chip fchip" aria-pressed={tagFilter.size > 0} aria-expanded={open} onclick={toggle} title="Filter by tag">
+            #{#if tagFilter.size}<span class="n">{tagFilter.size}</span>{/if}
+            <Icon name="chevron-down" size={11} />
+          </button>
+        {/snippet}
+      </Menu>
+    {/if}
   </div>
-  {#if allTags.length}
+  {#if tagFilter.size}
     <div class="tags">
-      {#each allTags as { t, n } (t)}
-        <button class="np-chip" aria-pressed={tagFilter.has(t)} onclick={() => toggleTag(t)}>#{t}<span class="n">{n}</span></button>
+      {#each [...tagFilter] as t (t)}
+        <button class="np-chip" aria-pressed="true" title="Remove this tag filter" onclick={() => toggleTag(t)}>#{t}<Icon name="x" size={10} /></button>
       {/each}
-      {#if tagFilter.size}<button class="clear" onclick={() => (tagFilter = new Set())}>clear</button>{/if}
     </div>
   {/if}
 
@@ -285,17 +298,14 @@
     min-height: 100%;
   }
   .scope {
-    display: flex;
-    align-items: center;
     gap: 8px;
     padding: 8px 8px 4px 12px;
-    min-width: 0;
   }
   .badge {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    flex: none;
+    max-width: 60%;
     height: 20px;
     padding: 0 8px;
     border-radius: 10px;
@@ -309,27 +319,21 @@
     color: var(--fg-muted);
   }
   .file {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
     direction: rtl;
     text-align: left;
     font-size: 10.5px;
     color: var(--fg-dim);
   }
   .filters {
-    display: flex;
-    gap: 6px;
+    gap: 5px;
     padding: 4px 10px 4px 12px;
   }
-  .filters :global(.np-search) {
-    flex: 1;
-  }
-  .status-chip {
+  .fchip {
     height: 28px;
+    padding: 0 7px;
     border-radius: var(--radius-sm);
+  }
+  .cap {
     text-transform: capitalize;
   }
   .n {
@@ -340,17 +344,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
-    padding: 4px 10px 4px 12px;
-  }
-  .clear {
-    border: 0;
-    background: transparent;
-    color: var(--fg-dim);
-    font-size: var(--fs-xs);
-    cursor: pointer;
-  }
-  .clear:hover {
-    color: var(--fg);
+    padding: 2px 10px 2px 12px;
   }
   .list {
     flex: 1;

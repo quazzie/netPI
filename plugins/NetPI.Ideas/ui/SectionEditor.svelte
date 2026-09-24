@@ -60,11 +60,13 @@
     gap: 6px;
   }
   .kind {
-    width: 130px;
+    width: 110px;
     flex: none;
     height: 26px;
   }
   .row input {
+    flex: 1;
+    min-width: 0;
     height: 26px;
   }
   textarea {
@@ -80,5 +82,14 @@
   .hint {
     margin-right: auto;
     font-size: var(--fs-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  @container (max-width: 299px) {
+    .hint {
+      display: none;
+    }
   }
 </style>

@@ -293,7 +293,7 @@ log('plugin tab: Work');
   await openStripTab('right', 'Work');
   await page.waitForSelector('.plugin-root .work .pool', { timeout: 10_000 });
   await page.waitForTimeout(400);
-  const qwen = page.locator('.work .pool', { hasText: 'aiproxy/qwen3.8-27b' }).first();
+  const qwen = page.locator('.work .pool', { hasText: 'qwen3.8-27b' }).first();
   const nums = (await qwen.locator('.nums').innerText().catch(() => '')).replace(/\s+/g, '');
   check('work: qwen pool 2/2 busy', nums.includes('2/2'), nums);
   check('work: pool shows queued waiter', (await qwen.locator('.owner.waiting').count()) > 0);
@@ -313,6 +313,7 @@ log('plugin tab: Work');
   // kill the background dev server (two-step confirm button)
   const dev = page.locator('.work .proc', { hasText: 'npm run dev' }).first();
   const kill = dev.locator('button[aria-label="Kill process tree"]');
+  await dev.hover(); // row actions appear on hover / focus
   await kill.click();
   await kill.click();
   await page.waitForTimeout(600);
@@ -350,31 +351,38 @@ log('plugin tab: Ideas');
   const first = cards().first();
   check('ideas: new idea added on top', (await first.locator('.title').innerText()) === 'Keyboard shortcuts cheat sheet');
   if ((await first.locator('.main').getAttribute('aria-expanded')) !== 'true') await first.locator('.main').click();
-  await first.locator('.actions button', { hasText: 'Section' }).click();
+  await first.locator('.actions button[title="Add section"]').click();
   await first.locator('.sed select').selectOption('todo');
   await first.locator('.sed textarea').fill('- [ ] list shortcuts\n- [ ] render a table');
   await first.locator('.sed button', { hasText: 'Add section' }).click();
   await page.waitForTimeout(500);
   check('ideas: section added', (await first.locator('.sec').count()) === 1);
   // send to chat → composer
-  await first.locator('.actions button', { hasText: 'Send to chat' }).click();
+  await first.locator('.actions button[title^="Insert a prompt"]').click();
   await page.waitForTimeout(300);
   check('ideas: send to chat fills the composer', (await ta.inputValue()).includes('# Keyboard shortcuts cheat sheet'));
   await ta.fill('');
-  // reorder, then delete through the host confirm dialog
-  await first.locator('.actions button[title="Move down"]').click();
+  // reorder, then delete through the host confirm dialog (both in the ⋯ menu)
+  const moreMenu = async (card, item) => {
+    await card.locator('.actions button[title="More actions"]').click();
+    await page.locator('.np-menu .np-menu-item', { hasText: item }).click();
+  };
+  await moreMenu(first, 'Move down');
   await page.waitForTimeout(500);
   check('ideas: move down (ideas.reorder)', (await cards().nth(1).locator('.title').innerText()) === 'Keyboard shortcuts cheat sheet');
-  await cards().nth(1).locator('.actions button[title="Delete idea"]').click();
+  await moreMenu(cards().nth(1), 'Delete idea');
   await page.locator('.dialog button', { hasText: /^Delete$/ }).click();
   await page.waitForTimeout(500);
   check('ideas: delete with confirm', (await page.locator('.ideas .card', { hasText: 'Keyboard shortcuts cheat sheet' }).count()) === 0);
-  // tag filter + an external change (ideas.changed) refetches
-  await page.locator('.ideas .tags .np-chip', { hasText: '#aiproxy' }).click();
+  // tag filter (menu; the selected tag shows as a removable chip) + an external change (ideas.changed) refetches
+  await page.locator('.ideas .filters button[title="Filter by tag"]').click();
+  await page.locator('.np-menu .np-menu-item', { hasText: '#aiproxy' }).click();
+  await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
   const nTag = await cards().count();
   check('ideas: tag filter', nTag > 0 && nTag < n0, `${nTag} of ${n0}`);
   await page.locator('.ideas .tags .np-chip', { hasText: '#aiproxy' }).click();
+  check('ideas: removing the tag chip clears the filter', (await cards().count()) >= n0);
   const projectId = (await rpcCall('projects.list')).find((p) => p.name === 'netpi')?.id;
   if (projectId) await rpcCall('ideas.add', { projectId, idea: { title: 'Added over RPC', tags: ['rpc'] } });
   await page.waitForSelector('.ideas .card:has-text("Added over RPC")', { timeout: 3000 }).catch(() => {});
@@ -385,7 +393,7 @@ log('plugin tab: Diagnostics');
 {
   await openStripTab('right', 'Diagnostics');
   await page.waitForSelector('.plugin-root .diag', { timeout: 10_000 });
-  const view = (v) => page.locator('.diag .views button', { hasText: v }).click();
+  const view = (v) => page.locator(`.diag .views button[data-value="${v.toLowerCase()}"]`).click();
   await view('Plugins');
   await page.waitForTimeout(300);
   check('diagnostics: failed plugin listed first with its error', /failed/.test(await page.locator('.diag .pl').first().innerText()) && (await page.locator('.diag .pl .error').count()) > 0);
@@ -393,6 +401,7 @@ log('plugin tab: Diagnostics');
   const row = page.locator('.diag .pl', { hasText: 'netpi.retry' }).first();
   const loads = async () => (await rpcCall('plugins.list')).find((p) => p.id === 'netpi.retry')?.loadCount;
   const before = await loads();
+  await row.hover();
   await row.locator('button[title^="Reload"]').click();
   await page.waitForTimeout(900);
   check('diagnostics: reload plugin', (await loads()) === before + 1);
@@ -446,6 +455,90 @@ log('plugin tab: Files');
   await page.locator('.files .np-search input').fill('');
   await ta.fill('');
   await openStripTab('left', 'Sessions');
+}
+
+log('narrow side panels');
+{
+  // drag both panels to ~230px (the user's layout is 230–340px) and check every tab for sideways overflow
+  const dragTo = async (side, width) => {
+    const h = await page.locator(`.panel.${side} .resizer`).boundingBox();
+    const body = await page.locator(`.panel.${side} > .body`).boundingBox();
+    const target = side === 'right' ? body.x + body.width - width : body.x + width;
+    await page.mouse.move(h.x + 3, h.y + 200);
+    await page.mouse.down();
+    await page.mouse.move(target, h.y + 200, { steps: 6 });
+    await page.mouse.up();
+  };
+  await dragTo('right', 230);
+  await dragTo('left', 230);
+  const overflow = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('.panel > .body')]
+        .filter((b) => !b.hidden)
+        .flatMap((b) => [...b.querySelectorAll('.pane:not([hidden]) .mount, .pane:not([hidden]) .list, .pane:not([hidden]) .tab-root')])
+        .filter((el) => el.scrollWidth > el.clientWidth + 1)
+        .map((el) => `${el.className} ${el.scrollWidth}>${el.clientWidth}`),
+    );
+  const w = Math.round((await page.locator('.panel.right > .body').boundingBox()).width);
+  const bad = [];
+  for (const [side, tab] of [['right', 'Work'], ['right', 'Ideas'], ['right', 'Diagnostics'], ['left', 'Sessions'], ['left', 'Projects'], ['left', 'Files']]) {
+    await openStripTab(side, tab);
+    await page.waitForTimeout(tab === 'Diagnostics' ? 600 : 300);
+    const o = await overflow();
+    if (o.length) bad.push(`${tab}: ${o.join(', ')}`);
+    if (tab === 'Diagnostics') {
+      const seg = await page.locator('.diag .np-seg').evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+      if (!seg) bad.push('Diagnostics: view switcher clipped');
+    }
+  }
+  check(`narrow panels (${w}px): no sideways overflow in any tab`, w <= 240 && bad.length === 0, bad.join(' | '));
+  await openStripTab('right', 'Work');
+  await openStripTab('left', 'Sessions');
+  await page.waitForTimeout(300);
+  await shot(page, '32-narrow-panels');
+  await page.locator('.panel.right .resizer').dblclick();
+  await page.locator('.panel.left .resizer').dblclick();
+}
+
+log('project picker + new session project');
+{
+  const projects = await rpcCall('projects.list');
+  const idOf = (name) => projects.find((p) => p.name === name)?.id;
+  await page.locator('.srow', { hasText: 'Scratch' }).first().click();
+  await page.waitForTimeout(400);
+  const pick = async (chip, name) => {
+    await chip.click();
+    await page.waitForSelector('.popover .item', { timeout: 3000 });
+    await page.locator('.popover .item', { hasText: name }).first().click();
+    await page.waitForTimeout(500);
+  };
+  await pick(page.locator('.topbar .chip'), 'website');
+  let s = await rpcCall('sessions.get', { id: 'ses_scratch' });
+  check('project picker (top bar) attaches the project', s.projectId === idOf('website'), String(s.projectId));
+  check('project picker (top bar) posts the project notice', (await page.locator('.notice', { hasText: 'website' }).count()) > 0);
+  await pick(page.locator('.header .chip'), 'aiproxy');
+  s = await rpcCall('sessions.get', { id: 'ses_scratch' });
+  check('project picker (chat header) attaches the project', s.projectId === idOf('aiproxy'), String(s.projectId));
+  check('project picker (chat header) posts the project notice', (await page.locator('.notice', { hasText: 'aiproxy' }).count()) > 0);
+  check('chips show the attached project', /aiproxy/.test(await page.locator('.topbar .chip').innerText()) && /aiproxy/.test(await page.locator('.header .chip').innerText()));
+  // a new session starts in the active session's project
+  await page.locator('.panel.left .head button[title^="New session"]').click();
+  await page.waitForTimeout(500);
+  const newId = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const ns = await rpcCall('sessions.get', { id: newId });
+  check('new session inherits the active project', ns.projectId === idOf('aiproxy'), String(ns.projectId));
+  // …and, with no session open, the project last worked in
+  // close the other tabs first so no other session becomes active on the way
+  while (await page.locator('.topbar .tab:not(.active)').count()) await page.locator('.topbar .tab:not(.active) .tab-close').first().click();
+  await page.locator('.topbar .tab.active .tab-close').click();
+  await page.waitForTimeout(200);
+  await page.keyboard.press('Control+t');
+  await page.waitForTimeout(500);
+  const id2 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const s2 = id2 ? await rpcCall('sessions.get', { id: id2 }) : null;
+  check('new session with no tab open uses the last project', s2?.projectId === idOf('aiproxy'), String(s2?.projectId));
+  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
+  await page.waitForTimeout(300);
 }
 
 // ------------------------------------------------------------------ settings + light theme

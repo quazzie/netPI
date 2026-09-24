@@ -10,11 +10,12 @@
   let stopping = $state(false);
 
   async function abort(e) {
-    e.stopPropagation();
+    e?.stopPropagation();
     stopping = true;
+    const { sessionId, name } = agent; // the node can unmount (agent finished) before the call returns
     try {
-      const ok = await ctx.rpc('agent.abort', { sessionId: agent.sessionId });
-      if (!ok) ctx.app.toast(`${agent.name} was not running`, 'warn');
+      const ok = await ctx.rpc('agent.abort', { sessionId });
+      if (!ok) ctx.app.toast(`${name} was not running`, 'warn');
     } catch (err) {
       ctx.app.toast(`Abort failed: ${err.message}`, 'error');
     } finally {
@@ -24,34 +25,30 @@
 </script>
 
 <div class="node" class:child={depth > 0}>
-  <div
-    class="row"
-    role="button"
-    tabindex="0"
-    title={tip}
-    onclick={() => ctx.app.openSession(agent.sessionId)}
-    onkeydown={(e) => e.key === 'Enter' && ctx.app.openSession(agent.sessionId)}
-  >
-    <StatusDot status={agentDot(agent.status)} />
-    <span class="name">{agent.name}</span>
-    {#if agent.isSubagent && depth === 0}<span class="sub">sub</span>{/if}
-    <span class="act np-ellipsis">{agent.activity || agent.status}</span>
-    <span class="np-spacer"></span>
-    {#if agent.startedAt}<Elapsed since={agent.startedAt} class="np-mono el" />{/if}
-    <span class="stop"><IconButton icon="stop" title="Stop ({agent.name})" size="sm" disabled={stopping} onclick={abort} /></span>
-  </div>
-  {#if !agent.isSubagent && title}<div class="stitle np-ellipsis">{title}</div>{/if}
-  {#if agent.task && agent.isSubagent}<div class="task np-ellipsis">{agent.task}</div>{/if}
-  <div class="meta np-mono np-ellipsis">
-    {[
-      shortModel(agent.model),
-      `${agent.turns ?? 0} turns`,
-      `${agent.toolCalls ?? 0} tools`,
-      agent.inputTokens || agent.outputTokens ? `${tokens(agent.inputTokens) || 0}↑ ${tokens(agent.outputTokens) || 0}↓` : '',
-      agent.pool && shortModel(agent.pool) !== shortModel(agent.model) ? `lane ${agent.pool}` : '',
-    ]
-      .filter(Boolean)
-      .join(' · ')}{#if agent.queuedMessages}<span class="q"> · {agent.queuedMessages} queued</span>{/if}
+  <div class="card np-hover-row">
+    <div
+      class="row np-line"
+      role="button"
+      tabindex="0"
+      title={tip}
+      onclick={() => ctx.app.openSession(agent.sessionId)}
+      onkeydown={(e) => e.key === 'Enter' && ctx.app.openSession(agent.sessionId)}
+    >
+      <StatusDot status={agentDot(agent.status)} />
+      <span class="name">{agent.name}</span>
+      {#if agent.isSubagent && depth === 0}<span class="sub">sub</span>{/if}
+      <span class="act np-grow">{agent.activity || agent.status}</span>
+      {#if agent.startedAt}<Elapsed since={agent.startedAt} class="np-mono el" />{/if}
+    </div>
+    {#if !agent.isSubagent && title}<div class="line2 np-ellipsis" title={title}>{title}</div>{/if}
+    {#if agent.task && agent.isSubagent}<div class="line2 task np-ellipsis" title={agent.task}>{agent.task}</div>{/if}
+    <div class="np-meta meta">
+      <span>{shortModel(agent.model)}</span><span>{agent.turns ?? 0} turns</span><span>{agent.toolCalls ?? 0} tools</span
+      >{#if agent.inputTokens || agent.outputTokens}<span>{tokens(agent.inputTokens) || 0}↑ {tokens(agent.outputTokens) || 0}↓</span>{/if}{#if agent.queuedMessages}<span
+          class="q">{agent.queuedMessages} queued</span
+        >{/if}{#if agent.pool && shortModel(agent.pool) !== shortModel(agent.model)}<span>lane {agent.pool}</span>{/if}
+    </div>
+    <span class="np-hover-actions"><IconButton icon="stop" title="Stop ({agent.name})" size="sm" disabled={stopping} onclick={abort} /></span>
   </div>
   {#if kids.length}
     <div class="kids">
@@ -64,28 +61,36 @@
 
 <style>
   .node {
-    padding: 2px 0;
+    padding: 1px 0;
   }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    min-height: 24px;
-    padding: 0 2px 0 3px;
-    margin: 0 -2px 0 -3px;
-    border-radius: 4px;
-    cursor: pointer;
-    min-width: 0;
+  .card {
+    padding: 2px 4px 3px;
+    margin: 0 -4px;
+    border-radius: var(--radius-sm);
   }
-  .row:hover {
+  .card:hover,
+  .card:focus-within {
+    --row-bg: var(--bg-2);
     background: var(--bg-2);
   }
-  .name {
+  .row {
+    gap: 7px;
+    min-height: 22px;
+    cursor: pointer;
+    outline: none;
+  }
+  .row:focus-visible {
+    box-shadow: 0 0 0 2px var(--accent-line);
+    border-radius: 4px;
+  }
+  .row > .name {
     flex: none;
+    max-width: 55%;
+    overflow: hidden;
+    text-overflow: ellipsis;
     font-weight: 600;
   }
   .sub {
-    flex: none;
     font-size: 10px;
     padding: 0 4px;
     border-radius: 3px;
@@ -97,41 +102,31 @@
     font-size: var(--fs-sm);
   }
   .row :global(.el) {
-    flex: none;
     font-size: 11px;
     color: var(--fg-dim);
-    white-space: nowrap;
   }
-  .stop {
-    opacity: 0;
-    transition: opacity var(--t-fast);
-  }
-  .row:hover .stop,
-  .row:focus-within .stop {
-    opacity: 1;
-  }
+  .line2,
   .meta {
-    padding-left: 15px;
-    font-size: 10.5px;
-    color: var(--fg-dim);
+    padding-left: 13px;
   }
-  .stitle {
-    padding-left: 15px;
+  .line2 {
     font-size: var(--fs-xs);
     color: var(--fg-muted);
+  }
+  .task {
+    color: var(--fg-dim);
+    font-style: italic;
+  }
+  .meta {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
   }
   .q {
     color: var(--warn);
   }
-  .task {
-    padding-left: 15px;
-    font-size: var(--fs-xs);
-    color: var(--fg-dim);
-    font-style: italic;
-  }
   .kids {
-    margin: 2px 0 0 3px;
-    padding-left: 10px;
+    margin: 1px 0 0 3px;
+    padding-left: 9px;
     border-left: 1px solid var(--border);
   }
 </style>

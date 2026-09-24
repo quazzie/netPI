@@ -139,7 +139,14 @@ Plugin tabs attach to the same bus through `ctx.on`.
 **Persistence** uses localStorage (read synchronously at startup, every access in try/catch) plus a debounced
 `ui.state.set` as the durable copy. The keys are `netpi.layout`, `netpi.prefs` and `netpi.openTabs`. The UI
 reads the host copies with `ui.state.get` only when localStorage is empty, for example in a new WebView
-profile. Drafts (`netpi.draft.<sessionId>`) are local only.
+profile. Drafts (`netpi.draft.<sessionId>`) and the last project used (`netpi.lastProject`) are local only.
+
+**New sessions and projects.** `newSession({ projectId? })` uses the explicit `projectId` (`null` means no
+project). Without one, it uses the active session's project; with no session open, it uses the project last
+worked in (the last active session's project, or the one last attached through a picker). The top-bar chip,
+the chat-header chip and `/project` all open `ProjectPicker`, which calls `sessions.setProject`. The host then
+appends a `project` notice. Components that close themselves (`onclose()`) or `await` a dialog read their props
+into locals first, because after the parent clears the modal state or the row re-renders, the props are gone.
 
 ### Chat rendering pipeline
 
@@ -233,10 +240,52 @@ ctx = {
 }
 ```
 
+### Narrow panels
+
+Side panels are often narrow: a user's layout might be 230–340px wide, and the minimum is 200px. Every panel
+tab (Sessions, Projects, Files, Work, Ideas, Diagnostics) is designed for 220px first, looks right at a typical
+280–320px, and uses wider containers for extra detail. The rules:
+
+- **Never scroll sideways.** Plugin tab hosts clip `overflow-x`, and e2e checks that no panel tab overflows at
+  230px.
+- **Titles** go on their own line with ellipsis (or a 2-line clamp for idea titles) and a `title` tooltip.
+- **Metadata** is one muted line (`.np-meta`, items joined with `·`) that ellipsizes and never wraps
+  word-by-word. Details move into a tooltip or the expanded row.
+- **Right-hand columns** (elapsed time, size, time ago) are `flex: none`. A name keeps its width up to about
+  55% of the line (`flex: none; max-width`) and the secondary text shrinks first.
+- **Row actions** are icon buttons in `.np-hover-actions`. They appear on hover or keyboard focus, sit over the
+  right end of the first line with a fade (`--row-bg`), and stay visible on the selected or failed row.
+- **Stats lines** use `.np-fit`, which drops whole items that do not fit (least important last) instead of
+  clipping text. Examples: the Work summary and the Diagnostics runtime line.
+- **Segmented controls** fit their container: icons + labels, then labels only, then icons + the selected
+  label, then icons only, with the labels moved into tooltips (see `Segmented`).
+- **Wide variants** use container queries. `.plugin-root`, `.tab-root` (Sessions, Projects) are
+  `container-type: inline-size`, so `@container (max-width: 279px)` / `(min-width: …)` react to the panel
+  width, not the window. Examples: the Files indent shrinks, the idea meta hides tags and priority labels, and
+  "Send to chat" becomes "Send".
+- **Filters that would wrap** (for example idea tags) become a menu, and selected values show as removable
+  chips.
+
+Per-tab narrow layouts:
+
+- **Sessions:** search box and **+** share one row. Line 2 shows the project · message count · `› N`
+  subagents (the word "subagents" only when the panel is ≥ 260px). Subagent rows are one line.
+- **Work:** a pool reads `model provider` (so truncation eats the provider), with a status pill. Line 2 shows
+  `busy/capacity`, pips and `+queued`, plus the models only when they differ from the pool. Agents use three
+  lines: name + activity + elapsed, title or task, and meta. A process shows its command + elapsed/exit, then
+  pid · bg · size · cwd … time ago.
+- **Ideas:** a full-width title, a 2-line summary, then one meta line: status pill · priority · tags ·
+  sections · time. In an expanded card the actions are **Send to chat**, **+ Section**, edit, and ⋯ (move
+  up/down, copy id, delete).
+- **Diagnostics:** the runtime facts drop out as the panel narrows. The view switcher collapses to icons. A
+  plugin row has the name and state pill, one meta line (id · version · load ms · count), hover reload and ⋯,
+  and a failed plugin's error clamped to 3 lines (click for all). Log messages clamp to 3 lines, and clicking
+  opens the message and its exception.
+
 ### Built-in plugin tabs
 
 Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle
-sizes (minified; Svelte runtime and kit included): Work 86KB, Ideas 85KB, Diagnostics 96KB, Files 67KB.
+sizes (minified; Svelte runtime and kit included): Work 88KB, Ideas 88KB, Diagnostics 99KB, Files 67KB.
 
 **Work** (`netpi.work`, right). One `work.snapshot` feeds four collapsible sections, each with a count. The
 open or closed state of each section is remembered (`storageKey`).
@@ -264,26 +313,29 @@ open or closed state of each section is remembered (`storageKey`).
 
 - The header shows the scope badge (project name or *global*), the file path and a **+** button.
 - Filters: search over title, summary, tags and sections; a status menu (**Active** = open, planned,
-  in-progress; **All**; or one status), each with counts; and tag chips (an idea matches when it has any of the selected tags).
+  in-progress; **All**; or one status), each with counts; and a **#** tag menu (multi-select; an idea matches
+  when it has any of the selected tags). Selected tags show as removable chips below the filters.
 - Cards show a status pill (a menu that calls `ideas.update { patch: { status } }`), priority, tags, section
   count, an agent icon for agent-created ideas, and the update time. Expanding a card renders the summary and
   its sections as markdown.
 - Editing: title, summary, priority and tags inline; add, edit (kind, title, markdown; Ctrl+Enter saves) and
   remove sections through `addSections`, `updateSections` and `removeSectionIds`; delete with the host confirm
   dialog.
-- Reordering uses the grip (HTML5 drag with a drop indicator) or the up and down buttons, and sends the full
-  id order to `ideas.reorder`.
+- Reordering uses the grip (shown on hover; HTML5 drag with a drop indicator) or **Move up / Move down** in the
+  ⋯ menu, and sends the full id order to `ideas.reorder`. Delete is in the ⋯ menu too.
 - **Send to chat** calls `ideas.toPrompt` and `ctx.app.insertText`.
 - The list refetches on `ideas.changed` for the shown file and on `ctx.app.onChange`.
 
-**Diagnostics** (`netpi.diagnostics`, right). `diag.snapshot { events: 300 }` plus a runtime line (pid,
-framework, working set, threads, uptime). A segmented control switches views, and the last view is remembered.
+**Diagnostics** (`netpi.diagnostics`, right). `diag.snapshot { events: 300 }` plus a runtime line (pid, working
+set, uptime, threads, framework; the full details are in its tooltip). A segmented control (buttons carry
+`data-value`) switches views, and the last view is remembered.
 
 - **Plugins:** filter, state counts, failed plugins first with their error, a reload button
   (`diag.reload { args: id }`), and a ⋯ menu with Reload, Enable/Disable (`plugins.setEnabled`), Copy id, Copy
   folder and Reveal (desktop only). Expanding a row shows its folder, assembly, load time and count.
 - **Tools:** grouped by category, with read-only, shadowed, disabled and priority badges. A chip shows or
-  hides shadowed registrations.
+  hides shadowed registrations. The owning plugin is shown under a tool only when several plugins register
+  that name, and in the tooltip otherwise.
 - **RPC:** methods grouped by prefix with the owning plugin; clicking copies the name.
 - **Events:** the snapshot's recent events, then live events from `ctx.on('*')`, batched per animation frame and
   capped at 1000. Controls: type or session filter (`agent.*` prefixes work), hide `stream.delta`,
@@ -384,8 +436,8 @@ Import from `@netpi/kit`. The build aliases it to `web/src/lib/kit/index.js`, an
 | `IconButton` | `icon`, `title`, `size`, `pressed`, `onclick` |
 | `ConfirmButton` | `icon`, `label`, `confirmLabel`, `title`, `onconfirm`: the first click arms it for 2.5s, the second confirms |
 | `SearchInput` | `bind:value`, `placeholder`; Esc clears |
-| `Segmented` | `options` (`{ value, label, icon?, count?, title? }[]`), `bind:value`, `onchange` |
-| `Menu` | `items` (`{ label, icon?, hint?, checked?, danger?, disabled?, onclick }`, `{ divider }`, `{ header }`), `trigger` snippet `({ toggle, open })`; exported `openAt(x, y, items?)`, `openFor(el, items?)`, `close()` for context menus |
+| `Segmented` | `options` (`{ value, label, icon?, count?, tone?, title? }[]`), `bind:value`, `onchange`, `fit` (default `true`: steps down to labels only → icons + selected label → icons only to stay inside its container; the icon steps need an `icon` on every option). Buttons carry `data-value`. |
+| `Menu` | `items` (`{ label, icon?, hint?, checked?, danger?, disabled?, keepOpen?, onclick }`, `{ divider }`, `{ header }`; `keepOpen` for multi-select toggles), `trigger` snippet `({ toggle, open })`, `placement` (`bottom-end` / `bottom-start`); exported `openAt(x, y, items?)`, `openFor(el, items?)`, `close()` for context menus |
 | `Pips` | `busy`, `capacity`, `queued`, `max` (a bar instead of pips above `max`) |
 | `Collapsible` | `title` or `header` snippet, `bind:open` |
 | `Markdown` | `text`, `highlight` (default `true`) |
@@ -430,6 +482,7 @@ names or an inline `<svg …>` string.
 | sections | `np-section np-section-title np-section-actions np-section-count np-section-toggle np-card` |
 | lists | `np-list np-row np-row-title np-row-sub np-kv np-table` |
 | controls | `np-btn np-btn-primary np-btn-ghost np-btn-danger np-btn-sm np-icon-btn np-input np-check np-seg np-search np-chip[aria-pressed]` |
+| narrow rows | `np-line` (+ `np-grow`), `np-meta` (+ `np-meta-plain`), `np-fit`, `np-hover-row` + `np-hover-actions` (`--row-bg`) |
 | text | `np-mono np-muted np-dim np-small np-strong np-ellipsis np-kbd` |
 | status | `np-badge[data-tone] np-dot[data-status] np-empty np-spinner np-progress[style=--value]` |
 

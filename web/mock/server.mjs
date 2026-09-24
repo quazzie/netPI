@@ -27,7 +27,8 @@ const PORT = Number(opt('port', process.env.PORT || 7431));
 const HOST = opt('host', '127.0.0.1');
 const TOKEN = opt('token', process.env.NETPI_TOKEN || 'dev');
 const NO_AUTH = args.includes('--no-auth');
-const WWWROOT = path.join(REPO, 'artifacts/app/wwwroot');
+// the app's copy when it has been built, else the committed build output
+const WWWROOT = [path.join(REPO, 'artifacts/app/wwwroot'), path.join(REPO, 'web/dist')].find((d) => fs.existsSync(path.join(d, 'index.html'))) ?? path.join(REPO, 'web/dist');
 // Plugin UI bundles the mock serves (built by `npm run build:plugins`); a tab is listed only when its bundle exists.
 const PLUGIN_UIS = [
   { pluginId: 'netpi.work', dir: 'plugins/NetPI.Work/wwwroot', tabs: [{ id: 'work', title: 'Work', panel: 'right', icon: 'work', order: 10 }] },

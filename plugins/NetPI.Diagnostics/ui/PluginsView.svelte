@@ -8,6 +8,7 @@
   let menu = $state();
 
   const STATE = { running: 'ok', loading: 'running', failed: 'error', stopped: 'warn', disabled: 'idle', unloaded: 'idle' };
+  const ORDER = ['failed', 'running', 'loading', 'stopped', 'disabled', 'unloaded'];
   const sorted = $derived(
     (plugins ?? [])
       .filter((p) => !q || `${p.id} ${p.name} ${p.description ?? ''}`.toLowerCase().includes(q.toLowerCase()))
@@ -75,34 +76,35 @@
 {#if !plugins}
   <Empty icon="puzzle">{error ?? 'No plugin manager'}</Empty>
 {:else}
-  <div class="counts">
-    {#each Object.entries(counts) as [s, n] (s)}<span class="c" data-s={s}><StatusDot status={STATE[s] ?? 'idle'} />{n} {s}</span>{/each}
+  <div class="counts np-fit">
+    {#each ORDER.filter((s) => counts[s]) as s (s)}<span class="c" data-s={s}><StatusDot status={STATE[s] ?? 'idle'} />{counts[s]} {s}</span>{/each}
   </div>
   <div class="list">
     {#each sorted as p (p.id)}
-      <div class="pl" data-state={p.state}>
-        <div class="row" role="button" tabindex="0" onclick={() => toggle(p.id)} onkeydown={(e) => e.key === 'Enter' && toggle(p.id)}>
+      <div class="pl np-hover-row" class:is-active={p.state === 'failed'} data-state={p.state}>
+        <button class="row np-line" onclick={() => toggle(p.id)} aria-expanded={open.has(p.id)} title={p.description ?? p.name}>
           <StatusDot status={STATE[p.state] ?? 'idle'} title={p.state} />
-          <span class="name">{p.name}</span>
+          <span class="name np-grow">{p.name}</span>
           {#if p.state !== 'running'}<span class="st">{p.state}</span>{/if}
-          <span class="np-spacer"></span>
-          <span class="acts">
-            {#if busy.has(p.id)}<span class="np-spinner"></span>{:else}
-              <IconButton icon="refresh" title="Reload {p.name}" size="sm" disabled={!p.enabled} onclick={(e) => (e.stopPropagation(), reload(p))} />
-            {/if}
-            <IconButton icon="more" title="More" size="sm" onclick={(e) => more(e, p)} />
-          </span>
+        </button>
+        <div class="np-meta sub" title="{p.id} · v{p.version ?? '?'} · loaded in {p.loadMs ?? 0} ms · {p.loadCount ?? 0} load(s)">
+          <span class="np-mono">{p.id}</span>{#if p.version}<span>v{p.version}</span>{/if}{#if p.state === 'running' || p.loadCount}<span>{p.loadMs ?? 0} ms</span><span>{p.loadCount ?? 0}×</span>{/if}
         </div>
-        <div class="sub np-mono">
-          <span>{p.id}</span>
-          {#if p.version}<span>v{p.version}</span>{/if}
-          {#if p.state === 'running' || p.loadCount}<span title="load time · load count">{p.loadMs ?? 0} ms · {p.loadCount ?? 0}×</span>{/if}
-        </div>
-        {#if p.error}<div class="error np-mono">{p.error}</div>{/if}
+        <span class="np-hover-actions">
+          {#if busy.has(p.id)}<span class="spin"><span class="np-spinner"></span></span>{:else}
+            <IconButton icon="refresh" title="Reload {p.name}" size="sm" disabled={!p.enabled} onclick={() => reload(p)} />
+          {/if}
+          <IconButton icon="more" title="More" size="sm" onclick={(e) => more(e, p)} />
+        </span>
+        {#if p.error}
+          <button class="error np-mono" class:clamp={!open.has(p.id)} onclick={() => toggle(p.id)} title={open.has(p.id) ? undefined : 'Show the full error'}
+            ><span class="txt">{p.error}</span></button
+          >
+        {/if}
         {#if open.has(p.id)}
           <dl class="np-kv details">
             <dt>Folder</dt><dd class="np-mono" title={p.directory}>{p.directory}</dd>
-            {#if p.assembly}<dt>Assembly</dt><dd class="np-mono">{p.assembly}</dd>{/if}
+            {#if p.assembly}<dt>Assembly</dt><dd class="np-mono" title={p.assembly}>{p.assembly}</dd>{/if}
             <dt>Order</dt><dd>{p.order}</dd>
             <dt>Enabled</dt><dd>{p.enabled ? 'yes' : 'no'}</dd>
             {#if p.loadedAt}<dt>Loaded</dt><dd><TimeAgo time={p.loadedAt} /></dd>{/if}
@@ -121,10 +123,7 @@
     padding: 4px 10px 4px 12px;
   }
   .counts {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 12px;
-    padding: 2px 12px 6px;
+    padding: 0 12px 4px;
     font-size: var(--fs-xs);
     color: var(--fg-muted);
   }
@@ -137,24 +136,30 @@
     color: var(--err);
   }
   .list {
-    padding: 0 10px 10px 12px;
+    padding: 0 8px 10px 10px;
   }
   .pl {
-    padding: 4px 0 5px;
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+    padding: 3px 4px 4px;
+    border-radius: var(--radius-sm);
+  }
+  .pl + .pl {
+    margin-top: 1px;
+  }
+  .pl:hover,
+  .pl:focus-within {
+    --row-bg: var(--bg-2);
+    background: var(--bg-2);
   }
   .row {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    min-height: 24px;
-    padding: 0 2px 0 3px;
-    margin: 0 -2px 0 -3px;
-    border-radius: 4px;
+    width: 100%;
+    min-height: 22px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
     cursor: pointer;
-  }
-  .row:hover {
-    background: var(--bg-2);
   }
   .name {
     font-weight: 600;
@@ -174,36 +179,43 @@
   [data-state='disabled'] .name {
     color: var(--fg-dim);
   }
-  .acts {
-    display: flex;
-    align-items: center;
-    opacity: 0;
-    transition: opacity var(--t-fast);
-  }
-  .row:hover .acts,
-  .row:focus-within .acts,
-  [data-state='failed'] .acts {
-    opacity: 1;
-  }
   .sub {
-    display: flex;
-    gap: 10px;
-    padding-left: 15px;
+    padding-left: 13px;
     font-size: 10.5px;
-    color: var(--fg-dim);
+  }
+  .sub .np-mono {
+    font-size: 10.5px;
+  }
+  .spin {
+    display: inline-grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
   }
   .error {
-    margin: 4px 0 2px 15px;
+    display: block;
+    width: calc(100% - 13px);
+    margin: 4px 0 2px 13px;
     padding: 5px 8px;
+    border: 0;
     border-radius: var(--radius-sm);
     background: var(--err-soft);
     color: var(--err);
     font-size: 11px;
+    text-align: left;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  .error.clamp .txt {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
   }
   .details {
-    margin: 6px 0 2px 15px;
+    margin: 6px 0 2px 13px;
     font-size: var(--fs-xs);
   }
   .details dd {

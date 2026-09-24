@@ -130,11 +130,14 @@
   .mount {
     flex: 1;
     min-height: 0;
+    overflow-x: hidden; /* side panels never scroll sideways; tabs ellipsize instead */
   }
   .mount :global(.plugin-root) {
     min-height: 100%;
     display: flex;
     flex-direction: column;
+    /* tabs style wider variants with @container (min-width: …) */
+    container-type: inline-size;
   }
   .state {
     display: flex;

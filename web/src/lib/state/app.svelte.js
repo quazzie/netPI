@@ -3,7 +3,7 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { rpc, subscribe, onOpen, connect } from '../rpc.svelte.js';
 import { bus } from '../bus.js';
-import { load, persist, fetchRemote } from '../persist.js';
+import { load, save, persist, fetchRemote } from '../persist.js';
 import { getChat, peekChat, dropChat, allChats } from './chat.svelte.js';
 import { toast, syncUiStateFromHost, composer } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
@@ -31,6 +31,8 @@ class AppState {
   projectsById = $derived(new Map(this.projects.map((p) => [p.id, p])));
   modelsByRef = $derived(new Map(this.models.map((m) => [m.ref ?? `${m.provider}/${m.id}`, m])));
   activeSession = $derived(this.activeId ? (this.sessionsById.get(this.activeId) ?? null) : null);
+  // the project the user last worked in (the active session's, kept while no session is active)
+  lastProjectId = $state(load('netpi.lastProject', null));
   activeProject = $derived(
     this.activeSession?.projectId ? (this.projectsById.get(this.activeSession.projectId) ?? null) : null,
   );
@@ -218,6 +220,8 @@ export function activate(id) {
   }
   if (!app.openTabs.includes(id)) app.openTabs.push(id);
   app.activeId = id;
+  const act = app.sessionsById.get(id);
+  if (act) noteProject(act.projectId ?? null);
   app.unread.delete(id);
   app.errored.delete(id);
   const c = getChat(id);
@@ -271,8 +275,23 @@ export function cycleTab(dir) {
   activate(tabs[(i + dir + tabs.length) % tabs.length]);
 }
 
+/** Remember the active session's project so a new session made with no tab open lands in it too. */
+export function noteProject(projectId) {
+  if (projectId === app.lastProjectId) return;
+  app.lastProjectId = projectId ?? null;
+  save('netpi.lastProject', app.lastProjectId);
+}
+
 export async function newSession(opts = {}) {
-  const projectId = opts.projectId !== undefined ? opts.projectId : (app.activeSession?.projectId ?? null);
+  // explicit projectId (null = none) › the active session's project › the last project used
+  const projectId =
+    opts?.projectId !== undefined
+      ? opts.projectId
+      : app.activeSession
+        ? (app.activeSession.projectId ?? null)
+        : app.lastProjectId && app.projectsById.has(app.lastProjectId)
+          ? app.lastProjectId
+          : null;
   try {
     const params = {};
     if (projectId) params.projectId = projectId;
@@ -319,6 +338,7 @@ export async function setSessionProject(id, projectId) {
   try {
     const s = await rpc('sessions.setProject', { id, projectId: projectId ?? null });
     upsertSession(s);
+    if (id === app.activeId) noteProject(s?.projectId ?? null);
     return s;
   } catch (e) {
     toast(e.message, 'error');

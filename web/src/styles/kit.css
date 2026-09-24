@@ -19,6 +19,16 @@
  *   .np-section-toggle    button inside the title that collapses the section; .np-section-count = count pill
  *   .np-card              bordered, rounded box on --bg-2
  *
+ * Narrow panels (side panels can be 200–320px wide: never wrap word-by-word, never scroll sideways)
+ *   .np-line              one-line flex row (nowrap); put .np-grow on the part that may shrink (ellipsized)
+ *   .np-meta              one muted line of metadata; inline children are joined with " · " and the whole
+ *                         line ellipsizes (use <span>s; .np-meta-end pushes a trailing item right)
+ *   .np-fit               one-line flex row that drops whole items that do not fit (no clipped text)
+ *   .np-hover-row         row whose .np-hover-actions (absolute, right) appear on hover / focus / .is-active;
+ *                         set --row-bg to the row's background so the fade under the actions matches
+ *   Plugin tab roots (.plugin-root) are size containers: use @container (min-width: 360px) { … } for wide
+ *   variants instead of viewport media queries.
+ *
  * Lists
  *   .np-list              unstyled list container
  *   .np-row               compact clickable row (hover background); .is-active / [aria-selected=true] highlight
@@ -130,8 +140,10 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   min-height: 22px;
   margin: 0 0 6px;
+  white-space: nowrap;
   font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -142,6 +154,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
   margin: 0 0 0 -3px;
   padding: 2px 4px 2px 2px;
   border: 0;
@@ -172,7 +185,16 @@
   text-transform: none;
   font-variant-numeric: tabular-nums;
 }
+.np-section-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.np-section-count {
+  flex: none;
+}
 .np-section-title .np-section-actions {
+  flex: none;
   margin-left: auto;
   display: flex;
   gap: 2px;
@@ -442,6 +464,33 @@ select.np-input {
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
 }
+.np-seg-count[data-tone='err'] {
+  color: var(--err);
+  font-weight: 600;
+}
+.np-seg > button {
+  flex: none;
+  white-space: nowrap;
+}
+/* Segmented with fit (default): stays inside its container; see Segmented.svelte */
+.np-seg-fit {
+  display: flex;
+  max-width: 100%;
+  overflow: hidden;
+}
+.np-seg-fit[data-mode='active'],
+.np-seg-fit[data-mode='icons'] {
+  width: 100%;
+}
+.np-seg-fit[data-mode='active'] > button,
+.np-seg-fit[data-mode='icons'] > button {
+  flex: 1 1 auto;
+  justify-content: center;
+  padding: 0 6px;
+}
+.np-seg-fit[data-mode='icons'] > button {
+  gap: 3px;
+}
 .np-search {
   display: flex;
   align-items: center;
@@ -511,6 +560,90 @@ select.np-input {
   border-color: var(--accent-line);
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ narrow-panel rows */
+.np-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.np-line > * {
+  flex: none;
+}
+.np-line > .np-grow {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.np-meta {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.np-meta > * + *::before {
+  content: '·';
+  padding: 0 5px;
+  color: var(--fg-dim);
+  opacity: 0.8;
+}
+.np-meta > .np-meta-plain::before,
+.np-meta > .np-meta-plain + *::before {
+  content: none;
+  padding: 0;
+}
+.np-fit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 40px;
+  height: 20px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.np-fit > * {
+  flex: none;
+  line-height: 20px;
+}
+.np-hover-row {
+  position: relative;
+  --row-bg: var(--bg-1);
+}
+.np-hover-actions {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-left: 18px;
+  background: linear-gradient(90deg, transparent, var(--row-bg) 16px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast);
+}
+.np-hover-row:hover > .np-hover-actions,
+.np-hover-row:focus-within > .np-hover-actions,
+.np-hover-row.is-active > .np-hover-actions,
+.np-hover-actions.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .np-hover-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* ------------------------------------------------------------------ text */

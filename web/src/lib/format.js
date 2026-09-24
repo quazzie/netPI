@@ -12,10 +12,11 @@ export function duration(ms) {
   if (ms == null || !Number.isFinite(ms)) return '';
   if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
   const s = ms / 1000;
-  if (s < 10) return `${s.toFixed(1)}s`;
-  if (s < 60) return `${Math.round(s)}s`;
+  if (s < 10) return `${(Math.floor(s * 10) / 10).toFixed(1)}s`;
+  // floor, not round: 59.6s must not read "60s" (or "12m 60s")
+  if (s < 60) return `${Math.floor(s)}s`;
   const m = Math.floor(s / 60);
-  const rs = Math.round(s - m * 60);
+  const rs = Math.floor(s - m * 60);
   if (m < 60) return rs ? `${m}m ${rs}s` : `${m}m`;
   const h = Math.floor(m / 60);
   const rm = m - h * 60;

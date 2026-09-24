@@ -7,42 +7,45 @@
   const TONE = { queued: 'warn', full: 'accent', busy: 'accent', idle: 'dim', offline: 'err', stopped: 'warn' };
   const who = (o) => agentById.get(o.agentId)?.name ?? o.label ?? o.agentId;
   const statusOf = (ref) => models.get(ref)?.status ?? models.get(`${pool.provider}/${ref}`)?.status ?? null;
+  // "provider/model" pools read as "model provider" so truncation eats the provider, not the model
+  const slash = $derived(pool.key.indexOf('/'));
+  const name = $derived(slash > 0 ? pool.key.slice(slash + 1) : pool.key);
+  const prov = $derived(slash > 0 ? pool.key.slice(0, slash) : '');
+  // a pool that serves exactly its own model shows that model's status dot in the head instead of a models line
+  const single = $derived(pool.models?.length === 1 && (pool.models[0] === pool.key || shortModel(pool.models[0]) === name) ? pool.models[0] : null);
 </script>
 
 <div class="pool">
-  <div class="head">
-    <span class="key np-mono" title={pool.key}>{pool.key}</span>
-    <Pips busy={pool.busy} capacity={pool.capacity} queued={pool.queued} />
-    <span class="np-spacer"></span>
-    <span class="nums np-mono">{pool.busy}/{pool.capacity}</span>
+  <div class="head np-line" title="{pool.key} — {pool.busy}/{pool.capacity} busy{pool.queued ? `, ${pool.queued} queued` : ''}{pool.source ? ` · capacity from ${pool.source}` : ''}">
+    {#if single}<StatusDot status={statusOf(single) ?? 'idle'} title={statusOf(single) ?? 'unknown'} />{/if}
+    <span class="key np-mono np-grow"><b>{name}</b>{#if prov}<span class="prov">{prov}</span>{/if}</span>
     {#if pool.status}<span class="st" data-tone={TONE[pool.status] ?? 'dim'}>{pool.status}</span>{/if}
   </div>
-  {#if pool.models?.length}
-    <div class="models">
-      {#each pool.models as m (m)}
-        {@const st = statusOf(m)}
-        <span class="model" title="{m}{st ? ` — ${st}` : ''}">
-          {#if st}<StatusDot status={st} />{/if}{shortModel(m)}
-        </span>
-      {/each}
-      {#if pool.source && pool.source !== 'default'}<span class="src" title="capacity source">{pool.source}</span>{/if}
-    </div>
-  {/if}
+  <div class="cap np-line">
+    <span class="nums np-mono">{pool.busy}/{pool.capacity}</span>
+    <Pips busy={pool.busy} capacity={pool.capacity} queued={pool.queued} max={6} />
+    {#if !single && pool.models?.length}
+      <span class="models np-grow">
+        {#each pool.models as m, i (m)}
+          {@const st = statusOf(m)}
+          <span class="model" title="{m}{st ? ` — ${st}` : ''}">{#if i}, {/if}{#if st}<StatusDot status={st} />{/if}{shortModel(m)}</span>
+        {/each}
+      </span>
+    {/if}
+  </div>
   {#each pool.owners ?? [] as o (o.agentId + o.since)}
-    <button class="owner" title="Open session" onclick={() => o.sessionId && ctx.app.openSession(o.sessionId)}>
+    <button class="owner np-line" title="{who(o)}{o.label && o.label !== who(o) ? ` — ${o.label}` : ''} (open session)" onclick={() => o.sessionId && ctx.app.openSession(o.sessionId)}>
       <span class="slot on"></span>
       <span class="name">{who(o)}</span>
-      {#if o.label && o.label !== who(o)}<span class="label np-ellipsis">{o.label}</span>{/if}
-      <span class="np-spacer"></span>
+      <span class="label np-grow">{o.label && o.label !== who(o) ? o.label : ''}</span>
       <Elapsed since={o.since} class="np-mono el" />
     </button>
   {/each}
   {#each pool.waiters ?? [] as w (w.agentId + w.since)}
-    <button class="owner waiting" title="Waiting for a free slot — open session" onclick={() => w.sessionId && ctx.app.openSession(w.sessionId)}>
+    <button class="owner waiting np-line" title="{who(w)} is waiting for a free slot (open session)" onclick={() => w.sessionId && ctx.app.openSession(w.sessionId)}>
       <span class="slot"></span>
       <span class="name">{who(w)}</span>
-      <span class="label">waiting</span>
-      <span class="np-spacer"></span>
+      <span class="label np-grow">waiting</span>
       <Elapsed since={w.since} class="np-mono el" />
     </button>
   {/each}
@@ -56,19 +59,24 @@
     border-top: 1px dashed var(--border);
   }
   .head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
+    min-height: 20px;
   }
   .key {
     font-size: 12px;
     color: var(--fg);
+  }
+  .key b {
     font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
+  }
+  .prov {
+    margin-left: 6px;
+    color: var(--fg-dim);
+    font-size: 11px;
+  }
+  .cap {
+    margin: 1px 0 3px;
+    gap: 7px;
+    min-height: 16px;
   }
   .nums {
     font-size: 11px;
@@ -95,26 +103,15 @@
     color: var(--err);
   }
   .models {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 10px;
-    margin: 3px 0 2px;
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--fg-dim);
-  }
-  .model {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
     font-family: var(--font-mono);
   }
-  .src {
-    color: var(--fg-dim);
-    opacity: 0.8;
+  .model :global(.np-dot) {
+    margin-right: 4px;
+    vertical-align: 1px;
   }
   .owner {
-    display: flex;
-    align-items: center;
     gap: 7px;
     width: 100%;
     min-height: 22px;
@@ -144,13 +141,17 @@
     box-shadow: none;
   }
   .name {
-    flex: none;
     font-weight: 500;
+    max-width: 55%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .owner > .name {
+    flex: none;
   }
   .label {
     color: var(--fg-dim);
     font-size: var(--fs-xs);
-    min-width: 0;
   }
   .waiting .name {
     color: var(--fg-muted);

@@ -52,26 +52,28 @@
     <Empty><span class="np-spinner"></span></Empty>
   {:else}
     <div class="stats">
-      <div class="stat"><b>≈{tokens(preview.estimatedTokens)}</b><span>estimated tokens</span></div>
-      <div class="stat"><b>{tokens(promptTokens)}</b><span>system prompt</span></div>
-      <div class="stat"><b>{preview.tools?.length ?? 0}</b><span>tools</span></div>
+      <div class="stat" title="Estimated context tokens (system prompt + tools + messages)"><b>≈{tokens(preview.estimatedTokens)}</b><span>context</span></div>
+      <div class="stat" title="System prompt tokens (estimate)"><b>{tokens(promptTokens)}</b><span>prompt</span></div>
+      <div class="stat" title="Tools sent to the model"><b>{preview.tools?.length ?? 0}</b><span>tools</span></div>
     </div>
 
     <Section title="AGENTS.md" count={files?.length ?? null} collapsible storageKey="diag.ctx.agentsmd">
       {#each files ?? [] as f (f.path)}
-        <div class="file">
+        <div class="file np-line np-hover-row">
           <span class="scope" data-s={f.scope}>{f.scope}</span>
-          <span class="path np-mono" title={f.path}><bdi>{f.path}</bdi></span>
+          <span class="path np-mono np-grow" title={f.path}><bdi>{f.path}</bdi></span>
           <span class="size np-dim">{bytes(f.bytes)}</span>
-          <IconButton icon="copy" title="Copy path" size="sm" onclick={() => copyText(f.path)} />
-          {#if desktop.available}<IconButton icon="folder-open" title="Reveal" size="sm" onclick={() => desktop.revealPath(f.path)} />{/if}
+          <span class="np-hover-actions">
+            <IconButton icon="copy" title="Copy path" size="sm" onclick={() => copyText(f.path)} />
+            {#if desktop.available}<IconButton icon="folder-open" title="Reveal" size="sm" onclick={() => desktop.revealPath(f.path)} />{/if}
+          </span>
         </div>
       {:else}
         <div class="np-dim np-small">No instruction files apply to this session.</div>
       {/each}
     </Section>
 
-    <Section title="System prompt" count={`${(preview.systemPrompt?.length ?? 0).toLocaleString()} ch`} collapsible storageKey="diag.ctx.prompt">
+    <Section title="System prompt" collapsible storageKey="diag.ctx.prompt">
       {#snippet actions()}
         <IconButton icon="copy" title="Copy system prompt" size="sm" onclick={() => copyText(preview.systemPrompt)} />
         <IconButton icon="expand" title={full ? 'Collapse' : 'Show all'} size="sm" pressed={full} onclick={() => (full = !full)} />
@@ -81,7 +83,7 @@
 
     <Section title="Tools" count={preview.tools?.length ?? 0} collapsible open={false} storageKey="diag.ctx.tools">
       {#each preview.tools ?? [] as t (t.name)}
-        <div class="t"><span class="np-mono">{t.name}</span><span class="np-dim">{t.description}</span></div>
+        <div class="t" title={t.description}><span class="np-mono">{t.name}</span><span class="np-dim desc">{t.description}</span></div>
       {/each}
     </Section>
   {/if}
@@ -107,7 +109,8 @@
   .stat {
     display: flex;
     flex-direction: column;
-    padding: 6px 8px;
+    min-width: 0;
+    padding: 5px 8px;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--bg-2);
@@ -119,12 +122,19 @@
   .stat span {
     font-size: var(--fs-xs);
     color: var(--fg-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .file {
-    display: flex;
-    align-items: center;
-    gap: 6px;
     min-height: 24px;
+    margin: 0 -4px;
+    padding: 0 4px;
+    border-radius: var(--radius-sm);
+  }
+  .file:hover {
+    --row-bg: var(--bg-2);
+    background: var(--bg-2);
   }
   .scope {
     flex: none;
@@ -140,11 +150,6 @@
     color: var(--accent);
   }
   .path {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
     direction: rtl;
     text-align: left;
     font-size: 11px;
@@ -180,5 +185,12 @@
   .t .np-mono {
     font-size: 11.5px;
     color: var(--fg);
+  }
+  .desc {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
   }
 </style>

@@ -3,7 +3,8 @@
   import Icon from './Icon.svelte';
   /**
    * Dropdown / context menu (fixed position, closes on outside click or Esc).
-   *   items: ({ label, icon?, hint?, checked?, danger?, disabled?, onclick } | { divider: true } | { header })[]
+   *   items: ({ label, icon?, hint?, checked?, danger?, disabled?, keepOpen?, onclick } | { divider: true } | { header })[]
+   *   (keepOpen: the menu stays open after the click, e.g. for multi-select toggles)
    * Use the `trigger` snippet ({ toggle, open }) for a dropdown button, or call openAt(x, y, items?) /
    * openFor(element, items?) on the component instance for a context menu.
    */
@@ -77,7 +78,7 @@
 
   function run(it) {
     if (it.disabled) return;
-    open = false;
+    if (!it.keepOpen) open = false;
     it.onclick?.();
   }
 </script>
