@@ -11,7 +11,8 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel. 
 | User data | `%USERPROFILE%\.netpi\`: `settings.json`, `netpi.db` (SQLite), `logs\netpi-YYYYMMDD.log`, `logs\failed-requests\`, `window.json`, `webview\`, `workspace\` |
 | Old NetPI v1 | source `C:\AI\Projects\NetPI`; its data was moved to `%USERPROFILE%\.netpi\legacy-netpi-v1\`. Reference only; don't run it against the new data folder |
 | Model stack | AiProxy `http://127.0.0.1:8090` (AiSwitcher, `C:\AI\AiSwitcher`) → nInfer `:8080` (source `C:\AI\src\ninfer-windows`, AiSwitcher profile `quasar-v3`), serving `qwen3.8-27b` with concurrency 2 and 2 × 262k KV. See `docs/AIPROXY-AGENT-GUIDE.md` |
-| Claude | Anthropic Messages API with an API key (`providers.anthropic.apiKey` or `ANTHROPIC_API_KEY`). Only tested against a mock so far |
+| Claude | Anthropic Messages API with an API key (`providers.anthropic.apiKey` or `ANTHROPIC_API_KEY`). Only tested against a mock so far (no API key available) |
+| OpenRouter | `providers.openrouter.apiKey` or `OPENROUTER_API_KEY`; tested live with the free `stealth/space-bunny-alpha` |
 
 ## Verification so far
 
@@ -22,8 +23,9 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel. 
     tests and harness (Git Bash quoting and `/tmp` spelling, a Debug-only build path, UI smoke browser and a race).
 - **Real model:**
   - One real run exposed a bug in nInfer. nInfer has since been fixed; details below.
-  - Smoke test after the fix (two agents, a subagent, a steer): lanes, steering and cache reuse behave. One problem was
-    found: the minute in the system prompt's date line invalidates the cache (`docs/STATUS.md`, known limitations).
+  - Smoke test after the fix (two agents, a subagent, a steer): lanes, steering and cache reuse behave. The one cache
+    miss came from the minute in the system prompt's date line; the prompt now has no date or time.
+  - OpenRouter (free `stealth/space-bunny-alpha`): the same run works end to end, including `reasoning_details` replay.
 
 ## Decisions and preferences to keep
 
@@ -50,15 +52,17 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Suggested next steps
 
-1. **Run the tests on Windows.** Close NetPI, run `.\build.ps1 -Test`, then `dotnet tests\NetPI.E2E\bin\Release\NetPI.E2E.dll --no-ui`. The UI test also needs Node and Playwright Chromium. Fix any failures specific to Windows: paths, Git Bash quoting, file locking, process-tree kill, CRLF.
-2. **Real smoke test.** Run two concurrent agents on `aiproxy/qwen3.8-27b` in one project, including a spawned subagent and a steering message. Check that:
-   - the lanes and queueing work;
-   - cached tokens per turn are near the full prompt after the first turn;
-   - no failed requests are saved;
-   - the Work tab is correct.
-3. **Claude provider live test.** Test with a real API key: thinking, tools, prompt caching, and the adaptive-thinking settings (`docs/SETTINGS.md`).
+Done on 2026-09-24: the Windows test run, the real smoke test, the date-free and plugin-owned system prompt, `build.ps1`
+while NetPI runs, and the OpenRouter provider.
+
+1. **Claude provider live test.** Needs an Anthropic API key (none available yet): thinking, tools, prompt caching, and the
+   adaptive-thinking settings (`docs/SETTINGS.md`). Claude through OpenRouter (paid) would exercise OpenRouter's side of
+   it (signed `reasoning_details`, `cache_control`), not the native provider.
+2. **Per-turn cache reuse and TTFT** in the chat or the Work tab. Cached/prompt tokens are in each assistant message's
+   `usage`; TTFT is not recorded yet (the agent runner could store the time to the first delta in the message meta).
+3. **OpenRouter follow-ups:** let the retry plugin honor `Retry-After` (an additive `ModelException` field), show the cost
+   stored in `meta.openrouter.cost`.
 4. **Open items** in `docs/STATUS.md`, under "Known limitations / ideas".
-5. **Idea:** show per-turn cache reuse (cached / prompt tokens, TTFT) in the chat or the Work tab. The data is already in each assistant message's `usage`.
 
 ## Working rules
 
