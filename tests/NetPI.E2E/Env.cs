@@ -260,10 +260,15 @@ public sealed class Env : IAsyncDisposable
         };
     }
 
-    /// <summary>How bash prints a directory with pwd (Git Bash on Windows: /c/Users/…).</summary>
+    /// <summary>
+    /// How bash's pwd prints the directory it was started in. Git Bash maps it through its mount table: the user's temp
+    /// folder (where the E2E work dir lives) is /tmp, other paths are /c/Users/….
+    /// </summary>
     public static string BashPath(string dir)
     {
         if (!OperatingSystem.IsWindows() || dir.Length < 2 || dir[1] != ':') return dir;
+        var temp = Path.TrimEndingDirectorySeparator(Path.GetTempPath());
+        if (dir.StartsWith(temp + "\\", StringComparison.OrdinalIgnoreCase)) return "/tmp/" + dir[(temp.Length + 1)..].Replace('\\', '/');
         return "/" + char.ToLowerInvariant(dir[0]) + dir[2..].Replace('\\', '/');
     }
 
