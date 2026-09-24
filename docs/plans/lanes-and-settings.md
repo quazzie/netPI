@@ -1,121 +1,82 @@
-# Plan: lanes with a profile and cost, and a settings dialog with real controls, 2026-09-24
+# Plan: lanes you set up per model, and a settings dialog with real controls, 2026-09-24
 
-Status: proposed; decisions so far from the user, questions at the end.
+Status: proposed, simplified with the user; waiting for "go".
 
 ## Where we are
 
-- **Any agent can use any lane.** `agent_spawn { model }` takes a model ref or a lane key; provider credentials are
-  global, and nothing ties a lane to the agents that may use it. The only limits are `agents.maxDepth` (3), lane
-  capacity and `lanes.budgets`. The test "an agent on a local model spawns onto a pool defined in settings" covers
-  exactly that: a local-model agent delegates to a one-model cloud lane.
-- **Agents can't tell lanes apart.** `lanes_list` shows each lane's key, busy/capacity, queue, models and holders; nothing
-  about what a lane is good at or what it costs.
-- **Settings are JSON.** The dialog has UI preferences (General) and the raw settings.json; the ~80 host and plugin
-  settings in `docs/SETTINGS.md` have no controls.
+- **Any agent can use any lane.** Provider credentials are global and nothing ties a lane to the agents that may use
+  it. The test "an agent on a local model spawns onto a pool defined in settings" covers a local-model agent delegating
+  to a one-model cloud lane.
+- **Lanes are "pools" today.** One per cloud provider and one per local model, created automatically, plus
+  `lanes.pools` with model globs. `lanes.budgets` counts tokens per day.
+- **Agents can't tell lanes apart.** `lanes_list` shows key, busy/capacity, queue, models and holders, nothing about
+  when to use a lane or what it costs.
+- **Settings are JSON.** The dialog has the UI preferences and the raw settings.json.
 
-## Decisions (user, 2026-09-24)
+## Design (the user's simplification)
 
-- **A lane is one model:** "I set up a lane for a specific model", e.g. one for `openrouter/stealth/space-bunny-alpha`
-  (free) and one for `openrouter/anthropic/claude-opus-…` (real cost). No glob lanes in the UI.
-- **Profile:** a description and capabilities written by the user; everything that can be inferred (cost, context,
-  vision…) is inferred but editable.
-- **Cost-aware delegation:** agents avoid the costly lane unless they judge it necessary.
-- **Controls, not JSON:** as much of the settings as possible gets real controls in the dialog.
-
-## Part 1: lanes as models with a profile
+A lane is a model you set up, with a capacity, a note on when to use it, and an optional budget. No pools, globs, tags
+or policy fields:
 
 ```jsonc
 "lanes": {
-  "pools": {
-    "bunny": {
-      "model": "openrouter/stealth/space-bunny-alpha",
-      "capacity": 2,
-      "description": "Free, strong general coder; slower. Good for research, reading code, first drafts.",
-      "strengths": ["coding", "long-context"]
-    },
-    "opus": {
-      "model": "openrouter/anthropic/claude-opus-4.1",
-      "capacity": 1,
-      "description": "Best at hard design and debugging. Costs real money: only when cheaper lanes fail or the task clearly needs it.",
-      "strengths": ["reasoning", "coding", "review"],
-      "use": "when-needed"          // default | when-needed | never-for-subagents
-    }
-  },
-  "budgets": { "opus": { "dailyTokens": 500000 } }
+  "bunny": { "model": "openrouter/stealth/space-bunny-alpha", "capacity": 2,
+             "use": "Free. General coding, research, reading code. The default for subagents." },
+  "qwen":  { "model": "aiproxy/qwen3.8-27b", "capacity": 2,
+             "use": "Local and free, fast. Searches, small edits, summaries." },
+  "opus":  { "model": "openrouter/anthropic/claude-opus-4.1", "capacity": 1,
+             "use": "Costs real money. Only for hard design or debugging the free lanes could not solve.",
+             "budget": { "limitUsd": 5 } }          // per day; also limitTokens; cost: { input, output } $ per Mtok
 }
 ```
 
-- **`model`:** the one model of the lane. `models` (a list, globs) keeps working in settings.json for compatibility,
-  but the dialog and the docs use `model`. Models without a lane of their own keep today's default pools (one per
-  cloud provider, one per local model).
-- **Inferred facts, each overridable in the lane:**
-  - local or cloud;
-  - price per million input/output tokens (OpenRouter's catalog already carries `pricing`; local = free);
-  - context window and max output;
-  - image input and reasoning levels;
-  - the free-tier rate limit (OpenRouter `:free` and stealth models: 20 requests/min);
-  - loaded/offline, and today's usage against the budget.
+- **Budget:**
+  - `cost` is the price per million input/output tokens. It is inferred (OpenRouter's catalog has it, local models are
+    free) and you only type it where it is missing or wrong.
+  - `limitUsd` / `limitTokens` stop the lane for the day; OpenRouter reports the real cost of every call.
+- **Facts shown automatically, nothing to configure:** local or cloud, context window, image input, reasoning, the
+  free-tier rate limit, loaded/offline, today's spend.
+- **Agents:**
+  - `lanes_list` shows one line per lane, cheapest first: `opus · openrouter/anthropic/claude-opus-4.1 · 0/1 busy ·
+    $15/$75 per Mtok · $1.20 of $5 today · 200k ctx · "Costs real money. Only for …"`.
+  - `agent_spawn` takes `lane` (the id). Without it, the error lists the lanes and their `use`, so the model can retry at
+    once.
+  - With no lanes set up, a subagent runs on the caller's model, as today.
+  - The lanes prompt section (static) says: read the lanes' `use` and cost, prefer free lanes, use a costly one only
+    when the task needs it. The budget is the hard stop.
+- **Automatic lanes:** a model you chat with that has no lane of its own still gets one (capacity from the catalog, or
+  `laneDefaults.localCapacity` 1 / `cloudCapacity` 4). It shows in the Work tab but is not offered to agents.
+- **Compatibility:** `lanes.pools` / `lanes.budgets` / `lanes.*DefaultCapacity` are still read (a one-model pool
+  becomes a lane); the docs and the dialog only know the new shape.
+- **Not kept:** several models sharing one lane's capacity (e.g. two models on one GPU). Nobody needs it now.
 
-  Overrides are `contextWindow`, `cost: { input, output }` and so on; the dialog shows the inferred value until you
-  type another. Later: measured speed (tokens/s, time to first token) from recent runs.
-- **`use`:**
-  - `when-needed`: the lane is listed last, marked "costly", and `agent_spawn` onto it requires a `reason` (why a
-    cheaper lane won't do), shown on the spawn row so you can see why the agent chose it;
-  - `never-for-subagents`: only you pick it for a session;
-  - `lanes.budgets` stays the hard stop.
-- **What agents see:** `lanes_list` shows one compact line per lane, cheapest first:
-  `bunny · openrouter/stealth/space-bunny-alpha · 0/2 busy · cloud · free (20 req/min) · 200k ctx · reasoning · coding, long-context · "Free, strong general coder; …"`,
-  and for `opus`: `… · $15 / $75 per Mtok · costly: only when needed (give a reason) · budget 120k/500k today`.
+## Settings dialog with real controls
 
-  The lanes prompt section (static, so the frozen prompt stays valid) adds one rule: "choose a lane by its profile;
-  prefer free and local lanes; use a costly lane only when the task needs what it is good at, and say why."
-
-## Part 2: the settings dialog with real controls
-
-- **Settings schema.** Each plugin declares its settings once:
-  - key, type, default, label, help, section, options, min/max, unit, secret, needs-restart;
-  - a new additive contract (`SettingInfo` in a `SettingsSection` registered through `ctx.Services`, so hot reload
-    removes it); the host declares its own;
-  - `settings.schema` returns them all;
-  - `docs/SETTINGS.md` stays the reference and could later be generated from the schema.
-- **The dialog renders it:**
-  - toggle, number with unit and limits, text, text area, secret (masked, "show", `env:NAME` accepted), choice, list
-    (chips), model (the model picker), folder (the folder picker);
+- **Schema.** Each plugin declares its settings once (key, type, default, label, help, section, options, limits, secret):
+  - a new additive contract registered through `ctx.Services`, so hot reload removes it; the host declares its own;
+  - `settings.schema` returns them all.
+- **The dialog renders them:**
+  - toggle, number with unit and limits, text, text area, secret (masked, "show", `env:NAME` accepted), choice, list,
+    model picker, folder picker;
   - every field saves on change (`settings.set`), shows the default while unset and has "reset to default";
   - settings.json stays as **Advanced**.
 - **Sections:**
-  - **General:** the UI preferences, as now.
-  - **Models & providers:** default model; per provider its base URL, API key (masked) and model include list, with a
-    "test" button that lists the models it offers.
-  - **Lanes:** Part 1 as a table:
-    - one row per lane: a model picker, lanes, description, strengths and `use`;
-    - the inferred facts with an override each, and the daily budget;
-    - "add lane" starts from a model.
-  - **Agents:** max turns, max depth; goals (continuation limit, no-progress limit, token budget).
-  - **Context:** custom instructions, the AGENTS.md file names and guidance, compaction, nudge, retry.
-  - **Tools and plugins:**
-    - every tool from `tools.list` and every plugin, with on/off switches (`tools.disabled`, `plugins.disabled`);
-    - shell (paths, timeout), files (new-file line endings), web (search provider, SearXNG URL, Brave key, fetch
-      limits, browser), SSH.
-  - **Workspace & logging:** default folder, log level.
+  - **General:** UI preferences.
+  - **Models & providers:** default model; per provider base URL, API key and model list, with a "test" button.
+  - **Lanes:** a row per lane: model picker, capacity, use, budget with the inferred cost; "add lane".
+  - **Agents & goals.**
+  - **Context:** custom instructions, AGENTS.md, compaction, nudge, retry.
+  - **Tools & plugins:** on/off for every tool and plugin; shell, files, web, SSH.
+  - **Workspace & logging.**
 
 ## Order and tests
 
-1. Schema, renderer and the simple sections (most keys, quick win).
-2. Models & providers, tools and plugins switches.
-3. Lanes: `model`, profile, inference, `use`, `lanes_list`, the prompt rule, the lanes editor.
+1. Lanes: the new shape, cost and spend, `lanes_list`, `agent_spawn { lane }`, the prompt rule.
+2. The settings schema, the renderer and the simple sections.
+3. Providers, the lanes editor, the tool and plugin switches.
 
 Tests:
-- Host: schema collected from plugins and removed on unload; `settings.set` type checks.
-- Lanes: inferred facts and overrides, the `lanes_list` text, the `use: when-needed` reason rule.
-- UI mock: the forms save and reload, the lanes editor.
-
-## Questions
-
-1. **Multi-model lanes.** Should they disappear completely, or stay possible in settings.json for models that share one
-   GPU's slots (as `models`)? Proposed: keep reading them, but the dialog edits one model per lane.
-2. **Strengths.** A fixed tag list (coding, reasoning, review, vision, long-context, fast, cheap) plus the description,
-   or free text only? Proposed: tags plus the description.
-3. **`use: when-needed`.** Is a required reason on `agent_spawn` the right amount of friction, or should a costly lane
-   ask you first (a confirmation in the UI) before a subagent starts on it?
-4. **Saving.** Immediately per field (proposed), or a Save button per section?
+- Lanes suite: lanes from settings, automatic lanes, budget stop in dollars and tokens, the `lanes_list` text.
+- Agent suite: `agent_spawn` by lane, the error listing lanes, the fallback without lanes.
+- Host: schema collected and removed on unload.
+- UI mock: forms save and reload, the lanes editor.

@@ -60,9 +60,9 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Suggested next steps
 
-0. **Lanes with a profile and cost, and settings controls** (`docs/plans/lanes-and-settings.md`): one lane per model
-   with a user-written profile and inferred, editable facts (cost, context…), costly lanes used only when needed, and
-   real controls in the settings dialog. Waiting for the answers to its questions.
+0. **Lanes you set up per model, and settings controls** (`docs/plans/lanes-and-settings.md`): a lane is a model
+   with a capacity, a note on when to use it and a budget (cost inferred); agents pick one by id from `lanes_list`;
+   real controls in the settings dialog. Simplified with the user; waiting for "go".
 1. **Goals with a real model.** Run a goal on `qwen3.8-27b` (a throwaway server or the user's NetPI): does it keep
    working, call `goal_update` complete only when done, stay within the no-progress rule? Then consider an
    independent check of "complete" (a verifier subagent) if it declares done too early.
