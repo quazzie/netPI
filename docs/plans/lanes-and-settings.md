@@ -50,6 +50,31 @@ or policy fields:
   becomes a lane); the docs and the dialog only know the new shape.
 - **Not kept:** several models sharing one lane's capacity (e.g. two models on one GPU). Nobody needs it now.
 
+## Budget and cost tracking (user, 2026-09-24: one global budget, visible to agents, usage tracked)
+
+- **Ledger:** one row per model call, for every call (agents, compaction, anything a plugin asks a model). Today only
+  agent turns publish `usage.recorded`, as token totals per day. Each row holds:
+  - time, session, agent, lane, model, purpose;
+  - tokens: input, cache read, cache write, output;
+  - cost in USD and where it came from: `reported` (OpenRouter returns the real cost of each call; today it is only
+    stored on the message), `estimated` (tokens × the lane's or catalog's price) or `free` (local models).
+
+  The cost travels in an additive `Usage.CostUsd`, and the rows go in SQLite.
+- **One global budget:**
+  - `budget.monthlyUsd` (calendar month, resets on the 1st) and optionally `budget.dailyUsd`, with a warning at
+    `budget.warnPercent` (80);
+  - a lane's `budget.limitUsd` stays an optional extra cap ("Opus at most $5 a day");
+  - when a budget is spent, paid lanes refuse new runs with a clear message; free and local lanes are never blocked.
+- **Agents see it:**
+  - `lanes_list` starts with `Budget: $12.40 of $50 this month (25 %), $1.10 today; free lanes don't count`, and every
+    lane shows its price and spend;
+  - the lanes prompt rule adds: paid lanes spend the user's budget; above the warning level use them only when the
+    user asked.
+- **You see it:** the Work tab's usage section shows this month against the budget, today, and a breakdown per lane and
+  model. Each chat shows its own cost (subagents included). A banner appears at the warning level. Settings → Budget
+  holds the limits.
+- **Goals:** a goal's budget can be dollars too (`goal.budgetUsd`, from the same ledger), next to the token budget.
+
 ## Settings dialog with real controls
 
 - **Schema.** Each plugin declares its settings once (key, type, default, label, help, section, options, limits, secret):
@@ -71,12 +96,18 @@ or policy fields:
 
 ## Order and tests
 
-1. Lanes: the new shape, cost and spend, `lanes_list`, `agent_spawn { lane }`, the prompt rule.
-2. The settings schema, the renderer and the simple sections.
-3. Providers, the lanes editor, the tool and plugin switches.
+1. The ledger and the budget (every model call, cost, `budget.*`, the stop for paid lanes).
+2. Lanes: the new shape, `lanes_list` with budget and prices, `agent_spawn { lane }`, the prompt rule.
+3. The settings schema, the renderer and the simple sections, Budget included.
+4. Providers, the lanes editor, the tool and plugin switches, the usage view in the Work tab.
+
+Open budget questions:
+- Is the budget period the calendar month, or should it reset on a chosen day (a billing date)?
+- When the budget is spent, should paid calls stop, or should you be asked in your own chats (agents stop either way)?
 
 Tests:
-- Lanes suite: lanes from settings, automatic lanes, budget stop in dollars and tokens, the `lanes_list` text.
+- Lanes suite: lanes from settings, automatic lanes, the ledger (reported, estimated and free costs), the global and per-lane
+  budget stops, the `lanes_list` text with the budget line.
 - Agent suite: `agent_spawn` by lane, the error listing lanes, the fallback without lanes.
 - Host: schema collected and removed on unload.
 - UI mock: forms save and reload, the lanes editor.
