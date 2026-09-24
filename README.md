@@ -88,6 +88,7 @@ Data: `~/.netpi/` — `settings.json`, `netpi.db` (sessions, messages, projects,
 
 ```powershell
 dotnet build plugins\NetPI.Nudge     # while NetPI runs: the plugin hot-reloads
+.\build.ps1                          # while NetPI runs: everything but the host is built, plugins hot-reload
 npm run build:plugins                # plugin tab UIs → tabs reload
 npm run dev                          # UI dev server against a running NetPI (see docs/UI.md)
 .\build.ps1 -Test                    # unit suites (NuGet-free console runners)

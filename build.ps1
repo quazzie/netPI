@@ -6,6 +6,8 @@
   1. (optional) builds the web UI and plugin tab bundles with npm — prebuilt bundles are committed,
      so Node.js is only needed when you change the UI;
   2. builds the solution into artifacts\app (NetPI.exe desktop app, netpi-server.exe, plugins\, wwwroot\).
+     While NetPI runs from artifacts\app its host DLLs are locked: then everything except netpi-server and the
+     desktop shell is built, the plugins hot-reload, and host changes wait for the next build with NetPI closed.
 
 .EXAMPLE
   .\build.ps1              # build everything (Release)
@@ -44,15 +46,41 @@ if (-not $SkipWeb) {
     }
 }
 
-# ---- is NetPI running? (its DLLs would be locked)
-if (Get-Process -Name NetPI, netpi-server -ErrorAction SilentlyContinue) {
-    Write-Host 'NetPI is running: close it first (plugins alone can be rebuilt while it runs: dotnet build plugins\<Name>).' -ForegroundColor Yellow
+# ---- is NetPI running from artifacts\app? A running app keeps its host DLLs open (plugins load from shadow copies).
+function Test-FileLocked([string] $path) {
+    if (-not (Test-Path $path)) { return $false }
+    try { [IO.File]::Open($path, 'Open', 'ReadWrite', 'None').Dispose(); return $false } catch { return $true }
 }
+$app = Join-Path $PSScriptRoot 'artifacts\app'
+$running = Test-FileLocked (Join-Path $app 'NetPI.Host.dll')
 
 # ---- .NET
 Step "dotnet build ($Configuration)"
-dotnet build NetPI.slnx -c $Configuration --nologo
-if ($LASTEXITCODE) { throw 'dotnet build failed' }
+if ($running) {
+    Write-Host 'NetPI is running from artifacts\app: building everything except netpi-server and the desktop shell (plugins hot-reload).' -ForegroundColor Yellow
+    # the solution minus the two projects that write the host DLLs into artifacts\app
+    $hostProjects = 'src/NetPI.Server/NetPI.Server.csproj', 'src/NetPI.Desktop/NetPI.Desktop.csproj'
+    $projects = @(([xml](Get-Content NetPI.slnx -Raw)).SelectNodes('//Project') | ForEach-Object { $_.Path } |
+        Where-Object { $hostProjects -notcontains $_ } | ForEach-Object { $_ -replace '/', '\' })
+    $filter = Join-Path $PSScriptRoot 'artifacts\build\running.slnf'
+    New-Item -ItemType Directory -Force (Split-Path $filter) | Out-Null
+    @{ solution = @{ path = '..\..\NetPI.slnx'; projects = $projects } } | ConvertTo-Json -Depth 4 | Set-Content $filter -Encoding utf8
+    dotnet build $filter -c $Configuration --nologo
+    if ($LASTEXITCODE) { throw 'dotnet build failed' }
+    # the running app keeps its kernel and contracts until it restarts
+    $stale = @(foreach ($n in 'NetPI.Abstractions', 'NetPI.Host') {
+        $built = Join-Path $PSScriptRoot "src\$n\bin\$Configuration\$n.dll"
+        $inApp = Join-Path $app "$n.dll"
+        if ((Test-Path $built) -and (Get-FileHash $built).Hash -ne (Get-FileHash $inApp).Hash) { $n }
+    })
+    if ($stale.Count) {
+        Write-Host "$($stale -join ' and ') changed: close NetPI and run .\build.ps1 again to update it (until then, plugins that use new contracts may fail to load)." -ForegroundColor Yellow
+    }
+}
+else {
+    dotnet build NetPI.slnx -c $Configuration --nologo
+    if ($LASTEXITCODE) { throw 'dotnet build failed' }
+}
 
 Write-Host "`nBuilt artifacts\app:" -ForegroundColor Green
 Write-Host '  NetPI.exe          desktop app (WebView2 window, starts its own server)'
@@ -70,4 +98,7 @@ if ($Test) {
     if ($failed) { throw "$failed test suite(s) failed" }
 }
 
-if ($Run) { Start-Process (Join-Path $PSScriptRoot 'artifacts\app\NetPI.exe') }
+if ($Run) {
+    if ($running) { Write-Host 'NetPI is already running.' -ForegroundColor Yellow }
+    else { Start-Process (Join-Path $PSScriptRoot 'artifacts\app\NetPI.exe') }
+}
