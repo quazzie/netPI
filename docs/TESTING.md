@@ -196,11 +196,12 @@ Coverage (run `--list` for the names):
   `tests/NetPI.E2E/screenshots/ui-*.png`.
 
 The UI test needs `node` and Playwright with Chromium (`npm i -g playwright && npx playwright install chromium`, or
-`PLAYWRIGHT_BROWSERS_PATH` pointing at installed browsers). Use `--no-ui` without them. It can also run on its own against
-any server: `node tests/NetPI.E2E/ui/smoke.mjs --url http://127.0.0.1:7431 --token <token> --session "<title>"`.
+`PLAYWRIGHT_BROWSERS_PATH` pointing at installed browsers). When Playwright's own Chromium build is not downloaded it
+falls back to an installed Edge or Chrome and prints `browser: msedge`. Use `--no-ui` without Playwright. It can also run
+on its own against any server: `node tests/NetPI.E2E/ui/smoke.mjs --url http://127.0.0.1:7431 --token <token> --session "<title>"`.
 
-On Windows bash scenarios run in Git Bash; the shutdown test kills the process instead of sending SIGTERM and only checks
-persistence.
+On Windows bash scenarios run in Git Bash (which shows directories under `%TEMP%`, where the work dir lives, as
+`/tmp/…`); the shutdown test kills the process instead of sending SIGTERM and only checks persistence.
 
 ### Adding a test
 

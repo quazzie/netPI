@@ -18,10 +18,12 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel. 
 - **Linux sandbox:** 5 unit suites (Providers 35, Tools 52, Agent 53, Aux 74, Host 38) and the end-to-end suite (`tests/NetPI.E2E`, 55 tests against the scripted mock model server `tests/MockLlm`, including a Playwright UI smoke test) all pass.
 - **Windows:**
   - Verified: `build.ps1` builds, `NetPI.exe` runs, and Git Bash, pwsh, `winsqlite3.dll` and window placement work.
-  - Not yet run: the test suites and the E2E suite.
+  - `.\build.ps1 -Test` and the E2E suite (55 tests, UI smoke included) pass. The Windows-only failures were all in the
+    tests and harness (Git Bash quoting and `/tmp` spelling, a Debug-only build path, UI smoke browser and a race).
 - **Real model:**
   - One real run exposed a bug in nInfer. nInfer has since been fixed; details below.
-  - Real-model runs have not been repeated since the fix.
+  - Smoke test after the fix (two agents, a subagent, a steer): lanes, steering and cache reuse behave. One problem was
+    found: the minute in the system prompt's date line invalidates the cache (`docs/STATUS.md`, known limitations).
 
 ## Decisions and preferences to keep
 
