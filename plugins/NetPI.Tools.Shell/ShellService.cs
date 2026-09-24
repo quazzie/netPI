@@ -164,7 +164,7 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
     private ToolResult FormatForeground(ManagedProcess mp, int timeoutSeconds, bool timedOut, bool aborted)
     {
         var full = OutputFormat.ResolveCarriageReturns(mp.Output.Snapshot());
-        var (tail, truncated, totalLines, shownLines) = OutputFormat.TailLines(full, OutputFormat.ModelMaxLines, OutputFormat.ModelMaxBytes);
+        var (tail, truncated, totalLines, shownLines) = OutputFormat.TailLines(full, OutputFormat.ModelMaxLines, ToolResultLimit.Fit(Settings, OutputFormat.ModelMaxBytes));
         var complete = mp.Output.Complete;
         truncated |= !complete;
         string? fullPath = null;

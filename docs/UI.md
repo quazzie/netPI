@@ -270,7 +270,7 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 
 ### Settings dialog
 
-The pages: **General**, **Lanes & budget**, **Profiles**, **Models**, **Agents**, **Context**, **Tools & plugins**, then
+The pages: **General**, **Lanes & budget**, **Profiles**, **Models**, **Agents**, **Context**, **Tools**, **Plugins**, then
 **settings.json** and **About**. Host settings are controls rendered from `settings.schema` (the host's and each
 plugin's `SettingsSection`, placed on the page of its group; a plugin's section comes and goes with the plugin).
 `SettingField` renders one control per type (switch, number with unit and range, text, secret with an eye, choice,
@@ -293,9 +293,9 @@ the same Esc stack, `escLayer()` in `Modal.svelte`).
   the first line of its instructions, its tools); `ProfileDialog` edits one: the name, the instructions that replace the
   opening of the system prompt (they start as the current opening; unchanged they stay unset), whether new chats
   start with it, and the tools as checkboxes by category (with all on / all off per category).
-- **Models** and **Tools & plugins:** one row per provider or tool section (its help, "N changed", "off"), each opening
+- **Models** and **Tools:** one row per provider or tool section (its help, "N changed", "off"), each opening
   a dialog with that section's settings. The Projects dialog sets a project's default (`projects.update { meta: { profile } }`).
-- **Tools & plugins:** `PluginSwitches` lists every plugin with a switch (`plugins.setEnabled`, confirmed) and the
+- **Plugins:** `PluginSwitches` lists every plugin with a switch (`plugins.setEnabled`, confirmed) and the
   tools it brings, and the names in `tools.disabled` when there are any (× shows one again). Single tools are switched
   per chat (the composer's tools button).
 

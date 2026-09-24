@@ -212,7 +212,7 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
 
         var ssh = r.ExitCode == 255 && !r.Aborted && !r.TimedOut && pgid is null;
         var output = Resolve(stdout + (r.Stderr.Length > 0 && !ssh ? (stdout.Length > 0 && !stdout.EndsWith('\n') ? "\n" : "") + r.Stderr : ""));
-        var (tail, truncated, total, shown) = Tail(output);
+        var (tail, truncated, total, shown) = Tail(output, ToolResultLimit.Fit(Ctx.Settings, TailChars));
         truncated |= r.Cut;
         var fullOutputPath = truncated && !ssh ? Save(host, output) : null;
         var timedOut = r.TimedOut || r.ExitCode == 124;
@@ -286,14 +286,14 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
         return string.Join('\n', lines);
     }
 
-    private static (string Tail, bool Truncated, int Total, int Shown) Tail(string s)
+    private static (string Tail, bool Truncated, int Total, int Shown) Tail(string s, int maxChars)
     {
         s = s.TrimEnd('\n');
         var lines = s.Split('\n');
-        if (lines.Length <= TailLines && s.Length <= TailChars) return (s, false, lines.Length, lines.Length);
+        if (lines.Length <= TailLines && s.Length <= maxChars) return (s, false, lines.Length, lines.Length);
         var keep = new List<string>();
         var size = 0;
-        for (var i = lines.Length - 1; i >= 0 && keep.Count < TailLines && size + lines[i].Length + 1 <= TailChars; i--)
+        for (var i = lines.Length - 1; i >= 0 && keep.Count < TailLines && size + lines[i].Length + 1 <= maxChars; i--)
         {
             keep.Add(lines[i]);
             size += lines[i].Length + 1;

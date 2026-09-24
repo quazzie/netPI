@@ -7,7 +7,7 @@ namespace NetPI.Agent;
 /// The agent runtime (<see cref="IAgentRuntime"/>) and its RPC methods: <c>agent.send</c>, <c>agent.abort</c>,
 /// <c>agent.queue</c>, <c>agent.dequeue</c>, <c>agents.list</c>, <c>agent.get</c>, and the per-session tool switches
 /// <c>agent.tools</c>, <c>agent.setTools</c>.
-/// <para>Settings: <c>agent.maxTurns</c> (200), <c>agent.defaultMaxOutputTokens</c> (16384), <c>agent.maxToolResultChars</c> (60000),
+/// <para>Settings: <c>agent.maxTurns</c> (200), <c>agent.defaultMaxOutputTokens</c> (16384), <c>agent.maxToolResultChars</c> (20000),
 /// <c>agent.parallelReadOnlyTools</c> (true), <c>agents.maxDepth</c> (3).</para>
 /// </summary>
 [NetPiPlugin("netpi.agent", Name = "Agent runtime", Description = "Model/tool loop, steering and follow-ups, subagents and lanes", Order = 50)]
@@ -27,7 +27,7 @@ public sealed class AgentPlugin : INetPiPlugin
                 SettingInfo.Int("agent.maxTurns", "Model calls per run", 200, "A run stops after this many.", 1, 10000),
                 SettingInfo.Int("agents.maxDepth", "Subagent depth", 3, "How deep subagents may nest; the deepest get no orchestration tools.", 1, 10),
                 SettingInfo.Bool("agent.parallelReadOnlyTools", "Run read-only tools in parallel", true, "Several read-only calls of one turn at once."),
-                SettingInfo.Int("agent.maxToolResultChars", "Longest tool result", 60000, "Longer output is cut (its start and end are kept).", 1000, null, "chars"),
+                SettingInfo.Int(ToolResultLimit.Setting, "Longest tool result", ToolResultLimit.Default, "Longer results go to a file: the agent sees their start and end and reads the rest from the file when it needs it.", 1000, null, "chars"),
                 SettingInfo.Int("agent.defaultMaxOutputTokens", "Output limit for models without one", 16384, null, 256, null, "tokens"),
             ],
         });

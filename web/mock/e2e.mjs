@@ -703,13 +703,16 @@ log('settings: controls, lanes, budget, tools');
   await page.waitForTimeout(300);
   check('Reset brings the built-in text back', (await rpcCall('settings.get')).settings.context?.customPrompt === undefined && (await identity.inputValue()).startsWith('You are a coding agent'));
 
-  await page.locator('.nav button', { hasText: 'Tools & plugins' }).click();
+  await page.locator('.nav').getByRole('button', { name: 'Tools', exact: true }).click();
   await page.waitForTimeout(300);
   await page.locator('.setting-row[data-section="shell"]').click();
   await sectionDialog.waitFor({ timeout: 3000 }).catch(() => {});
   check('a tool row opens its options', (await sectionDialog.locator('.field', { hasText: 'Default timeout' }).count()) === 1);
   check('found paths show as the real path', ((await sectionDialog.locator('.field', { hasText: 'bash' }).locator('input').getAttribute('placeholder')) ?? '').includes('bash.exe'));
   await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  check('the Tools page has the tool options, not the plugin switches', (await page.locator('.plugin').count()) === 0);
+  await page.locator('.nav button', { hasText: 'Plugins' }).click();
   await page.waitForTimeout(200);
   const shell = page.locator('.plugin[data-plugin="netpi.tools.shell"]');
   check('each plugin lists the tools it brings', (await shell.count()) === 1 && (await shell.locator('.ptools').innerText()).includes('bash'));

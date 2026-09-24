@@ -424,9 +424,13 @@ public static class LoopTests
         Check.True(results[0].IsError);
         Check.Contains(results[0].Content, "disk on fire");
         Check.False(results[1].IsError);
-        Check.Contains(results[1].Content, "characters omitted");
+        Check.Contains(results[1].Content, "characters not shown");
         Check.True(results[1].Content.StartsWith("aaaa") && results[1].Content.EndsWith("zzzz"), "head and tail kept");
-        Check.True(results[1].Content.Length < 1400, $"truncated to ~1000 chars (got {results[1].Content.Length})");
+        Check.True(results[1].Content.Length < 1500, $"about 1000 chars plus the note (got {results[1].Content.Length})");
+        // the whole result is in a file the note names, to read or grep
+        var m = System.Text.RegularExpressions.Regex.Match(results[1].Content, @"The whole result is in (.+?): read");
+        Check.True(m.Success, "the note names the file");
+        Check.Equal(new string('a', 3000) + new string('z', 2000), File.ReadAllText(m.Groups[1].Value));
     }
 
     private static async Task ModelError()

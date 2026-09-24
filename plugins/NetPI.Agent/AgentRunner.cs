@@ -813,7 +813,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         {
             CallId = p.Call.Id,
             Name = p.Call.Name,
-            Content = TruncateResult(result.Content ?? ""),
+            Content = LimitResult(result.Content ?? "", p.Call),
             IsError = result.IsError,
             Images = result.Images,
             Details = details,
@@ -821,16 +821,24 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         };
     }
 
-    private string TruncateResult(string content)
+    /// <summary>
+    /// A result longer than <c>agent.maxToolResultChars</c> (20000): the whole of it goes to a file, and the model gets its
+    /// start and end with the path, to read the rest in parts or search it instead of losing it.
+    /// </summary>
+    private string LimitResult(string content, ToolCallPart call)
     {
-        var max = rt.IntSetting("agent.maxToolResultChars", 60_000);
+        var max = rt.IntSetting(ToolResultLimit.Setting, ToolResultLimit.Default);
         if (max <= 0 || content.Length <= max) return content;
         var head = max * 2 / 3;
         if (head > 0 && char.IsHighSurrogate(content[head - 1])) head--;
         var tail = max - head;
         if (tail > 0 && char.IsLowSurrogate(content[^tail])) tail--;
+        var file = rt.SaveToolResult(SessionId, call, content);
+        var where = file is null
+            ? "It could not be saved; narrow the request (offset/limit, a more specific pattern, head/tail) to see it."
+            : $"The whole result is in {file}: read the part you need (read with offset/limit) or search it (grep) instead of running the call again.";
         return content[..head]
-               + $"\n\n[... {content.Length - head - tail:N0} characters omitted: the result had {content.Length:N0} characters, more than the limit of {max:N0} (setting agent.maxToolResultChars). Narrow the request (offset/limit, a more specific pattern, head/tail) to see the omitted part. ...]\n\n"
+               + $"\n\n[... {content.Length - head - tail:N0} of {content.Length:N0} characters not shown (limit {max:N0}). {where} ...]\n\n"
                + content[^tail..];
     }
 

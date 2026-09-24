@@ -32,7 +32,7 @@
   {:else}
     <span class="name np-ellipsis np-dim">{none ?? 'Choose a model…'}</span>
   {/if}
-  <Icon name="chevron-down" size={11} />
+  <span class="chev"><Icon name="chevron-down" size={11} /></span>
 </button>
 {#if open}
   <ModelMenu anchor={btn} current={value} {none} {width} onchoose={choose} onclose={() => (open = false)} />
@@ -51,8 +51,13 @@
   .name {
     min-width: 0;
   }
+  .chev {
+    display: grid;
+    flex: none;
+    margin-left: auto;
+    color: var(--fg-dim);
+  }
   .ref {
-    flex: 1;
     min-width: 0;
     color: var(--fg-dim);
     font-size: var(--fs-xs);

@@ -83,6 +83,31 @@ public sealed class ToolResult
 
 public sealed record ToolRegistration(IAgentTool Tool, string PluginId, int Priority);
 
+/// <summary>
+/// The longest tool result the model is sent (setting <c>agent.maxToolResultChars</c>). The agent runner saves a longer
+/// result to a file and sends its start, end and path; tools that page or tail their own output stay under it, so
+/// nothing is cut twice.
+/// </summary>
+public static class ToolResultLimit
+{
+    public const string Setting = "agent.maxToolResultChars";
+    public const int Default = 20_000;
+
+    /// <summary>The limit in characters (0 or less: none).</summary>
+    public static int Get(ISettings? settings)
+    {
+        try { return settings?.Get(Setting, Default) ?? Default; }
+        catch { return Default; }
+    }
+
+    /// <summary>A tool's own cap, kept under the limit with room for its notes.</summary>
+    public static int Fit(ISettings? settings, int own, int room = 1000)
+    {
+        var limit = Get(settings);
+        return limit > 0 ? Math.Clamp(limit - room, 1024, own) : own;
+    }
+}
+
 public interface IToolRegistry
 {
     IDisposable Register(IAgentTool tool, int priority = 0);

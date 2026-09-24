@@ -305,14 +305,22 @@ public static class FileTests
             Check.Error(await T.Run(Read, dir, new { path = "big.txt", offset = 6000 }), "past the end");
         });
 
-        r.Add("read: 50KB cap, huge single line, empty file", async () =>
+        r.Add("read: pages fit the tool result limit (at most 50KB), huge single line, empty file", async () =>
         {
             var dir = T.TempDir("read");
             T.WriteText(dir, "wide.txt", string.Join("\n", Enumerable.Range(1, 300).Select(i => new string('x', 500))) + "\n");
+            // the default tool result limit (20000 chars): a page ends with the offset to continue instead of being cut
             var res = await T.Run(Read, dir, new { path = "wide.txt" });
             var d = T.D(res);
-            Check.True(d.Int("endLine") < 300 && d.Int("endLine") >= 90, $"byte cap applied (endLine={d.Int("endLine")})");
+            Check.True(d.Int("endLine") < 45 && d.Int("endLine") >= 30, $"page fits the limit (endLine={d.Int("endLine")})");
             Check.Contains(res.Content, $"Use offset={d.Int("endLine") + 1} to continue");
+            Check.True(res.Content.Length <= ToolResultLimit.Default, $"{res.Content.Length} chars");
+            // a higher limit: pages of up to 50KB
+            var roomy = new FakeSettings();
+            roomy.Set(ToolResultLimit.Setting, 200_000);
+            res = await T.Run(new ReadTool(roomy), dir, new { path = "wide.txt" });
+            d = T.D(res);
+            Check.True(d.Int("endLine") < 300 && d.Int("endLine") >= 90, $"byte cap applied (endLine={d.Int("endLine")})");
             Check.True(Encoding.UTF8.GetByteCount(res.Content) < ReadTool.MaxBytes + 200);
 
             T.WriteText(dir, "min.js", new string('y', 200_000));

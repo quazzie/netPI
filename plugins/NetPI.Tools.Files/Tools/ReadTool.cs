@@ -18,7 +18,7 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
         SummaryArg = "path",
         Description =
             "Read a text file. Returns the file content (line endings normalized to \\n, no line-number prefixes), " +
-            $"at most {MaxLines} lines / {MaxBytes / 1024}KB per call; use offset/limit to page through larger files. " +
+            $"at most {MaxLines} lines (and about {MaxBytes / 1024}KB) per call; a longer file ends with the offset to continue, so page through it with offset/limit. " +
             "Images (png, jpg, gif, webp) are returned as images when the model supports them.",
         Parameters = Schema.Object(
             ("path", Schema.Str("File path, absolute or relative to the working directory."), true),
@@ -47,18 +47,25 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
         var limitArg = args.Int("limit", "lines", "count", "max_lines", "maxLines", "n");
         var limit = Math.Clamp(limitArg ?? MaxLines, 1, MaxLines);
 
-        if (fi.Length > StreamingThreshold) return ReadLarge(ctx, fi, offsetArg, limit, ct);
+        var maxBytes = PageBytes();
+        if (fi.Length > StreamingThreshold) return ReadLarge(ctx, fi, offsetArg, limit, maxBytes, ct);
 
         var bytes = await File.ReadAllBytesAsync(full, ct).ConfigureAwait(false);
         if (TextCodec.IsBinary(bytes))
             return ToolResult.Error($"{full} appears to be a binary file ({PathDisplay.FormatSize(bytes.Length)}); read only displays text. Use the shell (e.g. `file`, `xxd | head`) to inspect it.");
         var doc = TextCodec.Decode(bytes);
         var lines = TextCodec.SplitLines(doc.Text);
-        return Page(ctx, full, lines, lines.Length, offsetArg, limit, doc.DetectedEol, doc.Bom, doc.Legacy);
+        return Page(ctx, full, lines, lines.Length, offsetArg, limit, maxBytes, doc.DetectedEol, doc.Bom, doc.Legacy);
     }
 
+    /// <summary>
+    /// A page is at most MaxBytes, and fits the tool result limit (agent.maxToolResultChars): the runner would cut a longer
+    /// result in the middle, while a page ends with the offset to continue.
+    /// </summary>
+    internal int PageBytes() => ToolResultLimit.Fit(Settings, MaxBytes, 400);
+
     private static ToolResult Page(ToolContext ctx, string full, IReadOnlyList<string> lines, int total, int? offsetArg, int limit,
-        EolStyle? eol, bool bom, bool legacy, int firstLineNumber = 1)
+        int maxBytes, EolStyle? eol, bool bom, bool legacy, int firstLineNumber = 1)
     {
         object Details(int start, int end, bool truncated) => new
         {
@@ -88,15 +95,15 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
         {
             var line = lines[i];
             var lineBytes = Encoding.UTF8.GetByteCount(line) + 1;
-            if (bytes + lineBytes > MaxBytes)
+            if (bytes + lineBytes > maxBytes)
             {
                 if (taken == 0)
                 {
                     // A single enormous line (minified file): show its beginning.
-                    var cut = CutToBytes(line, MaxBytes);
+                    var cut = CutToBytes(line, maxBytes);
                     sb.Append(cut);
                     taken = 1;
-                    lineNote = $"[Line {offset} is {PathDisplay.FormatSize(lineBytes)} long; showing its first {PathDisplay.FormatSize(MaxBytes)}. Use the shell (e.g. `cut -c`) or grep to inspect the rest.]";
+                    lineNote = $"[Line {offset} is {PathDisplay.FormatSize(lineBytes)} long; showing its first {PathDisplay.FormatSize(maxBytes)}. Use the shell (e.g. `cut -c`) or grep to inspect the rest.]";
                 }
                 break;
             }
@@ -122,7 +129,7 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
     }
 
     /// <summary>Huge files: stream lines instead of loading the whole file.</summary>
-    private static ToolResult ReadLarge(ToolContext ctx, FileInfo fi, int? offsetArg, int limit, CancellationToken ct)
+    private static ToolResult ReadLarge(ToolContext ctx, FileInfo fi, int? offsetArg, int limit, int maxBytes, CancellationToken ct)
     {
         using var fs = new FileStream(fi.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16);
         var head = new byte[64 * 1024];
@@ -155,7 +162,7 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
             if ((lineNo & 0xFFFF) == 0) ct.ThrowIfCancellationRequested(); // keep counting for the total
         }
         total = lineNo;
-        return Page(ctx, fi.FullName, window, total, offset, limit, sample.DetectedEol, sample.Bom, sample.Legacy, firstLineNumber: offset);
+        return Page(ctx, fi.FullName, window, total, offset, limit, maxBytes, sample.DetectedEol, sample.Bom, sample.Legacy, firstLineNumber: offset);
     }
 
     private static async Task<ToolResult> ReadImageAsync(ToolContext ctx, FileInfo fi, CancellationToken ct)

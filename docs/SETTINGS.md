@@ -98,7 +98,7 @@ turned off; models without effort levels only get on/off. Free models are limite
 |---|---|---|
 | `agent.maxTurns` | `200` | model calls per run |
 | `agent.defaultMaxOutputTokens` | `16384` | when a model has no limit |
-| `agent.maxToolResultChars` | `60000` | longer tool output is cut (head + tail kept) |
+| `agent.maxToolResultChars` | `20000` | a longer tool result is saved to a file: the agent gets its start and end and the path, to read the rest in parts or grep it (`read` pages, the bash and `ssh_run` tails stay under it) |
 | `agent.parallelReadOnlyTools` | `true` | run several read-only calls of one turn concurrently |
 | `agents.maxDepth` | `3` | subagent nesting depth (deeper agents get no orchestration tools) |
 

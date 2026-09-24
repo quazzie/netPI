@@ -32,7 +32,8 @@ export function pagesOf(schema) {
     { id: 'Models', title: 'Models', icon: 'cpu', sections: [] },
     { id: 'Agents', title: 'Agents', icon: 'bot', sections: [] },
     { id: 'Context', title: 'Context', icon: 'file-text', sections: [] },
-    { id: 'Tools', title: 'Tools & plugins', icon: 'wrench', sections: [] },
+    { id: 'Tools', title: 'Tools', icon: 'wrench', sections: [] },
+    { id: 'plugins', title: 'Plugins', icon: 'puzzle', sections: [] },
   ];
   const byId = Object.fromEntries(pages.map((p) => [p.id, p]));
   const general = [];

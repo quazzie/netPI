@@ -26,7 +26,7 @@ dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll [name-filter…] 
 
 Every request carries the active tools (the highest-priority registration per name), sorted by name, minus:
 
-- the tools of a disabled plugin (Settings → Tools & plugins), and names in `tools.disabled` (settings.json): every chat;
+- the tools of a disabled plugin (Settings → Plugins), and names in `tools.disabled` (settings.json): every chat;
 - the tools switched off for the chat (the composer's tools button; `agent.setTools`, session `meta.toolsOff`; a profile
   sets them when it is applied). Before the first message that is free. In a started chat the change applies from the next model call: tool definitions lead the
   request, so the model re-reads the conversation once (slower on a local model, a full-price read on a paid one), and a
@@ -42,6 +42,12 @@ A tool that appears or disappears during a session (a plugin loaded, reloaded or
 
 ## Conventions
 
+- **Long results go to a file.** A result longer than `agent.maxToolResultChars` (20000 characters) is saved to
+  `<temp>/netpi/tool-results/<session>/<tool>-<call>.txt`; the model gets its start and end and the path, and reads the
+  rest with `read` (offset/limit) or searches it with `grep` instead of running the call again. Tools that page or tail
+  their own output stay under the limit (`ToolResultLimit.Fit`): `read` pages end with the offset to continue, bash and
+  `ssh_run` keep the tail and save the full output themselves. Saved results are removed with their session or after
+  a week.
 - **Lenient arguments.** Names are matched ignoring case, `_` and `-` (`file_path` = `filePath` = `FilePath`), and common
   aliases are accepted (`file_path`/`file`/`filename` for `path`, `old_string`/`new_string` for `oldText`/`newText`, and so on).
   Numbers and booleans may be strings (`"30"`, `"true"`). An arguments object sent as a JSON string is unwrapped.
@@ -83,8 +89,9 @@ A tool that appears or disappears during a session (a plugin loaded, reloaded or
 
 `{ path, offset?, limit? }`
 
-- Returns the text LF-normalized, **without** line-number prefixes. At most **2000 lines / 50KB** are returned per call
-  (`limit` is capped at 2000). `offset` is 1-based; a negative offset counts from the end (`-100` = last 100 lines).
+- Returns the text LF-normalized, **without** line-number prefixes. At most **2000 lines / 50KB** are returned per call,
+  and no more than the tool result limit (`agent.maxToolResultChars`, 20000 characters by default) (`limit` is capped at
+  2000). `offset` is 1-based; a negative offset counts from the end (`-100` = last 100 lines).
 - When the output is cut, it ends with a footer: `[Showing lines 1-2000 of 5230. Use offset=2001 to continue.]`.
 - If a single line is longer than 50KB (minified files), the start of that line is shown with a note.
 - Images (`png jpg jpeg gif webp`, ≤ 20MB) come back as an `ImagePart` when `context.Model.SupportsImages`. Otherwise the result

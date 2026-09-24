@@ -175,7 +175,7 @@
   <div class="layout">
     <nav class="nav">
       <button class:active={section === 'general'} onclick={() => (section = 'general')}><Icon name="sliders" size={14} /> General</button>
-      {#each layout.pages.filter((p) => p.sections.length || p.id === 'lanes' || p.id === 'profiles' || p.id === 'Tools') as p (p.id)}
+      {#each layout.pages.filter((p) => p.sections.length || p.id === 'lanes' || p.id === 'profiles' || p.id === 'plugins') as p (p.id)}
         <button class:active={section === p.id} onclick={() => (section = p.id)}><Icon name={p.icon} size={14} /> {p.title}</button>
       {/each}
       <div class="nav-gap"></div>
@@ -211,6 +211,8 @@
             <ProfilesEditor {doc} {opening} />
           </section>
           {#each page.sections as s (s.id)}{@render sectionBlock(s)}{/each}
+        {:else if page.id === 'plugins'}
+          <section class="sec"><PluginSwitches {doc} /></section>
         {:else if ROW_PAGES.has(page.id)}
           {#if page.sections.length}
             <section class="sec rows">
@@ -221,7 +223,6 @@
               {/each}
             </section>
           {/if}
-          {#if page.id === 'Tools'}<section class="sec"><PluginSwitches {doc} /></section>{/if}
         {:else}
           {#each page.sections as s (s.id)}{@render sectionBlock(s)}{/each}
         {/if}

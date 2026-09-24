@@ -37,8 +37,65 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// <summary>Throttle interval for activity-only <c>agent.status</c> updates.</summary>
     internal int StatusThrottleMs { get; set; } = 250;
 
+    private static readonly TimeSpan KeepToolResults = TimeSpan.FromDays(7);
+
+    /// <summary>The folder of a session's full tool results (under the host's temp folder).</summary>
+    internal string ToolResultsDir(string sessionId) => Path.Combine(Ctx.Paths.TempDir, "tool-results", Safe(sessionId));
+
+    /// <summary>Save a whole tool result; returns the file, or null when it could not be written.</summary>
+    internal string? SaveToolResult(string sessionId, ToolCallPart call, string content)
+    {
+        try
+        {
+            var dir = ToolResultsDir(sessionId);
+            Directory.CreateDirectory(dir);
+            var file = Path.Combine(dir, $"{Safe(call.Name)}-{Safe(call.Id)}.txt");
+            File.WriteAllText(file, content);
+            return file;
+        }
+        catch (Exception ex)
+        {
+            Ctx.Logger.LogWarning(ex, "Saving the full result of {Tool} failed", call.Name);
+            return null;
+        }
+    }
+
+    private static string Safe(string s)
+    {
+        var chars = s.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '_').ToArray();
+        return chars.Length == 0 ? "x" : new string(chars, 0, Math.Min(chars.Length, 80));
+    }
+
+    /// <summary>Remove saved tool results older than a week, and a deleted session's.</summary>
+    private void CleanToolResults(string? sessionId = null)
+    {
+        try
+        {
+            var root = Path.Combine(Ctx.Paths.TempDir, "tool-results");
+            if (!Directory.Exists(root)) return;
+            if (sessionId is not null)
+            {
+                var dir = ToolResultsDir(sessionId);
+                if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+                return;
+            }
+            foreach (var dir in Directory.EnumerateDirectories(root))
+            {
+                foreach (var f in Directory.EnumerateFiles(dir))
+                    if (DateTime.UtcNow - File.GetLastWriteTimeUtc(f) > KeepToolResults) File.Delete(f);
+                if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir);
+            }
+        }
+        catch (Exception ex) { Ctx.Logger.LogDebug(ex, "Cleaning saved tool results failed"); }
+    }
+
     public void Initialize()
     {
+        _ = Task.Run(() => CleanToolResults());
+        Ctx.Events.Subscribe(EventTypes.SessionDeleted, e =>
+        {
+            if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id) CleanToolResults(id);
+        });
         _store.Initialize();
         var interrupted = _store.MarkInterrupted();
         if (interrupted > 0) Ctx.Logger.LogInformation("Marked {Count} interrupted agent(s) as failed", interrupted);
