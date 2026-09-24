@@ -30,12 +30,12 @@ dotted paths — `providers.aiproxy.baseUrl` means `{ "providers": { "aiproxy": 
 | `transport` | `responses` | `responses` (`/v1/responses`) or `chat` (`/v1/chat/completions`) |
 | `apiKey` | – | sent as Bearer; `"env:NAME"` / `"$NAME"` reads an environment variable |
 | `replayReasoning` | Responses: `true`, Chat: `false` | send previous reasoning back. Standard stateless Responses usage appends every output item of a response (reasoning → message → function calls) to the next input |
-| `includeEncryptedReasoning` | `false` | also request `include: ["reasoning.encrypted_content"]` (OpenAI-hosted reasoning models) |
+| `includeEncryptedReasoning` | `false` | also request `include: ["reasoning.encrypted_content"]` (OpenAI-hosted reasoning models; nInfer rejects non-empty `include` with HTTP 400) |
 | `dumpFailedRequests` | `true` | save the request body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30) and add the server's `x-request-id` / response id to the error, for reproducing backend bugs |
 | `parseThinkTags` | `true` | split inline `<think>…</think>` into thinking blocks |
 | `defaultMaxOutputTokens` | `16384` | when the catalog says `max_output_tokens: null` |
 | `modelsCacheSeconds` | `10` | `/v1/models` cache |
-| `reasoningSummary` | – | Responses `reasoning.summary` |
+| `reasoningSummary` | – | Responses `reasoning.summary` (nInfer rejects it with HTTP 400; leave unset for AiProxy/nInfer) |
 | `headers` | – | extra HTTP headers |
 | `enabled`, `local` | `true` | local providers take lane capacity from the catalog's `concurrency` |
 | `models.<id>` | – | per model: `transport`, `replayReasoning`, `parseThinkTags`, `maxOutputTokens`, `contextWindow`, `concurrency`, `displayName`, `hidden` |

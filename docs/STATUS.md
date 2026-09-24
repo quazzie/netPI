@@ -13,11 +13,11 @@ Verified on Windows: the desktop shell builds and runs; Git Bash, pwsh, winsqlit
 - The Anthropic provider was tested against a mock of the Messages API only (the adaptive-thinking request shape
   and the fallback model ids are best guesses; both are configurable).
 
-## Open backend issue
-- nInfer (`qwen3.8-27b` via AiProxy, Responses transport) failed a valid stateless request with
-  `response.failed: capture owner has no planning ID` — an internal invariant of nInfer's KV-cache capture
-  planner. NetPI surfaces it unchanged (no retry, no chaining workaround). Failed requests are saved to
-  `~/.netpi/logs/failed-requests/` with nInfer's `x-request-id` for a reproduction.
+## Backend (nInfer) — resolved 2026-09-24
+- `response.failed: capture owner has no planning ID` was an nInfer bug (live-session commit 2fb27c35); fixed in
+  `C:\AI\src\ninfer-windows`, which now also retains stateless (`store:false`) agent chains as lineage heads.
+  Report: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`. Real-model NetPI runs
+  have not been repeated since — see docs/HANDOFF.md, next steps.
 
 ## Known limitations / ideas
 - Steering an orchestrator that is waiting on its workers makes it stop waiting, but it still needs a lane back;
