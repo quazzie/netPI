@@ -213,11 +213,14 @@ public static class ShellTests
             Check.True(Encoding.UTF8.GetByteCount(res.Content) < 32 * 1024);
         });
 
+        // Windows regression: the test also ran `bash -c <command>` on Windows, where Git Bash's MSYS runtime re-parses the
+        // command line and collapses the backslashes; production never launches that way on Windows.
         r.Add("bash: Windows-style invocation (env + eval) preserves quoting and backslashes", async () =>
         {
             var bash = ShellLocator.FindBash(null)!;
             var dir = T.TempDir("bash");
-            var command = "x='a\\\\b \"q\"'; printf '%s|%s\\n' \"$x\" 'C:\\Users\\me'\ncat <<'EOF'\nline $HOME \\n\nEOF\necho \"$0\" >/dev/null; echo ${NETPI_COMMAND:-unset}";
+            var command = "x='a\\\\b \"q\"'; printf '%s|%s\\n' \"$x\" 'C:\\Users\\me'\ncat <<'EOF'\nline $HOME \\n\nEOF\necho \"$0\" >/dev/null; echo ${NETPI_COMMAND:-unset}\necho 'héllo ✓ 日本'";
+            const string expected = "a\\\\b \"q\"|C:\\Users\\me\nline $HOME \\n\nunset\nhéllo ✓ 日本\n";
             async Task<string> RunSpec(LaunchSpec spec)
             {
                 var cap = new OutputCapture();
@@ -225,10 +228,11 @@ public static class ShellTests
                 await mp.Completion;
                 return cap.Snapshot();
             }
-            var unix = await RunSpec(ShellLaunch.Bash(bash, command, dir, windowsStyle: false));
-            var win = await RunSpec(ShellLaunch.Bash(bash, command, dir, windowsStyle: true));
-            Check.Equal("a\\\\b \"q\"|C:\\Users\\me\nline $HOME \\n\nunset\n", unix);
-            Check.Equal(unix, win);
+            Check.Equal(expected, await RunSpec(ShellLaunch.Bash(bash, command, dir)), "default launch for this OS");
+            Check.Equal(expected, await RunSpec(ShellLaunch.Bash(bash, command, dir, windowsStyle: true)), "env + eval");
+            // argv reaches bash verbatim only outside Windows (the reason the Windows style exists)
+            if (!OperatingSystem.IsWindows())
+                Check.Equal(expected, await RunSpec(ShellLaunch.Bash(bash, command, dir, windowsStyle: false)), "bash -c");
         });
 
         r.Add("bash: very long commands go through a temp script", async () =>
