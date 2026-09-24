@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -11,6 +12,13 @@ namespace NetPI.Host.Tests;
 public static class SampleBuild
 {
     private static Task? _build;
+
+    /// <summary>
+    /// The configuration this runner was built with. With BuildProjectReferences=false the sample needs NetPI.Abstractions'
+    /// reference assembly of the same configuration, and build.ps1 builds Release only.
+    /// </summary>
+    public static readonly string Configuration =
+        typeof(SampleBuild).Assembly.GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration is { Length: > 0 } c ? c : "Debug";
 
     public static string Dir(string variant) => Path.Combine(T.RepoRoot, "artifacts", "tests", "SamplePlugin", variant);
 
@@ -28,7 +36,7 @@ public static class SampleBuild
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
-            foreach (var a in new[] { "build", project, $"-p:SampleVariant={variant}", "-p:BuildProjectReferences=false", "-nologo", "-v:q", "-clp:ErrorsOnly" })
+            foreach (var a in new[] { "build", project, "-c", Configuration, $"-p:SampleVariant={variant}", "-p:BuildProjectReferences=false", "-nologo", "-v:q", "-clp:ErrorsOnly" })
                 psi.ArgumentList.Add(a);
             using var p = Process.Start(psi)!;
             var stdout = p.StandardOutput.ReadToEndAsync();
