@@ -157,10 +157,12 @@ public static class TranscriptSerializer
                         case TextPart t when !string.IsNullOrWhiteSpace(t.Text):
                             sb.Append('\n').Append(t.Text.Trim());
                             break;
+                        case ThinkingPart th when !string.IsNullOrWhiteSpace(th.Text):
+                            sb.Append("\n[Thinking] ").Append(th.Text.Trim());
+                            break;
                         case ToolCallPart c:
                             sb.Append("\n[Tool call] ").Append(c.Name).Append('(').Append(Truncate(c.Arguments.Trim(), ToolArgsChars)).Append(')');
                             break;
-                        // Thinking is omitted.
                     }
                 }
                 if (m.StopReason is "aborted" or "error") sb.Append($"\n[response {m.StopReason}]");

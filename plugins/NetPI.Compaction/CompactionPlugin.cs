@@ -18,11 +18,11 @@ public sealed class CompactionPlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Bool("compaction.enabled", "Compact long conversations", true),
-                SettingInfo.Number("compaction.thresholdPercent", "Compact at", 0.8, "Share of the context window.", 0.3, 0.95),
-                SettingInfo.Int("compaction.reserveTokens", "…or when fewer tokens are left", 16384, null, 0, null, "tokens"),
+                SettingInfo.Int("compaction.reserveTokens", "Compact when fewer tokens are left", 16384, "Room kept for the next answer.", 0, null, "tokens"),
+                SettingInfo.Number("compaction.thresholdPercent", "Also compact at", 1.0, "Share of the context window; 1 = only by the reserve above.", 0.3, 1.0),
                 SettingInfo.Int("compaction.keepRecentTokens", "Recent tokens kept verbatim", 20000, null, 0, null, "tokens"),
-                SettingInfo.ModelRef("compaction.model", "Summarizer model", null, "the session's model"),
-                SettingInfo.Int("compaction.maxSummaryTokens", "Summary length", 8192, null, 256, null, "tokens"),
+                SettingInfo.ModelRef("compaction.model", "Summarizer model", "It summarizes at the chat's reasoning effort when it offers it.", "the session's model"),
+                SettingInfo.Int("compaction.maxSummaryTokens", "Summary length", 13107, "Output budget of a summary, thinking included (80 % of the reserve); a summary cut off at it is not used.", 256, null, "tokens"),
                 SettingInfo.Int("compaction.defaultContextWindow", "Context window when unknown", 131072, null, 1024, null, "tokens"),
             ],
         });

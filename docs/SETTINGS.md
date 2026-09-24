@@ -186,14 +186,25 @@ with their guidelines. The global file is `~/.netpi/AGENTS.md`.
 
 ## Auto-compaction, nudge, retry, tool repair
 
+Compaction works like pi's. When fewer than `compaction.reserveTokens` are left in the window, the older part of the
+chat is summarized and the last `compaction.keepRecentTokens` are kept as they are (never a tool call without its
+result). The summary is a structured checkpoint (Goal, Constraints & Preferences, Progress: Done / In Progress /
+Blocked, Key Decisions, Next Steps, Critical Context) written at the chat's reasoning effort from a transcript that
+includes the model's thinking (tool results cut to 2000 characters). An earlier summary is merged by rule (keep
+everything, move finished work to Done, update the next steps). When the kept part starts inside one long turn, the
+start of that turn gets its own summary. The files read and modified are listed from the tool calls themselves
+(`<read-files>`, `<modified-files>`) and carried from summary to summary. A summary cut off at its output limit is not
+used: the chat stays as it was. Beyond pi: a transcript too long for the summarizer is summarized in rolling parts, and
+`compaction.model` can summarize with another model.
+
 | key | default | |
 |---|---|---|
 | `compaction.enabled` | `true` | |
-| `compaction.thresholdPercent` | `0.8` | compact when the context passes this share of the window |
-| `compaction.reserveTokens` | `16384` | …or when fewer tokens than this are left |
+| `compaction.reserveTokens` | `16384` | compact when fewer tokens than this are left (at most half the window) |
+| `compaction.thresholdPercent` | `1` | also compact at this share of the window (1 = only by the reserve) |
 | `compaction.keepRecentTokens` | `20000` | recent messages kept verbatim |
-| `compaction.model` | – | summarizer model ref (default: the session's model) |
-| `compaction.maxSummaryTokens` | `8192` | |
+| `compaction.model` | – | summarizer model ref (default: the session's model); it summarizes at the chat's reasoning effort when it offers it |
+| `compaction.maxSummaryTokens` | 80 % of the reserve (`13107`) | output budget of a summary, thinking included (at most a quarter of the window) |
 | `compaction.defaultContextWindow` | `131072` | for models without a known window |
 | `nudge.enabled` / `nudge.maxPerRun` | `true` / `3` | "continue" when a turn ends empty, cut off, or announces an action without doing it |
 | `toolRepair.enabled` | `true` | execute tool calls a model wrote as text (`<tool_call>…`) |

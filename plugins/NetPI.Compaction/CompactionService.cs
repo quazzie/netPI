@@ -12,26 +12,29 @@ public sealed class CompactionOptions
 {
     public bool Enabled { get; init; } = true;
     public int DefaultContextWindow { get; init; } = 131_072;
-    public double ThresholdPercent { get; init; } = 0.8;
+    /// <summary>Also compact at this share of the window; 1 (the default) = only when fewer than the reserve tokens are left.</summary>
+    public double ThresholdPercent { get; init; } = 1.0;
     public int ReserveTokens { get; init; } = 16_384;
     public int KeepRecentTokens { get; init; } = 20_000;
     public string? Model { get; init; }
-    public int MaxSummaryTokens { get; init; } = 8192;
+    /// <summary>The summary's output budget (thinking included): by default 80 % of the reserve.</summary>
+    public int MaxSummaryTokens { get; init; } = 13_107;
 
     public static CompactionOptions From(ISettings? s)
     {
         if (s is null) return new CompactionOptions();
-        var threshold = Get(s, "compaction.thresholdPercent", 0.8);
+        var threshold = Get(s, "compaction.thresholdPercent", 1.0);
+        var reserve = Math.Max(0, Get(s, "compaction.reserveTokens", 16_384));
         if (threshold > 1) threshold /= 100; // "80" means 80%
         return new CompactionOptions
         {
             Enabled = Get(s, "compaction.enabled", true),
             DefaultContextWindow = Math.Max(1024, Get(s, "compaction.defaultContextWindow", 131_072)),
             ThresholdPercent = Math.Clamp(threshold, 0.1, 1.0),
-            ReserveTokens = Math.Max(0, Get(s, "compaction.reserveTokens", 16_384)),
+            ReserveTokens = reserve,
             KeepRecentTokens = Math.Max(0, Get(s, "compaction.keepRecentTokens", 20_000)),
             Model = Get<string?>(s, "compaction.model", null) is { Length: > 0 } m ? m.Trim() : null,
-            MaxSummaryTokens = Math.Clamp(Get(s, "compaction.maxSummaryTokens", 8192), 256, 128_000),
+            MaxSummaryTokens = Math.Clamp(Get(s, "compaction.maxSummaryTokens", (int)(reserve * 0.8)), 256, 128_000),
         };
     }
 
@@ -73,35 +76,7 @@ public sealed class CompactionResult
 /// <summary>Plans, summarizes and applies a compaction (shared by the hook and the compaction.run RPC).</summary>
 public sealed class CompactionService(IPluginContext ctx)
 {
-    public const string SystemPrompt =
-        """
-        You are a precise summarizer for an AI coding agent. Your summary replaces the older part of the agent's conversation
-        in its context window, so it must preserve everything the agent needs to continue the work seamlessly: the user's
-        goal and requirements, constraints and preferences, decisions and their reasons, exact file paths, identifiers,
-        commands, error messages and how they were resolved, and the current state of the work.
-        Be factual and specific. Never invent anything that is not in the transcript. Leave out pleasantries, repetition
-        and details that no longer matter (e.g. superseded attempts), but keep facts that were learned the hard way.
-        Write in the language the user writes in. Output only the summary, in Markdown.
-        """;
-
-    public const string Structure =
-        """
-        ## Goal
-        What the user wants to achieve overall (and the current sub-task).
-        ## Constraints & preferences
-        Requirements, conventions, things to avoid, the user's stated preferences.
-        ## Progress
-        ### Done
-        ### In progress
-        ## Key decisions
-        Decisions made and why.
-        ## Files & code touched
-        Paths with what was changed or learned about each (functions, classes, config keys).
-        ## Current state & next steps
-        Where the work stands right now and the concrete next steps.
-        ## Open questions
-        Unresolved questions, blockers, things to verify.
-        """;
+    public const string SystemPrompt = SummaryPrompts.System;
 
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new(StringComparer.Ordinal);
 
@@ -191,9 +166,10 @@ public sealed class CompactionService(IPluginContext ctx)
 
         string summary;
         int calls;
+        List<string> readFiles, modifiedFiles;
         try
         {
-            (summary, calls) = await SummarizeAsync(plan.ToSummarize.ToList(), summarizer, req, o, ct).ConfigureAwait(false);
+            (summary, calls, readFiles, modifiedFiles) = await SummarizePlanAsync(plan, summarizer, req, o, ct).ConfigureAwait(false);
         }
         finally { lease?.Dispose(); }
 
@@ -215,6 +191,8 @@ public sealed class CompactionService(IPluginContext ctx)
             ["messages"] = plan.SummarizeCount,
             ["mode"] = req.Mode.ToString().ToLowerInvariant(),
             ["summarizer"] = summarizer.Ref,
+            ["readFiles"] = new JsonArray([.. readFiles.Select(f => (JsonNode?)f)]),
+            ["modifiedFiles"] = new JsonArray([.. modifiedFiles.Select(f => (JsonNode?)f)]),
         };
 
         // Append first: if anything fails afterwards the old messages are still in the context.
@@ -247,78 +225,100 @@ public sealed class CompactionService(IPluginContext ctx)
         };
     }
 
-    private async Task<(string Summary, int Calls)> SummarizeAsync(List<ChatMessage> messages, ModelInfo model,
-        CompactionRequest req, CompactionOptions o, CancellationToken ct)
+    /// <summary>
+    /// The summary of a plan, after pi: an earlier summary is merged by rule (`<previous-summary>`), not re-read as part
+    /// of the conversation; when the kept part starts inside a turn, that turn's start gets its own summary; the files
+    /// read and modified come from the tool calls. Returns the summary text with its file lists.
+    /// </summary>
+    private async Task<(string Summary, int Calls, List<string> Read, List<string> Modified)> SummarizePlanAsync(
+        CompactionPlan plan, ModelInfo model, CompactionRequest req, CompactionOptions o, CancellationToken ct)
+    {
+        var toSummarize = plan.ToSummarize.ToList();
+        var previous = toSummarize.FirstOrDefault(m => m.Role == MessageRole.Summary);
+        var previousText = previous is null ? null : FileLists.Strip(previous.Text);
+        var fresh = toSummarize.Where(m => m.Role != MessageRole.Summary).ToList();
+        if (fresh.Count == 0) throw new InvalidOperationException("Nothing to summarize.");
+
+        // a split turn: the first kept message is not the start of a turn, and that turn's user message is summarized
+        var turnStart = -1;
+        if (plan.CutIndex < plan.Messages.Count && plan.Messages[plan.CutIndex].Role != MessageRole.User)
+            turnStart = fresh.FindLastIndex(m => m.Role == MessageRole.User);
+        var history = turnStart >= 0 ? fresh[..turnStart] : fresh;
+        var prefix = turnStart >= 0 ? fresh[turnStart..] : [];
+
+        var sessionEffort = ctx.Sessions.GetSession(req.SessionId)?.Reasoning;
+        var effort = EffortFor(model, sessionEffort);
+        var calls = 0;
+        string summary;
+        if (prefix.Count > 0)
+        {
+            var historyText = previousText ?? "No earlier history.";
+            if (history.Count > 0)
+            {
+                (historyText, var n) = await RollAsync(history, previousText, false, model, effort, req, o, o.MaxSummaryTokens, ct).ConfigureAwait(false);
+                calls += n;
+            }
+            var (prefixText, m) = await RollAsync(prefix, null, true, model, effort, req, o, o.MaxSummaryTokens / 2, ct).ConfigureAwait(false);
+            calls += m;
+            summary = historyText + SummaryPrompts.SplitTurnHeading + prefixText;
+        }
+        else
+        {
+            (summary, calls) = await RollAsync(fresh, previousText, false, model, effort, req, o, o.MaxSummaryTokens, ct).ConfigureAwait(false);
+        }
+
+        var (read, modified) = FileLists.Collect(fresh, previous?.Meta);
+        return (FileLists.Strip(summary) + FileLists.Format(read, modified), calls, read, modified);
+    }
+
+    /// <summary>
+    /// Summarize messages in one call, or in rolling parts when they do not fit the summarizer's window (each part merged
+    /// into the summary so far). A summary cut off at the output limit is refused: the context stays as it was.
+    /// </summary>
+    private async Task<(string Summary, int Calls)> RollAsync(List<ChatMessage> messages, string? previousSummary, bool turnPrefix,
+        ModelInfo model, string? effort, CompactionRequest req, CompactionOptions o, int budget, CancellationToken ct)
     {
         var window = model.ContextWindow is > 0 and var w ? w : o.DefaultContextWindow;
-        var maxOut = Math.Min(o.MaxSummaryTokens, model.MaxOutputTokens is > 0 and var mo ? mo : int.MaxValue);
+        var maxOut = Math.Min(budget, model.MaxOutputTokens is > 0 and var mo ? mo : int.MaxValue);
         maxOut = Math.Max(256, Math.Min(maxOut, window / 4));
-        // Room for the system prompt, instructions, the rolling summary (≤ maxOut) and the answer (maxOut).
+        // Room for the system prompt, instructions, the summary so far (≤ maxOut) and the answer (maxOut).
         var budgetTokens = (long)((window - 2L * maxOut - 1500) * 0.85);
         var budgetChars = (int)Math.Clamp(budgetTokens * 4, 2000, 4_000_000);
 
         var chunks = TranscriptSerializer.Chunk(messages.Select(TranscriptSerializer.Serialize), budgetChars);
         if (chunks.Count == 0) throw new InvalidOperationException("Nothing to summarize.");
 
-        string? summary = null;
-        for (var i = 0; i < chunks.Count; i++)
+        var summary = previousSummary;
+        foreach (var chunk in chunks)
         {
-            var prompt = BuildPrompt(chunks[i], summary, i, chunks.Count, req.Instructions);
             var request = new ModelRequest
             {
                 Model = model,
                 SystemPrompt = SystemPrompt,
-                Messages = [ChatMessage.UserText(prompt)],
-                ReasoningEffort = LowestEffort(model),
+                Messages = [ChatMessage.UserText(SummaryPrompts.Build(chunk, summary, turnPrefix, req.Instructions))],
+                ReasoningEffort = effort,
                 MaxOutputTokens = maxOut,
                 SessionId = req.SessionId,
                 AgentId = req.AgentId,
                 Purpose = "compaction",
             };
             var response = await ctx.Models.CompleteAsync(request, ct).ConfigureAwait(false);
+            if (response.StopReason == "length")
+                throw new InvalidOperationException($"The summary hit the output limit ({maxOut} tokens) and would be incomplete; the context was left as it was (setting compaction.maxSummaryTokens).");
             var text = response.Text.Trim();
             if (text.Length == 0)
                 throw new InvalidOperationException($"The summarizer ({model.Ref}) returned an empty response (stop reason: {response.StopReason ?? "?"}).");
-            if (response.StopReason == "length")
-                ctx.Logger.LogWarning("Compaction summary hit the output limit ({Max} tokens); it may be incomplete", maxOut);
             summary = text;
         }
         return (summary!, chunks.Count);
     }
 
-    public static string BuildPrompt(string transcript, string? previousSummary, int index, int total, string? instructions)
-    {
-        var sb = new StringBuilder();
-        if (previousSummary is null)
-        {
-            sb.Append(total > 1
-                ? $"Summarize the conversation transcript below (part 1 of {total}; the following parts will be merged into your summary later).\n\n"
-                : "Summarize the conversation transcript below.\n\n");
-        }
-        else
-        {
-            sb.Append($"Below is the summary of the earlier part of the conversation, followed by the next part of the transcript (part {index + 1} of {total}). ")
-              .Append("Produce one updated summary that merges both.\n\n")
-              .Append("<previous-summary>\n").Append(previousSummary.Trim()).Append("\n</previous-summary>\n\n");
-        }
-        sb.Append("Use exactly this structure (write \"(none)\" for empty sections):\n\n").Append(Structure).Append("\n\n");
-        if (!string.IsNullOrWhiteSpace(instructions))
-            sb.Append("Additional focus requested by the user: ").Append(instructions.Trim()).Append("\n\n");
-        sb.Append("<transcript>\n").Append(transcript).Append("\n</transcript>");
-        return sb.ToString();
-    }
-
-    /// <summary>The cheapest reasoning effort the model offers (null when reasoning is not configurable).</summary>
-    public static string? LowestEffort(ModelInfo model)
+    /// <summary>The chat's reasoning effort when the summarizer offers it, else the model's default (null).</summary>
+    public static string? EffortFor(ModelInfo model, string? sessionEffort)
     {
         var r = model.Reasoning;
-        if (r is null || !r.Supported || r.Efforts.Count == 0) return null;
-        foreach (var candidate in new[] { "none", "off", "minimal", "low", "medium", "high" })
-        {
-            var hit = r.Efforts.FirstOrDefault(e => string.Equals(e, candidate, StringComparison.OrdinalIgnoreCase));
-            if (hit is not null) return hit;
-        }
-        return r.Efforts[0];
+        if (r is null || !r.Supported || string.IsNullOrWhiteSpace(sessionEffort)) return null;
+        return r.Efforts.FirstOrDefault(e => string.Equals(e, sessionEffort, StringComparison.OrdinalIgnoreCase));
     }
 
     public void Notice(string sessionId, string level, string text) =>

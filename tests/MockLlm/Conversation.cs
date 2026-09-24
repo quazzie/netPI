@@ -61,7 +61,7 @@ public sealed class NRequest
     public int CacheControlBlocks { get; set; }
 
     public bool IsSubagent => System.Contains("a subagent working for", StringComparison.Ordinal);
-    public bool IsSummarizer => System.StartsWith("You are a precise summarizer", StringComparison.Ordinal);
+    public bool IsSummarizer => System.StartsWith("You are a context summarization assistant", StringComparison.Ordinal);
 
     /// <summary>Approximate prompt size (chars/4 of everything the model reads).</summary>
     public int EstimateTokens()

@@ -163,12 +163,12 @@ public static class CompactionTests
             Check.Equal(MessageRole.Summary, plan4.ToSummarize.First().Role);
         });
 
-        r.Add("compaction: transcript serialization (roles, tool calls, truncation, no thinking)", () =>
+        r.Add("compaction: transcript serialization (roles, thinking, tool calls, truncation)", () =>
         {
             var a = T.Assistant("I will read it", T.Call("c1", "read", "{\"path\":\"a.cs\"}"));
-            a.Parts.Insert(0, new ThinkingPart { Text = "PRIVATE" });
+            a.Parts.Insert(0, new ThinkingPart { Text = "the file first" });
             var s = TranscriptSerializer.Serialize(a);
-            Check.Equal("[Assistant]\nI will read it\n[Tool call] read({\"path\":\"a.cs\"})", s);
+            Check.Equal("[Assistant]\n[Thinking] the file first\nI will read it\n[Tool call] read({\"path\":\"a.cs\"})", s);
             var tool = new ChatMessage
             {
                 Role = MessageRole.Tool,
@@ -199,8 +199,8 @@ public static class CompactionTests
             var req = env.Ctx.ModelsFake.Requests.Single();
             Check.Equal("compaction", req.Purpose);
             Check.Equal(CompactionService.SystemPrompt, req.SystemPrompt);
-            Check.Equal("low", req.ReasoningEffort);
-            Check.Equal(8192, req.MaxOutputTokens);
+            Check.True(req.ReasoningEffort is null, "the chat has no effort set: the model's default");
+            Check.Equal(10_000, req.MaxOutputTokens); // 80 % of the reserve, at most a quarter of the 40k window
             Check.Equal(0, req.Tools.Count);
             Check.Equal(session.Id, req.SessionId);
             var prompt = req.Messages.Single().Text;
@@ -209,8 +209,10 @@ public static class CompactionTests
             Check.Contains(prompt, "[Tool call] read({\"path\":\"src/f0.cs\"})");
             Check.Contains(prompt, "[Tool result: read]\nRrrr");
             Check.Contains(prompt, "chars omitted");
-            Check.NotContains(prompt, "SECRET_THINKING");
-            foreach (var h in new[] { "## Goal", "## Constraints & preferences", "## Progress", "### Done", "### In progress", "## Key decisions", "## Files & code touched", "## Current state & next steps", "## Open questions" })
+            Check.Contains(prompt, "[Thinking] SECRET_THINKING 0");
+            Check.True(prompt.StartsWith("<conversation>\n") && prompt.Contains("</conversation>"), "the conversation in tags");
+            Check.Contains(prompt, "Create a structured context checkpoint summary");
+            foreach (var h in new[] { "## Goal", "## Constraints & Preferences", "## Progress", "### Done", "### In Progress", "### Blocked", "## Key Decisions", "## Next Steps", "## Critical Context" })
                 Check.Contains(prompt, h);
 
             var store = env.Ctx.SessionsFake;
@@ -218,7 +220,8 @@ public static class CompactionTests
             Check.Equal(session.Id, sid);
             var summary = store.Appended.Last();
             Check.Equal(MessageRole.Summary, summary.Role);
-            Check.Equal("## Goal\nSUMMARY", summary.Text);
+            Check.True(summary.Text.StartsWith("## Goal\nSUMMARY\n\n<read-files>\nsrc/f0.cs\n"), summary.Text);
+            Check.Equal("src/f0.cs", summary.Meta!["readFiles"]![0]!.GetValue<string>());
             Check.Equal("compaction", summary.MetaString("kind"));
             Check.Equal(upTo, (long)summary.Meta!["coversUpToSeq"]!);
             var before = (long)summary.Meta["tokensBefore"]!;
@@ -271,8 +274,10 @@ public static class CompactionTests
         r.Add("compaction: settings (disabled, threshold, reserve)", async () =>
         {
             var o = new CompactionOptions();
-            Check.True(CompactionService.ShouldCompact(104_858, 131_072, o));
-            Check.False(CompactionService.ShouldCompact(104_000, 131_072, o));
+            Check.True(CompactionService.ShouldCompact(114_689, 131_072, o), "fewer than the reserve left");
+            Check.False(CompactionService.ShouldCompact(114_000, 131_072, o));
+            Check.True(CompactionService.ShouldCompact(104_858, 131_072, new CompactionOptions { ThresholdPercent = 0.8 }), "a threshold when set");
+            Check.Equal(13_107, CompactionOptions.From(new FakeSettings()).MaxSummaryTokens);
             Check.True(CompactionService.ShouldCompact(115_000, 131_072, new CompactionOptions { ThresholdPercent = 0.95 }));
             Check.False(CompactionService.ShouldCompact(3_000, 8_192, o)); // reserve capped at half the window
             var env = new Env();
@@ -343,6 +348,71 @@ public static class CompactionTests
             Check.True(r2.Compacted && keptBig >= 19_000, $"keeps compaction.keepRecentTokens (20k): {keptBig}");
         });
 
+        r.Add("compaction: file lists come from the tool calls and are carried from summary to summary", () =>
+        {
+            var prev = new JsonObject { ["readFiles"] = new JsonArray("old.cs", "x.cs"), ["modifiedFiles"] = new JsonArray("done.cs") };
+            var msgs = new List<ChatMessage>
+            {
+                T.Assistant("", T.Call("c1", "read", "{\"path\":\"a.cs\"}"), T.Call("c2", "grep", "{\"pattern\":\"x\"}")),
+                T.Assistant("", T.Call("c3", "edit", "{\"file_path\":\"x.cs\",\"oldText\":\"a\",\"newText\":\"b\"}")),
+                T.Assistant("", T.Call("c4", "ssh_read", "{\"host\":\"nuc\",\"path\":\"/etc/hosts\"}"), T.Call("c5", "write", "not json")),
+            };
+            var (read, modified) = FileLists.Collect(msgs, prev);
+            Check.Equal("a.cs,nuc:/etc/hosts,old.cs", string.Join(",", read), "read, minus what was modified");
+            Check.Equal("done.cs,x.cs", string.Join(",", modified));
+            var text = "## Goal\nG" + FileLists.Format(read, modified);
+            Check.Contains(text, "<read-files>\na.cs\nnuc:/etc/hosts\nold.cs\n</read-files>");
+            Check.Contains(text, "<modified-files>\ndone.cs\nx.cs\n</modified-files>");
+            Check.Equal("## Goal\nG", FileLists.Strip(text));
+        });
+
+        r.Add("compaction: a turn too long to keep gets its start summarized apart (split turn)", async () =>
+        {
+            var env = new Env();
+            env.Add(T.User("earlier question"));
+            env.Add(T.Assistant("earlier answer " + new string('e', 4000)));
+            // one long turn: a single user message, then many tool rounds
+            env.Add(T.User("LONG TASK: migrate the parser"));
+            for (var i = 0; i < 12; i++)
+            {
+                env.Add(T.Assistant($"step {i}", T.Call($"s{i}", "read", $"{{\"path\":\"p{i}.cs\"}}")));
+                env.Add(T.ToolResult(($"s{i}", "read", new string('r', 7000))));
+            }
+            env.Ctx.ModelsFake.Responder = req => new ChatMessage
+            {
+                Role = MessageRole.Assistant, StopReason = "stop",
+                Parts = [new TextPart { Text = req.Messages[0].Text.Contains("PREFIX of a turn") ? "PREFIX-SUMMARY" : "HISTORY-SUMMARY" }],
+            };
+            var result = await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            Check.True(result.Compacted, result.Message);
+            var reqs = env.Ctx.ModelsFake.Requests.ToList();
+            Check.Equal(2, reqs.Count, "history and turn prefix");
+            Check.Contains(reqs[0].Messages[0].Text, "earlier question");
+            Check.NotContains(reqs[0].Messages[0].Text, "LONG TASK");
+            Check.Contains(reqs[1].Messages[0].Text, "LONG TASK: migrate the parser");
+            Check.Contains(reqs[1].Messages[0].Text, "## Original Request");
+            Check.True(reqs[1].MaxOutputTokens < reqs[0].MaxOutputTokens, "a smaller budget for the prefix");
+            Check.True(result.Summary!.Text.StartsWith("HISTORY-SUMMARY\n\n---\n\n**Turn Context (split turn):**\n\nPREFIX-SUMMARY"), result.Summary.Text);
+            var firstKept = env.Ctx.Sessions.GetContextMessages(env.Session.Id)[1];
+            Check.Equal(MessageRole.Assistant, firstKept.Role);
+        });
+
+        r.Add("compaction: a summary cut off at the output limit is refused and nothing changes", async () =>
+        {
+            var env = new Env();
+            env.Conversation(13);
+            env.Ctx.ModelsFake.Responder = req => new ChatMessage { Role = MessageRole.Assistant, StopReason = "length", Parts = [new TextPart { Text = "## Goal\nhalf a" }] };
+            var before = env.Ctx.Sessions.GetContextMessages(env.Session.Id).Count;
+            try
+            {
+                await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+                throw new AssertException("expected a failure");
+            }
+            catch (InvalidOperationException ex) { Check.Contains(ex.Message, "output limit"); }
+            Check.Equal(before, env.Ctx.Sessions.GetContextMessages(env.Session.Id).Count, "context unchanged");
+            Check.False(env.Ctx.SessionsFake.Appended.Any(m => m.Role == MessageRole.Summary), "no summary written");
+        });
+
         r.Add("compaction: chunked (rolling) summaries when the transcript exceeds the summarizer window", async () =>
         {
             var env = new Env();
@@ -363,14 +433,15 @@ public static class CompactionTests
             Check.True(reqs.Count >= 3, $"{reqs.Count} summarizer calls");
             Check.True(reqs.All(q => q.Model.Id == "small" && q.ReasoningEffort is null && q.MaxOutputTokens == 3000));
             Check.NotContains(reqs[0].Messages[0].Text, "<previous-summary>");
-            Check.Contains(reqs[0].Messages[0].Text, $"part 1 of {reqs.Count}");
+            Check.Contains(reqs[0].Messages[0].Text, "Create a structured context checkpoint summary");
             for (var i = 1; i < reqs.Count; i++)
             {
                 var p = reqs[i].Messages[0].Text;
                 Check.Contains(p, $"<previous-summary>\nROLLING-{i}\n</previous-summary>");
+                Check.Contains(p, "PRESERVE all existing information from the previous summary");
                 Check.True(ModelMessages.EstimateTokens(p) < 12_000 - 3000, $"chunk {i} fits: {ModelMessages.EstimateTokens(p)}");
             }
-            Check.Equal($"ROLLING-{reqs.Count}", env.Ctx.SessionsFake.Appended.Last().Text);
+            Check.True(env.Ctx.SessionsFake.Appended.Last().Text.StartsWith($"ROLLING-{reqs.Count}\n\n<read-files>"));
             // A different model than the agent's → its own lane, released afterwards.
             Check.Equal("test/small", lanes.Acquired.Single().PoolKey);
             Check.Equal("agt_1", lanes.Acquired.Single().AgentId);
@@ -415,7 +486,7 @@ public static class CompactionTests
             var result = (string?)await ctx.RpcFake.Call("compaction.run", new JsonObject { ["sessionId"] = env.Session.Id, ["args"] = "focus on the parser" });
             Check.Contains(result, "Context compacted: ~");
             var req = ctx.ModelsFake.Requests.Last();
-            Check.Contains(req.Messages[0].Text, "Additional focus requested by the user: focus on the parser");
+            Check.Contains(req.Messages[0].Text, "Additional focus: focus on the parser");
             Check.Equal("agt_9", req.AgentId);
             Check.Equal("manual", ctx.SessionsFake.Appended.Last().MetaString("mode"));
             Check.Equal("test/m1", lanes.Acquired.Single().PoolKey);
@@ -440,19 +511,25 @@ public static class CompactionTests
             var result = await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
             Check.True(result.Compacted, result.Message);
             var prompt = env.Ctx.ModelsFake.Requests.Last().Messages[0].Text;
-            Check.Contains(prompt, "[Summary of the earlier conversation]\n## Goal\nSUMMARY");
+            Check.Contains(prompt, "<previous-summary>\n## Goal\nSUMMARY\n</previous-summary>");
+            Check.NotContains(prompt, "[Summary of the earlier conversation]");
+            Check.NotContains(prompt, "<read-files>"); // the lists come from the meta, not through the model
+            Check.Contains(prompt, "NEW conversation messages to incorporate");
+            var files = result.Summary!.Meta!["readFiles"]!.AsArray().Select(n => n!.GetValue<string>()).ToList();
+            Check.True(files.Contains("src/fA0.cs") || files.Contains("src/f0.cs"), string.Join(",", files));
             Check.True(s1.Compacted, "previous summary marked compacted");
             var ctxMsgs = store.GetContextMessages(env.Session.Id);
             Check.Equal(1, ctxMsgs.Count(m => m.Role == MessageRole.Summary));
             Check.Equal(result.Summary!.Id, ctxMsgs[0].Id);
         });
 
-        r.Add("compaction: lowest reasoning effort and token formatting", () =>
+        r.Add("compaction: the summary at the chat's reasoning effort; token formatting", () =>
         {
-            Check.Equal("minimal", CompactionService.LowestEffort(T.Model(efforts: ["high", "minimal", "low"])));
-            Check.Equal("none", CompactionService.LowestEffort(T.Model(efforts: ["none", "low"])));
-            Check.Equal("xhigh", CompactionService.LowestEffort(T.Model(efforts: ["xhigh"])));
-            Check.True(CompactionService.LowestEffort(T.Model()) is null);
+            Check.Equal("high", CompactionService.EffortFor(T.Model(efforts: ["low", "high"]), "high"));
+            Check.Equal("low", CompactionService.EffortFor(T.Model(efforts: ["low", "high"]), "LOW"));
+            Check.True(CompactionService.EffortFor(T.Model(efforts: ["low", "high"]), "xhigh") is null, "not offered: the model's default");
+            Check.True(CompactionService.EffortFor(T.Model(efforts: ["low"]), null) is null);
+            Check.True(CompactionService.EffortFor(T.Model(), "high") is null);
             Check.Equal("950", CompactionService.Fmt(950));
             Check.Equal("12.3k", CompactionService.Fmt(12_345));
             Check.Equal("131k", CompactionService.Fmt(131_072));
