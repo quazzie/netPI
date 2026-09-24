@@ -2,9 +2,9 @@
 
 ## Verified on Windows
 - The desktop shell builds and runs; Git Bash, pwsh, winsqlite3 and window placement work.
-- `.\build.ps1 -Test` (Release): Providers 41, Tools 54, Agent 60, Aux 83, Host 38, all passing.
+- `.\build.ps1 -Test` (Release): Providers 41, Tools 54, Agent 60, Aux 86, Host 38, all passing.
 - E2E suite: 55 tests / 703 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
-  (`npm run e2e`) 105/105.
+  (`npm run e2e`) 110/110.
 - Plugins hot-reload while NetPI runs (they load from shadow copies); only the host DLLs are locked. `build.ps1` then
   builds everything except the host, and a rebuild after a commit no longer reloads unchanged plugins.
 - Real model (AiProxy → nInfer `qwen3.8-27b`, 2 lanes): two concurrent agents, one spawning a subagent, the other

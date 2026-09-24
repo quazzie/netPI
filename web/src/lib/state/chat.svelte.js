@@ -138,6 +138,9 @@ export class ChatStore {
   notice = $state(null); // { level, text, ts }
   pendingUser = $state.raw(null); // optimistic user message while agent.send is in flight
   expanded = new SvelteMap(); // UI memory: item key -> boolean
+  // the user opened the thinking of a streaming answer: later streams in this chat start open too, and the finished
+  // thinking rows of those answers stay open
+  liveThinkingOpen = $state(false);
   // composer
   draft = $state('');
   images = $state.raw([]);
@@ -244,6 +247,8 @@ export class ChatStore {
       case 'message.added': {
         const m = d.message;
         if (!m) return;
+        if (m.role === 'assistant' && this.liveThinkingOpen)
+          (m.parts ?? []).forEach((p, i) => p.type === 'thinking' && this.expanded.set(`k${m.id}.${i}`, true));
         this.#append(m);
         if (m.role === 'assistant') {
           clearTimeout(this.#endTimer);

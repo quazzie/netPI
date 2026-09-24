@@ -9,6 +9,7 @@ CompactionTests.Register(runner);
 IdeasTests.Register(runner);
 TodoTests.Register(runner);
 WebTests.Register(runner);
+MediaTests.Register(runner);
 PanelTests.Register(runner);
 LoadTests.Register(runner);
 var code = await runner.RunAsync(args);

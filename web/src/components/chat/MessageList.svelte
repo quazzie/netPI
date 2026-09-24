@@ -7,6 +7,7 @@
   import NoticeRow from './NoticeRow.svelte';
   import StatusRow from './StatusRow.svelte';
   import StreamingBlock from './StreamingBlock.svelte';
+  import ShownImage from './ShownImage.svelte';
   import { createItemBuilder } from '../../lib/chatItems.js';
   import { app, isBusy, projectOf } from '../../lib/state/app.svelte.js';
   import { modals } from '../../lib/state/ui.svelte.js';
@@ -33,6 +34,7 @@
   let scroller = $state();
   let content = $state();
   let stick = true; // follow the bottom while new content arrives (plain var: no re-render on scroll)
+  let lastTop = 0; // scrollTop at the last scroll event or programmatic scroll
   let showJump = $state(false);
   let restoring = true;
 
@@ -40,10 +42,21 @@
     return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
   }
 
+  function pin() {
+    scroller.scrollTop = scroller.scrollHeight;
+    lastTop = scroller.scrollTop;
+  }
+
   function onScroll() {
     if (restoring) return;
+    const top = scroller.scrollTop;
     const d = distanceFromBottom();
-    stick = d < 48;
+    // Only the user scrolling up unpins. Content that grew, or a view that shrank (the plan strip or queue chips
+    // appearing above the composer), can put the bottom out of sight before the resize observer re-pins: that
+    // must not count as leaving the bottom.
+    if (d < 48) stick = true;
+    else if (top < lastTop - 1) stick = false;
+    lastTop = top;
     const jump = d > 320;
     if (jump !== showJump) showJump = jump;
   }
@@ -51,7 +64,7 @@
   export function scrollToBottom(force = false) {
     if (!scroller) return;
     if (force) stick = true;
-    scroller.scrollTop = scroller.scrollHeight;
+    pin();
     showJump = false;
   }
 
@@ -80,14 +93,16 @@
     const saved = chat.scroll;
     if (saved && !saved.atBottom) {
       scroller.scrollTop = saved.top;
+      lastTop = scroller.scrollTop;
       stick = false;
       showJump = distanceFromBottom() > 320;
     } else scrollToBottom(true);
     requestAnimationFrame(() => (restoring = false));
 
-    // keep pinned to the bottom while content grows (streaming, tool output, highlighting…)
+    // keep pinned to the bottom while content grows (streaming, tool output, highlighting…) and while the view
+    // shrinks (the composer dock grows)
     const ro = new ResizeObserver(() => {
-      if (stick) scroller.scrollTop = scroller.scrollHeight;
+      if (stick) pin();
     });
     ro.observe(content);
     ro.observe(scroller);
@@ -164,6 +179,8 @@
           <NoticeRow msg={item.msg} {chat} />
         {:else if item.kind === 'status'}
           <StatusRow msg={item.msg} />
+        {:else if item.kind === 'shown'}
+          <ShownImage {item} onimage={openImage} />
         {:else if item.kind === 'images'}
           <div class="images">
             {#each item.images as img, j (j)}
@@ -186,7 +203,7 @@
         </button>
       </div>
     {:else if chat.stream.active}
-      <div class="item"><StreamingBlock stream={chat.stream} /></div>
+      <div class="item"><StreamingBlock stream={chat.stream} {chat} /></div>
     {:else if running && !liveToolRunning}
       <div class="item working">
         <span class="np-spinner"></span>

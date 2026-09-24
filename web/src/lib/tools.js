@@ -17,9 +17,10 @@ const META = {
   web_search: { label: 'Web search', icon: 'search', arg: 'query', view: 'web' },
   screenshot: { label: 'Screenshot', icon: 'image', arg: 'url', view: 'web' },
   todo_write: { label: 'Todo', icon: 'list', arg: null, view: 'todo' },
+  show_image: { label: 'Image', icon: 'image', arg: 'source', view: 'generic' },
 };
 
-const CATEGORY_ICON = { files: 'file', shell: 'terminal', agents: 'bot', ideas: 'idea', web: 'globe', todo: 'list', general: 'wrench' };
+const CATEGORY_ICON = { files: 'file', shell: 'terminal', agents: 'bot', ideas: 'idea', web: 'globe', todo: 'list', media: 'image', general: 'wrench' };
 const SUMMARY_KEYS = ['path', 'command', 'pattern', 'query', 'url', 'name', 'task', 'id', 'text', 'title'];
 
 /** Server tool definitions (from tools.list), filled by the app store. */
@@ -101,6 +102,10 @@ export function toolSummary(name, args, base) {
   switch (name) {
     case 'screenshot':
       return arg(args, 'url') ? truncate(String(arg(args, 'url')), 160) : 'NetPI window';
+    case 'show_image': {
+      const s = String(arg(args, 'source', 'path', 'url', 'file', 'src') ?? '');
+      return s.startsWith('data:') ? 'data: URL' : truncate(relPath(s, base) || s, 160);
+    }
     case 'todo_write': {
       const items = todoItems(args);
       const cur = items.find((i) => i.status === 'in_progress') ?? items.find((i) => i.status !== 'done');

@@ -10,7 +10,7 @@
    * animation frame); markdown is re-rendered at most every 100ms and never highlighted here — the final
    * message.added replaces this block.
    */
-  let { stream } = $props();
+  let { stream, chat = null } = $props();
 
   const INTERVAL = 100;
   let html = $state('');
@@ -34,7 +34,45 @@
     if (wait <= 0) render();
     else timer = setTimeout(render, wait);
   });
-  onDestroy(() => clearTimeout(timer));
+  onDestroy(() => {
+    clearTimeout(timer);
+    clearTimeout(thinkTimer);
+  });
+
+  // the thinking so far, when the user opens it while it streams (markdown at most every 150ms)
+  const open = $derived(!!chat?.liveThinkingOpen);
+  let thinkHtml = $state('');
+  let thinkTimer = 0;
+  let thinkLast = 0;
+  function renderThinking() {
+    thinkTimer = 0;
+    thinkLast = performance.now();
+    thinkHtml = renderMarkdown(stream.thinking, { cache: false });
+  }
+  $effect(() => {
+    const t = stream.thinking;
+    if (!t) thinkHtml = '';
+    if (!open || !t || thinkTimer) return;
+    const wait = 150 - (performance.now() - thinkLast);
+    if (wait <= 0) renderThinking();
+    else thinkTimer = setTimeout(renderThinking, wait);
+  });
+
+  /** Keep the thinking box scrolled to its end while it grows, unless the user scrolled up inside it. */
+  function follow(node) {
+    let atEnd = true;
+    const onScroll = () => (atEnd = node.scrollHeight - node.scrollTop - node.clientHeight < 24);
+    node.addEventListener('scroll', onScroll);
+    node.scrollTop = node.scrollHeight;
+    return {
+      update() {
+        if (atEnd) requestAnimationFrame(() => (node.scrollTop = node.scrollHeight));
+      },
+      destroy() {
+        node.removeEventListener('scroll', onScroll);
+      },
+    };
+  }
 
   // live one-line thinking preview + timer
   let now = $state(Date.now());
@@ -58,11 +96,23 @@
 
 <div class="streaming">
   {#if stream.thinking}
-    <div class="thinking" class:live={thinkingLive}>
-      <span class="ic">{#if thinkingLive}<span class="np-spinner"></span>{:else}<Icon name="brain" size={14} />{/if}</span>
-      <span class="label">{thinkingLive ? 'Thinking…' : 'Thought'}</span>
-      <span class="dur">{duration(thinkingMs)}</span>
-      {#if thinkingLive && preview}<span class="preview"><bdi>{preview}</bdi></span>{/if}
+    <div class="thinking" class:live={thinkingLive} class:open>
+      <button
+        class="tline"
+        aria-expanded={open}
+        disabled={!chat}
+        title={open ? 'Hide the thinking' : 'Show the thinking so far'}
+        onclick={() => chat && (chat.liveThinkingOpen = !open)}
+      >
+        <span class="ic">{#if thinkingLive}<span class="np-spinner"></span>{:else}<Icon name="brain" size={14} />{/if}</span>
+        <span class="label">{thinkingLive ? 'Thinking…' : 'Thought'}</span>
+        <span class="dur">{duration(thinkingMs)}</span>
+        {#if thinkingLive && preview && !open}<span class="preview"><bdi>{preview}</bdi></span>{:else}<span class="grow"></span>{/if}
+        {#if chat}<span class="chev" class:open><Icon name="chevron-right" size={12} /></span>{/if}
+      </button>
+      {#if open && thinkHtml}
+        <div class="tbody md np-scroll" use:follow={thinkHtml}>{@html thinkHtml}</div>
+      {/if}
     </div>
   {/if}
   {#if html}
@@ -88,7 +138,49 @@
     min-width: 0;
     padding: 0 2px;
   }
-  .thinking,
+  .thinking {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .tline {
+    width: 100%;
+    margin-left: -4px;
+    padding: 0 8px 0 4px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    text-align: left;
+    font: inherit;
+  }
+  .tline:not(:disabled):hover {
+    background: var(--bg-2);
+  }
+  .tline:disabled {
+    cursor: default;
+  }
+  .grow {
+    flex: 1;
+  }
+  .chev {
+    display: grid;
+    flex: none;
+    color: var(--fg-dim);
+    transition: transform var(--t-fast);
+  }
+  .chev.open {
+    transform: rotate(90deg);
+  }
+  .tbody {
+    max-height: 320px;
+    overflow-y: auto;
+    margin: 2px 0 4px 22px;
+    padding: 6px 10px;
+    border-left: 2px solid var(--border);
+    color: var(--fg-muted);
+    font-size: var(--fs-sm);
+  }
+  .tline,
   .tool {
     display: flex;
     align-items: center;
@@ -105,7 +197,7 @@
     color: var(--accent);
     flex: none;
   }
-  .thinking:not(.live) .ic {
+  .thinking:not(.live) .tline .ic {
     color: var(--fg-dim);
   }
   .label {
@@ -143,7 +235,7 @@
     border-radius: 1px;
     animation: blink 1s steps(2, start) infinite;
   }
-  .md :global(p:nth-last-child(2)) {
+  .md:not(.tbody) :global(p:nth-last-child(2)) {
     display: inline;
   }
   @keyframes blink {

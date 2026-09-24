@@ -5,6 +5,7 @@
 //   steps         { kind:'steps', key, steps:[…], startMs, endMs }    consecutive thinking / tool rows
 //     step        { kind:'thinking', key, part, msg } | { kind:'tool', key, call, result, resultMsg, msg }
 //   images        { kind:'images', key, msg, images }                 assistant image parts
+//   shown         { kind:'shown', key, call, result, msg }            an image the agent showed (show_image): not in a steps group
 //   notice        { kind:'notice', key, msg }                         role notice / summary
 //   status        { kind:'status', key, msg }                         assistant stopped with error/aborted/length
 //
@@ -90,7 +91,10 @@ export function createItemBuilder() {
               addStep({ kind: 'thinking', key: `k${m.id}.${i}`, part: p, msg: m }, [p], m, i);
             } else if (p.type === 'tool_call') {
               const r = results.get(p.id);
-              if (r) {
+              if (r && p.name === 'show_image' && !r.part.isError && r.part.details?.data) {
+                flush();
+                items.push(stable({ kind: 'shown', key: `v${p.id}`, call: p, result: r.part, msg: m }, [p, r.part]));
+              } else if (r) {
                 addStep(
                   { kind: 'tool', key: `c${p.id}`, call: p, result: r.part, resultMsg: r.msg, msg: m },
                   [p, r.part],

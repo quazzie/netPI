@@ -9,6 +9,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Tools.Shell` | `netpi.tools.shell` | `bash` `pwsh` `process_list` `process_output` `process_kill` | `processes.list`, `processes.output`, `processes.kill` |
 | `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `screenshot` | – |
 | `plugins/NetPI.Todo` | `netpi.todo` | `todo_write` | – |
+| `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
 
 The file and shell tools start at `Order = 20`. Tests live in `tests/NetPI.Tools.Tests`, a console app with no test framework:
 
@@ -331,3 +332,21 @@ the list from that result and changes it by sending the whole list again. When c
 ```ts
 details: { items: { text, status }[], done, total }
 ```
+
+---
+
+## Media (`category: "media"`)
+
+### `show_image` (read-only, summary arg `source`)
+
+`plugins/NetPI.Tools.Media`. `{ source /* file path, http(s) URL or data: URL */, caption? }` shows the user an image in
+the chat, for example a chart the agent generated. The type comes from the bytes (png, jpg, gif, webp, bmp, svg, ico,
+avif), so a mislabelled file still works and a non-image is refused. At most `media.maxBytes` (10 MB). The image goes
+to the UI only: the model gets "Showed chart.png (image/png, 184 KB) to the user…" and no image tokens (to look at an
+image itself it uses `read` or `screenshot`). The UI renders a successful result as its own chat item with the caption,
+outside the collapsible steps, and opens it full size on click.
+
+```ts
+details: { source: 'file'|'url'|'data', path?, url?, name, mediaType, bytes, caption?, data /* base64 */ }
+```
+

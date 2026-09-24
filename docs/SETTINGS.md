@@ -175,4 +175,5 @@ with their guidelines. The global file is `~/.netpi/AGENTS.md`.
 | `web.search.braveApiKey` | env `BRAVE_API_KEY` | Brave Search API key; `"env:NAME"` / `"$NAME"` read an environment variable |
 | `web.search.braveUrl` | `https://api.search.brave.com/res/v1/web/search` | |
 | `web.search.count` | `8` | results per search (max 20) |
+| `media.maxBytes` | `10000000` | largest image `show_image` shows |
 | `web.browserPath` | auto | Edge, Chrome or Chromium for `screenshot` (found in the usual install folders or on PATH) |

@@ -24,6 +24,10 @@ Kept for reference; the current state is in `docs/HANDOFF.md` and `docs/STATUS.m
 | File links in the chat open with the operating system (`files.open`: default app, scripts for editing, executables only revealed); "Open file" on read/write/edit rows; "Open" in the file tree | `plugins/NetPI.Tools.Files/FileOpener.cs`, `web/src/lib/openFile.js` |
 | The Providers test runner honors `[filter]` like the other suites (`7ab67b5`) | `tests/NetPI.Providers.Tests` |
 
+Follow-ups the same day: `show_image` (`plugins/NetPI.Tools.Media`: the agent shows the user an image, display only);
+thinking can be opened while it streams; the chat stays pinned to the bottom when the plan strip appears (only the
+user scrolling up unpins it); the todo list survives compaction; web search reads only NetPI's settings.
+
 Decisions: light web limits only (agents have curl anyway); no separate learnings journal (AGENTS.md, kept lean, is
 the place); no symbol search (would need Roslyn).
 

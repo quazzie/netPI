@@ -70,7 +70,7 @@ web/
       TopBar.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
       panels/  SidePanel, PluginTabHost, SessionsTab, ProjectsTab
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
-               ToolRow, NoticeRow, StatusRow, StreamingBlock, TodoList,
+               ToolRow, NoticeRow, StatusRow, StreamingBlock, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
       composer/ Composer, ModelPicker, EffortPicker, ContextRing, QueueChips, TodoStrip
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
@@ -187,6 +187,14 @@ into locals first, because after the parent clears the modal state or the row re
      opens them in the default browser).
    - **Plan strip.** `TodoStrip` (in the composer dock) shows the session's `meta.todo` while any item is open:
      `done/total` and the current item, expanding to the checklist.
+   - **Shown images.** A successful `show_image` result becomes its own `shown` item (`ShownImage`: the image, the
+     caption, name · size), never folded into a steps group; a click opens the lightbox.
+   - **Live thinking.** The streaming block's thinking line is a toggle: open, it shows the thinking so far (markdown
+     at most every 150 ms, following its end). The choice is `chat.liveThinkingOpen`: later answers in that chat start
+     open, and their finished thinking rows are marked expanded when the message arrives.
+   - **Pinned to the bottom.** The list follows new content while it is pinned; only the user scrolling up unpins it.
+     A view that shrinks (the plan strip or queue chips appearing) or content that grows never does: the resize
+     observer re-pins.
    - A **steps** group with more than 3 steps collapses to `▸ N steps · time · tool counts`, but only after its
      run has finished. Steering input does not end a run. The user's choice to expand or collapse is kept per
      group in `chat.expanded`.
