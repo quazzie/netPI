@@ -110,6 +110,7 @@ public sealed class Env : IAsyncDisposable
         foreach (var a in new[] { Path.Combine(AppDir, "netpi-server.dll"), "--port", Options.Port.ToString(), "--home", Home, "--token", Token })
             psi.ArgumentList.Add(a);
         psi.Environment["ANTHROPIC_API_KEY"] = "";
+        psi.Environment["OPENROUTER_API_KEY"] = ""; // no real OpenRouter calls from a developer's environment
         var ready = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
         _proc = proc;

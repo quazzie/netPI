@@ -12,5 +12,6 @@
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Providers.Anthropic/NetPI.Providers.Anthropic.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.csproj" />
   </ItemGroup>
 </Project>

@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Text;
 
 // NOTE: mirrored in NetPI.Providers.{AiProxy,Anthropic,OpenRouter}/Common (plugins cannot share code). Keep the copies in sync.
-namespace NetPI.Providers.AiProxy;
+namespace NetPI.Providers.OpenRouter;
 
 /// <summary>
 /// Accumulates streamed deltas into message parts (in emission order) and buffers the

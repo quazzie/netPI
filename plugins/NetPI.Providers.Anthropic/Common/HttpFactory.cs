@@ -1,6 +1,6 @@
 using System.Net;
 
-// NOTE: mirrored in NetPI.Providers.AiProxy/Common (plugins cannot share code). Keep both copies in sync.
+// NOTE: mirrored in NetPI.Providers.{AiProxy,Anthropic,OpenRouter}/Common (plugins cannot share code). Keep the copies in sync.
 namespace NetPI.Providers.Anthropic;
 
 internal static class HttpFactory

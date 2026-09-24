@@ -37,7 +37,7 @@ from a private copy of `artifacts/app`, so it is not affected by (and does not a
 ## Unit suites
 
 ```bash
-dotnet tests/NetPI.Providers.Tests/bin/Debug/NetPI.Providers.Tests.dll   # AiProxy (Responses/Chat) + Anthropic against a scripted HTTP mock
+dotnet tests/NetPI.Providers.Tests/bin/Debug/NetPI.Providers.Tests.dll   # AiProxy (Responses/Chat), Anthropic, OpenRouter against a scripted HTTP mock
 dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll           # read/write/edit/grep/find/ls, bash/pwsh, processes
 dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll           # agent loop, steering/queue/abort, subagents, lanes, persistence
 dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll               # retry, nudge, tool repair, compaction, ideas, work, diagnostics
@@ -158,7 +158,7 @@ SQLite database and the project folders stay for inspection).
 
 Coverage (run `--list` for the names):
 
-- **startup / catalog**: all 16 plugins `running`, UI tabs, slash commands, tools, plugin UI bundles served; mock models with
+- **startup / catalog**: all 17 plugins `running`, UI tabs, slash commands, tools, plugin UI bundles served; mock models with
   context/concurrency/efforts/status; default model = first loaded local model; lane pools from the catalog.
 - **chat loop**: `stream.start` → thinking/text `stream.delta` → `stream.end` → `message.added`, `agent.status`
   running → idle, `session.context`, `usage.recorded`; streamed text = persisted text; usage and thinking duration persisted.

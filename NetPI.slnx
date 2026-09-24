@@ -10,6 +10,7 @@
     <Project Path="plugins/NetPI.Nudge/NetPI.Nudge.csproj" />
     <Project Path="plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.csproj" />
     <Project Path="plugins/NetPI.Providers.Anthropic/NetPI.Providers.Anthropic.csproj" />
+    <Project Path="plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.csproj" />
     <Project Path="plugins/NetPI.Retry/NetPI.Retry.csproj" />
     <Project Path="plugins/NetPI.ToolRepair/NetPI.ToolRepair.csproj" />
     <Project Path="plugins/NetPI.Tools.Agents/NetPI.Tools.Agents.csproj" />

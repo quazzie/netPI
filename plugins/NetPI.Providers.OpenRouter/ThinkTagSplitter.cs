@@ -2,7 +2,7 @@ using System.Text;
 
 // NOTE: mirrored in NetPI.Providers.{AiProxy,OpenRouter} (plugins cannot share code). Keep the copies in sync.
 
-namespace NetPI.Providers.AiProxy;
+namespace NetPI.Providers.OpenRouter;
 
 /// <summary>
 /// Splits inline <c>&lt;think&gt;…&lt;/think&gt;</c> reasoning out of streamed content. Tags may be split across

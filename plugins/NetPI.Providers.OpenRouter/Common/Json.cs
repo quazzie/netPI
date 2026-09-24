@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 
 // NOTE: mirrored in NetPI.Providers.{AiProxy,Anthropic,OpenRouter}/Common (plugins cannot share code). Keep the copies in sync.
-namespace NetPI.Providers.AiProxy;
+namespace NetPI.Providers.OpenRouter;
 
 /// <summary>Tolerant accessors over JsonNode/JsonElement (servers disagree about types).</summary>
 internal static class J

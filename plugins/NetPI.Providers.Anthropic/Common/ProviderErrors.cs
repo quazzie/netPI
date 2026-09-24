@@ -2,7 +2,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-// NOTE: mirrored in NetPI.Providers.AiProxy/Common (plugins cannot share code). Keep both copies in sync.
+// NOTE: mirrored in NetPI.Providers.{AiProxy,Anthropic,OpenRouter}/Common (plugins cannot share code). Keep the copies in sync.
 namespace NetPI.Providers.Anthropic;
 
 /// <summary>Maps HTTP / in-stream / network failures to <see cref="ModelException"/> (transient, context overflow...).</summary>

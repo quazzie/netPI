@@ -79,6 +79,34 @@ internal sealed class MockServer : IAsyncDisposable
     }
     """;
 
+    /// <summary>OpenRouter catalog shapes (2026): reasoning objects with mandatory/supported_efforts, tool support flags.</summary>
+    public const string OpenRouterModelsJson = """
+    {
+      "data": [
+        { "id": "stealth/bunny", "name": "Space Bunny", "context_length": 1000000,
+          "architecture": { "input_modalities": ["text", "image", "video"] }, "pricing": { "prompt": "0", "completion": "0" },
+          "top_provider": { "context_length": 1000000, "max_completion_tokens": 524288 },
+          "supported_parameters": ["include_reasoning", "max_tokens", "reasoning", "reasoning_effort", "tools", "tool_choice"],
+          "reasoning": { "mandatory": true, "supported_efforts": ["max", "xhigh", "high", "medium", "low"], "default_effort": "max" } },
+        { "id": "vendor/no-tools", "name": "No Tools", "context_length": 8192,
+          "architecture": { "input_modalities": ["text"] }, "supported_parameters": ["max_tokens", "temperature"] },
+        { "id": "vendor/plain:free", "name": "Plain (free)", "context_length": 32768,
+          "architecture": { "input_modalities": ["text"] }, "top_provider": { "context_length": 32768, "max_completion_tokens": null },
+          "supported_parameters": ["tools", "max_tokens"] },
+        { "id": "vendor/switch", "name": "Switch", "context_length": 131072,
+          "architecture": { "input_modalities": ["text"] }, "supported_parameters": ["tools", "reasoning"],
+          "reasoning": { "mandatory": false, "default_enabled": true } },
+        { "id": "anthropic/claude-x", "name": "Claude X", "context_length": 200000,
+          "architecture": { "input_modalities": ["text", "image"] }, "top_provider": { "context_length": 200000, "max_completion_tokens": 64000 },
+          "supported_parameters": ["tools", "reasoning"],
+          "reasoning": { "mandatory": false, "supports_max_tokens": true, "supported_efforts": ["high", "medium", "low"], "default_effort": "medium" } },
+        { "id": "vendor/any-effort", "name": "Any effort", "context_length": 65536,
+          "architecture": { "input_modalities": ["text"] }, "supported_parameters": ["tools", "reasoning"],
+          "reasoning": { "mandatory": false, "supported_efforts": null } }
+      ]
+    }
+    """;
+
     public async Task StartAsync()
     {
         var builder = WebApplication.CreateSlimBuilder();
@@ -107,6 +135,8 @@ internal sealed class MockServer : IAsyncDisposable
         _app.MapPost("/v1/responses", Responses);
         _app.MapPost("/v1/chat/completions", Chat);
         _app.MapPost("/v1/messages", Messages);
+        _app.MapGet("/openrouter/api/v1/models", async ctx => { Record(ctx, ""); await Json(ctx, OpenRouterModelsJson); });
+        _app.MapPost("/openrouter/api/v1/chat/completions", OpenRouter);
 
         await _app.StartAsync();
         var addr = _app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
@@ -260,6 +290,59 @@ internal sealed class MockServer : IAsyncDisposable
                     usage = new { input_tokens = 1000, input_tokens_details = new { cached_tokens = 600 }, output_tokens = 50, output_tokens_details = new { reasoning_tokens = 20 }, total_tokens = 1050 },
                 },
             }),
+        ]);
+    }
+
+    // ================================================================ OpenRouter /api/v1/chat/completions
+
+    private static string OrChunk(object delta, string? finish = null, object? usage = null) =>
+        D(new { id = "gen-1", @object = "chat.completion.chunk", provider = "Stealth", choices = new[] { new { index = 0, delta, finish_reason = finish } }, usage });
+
+    private async Task OpenRouter(HttpContext ctx)
+    {
+        var body = await ReadBody(ctx);
+        var model = body["model"]!.GetValue<string>();
+        ctx.Response.Headers["X-Generation-Id"] = "gen-" + model.Replace('/', '-');
+        switch (model)
+        {
+            case "vendor/rate-limited":
+                ctx.Response.Headers["Retry-After"] = "7";
+                await Json(ctx, """{"error":{"code":429,"message":"Rate limit exceeded: free-models-per-min.","metadata":{"headers":{"X-RateLimit-Limit":"20"}}}}""", 429);
+                return;
+            case "vendor/upstream-502":
+                await Json(ctx, """{"error":{"code":502,"message":"Provider returned error","metadata":{"provider_name":"SomeHost","raw":"{\"error\":\"upstream exploded\"}"}}}""", 502);
+                return;
+            case "vendor/mid-error":
+                await Sse(ctx,
+                [
+                    OrChunk(new { role = "assistant", content = "Partial" }),
+                    D(new { id = "gen-mid", @object = "chat.completion.chunk", provider = "UpstreamX", error = new { code = "server_error", message = "Provider disconnected unexpectedly" },
+                            choices = new[] { new { index = 0, delta = new { content = "" }, finish_reason = "error" } } }),
+                ]);
+                return;
+        }
+
+        // Default: reasoning text + reasoning_details streamed in pieces (keep-alive comments between), text, a tool call
+        // in two pieces, then OpenRouter's usage chunk that repeats finish_reason, then [DONE].
+        await Sse(ctx,
+        [
+            ": OPENROUTER PROCESSING\n\n",
+            OrChunk(new { role = "assistant", content = "", reasoning = "Let me ",
+                          reasoning_details = new object[] { new { type = "reasoning.text", text = "Let me ", format = "anthropic-claude-v1", index = 0 } } }),
+            OrChunk(new { content = "", reasoning = "think.",
+                          reasoning_details = new object[] { new { type = "reasoning.text", text = "think.", signature = "sig-1", format = "anthropic-claude-v1", index = 0 } } }),
+            OrChunk(new { reasoning_details = new object[] { new { type = "reasoning.encrypted", data = "ENC", id = "rs_7", format = "openai-responses-v1", index = 1 } } }),
+            ": OPENROUTER PROCESSING\n\n",
+            OrChunk(new { content = "Reading " }),
+            OrChunk(new { content = "it." }),
+            OrChunk(new { tool_calls = new[] { new { index = 0, id = "call_or1", type = "function", function = new { name = "read", arguments = "{\"path\":" } } } }),
+            OrChunk(new { tool_calls = new[] { new { index = 0, function = new { arguments = "\"a.txt\"}" } } } }, "tool_calls"),
+            OrChunk(new { role = "assistant", content = "" }, "tool_calls", new
+            {
+                prompt_tokens = 1000, prompt_tokens_details = new { cached_tokens = 600, cache_write_tokens = 100 },
+                completion_tokens = 50, completion_tokens_details = new { reasoning_tokens = 20 }, total_tokens = 1050, cost = 0.0012,
+            }),
+            "data: [DONE]\n\n",
         ]);
     }
 

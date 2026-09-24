@@ -1,0 +1,5 @@
+{
+  "id": "netpi.providers.openrouter",
+  "name": "OpenRouter provider",
+  "description": "Models through OpenRouter's OpenAI-compatible Chat Completions API (API key, tool calls, reasoning with replayed reasoning_details, prompt caching)."
+}

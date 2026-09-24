@@ -45,6 +45,34 @@ dotted paths — `providers.aiproxy.baseUrl` means `{ "providers": { "aiproxy": 
 An array of `{ "id", "name", "baseUrl", "apiKey"?, "transport"?, "local"?, "headers"? }` plus any of the keys above.
 Defaults differ: transport `chat`, `local` only for loopback URLs. Example: LM Studio, a remote llama.cpp, OpenRouter.
 
+### `providers.openrouter` (OpenRouter)
+
+Hundreds of hosted models through one API key. Without a key the provider offers no models. Calls use Chat
+Completions with OpenRouter's unified `reasoning` object; each answer's `reasoning_details` are replayed unmodified to the
+model that produced them (required for tool calls with Claude, Gemini or OpenAI reasoning). Requests carry the session id
+(`session_id`), so a session's requests stay on one upstream provider and its prompt cache stays warm.
+
+| key | default | |
+|---|---|---|
+| `apiKey` | env `OPENROUTER_API_KEY` | `"env:NAME"` / `"$NAME"` read another environment variable |
+| `baseUrl` | `https://openrouter.ai/api` | a trailing `/v1` is fine |
+| `include` | all models with tool calls | model ids or globs to offer, e.g. `["stealth/*", "anthropic/claude-*", "*:free"]`; an exact id is offered even without tool support |
+| `models.<id>` | – | per model: `displayName`, `contextWindow`, `maxOutputTokens`, `hidden` |
+| `maxOutputTokens` | `32768` | cap for `max_tokens` (catalogs report up to 500k+; reasoning counts against it) |
+| `provider` | – | routing preferences sent as the request's `provider` object, e.g. `{ "sort": "throughput" }` |
+| `promptCaching` | `true` | top-level `cache_control` for `anthropic/*` models (other providers cache automatically) |
+| `replayReasoning` | `true` | send `reasoning_details` back |
+| `parseThinkTags` | `true` | split inline `<think>…</think>` into thinking blocks |
+| `headers` | – | extra HTTP headers, e.g. `HTTP-Referer` + `X-OpenRouter-Title` for OpenRouter's app attribution (creates a public app page) |
+| `dumpFailedRequests` | `true` | save failed request bodies to `~/.netpi/logs/failed-requests/`; errors carry the generation id |
+| `modelsCacheSeconds` | `600` | |
+| `enabled` | `true` | |
+
+Effort levels come from the catalog: the picker lists the model's `supported_efforts`, plus `none` where reasoning can be
+turned off; models without effort levels only get on/off. Free models are limited to 20 requests per minute and 50 or
+1000 per day depending on credits bought; every agent turn is one request. The provider is one lane pool (`openrouter`,
+`lanes.cloudDefaultCapacity`).
+
 ### `providers.anthropic` (Claude)
 
 | key | default | |

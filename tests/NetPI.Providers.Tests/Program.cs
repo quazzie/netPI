@@ -4,8 +4,10 @@ using NetPI;
 using NetPI.Providers.Tests;
 using AN = NetPI.Providers.Anthropic;
 using AP = NetPI.Providers.AiProxy;
+using OR = NetPI.Providers.OpenRouter;
 
 Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
+Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null);
 
 var t = new TestRunner();
 await using var mock = new MockServer();
@@ -633,7 +635,8 @@ await t.Run("anthropic: no API key -> empty list and helpful non-transient error
         t.Eq(2, list.Count, "env var fallback key");
         t.Eq("env-key", mock.Requests.Last(r => r.Path == "/v1/models").Headers.GetValueOrDefault("x-api-key"), "env key sent");
     }
-    finally { Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null); }
+    finally { Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
+Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null); }
 });
 
 await t.Run("anthropic: models list merged with capability table; fallback list on failure", async () =>
@@ -789,6 +792,172 @@ await t.Run("anthropic plugin: registration and stop", async () =>
     t.Check(e is { Transient: true }, "calls after stop fail as transient (disposed client)");
 });
 
+// ================================================================== OpenRouter
+
+var orCtx = new FakePluginContext(new JsonObject
+{
+    ["providers"] = new JsonObject
+    {
+        ["openrouter"] = new JsonObject
+        {
+            ["baseUrl"] = mock.BaseUrl + "/openrouter/api", ["apiKey"] = "or-key", ["headers"] = new JsonObject { ["X-OpenRouter-Title"] = "NetPI" },
+        },
+    },
+}, "netpi.providers.openrouter");
+var orDumps = Path.Combine(Path.GetTempPath(), "netpi-or-" + Guid.NewGuid().ToString("N"));
+var openrouter = new OR.OpenRouterProvider(new HttpClient(), () => orCtx.SettingsImpl.GetNode("providers.openrouter") as JsonObject, null, orCtx.Bus, orDumps);
+async Task<ModelInfo> OrModel(string id) => (await openrouter.ListModelsAsync(false, CancellationToken.None)).Single(m => m.Id == id);
+
+await t.Run("openrouter: catalog = tool-capable models; context, output, modalities, reasoning efforts; include and overrides", async () =>
+{
+    var models = await openrouter.ListModelsAsync(true, CancellationToken.None);
+    t.Eq("anthropic/claude-x,stealth/bunny,vendor/any-effort,vendor/plain:free,vendor/switch", string.Join(",", models.Select(m => m.Id).OrderBy(x => x)), "no model without tool support");
+    var bunny = models.Single(m => m.Id == "stealth/bunny");
+    t.Check(bunny is { Provider: "openrouter", DisplayName: "Space Bunny", ContextWindow: 1000000, MaxOutputTokens: 524288, IsLocal: false }, "bunny basics");
+    t.Check(bunny.SupportsImages, "image input");
+    t.Eq("low,medium,high,xhigh,max", string.Join(",", bunny.Reasoning!.Efforts), "efforts low→high, no none (mandatory)");
+    t.Eq("max", bunny.Reasoning.Default, "default effort");
+    t.Eq("none,low,medium,high", string.Join(",", models.Single(m => m.Id == "anthropic/claude-x").Reasoning!.Efforts), "none when it can be turned off");
+    t.Eq("none", string.Join(",", models.Single(m => m.Id == "vendor/switch").Reasoning!.Efforts), "on/off only");
+    t.Check(models.Single(m => m.Id == "vendor/plain:free").Reasoning is { Supported: false }, "no reasoning");
+    t.Eq("none,minimal,low,medium,high,xhigh,max", string.Join(",", models.Single(m => m.Id == "vendor/any-effort").Reasoning!.Efforts), "every effort (supported_efforts: null)");
+    t.Eq("Bearer or-key", mock.Last("/openrouter/api/v1/models").Headers.GetValueOrDefault("authorization"), "key sent");
+
+    orCtx.SettingsImpl.Set("providers.openrouter.include", new JsonArray("stealth/*", "vendor/no-tools", "*:free"));
+    orCtx.SettingsImpl.Set("providers.openrouter.models", new JsonObject { ["vendor/plain:free"] = new JsonObject { ["hidden"] = true }, ["stealth/bunny"] = new JsonObject { ["displayName"] = "Bunny" } });
+    try
+    {
+        t.Check(openrouter.SettingsChangedSinceLastList, "settings change noticed");
+        var narrowed = await openrouter.ListModelsAsync(false, CancellationToken.None);
+        t.Eq("stealth/bunny,vendor/no-tools", string.Join(",", narrowed.Select(m => m.Id).OrderBy(x => x)), "globs; an exact id is offered even without tools; hidden");
+        t.Eq("Bunny", narrowed.Single(m => m.Id == "stealth/bunny").DisplayName, "override");
+    }
+    finally
+    {
+        orCtx.SettingsImpl.Set("providers.openrouter.include", null);
+        orCtx.SettingsImpl.Set("providers.openrouter.models", null);
+        await openrouter.ListModelsAsync(true, CancellationToken.None);
+    }
+});
+
+await t.Run("openrouter: request (reasoning object, max_tokens cap, session_id, routing, caching, headers)", async () =>
+{
+    var bunny = await OrModel("stealth/bunny");
+    await Collect(openrouter, Req(bunny));
+    var sent = mock.Last("/openrouter/api/v1/chat/completions");
+    var b = sent.Json;
+    t.Eq("stealth/bunny", b["model"]?.GetValue<string>(), "model id");
+    t.Check(b["stream"]?.GetValue<bool>() == true, "streaming");
+    t.Eq(32768, b["max_tokens"]?.GetValue<int>(), "524k catalog output capped at maxOutputTokens");
+    t.Check(b["reasoning"] is null, "no effort chosen: the model default");
+    t.Eq("ses_1", b["session_id"]?.GetValue<string>(), "session id for sticky routing");
+    t.Eq("system", b["messages"]![0]!["role"]?.GetValue<string>(), "system prompt first");
+    t.Eq("read", b["tools"]![0]!["function"]!["name"]?.GetValue<string>(), "tools");
+    t.Check(b["cache_control"] is null && b["provider"] is null, "no caching field for non-Claude, no routing unless set");
+    t.Eq("Bearer or-key", sent.Headers.GetValueOrDefault("authorization"), "bearer key");
+    t.Eq("NetPI", sent.Headers.GetValueOrDefault("x-openrouter-title"), "extra header");
+
+    JsonNode? R(ModelInfo m, string? effort) => OR.OpenRouterChat.Reasoning(effort, m);
+    t.Eq("""{"effort":"xhigh"}""", R(bunny, "xhigh")?.ToJsonString(), "listed effort");
+    t.Eq("""{"effort":"low"}""", R(bunny, "minimal")?.ToJsonString(), "nearest listed effort");
+    t.Check(R(bunny, "none") is null, "mandatory reasoning is never turned off");
+    var claude = await OrModel("anthropic/claude-x");
+    t.Eq("""{"effort":"high"}""", R(claude, "max")?.ToJsonString(), "max → high");
+    t.Eq("""{"enabled":false}""", R(claude, "none")?.ToJsonString(), "off when none is not a listed effort");
+    var sw = await OrModel("vendor/switch");
+    t.Eq("""{"enabled":true}""", R(sw, "high")?.ToJsonString(), "no effort levels: on");
+    t.Eq("""{"enabled":false}""", R(sw, "none")?.ToJsonString(), "no effort levels: off");
+    t.Eq("""{"effort":"minimal"}""", R(await OrModel("vendor/any-effort"), "minimal")?.ToJsonString(), "supported_efforts null: any effort");
+    t.Check(R(await OrModel("vendor/plain:free"), "high") is null, "no reasoning model: nothing");
+    t.Check(R(bunny, "default") is null, "default");
+
+    orCtx.SettingsImpl.Set("providers.openrouter.provider", new JsonObject { ["sort"] = "throughput" });
+    try
+    {
+        await Collect(openrouter, Req(claude, effort: "medium"));
+        var c = mock.Last("/openrouter/api/v1/chat/completions").Json;
+        t.Eq("""{"type":"ephemeral"}""", c["cache_control"]?.ToJsonString(), "automatic prompt caching for Claude");
+        t.Eq("""{"sort":"throughput"}""", c["provider"]?.ToJsonString(), "routing preferences passed through");
+        t.Eq("""{"effort":"medium"}""", c["reasoning"]?.ToJsonString(), "session effort");
+        t.Eq(32768, c["max_tokens"]?.GetValue<int>(), "cap below the catalog's 64000");
+    }
+    finally { orCtx.SettingsImpl.Set("providers.openrouter.provider", null); }
+});
+
+await t.Run("openrouter: stream → thinking + merged reasoning_details, text, tool call, usage split, meta", async () =>
+{
+    var events = await Collect(openrouter, Req(await OrModel("stealth/bunny")));
+    t.Eq("Let me think.", string.Concat(events.OfType<ThinkingDelta>().Select(d => d.Text)), "thinking streamed from the reasoning text");
+    t.Eq("Reading it.", string.Concat(events.OfType<TextDelta>().Select(d => d.Text)), "text");
+    var msg = events.OfType<StreamCompleted>().Single().Message;
+    var th = msg.Parts.OfType<ThinkingPart>().Single();
+    t.Eq("Let me think.", th.Text, "thinking part");
+    t.Eq("""[{"type":"reasoning.text","text":"Let me think.","format":"anthropic-claude-v1","index":0,"signature":"sig-1"},{"type":"reasoning.encrypted","data":"ENC","id":"rs_7","format":"openai-responses-v1","index":1}]""",
+        th.ProviderData?["reasoning_details"]?.ToJsonString(), "details merged by index for replay");
+    var call = msg.ToolCalls.Single();
+    t.Check(call is { Id: "call_or1", Name: "read", Arguments: "{\"path\":\"a.txt\"}" }, "tool call assembled");
+    t.Eq("tool_use", msg.StopReason, "stop reason (finish_reason repeated on the usage chunk)");
+    t.Check(msg.Usage is { InputTokens: 300, CacheReadTokens: 600, CacheWriteTokens: 100, OutputTokens: 50, ReasoningTokens: 20 }, "usage: prompt = uncached + cache reads + cache writes");
+    t.Eq("""{"openrouter":{"generationId":"gen-stealth-bunny","provider":"Stealth","cost":0.0012}}""", msg.Meta?.ToJsonString(), "generation id, upstream provider, cost");
+});
+
+await t.Run("openrouter: reasoning_details go back unmodified, only to the model that produced them", async () =>
+{
+    var bunny = await OrModel("stealth/bunny");
+    var first = (await Collect(openrouter, Req(bunny))).OfType<StreamCompleted>().Single().Message;
+    var history = new List<ChatMessage>
+    {
+        ChatMessage.UserText("read a.txt"),
+        first,
+        new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "call_or1", Name = "read", Content = "A" }] },
+        new() { Role = MessageRole.Assistant, Provider = "aiproxy", Model = "qwen3.8-27b", Parts = [new ThinkingPart { Text = "local thoughts" }, new TextPart { Text = "Earlier" }] },
+        new() { Role = MessageRole.Assistant, Provider = "openrouter", Model = "stealth/bunny", Parts = [new ThinkingPart { Text = "plain only" }, new TextPart { Text = "Before" }] },
+        ChatMessage.UserText("go on"),
+    };
+    await Collect(openrouter, Req(bunny, history));
+    var msgs = mock.Last("/openrouter/api/v1/chat/completions").Json["messages"]!.AsArray();
+    var assistants = msgs.Where(m => m!["role"]!.GetValue<string>() == "assistant").ToList();
+    t.Eq(first.Parts.OfType<ThinkingPart>().Single().ProviderData!["reasoning_details"]!.ToJsonString(), assistants[0]!["reasoning_details"]?.ToJsonString(), "details replayed as received");
+    t.Eq("call_or1", assistants[0]!["tool_calls"]![0]!["id"]?.GetValue<string>(), "with its tool call");
+    t.Check(assistants[1]!["reasoning"] is null && assistants[1]!["reasoning_details"] is null, "another provider's reasoning is not sent");
+    t.Eq("plain only", assistants[2]!["reasoning"]?.GetValue<string>(), "plain reasoning when there are no details");
+
+    await Collect(openrouter, Req(await OrModel("anthropic/claude-x"), history));
+    var other = mock.Last("/openrouter/api/v1/chat/completions").Json["messages"]!.AsArray();
+    t.Check(other.All(m => m!["reasoning_details"] is null && m["reasoning"] is null), "a different OpenRouter model gets no reasoning");
+
+    orCtx.SettingsImpl.Set("providers.openrouter.replayReasoning", false);
+    try
+    {
+        await Collect(openrouter, Req(bunny, history));
+        t.Check(mock.Last("/openrouter/api/v1/chat/completions").Json["messages"]!.AsArray().All(m => m!["reasoning_details"] is null), "replayReasoning: false");
+    }
+    finally { orCtx.SettingsImpl.Set("providers.openrouter.replayReasoning", null); }
+});
+
+await t.Run("openrouter: errors keep the server's text and add generation id, upstream provider, Retry-After; request saved", async () =>
+{
+    var mid = await Fails(openrouter, Req(M("openrouter", "vendor/mid-error")));
+    t.Check(mid is { Transient: true } && mid.Message.Contains("Provider disconnected unexpectedly"), "mid-stream error: " + mid?.Message);
+    t.Check(mid!.Message.Contains("upstream provider UpstreamX") && mid.Message.Contains("generation gen-vendor-mid-error"), "upstream + generation id: " + mid.Message);
+    var rate = await Fails(openrouter, Req(M("openrouter", "vendor/rate-limited")));
+    t.Check(rate is { Transient: true, StatusCode: 429 } && rate.Message.Contains("free-models-per-min") && rate.Message.Contains("retry after 7 s"), "429: " + rate?.Message);
+    var bad = await Fails(openrouter, Req(M("openrouter", "vendor/upstream-502")));
+    t.Check(bad is { StatusCode: 502 } && bad.Message.Contains("upstream provider SomeHost") && bad.Message.Contains("upstream exploded"), "502: " + bad?.Message);
+    var dumps = Directory.GetFiles(Path.Combine(orDumps, "failed-requests"), "*.json");
+    t.Eq(3, dumps.Length, "three failed requests saved");
+    t.Check(dumps.Select(f => JsonNode.Parse(File.ReadAllText(f))!).All(d => d["request"]?["messages"] is JsonArray && d["generationId"] is not null), "dumps have the body and the generation id");
+    Directory.Delete(orDumps, true);
+});
+
+await t.Run("openrouter: without an API key no models are offered and calls fail clearly", async () =>
+{
+    var p = new OR.OpenRouterProvider(new HttpClient(), () => new JsonObject { ["baseUrl"] = mock.BaseUrl + "/openrouter/api" });
+    t.Eq(0, (await p.ListModelsAsync(true, CancellationToken.None)).Count, "no models without a key");
+    var e = await Fails(p, Req(M("openrouter", "stealth/bunny")));
+    t.Check(e is { Transient: false } && e.Message.Contains("OPENROUTER_API_KEY"), "clear error: " + e?.Message);
+});
+
 // ================================================================== hot reload
 
 await t.Run("built plugins load, run and unload in a collectible AssemblyLoadContext", async () =>
@@ -810,6 +979,12 @@ await t.Run("built plugins load, run and unload in a collectible AssemblyLoadCon
     var r2 = await PluginLoadTest.LoadRunUnloadAsync(anDll, anSettings, _ => Req(AN.ClaudeCapabilities.ToModelInfo("anthropic", "claude-sonnet-4-5", null)));
     t.Check(r2 is { PluginId: "netpi.providers.anthropic", Providers: 1, Models: 2, StreamedText: "Sure, reading." }, $"anthropic ran in ALC ({r2})");
     t.Check(await PluginLoadTest.WaitCollectedAsync(r2.Alc), "anthropic ALC collected after unload");
+
+    var orDll = Path.Combine(root, "artifacts/app/plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.dll");
+    var orPluginSettings = new JsonObject { ["providers"] = new JsonObject { ["openrouter"] = new JsonObject { ["baseUrl"] = mock.BaseUrl + "/openrouter/api", ["apiKey"] = "k" } } };
+    var r3 = await PluginLoadTest.LoadRunUnloadAsync(orDll, orPluginSettings, p => Req(M(p.Id, "vendor/plain:free")));
+    t.Check(r3 is { PluginId: "netpi.providers.openrouter", Providers: 1, Models: 5, StreamedText: "Reading it.", AbstractionsShared: true }, $"openrouter ran in ALC ({r3})");
+    t.Check(await PluginLoadTest.WaitCollectedAsync(r3.Alc), "openrouter ALC collected after unload");
 });
 
 return t.Summary();

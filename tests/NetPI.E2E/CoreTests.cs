@@ -9,7 +9,7 @@ public static class CoreTests
     public static readonly string[] PluginIds =
     [
         "netpi.agent", "netpi.agentsmd", "netpi.compaction", "netpi.context", "netpi.diagnostics", "netpi.ideas", "netpi.lanes",
-        "netpi.nudge", "netpi.providers.aiproxy", "netpi.providers.anthropic", "netpi.retry", "netpi.toolrepair",
+        "netpi.nudge", "netpi.providers.aiproxy", "netpi.providers.anthropic", "netpi.providers.openrouter", "netpi.retry", "netpi.toolrepair",
         "netpi.tools.agents", "netpi.tools.files", "netpi.tools.shell", "netpi.work",
     ];
 

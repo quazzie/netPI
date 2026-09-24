@@ -22,8 +22,9 @@ headless for any browser.
 - **Tools as plugins:** `read`, `write`, `edit` (multi-edit, replace-all), `grep`, `find`, `ls` — all CRLF/LF
   agnostic, preserving each file's line endings and BOM — plus `bash` (Git Bash on Windows), `pwsh` and background
   processes. Replace any tool by registering one with the same name.
-- **Providers:** AiProxy / any OpenAI-compatible server (Responses API by default, Chat Completions per model) and
-  Anthropic Claude (thinking, prompt caching).
+- **Providers:** AiProxy / any OpenAI-compatible server (Responses API by default, Chat Completions per model),
+  Anthropic Claude (thinking, prompt caching) and OpenRouter (hundreds of hosted models, unified reasoning with replayed
+  `reasoning_details`).
 - **Robustness plugins:** auto-compaction, auto-nudge (continues agents that stall or get cut off mid-thinking),
   retry on lost connections/stalled streams, repair of tool calls a model wrote as text (`<tool_call>…`).
 - **Context:** a system-prompt plugin that tools contribute to, and an AGENTS.md plugin (global
@@ -47,7 +48,8 @@ cd C:\AI\NetPI
 
 On first start `%USERPROFILE%\.netpi\settings.json` is created: AiProxy at `http://127.0.0.1:8090` (Responses
 transport) and `aiproxy/qwen3.8-27b` as the default model. For Claude set `providers.anthropic.apiKey` (or the
-`ANTHROPIC_API_KEY` environment variable). All keys: [docs/SETTINGS.md](docs/SETTINGS.md).
+`ANTHROPIC_API_KEY` environment variable), for OpenRouter `providers.openrouter.apiKey` (or `OPENROUTER_API_KEY`).
+All keys: [docs/SETTINGS.md](docs/SETTINGS.md).
 
 Headless: `artifacts\app\netpi-server.exe --open` (prints and opens a tokenized URL). Linux/macOS: `./build.sh`, then
 `artifacts/app/netpi-server --open`.
@@ -75,7 +77,7 @@ netpi-server (headless) ─────────┴─ NetPI.Host ─┤   Ne
    Kestrel 127.0.0.1 + WebSocket (token auth)   │   NetPI.Lanes        lane pools, queueing, usage/budgets
    plugin manager · event bus · service/RPC/    │   NetPI.Context      system prompt builder + sections
    tool/UI registries · SQLite · settings ·     │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md
-   session store · model catalog                │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic
+   session store · model catalog                │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic, OpenRouter
                                                 │   NetPI.Tools.*      files, shell, agents
 NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Retry · NetPI.ToolRepair
 web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics
