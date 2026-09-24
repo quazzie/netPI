@@ -144,8 +144,9 @@ profile. Drafts (`netpi.draft.<sessionId>`) and the last project used (`netpi.la
 **New sessions and projects.** `newSession({ projectId? })` uses the explicit `projectId` (`null` means no
 project). Without one, it uses the active session's project; with no session open, it uses the project last
 worked in (the last active session's project, or the one last attached through a picker). The top-bar chip,
-the chat-header chip and `/project` all open `ProjectPicker`, which calls `sessions.setProject`. The host then
-appends a `project` notice. Components that close themselves (`onclose()`) or `await` a dialog read their props
+the chat-header chip and `/project` all open `ProjectPicker`, which calls `sessions.setProject`. The context plugin
+then appends a `project` notice, and the AGENTS.md plugin an `instructions` notice if other instruction files apply.
+Components that close themselves (`onclose()`) or `await` a dialog read their props
 into locals first, because after the parent clears the modal state or the row re-renders, the props are gone.
 
 ### Chat rendering pipeline

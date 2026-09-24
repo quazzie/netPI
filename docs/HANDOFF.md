@@ -1,6 +1,6 @@
 # NetPI: handoff to Claude Code (2026-09-24)
 
-NetPI was built in a Linux cloud sandbox by several agents working in parallel. It was then delivered here, built on Windows and run against the real model stack. This page covers what exists, what was verified, the decisions that must hold, and what to do next.
+NetPI was built in a Linux cloud sandbox by several agents working in parallel, then brought up on Windows and run against the real model stack. This page covers where things are, the current state, the decisions that must hold, and what to do next. Test results and open issues are in `docs/STATUS.md`; completed plans are archived in `docs/archive/`.
 
 ## Where things are
 
@@ -13,19 +13,16 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel. 
 | Model stack | AiProxy `http://127.0.0.1:8090` (AiSwitcher, `C:\AI\AiSwitcher`) → nInfer `:8080` (source `C:\AI\src\ninfer-windows`, AiSwitcher profile `quasar-v3`), serving `qwen3.8-27b` with concurrency 2 and 2 × 262k KV. See `docs/AIPROXY-AGENT-GUIDE.md` |
 | Claude | Anthropic Messages API with an API key (`providers.anthropic.apiKey` or `ANTHROPIC_API_KEY`). Only tested against a mock so far (no API key available) |
 | OpenRouter | `providers.openrouter.apiKey` or `OPENROUTER_API_KEY`; tested live with the free `stealth/space-bunny-alpha` |
+| Done plans | `docs/archive/`: one dated record per completed plan (what was done, results, commits) |
 
-## Verification so far
+## Current state
 
-- **Linux sandbox:** 5 unit suites (Providers 35, Tools 52, Agent 53, Aux 74, Host 38) and the end-to-end suite (`tests/NetPI.E2E`, 55 tests against the scripted mock model server `tests/MockLlm`, including a Playwright UI smoke test) all pass.
-- **Windows:**
-  - Verified: `build.ps1` builds, `NetPI.exe` runs, and Git Bash, pwsh, `winsqlite3.dll` and window placement work.
-  - `.\build.ps1 -Test` and the E2E suite (55 tests, UI smoke included) pass. The Windows-only failures were all in the
-    tests and harness (Git Bash quoting and `/tmp` spelling, a Debug-only build path, UI smoke browser and a race).
-- **Real model:**
-  - One real run exposed a bug in nInfer. nInfer has since been fixed; details below.
-  - Smoke test after the fix (two agents, a subagent, a steer): lanes, steering and cache reuse behave. The one cache
-    miss came from the minute in the system prompt's date line; the prompt now has no date or time.
-  - OpenRouter (free `stealth/space-bunny-alpha`): the same run works end to end, including `reasoning_details` replay.
+- **Windows:** all five unit suites and the E2E suite (UI smoke included) pass; counts are in `docs/STATUS.md`.
+- **Real models:** runs on nInfer (`qwen3.8-27b`) and on OpenRouter behave: lanes and queueing, subagents, steering,
+  and cache reuse across turns, project switches and AGENTS.md edits (every turn reuses the previous prompt + output).
+- **Not yet verified:** the Anthropic provider against the real API, and Linux/macOS since the Windows work.
+- **History:** the Windows bring-up, the first smoke tests and the prompt work are recorded in
+  `docs/archive/2026-09-24-windows-bringup.md`.
 
 ## Decisions and preferences to keep
 
@@ -53,9 +50,6 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Suggested next steps
 
-Done on 2026-09-24: the Windows test run, the real smoke test, the date-free and plugin-owned system prompt, `build.ps1`
-while NetPI runs, and the OpenRouter provider.
-
 1. **Claude provider live test.** Needs an Anthropic API key (none available yet): thinking, tools, prompt caching, and the
    adaptive-thinking settings (`docs/SETTINGS.md`). Claude through OpenRouter (paid) would exercise OpenRouter's side of
    it (signed `reasoning_details`, `cache_control`), not the native provider.
@@ -71,3 +65,5 @@ while NetPI runs, and the OpenRouter provider.
 - **Leave the user's live setup alone.** Don't modify `%USERPROFILE%\.netpi` data, and don't stop NetPI, AiSwitcher or nInfer without asking. The E2E suite and `netpi-server --home <temp>` use their own homes.
 - **Tests and docs with every change.** Every behaviour change gets a test in the owning suite (the console runners in `tests/`). Also update `docs/PROTOCOL.md`, `docs/SETTINGS.md`, `docs/TOOLS.md` or `docs/UI.md` as relevant.
 - **Commits.** Make small commits with descriptive messages.
+- **Plans.** When a plan is done, record it in `docs/archive/YYYY-MM-DD-<topic>.md` (what was done, results, commits)
+  and keep this page and `docs/STATUS.md` about the current state only.

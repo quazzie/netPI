@@ -71,34 +71,36 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 
 | method | params | result |
 |---|---|---|
-| `app.info` | – | `{ version, os, home, appDir, defaultWorkspace, desktop }` |
+| `app.info` | – | `{ version, os, osDescription, home, appDir, defaultWorkspace, settingsFile, desktop, pid, dotnet, sqlite, pathSeparator }` |
 | `projects.list` | – | `ProjectInfo[]` |
 | `projects.create` | `{ name, path, create? }` | `ProjectInfo` |
 | `projects.update` | `{ id, name?, path? }` | `ProjectInfo` |
-| `projects.delete` | `{ id }` | `true` |
-| `sessions.list` | `{ projectId?, search?, includeSubagents?, parentSessionId?, limit?, offset? }` | `SessionInfo[]` (newest first) |
+| `projects.delete` | `{ id }` | `true` (its sessions are detached) |
+| `sessions.list` | `{ projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, limit?, offset? }` | `SessionInfo[]` (newest first) |
 | `sessions.create` | `{ title?, projectId?, model?, reasoning? }` | `SessionInfo` |
 | `sessions.get` | `{ id }` | `SessionInfo` |
-| `sessions.update` | `{ id, title?, model?, reasoning?, archived? }` | `SessionInfo` |
-| `sessions.delete` | `{ id }` | `true` |
+| `sessions.update` | `{ id, title?, model?, reasoning?, archived?, meta? }` | `SessionInfo` (null clears model / reasoning) |
+| `sessions.delete` | `{ id }` | `true` (its subagent sessions are deleted too) |
 | `sessions.setProject` | `{ id, projectId: string\|null }` | `SessionInfo`; publishes `session.project` (the context plugin appends a `project` notice) |
 | `sessions.messages` | `{ id, beforeSeq?, limit? (default 60) }` | `{ messages: ChatMessage[], hasMore: boolean }` ascending by seq |
 | `models.list` | `{ refresh? }` | `{ models: ModelInfo[], defaultModel: string\|null }` |
 | `ui.tabs` | – | `UiTabInfo[]` |
 | `ui.commands` | – | `SlashCommandInfo[]` |
 | `ui.state.get` | `{ key }` | any JSON or null |
-| `ui.state.set` | `{ key, value }` | `true` |
+| `ui.state.set` | `{ key, value }` | `true` (a null value deletes the key) |
 | `plugins.list` | – | `PluginInfo[]` |
 | `plugins.reload` | `{ id }` | `true` |
 | `plugins.setEnabled` | `{ id, enabled }` | `true` |
 | `plugins.rescan` | – | `true` |
 | `settings.get` | – | `{ path, settings: object }` |
-| `settings.set` | `{ path, value }` | `true` (dotted path) |
+| `settings.set` | `{ path, value }` | `true` (dotted path; a null value removes the key) |
 | `settings.replace` | `{ settings: object }` | `true` |
 | `fs.dirs` | `{ path? }` | `{ path, parent, dirs: {name,path}[], roots: string[] }` (folder picker) |
-| `tools.list` | – | `{ name, label, description, category, readOnly, pluginId, active }[]` |
+| `tools.list` | – | `{ name, label, description, category, readOnly, pluginId, active, disabled, priority }[]` |
 | `rpc.list` | – | `{ method, description, pluginId }[]` |
-| `events.recent` | `{ max? }` | recent bus events |
+| `services.list` | – | `{ type, implementation, priority, owner }[]` (registered services) |
+| `events.recent` | `{ max? (200, up to 500) }` | `{ type, sid, d, seq, ts, source, ui }[]` recent bus events |
+| `logs.recent` | `{ max? (200, up to 2000) }` | `{ time, level, category, message, exception? }[]` |
 
 ## Plugin RPC methods
 
@@ -112,6 +114,7 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `agent.get` | netpi.agent | `{ id? , sessionId? }` → `AgentInfo\|null` |
 | `lanes.list` | netpi.lanes | → `LanePoolInfo[]` |
 | `usage.summary` | netpi.lanes | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] }` |
+| `agentsmd.list` | netpi.agentsmd | `{ sessionId }` → `{ path, bytes, scope }[]` (instruction files for the session's working directory; scope `global`, `project` or `extra`) |
 | `compaction.run` | netpi.compaction | `{ sessionId, args? /* extra focus for the summary */ }` → `string` (error `busy` while the agent runs) |
 | `context.preview` | netpi.context | `{ sessionId }` → `{ systemPrompt, frozen, tools: {name, description}[], estimatedTokens }` (`frozen`: the prompt stored at the session's first model call) |
 | `files.search` | netpi.tools.files | `{ sessionId?, query, limit? }` → `{ path, rel, isDir }[]` (for `@` mentions) |
