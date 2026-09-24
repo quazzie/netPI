@@ -79,8 +79,18 @@ export const modals = $state({
   confirm: null, // { title, message, confirmLabel, danger, resolve }
   prompt: null, // { title, label, value, resolve }
   lightbox: null, // { src }
-  projectPicker: null, // { sessionId, anchor }
+  projectPicker: null, // { sessionId, anchor } attaches a project; { select: true, anchor } picks the one new sessions use
+  projects: null, // { view: 'list' | 'new' | 'edit', id?, sessionId?, select? }
 });
+
+/**
+ * The projects dialog: view 'list' (all projects), 'new' or 'edit' (project `id`). A project created from a picker is
+ * attached to `sessionId`, or with `select` becomes the project new sessions start in.
+ */
+export function openProjects(opts = {}) {
+  modals.projectPicker = null;
+  modals.projects = { view: 'list', ...opts };
+}
 
 export function confirmDialog({ title = 'Are you sure?', message = '', confirmLabel = 'Confirm', danger = false } = {}) {
   return new Promise((resolve) => {

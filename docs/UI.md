@@ -71,7 +71,8 @@ web/
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
                ToolRow, NoticeRow, StatusRow, StreamingBlock, tools/{Shell,Diff,Read,Search,Agent,Generic}View
       composer/ Composer, ModelPicker, EffortPicker, ContextRing, QueueChips
-      modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker, Lightbox
+      modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
+               Projects (the projects dialog), Lightbox
   mock/
     server.mjs  store.mjs  agent.mjs  content.mjs    mock host (HTTP + WS + scripted agent)
     work.mjs  ideas.mjs  diag.mjs                     mock lanes/processes/usage, ideas backlog, plugin manager
@@ -143,9 +144,20 @@ profile. Drafts (`netpi.draft.<sessionId>`) and the last project used (`netpi.la
 
 **New sessions and projects.** `newSession({ projectId? })` uses the explicit `projectId` (`null` means no
 project). Without one, it uses the active session's project; with no session open, it uses the project last
-worked in (the last active session's project, or the one last attached through a picker). The top-bar chip,
-the chat-header chip and `/project` all open `ProjectPicker`, which calls `sessions.setProject`. The context plugin
-then appends a `project` notice, and the AGENTS.md plugin an `instructions` notice if other instruction files apply.
+worked in (`app.lastProjectId`: the last active session's project, or the one last chosen in a picker). The start
+screen shows that project as "New session in [project ▾]" with its folder underneath; its chip opens `ProjectPicker`
+in select mode (`{ select: true }`), which only changes `lastProjectId` and creates nothing, so the button, Ctrl+T and
+the + tab all start in the project shown. The top-bar chip, the chat-header chip and `/project` open `ProjectPicker`
+for a session, which calls `sessions.setProject`; the context plugin then appends a `project` notice, and the
+AGENTS.md plugin an `instructions` notice if other instruction files apply.
+
+**Projects dialog** (`ProjectsModal`, opened with `openProjects({ view, id?, sessionId?, select? })`). One dialog with
+three views: `list` (filter, new session, edit, remove), `new` (folder with Browse…, name, create-folder) and `edit`
+(name and folder, the project's sessions, the instruction files for its folder from `agentsmd.list { projectId }`,
+remove). The pickers' footer opens it (Edit "current"…, New project…, Manage projects…), as do the Projects tab (+,
+row click, the edit button) and the command palette. A project created from a picker is attached to that session, or
+in select mode becomes the project new sessions start in. Dialogs can stack (a confirm or the folder picker over the
+projects dialog): `Modal` keeps a stack, and Esc closes only the top one.
 Components that close themselves (`onclose()`) or `await` a dialog read their props
 into locals first, because after the parent clears the modal state or the row re-renders, the props are gone.
 

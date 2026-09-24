@@ -404,7 +404,8 @@ const handlers = {
   },
   'agentsmd.list': (p = {}) => {
     const s = p.sessionId ? store.sessions.get(p.sessionId) : null;
-    const pr = s?.projectId ? store.projects.get(s.projectId) : null;
+    const pr = p.projectId ? store.projects.get(p.projectId) : s?.projectId ? store.projects.get(s.projectId) : null;
+    if (p.projectId && !pr) throw notFound('Project');
     const out = [{ path: path.join(os.homedir(), '.netpi', 'AGENTS.md'), bytes: 1843, scope: 'global' }];
     if (pr) out.push({ path: path.join(pr.path, 'AGENTS.md'), bytes: 4210, scope: 'project' }, { path: path.join(pr.path, 'web', 'AGENTS.md'), bytes: 612, scope: 'directory' });
     return out;

@@ -2,15 +2,17 @@
   import Icon from '../lib/kit/Icon.svelte';
   import TimeAgo from '../lib/kit/TimeAgo.svelte';
   import { app, newSession, openSession, projectOf } from '../lib/state/app.svelte.js';
+  import { modals } from '../lib/state/ui.svelte.js';
   import { conn } from '../lib/rpc.svelte.js';
 
   const recent = $derived(app.sessions.filter((s) => !s.archived && !s.parentSessionId).slice(0, 6));
-  const projects = $derived(
-    app.projects
-      .slice()
-      .sort((a, b) => (Date.parse(b.lastUsedAt ?? b.updatedAt) || 0) - (Date.parse(a.lastUsedAt ?? a.updatedAt) || 0))
-      .slice(0, 4),
-  );
+  // the project new sessions start in: the one last worked in (Ctrl+T and the + tab use it too); the chip changes it
+  const target = $derived(app.lastProjectId ? (app.projectsById.get(app.lastProjectId) ?? null) : null);
+  let targetEl = $state();
+
+  function pickTarget() {
+    modals.projectPicker = modals.projectPicker ? null : { select: true, anchor: targetEl };
+  }
 </script>
 
 <div class="welcome np-scroll">
@@ -30,15 +32,27 @@
         {conn.status === 'open' ? 'Loading…' : 'Connecting to the NetPI host…'}
       </div>
     {:else}
-      <div class="actions">
-        <button class="np-btn np-btn-primary big" onclick={() => newSession({ projectId: null })}>
-          <Icon name="plus" size={15} /> New session <span class="np-kbd">Ctrl+T</span>
-        </button>
-        {#each projects as p (p.id)}
-          <button class="np-btn big" onclick={() => newSession({ projectId: p.id })} title={p.path}>
-            <Icon name="folder" size={14} /> {p.name}
+      <div class="start">
+        <div class="actions">
+          <button class="np-btn np-btn-primary big" onclick={() => newSession({ projectId: target?.id ?? null })}>
+            <Icon name="plus" size={15} /> New session <span class="np-kbd">Ctrl+T</span>
           </button>
-        {/each}
+          <span class="in">in</span>
+          <button
+            class="np-btn big target"
+            bind:this={targetEl}
+            onclick={pickTarget}
+            aria-haspopup="dialog"
+            title="Choose the project new sessions start in"
+          >
+            <Icon name="folder" size={14} />
+            <span class="np-ellipsis">{target?.name ?? 'No project'}</span>
+            <Icon name="chevron-down" size={12} />
+          </button>
+        </div>
+        <div class="where np-mono" title={target?.path ?? app.info?.defaultWorkspace ?? ''}>
+          <bdi>{target?.path ?? app.info?.defaultWorkspace ?? 'the default workspace'}</bdi>
+        </div>
       </div>
 
       {#if recent.length}
@@ -100,11 +114,33 @@
   p {
     margin: 0;
   }
+  .start {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
   .actions {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     justify-content: center;
     gap: 8px;
+  }
+  .in {
+    color: var(--fg-dim);
+  }
+  .target {
+    max-width: 260px;
+  }
+  .where {
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    direction: rtl;
+    font-size: 11.5px;
+    color: var(--fg-dim);
   }
   .big {
     height: 34px;

@@ -11,7 +11,7 @@ namespace NetPI.AgentsMd;
 /// session): the global <c>~/.netpi/AGENTS.md</c>, then the first existing file of <c>agentsMd.fileNames</c> (default
 /// <c>["AGENTS.md", "CLAUDE.md"]</c>) in every directory from the filesystem root down to the session's working
 /// directory, then <c>agentsMd.extraFiles</c>. Each file is capped at 32KB.
-/// <para>RPC: <c>agentsmd.list { sessionId }</c> → <c>[{ path, bytes, scope }]</c> (scope: global | project | extra).</para>
+/// <para>RPC: <c>agentsmd.list { sessionId } | { projectId }</c> → <c>[{ path, bytes, scope }]</c> (scope: global | project | extra).</para>
 /// </summary>
 [NetPiPlugin("netpi.agentsmd", Name = "AGENTS.md", Description = "Global and project AGENTS.md / CLAUDE.md instructions, announced as notices when they apply or change", Order = 41)]
 public sealed class AgentsMdPlugin : INetPiPlugin
@@ -27,14 +27,20 @@ public sealed class AgentsMdPlugin : INetPiPlugin
         });
         context.Rpc.Register("agentsmd.list", (req, _) =>
         {
-            var sessionId = req.Required("sessionId");
-            var session = context.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
-            var cwd = context.Sessions.GetCwd(session);
+            string cwd;
+            if (req.Str("projectId") is { Length: > 0 } projectId)
+                cwd = (context.Sessions.GetProject(projectId) ?? throw new RpcException("not_found", $"No project {projectId}")).Path;
+            else
+            {
+                var sessionId = req.Required("sessionId");
+                var session = context.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
+                cwd = context.Sessions.GetCwd(session);
+            }
             var arr = new JsonArray();
             foreach (var f in loader.Discover(cwd))
                 arr.Add(new JsonObject { ["path"] = f.Path, ["bytes"] = f.Bytes, ["scope"] = f.Scope });
             return Task.FromResult<object?>(arr);
-        }, "Instruction files that apply to a session: { sessionId } → [{ path, bytes, scope }]");
+        }, "Instruction files that apply to a session or a project folder: { sessionId } | { projectId } → [{ path, bytes, scope }]");
         return Task.CompletedTask;
     }
 }

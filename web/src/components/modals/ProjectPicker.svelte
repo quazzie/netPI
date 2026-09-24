@@ -1,30 +1,51 @@
 <script>
   import Icon from '../../lib/kit/Icon.svelte';
   import Popover from '../Popover.svelte';
-  import { app, setSessionProject } from '../../lib/state/app.svelte.js';
-  import { openPanelTab } from '../../lib/state/tabs.svelte.js';
-  import { toast } from '../../lib/state/ui.svelte.js';
+  import { app, setSessionProject, noteProject } from '../../lib/state/app.svelte.js';
+  import { toast, openProjects } from '../../lib/state/ui.svelte.js';
 
-  /** Attach a project to a session (sessions.setProject). data: { sessionId, anchor } */
+  /**
+   * Project picker.
+   * data: { sessionId, anchor }: attach the chosen project to that session (sessions.setProject).
+   * data: { select: true, anchor }: only choose the project new sessions start in (the start screen); nothing is created.
+   */
   let { data, onclose } = $props();
   let q = $state('');
-  let index = $state(0);
 
-  const session = $derived(data ? app.sessionsById.get(data.sessionId) : null);
+  const select = $derived(!!data?.select);
+  const session = $derived(data?.sessionId ? app.sessionsById.get(data.sessionId) : null);
+  const current = $derived(
+    select ? (app.lastProjectId && app.projectsById.has(app.lastProjectId) ? app.lastProjectId : null) : (session?.projectId ?? null),
+  );
+  const currentProject = $derived(current ? (app.projectsById.get(current) ?? null) : null);
   const items = $derived.by(() => {
     const query = q.trim().toLowerCase();
-    const list = app.projects.filter((p) => !query || p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query));
+    const list = app.projects
+      .filter((p) => !query || p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query))
+      .sort((a, b) => (Date.parse(b.lastUsedAt ?? b.updatedAt) || 0) - (Date.parse(a.lastUsedAt ?? a.updatedAt) || 0));
     return [{ id: null, name: 'No project', path: 'default workspace' }, ...list];
   });
+  // the keyboard highlight starts on the current project and goes back to the top when the filter changes
+  // svelte-ignore state_referenced_locally
+  let index = $state(Math.max(0, items.findIndex((p) => p.id === current)));
 
   async function choose(p) {
     // read everything from props BEFORE closing: onclose() unmounts this popover and `data` becomes null
+    const selecting = select;
     const sessionId = data?.sessionId;
-    const current = session?.projectId ?? null;
+    const was = current;
     onclose();
-    if (!sessionId || current === p.id) return;
+    if (selecting) return noteProject(p.id);
+    if (!sessionId || was === p.id) return;
     const s = await setSessionProject(sessionId, p.id);
     if (s) toast(p.id ? `Project: ${p.name}` : 'Project detached');
+  }
+
+  /** Open the projects dialog; a project created there is attached to this session or selected for new sessions. */
+  function manage(view, id = null) {
+    const context = select ? { select: true } : data?.sessionId ? { sessionId: data.sessionId } : {};
+    onclose();
+    openProjects(view === 'new' ? { view, ...context } : { view, id });
   }
 
   function onKey(e) {
@@ -44,26 +65,37 @@
   }
 </script>
 
-<Popover anchor={data?.anchor} placement={data?.anchor?.closest?.('[data-composer]') ? 'top-start' : 'bottom-end'} width={320} {onclose}>
+<Popover
+  anchor={data?.anchor}
+  placement={select ? 'bottom-start' : data?.anchor?.closest?.('[data-composer]') ? 'top-start' : 'bottom-end'}
+  width={320}
+  {onclose}
+>
   <div class="head">
     <Icon name="search" size={13} />
-    <input placeholder="Attach project…" bind:value={q} onkeydown={onKey} use:focus spellcheck="false" />
+    <input placeholder={select ? 'Start new sessions in…' : 'Attach project…'} bind:value={q} oninput={() => (index = 0)} onkeydown={onKey} use:focus spellcheck="false" />
   </div>
   <div class="list np-scroll">
     {#each items as p, i (p.id ?? '__none')}
-      <button class="item" class:active={i === index} class:current={(session?.projectId ?? null) === p.id} onclick={() => choose(p)} onmouseenter={() => (index = i)}>
+      <button class="item" class:active={i === index} class:current={current === p.id} onclick={() => choose(p)} onmouseenter={() => (index = i)}>
         <Icon name={p.id ? 'folder' : 'x'} size={14} />
         <span class="main">
           <span class="np-ellipsis name">{p.name}</span>
           <span class="np-ellipsis path np-mono">{p.path}</span>
         </span>
-        {#if (session?.projectId ?? null) === p.id}<Icon name="check" size={13} />{/if}
+        {#if current === p.id}<Icon name="check" size={13} />{/if}
       </button>
     {/each}
   </div>
-  <button class="manage" onclick={() => (onclose(), openPanelTab('core/projects'))}>
-    <Icon name="settings" size={13} /> Manage projects…
-  </button>
+  <div class="foot">
+    {#if currentProject}
+      <button class="manage" onclick={() => manage('edit', currentProject.id)}>
+        <Icon name="pencil" size={13} /> <span class="np-ellipsis">Edit “{currentProject.name}”…</span>
+      </button>
+    {/if}
+    <button class="manage" onclick={() => manage('new')}><Icon name="plus" size={13} /> New project…</button>
+    <button class="manage" onclick={() => manage('list')}><Icon name="settings" size={13} /> Manage projects…</button>
+  </div>
 </Popover>
 
 <style>
@@ -118,14 +150,21 @@
     font-size: 10.5px;
     color: var(--fg-dim);
   }
+  .foot {
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
+    border-top: 1px solid var(--border);
+  }
   .manage {
     display: flex;
     align-items: center;
     gap: 7px;
-    height: 34px;
-    padding: 0 12px;
+    min-width: 0;
+    height: 28px;
+    padding: 0 8px;
     border: 0;
-    border-top: 1px solid var(--border);
+    border-radius: 6px;
     background: transparent;
     color: var(--fg-muted);
     font-size: var(--fs-sm);

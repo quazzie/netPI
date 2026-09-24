@@ -7,6 +7,7 @@
   import CommandPalette from './CommandPalette.svelte';
   import Lightbox from './Lightbox.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
+  import ProjectsModal from './ProjectsModal.svelte';
   import { modals } from '../../lib/state/ui.svelte.js';
 </script>
 
@@ -14,6 +15,7 @@
 {#if modals.help}<HelpModal onclose={() => (modals.help = false)} />{/if}
 {#if modals.palette}<CommandPalette onclose={() => (modals.palette = false)} />{/if}
 {#if modals.projectPicker}<ProjectPicker data={modals.projectPicker} onclose={() => (modals.projectPicker = null)} />{/if}
+{#if modals.projects}<ProjectsModal data={modals.projects} onclose={() => (modals.projects = null)} />{/if}
 {#if modals.folder}<FolderPickerModal data={modals.folder} onclose={() => (modals.folder = null)} />{/if}
 {#if modals.prompt}<PromptModal data={modals.prompt} onclose={() => (modals.prompt = null)} />{/if}
 {#if modals.confirm}<ConfirmModal data={modals.confirm} onclose={() => (modals.confirm = null)} />{/if}

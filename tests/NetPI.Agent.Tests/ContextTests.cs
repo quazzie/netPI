@@ -142,6 +142,15 @@ public static class ContextTests
         Check.Equal("global,project,project,project", string.Join(",", list.Select(x => (string?)x!["scope"])));
         Check.Equal(Path.Combine(sub, "AGENTS.md"), (string?)list[^1]!["path"]);
         Check.Equal(16L, list[^1]!["bytes"]!.GetValue<long>());
+        // …and the same list for the project itself (the project dialog shows it)
+        var byProject = (JsonArray)(await h.Rpc.CallAsync("agentsmd.list", new { projectId = project.Id }))!;
+        Check.Equal(list.ToJsonString(), byProject.ToJsonString());
+        try
+        {
+            await h.Rpc.CallAsync("agentsmd.list", new { projectId = "prj_missing" });
+            throw new AssertException("expected not_found");
+        }
+        catch (RpcException ex) { Check.Equal("not_found", ex.Code); }
 
         await Turn(h, s.Id, "hi");
         var first = Notices(h, s.Id, "instructions").Single();

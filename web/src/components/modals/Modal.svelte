@@ -1,3 +1,8 @@
+<script module>
+  // open dialogs, innermost last: only the top one reacts to Esc
+  const stack = [];
+</script>
+
 <script>
   import { onMount } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
@@ -5,19 +10,21 @@
   let { title = '', onclose, width = 520, children, footer = undefined, class: cls = '', padded = true } = $props();
   let dialog = $state();
 
-  function onKey(e) {
-    if (e.key === 'Escape') {
+  onMount(() => {
+    const me = {};
+    stack.push(me);
+    const onKey = (e) => {
+      if (e.key !== 'Escape' || stack.at(-1) !== me) return;
       e.preventDefault();
       e.stopPropagation();
       onclose?.();
-    }
-  }
-  onMount(() => {
+    };
     window.addEventListener('keydown', onKey, true);
     const prev = document.activeElement;
     const first = dialog?.querySelector('[data-autofocus]') ?? dialog?.querySelector('input, textarea, select, button:not(.x)');
     first?.focus?.();
     return () => {
+      stack.splice(stack.indexOf(me), 1);
       window.removeEventListener('keydown', onKey, true);
       if (prev?.isConnected) prev.focus?.({ preventScroll: true });
     };

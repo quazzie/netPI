@@ -114,7 +114,7 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `agent.get` | netpi.agent | `{ id? , sessionId? }` → `AgentInfo\|null` |
 | `lanes.list` | netpi.lanes | → `LanePoolInfo[]` |
 | `usage.summary` | netpi.lanes | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] }` |
-| `agentsmd.list` | netpi.agentsmd | `{ sessionId }` → `{ path, bytes, scope }[]` (instruction files for the session's working directory; scope `global`, `project` or `extra`) |
+| `agentsmd.list` | netpi.agentsmd | `{ sessionId }` or `{ projectId }` → `{ path, bytes, scope }[]` (instruction files for the session's working directory or the project folder; scope `global`, `project` or `extra`) |
 | `compaction.run` | netpi.compaction | `{ sessionId, args? /* extra focus for the summary */ }` → `string` (error `busy` while the agent runs) |
 | `context.preview` | netpi.context | `{ sessionId }` → `{ systemPrompt, frozen, tools: {name, description}[], estimatedTokens }` (`frozen`: the prompt stored at the session's first model call) |
 | `files.search` | netpi.tools.files | `{ sessionId?, query, limit? }` → `{ path, rel, isDir }[]` (for `@` mentions) |

@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import { app, openSession, newSession, projectOf } from '../../lib/state/app.svelte.js';
-  import { modals, prefs, savePrefs, togglePanel, composer } from '../../lib/state/ui.svelte.js';
+  import { modals, prefs, savePrefs, togglePanel, composer, openProjects } from '../../lib/state/ui.svelte.js';
   import { tabs, openPanelTab } from '../../lib/state/tabs.svelte.js';
   import { allCommands } from '../../lib/commands.js';
 
@@ -15,6 +15,8 @@
     const out = [];
     const act = (label, icon, run, hint = '') => out.push({ group: 'Actions', label, icon, run, hint });
     act('New session', 'plus', () => newSession(), 'Ctrl+T');
+    act('New project…', 'folder', () => openProjects({ view: 'new' }));
+    act('Manage projects…', 'projects', () => openProjects());
     act('Settings', 'settings', () => (modals.settings = true), 'Ctrl+,');
     act('Toggle left panel', 'panel-left', () => togglePanel('left'), 'Ctrl+B');
     act('Toggle right panel', 'panel-right', () => togglePanel('right'), 'Ctrl+Alt+B');
