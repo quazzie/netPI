@@ -37,4 +37,12 @@
   <ItemGroup>
     <EmbeddedResource Include="netpi.ico" LogicalName="netpi.ico" />
   </ItemGroup>
+
+  <!-- The WebView2 package references its WPF control for every .NET 5+ app. This shell is WinForms only, and that
+       assembly's WindowsBase 5.0 conflicts with the reference pack (MSB3277): drop it before references resolve. -->
+  <Target Name="NetPiDropWebView2Wpf" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
 </Project>
