@@ -60,6 +60,8 @@ cd C:\AI\NetPI
 .\build.ps1 -Run          # builds into artifacts\app and starts artifacts\app\NetPI.exe
 ```
 
+From cmd: `build -Run` (`build.cmd` runs `build.ps1` with the same options; `build /?` lists them).
+
 On first start `%USERPROFILE%\.netpi\settings.json` is created: AiProxy at `http://127.0.0.1:8090` (Responses
 transport) and `aiproxy/qwen3.8-27b` as the default model. For Claude set `providers.anthropic.apiKey` (or the
 `ANTHROPIC_API_KEY` environment variable), for OpenRouter `providers.openrouter.apiKey` (or `OPENROUTER_API_KEY`).

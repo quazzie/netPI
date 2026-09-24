@@ -14,6 +14,7 @@
   .\build.ps1 -Run         # build and start the desktop app
   .\build.ps1 -SkipWeb     # don't run npm even if it is installed
   .\build.ps1 -Test        # build and run the unit test suites
+  From cmd: build.cmd runs this script with the same options (build -Run, build /?).
 #>
 param(
     [ValidateSet('Debug', 'Release')] [string] $Configuration = 'Release',
@@ -74,7 +75,7 @@ if ($running) {
         if ((Test-Path $built) -and (Get-FileHash $built).Hash -ne (Get-FileHash $inApp).Hash) { $n }
     })
     if ($stale.Count) {
-        Write-Host "$($stale -join ' and ') changed: close NetPI and run .\build.ps1 again to update it (until then, plugins that use new contracts may fail to load)." -ForegroundColor Yellow
+        Write-Host "$($stale -join ' and ') changed: close NetPI and build again (build.ps1 or build.cmd) to update it (until then, plugins that use new contracts may fail to load)." -ForegroundColor Yellow
     }
 }
 else {

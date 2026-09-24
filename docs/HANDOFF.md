@@ -86,7 +86,7 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Working rules
 
-- **Build.** While NetPI runs, `.\build.ps1` builds everything except the host (the running app locks `NetPI.Host.dll` and the contracts) and the plugins hot-reload; it says when the host changed and needs NetPI closed. `dotnet build plugins\<Name>` hot-reloads one plugin, `npm run build:plugins` the plugin tabs.
+- **Build.** The user runs builds from cmd: `build` (`build.cmd` runs `build.ps1` with the same options). While NetPI runs, `.\build.ps1` builds everything except the host (the running app locks `NetPI.Host.dll` and the contracts) and the plugins hot-reload; it says when the host changed and needs NetPI closed. `dotnet build plugins\<Name>` hot-reloads one plugin, `npm run build:plugins` the plugin tabs.
 - **Leave the user's live setup alone.** Don't modify `%USERPROFILE%\.netpi` data, and don't stop NetPI, AiSwitcher or nInfer without asking. The E2E suite and `netpi-server --home <temp>` use their own homes.
 - **Tests and docs with every change.** Every behaviour change gets a test in the owning suite (the console runners in `tests/`). Also update `docs/PROTOCOL.md`, `docs/SETTINGS.md`, `docs/TOOLS.md` or `docs/UI.md` as relevant.
 - **Commits.** Make small commits with descriptive messages.

@@ -17,7 +17,8 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   `tests/MockLlm` (scripted model server), `tests/NetPI.E2E` (end-to-end suite).
 
 ## Build & test
-- Windows: `.\build.ps1` (add `-Test` for the unit suites, `-Run` to start). Linux/macOS: `./build.sh [--test]`.
+- Windows: `.\build.ps1` (add `-Test` for the unit suites, `-Run` to start); from cmd `build` (`build.cmd`, same
+  options). Linux/macOS: `./build.sh [--test]`.
 - While NetPI runs: `dotnet build plugins/<Name>` (one plugin) or `.\build.ps1` (everything except the host, which a
   running app locks) → the plugins hot-reload; host or contract changes need a restart and another `.\build.ps1`.
 - Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
