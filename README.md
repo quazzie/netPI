@@ -22,9 +22,10 @@ headless for any browser.
 - **Tools as plugins:** `read`, `write`, `edit` (multi-edit, replace-all), `grep`, `find`, `ls` — all CRLF/LF
   agnostic, preserving each file's line endings and BOM — plus `bash` (Git Bash on Windows), `pwsh` and background
   processes; `web_fetch` (pages as Markdown), `web_search` (SearXNG or Brave), `screenshot` (headless Edge/Chrome,
-  or the NetPI window), `todo_write` (a checklist shown above the composer) and `show_image` (the agent shows you an
-  image). Replace any tool by registering one
-  with the same name. File links in the chat open with the operating system.
+  or the NetPI window), `todo_write` (a checklist shown above the composer), `show_image` (the agent shows you an
+  image) and `ssh_*` (scripts and files on the hosts in `~/.ssh/config`, sent through stdin, so nothing needs
+  quoting). Replace any tool by registering one with the same name. File links in the chat open with the operating
+  system.
 - **Providers:** AiProxy / any OpenAI-compatible server (Responses API by default, Chat Completions per model),
   Anthropic Claude (thinking, prompt caching) and OpenRouter (hundreds of hosted models, unified reasoning with replayed
   `reasoning_details`).
@@ -84,7 +85,7 @@ netpi-server (headless) ─────────┴─ NetPI.Host ─┤   Ne
    plugin manager · event bus · service/RPC/    │   NetPI.Context      system prompt (frozen per session), project notices
    tool/UI registries · SQLite · settings ·     │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md, announced as notices
    session store · model catalog                │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic, OpenRouter
-                                                │   NetPI.Tools.*      files, shell, agents, web, media · NetPI.Todo
+                                                │   NetPI.Tools.*      files, shell, agents, web, media, ssh · NetPI.Todo
 NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Retry · NetPI.ToolRepair
 web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics
                                                 └─ ~/.netpi/plugins/ (your own)

@@ -10,6 +10,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `screenshot` | – |
 | `plugins/NetPI.Todo` | `netpi.todo` | `todo_write` | – |
 | `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
+| `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh_hosts` `ssh_run` `ssh_read` `ssh_write` `ssh_edit` `ssh_copy` | – |
 
 The file and shell tools start at `Order = 20`. Tests live in `tests/NetPI.Tools.Tests`, a console app with no test framework:
 
@@ -350,3 +351,89 @@ outside the collapsible steps, and opens it full size on click.
 details: { source: 'file'|'url'|'data', path?, url?, name, mediaType, bytes, caption?, data /* base64 */ }
 ```
 
+---
+
+## SSH tools (`category: "ssh"`)
+
+`plugins/NetPI.Tools.Ssh`. Remote work through the system OpenSSH client (`ssh.path`: Windows OpenSSH, else Git's) with
+the user's `~/.ssh/config`, keys, agent and `known_hosts` as they are. **Scripts and file contents go through ssh's
+stdin, never through arguments**: the remote command line is a short one the plugin builds (paths single-quoted), so
+the agent's text is never quoted or escaped and has no length limit. Every call uses `BatchMode=yes` (nothing prompts), `StrictHostKeyChecking=yes`
+(an unknown host key fails; the user connects once first), `ConnectTimeout`, keep-alives and `LogLevel=ERROR`. The
+plugin never reads key files and never uses passwords. Settings: `ssh.*` in `docs/SETTINGS.md`.
+
+- **Hosts** are the concrete `Host` aliases of the config, read on every call (`Include` followed; wildcard and
+  negated patterns and `Match` blocks skipped). Aliases match ignoring case; any other host is refused with the list.
+  This is a guardrail, not a sandbox: agents also have `bash`.
+- **Remote side:** Linux (a POSIX login shell, bash, coreutils `timeout`/`mktemp`/`stat`, util-linux `setsid`).
+- **Paths** are remote: relative ones start at `cwd` (if given) or the home folder; a leading `~/` is expanded. A
+  `cwd` that does not exist is reported as such. Each call is one ssh connection (0.2–0.5 s on a LAN).
+- ssh's own failures (exit 255) are errors with ssh's message and a hint for an unknown host key or a refused key.
+
+### `ssh_hosts` (read-only)
+
+`{}`. One line per alias: `nuc: quazzie@192.168.1.3` (user, HostName, port when set).
+
+```ts
+details: { hosts: { alias, hostName: string|null, user: string|null, port: number|null }[] }
+```
+
+### `ssh_run` (summary arg `script`)
+
+`{ host, script, cwd?, timeout? (seconds; ssh.timeoutSeconds = 120, max 1800) }`. The script (CRLF → LF) is saved to a
+remote temp file and run with `bash` in its own session (`setsid`) under `timeout -k 5`, stdin `/dev/null`, stderr merged
+into stdout. A timeout (exit 124) ends the whole remote process group, background children included; so does stopping
+the run (a second ssh call sends TERM, then KILL, to the group). The temp file is removed. Output and notes like
+`bash`: live output in the UI, progress lines collapsed, the last 2000 lines / 30KB for the model with the whole output
+saved to `<tmp>/netpi/ssh-<host>-….log` when it was cut, `[exit code N]` for a non-zero exit (not `isError`),
+`[timed out after Ns; …]` and `[aborted; …]` (both `isError`). No background mode.
+
+```ts
+details: { host, command /* the script */, shell: 'ssh', cwd, exitCode: number|null /* null when aborted */, durationMs,
+           truncated, fullOutputPath: string|null, timedOut?: true, aborted?: true }
+```
+
+### `ssh_read` (read-only, summary arg `path`)
+
+`{ host, path, offset?, limit?, cwd? }`. Like `read`: LF-normalized text without line numbers, at most 2000 lines / 50KB
+per call, 1-based `offset` (negative counts from the end), the same "Use offset=N to continue" footer. Up to 8 MB of the
+file is fetched per call. A missing file, a directory or a binary file (NUL bytes) gives an error; binary files are for
+`ssh_copy`.
+
+```ts
+details: { host, path /* "host:path" */, startLine, endLine, totalLines, truncated, bytes /* file size */ }
+```
+
+### `ssh_write` (summary arg `path`)
+
+`{ host, path, content, append?, cwd? }`. The content goes to `cat >file` (or `>>` with `append`) as UTF-8 bytes, exactly
+as given (no line-ending conversion). Parent folders are created; an existing file is overwritten in place, so it keeps
+its owner and permissions. The text says Created, Wrote or Appended.
+
+```ts
+details: { host, path /* "host:path" */, created, append, bytes, lines }
+```
+
+### `ssh_edit` (summary arg `path`)
+
+`{ host, path, edits: { oldText, newText, replace_all? }[], cwd? }` (a single `oldText`/`newText` pair is accepted too).
+Like `edit`: each `oldText` must match exactly once unless `replace_all`, overlapping edits are refused, matching
+ignores CRLF vs LF and the file keeps its line endings. The file is read, edited locally and written back only if its
+size and mtime are unchanged; otherwise nothing is written and the agent is told to read it again. Files over 8 MB,
+binary files and files that are not valid UTF-8 are refused (use `ssh_run` with sed or python for those).
+
+```ts
+details: { host, path /* "host:path" */, diff /* unified, 3 lines of context */, added, removed, edits /* replacements */,
+           firstChangedLine, eol: 'lf'|'crlf' }
+```
+
+### `ssh_copy` (summary arg `from`)
+
+`{ host, direction: 'upload'|'download', from, to, recursive? }`. `scp -p` (times and modes kept), for large or binary
+files and for folders (`recursive`). Local paths resolve like the file tools; scp runs in the local folder with a
+relative `./name`, because it would read a Windows drive letter as a host name. A download creates the local folder.
+Timeout: at least 600 s.
+
+```ts
+details: { host, direction, from, to, local /* absolute */, remote /* "host:path" */, bytes /* local size */, recursive }
+```

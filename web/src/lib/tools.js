@@ -18,9 +18,15 @@ const META = {
   screenshot: { label: 'Screenshot', icon: 'image', arg: 'url', view: 'web' },
   todo_write: { label: 'Todo', icon: 'list', arg: null, view: 'todo' },
   show_image: { label: 'Image', icon: 'image', arg: 'source', view: 'generic' },
+  ssh_run: { label: 'SSH', icon: 'terminal', arg: 'script', view: 'shell' },
+  ssh_read: { label: 'SSH read', icon: 'file-text', arg: 'path', view: 'read' },
+  ssh_write: { label: 'SSH write', icon: 'file-plus', arg: 'path', view: 'write' },
+  ssh_edit: { label: 'SSH edit', icon: 'pencil', arg: 'path', view: 'edit' },
+  ssh_copy: { label: 'SCP', icon: 'files', arg: 'from', view: 'generic' },
+  ssh_hosts: { label: 'SSH hosts', icon: 'list', arg: null, view: 'generic' },
 };
 
-const CATEGORY_ICON = { files: 'file', shell: 'terminal', agents: 'bot', ideas: 'idea', web: 'globe', todo: 'list', media: 'image', general: 'wrench' };
+const CATEGORY_ICON = { files: 'file', shell: 'terminal', agents: 'bot', ideas: 'idea', web: 'globe', todo: 'list', media: 'image', ssh: 'terminal', general: 'wrench' };
 const SUMMARY_KEYS = ['path', 'command', 'pattern', 'query', 'url', 'name', 'task', 'id', 'text', 'title'];
 
 /** Server tool definitions (from tools.list), filled by the app store. */
@@ -102,6 +108,17 @@ export function toolSummary(name, args, base) {
   switch (name) {
     case 'screenshot':
       return arg(args, 'url') ? truncate(String(arg(args, 'url')), 160) : 'NetPI window';
+    case 'ssh_run':
+      return truncate(`${arg(args, 'host') ?? '?'} · ${firstLine(String(arg(args, 'script', 'command') ?? ''))}`, 200);
+    case 'ssh_read':
+    case 'ssh_write':
+    case 'ssh_edit':
+      return `${arg(args, 'host') ?? '?'}:${arg(args, 'path') ?? ''}`;
+    case 'ssh_copy': {
+      const up = arg(args, 'direction') === 'upload';
+      const h = arg(args, 'host') ?? '?';
+      return truncate(up ? `${arg(args, 'from') ?? ''} → ${h}:${arg(args, 'to') ?? ''}` : `${h}:${arg(args, 'from') ?? ''} → ${arg(args, 'to') ?? ''}`, 200);
+    }
     case 'show_image': {
       const s = String(arg(args, 'source', 'path', 'url', 'file', 'src') ?? '');
       return s.startsWith('data:') ? 'data: URL' : truncate(relPath(s, base) || s, 160);
@@ -163,13 +180,18 @@ export function toolBadge(name, result) {
   if (!d || typeof d !== 'object') return null;
   switch (name) {
     case 'edit':
+    case 'ssh_edit':
       if (d.added != null || d.removed != null) return { text: `+${d.added ?? 0} −${d.removed ?? 0}`, tone: 'diff' };
       return null;
     case 'write':
       if (d.created) return { text: `new · ${d.lines ?? '?'} lines`, tone: 'ok' };
       if (d.added != null || d.removed != null) return { text: `+${d.added ?? 0} −${d.removed ?? 0}`, tone: 'diff' };
       return null;
+    case 'ssh_write':
+      if (d.bytes != null) return { text: `${d.append ? 'appended' : d.created ? 'new' : 'wrote'} · ${d.lines ?? '?'} lines`, tone: d.created ? 'ok' : undefined };
+      return null;
     case 'read':
+    case 'ssh_read':
       if (d.image) return { text: 'image' };
       if (d.startLine != null && d.totalLines != null)
         return { text: `${d.endLine - d.startLine + 1 || 0}/${d.totalLines} lines` };
@@ -197,6 +219,7 @@ export function toolBadge(name, result) {
       return d.total ? { text: `${d.done}/${d.total}`, tone: d.done === d.total ? 'ok' : undefined } : null;
     case 'bash':
     case 'pwsh':
+    case 'ssh_run':
       if (d.background && d.status === 'running') return { text: `bg ${d.processId ?? ''}`.trim(), tone: 'info' };
       if (d.timedOut) return { text: 'timeout', tone: 'err' };
       if (d.exitCode != null && d.exitCode !== 0) return { text: `exit ${d.exitCode}`, tone: 'warn' };

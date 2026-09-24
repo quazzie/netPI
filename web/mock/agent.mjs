@@ -126,15 +126,15 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     return m;
   }
 
-  async function runTool(sid, run, tool, { content, details, isError = false, duration = 300, output = null, images = null }) {
+  async function runTool(sid, run, tool, { content, details, isError = false, duration = 300, output = null, images = null, proc = true }) {
     const a = agentFor(sid);
     setStatus(sid, { activity: `tool: ${tool.name}` });
     const t0 = Date.now();
     publish('tool.start', { sessionId: sid, agentId: a.id, callId: tool.id, name: tool.name, label: tool.label ?? tool.name, arguments: JSON.stringify(tool.args) }, sid);
     let aborted = false;
     let collected = '';
-    // shell tools show up in the process registry (Work tab)
-    const procId = output && work ? work.procStart({ command: tool.args.command, sessionId: sid, agentId: a.id, cwd: details?.cwd }) : null;
+    // local shell tools show up in the process registry (Work tab); ssh_run streams output without one
+    const procId = output && proc && work ? work.procStart({ command: tool.args.command, sessionId: sid, agentId: a.id, cwd: details?.cwd }) : null;
     try {
       if (output) {
         for (const line of output) {
@@ -267,8 +267,51 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     await streamAssistant(sid, run, { thinking: 'Summarize, with links to the files.', text: C.WEB_ANSWER });
   }
 
+  /** "[ssh]": ssh_run with live output, ssh_read, ssh_edit (diff) and ssh_copy on the host "nuc". */
+  async function sshScript(sid, run) {
+    const script = "cd /srv/demo\ncat <<'EOF' > NOTES\nit's \"quoted\" and $literal\nEOF\nsystemctl is-active nginx";
+    const sh = { id: newId('call'), name: 'ssh_run', label: 'SSH', args: { host: 'nuc', script } };
+    await streamAssistant(sid, run, { thinking: 'Check the service on nuc first.', tools: [sh] });
+    await runTool(sid, run, sh, {
+      content: 'active',
+      details: { host: 'nuc', command: script, shell: 'ssh', cwd: null, exitCode: 0, durationMs: 412, truncated: false, fullOutputPath: null },
+      output: ['active'],
+      proc: false,
+    });
+
+    const conf = '/etc/nginx/sites-enabled/demo.conf';
+    const lines = ['server {', '    listen 80;', '    server_name demo.local;', '    root /srv/demo/public;', '}'];
+    const read = { id: newId('call'), name: 'ssh_read', label: 'SSH read', args: { host: 'nuc', path: conf } };
+    await streamAssistant(sid, run, { tools: [read] });
+    await runTool(sid, run, read, {
+      content: lines.join('\n'),
+      details: { host: 'nuc', path: `nuc:${conf}`, startLine: 1, endLine: 5, totalLines: 5, truncated: false, bytes: 98 },
+      duration: 250,
+    });
+
+    const edit = { id: newId('call'), name: 'ssh_edit', label: 'SSH edit', args: { host: 'nuc', path: conf, edits: [{ oldText: '    listen 80;', newText: '    listen 8080;' }] } };
+    await streamAssistant(sid, run, { text: 'The site listens on port 80; the proxy in front of it expects 8080.', tools: [edit] });
+    const diff = [`--- a/${conf}`, `+++ b/${conf}`, '@@ -1,5 +1,5 @@', ' server {', '-    listen 80;', '+    listen 8080;', '     server_name demo.local;', '     root /srv/demo/public;', ' }', ''].join('\n');
+    await runTool(sid, run, edit, {
+      content: `Applied 1 edit to nuc:${conf} (+1 −1)`,
+      details: { host: 'nuc', path: `nuc:${conf}`, diff, added: 1, removed: 1, edits: 1, firstChangedLine: 2, eol: 'lf' },
+      duration: 300,
+    });
+
+    const copy = { id: newId('call'), name: 'ssh_copy', label: 'SCP', args: { host: 'nuc', direction: 'download', from: '/var/log/nginx/error.log', to: 'logs/nuc-error.log' } };
+    await streamAssistant(sid, run, { tools: [copy] });
+    const local = path.join(projectPath(sid), 'logs', 'nuc-error.log');
+    await runTool(sid, run, copy, {
+      content: `Downloaded nuc:/var/log/nginx/error.log to ${local} (18342 bytes).`,
+      details: { host: 'nuc', direction: 'download', from: '/var/log/nginx/error.log', to: 'logs/nuc-error.log', local, remote: 'nuc:/var/log/nginx/error.log', bytes: 18342, recursive: false },
+      duration: 500,
+    });
+    await streamAssistant(sid, run, { text: 'nginx on **nuc** now listens on 8080. The error log is in `logs/nuc-error.log`; reload nginx when you are ready.' });
+  }
+
   async function script(sid, run, input) {
     if (/\[web\]/i.test(input)) return webScript(sid, run);
+    if (/\[ssh\]/i.test(input)) return sshScript(sid, run);
     const file = 'src/NetPI.Host/Lanes/LaneScheduler.cs';
     const cwd = projectPath(sid);
     const isFollowUp = run.turn > 0;

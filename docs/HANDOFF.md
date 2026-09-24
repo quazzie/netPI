@@ -22,9 +22,11 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
   and cache reuse across turns, project switches and AGENTS.md edits (every turn reuses the previous prompt + output).
 - **Not yet verified:** the Anthropic provider against the real API, and Linux/macOS since the Windows work.
 - **Agent tools:** `web_fetch`, `web_search` (SearXNG / Brave), `screenshot` and `todo_write` work live with `qwen3.8-27b`;
-  tools that appear or disappear mid-session are announced with a notice.
+  tools that appear or disappear mid-session are announced with a notice. The `ssh_*` tools work against the hosts in
+  `~/.ssh/config` (tested live on `nuc` and `server`).
 - **History:** the Windows bring-up, the first smoke tests and the prompt work are recorded in
-  `docs/archive/2026-09-24-windows-bringup.md`; the agent tools and projects UI in `docs/archive/2026-09-24-agent-tools.md`.
+  `docs/archive/2026-09-24-windows-bringup.md`; the agent tools and projects UI in `docs/archive/2026-09-24-agent-tools.md`;
+  the SSH tools in `docs/archive/2026-09-24-ssh-tools.md`.
 
 ## Decisions and preferences to keep
 
@@ -53,8 +55,6 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Suggested next steps
 
-0. **SSH tools plugin** (`docs/plans/ssh-tools.md`): scripts and file contents to remote hosts through stdin instead of
-   shell arguments. Waiting for the answers to its open questions.
 1. **Claude provider live test.** Needs an Anthropic API key (none available yet): thinking, tools, prompt caching, and the
    adaptive-thinking settings (`docs/SETTINGS.md`). Claude through OpenRouter (paid) would exercise OpenRouter's side of
    it (signed `reasoning_details`, `cache_control`), not the native provider.

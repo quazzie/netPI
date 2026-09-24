@@ -177,3 +177,13 @@ with their guidelines. The global file is `~/.netpi/AGENTS.md`.
 | `web.search.count` | `8` | results per search (max 20) |
 | `media.maxBytes` | `10000000` | largest image `show_image` shows |
 | `web.browserPath` | auto | Edge, Chrome or Chromium for `screenshot` (found in the usual install folders or on PATH) |
+
+## SSH tools
+
+| key | default | |
+|---|---|---|
+| `ssh.path` | auto | the ssh client: Windows OpenSSH (`System32\OpenSSH\ssh.exe`), else Git's, else `ssh` on PATH |
+| `ssh.scpPath` | next to `ssh.path` | the scp client |
+| `ssh.config` | `~/.ssh/config` | where the host aliases come from; any other file is also passed to ssh and scp (`-F`) |
+| `ssh.connectTimeoutSeconds` | `10` | (2–120) |
+| `ssh.timeoutSeconds` | `120` | default `ssh_run` timeout (max 1800) |

@@ -792,6 +792,36 @@ log('web tools, todo plan, tools notice, file links');
   check('web links still open in a new window', (await page.locator('.md a[target="_blank"]', { hasText: 'docs' }).count()) === 1);
 }
 
+// ------------------------------------------------------------------ ssh tools (reuse the shell, read and diff views)
+log('ssh tools');
+{
+  await page.keyboard.press('Control+t');
+  await page.waitForSelector('.intro');
+  await ta.fill('[ssh] Make the demo site on nuc listen on 8080.');
+  await ta.press('Enter');
+  await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 });
+  await page.waitForTimeout(300);
+  const closed = page.locator('.group.collapsible .head[aria-expanded="false"]');
+  for (let n = 0; n < 12 && (await closed.count()); n++) await closed.first().click();
+  await page.waitForTimeout(150);
+  for (const label of [/^SSH$/, /^SSH read$/, /^SSH edit$/]) {
+    const row = page.locator('.tool .line[aria-expanded="false"]', { has: page.locator('.label', { hasText: label }) }).last();
+    if (await row.count()) await row.click();
+  }
+  await page.waitForTimeout(300);
+  check('ssh_run shows the host as the prompt, and the output', (await page.locator('.tool .shell .prompt', { hasText: 'nuc$' }).count()) === 1 && (await page.locator('.tool .shell .out').last().innerText()).includes('active'));
+  check('ssh_read shows the remote file', (await page.locator('.tool .read .path', { hasText: 'nuc:/etc/nginx/sites-enabled/demo.conf' }).count()) === 1 && (await page.locator('.tool .read .code').last().innerText()).includes('server_name demo.local;'));
+  check('ssh_edit shows the diff', (await page.locator('.tool .diff .dl.add', { hasText: 'listen 8080;' }).count()) === 1 && (await page.locator('.tool .diff .dl.del', { hasText: 'listen 80;' }).count()) === 1);
+  const summaries = await page.locator('.tool .summary').allInnerTexts();
+  check('the summaries name the host', summaries.includes('nuc · cd /srv/demo') && summaries.includes('nuc:/etc/nginx/sites-enabled/demo.conf') && summaries.includes('nuc:/var/log/nginx/error.log → logs/nuc-error.log'), summaries.join(' | '));
+  const badges = await page.locator('.tool .np-badge, .tool .diffbadge').allInnerTexts();
+  check('badges: exit code and the diff size', badges.includes('exit 0') && badges.some((b) => b.replace(/\s+/g, ' ') === '+1 −1'), badges.join(' | '));
+  check('remote files get no "Open file" button', (await page.locator('.tool .openfile').count()) === 0);
+  await page.locator('.tool', { has: page.locator('.label', { hasText: /^SSH edit$/ }) }).last().scrollIntoViewIfNeeded();
+  await shot(page, '26c-ssh-tools');
+}
+
 // ------------------------------------------------------------------ folder picker (fs.dirs) + add project
 log('projects: folder picker');
 await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();

@@ -2,9 +2,9 @@
 
 ## Verified on Windows
 - The desktop shell builds and runs; Git Bash, pwsh, winsqlite3 and window placement work.
-- `.\build.ps1 -Test` (Release): Providers 41, Tools 54, Agent 60, Aux 86, Host 38, all passing.
+- `.\build.ps1 -Test` (Release): Providers 41, Tools 54, Agent 60, Aux 96, Host 38, all passing.
 - E2E suite: 55 tests / 703 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
-  (`npm run e2e`) 110/110.
+  (`npm run e2e`) 116/116.
 - Plugins hot-reload while NetPI runs (they load from shadow copies); only the host DLLs are locked. `build.ps1` then
   builds everything except the host, and a rebuild after a commit no longer reloads unchanged plugins.
 - Real model (AiProxy → nInfer `qwen3.8-27b`, 2 lanes): two concurrent agents, one spawning a subagent, the other
@@ -18,7 +18,11 @@
   `todo_write`, searched through SearXNG, read the docs page with `web_fetch` and answered correctly; it read the
   headline off a `screenshot` of svelte.dev; disabling and re-enabling the web plugin mid-session produced "tools"
   notices it answered from. Every turn reused the previous prompt + output except the one after the tool set changed.
-- Numbers and details: `docs/archive/2026-09-24-windows-bringup.md`, `docs/archive/2026-09-24-agent-tools.md`.
+- SSH tools, live on `nuc` and `server`: a script full of quoting traps came back byte for byte; write, read and edit
+  (a path with a space, relative to `cwd`, and a 5 MB file); a 70 KB binary copied up and back unchanged; a timeout
+  and an abort both ended the remote process group, background children included.
+- Numbers and details: `docs/archive/2026-09-24-windows-bringup.md`, `docs/archive/2026-09-24-agent-tools.md`,
+  `docs/archive/2026-09-24-ssh-tools.md`.
 
 ## Not yet verified
 - The Anthropic provider was tested against a mock of the Messages API only (the adaptive-thinking request shape

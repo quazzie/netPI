@@ -180,7 +180,8 @@ into locals first, because after the parent clears the modal state or the row re
    code), `ReadView` (path, line range, highlighted content), `SearchView` (grep/find/ls), `AgentView`
    (`agent_*`, link to the subagent session), `WebView` (`web_fetch` title and text, `web_search` results as links,
    `screenshot` image and console errors), `TodoView` (the `todo_write` checklist) and `GenericView` (anything
-   else). `read`/`write`/`edit` rows get an "Open file" button (`lib/openFile.js` → `files.open`).
+   else). `read`/`write`/`edit` rows get an "Open file" button (`lib/openFile.js` → `files.open`). The SSH tools reuse
+   these views: `ssh_run` the shell view (prompt `host$`), `ssh_read` the read view, `ssh_write`/`ssh_edit` the diff view.
    - **File links.** `renderMarkdown` marks links whose target is a local path (relative, `C:\…`, `file://`) as
      `a.file-link[data-path]` with `href="#"`; one delegated click handler opens them with the operating system
      through `files.open`, so a link never navigates the app. Web links keep `target="_blank"` (the desktop shell

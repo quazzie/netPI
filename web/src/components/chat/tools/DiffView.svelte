@@ -7,15 +7,15 @@
   const LIMIT = 400;
 
   const d = $derived(result?.details ?? null);
-  const diffText = $derived(d?.diff ?? (name === 'edit' ? editsToDiff(args) : null));
+  const diffText = $derived(d?.diff ?? (name === 'edit' || name === 'ssh_edit' ? editsToDiff(args) : null));
   const parsed = $derived(diffText ? parseDiff(diffText) : null);
   const visibleRows = $derived(parsed ? parsed.rows.filter((r) => r.t !== 'file') : []);
   let showAll = $state(false);
   const rows = $derived(showAll ? visibleRows : visibleRows.slice(0, LIMIT));
-  const pseudo = $derived(!d?.diff && name === 'edit');
+  const pseudo = $derived(!d?.diff && (name === 'edit' || name === 'ssh_edit'));
 
   // write of a new file: show the content
-  const content = $derived(name === 'write' && !d?.diff ? String(arg(args, 'content', 'text') ?? '') : '');
+  const content = $derived((name === 'write' || name === 'ssh_write') && !d?.diff ? String(arg(args, 'content', 'text') ?? '') : '');
   const contentLines = $derived(content ? content.split('\n') : []);
   let showAllContent = $state(false);
 

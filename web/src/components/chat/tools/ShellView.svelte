@@ -35,7 +35,7 @@
 
 <div class="shell">
   <div class="cmd np-mono">
-    <span class="prompt">{name === 'pwsh' ? 'PS>' : '$'}</span>
+    <span class="prompt">{name === 'pwsh' ? 'PS>' : name === 'ssh_run' ? `${arg(args, 'host') ?? 'ssh'}$` : '$'}</span>
     <code>{cmd}</code>
     <button class="copy" title="Copy command" onclick={copyCmd}><Icon name={copied ? 'check' : 'copy'} size={12} /></button>
   </div>

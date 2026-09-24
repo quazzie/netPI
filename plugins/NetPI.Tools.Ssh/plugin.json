@@ -1,0 +1,5 @@
+{
+  "id": "netpi.tools.ssh",
+  "name": "SSH tools",
+  "description": "ssh_hosts, ssh_run, ssh_read, ssh_write, ssh_edit and ssh_copy on the hosts in ~/.ssh/config: scripts and file contents go through stdin, not shell arguments."
+}
