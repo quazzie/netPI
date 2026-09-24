@@ -17,6 +17,7 @@ public static class SubagentTests
         t.Add("subagents: aborting a parent cancels its children", AbortCascade);
         t.Add("subagents: failed subagent reports failure", FailedChild);
         t.Add("subagents: agent tools list / result / cancel / lanes_list", ToolsMisc);
+        t.Add("subagents: an agent on a local model spawns onto a pool defined in settings (another provider)", SpawnOntoConfiguredPool);
     }
 
     private static bool IsChild(ModelRequest r) => r.SystemPrompt?.Contains("a subagent working for") == true;
@@ -259,6 +260,36 @@ public static class SubagentTests
         var sendResult = h.Messages(child.SessionId).Single(m => m.Role == MessageRole.Tool).ToolResults.Single();
         Check.False(sendResult.IsError, sendResult.Content);
         Check.Contains(sendResult.Content, "Message delivered to main");
+    }
+
+    /// <summary>
+    /// The user's setup: a "stealth" lane in lanes.pools for one model of a cloud provider; the main agent runs on the local
+    /// model and delegates with agent_spawn { model: "stealth" }. No per-lane permission is involved: provider credentials
+    /// are global and any agent may use any lane (limits: agents.maxDepth, lane capacity, lanes.budgets).
+    /// </summary>
+    private static async Task SpawnOntoConfiguredPool()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+            x.Settings.SetQuiet("lanes.pools", JsonNode.Parse("""{ "stealth": { "capacity": 1, "models": ["cloud/big"] } }""")));
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (r.Model.Ref == "cloud/big") return Reply.Text("child report: done on the stealth lane");
+            var last = r.Messages[^1];
+            if (last.Role == MessageRole.Tool) return Reply.Text("spawned");
+            if (last.Text.Contains("<agent-result")) return Reply.Text("thanks");
+            return Reply.Tool("agent_spawn", new { task = "Look something up and report.", model = "stealth" });
+        };
+        var parent = h.NewSession(); // default model: fake/local
+        await h.SendAsync(parent.Id, "delegate it");
+        var p = h.Runtime.GetBySession(parent.Id)!;
+        await Wait.Until(() => h.Runtime.Get(p.Id)?.Children.Count == 1, "child spawned");
+        var child = await h.StatusAsync(h.Runtime.Get(p.Id)!.Children[0], AgentStatus.Completed);
+        Check.Equal("cloud/big", child.Model);
+        Check.Equal("stealth", child.Pool);
+        Check.Equal("child report: done on the stealth lane", child.Result);
+        Check.True(h.Lanes!.Snapshot().Any(x => x.Key == "stealth" && x.Capacity == 1), "the configured pool exists with its capacity");
+        await Wait.Until(() => h.Messages(parent.Id).Any(m => m.Role == MessageRole.Assistant && m.Text == "thanks"), "the parent got the report");
+        Check.Equal("fake/local", h.Catalog.Requests.First(r => r.SessionId == parent.Id).Model.Ref);
     }
 
     private static async Task SpawnOptions()

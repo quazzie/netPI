@@ -60,17 +60,20 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Suggested next steps
 
-0. **Goals with a real model.** Run a goal on `qwen3.8-27b` (a throwaway server or the user's NetPI): does it keep
+0. **Lanes with a profile and cost, and settings controls** (`docs/plans/lanes-and-settings.md`): one lane per model
+   with a user-written profile and inferred, editable facts (cost, context…), costly lanes used only when needed, and
+   real controls in the settings dialog. Waiting for the answers to its questions.
+1. **Goals with a real model.** Run a goal on `qwen3.8-27b` (a throwaway server or the user's NetPI): does it keep
    working, call `goal_update` complete only when done, stay within the no-progress rule? Then consider an
    independent check of "complete" (a verifier subagent) if it declares done too early.
-1. **Claude provider live test.** Needs an Anthropic API key (none available yet): thinking, tools, prompt caching, and the
+2. **Claude provider live test.** Needs an Anthropic API key (none available yet): thinking, tools, prompt caching, and the
    adaptive-thinking settings (`docs/SETTINGS.md`). Claude through OpenRouter (paid) would exercise OpenRouter's side of
    it (signed `reasoning_details`, `cache_control`), not the native provider.
-2. **Per-turn cache reuse and TTFT** in the chat or the Work tab. Cached/prompt tokens are in each assistant message's
+3. **Per-turn cache reuse and TTFT** in the chat or the Work tab. Cached/prompt tokens are in each assistant message's
    `usage`; TTFT is not recorded yet (the agent runner could store the time to the first delta in the message meta).
-3. **OpenRouter follow-ups:** let the retry plugin honor `Retry-After` (an additive `ModelException` field), show the cost
+4. **OpenRouter follow-ups:** let the retry plugin honor `Retry-After` (an additive `ModelException` field), show the cost
    stored in `meta.openrouter.cost`.
-4. **Open items** in `docs/STATUS.md`, under "Known limitations / ideas".
+5. **Open items** in `docs/STATUS.md`, under "Known limitations / ideas".
 
 ## Working rules
 

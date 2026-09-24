@@ -2,7 +2,7 @@
 
 ## Verified on Windows
 - The desktop shell builds and runs; Git Bash, pwsh, winsqlite3 and window placement work.
-- `.\build.ps1 -Test` (Release): Providers 41, Tools 54, Agent 70, Aux 96, Host 38, all passing.
+- `.\build.ps1 -Test` (Release): Providers 41, Tools 54, Agent 71, Aux 96, Host 38, all passing.
 - E2E suite: 55 tests / 703 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
   (`npm run e2e`) 126/126.
 - Plugins hot-reload while NetPI runs (they load from shadow copies); only the host DLLs are locked. `build.ps1` then
