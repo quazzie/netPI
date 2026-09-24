@@ -24,8 +24,8 @@ dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll [name-filter…] 
 - **Errors are results, never exceptions.** `isError: true` with a message that says what to do next (“Use ls…”,
   “Did you mean…”, “Include more context…”). Cancellation is the one exception: when the call's token is cancelled, file
   tools rethrow `OperationCanceledException`. Shell tools kill the process tree and return an `[aborted]` result.
-- **Paths** go through `ToolContext.ResolvePath`: relative to the session cwd, `~`, `/c/...` Git Bash paths on Windows, and both
-  `/` and `\`. Output paths are relative to the cwd with `/` separators, or absolute when outside the cwd.
+- **Paths** go through `ToolContext.ResolvePath`: relative to the session cwd, `~`, the paths Git Bash prints on Windows
+  (`/c/...` for drives, `/tmp/...` for the user's temp folder), and both `/` and `\`. Output paths are relative to the cwd with `/` separators, or absolute when outside the cwd.
 - **Line endings.** Every text tool works on LF-normalized text. On write, a file keeps its original style: CRLF when a strict
   majority of its line breaks are CRLF, else LF. Its UTF-8/UTF-16 BOM and encoding are kept too. A file that is not valid
   UTF-8 is read as Latin-1, so unchanged bytes round-trip exactly. A file whose first 8KB contain a NUL byte is binary: it is

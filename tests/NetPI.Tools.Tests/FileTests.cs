@@ -324,6 +324,29 @@ public static class FileTests
             Check.Equal("(empty file)", (await T.Run(Read, dir, new { path = "empty.txt" })).Content);
         });
 
+        // Windows regression: a /tmp/… path copied from Git Bash output resolved to C:\tmp\… in the file tools.
+        r.Add("paths: relative, ~, and Git Bash's /c/… and /tmp/… on Windows", () =>
+        {
+            var cwd = T.TempDir("paths");
+            var ctx = T.Ctx(cwd);
+            Check.Equal(cwd, ctx.ResolvePath(""));
+            Check.Equal(Path.Combine(cwd, "a", "b.txt"), ctx.ResolvePath("a/b.txt"));
+            Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "x.txt"), ctx.ResolvePath("~/x.txt"));
+            if (!OperatingSystem.IsWindows())
+            {
+                Check.Equal("/tmp/x.txt", ctx.ResolvePath("/tmp/x.txt"));
+                return;
+            }
+            Check.Equal(@"C:\Users\me\x.txt", ctx.ResolvePath("/c/Users/me/x.txt"));
+            Check.Equal(@"D:\", ctx.ResolvePath("/d"));
+            Check.Equal(@"C:\", ctx.ResolvePath("/c/"));
+            var temp = Path.GetTempPath();
+            Check.Equal(Path.Combine(temp, "netpi", "x.txt"), ctx.ResolvePath("/tmp/netpi/x.txt"));
+            Check.Equal(Path.GetFullPath(temp), ctx.ResolvePath("/tmp"));
+            Check.Equal(Path.GetFullPath(Path.Combine(cwd, "tmpfile")), ctx.ResolvePath("tmpfile"), "only the /tmp mount, not names starting with tmp");
+            Check.Equal(@"C:\tmpdir\x", ctx.ResolvePath("C:/tmpdir/x"));
+        });
+
         r.Add("read: directory, missing file suggestion, binary, images", async () =>
         {
             var dir = T.TempDir("read");

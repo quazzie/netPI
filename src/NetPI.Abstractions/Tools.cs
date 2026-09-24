@@ -46,17 +46,24 @@ public sealed class ToolContext
     /// <summary>Extra per-call state.</summary>
     public Dictionary<string, object?> Items { get; } = [];
 
-    /// <summary>Resolve a possibly relative path against <see cref="Cwd"/>. Accepts both / and \ and ~.</summary>
+    /// <summary>
+    /// Resolve a possibly relative path against <see cref="Cwd"/>. Accepts both / and \ and ~, and on Windows the paths
+    /// Git Bash prints: <c>/c/foo</c> (and <c>/c</c>) for drives, <c>/tmp/foo</c> for the user's temp folder.
+    /// </summary>
     public string ResolvePath(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) return Cwd;
         path = path.Trim().Trim('"');
         if (path == "~" || path.StartsWith("~/") || path.StartsWith("~\\"))
             path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path.Length > 2 ? path[2..] : "");
-        // Git-bash style /c/foo on Windows
-        if (OperatingSystem.IsWindows() && path.Length >= 3 && path[0] == '/' && char.IsLetter(path[1]) && path[2] == '/')
-            path = $"{char.ToUpperInvariant(path[1])}:\\{path[3..]}";
-        if (OperatingSystem.IsWindows()) path = path.Replace('/', '\\');
+        if (OperatingSystem.IsWindows())
+        {
+            if (path.Length >= 2 && path[0] == '/' && char.IsLetter(path[1]) && (path.Length == 2 || path[2] == '/'))
+                path = $"{char.ToUpperInvariant(path[1])}:\\{(path.Length > 3 ? path[3..] : "")}";
+            else if (path == "/tmp" || path.StartsWith("/tmp/", StringComparison.Ordinal))
+                path = Path.Combine(Path.GetTempPath(), path.Length > 5 ? path[5..] : "");
+            path = path.Replace('/', '\\');
+        }
         return Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(Cwd, path));
     }
 }
