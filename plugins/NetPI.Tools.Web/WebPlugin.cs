@@ -27,8 +27,8 @@ public sealed class WebPlugin : INetPiPlugin
                 SettingInfo.Int("web.fetch.maxChars", "Characters per page part", 20000, "Longer pages continue with offset.", 1000, 200000),
                 SettingInfo.Int("web.fetch.timeoutSeconds", "Fetch timeout", 30, null, 1, 600, "s"),
                 SettingInfo.Int("web.fetch.maxBytes", "Download limit", 5000000, null, 10000, null, "bytes"),
-                SettingInfo.FilePath("web.browserPath", "Browser for screenshots", null, "Edge or Chrome (found automatically)"),
-                SettingInfo.Str("web.userAgent", "User agent", null, null, "Chrome-like, ending in NetPI/0.1"),
+                SettingInfo.FilePath("web.browserPath", "Browser for screenshots", "Empty: the Edge or Chrome found.", HeadlessBrowser.Find(null) ?? "none found (install Edge or Chrome)"),
+                SettingInfo.Str("web.userAgent", "User agent", null, null, WebHttp.UserAgent),
                 SettingInfo.Str("web.search.braveUrl", "Brave API URL", "https://api.search.brave.com/res/v1/web/search"),
             ],
         });

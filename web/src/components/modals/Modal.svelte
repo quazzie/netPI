@@ -1,6 +1,19 @@
 <script module>
-  // open dialogs, innermost last: only the top one reacts to Esc
+  // open dialogs (and popovers), innermost last: only the top one reacts to Esc
   const stack = [];
+
+  /** A layer that takes Esc before the dialogs below it (a popover inside a dialog): { isTop(), remove() }. */
+  export function escLayer() {
+    const me = {};
+    stack.push(me);
+    return {
+      isTop: () => stack.at(-1) === me,
+      remove: () => {
+        const i = stack.indexOf(me);
+        if (i >= 0) stack.splice(i, 1);
+      },
+    };
+  }
 </script>
 
 <script>

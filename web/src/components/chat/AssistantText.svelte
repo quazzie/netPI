@@ -115,11 +115,14 @@
     color: var(--fg-dim);
     font-size: var(--fs-xs);
     opacity: 0;
+    /* hidden, it hangs below the message: it must not take the clicks meant for what is there */
+    pointer-events: none;
     transition: opacity var(--t-fast);
   }
   .assistant:hover .foot,
-  .foot:hover {
+  .foot:focus-within {
     opacity: 1;
+    pointer-events: auto;
   }
   .act {
     display: grid;

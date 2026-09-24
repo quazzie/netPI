@@ -1,5 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
+  import { escLayer } from './modals/Modal.svelte';
   /**
    * Floating panel anchored to an element (fixed positioning, so it escapes overflow clipping).
    * placement: bottom-start | bottom-end | top-start | top-end
@@ -25,8 +26,10 @@
     if (el?.contains(e.target) || anchor?.contains(e.target)) return;
     onclose?.();
   }
+  // on the dialogs' Esc stack: Esc closes this popover, not the dialog it opened in
+  let layer = null;
   function onKey(e) {
-    if (e.key === 'Escape') {
+    if (e.key === 'Escape' && (!layer || layer.isTop())) {
       e.preventDefault();
       e.stopPropagation();
       onclose?.();
@@ -34,12 +37,14 @@
   }
 
   onMount(() => {
+    layer = escLayer();
     place();
     tick().then(place);
     window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('resize', place);
     return () => {
+      layer?.remove();
       window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('resize', place);

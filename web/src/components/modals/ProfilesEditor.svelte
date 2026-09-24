@@ -1,16 +1,19 @@
 <script>
   /**
-   * Profiles (settings profiles.<id> = { name, prompt, toolsOff }, profiles.defaultProfile): the opening of a chat's
-   * system prompt and its tools, switched on and off here. A new chat gets its project's default profile (Projects
-   * dialog) or the one chosen here.
+   * Profiles (settings profiles.<id> = { name, prompt, toolsOff }, profiles.defaultProfile): one row each (name, how its
+   * instructions start, its tools), a dialog to edit one (ProfileDialog), the profile new chats start with, and "Add
+   * profile". A new chat gets its project's default profile (Projects dialog) or the one chosen here.
+   * opening: the current opening of the system prompt (context.customPrompt or the built-in text).
    */
   import Icon from '../../lib/kit/Icon.svelte';
+  import SettingsRow from './SettingsRow.svelte';
+  import ProfileDialog from './ProfileDialog.svelte';
   import { rpc } from '../../lib/rpc.svelte.js';
   import { bus } from '../../lib/bus.js';
   import { setSetting } from '../../lib/settings.js';
-  import { confirmDialog } from '../../lib/state/ui.svelte.js';
+  import { firstLine } from '../../lib/format.js';
 
-  let { doc } = $props();
+  let { doc, opening = '' } = $props();
 
   const RESERVED = new Set(['defaultProfile', 'none']);
   const profiles = $derived(Object.entries(doc?.profiles ?? {}).filter(([id, v]) => !RESERVED.has(id) && v && typeof v === 'object'));
@@ -39,9 +42,9 @@
     return [...byCat].sort(([a], [b]) => a.localeCompare(b));
   });
   const toolCount = $derived(categories.reduce((n, [, list]) => n + list.length, 0));
-  const offCount = (p) => categories.reduce((n, [, list]) => n + list.filter((t) => (p.toolsOff ?? []).includes(t.name)).length, 0);
+  const onCount = (p) => toolCount - categories.reduce((n, [, list]) => n + list.filter((t) => (p.toolsOff ?? []).includes(t.name)).length, 0);
 
-  let expanded = $state(null); // the profile whose tools are shown
+  let openId = $state(null);
   let newName = $state('');
 
   function slug(name) {
@@ -61,33 +64,8 @@
     for (let n = 2; doc?.profiles?.[id] || RESERVED.has(id); n++) id = `${base}-${n}`;
     if (await setSetting(`profiles.${id}`, { name })) {
       newName = '';
-      expanded = id;
+      openId = id;
     }
-  }
-  async function remove(id, name) {
-    const ok = await confirmDialog({
-      title: `Remove the profile "${name}"?`,
-      message: 'Chats that have it keep their instructions and tools; new chats no longer get it.',
-      confirmLabel: 'Remove',
-      danger: true,
-    });
-    if (!ok) return;
-    await setSetting(`profiles.${id}`, null);
-    if (defaultId === id) await setSetting('profiles.defaultProfile', null);
-  }
-  async function toggleTool(id, p, name, on) {
-    const off = new Set(p.toolsOff ?? []);
-    if (on) off.delete(name);
-    else off.add(name);
-    await setSetting(`profiles.${id}.toolsOff`, off.size ? [...off].sort() : null);
-  }
-  async function setCategory(id, p, list, on) {
-    const off = new Set(p.toolsOff ?? []);
-    for (const t of list) {
-      if (on) off.delete(t.name);
-      else off.add(t.name);
-    }
-    await setSetting(`profiles.${id}.toolsOff`, off.size ? [...off].sort() : null);
   }
 </script>
 
@@ -102,48 +80,15 @@
   </label>
 
   {#each profiles as [id, p] (id)}
-    {@const off = new Set(p.toolsOff ?? [])}
-    {@const offN = offCount(p)}
-    <div class="profile" data-profile={id}>
-      <div class="head">
-        <input class="np-input name" value={p.name ?? ''} placeholder={id} aria-label="Name" onchange={(e) => setSetting(`profiles.${id}.name`, e.currentTarget.value.trim() || null)} />
-        {#if defaultId === id}<span class="badge">default</span>{/if}
-        <button class="icon" title="Remove the profile" onclick={() => remove(id, p.name || id)}><Icon name="trash" size={13} /></button>
-      </div>
-      <textarea
-        class="np-input prompt"
-        rows="4"
-        value={p.prompt ?? ''}
-        placeholder="Who the agent is and how it works, e.g. “You are a system administrator for the hosts in ~/.ssh/config …”. It replaces the opening of the system prompt; empty keeps the built-in one."
-        aria-label="Instructions"
-        onchange={(e) => setSetting(`profiles.${id}.prompt`, e.currentTarget.value.trim() || null)}
-      ></textarea>
-      <button class="tools-toggle" aria-expanded={expanded === id} onclick={() => (expanded = expanded === id ? null : id)}>
-        <Icon name={expanded === id ? 'chevron-down' : 'chevron-right'} size={12} />
-        <Icon name="wrench" size={12} /> Tools: {toolCount - offN} of {toolCount} on
-      </button>
-      {#if expanded === id}
-        <div class="tools">
-          {#each categories as [cat, list] (cat)}
-            {@const allOn = list.every((t) => !off.has(t.name))}
-            <div class="cat">
-              <span class="np-dim">{cat}</span>
-              <button class="all" onclick={() => setCategory(id, p, list, !allOn)} title={allOn ? `Switch off every ${cat} tool` : `Switch on every ${cat} tool`}
-                >{allOn ? 'all off' : 'all on'}</button
-              >
-            </div>
-            <div class="chips">
-              {#each list as t (t.name)}
-                <label class="chip" class:is-off={off.has(t.name)} title={t.description}>
-                  <input type="checkbox" checked={!off.has(t.name)} onchange={(e) => toggleTool(id, p, t.name, e.currentTarget.checked)} />
-                  <span class="np-mono">{t.name}</span>
-                </label>
-              {/each}
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </div>
+    {@const on = onCount(p)}
+    <SettingsRow
+      title={p.name || id}
+      icon="user"
+      subtitle={firstLine(p.prompt?.trim() || opening)}
+      badges={[defaultId === id ? { text: 'default', tone: 'accent' } : null, { text: on === toolCount ? 'all tools' : `${on} of ${toolCount} tools` }]}
+      onclick={() => (openId = id)}
+      data-profile={id}
+    />
   {:else}
     <div class="empty np-dim">
       No profiles yet. A profile is a name, the instructions that open the system prompt and the tools a chat gets; give
@@ -157,11 +102,15 @@
   </div>
 </div>
 
+{#if openId}
+  <ProfileDialog id={openId} profile={doc?.profiles?.[openId]} {categories} {opening} isDefault={defaultId === openId} onclose={() => (openId = null)} />
+{/if}
+
 <style>
   .profiles {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 6px;
     margin-bottom: 12px;
   }
   .default {
@@ -169,6 +118,7 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px 8px;
+    margin-bottom: 6px;
     font-size: var(--fs-sm);
   }
   .default select {
@@ -178,112 +128,10 @@
   .empty {
     font-size: var(--fs-sm);
   }
-  .profile {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-1);
-  }
-  .head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .name {
-    flex: 1;
-    min-width: 0;
-    font-weight: 600;
-  }
-  .badge {
-    flex: none;
-    padding: 1px 6px;
-    border-radius: 8px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-size: var(--fs-xs);
-  }
-  .prompt {
-    width: 100%;
-    height: auto;
-    padding: 6px 8px;
-    line-height: 1.45;
-    resize: vertical;
-  }
-  .tools-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    align-self: flex-start;
-    padding: 2px 4px;
-    border: 0;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--fg-muted);
-    font-size: var(--fs-sm);
-  }
-  .tools-toggle:hover {
-    background: var(--bg-2);
-    color: var(--fg);
-  }
-  .cat {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 6px 0 3px;
-    font-size: var(--fs-xs);
-  }
-  .all {
-    padding: 0 4px;
-    border: 0;
-    background: transparent;
-    color: var(--accent);
-    font-size: var(--fs-xs);
-  }
-  .chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: 22px;
-    padding: 0 7px 0 5px;
-    border: 1px solid var(--border);
-    border-radius: 11px;
-    font-size: var(--fs-xs);
-    cursor: pointer;
-  }
-  .chip.is-off {
-    opacity: 0.55;
-    text-decoration: line-through;
-  }
-  .chip input {
-    margin: 0;
-    accent-color: var(--accent);
-  }
-  .icon {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: 26px;
-    height: 26px;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--fg-dim);
-  }
-  .icon:hover {
-    background: var(--bg-2);
-    color: var(--err);
-  }
   .add {
     display: flex;
     gap: 8px;
+    margin-top: 4px;
   }
   .add input {
     flex: 1;

@@ -2,11 +2,12 @@
   /**
    * One host setting from settings.schema as a control: toggle, number, text, text area, secret, choice, list, model,
    * folder or file. Saves with settings.set on change (text and numbers when the field is left); an unset key shows its
-   * default; "Reset" removes the key so the default applies again.
+   * default (a text with a built-in default shows that text, and stays unset while it is unchanged); "Reset" removes the
+   * key so the default applies again.
    */
   import Icon from '../../lib/kit/Icon.svelte';
   import { getAt, setSetting, parseList } from '../../lib/settings.js';
-  import { app } from '../../lib/state/app.svelte.js';
+  import ModelSelect from '../ModelSelect.svelte';
   import { pickFolder } from '../../lib/folderPicker.js';
 
   let { setting: s, doc } = $props();
@@ -15,6 +16,9 @@
   const isSet = $derived(value !== undefined && value !== null);
   const current = $derived(isSet ? value : s.default);
   const stacked = $derived(s.type === 'text');
+  // a text setting whose default is a built-in text (the opening of the system prompt, the AGENTS.md guidance)
+  const textDefault = $derived(s.type === 'text' && typeof s.default === 'string' ? s.default : null);
+  const shown = () => (textDefault != null && !isSet ? textDefault : toText(value));
 
   let draft = $state('');
   let focused = $state(false);
@@ -28,18 +32,20 @@
   }
   // show the saved value unless the user is typing
   $effect(() => {
-    const v = value;
-    if (!focused) draft = toText(v);
+    value;
+    if (!focused) draft = shown();
   });
 
-  const placeholder = $derived(s.placeholder ?? (s.default == null ? '' : toText(s.default)));
+  const placeholder = $derived(textDefault != null ? '' : (s.placeholder ?? (s.default == null ? '' : toText(s.default))));
 
   async function commit() {
     focused = false;
     invalid = '';
     const t = s.type === 'text' ? draft : draft.trim();
     let next;
-    if (t.trim() === '') next = null;
+    // unchanged built-in text: stays unset; emptied: an explicit empty text (e.g. no AGENTS.md guidance)
+    if (textDefault != null) next = t.trim() === textDefault.trim() ? null : t.trim();
+    else if (t.trim() === '') next = null;
     else if (s.type === 'int' || s.type === 'number') {
       const n = Number(t);
       if (!Number.isFinite(n) || (s.type === 'int' && !Number.isInteger(n))) return (invalid = s.type === 'int' ? 'a whole number' : 'a number');
@@ -55,7 +61,7 @@
   function onKey(e) {
     if (e.key === 'Enter' && s.type !== 'text') e.currentTarget.blur();
     if (e.key === 'Escape') {
-      draft = toText(value);
+      draft = shown();
       e.currentTarget.blur();
     }
   }
@@ -65,7 +71,6 @@
     if (picked) await setSetting(s.key, picked);
   }
 
-  const models = $derived(app.models.map((m) => ({ ref: m.ref ?? `${m.provider}/${m.id}`, name: m.displayName || m.id })));
 </script>
 
 <div class="field" class:stacked>
@@ -73,6 +78,7 @@
     <div class="name">
       {s.label ?? s.key}
       {#if s.applies}<span class="applies">{s.applies === 'restart' ? 'after a restart' : 'for new sessions'}</span>{/if}
+      {#if textDefault != null && !isSet}<span class="applies">default text</span>{/if}
     </div>
     {#if s.help}<div class="help">{s.help}</div>{/if}
   </div>
@@ -86,11 +92,7 @@
         {/each}
       </div>
     {:else if s.type === 'model'}
-      <select class="np-input sel" value={isSet ? value : ''} onchange={(e) => setSetting(s.key, e.currentTarget.value || null)} aria-label={s.label ?? s.key}>
-        <option value="">{s.placeholder ?? 'default'}</option>
-        {#if isSet && !models.some((m) => m.ref === value)}<option value={value}>{value}</option>{/if}
-        {#each models as m (m.ref)}<option value={m.ref}>{m.ref}</option>{/each}
-      </select>
+      <div class="sel"><ModelSelect value={isSet ? value : null} none={s.placeholder ?? 'the default'} label={s.label ?? s.key} onchange={(ref) => setSetting(s.key, ref)} /></div>
     {:else if s.type === 'text'}
       <textarea
         class="np-input area"
@@ -196,7 +198,8 @@
     font-size: var(--fs-sm);
   }
   .sel {
-    max-width: 260px;
+    width: 300px;
+    max-width: 100%;
   }
   .area {
     width: 100%;

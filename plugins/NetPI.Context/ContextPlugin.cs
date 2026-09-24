@@ -23,7 +23,7 @@ public sealed class ContextPlugin : INetPiPlugin
             Settings =
             [
                 new SettingInfo { Key = "context.appendPrompt", Type = "text", Label = "Custom instructions", Help = "Added to the end of every session's system prompt.", Applies = "new sessions" },
-                new SettingInfo { Key = "context.customPrompt", Type = "text", Label = "Identity", Help = "Replaces the opening section of the system prompt.", Placeholder = "built in", Applies = "new sessions" },
+                new SettingInfo { Key = "context.customPrompt", Type = "text", Label = "Identity", Help = "The opening of the system prompt: who the agent is and how it works. A profile can have its own.", Default = System.Text.Json.Nodes.JsonValue.Create(IdentitySection.Default), Applies = "new sessions" },
                 new SettingInfo { Key = "context.toolDescriptions", Type = "bool", Label = "Describe every tool in the prompt too", Default = System.Text.Json.Nodes.JsonValue.Create(false), Help = "They are always in the tool schemas.", Applies = "new sessions" },
             ],
         });

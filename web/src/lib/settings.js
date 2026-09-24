@@ -44,6 +44,25 @@ export function pagesOf(schema) {
   return { general, pages };
 }
 
+/** A setting's declared default from the schema (e.g. the built-in text of a prompt setting). */
+export function settingDefault(schema, key) {
+  for (const s of schema ?? []) for (const st of s.settings ?? []) if (st.key === key) return st.default;
+  return undefined;
+}
+
+/** For a section's row: how many of its keys are set, and whether its `….enabled` switch is off. */
+export function sectionState(section, doc) {
+  let changed = 0;
+  let off = false;
+  for (const st of section.settings ?? []) {
+    const v = getAt(doc, st.key);
+    if (v === undefined || v === null) continue;
+    changed++;
+    if (st.type === 'bool' && st.key.endsWith('.enabled') && v === false) off = true;
+  }
+  return { changed, off };
+}
+
 /** Parse a list field ("a, b" or one per line) into strings. */
 export function parseList(text) {
   return String(text ?? '')

@@ -69,6 +69,7 @@ web/
       kit/                     @netpi/kit: Svelte components shared with plugin tabs
     components/
       TopBar.svelte  BudgetPill.svelte  Welcome.svelte  Toasts.svelte  Popover.svelte
+      ModelMenu.svelte (the searchable model list)  ModelSelect.svelte (a model field that opens it)
       panels/  SidePanel, PluginTabHost, SessionsTab, ProjectsTab
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
                ToolRow, NoticeRow, StatusRow, TodoList, ShownImage,
@@ -77,7 +78,8 @@ web/
                TodoStrip
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
                Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
-               SettingInfo), LanesEditor, BudgetView, ProfilesEditor, PluginSwitches
+               SettingInfo), SettingsRow, LanesEditor + LaneDialog, BudgetView, ProfilesEditor + ProfileDialog,
+               PluginSwitches
   mock/
     server.mjs  store.mjs  agent.mjs  content.mjs    mock host (HTTP + WS + scripted agent)
     work.mjs  ideas.mjs  diag.mjs                     mock lanes/processes/usage, ideas backlog, plugin manager
@@ -251,8 +253,9 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 - `@` opens a file popup backed by `files.search`; picking a file inserts `@rel/path`.
 - Images can be attached with the button, pasted or dropped. They show as thumbnails and are sent as
   `{ mediaType, data }`.
-- The model picker groups models by provider and shows each one's status dot, context window and concurrency;
-  choosing one calls `sessions.update { model }`. The effort picker offers "default" plus
+- The model picker groups models by provider and shows each one's status dot, context window and concurrency, with a
+  filter and arrow keys (`ModelMenu`, also behind every model field in the settings: `ModelSelect`); choosing one calls
+  `sessions.update { model }`. The effort picker offers "default" plus
   `model.reasoning.efforts` and calls `sessions.update { reasoning }`; `''` means the model default.
 - The profile picker (shown once there are profiles) sets the chat's profile (`profiles.apply`): free before the first
   message; in a started chat it says the system prompt and tools change and the chat is read again (with its size).
@@ -271,17 +274,27 @@ The pages: **General**, **Lanes & budget**, **Profiles**, **Models**, **Agents**
 **settings.json** and **About**. Host settings are controls rendered from `settings.schema` (the host's and each
 plugin's `SettingsSection`, placed on the page of its group; a plugin's section comes and goes with the plugin).
 `SettingField` renders one control per type (switch, number with unit and range, text, secret with an eye, choice,
-list, model, folder, file); a change saves that key alone (`settings.set`, on change or blur), **Reset** removes it so
-the default applies again (shown as the placeholder), a bad value is refused in place, and a badge says when a change
-applies (`restart`, `new sessions`).
+list, model with the searchable list, folder, file); a change saves that key alone (`settings.set`, on change or blur),
+**Reset** removes it so the default applies again, a bad value is refused in place, and a badge says when a change
+applies (`restart`, `new sessions`). Defaults are shown as they are, never as "built in": a text setting with a built-in
+text (the opening of the system prompt, the AGENTS.md guidance) shows that text to edit, and stays unset while it is
+unchanged; a path that is found at runtime (bash, pwsh, ssh, the browser) shows the path found.
 
-- **Lanes & budget:** `LanesEditor` has one card per lane (`lanes.<id>`: the model, slots, the note on when to use
-  it, price overrides and a daily cap; the price, context, local/cloud and today's spend come from `lanes.list`); "Add a
-  lane for a model…" starts one (the id is a slug of the model). `BudgetView` shows this period against the monthly
+The Lanes, Profiles, Models and Tools pages list their items as rows (`SettingsRow`: a title, a line under it, badges);
+each row opens its own dialog over the settings. Esc closes only the top one (popovers such as the model list are on
+the same Esc stack, `escLayer()` in `Modal.svelte`).
+
+- **Lanes & budget:** `LanesEditor` has one row per lane (`lanes.<id>`: id, model, slots, price); `LaneDialog` edits one
+  (the model with the searchable list, slots, the note on when to use it, price overrides and a daily cap; the price,
+  context, local/cloud and today's spend come from `lanes.list`); "Add lane" opens the model list and then the new
+  lane's dialog (the id is a slug of the model). `BudgetView` shows this period against the monthly
   and daily budgets and what each model cost (`usage.summary`), above the budget settings.
-- **Profiles:** `ProfilesEditor` has "New chats start with" (`profiles.defaultProfile`) and one card per profile: the name,
-  the instructions that replace the opening of the system prompt, and the tools as checkboxes by category (with all
-  on / all off per category). The Projects dialog sets a project's default (`projects.update { meta: { profile } }`).
+- **Profiles:** `ProfilesEditor` has "New chats start with" (`profiles.defaultProfile`) and one row per profile (its name,
+  the first line of its instructions, its tools); `ProfileDialog` edits one: the name, the instructions that replace the
+  opening of the system prompt (they start as the current opening; unchanged they stay unset), whether new chats
+  start with it, and the tools as checkboxes by category (with all on / all off per category).
+- **Models** and **Tools & plugins:** one row per provider or tool section (its help, "N changed", "off"), each opening
+  a dialog with that section's settings. The Projects dialog sets a project's default (`projects.update { meta: { profile } }`).
 - **Tools & plugins:** `PluginSwitches` lists every plugin with a switch (`plugins.setEnabled`, confirmed) and the
   tools it brings, and the names in `tools.disabled` when there are any (× shows one again). Single tools are switched
   per chat (the composer's tools button).

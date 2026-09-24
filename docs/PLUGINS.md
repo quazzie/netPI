@@ -132,7 +132,7 @@ choice) renders the system prompt again (`context.reset`; the next call re-reads
 | `IModelMiddleware` | `ctx.Services.Register<IModelMiddleware>` | wrap every model call (retry, logging, budgets) |
 | `IAgentHook` | `ctx.Services.Register<IAgentHook>` | agent lifecycle: before/after model calls (compaction, nudge, tool repair), tool calls (permission gates), run start/end |
 | `IPromptSection` | `ctx.Services.Register<IPromptSection>` | system prompt sections |
-| `SettingsSection` | `ctx.Services.Register(new SettingsSection { … })` | the plugin's settings as controls in the settings dialog (`settings.schema`): `SettingInfo.Bool/Int/Number/Str/Text/Secret/Choice/List/ModelRef/Folder/FilePath`; `Group` picks the page (General, Models, Agents, Context, Tools); `Applies` says when a change takes effect (`"restart"`, `"new sessions"`) |
+| `SettingsSection` | `ctx.Services.Register(new SettingsSection { … })` | the plugin's settings as controls in the settings dialog (`settings.schema`): `SettingInfo.Bool/Int/Number/Str/Text/Secret/Choice/List/ModelRef/Folder/FilePath`; `Group` picks the page (General, Models, Agents, Context, Tools); `Applies` says when a change takes effect (`"restart"`, `"new sessions"`). Show the real default: `Default` for fixed values and built-in texts (the dialog shows a text in full, to edit), `Placeholder` for what is found at runtime (the path found), never a vague "built in" |
 | `ISystemPromptBuilder`, `ILaneScheduler`, `IAgentRuntime` | `ctx.Services.Register<…>(impl, priority)` | replace a core plugin's service |
 | RPC / events / HTTP | `ctx.Rpc`, `ctx.Events`, `ctx.Http` | UI and inter-plugin communication |
 | UI tabs / commands | `ctx.Ui` | left/right panel tabs, slash commands |

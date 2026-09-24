@@ -124,7 +124,7 @@ internal sealed record SshOptions(string Ssh, string Scp, string Config, bool De
 
     private static string? Blank(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
 
-    private static string FindSsh()
+    internal static string FindSsh()
     {
         if (!OperatingSystem.IsWindows()) return "ssh";
         var windir = Environment.GetEnvironmentVariable("SystemRoot") ?? @"C:\Windows";
@@ -137,7 +137,7 @@ internal sealed record SshOptions(string Ssh, string Scp, string Config, bool De
         return "ssh";
     }
 
-    private static string Sibling(string exe, string name)
+    internal static string Sibling(string exe, string name)
     {
         var dir = Path.GetDirectoryName(exe);
         return string.IsNullOrEmpty(dir) ? Path.GetFileNameWithoutExtension(name) : Path.Combine(dir, name);

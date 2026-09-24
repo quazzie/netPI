@@ -181,7 +181,7 @@ internal static class CoreRpc
         {
             string[] groups = ["General", "Models", "Agents", "Context", "Tools"];
             int Rank(string g) => Array.IndexOf(groups, g) is var i and >= 0 ? i : groups.Length;
-            return CoreSettings.Sections.Concat(k.Services.GetAll<SettingsSection>())
+            return CoreSettings.Sections(Path.Combine(k.Paths.Home, "workspace")).Concat(k.Services.GetAll<SettingsSection>())
                 .OrderBy(s => Rank(s.Group)).ThenBy(s => s.Order).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         });

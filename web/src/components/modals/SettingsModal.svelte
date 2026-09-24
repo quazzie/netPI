@@ -5,13 +5,14 @@
   import SettingField from './SettingField.svelte';
   import LanesEditor from './LanesEditor.svelte';
   import ProfilesEditor from './ProfilesEditor.svelte';
+  import SettingsRow from './SettingsRow.svelte';
   import BudgetView from './BudgetView.svelte';
   import PluginSwitches from './PluginSwitches.svelte';
   import { prefs, savePrefs, toast } from '../../lib/state/ui.svelte.js';
   import { app } from '../../lib/state/app.svelte.js';
   import { rpc, conn } from '../../lib/rpc.svelte.js';
   import { bus } from '../../lib/bus.js';
-  import { pagesOf } from '../../lib/settings.js';
+  import { pagesOf, getAt, settingDefault, sectionState } from '../../lib/settings.js';
 
   /** page: the page to open on (a page id such as 'lanes'; modals.settings may hold one). */
   let { onclose, page: startPage = 'general' } = $props();
@@ -24,6 +25,19 @@
   let lanesInfo = $state([]);
   const layout = $derived(pagesOf(schema));
   const page = $derived(layout.pages.find((p) => p.id === section) ?? null);
+  // Models and Tools list their sections as rows; each opens its own dialog
+  const ROW_PAGES = new Set(['Models', 'Tools']);
+  let openSectionId = $state(null);
+  const openSection = $derived(openSectionId ? (schema.find((s) => s.id === openSectionId) ?? null) : null);
+  // the current opening of the system prompt: context.customPrompt, else the built-in text
+  const opening = $derived(getAt(doc, 'context.customPrompt') || settingDefault(schema, 'context.customPrompt') || '');
+  function rowOf(s) {
+    const { changed, off } = sectionState(s, doc);
+    return {
+      subtitle: s.help || s.settings.map((st) => st.label ?? st.key).join(' · '),
+      badges: [off ? { text: 'off', tone: 'warn' } : null, changed ? { text: `${changed} changed` } : null],
+    };
+  }
   async function loadDoc() {
     try {
       doc = (await rpc('settings.get'))?.settings ?? {};
@@ -194,12 +208,20 @@
               A profile is the opening of a chat's system prompt and the tools it gets. Pick one per chat next to the model
               (free before the first message; later the chat is read again once), or give one to a project for its new chats.
             </div>
-            <ProfilesEditor {doc} />
+            <ProfilesEditor {doc} {opening} />
           </section>
           {#each page.sections as s (s.id)}{@render sectionBlock(s)}{/each}
-        {:else if page.id === 'Tools'}
-          <section class="sec"><PluginSwitches {doc} /></section>
-          {#each page.sections as s (s.id)}{@render sectionBlock(s)}{/each}
+        {:else if ROW_PAGES.has(page.id)}
+          {#if page.sections.length}
+            <section class="sec rows">
+              <div class="sec-title">{page.id === 'Models' ? 'Providers and model calls' : 'Tools'}</div>
+              {#each page.sections as s (s.id)}
+                {@const r = rowOf(s)}
+                <SettingsRow title={s.title} subtitle={r.subtitle} badges={r.badges} onclick={() => (openSectionId = s.id)} data-section={s.id} />
+              {/each}
+            </section>
+          {/if}
+          {#if page.id === 'Tools'}<section class="sec"><PluginSwitches {doc} /></section>{/if}
         {:else}
           {#each page.sections as s (s.id)}{@render sectionBlock(s)}{/each}
         {/if}
@@ -293,7 +315,7 @@
             </div>
           {/if}
         </div>
-      {:else}
+      {:else if section === 'about'}
         <dl class="np-kv about">
           <dt>Version</dt><dd>{app.info?.version ?? conn.version ?? '—'}</dd>
           <dt>OS</dt><dd>{app.info?.os ?? '—'}</dd>
@@ -309,6 +331,14 @@
     </div>
   </div>
 </Modal>
+
+<!-- a section of the Models or Tools page, over the settings (later in the page, so on top) -->
+{#if openSection}
+  <Modal title={openSection.title} width={620} onclose={() => (openSectionId = null)} class="section-dialog">
+    {#if openSection.help}<div class="sec-help np-dim">{openSection.help}</div>{/if}
+    {#each openSection.settings as st (st.key)}<SettingField setting={st} {doc} />{/each}
+  </Modal>
+{/if}
 
 <style>
   .layout {

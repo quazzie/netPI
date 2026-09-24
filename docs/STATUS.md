@@ -5,7 +5,7 @@
 - Unit suites (Debug, built into a scratch app folder while NetPI ran): Providers 41 (330 checks), Tools 54, Agent 82,
   Aux 97, Host 38, all passing.
 - E2E suite: 55 tests / 703 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
-  (`npm run e2e`) 160/160.
+  (`npm run e2e`) 173/173.
 - Plugins hot-reload while NetPI runs (they load from shadow copies); only the host DLLs are locked. `build.ps1` then
   builds everything except the host, and a rebuild after a commit no longer reloads unchanged plugins.
 - Real model (AiProxy → nInfer `qwen3.8-27b`, 2 lanes): two concurrent agents, one spawning a subagent, the other

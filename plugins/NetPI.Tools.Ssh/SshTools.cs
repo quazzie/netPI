@@ -23,8 +23,8 @@ public sealed class SshPlugin : INetPiPlugin
                 SettingInfo.Int("ssh.timeoutSeconds", "Default ssh_run timeout", 120, null, 1, 1800, "s"),
                 SettingInfo.Int("ssh.connectTimeoutSeconds", "Connect timeout", 10, null, 2, 120, "s"),
                 SettingInfo.FilePath("ssh.config", "ssh config", "The host aliases come from here.", "~/.ssh/config"),
-                SettingInfo.FilePath("ssh.path", "ssh", null, "Windows OpenSSH (found automatically)"),
-                SettingInfo.FilePath("ssh.scpPath", "scp", null, "next to ssh"),
+                SettingInfo.FilePath("ssh.path", "ssh", "Empty: the one found.", SshOptions.FindSsh()),
+                SettingInfo.FilePath("ssh.scpPath", "scp", "Empty: the one next to ssh.", SshOptions.Sibling(SshOptions.FindSsh(), OperatingSystem.IsWindows() ? "scp.exe" : "scp")),
             ],
         });
         foreach (var tool in SshToolSet.Create(context, new ProcessLauncher())) context.Tools.Register(tool);

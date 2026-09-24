@@ -28,8 +28,9 @@ public sealed class ShellPlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Int("shell.timeoutSeconds", "Default timeout", 120, null, 1, 1800, "s"),
-                SettingInfo.FilePath("shell.bashPath", "bash", "Git Bash on Windows, never WSL.", "Git Bash (found automatically)"),
-                SettingInfo.FilePath("shell.pwshPath", "PowerShell", null, "pwsh (found automatically)"),
+                // the placeholders show what is found when the field is empty
+                SettingInfo.FilePath("shell.bashPath", "bash", "Git Bash on Windows, never WSL. Empty: the one found.", ShellLocator.FindBash(null) ?? "none found (install Git for Windows)"),
+                SettingInfo.FilePath("shell.pwshPath", "PowerShell", "Empty: the one found.", ShellLocator.FindPwsh(null, out _) ?? "none found"),
                 SettingInfo.Bool("shell.pwshAlways", "Offer pwsh even when none was found", false),
             ],
         });

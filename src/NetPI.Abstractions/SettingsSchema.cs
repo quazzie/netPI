@@ -16,7 +16,7 @@ public sealed class SettingInfo
     public string? Label { get; init; }
     public string? Help { get; init; }
     public JsonNode? Default { get; init; }
-    /// <summary>What an unset field says when there is no fixed default ("auto", "built in", "env OPENROUTER_API_KEY").</summary>
+    /// <summary>What an unset field says when there is no fixed default ("auto", "first available", "env OPENROUTER_API_KEY").</summary>
     public string? Placeholder { get; init; }
     public double? Min { get; init; }
     public double? Max { get; init; }

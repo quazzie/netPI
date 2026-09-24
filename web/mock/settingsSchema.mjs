@@ -1,6 +1,16 @@
 // settings.schema for the mock: a representative part of what the host and the plugins declare (SettingsSection[]).
 const S = (key, type, label, extra = {}) => ({ key, type, label, ...extra });
 
+// the built-in texts, as the context and AGENTS.md plugins declare them
+export const IDENTITY =
+  "You are a coding agent running in NetPI, an agent harness on the user's own machine. " +
+  'Work through the tools you have: act rather than describe, check the results and verify your work when practical. ' +
+  'Ask only when a request is genuinely ambiguous or an action would be destructive. ' +
+  'Be concise, and end with a short summary of what you did or found.';
+const AGENTS_MD =
+  'AGENTS.md and CLAUDE.md files reach you as notices. They are the lean entry point for agents: the essentials, plus ' +
+  'pointers to deeper docs. When your task touches something they point to, read that doc first.';
+
 export const SETTINGS_SCHEMA = [
   {
     id: 'core',
@@ -9,7 +19,7 @@ export const SETTINGS_SCHEMA = [
     order: 0,
     settings: [
       S('defaultModel', 'model', 'Default model', { help: 'For sessions that have none.', placeholder: 'first available' }),
-      S('workspace.default', 'folder', 'Default working folder', { help: 'For sessions without a project.', placeholder: '~/.netpi/workspace' }),
+      S('workspace.default', 'folder', 'Default working folder', { help: 'For sessions without a project.', placeholder: 'C:\\Users\\me\\.netpi\\workspace' }),
       S('logging.level', 'choice', 'Log level', { default: 'Information', options: ['Trace', 'Debug', 'Information', 'Warning', 'Error'] }),
       S('server.port', 'int', 'Port', { default: 7431, min: 1, max: 65535, applies: 'restart' }),
     ],
@@ -39,6 +49,17 @@ export const SETTINGS_SCHEMA = [
     ],
   },
   {
+    id: 'aiproxy',
+    title: 'AiProxy / nInfer',
+    group: 'Models',
+    order: 30,
+    settings: [
+      S('providers.aiproxy.baseUrl', 'string', 'Server URL', { default: 'http://127.0.0.1:8090', help: 'A trailing /v1 is fine.' }),
+      S('providers.aiproxy.transport', 'choice', 'Transport', { default: 'responses', options: ['responses', 'chat'] }),
+      S('providers.aiproxy.enabled', 'bool', 'Enabled', { default: true }),
+    ],
+  },
+  {
     id: 'openrouter',
     title: 'OpenRouter',
     group: 'Models',
@@ -49,6 +70,13 @@ export const SETTINGS_SCHEMA = [
       S('providers.openrouter.maxOutputTokens', 'int', 'Output limit', { default: 32768, min: 256, unit: 'tokens' }),
       S('providers.openrouter.enabled', 'bool', 'Enabled', { default: true }),
     ],
+  },
+  {
+    id: 'retry',
+    title: 'Retries',
+    group: 'Models',
+    order: 60,
+    settings: [S('retry.maxAttempts', 'int', 'Attempts', { default: 4, min: 1, max: 10 })],
   },
   {
     id: 'agents',
@@ -73,7 +101,17 @@ export const SETTINGS_SCHEMA = [
     title: 'System prompt',
     group: 'Context',
     order: 10,
-    settings: [S('context.appendPrompt', 'text', 'Custom instructions', { help: "Added to the end of every session's system prompt.", applies: 'new sessions' })],
+    settings: [
+      S('context.appendPrompt', 'text', 'Custom instructions', { help: "Added to the end of every session's system prompt.", applies: 'new sessions' }),
+      S('context.customPrompt', 'text', 'Identity', { help: 'The opening of the system prompt: who the agent is and how it works. A profile can have its own.', default: IDENTITY, applies: 'new sessions' }),
+    ],
+  },
+  {
+    id: 'agentsMd',
+    title: 'AGENTS.md',
+    group: 'Context',
+    order: 20,
+    settings: [S('agentsMd.guidance', 'text', 'How agents use AGENTS.md', { help: 'The "# Instruction files" section of the system prompt; empty leaves it out.', default: AGENTS_MD, applies: 'new sessions' })],
   },
   {
     id: 'shell',
@@ -82,7 +120,7 @@ export const SETTINGS_SCHEMA = [
     order: 20,
     settings: [
       S('shell.timeoutSeconds', 'int', 'Default timeout', { default: 120, min: 1, max: 1800, unit: 's' }),
-      S('shell.bashPath', 'file', 'bash', { placeholder: 'Git Bash (found automatically)' }),
+      S('shell.bashPath', 'file', 'bash', { help: 'Git Bash on Windows, never WSL. Empty: the one found.', placeholder: 'C:\\Program Files\\Git\\bin\\bash.exe' }),
     ],
   },
   {
