@@ -80,6 +80,40 @@ public static class TodoTests
             env.Ctx.Unload();
         });
 
+        r.Add("todo: after compaction removed the last todo_write, a notice brings the open list back once", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var hook = env.Ctx.ServicesFake.GetAll<IAgentHook>().OfType<IAgentHook>().Single(h => h.Order == 530);
+            await env.Run(T.Args(new { items = new object[] { new { text = "Parse", status = "done" }, new { text = "Fix", status = "in_progress" }, new { text = "Test", status = "pending" } } }));
+            var run = T.Run(env.Ctx, T.Model(), env.Session);
+            var reloads = 0;
+            AgentTurnContext Turn(List<ChatMessage> messages) => T.Turn(run, messages, reload: () => { reloads++; return Task.CompletedTask; });
+
+            // the last todo_write is still in the context: nothing to add
+            var withCall = new List<ChatMessage> { T.User("go"), T.Assistant("", T.Call("c1", "todo_write")), T.ToolResult(("c1", "todo_write", "Todo list updated")) };
+            await hook.OnBeforeModelCallAsync(Turn(withCall));
+            Check.Equal(0, env.Ctx.SessionsFake.Appended.Count);
+
+            // compacted away: the open list comes back as a notice
+            await hook.OnBeforeModelCallAsync(Turn([T.User("summary of earlier work"), T.User("continue")]));
+            var notice = env.Ctx.SessionsFake.Appended.Single();
+            Check.Equal("todo", notice.MetaString("kind"));
+            Check.Contains(notice.Text, "Your todo list (its earlier updates were compacted away)");
+            Check.Contains(notice.Text, "[x] Parse\n[>] Fix\n[ ] Test");
+            Check.Equal(1, reloads);
+
+            // once in the context, not again
+            await hook.OnBeforeModelCallAsync(Turn([T.User("continue"), notice]));
+            Check.Equal(1, env.Ctx.SessionsFake.Appended.Count);
+
+            // a finished list is not brought back
+            await env.Run(T.Args(new { items = new[] { new { text = "All", status = "done" } } }));
+            await hook.OnBeforeModelCallAsync(Turn([T.User("next task")]));
+            Check.Equal(1, env.Ctx.SessionsFake.Appended.Count);
+            env.Ctx.Unload();
+        });
+
         r.Add("todo: an empty list clears it; bad input and unknown sessions are errors", async () =>
         {
             var env = new Env();

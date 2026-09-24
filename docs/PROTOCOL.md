@@ -43,7 +43,7 @@ interface ChatMessage {
   provider?: string; model?: string; stopReason?: 'stop'|'tool_use'|'length'|'aborted'|'error'|'content_filter';
   usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; reasoningTokens: number };
   durationMs?: number; compacted: boolean;
-  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | tools | nudge | agent-message | agent-result | steer | retry | error | compaction
+  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | tools | todo | nudge | agent-message | agent-result | steer | retry | error | compaction
 }
 type Part =
   | { type: 'text'; text: string }

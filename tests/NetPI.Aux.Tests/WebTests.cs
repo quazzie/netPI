@@ -75,12 +75,8 @@ public static class WebTests
     {
         public FakePluginContext Ctx { get; } = new(T.TempDir("web-home"));
 
-        public Env()
-        {
-            // never fall back to the developer's own pi config or key in tests
-            Ctx.SettingsFake.Set("web.search.piConfig", JsonValue.Create(""));
-            Environment.SetEnvironmentVariable("BRAVE_API_KEY", null);
-        }
+        // never pick up the developer's own key in tests
+        public Env() => Environment.SetEnvironmentVariable("BRAVE_API_KEY", null);
 
         public async Task StartAsync() => await new WebPlugin().StartAsync(Ctx, CancellationToken.None);
 
@@ -225,7 +221,7 @@ public static class WebTests
             env.Ctx.Unload();
         });
 
-        r.Add("web_search: SearXNG and Brave results, recency, fallback, pi config, not configured", async () =>
+        r.Add("web_search: SearXNG and Brave results, recency, fallback, keys from the environment, not configured", async () =>
         {
             var sx = new ConcurrentQueue<string>();
             var brave = new ConcurrentQueue<string>();
@@ -295,16 +291,16 @@ public static class WebTests
             Check.True(denied.IsError);
             Check.Contains(denied.Content, "HTTP 401");
 
-            // pi's config fills in what NetPI's settings leave unset
-            var pi = Path.Combine(T.TempDir("pi"), "web-search.json");
-            File.WriteAllText(pi, $$"""{ "searxngBaseUrl": "{{web.Url}}/sx", "braveApiKey": "unused" }""");
-            var env2 = new Env();
-            await env2.StartAsync();
-            env2.Set("web.search.piConfig", JsonValue.Create(pi));
-            var fromPi = await env2.Run("web_search", new { query = "pi config" });
-            Check.Contains(fromPi.Content, "(searxng, 2)");
+            // the key may come from an environment variable, named in the settings or the default BRAVE_API_KEY
+            Environment.SetEnvironmentVariable("NETPI_TEST_BRAVE", "test-key");
+            env.Set("web.search.braveApiKey", JsonValue.Create("env:NETPI_TEST_BRAVE"));
+            Check.Contains((await env.Run("web_search", new { query = "from env" })).Content, "(brave, 1)");
+            env.Set("web.search.braveApiKey", null);
+            Environment.SetEnvironmentVariable("BRAVE_API_KEY", "test-key");
+            Check.Contains((await env.Run("web_search", new { query = "default env" })).Content, "(brave, 1)");
+            Environment.SetEnvironmentVariable("BRAVE_API_KEY", null);
+            Environment.SetEnvironmentVariable("NETPI_TEST_BRAVE", null);
             env.Ctx.Unload();
-            env2.Ctx.Unload();
         });
 
         r.Add("screenshot: a page in headless Edge/Chrome (size, wait_for, console errors, full page); the window; text-only models", async () =>

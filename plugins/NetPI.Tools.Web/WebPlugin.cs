@@ -46,21 +46,15 @@ internal static class WebHttp
     }
 }
 
-/// <summary>
-/// <c>web.*</c> settings, read on every call. Search falls back to pi's <c>~/.pi/agent/web-search.json</c>
-/// (<c>searxngBaseUrl</c>, <c>braveApiKey</c>) for whatever NetPI's own settings leave unset.
-/// </summary>
+/// <summary><c>web.*</c> settings, read on every call (only NetPI's own settings and the <c>BRAVE_API_KEY</c> variable).</summary>
 internal sealed record WebOptions(
     int FetchMaxChars, int FetchTimeoutSeconds, long FetchMaxBytes, string? UserAgent,
     string Provider, string? SearxngUrl, string? BraveApiKey, string BraveUrl, int SearchCount, string? BrowserPath)
 {
     public static WebOptions Read(ISettings s)
     {
-        var pi = PiConfig(s.Get<string>("web.search.piConfig", "~/.pi/agent/web-search.json"));
-        var searx = Blank(s.Get<string>("web.search.searxngUrl")) ?? PiString(pi, "searxngBaseUrl");
-        var brave = Secret(s.Get<string>("web.search.braveApiKey"))
-                    ?? Blank(Environment.GetEnvironmentVariable("BRAVE_API_KEY"))
-                    ?? PiString(pi, "braveApiKey");
+        var searx = Blank(s.Get<string>("web.search.searxngUrl"));
+        var brave = Secret(s.Get<string>("web.search.braveApiKey")) ?? Blank(Environment.GetEnvironmentVariable("BRAVE_API_KEY"));
         return new WebOptions(
             FetchMaxChars: Math.Clamp(s.Get("web.fetch.maxChars", 20_000), 1_000, 200_000),
             FetchTimeoutSeconds: Math.Clamp(s.Get("web.fetch.timeoutSeconds", 30), 3, 300),
@@ -86,17 +80,6 @@ internal sealed record WebOptions(
         return v;
     }
 
-    private static string? PiString(JsonObject? pi, string name) =>
-        pi?[name] is JsonValue v && v.TryGetValue<string>(out var s) ? Blank(s) : null;
-
-    private static JsonObject? PiConfig(string? path)
-    {
-        path = Blank(path);
-        if (path is null) return null;
-        if (path.StartsWith("~/") || path.StartsWith("~\\")) path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..]);
-        try { return File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path)) as JsonObject : null; }
-        catch (Exception) { return null; }
-    }
 }
 
 /// <summary>Lenient argument access: names match ignoring case, '_' and '-'; numbers/bools may be strings.</summary>

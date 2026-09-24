@@ -16,9 +16,9 @@ Kept for reference; the current state is in `docs/HANDOFF.md` and `docs/STATUS.m
 | change | where |
 |---|---|
 | `web_fetch`: a page as Markdown (main content, absolute links, code languages, tables), JSON/text as-is, images for vision models, paged with `offset` from a 5-minute cache | `plugins/NetPI.Tools.Web` |
-| `web_search`: SearXNG or Brave, "auto" falls back from SearXNG to Brave; reads pi's `~/.pi/agent/web-search.json` for whatever NetPI's settings leave unset | `plugins/NetPI.Tools.Web` |
+| `web_search`: SearXNG or Brave, "auto" falls back from SearXNG to Brave; NetPI's own settings only (reading pi's config at runtime was removed on review) | `plugins/NetPI.Tools.Web` |
 | `screenshot`: a URL in a headless Edge/Chrome over the DevTools protocol (no Playwright), with wait_for, full page and console errors; without a URL the NetPI window through the desktop shell's `desktop.capture` | `plugins/NetPI.Tools.Web`, `src/NetPI.Desktop` |
-| `todo_write`: a checklist in the session meta, echoed to the model, shown above the composer while items are open | `plugins/NetPI.Todo`, `web/src/components/composer/TodoStrip.svelte` |
+| `todo_write`: a checklist in the session meta, echoed to the model, shown above the composer while items are open; brought back by a notice after compaction | `plugins/NetPI.Todo`, `web/src/components/composer/TodoStrip.svelte` |
 | "tools" notices: tools that appear or disappear mid-session are named, with the new tools' guidelines | `plugins/NetPI.Context/ToolNotices.cs` |
 | "# Instruction files" prompt section: AGENTS.md is the lean entry point with pointers to deeper docs; durable learnings go there as one line (`agentsMd.guidance`) | `plugins/NetPI.AgentsMd` |
 | File links in the chat open with the operating system (`files.open`: default app, scripts for editing, executables only revealed); "Open file" on read/write/edit rows; "Open" in the file tree | `plugins/NetPI.Tools.Files/FileOpener.cs`, `web/src/lib/openFile.js` |

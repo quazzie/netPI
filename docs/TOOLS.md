@@ -324,8 +324,9 @@ details: { source: 'browser', url, title, width, height, fullPage, consoleErrors
 (an empty list clears it; at most 50 items). Lenient like the other tools: plain strings, `content`/`title`/`task` for
 the text, status synonyms (`completed`, `active`…), a JSON string, a bare array. The list is stored in the session's
 meta (`meta.todo`, so it survives restarts and the UI shows it above the composer while items are open) and repeated in
-the result for the model: `Todo list updated (1/3 done):` followed by `[x]`, `[>]` and `[ ]` lines. Nothing is
-injected anywhere else.
+the result for the model: `Todo list updated (1/3 done):` followed by `[x]`, `[>]` and `[ ]` lines. The model reads
+the list from that result and changes it by sending the whole list again. When compaction has summarized the last
+`todo_write` away while items are still open, a `todo` notice appends the current list before the next model call.
 
 ```ts
 details: { items: { text, status }[], done, total }

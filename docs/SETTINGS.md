@@ -171,9 +171,8 @@ with their guidelines. The global file is `~/.netpi/AGENTS.md`.
 | `web.fetch.maxBytes` | `5000000` | download cap |
 | `web.userAgent` | a Chrome-like UA ending in `NetPI/0.1` | |
 | `web.search.provider` | `auto` | `auto` (SearXNG when a URL is set, falling back to Brave), `searxng` or `brave` |
-| `web.search.searxngUrl` | – | e.g. `http://192.168.1.3:8888` (the instance must allow `format=json`) |
+| `web.search.searxngUrl` | – | e.g. `http://192.168.1.3:8888` (the instance must allow `format=json`); a SearXNG that queries Brave itself makes a Brave key in NetPI a fallback only |
 | `web.search.braveApiKey` | env `BRAVE_API_KEY` | Brave Search API key; `"env:NAME"` / `"$NAME"` read an environment variable |
 | `web.search.braveUrl` | `https://api.search.brave.com/res/v1/web/search` | |
 | `web.search.count` | `8` | results per search (max 20) |
-| `web.search.piConfig` | `~/.pi/agent/web-search.json` | pi's web search config: its `searxngBaseUrl` and `braveApiKey` fill in what the settings above leave unset; `""` turns this off |
 | `web.browserPath` | auto | Edge, Chrome or Chromium for `screenshot` (found in the usual install folders or on PATH) |
