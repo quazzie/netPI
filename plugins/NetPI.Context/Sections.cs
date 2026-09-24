@@ -42,10 +42,9 @@ internal static class SectionUtil
 internal sealed class IdentitySection(ISettings settings) : IPromptSection
 {
     public const string Default =
-        "You are an expert coding agent running inside NetPI, a minimal agent harness on the user's own machine. " +
-        "You help the user with software engineering tasks by reading files, running commands, editing code and writing new files.\n\n" +
-        "Be concise and direct. Act, don't just describe: when something needs doing, do it with your tools and check the result. " +
-        "Ask only when the request is genuinely ambiguous or an action would be destructive.";
+        "You are a coding agent running in NetPI, an agent harness on the user's own machine. " +
+        "Work through your tools: read, search and change files, run commands, and check the results. " +
+        "Act rather than describe; ask only when a request is genuinely ambiguous or an action would be destructive. Be concise.";
 
     public string Id => "identity";
     public int Order => 0;
@@ -57,7 +56,11 @@ internal sealed class IdentitySection(ISettings settings) : IPromptSection
     }
 }
 
-/// <summary>Date, OS, shells, cwd, project and model (order 100).</summary>
+/// <summary>
+/// OS, shells, working directory, project, model and where harness notices come from (order 100). Nothing here may
+/// change between the turns of a session (no date or time): the system prompt is the start of every request, and any
+/// change to it makes the backend re-prefill the whole conversation.
+/// </summary>
 internal sealed class EnvironmentSection : IPromptSection
 {
     public string Id => "environment";
@@ -65,37 +68,32 @@ internal sealed class EnvironmentSection : IPromptSection
 
     public ValueTask<string?> RenderAsync(PromptContext c, CancellationToken ct)
     {
-        var now = DateTimeOffset.Now;
-        var offset = now.Offset;
-        var sign = offset < TimeSpan.Zero ? "-" : "+";
-        var tz = $"{TimeZoneInfo.Local.Id} (UTC{sign}{offset.Duration():hh\\:mm})";
-
         var sb = new StringBuilder("# Environment\n");
-        sb.Append("- Date: ").Append(now.ToString("dddd yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)).Append(", time zone ").Append(tz).Append('\n');
-        sb.Append("- OS: ").Append(OsName()).Append(" (").Append(RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant()).Append(")\n");
+        sb.Append("- OS: ").Append(OsName()).Append('\n');
 
         var shells = new List<string>();
-        if (SectionUtil.Has(c, "bash"))
-            shells.Add(OperatingSystem.IsWindows()
-                ? "`bash` (Git Bash: Unix syntax; Windows paths and /c/... paths both work)"
-                : "`bash`");
-        if (SectionUtil.Has(c, "pwsh")) shells.Add("`pwsh` (PowerShell)");
+        if (SectionUtil.Has(c, "bash")) shells.Add(OperatingSystem.IsWindows() ? "bash (Git Bash)" : "bash");
+        if (SectionUtil.Has(c, "pwsh")) shells.Add("pwsh (PowerShell)");
         if (shells.Count > 0) sb.Append("- Shells: ").Append(string.Join(", ", shells)).Append('\n');
 
-        sb.Append("- Working directory: ").Append(c.Cwd).Append('\n');
-        sb.Append(c.Project is { } p
-            ? $"- Project: {p.Name} ({p.Path})\n"
-            : "- Project: none (working in the default workspace)\n");
+        sb.Append("- Working directory: ").Append(c.Cwd).Append(c.Project is { } p ? $" (project: {p.Name})" : " (no project: the default workspace)").Append('\n');
         sb.Append("- Model: ").Append(c.Model.Ref);
-        if (c.Model.ContextWindow is { } w) sb.Append(" (context window ").Append(w.ToString("N0", CultureInfo.InvariantCulture)).Append(" tokens)");
+        if (c.Model.ContextWindow is { } w) sb.Append(", context window ").Append(w.ToString("N0", CultureInfo.InvariantCulture)).Append(" tokens");
+        sb.Append("\n- Messages in <system-notice> tags come from NetPI (project switches, subagent reports, reminders, errors), not from the user.");
         return ValueTask.FromResult<string?>(sb.ToString());
     }
 
-    private static string OsName()
+    internal static string OsName()
     {
-        if (OperatingSystem.IsWindows()) return $"Windows {Environment.OSVersion.Version}";
-        if (OperatingSystem.IsMacOS()) return $"macOS {Environment.OSVersion.Version}";
-        return RuntimeInformation.OSDescription;
+        var arch = RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant();
+        if (OperatingSystem.IsWindows())
+        {
+            var v = Environment.OSVersion.Version;
+            var name = v.Major == 10 && v.Build >= 22000 ? "11" : v.Major == 10 ? "10" : $"{v.Major}.{v.Minor}";
+            return $"Windows {name} (build {v.Build}, {arch})";
+        }
+        if (OperatingSystem.IsMacOS()) return $"macOS {Environment.OSVersion.Version} ({arch})";
+        return $"{RuntimeInformation.OSDescription} ({arch})";
     }
 }
 

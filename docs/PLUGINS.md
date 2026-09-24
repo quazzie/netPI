@@ -84,6 +84,11 @@ sealed class MySection : IPromptSection
 Register a tool with the same name as an existing one and a higher priority (`ctx.Tools.Register(tool, priority: 10)`)
 to **replace** a built-in tool; `tools.disabled` in the settings hides tools.
 
+Prompt sections are rendered for every model call and must give the same text on every turn of a session: no dates,
+times, counters or live status. The system prompt is the start of every request, so any change makes the backend
+re-prefill the whole conversation (nInfer's KV cache and Anthropic's prompt cache alike). Put changing information in a
+tool result or a notice instead.
+
 ## Extension points (all in `src/NetPI.Abstractions`)
 
 | contract | register with | used for |

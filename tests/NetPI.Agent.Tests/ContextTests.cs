@@ -7,6 +7,7 @@ public static class ContextTests
     public static void Register(TestRunner t)
     {
         t.Add("context: system prompt sections in order", PromptSections);
+        t.Add("context: no date or time in the system prompt (identical on every turn)", NoDateOrTime);
         t.Add("context: AGENTS.md discovery, order, caps and cache", AgentsMdDiscovery);
         t.Add("context: custom and appended prompt settings", CustomPrompt);
         t.Add("context: context.preview", Preview);
@@ -36,17 +37,16 @@ public static class ContextTests
         var prompt = await builder.BuildAsync(Ctx(h, s, h.Tools.All.Select(t => t.Definition).ToList(), "You are \"w1\", a subagent."), CancellationToken.None);
 
         int Idx(string s) { var i = prompt.IndexOf(s, StringComparison.Ordinal); Check.True(i >= 0, $"missing '{s}' in prompt:\n{prompt}"); return i; }
-        var identity = Idx("expert coding agent");
+        var identity = Idx("coding agent running in NetPI");
         var env = Idx("# Environment");
         var tools = Idx("# Tools");
         var guide = Idx("# Guidelines");
         var role = Idx("# Your role");
         Check.True(identity < env && env < tools && tools < guide && guide < role, "section order");
-        Check.Contains(prompt, "- Working directory: " + h.Workspace);
-        Check.Contains(prompt, $"- Project: Demo ({h.Workspace})");
-        Check.Contains(prompt, "- Model: fake/local (context window 100,000 tokens)");
-        Check.Contains(prompt, "- Shells: `bash`");
-        Check.Contains(prompt, "Date: ");
+        Check.Contains(prompt, $"- Working directory: {h.Workspace} (project: Demo)");
+        Check.Contains(prompt, "- Model: fake/local, context window 100,000 tokens");
+        Check.Contains(prompt, "- Shells: bash");
+        Check.Contains(prompt, "<system-notice>");
         Check.True(System.Text.RegularExpressions.Regex.IsMatch(prompt, @"- \w+: .*\bread\b"), "compact tool index lists read");
         Check.Contains(prompt, "agent_spawn");
         Check.Contains(prompt, "Use edit for testing.");
@@ -57,10 +57,28 @@ public static class ContextTests
 
         // no project, no tools: no tool section, no lanes guidance
         var bare = await builder.BuildAsync(Ctx(h, h.NewSession(), []), CancellationToken.None);
-        Check.Contains(bare, "- Project: none");
+        Check.Contains(bare, "(no project: the default workspace)");
         Check.NotContains(bare, "# Tools");
         Check.NotContains(bare, "Lanes and subagents");
         Check.NotContains(bare, "# Your role");
+    }
+
+    // Real-model regression: the date line (to the minute) changed the prompt's first ~100 tokens every minute, so the
+    // first turn after a minute boundary re-prefilled the whole conversation.
+    private static async Task NoDateOrTime()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.AddTool(new FakeTool("bash", (c, a, t) => Task.FromResult(ToolResult.Ok(""))));
+        var project = h.Sessions.CreateProject("Demo", h.Workspace);
+        var s = h.NewSession(projectId: project.Id);
+        var builder = h.Services.Get<ISystemPromptBuilder>()!;
+        var ctx = Ctx(h, s, h.Tools.All.Select(t => t.Definition).ToList());
+        var first = await builder.BuildAsync(ctx, CancellationToken.None);
+        var now = DateTimeOffset.Now;
+        foreach (var stamp in new[] { "yyyy-MM-dd", "dddd", "HH:mm" }.Select(f => now.ToString(f, System.Globalization.CultureInfo.InvariantCulture)))
+            Check.NotContains(first, stamp, "no date or time in the prompt");
+        Check.False(System.Text.RegularExpressions.Regex.IsMatch(first, @"(?im)^- (date|time)"), "no date line");
+        Check.Equal(first, await builder.BuildAsync(ctx, CancellationToken.None), "identical on the next turn");
     }
 
     private static async Task AgentsMdDiscovery()
@@ -133,7 +151,7 @@ public static class ContextTests
         await h.IdleAsync(s.Id);
         var prompt = h.Catalog.Requests.Single().SystemPrompt!;
         Check.True(prompt.StartsWith("You are Bob, a terse robot."), "custom identity first");
-        Check.NotContains(prompt, "expert coding agent");
+        Check.NotContains(prompt, "coding agent running in NetPI");
         Check.True(prompt.EndsWith("ALWAYS ANSWER IN FRENCH."), "appended at the end");
         Check.Contains(prompt, "# Environment");
     }
@@ -208,6 +226,7 @@ public static class ContextTests
         var fallback = h2.Catalog.Requests.Single().SystemPrompt!;
         Check.Contains(fallback, "NetPI");
         Check.Contains(fallback, "Working directory: " + h2.Workspace);
+        Check.NotContains(fallback, DateTimeOffset.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), "no date in the built-in prompt");
         Check.Equal(0, h2.Catalog.Requests.Single().Tools.Count);
     }
 }

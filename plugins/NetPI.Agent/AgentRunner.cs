@@ -389,9 +389,9 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
     internal static string FallbackPrompt(PromptContext pc)
     {
         var sb = new StringBuilder();
-        sb.Append("You are an expert coding agent running in NetPI, a minimal agent harness on the user's machine. ");
+        // no date or time: the prompt must not change between turns (the backend would re-prefill the conversation)
+        sb.Append("You are a coding agent running in NetPI, an agent harness on the user's machine. ");
         sb.Append("Be concise. Act, don't just describe: use your tools to do the work and check the result.\n\n");
-        sb.Append("Date: ").Append(DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm zzz")).Append('\n');
         sb.Append("OS: ").Append(RuntimeInformation.OSDescription).Append('\n');
         sb.Append("Working directory: ").Append(pc.Cwd).Append('\n');
         sb.Append("Project: ").Append(pc.Project is { } p ? $"{p.Name} ({p.Path})" : "none").Append('\n');
