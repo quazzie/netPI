@@ -189,6 +189,8 @@ try {
   await shot(page, 'ui-13-aborted');
 
   await send('Answer despite a flaky connection [s:drop]');
+  // idle() right after Enter can pass before the composer switches to running: wait for the run to start first
+  await page.waitForSelector('.composer.running', { timeout: 10_000 }).catch(() => {});
   check('retried run finished', await idle());
   await page.waitForTimeout(500);
   const afterDrop = await contentNow();
