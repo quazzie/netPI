@@ -1,0 +1,5 @@
+{
+  "id": "netpi.todo",
+  "name": "Todo",
+  "description": "A checklist the agent keeps for multi-step work (todo_write), shown above the composer."
+}

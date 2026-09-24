@@ -13,6 +13,8 @@ public static class ContextTests
         t.Add("context: working directory and project arrive as notices (first call, switch, moved, compaction)", ProjectNoticesFlow);
         t.Add("context: the system prompt is frozen per session; settings changes reach new sessions", FrozenPrompt);
         t.Add("context: tools are sent sorted by name", ToolOrder);
+        t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
+        t.Add("context: guidance on using and keeping AGENTS.md (setting replaces or drops it)", InstructionGuidance);
         t.Add("context: custom and appended prompt settings", CustomPrompt);
         t.Add("context: context.preview", Preview);
         t.Add("context: plugin sections and fallback prompt", PluginSectionAndFallback);
@@ -285,6 +287,52 @@ public static class ContextTests
         await Turn(h, s.Id, "hi");
         var names = h.Catalog.Requests.Last().Tools.Select(t => t.Name).ToList();
         Check.Equal(string.Join(",", names.OrderBy(n => n, StringComparer.Ordinal)), string.Join(",", names), "sorted by name");
+    }
+
+    // A tool that appears or disappears during a session (a plugin loaded, reloaded or disabled) is announced with a
+    // "tools" notice carrying its guidelines, which the frozen prompt lacks; everything sent before stays as it was.
+    private static async Task ToolChangeNotices()
+    {
+        await using var h = await TestHost.StartAsync();
+        var s = h.NewSession();
+        await Turn(h, s.Id, "hi");
+        await Turn(h, s.Id, "again");
+        Check.Equal(0, Notices(h, s.Id, "tools").Count, "no notice while the tools are unchanged");
+        var r1 = h.Catalog.Requests.Last();
+
+        var registration = h.Tools.Register(new FakeTool("web_probe", (c, a, t) => Task.FromResult(ToolResult.Ok(""))));
+        await Turn(h, s.Id, "a new tool?");
+        var added = Notices(h, s.Id, "tools").Single();
+        Check.Contains(added.Text, "Your tools changed. New: web_probe.");
+        Check.Contains(added.Text, "Guidelines for the new tools:\n- Use web_probe for testing.");
+        var r2 = h.Catalog.Requests.Last();
+        Check.True(r2.Tools.Any(t => t.Name == "web_probe"), "the new tool is sent");
+        Check.NotContains(r2.SystemPrompt!, "web_probe", "the frozen prompt stays as it was");
+        PrefixKept(r1, r2);
+
+        await Turn(h, s.Id, "still there");
+        Check.Equal(1, Notices(h, s.Id, "tools").Count, "announced once");
+
+        registration.Dispose();
+        await Turn(h, s.Id, "gone?");
+        Check.Equal("Your tools changed. No longer available: web_probe.", Notices(h, s.Id, "tools").Last().Text);
+        Check.Equal(2, Notices(h, s.Id, "tools").Count);
+    }
+
+    private static async Task InstructionGuidance()
+    {
+        await using var h = await TestHost.StartAsync();
+        var builder = h.Services.Get<ISystemPromptBuilder>()!;
+        async Task<string> Prompt() => await builder.BuildAsync(Ctx(h, h.NewSession(), []), CancellationToken.None);
+
+        var prompt = await Prompt();
+        Check.Contains(prompt, "# Instruction files\nAGENTS.md and CLAUDE.md files reach you as notices.");
+        Check.Contains(prompt, "pointers to deeper docs");
+        Check.Contains(prompt, "add one line to the most specific AGENTS.md");
+        h.Settings.SetQuiet("agentsMd.guidance", "Keep AGENTS.md short.");
+        Check.Contains(await Prompt(), "# Instruction files\nKeep AGENTS.md short.");
+        h.Settings.SetQuiet("agentsMd.guidance", "");
+        Check.NotContains(await Prompt(), "# Instruction files");
     }
 
     private static async Task CustomPrompt()

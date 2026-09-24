@@ -6,11 +6,12 @@ namespace NetPI.Context;
 /// System prompt builder (<see cref="ISystemPromptBuilder"/>) that renders all <see cref="IPromptSection"/>s, plus a bare
 /// base: identity (0), environment (100), the active tools' guidelines (200), subagent role (800), append (900).
 /// Feature guidance comes from the plugins that own the feature (their tools' guidelines or their own sections).
-/// A session's prompt is frozen at its first model call; its working directory and project arrive as "project" notices.
+/// A session's prompt is frozen at its first model call; its working directory and project arrive as "project" notices,
+/// changes to its tools as "tools" notices.
 /// <para>Settings: <c>context.customPrompt</c> (replaces the identity section), <c>context.appendPrompt</c>.</para>
 /// <para>RPC: <c>context.preview { sessionId }</c> → <c>{ systemPrompt, frozen, tools: [{name, description}], estimatedTokens }</c>.</para>
 /// </summary>
-[NetPiPlugin("netpi.context", Name = "Context", Description = "System prompt (frozen per session) and working-directory notices", Order = 40)]
+[NetPiPlugin("netpi.context", Name = "Context", Description = "System prompt (frozen per session), working-directory and tool-change notices", Order = 40)]
 public sealed class ContextPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
@@ -27,6 +28,7 @@ public sealed class ContextPlugin : INetPiPlugin
 
         var notices = new ProjectNotices(context);
         context.Services.Register<IAgentHook>(notices);
+        context.Services.Register<IAgentHook>(new ToolNotices(context, prompts));
         context.Events.Subscribe(EventTypes.SessionProject, e =>
         {
             if (e.As<JsonObject>()?["sessionId"]?.GetValue<string>() is { Length: > 0 } id) notices.OnProjectChanged(id);

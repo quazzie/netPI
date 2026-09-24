@@ -585,7 +585,8 @@ public static class Reply
 
     public static bool IsContextNotice(ChatMessage m) =>
         m.Text.StartsWith("<system-notice kind=\"project\">", StringComparison.Ordinal)
-        || m.Text.StartsWith("<system-notice kind=\"instructions\">", StringComparison.Ordinal);
+        || m.Text.StartsWith("<system-notice kind=\"instructions\">", StringComparison.Ordinal)
+        || m.Text.StartsWith("<system-notice kind=\"tools\">", StringComparison.Ordinal);
 
     /// <summary>Messages after the last assistant message (what is new this turn).</summary>
     public static List<ChatMessage> Tail(ModelRequest r)

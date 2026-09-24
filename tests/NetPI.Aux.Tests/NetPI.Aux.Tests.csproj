@@ -18,5 +18,7 @@
     <ProjectReference Include="../../plugins/NetPI.Ideas/NetPI.Ideas.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Work/NetPI.Work.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Diagnostics/NetPI.Diagnostics.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Todo/NetPI.Todo.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Tools.Web/NetPI.Tools.Web.csproj" />
   </ItemGroup>
 </Project>

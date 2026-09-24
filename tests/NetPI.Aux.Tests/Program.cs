@@ -7,6 +7,8 @@ NudgeTests.Register(runner);
 ToolRepairTests.Register(runner);
 CompactionTests.Register(runner);
 IdeasTests.Register(runner);
+TodoTests.Register(runner);
+WebTests.Register(runner);
 PanelTests.Register(runner);
 LoadTests.Register(runner);
 var code = await runner.RunAsync(args);

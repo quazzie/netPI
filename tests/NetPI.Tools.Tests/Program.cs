@@ -4,6 +4,7 @@ using NetPI.Tools.Tests;
 var runner = new TestRunner();
 FileTests.Register(runner);
 ShellTests.Register(runner);
+OpenTests.Register(runner);
 LoadTests.Register(runner);
 var code = await runner.RunAsync(args);
 try { Directory.Delete(Path.Combine(Path.GetTempPath(), "netpi-tests"), recursive: true); } catch { }

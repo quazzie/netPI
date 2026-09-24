@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Tools.Files;
 
 /// <summary>
-/// File tools: read, write, edit, grep, find, ls (+ files.search / files.list RPC).
+/// File tools: read, write, edit, grep, find, ls (+ files.search / files.list / files.open RPC).
 /// Settings: <c>files.newFileEol</c> ("lf" | "crlf" | "auto").
 /// </summary>
 [NetPiPlugin("netpi.tools.files", Name = "File tools", Description = "read, write, edit (CRLF/LF agnostic), grep, find, ls", Order = 20)]
@@ -37,6 +37,13 @@ public sealed class FilesPlugin : INetPiPlugin
             var root = ResolveRoot(context, req);
             return Task.FromResult<object?>(_index.List(root, req.Str("dir")));
         }, "List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries: { name, rel, isDir, size?, mtime?, ignored? }[] }");
+
+        context.Rpc.Register("files.open", (req, _) =>
+        {
+            var (path, action) = FileOpener.Decide(context, ResolveRoot(context, req), req.Required("path"));
+            FileOpener.Run(path, action);
+            return Task.FromResult<object?>(new { path, action });
+        }, "Open a path with the operating system (files in their default app, folders in the file manager, scripts for editing, executables only revealed): { path, sessionId?, cwd? } → { path, action }");
 
         // Left-panel file tree of the active session's workspace (UI in ui/main.js → wwwroot/ui.js).
         context.Ui.AddTab(new UiTabInfo { Id = "files", Title = "Files", Panel = UiPanel.Left, Icon = "files", Order = 30, Module = "ui.js" });

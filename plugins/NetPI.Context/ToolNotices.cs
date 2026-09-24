@@ -1,0 +1,82 @@
+using System.Collections.Concurrent;
+using System.Text;
+using System.Text.Json.Nodes;
+
+namespace NetPI.Context;
+
+/// <summary>
+/// Tells the model when its tools change during a session (a plugin loaded, reloaded or disabled, <c>tools.disabled</c>).
+/// Every request already carries the current tool definitions, but the frozen system prompt still has the guidelines of
+/// the first call and nothing in the conversation says what changed, so a "tools" notice names the added and removed
+/// tools and carries the new tools' guidelines. The baseline is the tool set of the session's first model call; each
+/// notice records its change in meta (<c>added</c>, <c>removed</c>), so the known set is the baseline plus the notices still
+/// in the context (a notice compacted away is announced again).
+/// </summary>
+internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgentHook
+{
+    public const string Kind = "tools";
+
+    private readonly ConcurrentDictionary<string, object> _gates = new(StringComparer.Ordinal);
+
+    /// <summary>After compaction (-100), the project (500) and instruction (510) notices.</summary>
+    public int Order => 520;
+
+    public async ValueTask OnBeforeModelCallAsync(AgentTurnContext turn)
+    {
+        var sessionId = turn.Run.Session.Id;
+        var names = Names(turn.Tools);
+        var baseline = store.GetTools(sessionId);
+        if (baseline is null)
+        {
+            store.FreezeTools(sessionId, names);
+            return;
+        }
+        var known = Known(baseline, turn.Messages);
+        if (known.SetEquals(names)) return;
+        if (Announce(sessionId, turn.Tools, baseline)) await turn.ReloadMessagesAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Appends a notice when the tools differ from what the context says, under a per-session lock.</summary>
+    internal bool Announce(string sessionId, IReadOnlyList<ToolDefinition> tools, IReadOnlyList<string> baseline)
+    {
+        lock (_gates.GetOrAdd(sessionId, _ => new object()))
+        {
+            var known = Known(baseline, ctx.Sessions.GetContextMessages(sessionId));
+            var names = Names(tools);
+            var added = names.Where(n => !known.Contains(n)).ToList();
+            var removed = known.Where(n => !names.Contains(n)).OrderBy(n => n, StringComparer.Ordinal).ToList();
+            if (added.Count == 0 && removed.Count == 0) return false;
+            var notice = ChatMessage.NoticeText(Text(tools, added, removed), Kind);
+            notice.Meta!["added"] = new JsonArray(added.Select(n => (JsonNode?)n).ToArray());
+            notice.Meta["removed"] = new JsonArray(removed.Select(n => (JsonNode?)n).ToArray());
+            ctx.Sessions.AppendMessage(sessionId, notice);
+            return true;
+        }
+    }
+
+    internal static string Text(IReadOnlyList<ToolDefinition> tools, IReadOnlyList<string> added, IReadOnlyList<string> removed)
+    {
+        var sb = new StringBuilder("Your tools changed.");
+        if (added.Count > 0) sb.Append(" New: ").Append(string.Join(", ", added)).Append('.');
+        if (removed.Count > 0) sb.Append(" No longer available: ").Append(string.Join(", ", removed)).Append('.');
+        var guidelines = tools.Where(t => added.Contains(t.Name)).SelectMany(t => t.PromptGuidelines ?? [])
+            .Where(g => !string.IsNullOrWhiteSpace(g)).Select(g => g.Trim()).Distinct(StringComparer.Ordinal).ToList();
+        if (guidelines.Count > 0) sb.Append("\nGuidelines for the new tools:").Append(string.Concat(guidelines.Select(g => "\n- " + g)));
+        return sb.ToString();
+    }
+
+    internal static HashSet<string> Known(IReadOnlyList<string> baseline, IReadOnlyList<ChatMessage> context)
+    {
+        var known = new HashSet<string>(baseline, StringComparer.Ordinal);
+        foreach (var m in context)
+        {
+            if (m.Role != MessageRole.Notice || m.MetaString("kind") != Kind) continue;
+            foreach (var n in m.Meta?["added"] as JsonArray ?? []) if (n?.GetValue<string>() is { } a) known.Add(a);
+            foreach (var n in m.Meta?["removed"] as JsonArray ?? []) if (n?.GetValue<string>() is { } r) known.Remove(r);
+        }
+        return known;
+    }
+
+    private static List<string> Names(IReadOnlyList<ToolDefinition> tools) =>
+        tools.Select(t => t.Name).Distinct(StringComparer.Ordinal).OrderBy(n => n, StringComparer.Ordinal).ToList();
+}

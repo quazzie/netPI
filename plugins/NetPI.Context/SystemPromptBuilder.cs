@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Context;
@@ -54,6 +55,7 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
 internal sealed class PromptStore(IPluginContext ctx)
 {
     private readonly ConcurrentDictionary<string, string> _cache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, IReadOnlyList<string>> _tools = new(StringComparer.Ordinal);
     private IDatabase? _db;
 
     public void Initialize()
@@ -62,7 +64,9 @@ internal sealed class PromptStore(IPluginContext ctx)
         {
             var db = ctx.Db;
             db.Migrate("context",
-                "CREATE TABLE IF NOT EXISTS context_prompts (session_id TEXT PRIMARY KEY, prompt TEXT NOT NULL, created_at TEXT NOT NULL)");
+                "CREATE TABLE IF NOT EXISTS context_prompts (session_id TEXT PRIMARY KEY, prompt TEXT NOT NULL, created_at TEXT NOT NULL)",
+                // the tool names of a session's first model call: the baseline for "tools" notices
+                "CREATE TABLE IF NOT EXISTS context_tools (session_id TEXT PRIMARY KEY, tools TEXT NOT NULL)");
             _db = db;
         }
         catch (Exception ex)
@@ -98,11 +102,48 @@ internal sealed class PromptStore(IPluginContext ctx)
         return stored;
     }
 
+    /// <summary>The tool names of the session's first model call, or null before it.</summary>
+    public IReadOnlyList<string>? GetTools(string sessionId)
+    {
+        if (_tools.TryGetValue(sessionId, out var names)) return names;
+        if (_db is null) return null;
+        try
+        {
+            var json = _db.Scalar<string>("SELECT tools FROM context_tools WHERE session_id = @sessionId", new { sessionId });
+            if (json is null) return null;
+            return _tools.GetOrAdd(sessionId, (JsonNode.Parse(json) as JsonArray)?.Select(n => n?.GetValue<string>()).OfType<string>().ToList() ?? []);
+        }
+        catch (Exception ex)
+        {
+            ctx.Logger.LogWarning(ex, "Reading the tool baseline of {Session} failed", sessionId);
+            return null;
+        }
+    }
+
+    /// <summary>Store the tool names of the session's first model call; returns the stored list (the first one wins).</summary>
+    public IReadOnlyList<string> FreezeTools(string sessionId, IReadOnlyList<string> names)
+    {
+        var stored = _tools.GetOrAdd(sessionId, names);
+        if (!ReferenceEquals(stored, names) || _db is null) return stored;
+        try
+        {
+            _db.Execute("INSERT OR IGNORE INTO context_tools (session_id, tools) VALUES (@sessionId, @tools)",
+                new { sessionId, tools = new JsonArray(names.Select(n => (JsonNode?)n).ToArray()).ToJsonString() });
+        }
+        catch (Exception ex) { ctx.Logger.LogWarning(ex, "Storing the tool baseline of {Session} failed", sessionId); }
+        return stored;
+    }
+
     public void Delete(string sessionId)
     {
         _cache.TryRemove(sessionId, out _);
+        _tools.TryRemove(sessionId, out _);
         if (_db is null) return;
-        try { _db.Execute("DELETE FROM context_prompts WHERE session_id = @sessionId", new { sessionId }); }
+        try
+        {
+            _db.Execute("DELETE FROM context_prompts WHERE session_id = @sessionId", new { sessionId });
+            _db.Execute("DELETE FROM context_tools WHERE session_id = @sessionId", new { sessionId });
+        }
         catch (Exception ex) { ctx.Logger.LogDebug(ex, "Deleting the prompt of {Session} failed", sessionId); }
     }
 }

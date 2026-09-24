@@ -316,7 +316,7 @@ public sealed class RunResult
     public JsonElement Final { get; init; }
 
     public static bool IsContextNotice(JsonElement m) =>
-        m.S("role") == "notice" && m.P("meta").S("kind") is "project" or "instructions";
+        m.S("role") == "notice" && m.P("meta").S("kind") is "project" or "instructions" or "tools";
 
     public IEnumerable<JsonElement> Role(string role) => Messages.Where(m => m.S("role") == role);
     public JsonElement LastAssistant => Messages.LastOrDefault(m => m.S("role") == "assistant");

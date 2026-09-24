@@ -21,6 +21,7 @@ public sealed class AgentsMdPlugin : INetPiPlugin
         var loader = new AgentsMdLoader(context);
         var notices = new InstructionNotices(context, loader);
         context.Services.Register<IAgentHook>(notices);
+        context.Services.Register<IPromptSection>(new InstructionsSection(context.Settings));
         context.Events.Subscribe(EventTypes.SessionProject, e =>
         {
             if (e.As<JsonObject>()?["sessionId"]?.GetValue<string>() is { Length: > 0 } id) notices.OnProjectChanged(id);
@@ -42,6 +43,30 @@ public sealed class AgentsMdPlugin : INetPiPlugin
             return Task.FromResult<object?>(arr);
         }, "Instruction files that apply to a session or a project folder: { sessionId } | { projectId } → [{ path, bytes, scope }]");
         return Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// How to use and keep instruction files (prompt section, order 450): they arrive as notices, stay lean with pointers to
+/// deeper docs, and are where durable learnings go. <c>agentsMd.guidance</c> replaces the text; an empty string drops it.
+/// </summary>
+internal sealed class InstructionsSection(ISettings settings) : IPromptSection
+{
+    public const string Default =
+        "AGENTS.md and CLAUDE.md files reach you as notices. They are the lean entry point for agents: the essentials, plus " +
+        "pointers to deeper docs. When your task touches something they point to, read that doc first.\n" +
+        "Keep them lean. When you learn something the next agent would otherwise have to rediscover (a non-obvious command, " +
+        "a pitfall, a convention), add one line to the most specific AGENTS.md, or put the details in the doc it points to " +
+        "and add a pointer there. Correct outdated lines instead of adding new ones next to them, and leave out what the code " +
+        "or git history already shows. Ask before creating an AGENTS.md where there is none.";
+
+    public string Id => "agentsmd";
+    public int Order => 450;
+
+    public ValueTask<string?> RenderAsync(PromptContext context, CancellationToken ct)
+    {
+        var text = settings.Get<string>("agentsMd.guidance") ?? Default;
+        return ValueTask.FromResult<string?>(string.IsNullOrWhiteSpace(text) ? null : "# Instruction files\n" + text.Trim());
     }
 }
 

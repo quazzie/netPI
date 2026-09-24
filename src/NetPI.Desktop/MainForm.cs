@@ -22,6 +22,7 @@ internal sealed class MainForm : Form
     private readonly WebView2 _web;
     private readonly Label _status;
     private NetPiServer? _server;
+    private IDisposable? _captureRpc;
     private EventWaitHandle? _activate;
     private RegisteredWaitHandle? _activateWait;
     private bool _closing;
@@ -242,8 +243,59 @@ internal sealed class MainForm : Form
                 BeginInvoke(new Action(core.Reload));
         };
         core.WebMessageReceived += OnWebMessage;
+        _captureRpc ??= server.Rpc.Register("desktop.capture", (req, ct) => CaptureAsync(req.Int("maxWidth") ?? 1600, ct),
+            "Screenshot of the NetPI window as the user sees it (desktop app only): { maxWidth? } → { mediaType, data, width, height }");
 
         core.Navigate(server.LaunchUrl);
+    }
+
+    // ---------------------------------------------------------------- window capture (desktop.capture)
+
+    /// <summary>PNG of the WebView as shown, scaled down to <paramref name="maxWidth"/>; runs on the UI thread.</summary>
+    private Task<object?> CaptureAsync(int maxWidth, CancellationToken ct)
+    {
+        var tcs = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            BeginInvoke(new Action(async () =>
+            {
+                try
+                {
+                    var core = _web.CoreWebView2 ?? throw new InvalidOperationException("the window is not ready");
+                    if (WindowState == FormWindowState.Minimized) throw new RpcException("unavailable", "The NetPI window is minimized; restore it to capture it.");
+                    using var ms = new MemoryStream();
+                    await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, ms);
+                    var (png, width, height) = Downscale(ms.ToArray(), maxWidth);
+                    tcs.TrySetResult(new { mediaType = "image/png", data = Convert.ToBase64String(png), width, height });
+                }
+                catch (Exception ex)
+                {
+                    tcs.TrySetException(ex);
+                }
+            }));
+        }
+        catch (Exception ex)
+        {
+            tcs.TrySetException(ex); // the window is closing
+        }
+        return tcs.Task.WaitAsync(TimeSpan.FromSeconds(15), ct);
+    }
+
+    private static (byte[] Png, int Width, int Height) Downscale(byte[] png, int maxWidth)
+    {
+        using var input = new MemoryStream(png);
+        using var src = new Bitmap(input);
+        if (maxWidth <= 0 || src.Width <= maxWidth) return (png, src.Width, src.Height);
+        var height = Math.Max(1, (int)Math.Round(src.Height * (maxWidth / (double)src.Width)));
+        using var dst = new Bitmap(maxWidth, height);
+        using (var g = Graphics.FromImage(dst))
+        {
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            g.DrawImage(src, 0, 0, maxWidth, height);
+        }
+        using var output = new MemoryStream();
+        dst.Save(output, System.Drawing.Imaging.ImageFormat.Png);
+        return (output.ToArray(), maxWidth, height);
     }
 
     // ---------------------------------------------------------------- web ⇄ native bridge
