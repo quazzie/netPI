@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -6,18 +7,24 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.AgentsMd;
 
 /// <summary>
-/// Project instruction files in the system prompt (section order 500): the global <c>~/.netpi/AGENTS.md</c>, then the
-/// first existing file of <c>agentsMd.fileNames</c> (default <c>["AGENTS.md", "CLAUDE.md"]</c>) in every directory from
-/// the filesystem root down to the session cwd, then <c>agentsMd.extraFiles</c>. Each file is capped at 32KB.
+/// Instruction files for the model, delivered as "instructions" notices (never in the system prompt, which is frozen per
+/// session): the global <c>~/.netpi/AGENTS.md</c>, then the first existing file of <c>agentsMd.fileNames</c> (default
+/// <c>["AGENTS.md", "CLAUDE.md"]</c>) in every directory from the filesystem root down to the session's working
+/// directory, then <c>agentsMd.extraFiles</c>. Each file is capped at 32KB.
 /// <para>RPC: <c>agentsmd.list { sessionId }</c> → <c>[{ path, bytes, scope }]</c> (scope: global | project | extra).</para>
 /// </summary>
-[NetPiPlugin("netpi.agentsmd", Name = "AGENTS.md", Description = "Global and project AGENTS.md / CLAUDE.md instructions in the system prompt", Order = 41)]
+[NetPiPlugin("netpi.agentsmd", Name = "AGENTS.md", Description = "Global and project AGENTS.md / CLAUDE.md instructions, announced as notices when they apply or change", Order = 41)]
 public sealed class AgentsMdPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
         var loader = new AgentsMdLoader(context);
-        context.Services.Register<IPromptSection>(new AgentsMdSection(loader));
+        var notices = new InstructionNotices(context, loader);
+        context.Services.Register<IAgentHook>(notices);
+        context.Events.Subscribe(EventTypes.SessionProject, e =>
+        {
+            if (e.As<JsonObject>()?["sessionId"]?.GetValue<string>() is { Length: > 0 } id) notices.OnProjectChanged(id);
+        });
         context.Rpc.Register("agentsmd.list", (req, _) =>
         {
             var sessionId = req.Required("sessionId");
@@ -42,7 +49,7 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
     private sealed record CacheEntry(DateTime MtimeUtc, long Length, string Content);
     private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(PathComparer);
 
-    private static StringComparer PathComparer => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+    internal static StringComparer PathComparer => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     private List<string> Setting(string path, IReadOnlyList<string> fallback)
@@ -150,25 +157,107 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
     }
 }
 
-internal sealed class AgentsMdSection(AgentsMdLoader loader) : IPromptSection
+/// <summary>
+/// Announces the instruction files in "instructions" notices, which are only ever appended (the conversation's cached
+/// prefix survives): all files when a session first calls the model, afterwards only what changed — an edited or new
+/// file with its content, a file that no longer applies by name (e.g. after a project switch, event
+/// <c>session.project</c>). What the model has is read from the notices still in the context, so a file whose notice was
+/// compacted away is announced again. Notice meta: <c>files: [{ path, hash, scope }]</c> (content included) and
+/// <c>removed: [path]</c>.
+/// </summary>
+internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader loader) : IAgentHook
 {
-    public string Id => "agents-md";
-    public int Order => 500;
+    public const string Kind = "instructions";
 
-    public ValueTask<string?> RenderAsync(PromptContext context, CancellationToken ct)
+    private sealed record Current(InstructionFile File, string Content, string Hash);
+    private sealed record Delta(List<Current> Changed, List<string> Removed, bool First)
     {
-        var files = loader.Discover(context.Cwd);
-        var sb = new StringBuilder();
-        foreach (var f in files)
-        {
-            var content = loader.Read(f.Path);
-            if (string.IsNullOrWhiteSpace(content)) continue;
-            if (sb.Length == 0)
-                sb.Append("# Project instructions\n\nInstruction files that apply here (global first, then from the filesystem root down to the working directory; later files are more specific). Follow them.\n");
-            sb.Append("\n## ").Append(f.Path);
-            if (f.Scope == "global") sb.Append(" (global)");
-            sb.Append("\n\n").Append(content.Trim()).Append('\n');
-        }
-        return ValueTask.FromResult<string?>(sb.Length == 0 ? null : sb.ToString().TrimEnd());
+        public bool Any => Changed.Count > 0 || Removed.Count > 0;
     }
+
+    private readonly ConcurrentDictionary<string, object> _gates = new(StringComparer.Ordinal);
+
+    /// <summary>After compaction (-100) and the working-directory notice (500).</summary>
+    public int Order => 510;
+
+    public async ValueTask OnBeforeModelCallAsync(AgentTurnContext turn)
+    {
+        if (!Pending(turn.Messages, turn.Run.Cwd).Any) return;
+        if (Announce(turn.Run.Session.Id)) await turn.ReloadMessagesAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>A project switch: announce the new project's instructions right away.</summary>
+    public void OnProjectChanged(string sessionId)
+    {
+        try { Announce(sessionId); }
+        catch (Exception ex) { ctx.Logger.LogWarning(ex, "Instructions notice for {Session} failed", sessionId); }
+    }
+
+    /// <summary>Re-reads the session under a per-session lock (the event and the hook can race) and appends a notice if needed.</summary>
+    internal bool Announce(string sessionId)
+    {
+        lock (_gates.GetOrAdd(sessionId, _ => new object()))
+        {
+            var session = ctx.Sessions.GetSession(sessionId);
+            if (session is null) return false;
+            var delta = Pending(ctx.Sessions.GetContextMessages(sessionId), ctx.Sessions.GetCwd(session));
+            if (!delta.Any) return false;
+            var notice = ChatMessage.NoticeText(Text(delta), Kind);
+            notice.Meta!["files"] = new JsonArray([.. delta.Changed.Select(c =>
+                (JsonNode)new JsonObject { ["path"] = c.File.Path, ["hash"] = c.Hash, ["scope"] = c.File.Scope })]);
+            if (delta.Removed.Count > 0) notice.Meta["removed"] = new JsonArray([.. delta.Removed.Select(p => (JsonNode)JsonValue.Create(p))]);
+            ctx.Sessions.AppendMessage(sessionId, notice);
+            return true;
+        }
+    }
+
+    private Delta Pending(IReadOnlyList<ChatMessage> context, string cwd)
+    {
+        var known = Known(context);
+        var current = new List<Current>();
+        foreach (var f in loader.Discover(cwd))
+        {
+            var content = loader.Read(f.Path)?.Trim();
+            if (string.IsNullOrEmpty(content)) continue;
+            current.Add(new Current(f, content, Hash(content)));
+        }
+        var changed = current.Where(c => !known.TryGetValue(c.File.Path, out var h) || h != c.Hash).ToList();
+        var removed = known.Keys.Where(k => !current.Any(c => AgentsMdLoader.PathComparer.Equals(c.File.Path, k))).ToList();
+        return new Delta(changed, removed, known.Count == 0);
+    }
+
+    /// <summary>Path → hash of what the model has: the instruction notices still in the context, in order.</summary>
+    private static Dictionary<string, string> Known(IReadOnlyList<ChatMessage> context)
+    {
+        var known = new Dictionary<string, string>(AgentsMdLoader.PathComparer);
+        foreach (var m in context)
+        {
+            if (m.Role != MessageRole.Notice || m.MetaString("kind") != Kind) continue;
+            if (m.Meta?["files"] is JsonArray files)
+                foreach (var f in files.OfType<JsonObject>())
+                    if (f["path"]?.GetValue<string>() is { } path && f["hash"]?.GetValue<string>() is { } hash) known[path] = hash;
+            if (m.Meta?["removed"] is JsonArray removed)
+                foreach (var r in removed)
+                    if (r?.GetValue<string>() is { } path) known.Remove(path);
+        }
+        return known;
+    }
+
+    private static string Text(Delta d)
+    {
+        var sb = new StringBuilder(d.First
+            ? "Instruction files that apply here: global first, then from the filesystem root down to the working directory. Follow them; where they disagree, the more specific (deeper) file wins.\n"
+            : "The instruction files changed. Follow the current versions below.\n");
+        foreach (var c in d.Changed)
+        {
+            sb.Append("\n## ").Append(c.File.Path);
+            if (c.File.Scope == "global") sb.Append(" (global)");
+            sb.Append("\n\n").Append(c.Content).Append('\n');
+        }
+        if (d.Removed.Count > 0) sb.Append("\nNo longer apply: ").Append(string.Join(", ", d.Removed)).Append('\n');
+        return sb.ToString().TrimEnd();
+    }
+
+    private static string Hash(string content) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)))[..16].ToLowerInvariant();
 }

@@ -263,35 +263,30 @@ internal sealed class SessionStore : ISessionStore
         for (var i = deleted.Count - 1; i >= 0; i--) Publish(EventTypes.SessionDeleted, new { id = deleted[i] });
     }
 
+    /// <summary>
+    /// Attach (or detach) a project. The host only stores it and publishes <see cref="EventTypes.SessionProject"/>; what the
+    /// model is told is up to plugins (the context plugin appends a "project" notice, the AGENTS.md plugin the new
+    /// instructions): the conversation is only ever appended to.
+    /// </summary>
     public SessionInfo SetSessionProject(string sessionId, string? projectId)
     {
         if (string.IsNullOrWhiteSpace(projectId)) projectId = null;
-        var (session, notice) = _db.Transaction(_ =>
+        var (session, changed) = _db.Transaction(_ =>
         {
             var s = GetSession(sessionId) ?? throw new KeyNotFoundException($"Session {sessionId} not found");
-            if (s.ProjectId == projectId) return (s, (ChatMessage?)null);
-            ProjectInfo? project = null;
+            if (s.ProjectId == projectId) return (s, false);
             if (projectId is not null)
             {
-                project = GetProject(projectId) ?? throw new KeyNotFoundException($"Project {projectId} not found");
+                if (GetProject(projectId) is null) throw new KeyNotFoundException($"Project {projectId} not found");
                 _db.Execute("UPDATE projects SET last_used_at = @now WHERE id = @id", new { now = Now(), id = projectId });
             }
             _db.Execute("UPDATE sessions SET project_id = @projectId, updated_at = @now WHERE id = @sessionId", new { projectId, now = Now(), sessionId });
-            var text = project is not null
-                ? $"The workspace changed: this session is now attached to project \"{project.Name}\" at {project.Path}. " +
-                  $"Your working directory is now {project.Path} — resolve relative paths against it."
-                : $"The workspace changed: this session is no longer attached to a project. " +
-                  $"Your working directory is now the default workspace at {_defaultWorkspace} — resolve relative paths against it.";
-            var msg = ChatMessage.NoticeText(text, "project");
-            msg.Meta!["projectId"] = projectId;
-            msg.Meta!["cwd"] = project?.Path ?? _defaultWorkspace;
-            var appended = AppendMessageCore(sessionId, msg, out var updated);
-            return (updated, appended);
+            return (GetSession(sessionId)!, true);
         });
-        if (notice is not null)
+        if (changed)
         {
-            PublishMessage(EventTypes.MessageAdded, notice);
             Publish(EventTypes.SessionUpdated, new { session });
+            Publish(EventTypes.SessionProject, new { sessionId, projectId, cwd = GetCwd(session) });
         }
         return session;
     }

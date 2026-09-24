@@ -350,13 +350,14 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         var depth = Info.Depth;
         List<IAgentTool> all;
         try { all = [.. Ctx.Tools.All]; } catch { all = []; }
+        // Sorted by name: tool definitions are part of the request prefix, and registry order changes when a plugin reloads.
         return all.Where(t =>
         {
             var d = t.Definition;
             if (allow is not null && !allow.Contains(d.Name, StringComparer.OrdinalIgnoreCase)) return false;
             if (depth >= maxDepth && d.Category == "agents" && d.Name != "agent_send") return false;
             return true;
-        }).ToList();
+        }).OrderBy(t => t.Definition.Name, StringComparer.Ordinal).ToList();
     }
 
     private async Task<string> BuildPromptAsync(SessionInfo session, ProjectInfo? project, string cwd, ModelInfo model,
@@ -389,7 +390,8 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
     internal static string FallbackPrompt(PromptContext pc)
     {
         var sb = new StringBuilder();
-        // no date or time: the prompt must not change between turns (the backend would re-prefill the conversation)
+        // Only used without the context plugin (which freezes the prompt and announces the working directory in notices):
+        // no date or time, but the working directory has to be here.
         sb.Append("You are a coding agent running in NetPI, an agent harness on the user's machine. ");
         sb.Append("Be concise. Act, don't just describe: use your tools to do the work and check the result.\n\n");
         sb.Append("OS: ").Append(RuntimeInformation.OSDescription).Append('\n');

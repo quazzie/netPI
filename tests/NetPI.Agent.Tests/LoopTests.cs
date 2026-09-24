@@ -48,10 +48,11 @@ public static class LoopTests
         var a = await h.IdleAsync(s.Id);
 
         var msgs = h.Messages(s.Id);
-        Check.Equal(2, msgs.Count, "messages");
+        Check.Equal(3, msgs.Count, "messages");
         Check.Equal(MessageRole.User, msgs[0].Role);
         Check.Equal("hi", msgs[0].Text);
-        var m = msgs[1];
+        Check.Equal("project", msgs[1].MetaString("kind"), "the working directory arrives as a notice before the first model call");
+        var m = msgs[2];
         Check.Equal(MessageRole.Assistant, m.Role);
         Check.Equal("Hello there!", m.Text);
         Check.Equal("fake", m.Provider);
@@ -74,7 +75,8 @@ public static class LoopTests
 
         var req = h.Catalog.Requests.Single();
         Check.Contains(req.SystemPrompt, "NetPI");
-        Check.Contains(req.SystemPrompt, "Working directory: " + h.Workspace);
+        Check.True(req.Messages.Any(m => m.Text.Contains("Working directory: " + h.Workspace)), "working directory notice sent");
+        Check.NotContains(req.SystemPrompt, h.Workspace, "not in the system prompt");
         Check.Equal(4096, req.MaxOutputTokens);
         Check.Equal(s.Id, req.SessionId);
         Check.Equal(a.Id, req.AgentId);
@@ -138,17 +140,17 @@ public static class LoopTests
         var a = await h.IdleAsync(s.Id);
 
         var msgs = h.Messages(s.Id);
-        Check.Equal("User,Assistant,Tool,Assistant", string.Join(",", msgs.Select(m => m.Role)));
-        Check.Equal("tool_use", msgs[1].StopReason);
-        var call = msgs[1].ToolCalls.Single();
-        var result = msgs[2].ToolResults.Single();
+        Check.Equal("User,Notice,Assistant,Tool,Assistant", string.Join(",", msgs.Select(m => m.Role)));
+        Check.Equal("tool_use", msgs[2].StopReason);
+        var call = msgs[2].ToolCalls.Single();
+        var result = msgs[3].ToolResults.Single();
         Check.Equal(call.Id, result.CallId);
         Check.Equal("echo", result.Name);
         Check.Equal("echo:abc", result.Content);
         Check.False(result.IsError);
         Check.Equal(3, result.Details!["len"]!.GetValue<int>());
         Check.True(result.DurationMs is not null);
-        Check.Equal("done: echo:abc", msgs[3].Text);
+        Check.Equal("done: echo:abc", msgs[4].Text);
         Check.Equal(1, echo.Calls);
         Check.Equal(2, a.Turns);
         Check.Equal(1, a.ToolCalls);
@@ -218,7 +220,7 @@ public static class LoopTests
         await h.IdleAsync(s.Id);
         Check.Equal(1, max, "sequential");
         var order = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).Select(m => m.ToolResults.Single().CallId).ToList();
-        var calls = h.Messages(s.Id)[1].ToolCalls.Select(c => c.Id).ToList();
+        var calls = h.Messages(s.Id)[2].ToolCalls.Select(c => c.Id).ToList();
         Check.Equal(string.Join(",", calls), string.Join(",", order), "results in call order");
     }
 
@@ -258,14 +260,14 @@ public static class LoopTests
         var a = await h.IdleAsync(s.Id);
         Check.Equal(1, work.Calls, "only the running call executed");
         var msgs = h.Messages(s.Id);
-        Check.Equal("User,Assistant,Tool,Tool,Tool,User,Assistant", string.Join(",", msgs.Select(m => m.Role)));
-        Check.Equal("worked", msgs[2].ToolResults.Single().Content);
-        Check.Contains(msgs[3].ToolResults.Single().Content, "Skipped");
-        Check.True(msgs[3].ToolResults.Single().IsError);
+        Check.Equal("User,Notice,Assistant,Tool,Tool,Tool,User,Assistant", string.Join(",", msgs.Select(m => m.Role)));
+        Check.Equal("worked", msgs[3].ToolResults.Single().Content);
         Check.Contains(msgs[4].ToolResults.Single().Content, "Skipped");
-        Check.Equal("change of plans", msgs[5].Text);
-        Check.Equal("steer", msgs[5].MetaString("delivery"));
-        Check.Equal("ack", msgs[6].Text);
+        Check.True(msgs[4].ToolResults.Single().IsError);
+        Check.Contains(msgs[5].ToolResults.Single().Content, "Skipped");
+        Check.Equal("change of plans", msgs[6].Text);
+        Check.Equal("steer", msgs[6].MetaString("delivery"));
+        Check.Equal("ack", msgs[7].Text);
         Check.Equal("change of plans", Reply.LastUser(h.Catalog.Requests.Last()));
         Check.Equal(0, h.Runtime.GetQueue(s.Id).Count);
         Check.Equal(1, a.Runs);
@@ -297,8 +299,8 @@ public static class LoopTests
         Check.Equal("A", Reply.LastUser(reqs[1]));
         Check.False(reqs[1].Messages.Any(m => m.Text == "B"), "B not yet delivered");
         Check.Equal("B", Reply.LastUser(reqs[2]));
-        Check.Equal("go,first,A,second,B,third", string.Join(",", h.Messages(s.Id).Select(m => m.Text)));
-        Check.Equal("queue", h.Messages(s.Id)[2].MetaString("delivery"));
+        Check.Equal("go,first,A,second,B,third", string.Join(",", h.Messages(s.Id).Where(m => m.MetaString("kind") != "project").Select(m => m.Text)));
+        Check.Equal("queue", h.Messages(s.Id).Single(m => m.Text == "A").MetaString("delivery"));
         Check.Equal(1, a.Runs);
         Check.Equal(0, a.QueuedMessages);
     }
@@ -580,10 +582,10 @@ public static class LoopTests
         await h.SendAsync(s.Id, "go");
         await h.IdleAsync(s.Id);
         var msgs = h.Messages(s.Id);
-        Check.Equal("User,Assistant,Notice,Assistant", string.Join(",", msgs.Select(m => m.Role)));
-        Check.Equal("nudge", msgs[2].MetaString("kind"));
-        Check.Equal("Please double-check your answer.", msgs[2].Text);
-        Check.Equal("answer2", msgs[3].Text);
+        Check.Equal("User,Notice,Assistant,Notice,Assistant", string.Join(",", msgs.Select(m => m.Role)));
+        Check.Equal("nudge", msgs[3].MetaString("kind"));
+        Check.Equal("Please double-check your answer.", msgs[3].Text);
+        Check.Equal("answer2", msgs[4].Text);
         Check.Contains(Reply.LastUser(h.Catalog.Requests.Last()), "<system-notice kind=\"nudge\">");
     }
 
@@ -603,12 +605,12 @@ public static class LoopTests
         await h.SendAsync(s.Id, "go");
         await h.IdleAsync(s.Id);
         var msgs = h.Messages(s.Id);
-        Check.Equal("User,Assistant,Tool,Assistant", string.Join(",", msgs.Select(m => m.Role)));
-        Check.Equal("calling echo", msgs[1].Text);
-        Check.Equal("tool_use", msgs[1].StopReason);
-        Check.Equal("call_rep", msgs[1].ToolCalls.Single().Id);
+        Check.Equal("User,Notice,Assistant,Tool,Assistant", string.Join(",", msgs.Select(m => m.Role)));
+        Check.Equal("calling echo", msgs[2].Text);
+        Check.Equal("tool_use", msgs[2].StopReason);
+        Check.Equal("call_rep", msgs[2].ToolCalls.Single().Id);
         Check.True(h.Sessions.UpdateMessageCalls >= 1, "UpdateMessage called");
-        Check.Equal("echo:repaired", msgs[2].ToolResults.Single().Content);
+        Check.Equal("echo:repaired", msgs[3].ToolResults.Single().Content);
         Check.Equal(1, echo.Calls);
         Check.True(h.Bus.OfType(EventTypes.MessageUpdated).Count >= 1);
     }

@@ -34,7 +34,7 @@ public sealed class MyPlugin : INetPiPlugin
         ctx.Tools.Register(new WordCountTool());
 
         // a section of the system prompt (ordered: 0 identity, 100 environment, 200 tool guidelines, 300 lanes,
-        // 500 AGENTS.md, 800 subagent role, 900 appended prompt)
+        // 800 subagent role, 900 appended prompt); rendered once per session, see "Never rewrite what was sent"
         ctx.Services.Register<IPromptSection>(new MySection());
 
         // an RPC method for the UI (and for other plugins: ctx.Rpc.InvokeAsync("my.hello"))
@@ -90,10 +90,25 @@ Guidance for a feature comes from the plugin that owns it, so it disappears with
 `PromptGuidelines` (listed under "# Tools" while the tool is active), anything else as the plugin's own section (the lanes
 plugin adds "# Lanes" for agents that can spawn subagents).
 
-Prompt sections are rendered for every model call and must give the same text on every turn of a session: no dates,
-times, counters or live status. The system prompt is the start of every request, so any change makes the backend
-re-prefill the whole conversation (nInfer's KV cache and Anthropic's prompt cache alike). Put changing information in a
-tool result or a notice instead.
+### Never rewrite what was sent
+
+A request starts with the system prompt, the tool definitions and every earlier message; the backend reuses its cache
+for as long as that prefix is unchanged, and any change makes it re-prefill the whole conversation (nInfer's KV cache and
+Anthropic's prompt cache alike). So nothing that was sent is ever changed; new information is only appended:
+
+- **The system prompt is rendered once per session**, at its first model call, and then reused (the context plugin
+  stores it). Sections must not depend on session state (working directory, project, files, model, time); settings and
+  plugin changes reach new sessions. `context.preview` shows the stored prompt (`frozen: true`).
+- **State that changes during a session is appended as a notice by the plugin that owns it**: the context plugin
+  announces the working directory and project (`project` notices: at the first model call, on a switch, when a project
+  folder moves), the AGENTS.md plugin the instruction files (`instructions` notices: all at first, later only edited,
+  new or removed files). Pattern: an `IAgentHook` whose `OnBeforeModelCallAsync` (Order above compaction's -100) compares
+  the current state with the last notice still in `turn.Messages` and, if they differ, appends a notice and calls
+  `turn.ReloadMessagesAsync()`; react to events (e.g. `session.project`) to announce right away.
+- **Tools are sent sorted by name**, so a plugin reload does not reorder them.
+
+Exceptions by necessity: compaction replaces old messages with a summary when the context is nearly full, and tool-call
+repair turns a tool call the model wrote as text into a real call.
 
 ## Extension points (all in `src/NetPI.Abstractions`)
 

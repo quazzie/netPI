@@ -120,7 +120,7 @@ public static class CoreTests
             Check.Equal("idle", run.Final.S("status"));
 
             var session = await env.Rpc("sessions.get", new { id = sid });
-            Check.Equal(2L, session.L("messageCount"));
+            Check.Equal(3L, session.L("messageCount"), "user, working-directory notice, assistant");
             Check.True(session.L("contextTokens") > 0, "session context tokens");
             var log = (await env.MockLog(mockMark)).Where(e => e.S("scenario") == "default").ToList();
             Check.Equal(1, log.Count, "one model request");
@@ -170,7 +170,7 @@ public static class CoreTests
             // message order: user, (assistant, tool+)*, assistant
             var roles = string.Join(",", run.Messages.Select(m => m.S("role")));
             Check.Equal("user,assistant,tool,assistant,tool,assistant,tool,tool,assistant", roles);
-            var seqs = run.Messages.Select(m => m.L("seq")).ToList();
+            var seqs = run.AllMessages.Select(m => m.L("seq")).ToList();
             Check.True(seqs.Zip(seqs.Skip(1)).All(x => x.First < x.Second), "seq ascending");
 
             // paging with beforeSeq
@@ -187,7 +187,7 @@ public static class CoreTests
                 before = msgs[0].L("seq");
                 Check.True(pages < 10, "paging terminates");
             }
-            Check.Equal(3, pages, "9 messages in pages of 4");
+            Check.Equal(3, pages, "10 messages (with the working-directory notice) in pages of 4");
             Check.Equal(string.Join(",", seqs), string.Join(",", collected), "pages cover every message exactly once");
         });
 

@@ -124,7 +124,11 @@ turned off; models without effort levels only get on/off. Free models are limite
 | `agentsMd.fileNames` | `["AGENTS.md", "CLAUDE.md"]` | first match per directory, from the file system root down to the working directory |
 | `agentsMd.extraFiles` | `[]` | always included |
 
-The global file is `~/.netpi/AGENTS.md`.
+A session's system prompt is rendered once, at its first model call, and kept for the whole session (the cached prefix
+of the conversation depends on it), so the `context.*` settings apply to sessions started afterwards. The working
+directory, the project and the instruction files are not in the prompt: they reach the model as notices when they first
+apply and whenever they change (an edited AGENTS.md is announced on the next model call). The global file is
+`~/.netpi/AGENTS.md`.
 
 ## Auto-compaction, nudge, retry, tool repair
 

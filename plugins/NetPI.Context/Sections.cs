@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -56,26 +55,20 @@ internal sealed class IdentitySection(ISettings settings) : IPromptSection
 }
 
 /// <summary>
-/// The harness the agent runs in: OS, working directory and project, model, and where notices come from (order 100).
-/// Nothing here may change between the turns of a session (no date or time): the system prompt is the start of every
-/// request, and any change to it makes the backend re-prefill the whole conversation.
+/// The harness the agent runs in (order 100): the OS and where session state comes from. Nothing that depends on the
+/// session goes here (working directory, project, instructions, model, time): a session's prompt is frozen at its first
+/// model call, and state arrives as notices that are appended to the conversation.
 /// </summary>
 internal sealed class EnvironmentSection : IPromptSection
 {
     public string Id => "environment";
     public int Order => 100;
 
-    public ValueTask<string?> RenderAsync(PromptContext c, CancellationToken ct)
-    {
-        var sb = new StringBuilder("# Environment\n");
-        sb.Append("- OS: ").Append(OsName()).Append('\n');
-        sb.Append("- Working directory: ").Append(c.Cwd).Append(c.Project is { } p ? $" (project: {p.Name})" : " (no project: the default workspace)")
-          .Append("; relative paths resolve against it\n");
-        sb.Append("- Model: ").Append(c.Model.Ref);
-        if (c.Model.ContextWindow is { } w) sb.Append(", context window ").Append(w.ToString("N0", CultureInfo.InvariantCulture)).Append(" tokens");
-        sb.Append("\n- Messages in <system-notice> tags come from NetPI (project switches, subagent reports, reminders, errors), not from the user.");
-        return ValueTask.FromResult<string?>(sb.ToString());
-    }
+    public ValueTask<string?> RenderAsync(PromptContext c, CancellationToken ct) => ValueTask.FromResult<string?>(
+        "# Environment\n" +
+        "- OS: " + OsName() + "\n" +
+        "- Messages in <system-notice> tags come from NetPI, not from the user: your working directory and project (relative " +
+        "paths resolve against the latest one), instruction files, subagent reports, reminders and errors.");
 
     internal static string OsName()
     {

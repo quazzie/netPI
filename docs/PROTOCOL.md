@@ -43,7 +43,7 @@ interface ChatMessage {
   provider?: string; model?: string; stopReason?: 'stop'|'tool_use'|'length'|'aborted'|'error'|'content_filter';
   usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; reasoningTokens: number };
   durationMs?: number; compacted: boolean;
-  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | nudge | agent-message | agent-result | steer | retry | error | compaction
+  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | nudge | agent-message | agent-result | steer | retry | error | compaction
 }
 type Part =
   | { type: 'text'; text: string }
@@ -81,7 +81,7 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `sessions.get` | `{ id }` | `SessionInfo` |
 | `sessions.update` | `{ id, title?, model?, reasoning?, archived? }` | `SessionInfo` |
 | `sessions.delete` | `{ id }` | `true` |
-| `sessions.setProject` | `{ id, projectId: string\|null }` | `SessionInfo` (a `project` notice is appended) |
+| `sessions.setProject` | `{ id, projectId: string\|null }` | `SessionInfo`; publishes `session.project` (the context plugin appends a `project` notice) |
 | `sessions.messages` | `{ id, beforeSeq?, limit? (default 60) }` | `{ messages: ChatMessage[], hasMore: boolean }` ascending by seq |
 | `models.list` | `{ refresh? }` | `{ models: ModelInfo[], defaultModel: string\|null }` |
 | `ui.tabs` | – | `UiTabInfo[]` |
@@ -113,7 +113,7 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `lanes.list` | netpi.lanes | → `LanePoolInfo[]` |
 | `usage.summary` | netpi.lanes | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] }` |
 | `compaction.run` | netpi.compaction | `{ sessionId, args? /* extra focus for the summary */ }` → `string` (error `busy` while the agent runs) |
-| `context.preview` | netpi.context | `{ sessionId }` → `{ systemPrompt, tools: {name, description}[], estimatedTokens }` |
+| `context.preview` | netpi.context | `{ sessionId }` → `{ systemPrompt, frozen, tools: {name, description}[], estimatedTokens }` (`frozen`: the prompt stored at the session's first model call) |
 | `files.search` | netpi.tools.files | `{ sessionId?, query, limit? }` → `{ path, rel, isDir }[]` (for `@` mentions) |
 | `files.list` | netpi.tools.files | `{ sessionId?, dir? }` → `{ root, dir, entries: {name, rel, isDir, size?, mtime?}[] }` |
 | `processes.list` | netpi.tools.shell | → `ProcessInfo[]` |
@@ -136,6 +136,7 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 |---|---|---|
 | `session.created` / `session.updated` | no | `{ session: SessionInfo }` |
 | `session.deleted` | no | `{ id }` |
+| `session.project` | no | `{ sessionId, projectId, cwd }` – attached to another project or detached |
 | `project.created` / `project.updated` | no | `{ project }` |
 | `project.deleted` | no | `{ id }` |
 | `message.added` / `message.updated` | yes | `{ sessionId, message: ChatMessage }` |

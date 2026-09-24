@@ -296,23 +296,36 @@ public static class AdvancedTests
             Check.Contains(textOnly, "image omitted");
         });
 
-        r.Add("instructions: project AGENTS.md is in the system prompt sent to the model", async () =>
+        r.Add("instructions: AGENTS.md and the working directory arrive as notices; an edit is appended, the prefix stays byte-identical", async () =>
         {
             var p = await env.NewProject("agentsmd", d => File.WriteAllText(Path.Combine(d, "AGENTS.md"), "# Rules\nAlways run the tests. E2E-AGENTS-MARKER\n"));
             var s = await env.NewSession(projectId: p.S("id"));
             var sid = s.S("id")!;
-            var mockMark = await env.MockMark();
+            async Task<JsonElement> LastRequest(long mark) => await env.MockRequest((await env.MockLog(mark)).Last().L("seq"));
+
+            var mark = await env.MockMark();
             await env.Run(sid, "hi [s:echo]");
-            var seq = (await env.MockLog(mockMark)).Last().L("seq");
-            var body = await env.Http.GetStringAsync($"{env.MockUrl}/_request/{seq}");
-            using var doc = JsonDocument.Parse(body);
-            var instructions = doc.RootElement.S("instructions") ?? "";
-            Check.Contains(instructions, "E2E-AGENTS-MARKER");
-            Check.Contains(instructions, "Working directory: " + p.S("path"));
+            var first = await LastRequest(mark);
+            var instructions = first.S("instructions") ?? "";
+            Check.NotContains(instructions, "E2E-AGENTS-MARKER", "AGENTS.md is not in the system prompt");
+            Check.NotContains(instructions, p.S("path")!, "neither is the working directory");
+            var input1 = first.Arr("input").ToList();
+            Check.True(input1.Any(i => i.GetRawText().Contains("E2E-AGENTS-MARKER") && i.GetRawText().Contains("kind=\\\"instructions\\\"")), "instructions notice sent");
+            Check.True(input1.Any(i => i.GetRawText().Contains("Working directory: " + p.S("path")!.Replace("\\", "\\\\"))), "working directory notice sent");
+
+            // an edited AGENTS.md is appended as a new notice: the system prompt and everything sent before stay byte-identical
+            File.WriteAllText(Path.Combine(p.S("path")!, "AGENTS.md"), "# Rules\nAlways run the tests. E2E-AGENTS-MARKER-V2\n");
+            mark = await env.MockMark();
+            await env.Run(sid, "again [s:echo]");
+            var second = await LastRequest(mark);
+            Env.PrefixKept(first, second, "after the AGENTS.md edit");
+            Check.True(second.Arr("input").Skip(input1.Count).Any(i => i.GetRawText().Contains("E2E-AGENTS-MARKER-V2")), "the edit arrives as a new notice");
+
             var files = await env.Rpc("agentsmd.list", new { sessionId = sid });
             Check.True(files.Arr().Any(f => f.S("path") == Path.Combine(p.S("path")!, "AGENTS.md")), "agentsmd.list");
             var preview = await env.Rpc("context.preview", new { sessionId = sid });
-            Check.Contains(preview.S("systemPrompt"), "E2E-AGENTS-MARKER");
+            Check.Equal(instructions, preview.S("systemPrompt"), "the preview shows the frozen prompt");
+            Check.True(preview.B("frozen"), "frozen");
             Check.True(preview.L("estimatedTokens") > 1000, "preview estimate");
         });
 

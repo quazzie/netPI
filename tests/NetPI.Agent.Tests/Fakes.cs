@@ -316,11 +316,12 @@ public sealed class FakeSessionStore(IEventBus bus, string workspace) : ISession
 
     public void DeleteSession(string id) { lock (_gate) { _sessions.Remove(id); _messages.Remove(id); } }
 
+    /// <summary>Like the host: store the switch and publish session.project (plugins append what the model is told).</summary>
     public SessionInfo SetSessionProject(string sessionId, string? projectId)
     {
+        if (GetSession(sessionId)?.ProjectId == projectId) return GetSession(sessionId)!;
         var s = UpdateSession(sessionId, x => x.ProjectId = projectId);
-        var p = projectId is null ? null : GetProject(projectId);
-        AppendMessage(sessionId, ChatMessage.NoticeText(p is null ? "The session left its project." : $"The session is now in project {p.Name} ({p.Path}).", "project"));
+        bus.Publish(EventTypes.SessionProject, new JsonObject { ["sessionId"] = sessionId, ["projectId"] = projectId, ["cwd"] = GetCwd(s) });
         return s;
     }
 
@@ -576,8 +577,15 @@ public static class Reply
 #pragma warning restore CS0162
     }
 
-    /// <summary>The last user-visible text of the (normalized) request: last User message.</summary>
-    public static string LastUser(ModelRequest r) => r.Messages.LastOrDefault(m => m.Role == MessageRole.User)?.Text ?? "";
+    /// <summary>
+    /// The last user-visible text of the (normalized) request: the last User message, skipping the context notices
+    /// (working directory, instruction files) that the harness appends before a session's first model call.
+    /// </summary>
+    public static string LastUser(ModelRequest r) => r.Messages.LastOrDefault(m => m.Role == MessageRole.User && !IsContextNotice(m))?.Text ?? "";
+
+    public static bool IsContextNotice(ChatMessage m) =>
+        m.Text.StartsWith("<system-notice kind=\"project\">", StringComparison.Ordinal)
+        || m.Text.StartsWith("<system-notice kind=\"instructions\">", StringComparison.Ordinal);
 
     /// <summary>Messages after the last assistant message (what is new this turn).</summary>
     public static List<ChatMessage> Tail(ModelRequest r)

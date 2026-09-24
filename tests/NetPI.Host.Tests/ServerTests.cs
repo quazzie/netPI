@@ -354,11 +354,11 @@ public static class ServerTests
             Check.Equal(10, older["messages"]!.AsArray().Count);
             Check.False(older["hasMore"]!.GetValue<bool>());
 
+            var lastBefore = (await Call("sessions.messages", new { id = sid, limit = 1 }))!["messages"]![0]!["seq"]!.GetValue<long>();
             var moved = (await Call("sessions.setProject", new { id = sid, projectId = (string?)null }))!;
             Check.True(moved["projectId"] is null);
-            var last = (await Call("sessions.messages", new { id = sid, limit = 1 }))!["messages"]![0]!;
-            Check.Equal("notice", last["role"]!.GetValue<string>());
-            Check.Equal("project", last["meta"]!["kind"]!.GetValue<string>());
+            var lastAfter = (await Call("sessions.messages", new { id = sid, limit = 1 }))!["messages"]![0]!["seq"]!.GetValue<long>();
+            Check.Equal(lastBefore, lastAfter, "the host appends nothing (plugins announce the switch)");
 
             var models = (await Call("models.list", new { refresh = true }))!;
             Check.True(models["models"] is JsonArray);

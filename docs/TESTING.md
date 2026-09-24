@@ -171,13 +171,15 @@ Coverage (run `--list` for the names):
   `<think>` tags split on both OpenAI transports.
 - **control**: steering mid tool batch (remaining calls skipped, message delivered next turn), follow-up queue and
   `agent.dequeue`, abort while streaming (partial answer `aborted`, request cancelled at the backend) and during a tool
-  (process tree killed, the rest of the batch never starts), project switch (notice, new cwd, the model sees the notice),
+  (process tree killed, the rest of the batch never starts), project switch (notice, new cwd, the model sees the notice,
+  request prefix byte-identical),
   deleting a session (or an orchestrator with running subagents) during a run.
 - **hooks / middleware**: textual tool-call repair, nudge after `length` and after an empty answer, retry after a dropped
   connection, HTTP 503, a stalled stream and in-stream errors on all three APIs (`agent.notice` + `stream.reset`), giving
   up after `retry.maxAttempts`, non-retryable errors, unknown model, budgets, a stopped backend; auto-compaction on
   `tiny-ctx` (summary, `compacted` flags, `messages.compacted`, context meter drops), overflow recovery when the backend's
-  window is smaller than advertised, `/compact`; disabling/enabling a plugin; AGENTS.md in the system prompt.
+  window is smaller than advertised, `/compact`; disabling/enabling a plugin; AGENTS.md and the working directory as
+  notices (an edited AGENTS.md is appended, the prefix stays byte-identical).
 - **lanes / subagents**: 3 workers on `qwen3.8-27b` (2 lanes) → at most 2 requests in flight at the backend, one worker
   queued, the parent yields and resumes with the reports, `lanes.list` / `work.snapshot` mid-flight, no duplicate
   `agent-result` notices; a background worker's report wakes the idle parent; steering interrupts `agent_wait` and the late

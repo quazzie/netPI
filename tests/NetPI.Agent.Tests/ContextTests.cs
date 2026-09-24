@@ -9,7 +9,10 @@ public static class ContextTests
         t.Add("context: system prompt sections in order", PromptSections);
         t.Add("context: no date or time in the system prompt (identical on every turn)", NoDateOrTime);
         t.Add("context: plugins add the guidance for what they own (lanes, agent tools)", PluginOwnedGuidance);
-        t.Add("context: AGENTS.md discovery, order, caps and cache", AgentsMdDiscovery);
+        t.Add("context: AGENTS.md arrives as notices: all at first, then only changes, again after compaction", AgentsMdNotices);
+        t.Add("context: working directory and project arrive as notices (first call, switch, moved, compaction)", ProjectNoticesFlow);
+        t.Add("context: the system prompt is frozen per session; settings changes reach new sessions", FrozenPrompt);
+        t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: custom and appended prompt settings", CustomPrompt);
         t.Add("context: context.preview", Preview);
         t.Add("context: plugin sections and fallback prompt", PluginSectionAndFallback);
@@ -44,8 +47,9 @@ public static class ContextTests
         var lanes = Idx("# Lanes");
         var role = Idx("# Your role");
         Check.True(identity < env && env < tools && tools < lanes && lanes < role, "section order");
-        Check.Contains(prompt, $"- Working directory: {h.Workspace} (project: Demo); relative paths resolve against it");
-        Check.Contains(prompt, "- Model: fake/local, context window 100,000 tokens");
+        Check.NotContains(prompt, h.Workspace, "no working directory (a notice brings it)");
+        Check.NotContains(prompt, "Demo", "no project");
+        Check.NotContains(prompt, "fake/local", "no model");
         Check.Contains(prompt, "<system-notice>");
         Check.Contains(prompt, "Use edit for testing.");
         Check.Contains(prompt, "Delegate independent, well-scoped work");
@@ -56,7 +60,6 @@ public static class ContextTests
 
         // no project, no tools: the bare base only
         var bare = await builder.BuildAsync(Ctx(h, h.NewSession(), []), CancellationToken.None);
-        Check.Contains(bare, "(no project: the default workspace)");
         Check.NotContains(bare, "# Tools");
         Check.NotContains(bare, "# Lanes");
         Check.NotContains(bare, "# Your role");
@@ -101,7 +104,27 @@ public static class ContextTests
         Check.Equal(first, await builder.BuildAsync(ctx, CancellationToken.None), "identical on the next turn");
     }
 
-    private static async Task AgentsMdDiscovery()
+    private static List<ChatMessage> Notices(TestHost h, string sessionId, string kind) =>
+        h.Sessions.GetMessages(sessionId, null, 1000).Where(m => m.Role == MessageRole.Notice && m.MetaString("kind") == kind).ToList();
+
+    private static async Task Turn(TestHost h, string sessionId, string text)
+    {
+        await h.SendAsync(sessionId, text);
+        await h.IdleAsync(sessionId);
+    }
+
+    /// <summary>What was sent before must be sent again unchanged: the earlier request's messages prefix the later one's.</summary>
+    private static void PrefixKept(ModelRequest earlier, ModelRequest later)
+    {
+        Check.Equal(earlier.SystemPrompt, later.SystemPrompt, "system prompt unchanged");
+        Check.True(later.Messages.Count >= earlier.Messages.Count, "history only grows");
+        for (var i = 0; i < earlier.Messages.Count; i++)
+            Check.Equal($"{earlier.Messages[i].Role}:{earlier.Messages[i].Text}", $"{later.Messages[i].Role}:{later.Messages[i].Text}", $"message {i} unchanged");
+    }
+
+    // Instruction files reach the model as notices (the system prompt is frozen): all at the first model call, then only
+    // what changed, and again after compaction removed them.
+    private static async Task AgentsMdNotices()
     {
         await using var h = await TestHost.StartAsync();
         var root = Path.Combine(h.Root, "repo");
@@ -115,48 +138,144 @@ public static class ContextTests
         var project = h.Sessions.CreateProject("App", sub);
         var s = h.NewSession(projectId: project.Id);
 
-        var builder = h.Services.Get<ISystemPromptBuilder>()!;
-        var prompt = await builder.BuildAsync(Ctx(h, s, []), CancellationToken.None);
-        var g = prompt.IndexOf("GLOBAL RULES", StringComparison.Ordinal);
-        var r = prompt.IndexOf("ROOT RULES", StringComparison.Ordinal);
-        var c = prompt.IndexOf("SRC CLAUDE RULES", StringComparison.Ordinal);
-        var a = prompt.IndexOf("APP AGENTS RULES", StringComparison.Ordinal);
-        Check.True(g >= 0 && r > g && c > r && a > c, $"global → root → leaf order ({g}, {r}, {c}, {a})");
-        Check.NotContains(prompt, "shadowed", "only the first file name per directory");
-        Check.Contains(prompt, "# Project instructions");
-        Check.Contains(prompt, "## " + Path.Combine(root, "AGENTS.md"));
-        Check.Contains(prompt, "(global)");
-        Check.True(prompt.IndexOf("# Environment", StringComparison.Ordinal) < prompt.IndexOf("# Project instructions", StringComparison.Ordinal), "after the environment");
-
         var list = (JsonArray)(await h.Rpc.CallAsync("agentsmd.list", new { sessionId = s.Id }))!;
         Check.Equal("global,project,project,project", string.Join(",", list.Select(x => (string?)x!["scope"])));
         Check.Equal(Path.Combine(sub, "AGENTS.md"), (string?)list[^1]!["path"]);
         Check.Equal(16L, list[^1]!["bytes"]!.GetValue<long>());
 
-        // cap at 32KB with a note
-        File.WriteAllText(Path.Combine(root, "AGENTS.md"), "BIG " + new string('x', 40_000));
-        prompt = await builder.BuildAsync(Ctx(h, s, []), CancellationToken.None);
-        Check.Contains(prompt, "[Truncated: this file is 39 KB; only the first 32 KB are included");
-        Check.True(prompt.Length < 40_000, "capped");
+        await Turn(h, s.Id, "hi");
+        var first = Notices(h, s.Id, "instructions").Single();
+        var text = first.Text;
+        int At(string x) => text.IndexOf(x, StringComparison.Ordinal);
+        Check.True(At("GLOBAL RULES") >= 0 && At("ROOT RULES") > At("GLOBAL RULES") && At("SRC CLAUDE RULES") > At("ROOT RULES")
+                   && At("APP AGENTS RULES") > At("SRC CLAUDE RULES"), "global → root → leaf order");
+        Check.NotContains(text, "shadowed", "only the first file name per directory");
+        Check.Contains(text, "Instruction files that apply here");
+        Check.Contains(text, "## " + Path.Combine(root, "AGENTS.md"));
+        Check.Contains(text, "(global)");
+        var r1 = h.Catalog.Requests.Last();
+        Check.True(r1.Messages.Any(m => m.Text.Contains("APP AGENTS RULES")), "the model got the instructions");
+        Check.NotContains(r1.SystemPrompt, "RULES", "not in the system prompt");
 
-        // cache invalidation by mtime/size
+        await Turn(h, s.Id, "again");
+        Check.Equal(1, Notices(h, s.Id, "instructions").Count, "nothing changed: no notice");
+
+        // an edited file: only that file is announced, nothing earlier changes
         var appFile = Path.Combine(sub, "AGENTS.md");
         File.WriteAllText(appFile, "APP RULES V2");
         File.SetLastWriteTimeUtc(appFile, DateTime.UtcNow.AddMinutes(1));
-        prompt = await builder.BuildAsync(Ctx(h, s, []), CancellationToken.None);
-        Check.Contains(prompt, "APP RULES V2");
-        Check.NotContains(prompt, "APP AGENTS RULES");
+        await Turn(h, s.Id, "edited");
+        var edit = Notices(h, s.Id, "instructions").Last();
+        Check.Contains(edit.Text, "The instruction files changed");
+        Check.Contains(edit.Text, "APP RULES V2");
+        Check.NotContains(edit.Text, "ROOT RULES", "unchanged files are not repeated");
+        Check.Equal(text, Notices(h, s.Id, "instructions")[0].Text, "the first notice is untouched");
+        PrefixKept(r1, h.Catalog.Requests.Last());
 
-        // custom file names + extra files
+        // capped at 32KB with a note
+        File.WriteAllText(Path.Combine(root, "AGENTS.md"), "BIG " + new string('x', 40_000));
+        await Turn(h, s.Id, "big");
+        Check.Contains(Notices(h, s.Id, "instructions").Last().Text, "[Truncated: this file is 39 KB; only the first 32 KB are included");
+
+        // other file names and extra files: the app's CLAUDE.md applies instead, root AGENTS.md no longer does
         var extra = Path.Combine(h.Root, "extra.md");
         File.WriteAllText(extra, "EXTRA RULES");
         h.Settings.SetQuiet("agentsMd.fileNames", new JsonArray("CLAUDE.md"));
         h.Settings.SetQuiet("agentsMd.extraFiles", new JsonArray(extra));
-        prompt = await builder.BuildAsync(Ctx(h, s, []), CancellationToken.None);
-        Check.Contains(prompt, "APP CLAUDE RULES (shadowed)");
-        Check.NotContains(prompt, "ROOT RULES");
-        Check.Contains(prompt, "EXTRA RULES");
-        Check.True(prompt.IndexOf("EXTRA RULES", StringComparison.Ordinal) > prompt.IndexOf("APP CLAUDE RULES", StringComparison.Ordinal), "extra files last");
+        await Turn(h, s.Id, "names");
+        var names = Notices(h, s.Id, "instructions").Last().Text;
+        Check.Contains(names, "APP CLAUDE RULES (shadowed)");
+        Check.Contains(names, "EXTRA RULES");
+        Check.Contains(names, "No longer apply: ");
+        Check.Contains(names, Path.Combine(root, "AGENTS.md"));
+        Check.NotContains(names, "SRC CLAUDE RULES", "still applies unchanged");
+
+        // compaction removed the notices: everything is announced again
+        h.Sessions.MarkCompacted(s.Id, h.Sessions.GetMessages(s.Id, null, 1000)[^1].Seq);
+        await Turn(h, s.Id, "after compaction");
+        var again = Notices(h, s.Id, "instructions").Last().Text;
+        Check.Contains(again, "Instruction files that apply here");
+        Check.Contains(again, "GLOBAL RULES");
+        Check.Contains(again, "SRC CLAUDE RULES");
+    }
+
+    // The working directory and project reach the model as "project" notices: at the first model call, right after a
+    // switch, when a project folder moves; the system prompt and everything sent before stay the same.
+    private static async Task ProjectNoticesFlow()
+    {
+        await using var h = await TestHost.StartAsync();
+        string Dir(string name) { var d = Path.Combine(h.Root, name); Directory.CreateDirectory(d); return d; }
+        var alpha = h.Sessions.CreateProject("Alpha", Dir("alpha"));
+        var beta = h.Sessions.CreateProject("Beta", Dir("beta"));
+        var s = h.NewSession(projectId: alpha.Id);
+
+        await Turn(h, s.Id, "hi");
+        var n1 = Notices(h, s.Id, "project").Single();
+        Check.Equal($"Working directory: {alpha.Path} (project \"Alpha\"). Relative paths resolve against it.", n1.Text);
+        Check.Equal(alpha.Path, n1.MetaString("cwd"));
+        var r1 = h.Catalog.Requests.Last();
+        Check.True(r1.Messages.Any(m => m.Text.StartsWith("<system-notice kind=\"project\">") && m.Text.Contains(alpha.Path)), "sent to the model as a notice");
+        Check.NotContains(r1.SystemPrompt, alpha.Path, "not in the system prompt");
+
+        await Turn(h, s.Id, "again");
+        Check.Equal(1, Notices(h, s.Id, "project").Count, "not repeated");
+
+        h.Sessions.SetSessionProject(s.Id, beta.Id);
+        await Wait.Until(() => Notices(h, s.Id, "project").Count == 2, "switch notice right away");
+        Check.Equal($"The session moved to project \"Beta\": the working directory is now {beta.Path}.", Notices(h, s.Id, "project")[1].Text);
+        await Turn(h, s.Id, "in beta");
+        Check.Equal(2, Notices(h, s.Id, "project").Count, "the hook does not repeat the switch notice");
+        PrefixKept(r1, h.Catalog.Requests.Last());
+
+        var moved = Dir("beta-moved");
+        h.Sessions.UpdateProject(beta.Id, null, moved);
+        await Turn(h, s.Id, "moved");
+        Check.Equal($"Project \"Beta\" moved: the working directory is now {moved}.", Notices(h, s.Id, "project").Last().Text);
+
+        h.Sessions.SetSessionProject(s.Id, null);
+        await Wait.Until(() => Notices(h, s.Id, "project").Count == 4, "detach notice");
+        Check.Equal($"The session left its project: the working directory is now the default workspace, {h.Workspace}.", Notices(h, s.Id, "project").Last().Text);
+
+        // after compaction removed it, the current directory is announced again
+        h.Sessions.MarkCompacted(s.Id, h.Sessions.GetMessages(s.Id, null, 1000)[^1].Seq);
+        await Turn(h, s.Id, "after compaction");
+        Check.Equal($"Working directory: {h.Workspace} (no project: the default workspace). Relative paths resolve against it.", Notices(h, s.Id, "project").Last().Text);
+    }
+
+    // A session's system prompt is rendered once: later settings changes reach new sessions only.
+    private static async Task FrozenPrompt()
+    {
+        await using var h = await TestHost.StartAsync();
+        var s = h.NewSession();
+        var preview = (await h.Rpc.CallAsync("context.preview", new { sessionId = s.Id }))!;
+        Check.False(preview["frozen"]!.GetValue<bool>(), "a preview does not freeze");
+        await Turn(h, s.Id, "hi");
+        var p1 = h.Catalog.Requests.Last().SystemPrompt!;
+        h.Settings.SetQuiet("context.appendPrompt", "APPENDED LATER");
+        h.Settings.SetQuiet("context.customPrompt", "You are someone else.");
+        await Turn(h, s.Id, "again");
+        Check.Equal(p1, h.Catalog.Requests.Last().SystemPrompt, "the running session keeps its prompt");
+        preview = (await h.Rpc.CallAsync("context.preview", new { sessionId = s.Id }))!;
+        Check.True(preview["frozen"]!.GetValue<bool>(), "frozen after the first model call");
+        Check.Equal(p1, (string?)preview["systemPrompt"], "the preview shows what is sent");
+
+        var s2 = h.NewSession();
+        await Turn(h, s2.Id, "hi");
+        var p2 = h.Catalog.Requests.Last().SystemPrompt!;
+        Check.True(p2.StartsWith("You are someone else.") && p2.EndsWith("APPENDED LATER"), "new sessions get the new settings");
+    }
+
+    // Tool definitions are part of the request prefix: sent sorted by name, not in registration order (which changes
+    // when a plugin reloads).
+    private static async Task ToolOrder()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.AddTool(new FakeTool("zeta", (c, a, t) => Task.FromResult(ToolResult.Ok(""))));
+        h.AddTool(new FakeTool("alpha", (c, a, t) => Task.FromResult(ToolResult.Ok(""))));
+        var s = h.NewSession();
+        await Turn(h, s.Id, "hi");
+        var names = h.Catalog.Requests.Last().Tools.Select(t => t.Name).ToList();
+        Check.Equal(string.Join(",", names.OrderBy(n => n, StringComparer.Ordinal)), string.Join(",", names), "sorted by name");
     }
 
     private static async Task CustomPrompt()
@@ -184,7 +303,7 @@ public static class ContextTests
         var preview = (await h.Rpc.CallAsync("context.preview", new { sessionId = s.Id }))!;
         var prompt = (string)preview["systemPrompt"]!;
         Check.Contains(prompt, "# Environment");
-        Check.Contains(prompt, "fake/local");
+        Check.NotContains(prompt, "fake/local", "no model line");
         var tools = ((JsonArray)preview["tools"]!).Select(t => (string)t!["name"]!).ToList();
         Check.True(tools.Contains("read") && tools.Contains("agent_spawn"), string.Join(",", tools));
         Check.True(((JsonArray)preview["tools"]!)[0]!["description"] is not null);

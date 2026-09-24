@@ -92,7 +92,7 @@ internal static class CoreRpc
             return true;
         });
 
-        Add("sessions.setProject", "Attach/detach a project: { id, projectId: string|null } → SessionInfo (appends a project notice)",
+        Add("sessions.setProject", "Attach/detach a project: { id, projectId: string|null } → SessionInfo (publishes session.project)",
             req => k.Sessions.SetSessionProject(req.Required("id"), req.Str("projectId")));
 
         Add("sessions.messages", "Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore } ascending by seq", req =>

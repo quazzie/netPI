@@ -97,25 +97,13 @@ const SYSTEM_PROMPT = (project, session) => `You are a coding agent running in N
 
 # Environment
 - OS: ${os.type()} ${os.release()}
-- Working directory: ${project?.path ?? path.join(os.homedir(), '.netpi', 'workspace')}${project ? ` (project: ${project.name})` : ' (no project: the default workspace)'}; relative paths resolve against it
-- Model: ${session?.model ?? DEFAULT_MODEL}
-- Messages in <system-notice> tags come from NetPI (project switches, subagent reports, reminders, errors), not from the user.
+- Messages in <system-notice> tags come from NetPI, not from the user: your working directory and project (relative paths resolve against the latest one), instruction files, subagent reports, reminders and errors.
 
 # Tools
 - Prefer read/grep/find/ls over shell commands for exploring files.
 - Use edit for small changes; include enough context for oldText to match exactly once.
 - Run the relevant build or tests before you say you're done.
-- When research or plans are deferred, record them with idea_add instead of losing them.
-
-# Project instructions (AGENTS.md)
-## ~/.netpi/AGENTS.md
-Keep answers short. Use British spelling in docs.
-${project ? `
-## ${project.path}/AGENTS.md
-- Build: \`dotnet build NetPI.slnx\`; web UI: \`npm run build\`.
-- Never run \`dotnet build\` while another agent owns the .NET build.
-- Plugins live under plugins/ and hot-reload from artifacts/app/plugins.
-` : ''}`;
+- When research or plans are deferred, record them with idea_add instead of losing them.`;
 
 class RpcError extends Error {
   constructor(code, message) {

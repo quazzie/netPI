@@ -206,6 +206,23 @@ public sealed class Env : IAsyncDisposable
 
     public async Task MockReset() => (await Http.PostAsync(MockUrl + "/_reset", null)).EnsureSuccessStatusCode();
 
+    /// <summary>The raw request body the mock received as request <paramref name="seq"/> (see <see cref="MockLog"/>).</summary>
+    public async Task<JsonElement> MockRequest(long seq)
+    {
+        using var doc = JsonDocument.Parse(await Http.GetStringAsync($"{MockUrl}/_request/{seq}"));
+        return doc.RootElement.Clone();
+    }
+
+    /// <summary>What was sent before is sent again unchanged: same instructions, earlier input items as a prefix.</summary>
+    public static void PrefixKept(JsonElement earlier, JsonElement later, string what)
+    {
+        Check.Equal(earlier.S("instructions"), later.S("instructions"), $"{what}: instructions unchanged");
+        var a = earlier.Arr("input").ToList();
+        var b = later.Arr("input").ToList();
+        Check.True(b.Count >= a.Count, $"{what}: input only grows");
+        for (var i = 0; i < a.Count; i++) Check.Equal(a[i].GetRawText(), b[i].GetRawText(), $"{what}: input item {i} unchanged");
+    }
+
     // ------------------------------------------------------------------ NetPI helpers
 
     public Task<JsonElement> Rpc(string method, object? p = null, int timeoutMs = 30_000) => Client.Rpc(method, p, timeoutMs);
@@ -251,12 +268,14 @@ public sealed class Env : IAsyncDisposable
     public async Task<RunResult> Result(string sessionId, long mark, Ev? done = null)
     {
         var page = await Rpc("sessions.messages", new { id = sessionId, limit = 2000 });
+        var all = page.Arr("messages").ToList();
         return new RunResult
         {
             SessionId = sessionId,
             Events = Client.Since(mark, e => e.Sid == sessionId || e.D.P("sessionId").GetString0() == sessionId
                                              || e.D.P("agent").S("sessionId") == sessionId),
-            Messages = page.Arr("messages").ToList(),
+            Messages = all.Where(m => !RunResult.IsContextNotice(m)).ToList(),
+            AllMessages = all,
             Final = done?.D.P("agent") ?? default,
         };
     }
@@ -290,8 +309,14 @@ public sealed class RunResult
 {
     public required string SessionId { get; init; }
     public required List<Ev> Events { get; init; }
+    /// <summary>The transcript without the context notices (working directory, instruction files), which have their own tests.</summary>
     public required List<JsonElement> Messages { get; init; }
+    /// <summary>The whole transcript.</summary>
+    public required List<JsonElement> AllMessages { get; init; }
     public JsonElement Final { get; init; }
+
+    public static bool IsContextNotice(JsonElement m) =>
+        m.S("role") == "notice" && m.P("meta").S("kind") is "project" or "instructions";
 
     public IEnumerable<JsonElement> Role(string role) => Messages.Where(m => m.S("role") == role);
     public JsonElement LastAssistant => Messages.LastOrDefault(m => m.S("role") == "assistant");

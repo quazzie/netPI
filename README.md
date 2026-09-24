@@ -27,8 +27,10 @@ headless for any browser.
   `reasoning_details`).
 - **Robustness plugins:** auto-compaction, auto-nudge (continues agents that stall or get cut off mid-thinking),
   retry on lost connections/stalled streams, repair of tool calls a model wrote as text (`<tool_call>…`).
-- **Context:** a system-prompt plugin that tools contribute to, and an AGENTS.md plugin (global
-  `~/.netpi/AGENTS.md` + every `AGENTS.md`/`CLAUDE.md` from the file system root down to the project).
+- **Context that never rewrites history:** a bare system prompt that plugins and tools contribute to, rendered once per
+  session; the working directory, project and instruction files (global `~/.netpi/AGENTS.md` + every
+  `AGENTS.md`/`CLAUDE.md` from the file system root down to the project) arrive as notices when they apply or change,
+  so the backend's prompt cache survives a project switch or an edited AGENTS.md.
 - **Ideas backlog:** agents and you park research, plans and requirements in `ideas.json` in the project folder
   (tools `idea_*` + the Ideas tab); "send to chat" when it's time to implement.
 - **UI:** left and right panels with vertical, pluggable tabs (Sessions, Projects, Files | Work, Ideas,

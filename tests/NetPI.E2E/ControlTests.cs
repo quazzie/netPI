@@ -137,13 +137,15 @@ public static class ControlTests
             Check.Contains(next.FinalText, "ECHO-DONE");
         });
 
-        r.Add("project switch mid-session: project notice, new cwd for tools, model sees the notice", async () =>
+        r.Add("project switch mid-session: project notice, new cwd for tools, model sees the notice, prefix unchanged", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
             var info = await env.Rpc("app.info");
             var workspace = info.S("defaultWorkspace")!;
+            var firstMark = await env.MockMark();
             var first = await env.Run(sid, "where am I [s:where file=where-1.txt]");
+            var before = await env.MockRequest((await env.MockLog(firstMark)).Last().L("seq"));
             Check.Contains(first.FinalText, "PWD=" + Env.BashPath(workspace));
             Check.True(File.Exists(Path.Combine(workspace, "where-1.txt")), "file written in the default workspace");
 
@@ -164,6 +166,8 @@ public static class ControlTests
             Check.False(File.Exists(Path.Combine(workspace, "where-2.txt")), "not in the old cwd");
             var log = await env.MockLog(mockMark);
             Check.True(log[0].Arr("notices").Any(n => n.GetString() == "project"), "the model received the project notice");
+            // the switch only appended: the system prompt and everything sent before are byte-identical
+            Env.PrefixKept(before, await env.MockRequest(log[0].L("seq")), "after the project switch");
             var files = await env.Rpc("files.list", new { sessionId = sid });
             Check.Equal(dir, files.S("root"), "files.list follows the session's project");
         });

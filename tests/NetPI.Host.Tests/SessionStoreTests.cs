@@ -162,7 +162,9 @@ public static class SessionStoreTests
             Check.Equal(s.Id, compacted[0].SessionId);
         });
 
-        r.Add("sessions: project attach/detach appends a project notice; cwd follows", async () =>
+        // The host only stores the switch and publishes session.project; the conversation is appended to by plugins (the
+        // context plugin's project notice), so the host never writes model-facing text.
+        r.Add("sessions: project attach/detach publishes session.project with the new cwd; no message from the host", async () =>
         {
             await using var f = new Fixture();
             var projDir = T.TempDir("proj");
@@ -174,20 +176,20 @@ public static class SessionStoreTests
             var attached = f.Store.SetSessionProject(s.Id, p.Id);
             Check.Equal(p.Id, attached.ProjectId);
             Check.Equal(p.Path, f.Store.GetCwd(attached));
-            var notice = f.Store.GetMessages(s.Id).Last();
-            Check.Equal(MessageRole.Notice, notice.Role);
-            Check.Equal("project", notice.MetaString("kind"));
-            Check.Equal($"The workspace changed: this session is now attached to project \"{p.Name}\" at {p.Path}. Your working directory is now {p.Path} — resolve relative paths against it.", notice.Text);
-            Check.Equal(1L, attached.MessageCount);
+            Check.Equal(0, f.Store.GetMessages(s.Id).Count, "the host appends nothing");
+            var first = (await f.EventsAsync(EventTypes.SessionProject)).Single().As<System.Text.Json.Nodes.JsonObject>()!;
+            Check.Equal(s.Id, (string?)first["sessionId"]);
+            Check.Equal(p.Id, (string?)first["projectId"]);
+            Check.Equal(p.Path, (string?)first["cwd"]);
 
-            var same = f.Store.SetSessionProject(s.Id, p.Id);
-            Check.Equal(1, f.Store.GetMessages(s.Id).Count, "no notice when nothing changes");
+            f.Store.SetSessionProject(s.Id, p.Id);
+            Check.Equal(1, (await f.EventsAsync(EventTypes.SessionProject)).Count, "no event when nothing changes");
 
             var detached = f.Store.SetSessionProject(s.Id, null);
             Check.Equal<string?>(null, detached.ProjectId);
-            var n2 = f.Store.GetMessages(s.Id).Last();
-            Check.Contains(n2.Text, "no longer attached to a project");
-            Check.Contains(n2.Text, Path.Combine(f.Dir, "workspace"));
+            var second = (await f.EventsAsync(EventTypes.SessionProject)).Last().As<System.Text.Json.Nodes.JsonObject>()!;
+            Check.Equal<string?>(null, (string?)second["projectId"]);
+            Check.Equal(Path.Combine(f.Dir, "workspace"), (string?)second["cwd"]);
             Check.Throws<KeyNotFoundException>(() => f.Store.SetSessionProject(s.Id, "prj_missing"));
 
             // Deleting a project detaches its sessions.
