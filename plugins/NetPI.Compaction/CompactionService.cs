@@ -145,6 +145,12 @@ public sealed class CompactionService(IPluginContext ctx)
         var msgTokens = CompactionPlanner.Estimate(context);
 
         long keep = Math.Min(o.KeepRecentTokens, (long)(window * 0.3));
+        // What every call sends (system prompt, tool schemas) takes room too: with the largest summary, what is kept must
+        // leave the context at most 60 % full, or on a small window the next tool result overflows it. Keep at least a
+        // twentieth of the window (the latest exchange).
+        var summaryCap = Math.Max(256, Math.Min(o.MaxSummaryTokens, window / 4));
+        var room = (long)(window * 0.6) - req.OverheadTokens - summaryCap;
+        keep = Math.Min(keep, Math.Max(room, Math.Min(keep, window / 20)));
         // Overflow: the backend rejected what was actually sent, so its real window may be smaller than the catalog says
         // (e.g. a model loaded with a smaller n_ctx than its static capability entry). Size the cut from the messages that
         // were sent, not from the advertised window, or the retry fails again.

@@ -317,6 +317,32 @@ public static class CompactionTests
             Check.True(after <= before * 6 / 10, $"messages shrank to at most 60%: {before} → {after}");
         });
 
+        // E2E regression: on a 12k window where the system prompt and 36 tool schemas took 7k, compaction kept 30 % of the
+        // window of messages, the context stayed ~88 % full and the next tool result overflowed it.
+        r.Add("compaction: what every call sends (prompt, tools) leaves less room for kept messages", async () =>
+        {
+            var env = new Env(window: 12_000);
+            env.Conversation(3); // ≈ 8.3k tokens of messages
+            var result = await env.Service.CompactAsync(new CompactionRequest
+            {
+                SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Auto, OverheadTokens = 7_000, TokensBefore = 15_300,
+            }, CancellationToken.None);
+            Check.True(result.Compacted, result.Message);
+            var kept = CompactionPlanner.Estimate(env.Ctx.Sessions.GetContextMessages(env.Session.Id).Where(m => m.Role != MessageRole.Summary));
+            Check.True(kept <= 1_500, $"kept the latest exchange only: {kept} tokens");
+            Check.True(result.TokensAfter <= 12_000 * 7 / 10, $"room to work after compacting: {result.TokensAfter}");
+
+            // a large window keeps its full share
+            var big = new Env(window: 200_000);
+            big.Conversation(12); // ≈ 33k tokens
+            var r2 = await big.Service.CompactAsync(new CompactionRequest
+            {
+                SessionId = big.Session.Id, Model = big.Model, Mode = CompactionMode.Auto, OverheadTokens = 7_000, TokensBefore = 170_000,
+            }, CancellationToken.None);
+            var keptBig = CompactionPlanner.Estimate(big.Ctx.Sessions.GetContextMessages(big.Session.Id).Where(m => m.Role != MessageRole.Summary));
+            Check.True(r2.Compacted && keptBig >= 19_000, $"keeps compaction.keepRecentTokens (20k): {keptBig}");
+        });
+
         r.Add("compaction: chunked (rolling) summaries when the transcript exceeds the summarizer window", async () =>
         {
             var env = new Env();
