@@ -153,7 +153,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             ["name"] = Prop("string", "Short name for the subagent, e.g. \"tests\" or \"api-research\"."),
             ["lane"] = Prop("string", "Lane id from lanes_list. Required when the user has set up lanes; choose by the lane's note and cost."),
             ["model"] = Prop("string", "Only when no lanes are set up: a model ref \"provider/model\". Default: your model."),
-            ["tools"] = StringArray("Restrict the subagent to these tool names. Default: all tools."),
+            ["tools"] = StringArray("The subagent's tools, by name; they may include tools you do not have yourself (e.g. give a remote-work agent the ssh_* tools). Default: the tools you have."),
             ["instructions"] = Prop("string", "Extra instructions appended to the subagent's system prompt."),
             ["wait"] = Prop("boolean", "Block until the subagent finishes and return its report (yields your lane while waiting). Default false."),
             ["timeoutSeconds"] = Prop("integer", "With wait=true: maximum seconds to wait."),
@@ -182,12 +182,25 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         }
         else spawnModel = laneArg ?? modelArg;
 
+        // the caller may not see the tools it hands out (a limited orchestrator): unknown names get the list
+        var tools = ToolArgs.List(args, "tools", "allowedTools");
+        if (tools is { Count: > 0 })
+        {
+            var all = Plugin.Tools.All;
+            var known = new HashSet<string>(all.Select(t => t.Definition.Name), StringComparer.OrdinalIgnoreCase);
+            var unknown = tools.Where(n => !known.Contains(n.Trim())).ToList();
+            if (unknown.Count > 0)
+                return ToolResult.Error($"Unknown tool{(unknown.Count > 1 ? "s" : "")}: {string.Join(", ", unknown)}. The tools:\n" +
+                    string.Join("\n", all.GroupBy(t => t.Definition.Category).OrderBy(g => g.Key, StringComparer.Ordinal)
+                        .Select(g => $"- {g.Key}: {string.Join(", ", g.Select(t => t.Definition.Name).Distinct().Order(StringComparer.Ordinal))}")));
+        }
+
         var info = await runtime.SpawnAsync(new SpawnRequest
         {
             Task = task,
             Name = ToolArgs.Str(args, "name"),
             Model = spawnModel,
-            Tools = ToolArgs.List(args, "tools", "allowedTools"),
+            Tools = tools,
             Instructions = ToolArgs.Str(args, "instructions", "systemPrompt"),
             ParentAgentId = context.AgentId,
         }, ct).ConfigureAwait(false);

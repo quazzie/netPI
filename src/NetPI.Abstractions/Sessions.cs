@@ -11,6 +11,8 @@ public sealed class ProjectInfo
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public DateTimeOffset? LastUsedAt { get; set; }
+    /// <summary>Per-project data other parts keep here (e.g. <c>profile</c>: the default profile of new sessions).</summary>
+    public JsonObject? Meta { get; set; }
 }
 
 /// <summary>Sessions are the primary unit of work. A session may or may not be attached to a project.</summary>
@@ -51,6 +53,18 @@ public static class SessionTools
                 if (n is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s)) off.Add(s.Trim());
         return off;
     }
+}
+
+/// <summary>
+/// The opening of a session's system prompt when its profile replaces the built-in one: <c>meta.identity</c>, set by the
+/// profiles plugin and rendered by the context plugin at the first model call (and again after <c>context.reset</c>).
+/// </summary>
+public static class SessionIdentity
+{
+    public const string MetaKey = "identity";
+
+    public static string? Of(SessionInfo? session) =>
+        session?.Meta?[MetaKey] is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;
 }
 
 public sealed class SessionQuery

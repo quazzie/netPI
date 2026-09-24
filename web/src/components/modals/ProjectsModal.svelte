@@ -41,6 +41,18 @@
   let form = $state({ name: '', path: '', create: false });
   let files = $state(null); // instruction files of the edited project; null while loading
   let filesError = $state('');
+  // profiles (the profiles plugin): the one new sessions of the edited project start with
+  let profiles = $state(null);
+  rpc('profiles.list')
+    .then((r) => (profiles = r))
+    .catch(() => (profiles = null));
+  async function setProfile(value) {
+    try {
+      await rpc('projects.update', { id: project.id, meta: { profile: value || null } });
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
 
   const project = $derived(editId ? (app.projectsById.get(editId) ?? null) : null);
   const dirty = $derived(!!project && (form.name.trim() !== project.name || form.path.trim() !== project.path));
@@ -267,6 +279,18 @@
         </div>
         <span class="hint">Sessions in this project follow the folder; their agents are told at their next turn.</span>
       </label>
+      {#if profiles?.profiles?.length}
+        {@const global = profiles.profiles.find((p) => p.id === profiles.defaultProfile)}
+        <label class="field">
+          <span>Profile of new sessions</span>
+          <select class="np-input" value={project.meta?.profile ?? ''} onchange={(e) => setProfile(e.currentTarget.value)} aria-label="Profile of new sessions">
+            <option value="">the default ({global?.name ?? 'no profile'})</option>
+            {#each profiles.profiles as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
+            <option value="none">no profile</option>
+          </select>
+          <span class="hint">Its instructions and tools; each chat can still pick another.</span>
+        </label>
+      {/if}
     </form>
 
     <section>

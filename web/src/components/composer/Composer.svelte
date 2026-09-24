@@ -3,6 +3,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import ModelPicker from './ModelPicker.svelte';
   import EffortPicker from './EffortPicker.svelte';
+  import ProfilePicker from './ProfilePicker.svelte';
   import ToolsPicker from './ToolsPicker.svelte';
   import ChatCost from './ChatCost.svelte';
   import ContextRing from './ContextRing.svelte';
@@ -414,6 +415,7 @@
         <button class="tb" title="Commands (/)" onclick={() => triggerPopup('/')}><Icon name="slash" size={15} /></button>
         <button class="tb" title="Mention a file (@)" onclick={() => triggerPopup('@')}><Icon name="at" size={15} /></button>
         <span class="sep"></span>
+        <ProfilePicker {session} />
         <ModelPicker {session} bind:open={modelOpen} />
         <EffortPicker {session} {model} bind:open={effortOpen} />
         <ToolsPicker {session} />

@@ -2,10 +2,10 @@
 
 ## Verified on Windows
 - The desktop shell builds and runs; Git Bash, pwsh, winsqlite3 and window placement work.
-- Unit suites (Debug, built into a scratch app folder while NetPI ran): Providers 41 (330 checks), Tools 54, Agent 79,
+- Unit suites (Debug, built into a scratch app folder while NetPI ran): Providers 41 (330 checks), Tools 54, Agent 82,
   Aux 97, Host 38, all passing.
 - E2E suite: 55 tests / 703 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
-  (`npm run e2e`) 150/150.
+  (`npm run e2e`) 160/160.
 - Plugins hot-reload while NetPI runs (they load from shadow copies); only the host DLLs are locked. `build.ps1` then
   builds everything except the host, and a rebuild after a commit no longer reloads unchanged plugins.
 - Real model (AiProxy → nInfer `qwen3.8-27b`, 2 lanes): two concurrent agents, one spawning a subagent, the other
@@ -31,12 +31,15 @@
   and the UI mock: every model call recorded with its cost, the monthly, daily and per-lane stops, "ask" and going
   over; `agent_spawn { lane }` from a local agent onto a cloud lane; settings saved and reset from the dialog; tools
   switched per chat (before the first message, mid-chat with a notice, inherited by subagents).
+- Profiles, with the real runner and a scripted model and in the UI mock: a new chat gets its project's default; the
+  profile's text opens the prompt and its tools are off; a switch after the first message renders the prompt again
+  with a notice and no stray tools notice; subagents get their owner's tools or exactly the ones it names.
 - Numbers and details: `docs/archive/2026-09-24-windows-bringup.md`, `docs/archive/2026-09-24-agent-tools.md`,
   `docs/archive/2026-09-24-ssh-tools.md`, `docs/archive/2026-09-24-goals.md`,
-  `docs/archive/2026-09-24-lanes-budget-settings.md`.
+  `docs/archive/2026-09-24-lanes-budget-settings.md`, `docs/archive/2026-09-24-profiles.md`.
 
 ## Not yet verified
-- Lanes, the budget, the settings dialog and per-chat tools in the real app: the host and the contracts changed, so
+- Lanes, the budget, the settings dialog, per-chat tools and profiles in the real app: the host and the contracts changed, so
   they need NetPI closed, `.\build.ps1` and a restart. Then: costs from a paid OpenRouter model (`usage.cost`), and
   whether `qwen3.8-27b` picks lanes by their notes and avoids the paid one.
 - Goals with a real model (only the scripted model so far): whether `qwen3.8-27b` follows the continuation

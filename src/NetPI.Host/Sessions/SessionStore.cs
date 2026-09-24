@@ -62,6 +62,8 @@ internal sealed class SessionStore : ISessionStore
             value TEXT
         );
         """,
+        // per-project data other parts keep (e.g. the default profile of new sessions)
+        "ALTER TABLE projects ADD COLUMN meta TEXT;",
     ];
 
     private const string SessionColumns =
@@ -107,15 +109,28 @@ internal sealed class SessionStore : ISessionStore
         return project;
     }
 
-    public ProjectInfo UpdateProject(string id, string? name, string? path)
+    public ProjectInfo UpdateProject(string id, string? name, string? path) => UpdateProject(id, name, path, null);
+
+    /// <summary>Update a project; <paramref name="meta"/> is merged key by key (a null value removes the key).</summary>
+    public ProjectInfo UpdateProject(string id, string? name, string? path, JsonObject? meta)
     {
         var project = _db.Transaction(_ =>
         {
             var p = GetProject(id) ?? throw new KeyNotFoundException($"Project {id} not found");
             if (!string.IsNullOrWhiteSpace(name)) p.Name = name.Trim();
             if (!string.IsNullOrWhiteSpace(path)) p.Path = PathUtil.Normalize(path);
+            if (meta is not null)
+            {
+                p.Meta ??= new JsonObject();
+                foreach (var (key, value) in meta)
+                {
+                    if (value is null) p.Meta.Remove(key);
+                    else p.Meta[key] = value.DeepClone();
+                }
+                if (p.Meta.Count == 0) p.Meta = null;
+            }
             p.UpdatedAt = Now();
-            _db.Execute("UPDATE projects SET name = @Name, path = @Path, updated_at = @UpdatedAt WHERE id = @Id", p);
+            _db.Execute("UPDATE projects SET name = @Name, path = @Path, updated_at = @UpdatedAt, meta = @Meta WHERE id = @Id", p);
             return p;
         });
         Publish(EventTypes.ProjectUpdated, new { project });
@@ -481,6 +496,7 @@ internal sealed class SessionStore : ISessionStore
         CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64("created_at")),
         UpdatedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64("updated_at")),
         LastUsedAt = r.GetInt64OrNull("last_used_at") is { } l ? DateTimeOffset.FromUnixTimeMilliseconds(l) : null,
+        Meta = ParseObject(r.GetStringOrNull("meta")),
     };
 
     private static JsonObject? ParseObject(string? json)

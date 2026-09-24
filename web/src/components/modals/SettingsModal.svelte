@@ -4,6 +4,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import SettingField from './SettingField.svelte';
   import LanesEditor from './LanesEditor.svelte';
+  import ProfilesEditor from './ProfilesEditor.svelte';
   import BudgetView from './BudgetView.svelte';
   import PluginSwitches from './PluginSwitches.svelte';
   import { prefs, savePrefs, toast } from '../../lib/state/ui.svelte.js';
@@ -160,7 +161,7 @@
   <div class="layout">
     <nav class="nav">
       <button class:active={section === 'general'} onclick={() => (section = 'general')}><Icon name="sliders" size={14} /> General</button>
-      {#each layout.pages.filter((p) => p.sections.length || p.id === 'lanes' || p.id === 'Tools') as p (p.id)}
+      {#each layout.pages.filter((p) => p.sections.length || p.id === 'lanes' || p.id === 'profiles' || p.id === 'Tools') as p (p.id)}
         <button class:active={section === p.id} onclick={() => (section = p.id)}><Icon name={p.icon} size={14} /> {p.title}</button>
       {/each}
       <div class="nav-gap"></div>
@@ -186,6 +187,16 @@
             </section>
           {/each}
           {#each page.sections.filter((s) => s.id !== 'budget') as s (s.id)}{@render sectionBlock(s)}{/each}
+        {:else if page.id === 'profiles'}
+          <section class="sec">
+            <div class="sec-title">Profiles</div>
+            <div class="sec-help np-dim">
+              A profile is the opening of a chat's system prompt and the tools it gets. Pick one per chat next to the model
+              (free before the first message; later the chat is read again once), or give one to a project for its new chats.
+            </div>
+            <ProfilesEditor {doc} />
+          </section>
+          {#each page.sections as s (s.id)}{@render sectionBlock(s)}{/each}
         {:else if page.id === 'Tools'}
           <section class="sec"><PluginSwitches {doc} /></section>
           {#each page.sections as s (s.id)}{@render sectionBlock(s)}{/each}

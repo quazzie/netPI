@@ -30,13 +30,15 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
   note on when to use it and a price (inferred, editable); agents pick one by id (`lanes_list`, `agent_spawn { lane }`).
   Every model call is recorded with its cost against one monthly budget (paid calls stop or ask when it is spent).
   The settings dialog renders the host's and every plugin's settings as controls; each chat switches its own tools.
+- **Profiles** (built 2026-09-24, not yet deployed): the opening of a chat's system prompt and its tools; a default per
+  project; switching is free before the first message and one full re-read after it.
 - **Chat UI:** the streamed answer is laid out as the finished one will be, so nothing jumps between steps; a Steps
   preference (expanded / fold when done / folded), chat width, zoom and spellcheck are in Settings.
 - **History:** the Windows bring-up, the first smoke tests and the prompt work are recorded in
   `docs/archive/2026-09-24-windows-bringup.md`; the agent tools and projects UI in `docs/archive/2026-09-24-agent-tools.md`;
   the SSH tools in `docs/archive/2026-09-24-ssh-tools.md`; goals and the steady chat in
   `docs/archive/2026-09-24-goals.md`; lanes, the budget and the settings dialog in
-  `docs/archive/2026-09-24-lanes-budget-settings.md`.
+  `docs/archive/2026-09-24-lanes-budget-settings.md`; profiles in `docs/archive/2026-09-24-profiles.md`.
 
 ## Decisions and preferences to keep
 
@@ -46,6 +48,9 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 - **Tools are switched per chat; globally, whole plugins are.** The composer's tools button (`meta.toolsOff`); a change
   in a started chat applies from the next model call with a notice, at the price of one re-read; subagents inherit it
   (decided 2026-09-24).
+- **Profiles hold instructions and tools, not the model; subagents get no profile.** The agent that starts a subagent
+  chooses its tools, including ones it lacks itself (a limited orchestrator dispatches agents that can do more); by
+  default its own (decided 2026-09-24).
 - **Lanes are models the user sets up, and one global budget guards the money.** Agents choose a lane by its note
   and price; paid calls are recorded and stop (or ask) when the monthly budget is spent (decided 2026-09-24).
 - **The Responses transport is standard and stateless.** It sends `store:false` and the full input every call, and replays reasoning items (`reasoning` → `message` → `function_call`). No `previous_response_id` chaining.
@@ -70,7 +75,7 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Suggested next steps
 
-0. **Deploy lanes, the budget and the settings dialog.** Close NetPI, `.\build.ps1`, restart. Then set up a lane for
+0. **Deploy lanes, the budget, the settings dialog and profiles.** Close NetPI, `build` (cmd) or `.\build.ps1`, restart. Then set up a lane for
    the free stealth model and one for a paid model with a note, set a monthly budget, and watch a local agent pick
    lanes (and a paid OpenRouter call's cost reach the ledger).
 1. **Goals with a real model.** Run a goal on `qwen3.8-27b` (a throwaway server or the user's NetPI): does it keep

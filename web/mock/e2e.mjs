@@ -757,6 +757,82 @@ log('budget: chat cost, Work tab, a chat stopped by the budget');
   await page.waitForTimeout(300);
 }
 
+// ------------------------------------------------------------------ profiles
+log('profiles: settings, a project default, per chat');
+{
+  // a profile from the settings: a name, the instructions, tools switched off with checkboxes
+  await page.keyboard.press('Control+,');
+  await page.waitForSelector('.dialog');
+  await page.locator('.nav button', { hasText: 'Profiles' }).click();
+  await page.locator('.profiles .add input').fill('Admin');
+  await page.locator('.profiles .add button').click();
+  const card = page.locator('.profile[data-profile="admin"]');
+  await card.waitFor({ timeout: 3000 }).catch(() => {});
+  check('a profile is added by its name', (await card.count()) === 1);
+  await card.locator('textarea.prompt').fill('You are a system administrator.');
+  await card.locator('textarea.prompt').blur();
+  await card.getByRole('checkbox', { name: 'bash', exact: true }).uncheck();
+  await page.waitForTimeout(400);
+  const saved = (await rpcCall('settings.get')).settings.profiles?.admin;
+  check('its instructions and switched-off tools are saved', saved?.prompt === 'You are a system administrator.' && (saved?.toolsOff ?? []).includes('bash'), JSON.stringify(saved));
+  check('the card counts the tools that are on', /Tools: \d+ of \d+ on/.test(await card.locator('.tools-toggle').innerText()));
+  await shot(page, '45-settings-profiles');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+
+  // the project's default, from the Projects dialog
+  await page.locator('.topbar .chip').click();
+  await page.locator('.popover .manage', { hasText: 'Edit “netpi”' }).click();
+  await page.waitForSelector('.projects-dialog');
+  const select = page.getByRole('combobox', { name: 'Profile of new sessions' });
+  await select.waitFor({ timeout: 3000 }).catch(() => {});
+  await select.selectOption('admin');
+  await page.waitForTimeout(300);
+  const netpi = (await rpcCall('projects.list')).find((p) => p.name === 'netpi');
+  check('a project gets a default profile', netpi?.meta?.profile === 'admin', JSON.stringify(netpi?.meta));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+
+  // a new chat in the project starts with it; switching before the first message is free
+  await page.keyboard.press('Control+t');
+  await page.waitForTimeout(500);
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  let s = await rpcCall('sessions.get', { id: sid });
+  const picker = page.locator('button[aria-label="Profile"]');
+  check('a new chat starts with its project\'s profile', s.meta?.profile === 'admin' && (s.meta?.toolsOff ?? []).includes('bash') && (await picker.innerText()).includes('Admin'));
+  check('the tools button shows what the profile switched off', (await page.locator('button[aria-label="Tools for this chat"]').innerText()).includes('1 off'));
+  await picker.click();
+  await page.waitForSelector('.profile-pop');
+  check('before the first message the change is free', (await page.locator('.profile-pop .help').innerText()).includes('free'));
+  await page.locator('.profile-pop .opt', { hasText: 'No profile' }).click();
+  await page.waitForTimeout(300);
+  s = await rpcCall('sessions.get', { id: sid });
+  check('no profile: its tools come back', s.meta?.profile == null && !s.meta?.toolsOff);
+  await picker.click();
+  await page.locator('.profile-pop .opt', { hasText: 'Admin' }).click();
+  await page.waitForTimeout(300);
+
+  // after the first message: the picker warns, and the model is told
+  const ta = page.locator('.composer textarea');
+  await ta.fill('hello');
+  await ta.press('Enter');
+  await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 });
+  await picker.click();
+  await page.waitForSelector('.profile-pop');
+  check('in a started chat the picker says the chat is read again', (await page.locator('.profile-pop .help').innerText()).includes('re-reads this chat'));
+  await shot(page, '46-chat-profile');
+  await page.locator('.profile-pop .opt', { hasText: 'No profile' }).click();
+  await page.waitForTimeout(400);
+  check('the switch is announced in the chat', (await page.locator('.notice', { hasText: "profile away" }).count()) === 1);
+
+  // back to how it was for the rest of the walkthrough
+  await rpcCall('projects.update', { id: netpi.id, meta: { profile: null } });
+  await rpcCall('settings.set', { path: 'profiles', value: null });
+  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
+  await page.waitForTimeout(300);
+}
+
 // ------------------------------------------------------------------ settings + light theme
 log('settings');
 await page.keyboard.press('Control+,');

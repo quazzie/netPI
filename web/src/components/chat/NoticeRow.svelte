@@ -16,6 +16,7 @@
     todo: { icon: 'list', tone: 'info', label: 'Todo list', expand: true },
     goal: { icon: 'target', tone: 'accent', label: 'Goal' },
     budget: { icon: 'dollar', tone: 'warn' },
+    profile: { icon: 'user', tone: 'accent' },
     nudge: { icon: 'zap', tone: 'warn', label: 'Nudge' },
     'agent-message': { icon: 'message-circle', tone: 'accent', expand: true },
     'agent-result': { icon: 'bot', tone: 'ok', expand: true },

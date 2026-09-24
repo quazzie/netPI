@@ -9,7 +9,8 @@ namespace NetPI.Context;
 /// A session's prompt is frozen at its first model call; its working directory and project arrive as "project" notices,
 /// changes to its tools as "tools" notices.
 /// <para>Settings: <c>context.customPrompt</c> (replaces the identity section), <c>context.appendPrompt</c>.</para>
-/// <para>RPC: <c>context.preview { sessionId }</c> → <c>{ systemPrompt, frozen, tools: [{name, description}], estimatedTokens }</c>.</para>
+/// <para>RPC: <c>context.preview { sessionId }</c> → <c>{ systemPrompt, frozen, tools: [{name, description}], estimatedTokens }</c>;
+/// <c>context.reset { sessionId }</c> (a profile switch: the prompt is rendered again at the next call).</para>
 /// </summary>
 [NetPiPlugin("netpi.context", Name = "Context", Description = "System prompt (frozen per session), working-directory and tool-change notices", Order = 40)]
 public sealed class ContextPlugin : INetPiPlugin
@@ -53,6 +54,13 @@ public sealed class ContextPlugin : INetPiPlugin
             var sessionId = req.Required("sessionId");
             return await PreviewAsync(context, builder, sessionId, token).ConfigureAwait(false);
         }, "The system prompt and tools a session is sent: { sessionId } → { systemPrompt, frozen, tools, estimatedTokens }");
+
+        // a profile switch: the next model call renders the prompt again and takes a new tool baseline (one full re-read)
+        context.Rpc.Register("context.reset", (req, _) =>
+        {
+            prompts.Delete(req.Required("sessionId"));
+            return Task.FromResult<object?>(true);
+        }, "Forget a session's frozen system prompt and tool baseline; its next model call renders them again: { sessionId } → true");
         return Task.CompletedTask;
     }
 

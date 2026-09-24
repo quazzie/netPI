@@ -119,6 +119,9 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 _lastContextTokens = session.ContextTokens;
                 foreach (var hook in rt.Hooks())
                     await SafeAsync(() => hook.OnRunStartAsync(_rc), "OnRunStart", ct).ConfigureAwait(false);
+                // a hook may have set up the session (the profiles plugin applies a new chat's profile here)
+                session = Ctx.Sessions.GetSession(SessionId) ?? session;
+                _rc.Session = session;
             }
             else
             {

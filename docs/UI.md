@@ -73,10 +73,11 @@ web/
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
                ToolRow, NoticeRow, StatusRow, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
-      composer/ Composer, ModelPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing, QueueChips, GoalStrip, TodoStrip
+      composer/ Composer, ProfilePicker, ModelPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing, QueueChips, GoalStrip,
+               TodoStrip
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
                Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
-               SettingInfo), LanesEditor, BudgetView, PluginSwitches
+               SettingInfo), LanesEditor, BudgetView, ProfilesEditor, PluginSwitches
   mock/
     server.mjs  store.mjs  agent.mjs  content.mjs    mock host (HTTP + WS + scripted agent)
     work.mjs  ideas.mjs  diag.mjs                     mock lanes/processes/usage, ideas backlog, plugin manager
@@ -253,6 +254,8 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 - The model picker groups models by provider and shows each one's status dot, context window and concurrency;
   choosing one calls `sessions.update { model }`. The effort picker offers "default" plus
   `model.reasoning.efforts` and calls `sessions.update { reasoning }`; `''` means the model default.
+- The profile picker (shown once there are profiles) sets the chat's profile (`profiles.apply`): free before the first
+  message; in a started chat it says the system prompt and tools change and the chat is read again (with its size).
 - The tools button (a wrench; "N off" when tools are switched off) lists the chat's tools by category with a switch each
   (`agent.tools`, `agent.setTools`): free before the first message; in a started chat it says that the next model call
   re-reads the chat (with its size). **All on** undoes every switch.
@@ -264,7 +267,7 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 
 ### Settings dialog
 
-The pages: **General**, **Lanes & budget**, **Models**, **Agents**, **Context**, **Tools & plugins**, then
+The pages: **General**, **Lanes & budget**, **Profiles**, **Models**, **Agents**, **Context**, **Tools & plugins**, then
 **settings.json** and **About**. Host settings are controls rendered from `settings.schema` (the host's and each
 plugin's `SettingsSection`, placed on the page of its group; a plugin's section comes and goes with the plugin).
 `SettingField` renders one control per type (switch, number with unit and range, text, secret with an eye, choice,
@@ -276,6 +279,9 @@ applies (`restart`, `new sessions`).
   it, price overrides and a daily cap; the price, context, local/cloud and today's spend come from `lanes.list`); "Add a
   lane for a model…" starts one (the id is a slug of the model). `BudgetView` shows this period against the monthly
   and daily budgets and what each model cost (`usage.summary`), above the budget settings.
+- **Profiles:** `ProfilesEditor` has "New chats start with" (`profiles.defaultProfile`) and one card per profile: the name,
+  the instructions that replace the opening of the system prompt, and the tools as checkboxes by category (with all
+  on / all off per category). The Projects dialog sets a project's default (`projects.update { meta: { profile } }`).
 - **Tools & plugins:** `PluginSwitches` lists every plugin with a switch (`plugins.setEnabled`, confirmed) and the
   tools it brings, and the names in `tools.disabled` when there are any (× shows one again). Single tools are switched
   per chat (the composer's tools button).

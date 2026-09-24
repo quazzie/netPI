@@ -28,6 +28,7 @@ export async function setSetting(key, value) {
 export function pagesOf(schema) {
   const pages = [
     { id: 'lanes', title: 'Lanes & budget', icon: 'layers', sections: [] },
+    { id: 'profiles', title: 'Profiles', icon: 'user', sections: [] },
     { id: 'Models', title: 'Models', icon: 'cpu', sections: [] },
     { id: 'Agents', title: 'Agents', icon: 'bot', sections: [] },
     { id: 'Context', title: 'Context', icon: 'file-text', sections: [] },

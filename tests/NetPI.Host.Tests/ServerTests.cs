@@ -333,6 +333,15 @@ public static class ServerTests
             Check.True(Directory.Exists(Path.Combine(dir, "sub", "new")));
             Check.Equal("Renamed", (await Call("projects.update", new { id = pid, name = "Renamed" }))!["name"]!.GetValue<string>());
             Check.Equal(2, (await Call("projects.list"))!.AsArray().Count);
+            // project meta is merged key by key; null removes a key, and the last one the object
+            var withMeta = (await Call("projects.update", new { id = pid, meta = new { profile = "admin", other = 1 } }))!;
+            Check.Equal("admin", withMeta["meta"]?["profile"]?.GetValue<string>());
+            Check.Equal("Renamed", withMeta["name"]!.GetValue<string>(), "name kept");
+            var merged = (await Call("projects.update", new { id = pid, meta = new Dictionary<string, object?> { ["other"] = null } }))!;
+            Check.Equal("{\"profile\":\"admin\"}", merged["meta"]!.ToJsonString());
+            Check.Equal("admin", (await Call("projects.list"))!.AsArray().First(p => p!["id"]!.GetValue<string>() == pid)!["meta"]?["profile"]?.GetValue<string>());
+            var cleared = (await Call("projects.update", new { id = pid, meta = new Dictionary<string, object?> { ["profile"] = null } }))!;
+            Check.True(cleared["meta"] is null, "no keys, no meta");
 
             var session = (await Call("sessions.create", new { title = "Chat", projectId = pid, model = "aiproxy/x", reasoning = "low" }))!;
             var sid = session["id"]!.GetValue<string>();

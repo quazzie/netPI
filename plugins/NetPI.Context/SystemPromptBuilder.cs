@@ -55,7 +55,7 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
 internal sealed class PromptStore(IPluginContext ctx)
 {
     private readonly ConcurrentDictionary<string, string> _cache = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, IReadOnlyList<string>> _tools = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ToolBaseline> _tools = new(StringComparer.Ordinal);
     private IDatabase? _db;
 
     public void Initialize()
@@ -66,7 +66,9 @@ internal sealed class PromptStore(IPluginContext ctx)
             db.Migrate("context",
                 "CREATE TABLE IF NOT EXISTS context_prompts (session_id TEXT PRIMARY KEY, prompt TEXT NOT NULL, created_at TEXT NOT NULL)",
                 // the tool names of a session's first model call: the baseline for "tools" notices
-                "CREATE TABLE IF NOT EXISTS context_tools (session_id TEXT PRIMARY KEY, tools TEXT NOT NULL)");
+                "CREATE TABLE IF NOT EXISTS context_tools (session_id TEXT PRIMARY KEY, tools TEXT NOT NULL)",
+                // a baseline taken later (after context.reset) ignores the "tools" notices up to this seq
+                "ALTER TABLE context_tools ADD COLUMN since_seq INTEGER NOT NULL DEFAULT 0");
             _db = db;
         }
         catch (Exception ex)
@@ -102,16 +104,18 @@ internal sealed class PromptStore(IPluginContext ctx)
         return stored;
     }
 
-    /// <summary>The tool names of the session's first model call, or null before it.</summary>
-    public IReadOnlyList<string>? GetTools(string sessionId)
+    /// <summary>The tool names of the session's first model call (or the first after a reset), or null before it.</summary>
+    public ToolBaseline? GetTools(string sessionId)
     {
-        if (_tools.TryGetValue(sessionId, out var names)) return names;
+        if (_tools.TryGetValue(sessionId, out var baseline)) return baseline;
         if (_db is null) return null;
         try
         {
-            var json = _db.Scalar<string>("SELECT tools FROM context_tools WHERE session_id = @sessionId", new { sessionId });
-            if (json is null) return null;
-            return _tools.GetOrAdd(sessionId, (JsonNode.Parse(json) as JsonArray)?.Select(n => n?.GetValue<string>()).OfType<string>().ToList() ?? []);
+            var row = _db.QuerySingle("SELECT tools, since_seq FROM context_tools WHERE session_id = @sessionId", new { sessionId },
+                r => (Tools: r.GetString("tools"), Since: r.GetInt64("since_seq")));
+            if (row.Tools is null) return null;
+            var names = (JsonNode.Parse(row.Tools) as JsonArray)?.Select(n => n?.GetValue<string>()).OfType<string>().ToList() ?? [];
+            return _tools.GetOrAdd(sessionId, new ToolBaseline(names, row.Since));
         }
         catch (Exception ex)
         {
@@ -120,20 +124,25 @@ internal sealed class PromptStore(IPluginContext ctx)
         }
     }
 
-    /// <summary>Store the tool names of the session's first model call; returns the stored list (the first one wins).</summary>
-    public IReadOnlyList<string> FreezeTools(string sessionId, IReadOnlyList<string> names)
+    /// <summary>
+    /// Store the tool names of the session's first model call; <paramref name="sinceSeq"/> is the last message seq then
+    /// (older "tools" notices do not apply to this baseline). Returns the stored baseline (the first one wins).
+    /// </summary>
+    public ToolBaseline FreezeTools(string sessionId, IReadOnlyList<string> names, long sinceSeq = 0)
     {
-        var stored = _tools.GetOrAdd(sessionId, names);
-        if (!ReferenceEquals(stored, names) || _db is null) return stored;
+        var baseline = new ToolBaseline(names, sinceSeq);
+        var stored = _tools.GetOrAdd(sessionId, baseline);
+        if (!ReferenceEquals(stored, baseline) || _db is null) return stored;
         try
         {
-            _db.Execute("INSERT OR IGNORE INTO context_tools (session_id, tools) VALUES (@sessionId, @tools)",
-                new { sessionId, tools = new JsonArray(names.Select(n => (JsonNode?)n).ToArray()).ToJsonString() });
+            _db.Execute("INSERT OR IGNORE INTO context_tools (session_id, tools, since_seq) VALUES (@sessionId, @tools, @sinceSeq)",
+                new { sessionId, tools = new JsonArray(names.Select(n => (JsonNode?)n).ToArray()).ToJsonString(), sinceSeq });
         }
         catch (Exception ex) { ctx.Logger.LogWarning(ex, "Storing the tool baseline of {Session} failed", sessionId); }
         return stored;
     }
 
+    /// <summary>Forget the session's prompt and tool baseline (deleted session, or <c>context.reset</c>: rendered again at the next call).</summary>
     public void Delete(string sessionId)
     {
         _cache.TryRemove(sessionId, out _);
@@ -147,3 +156,6 @@ internal sealed class PromptStore(IPluginContext ctx)
         catch (Exception ex) { ctx.Logger.LogDebug(ex, "Deleting the prompt of {Session} failed", sessionId); }
     }
 }
+
+/// <summary>The tools a session's prompt was rendered with, and the last message seq at that time.</summary>
+internal sealed record ToolBaseline(IReadOnlyList<string> Names, long SinceSeq);

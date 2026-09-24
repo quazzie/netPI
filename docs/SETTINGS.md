@@ -102,6 +102,29 @@ turned off; models without effort levels only get on/off. Free models are limite
 | `agent.parallelReadOnlyTools` | `true` | run several read-only calls of one turn concurrently |
 | `agents.maxDepth` | `3` | subagent nesting depth (deeper agents get no orchestration tools) |
 
+## Profiles
+
+A profile is the opening of a chat's system prompt and the tools it gets (Settings → Profiles). A new chat gets its
+project's default profile (the Projects dialog; `project.meta.profile`, `"none"` for none), else `profiles.defaultProfile`;
+each chat can pick another next to the model: free before the first message, later the chat is read again once.
+Subagents don't use profiles: the agent that starts one chooses its tools.
+
+```jsonc
+"profiles": {
+  "defaultProfile": "coder",
+  "coder": { "name": "Coder" },
+  "admin": { "name": "Admin", "prompt": "You are a system administrator for the hosts in ~/.ssh/config. …",
+             "toolsOff": ["bash", "pwsh", "write", "edit"] }
+}
+```
+
+| key | |
+|---|---|
+| `profiles.<id>.name` | shown in the pickers |
+| `profiles.<id>.prompt` | replaces the opening of the system prompt (the built-in "You are a coding agent…", or `context.customPrompt`); empty keeps it |
+| `profiles.<id>.toolsOff` | tools the chat starts without (checkboxes in the dialog); the chat's tools button can still change them |
+| `profiles.defaultProfile` | the profile of new chats whose project has none |
+
 ## Lanes
 
 A lane is a model with a number of parallel slots; every model call takes one. The lanes you set up are the ones

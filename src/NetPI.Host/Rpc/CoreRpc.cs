@@ -45,10 +45,11 @@ internal static class CoreRpc
             return k.Sessions.CreateProject(req.Str("name") ?? "", path);
         });
 
-        Add("projects.update", "Update a project: { id, name?, path? } → ProjectInfo", req =>
+        Add("projects.update", "Update a project: { id, name?, path?, meta? } → ProjectInfo (meta is merged key by key; a null value removes a key)", req =>
         {
             var path = req.Str("path") is { Length: > 0 } p ? ExistingDirectory(p, req.Bool("create") == true) : null;
-            return k.Sessions.UpdateProject(req.Required("id"), req.Str("name"), path);
+            var meta = req.Prop("meta") is { ValueKind: JsonValueKind.Object } m ? JsonNode.Parse(m.GetRawText()) as JsonObject : null;
+            return k.Sessions.UpdateProject(req.Required("id"), req.Str("name"), path, meta);
         });
 
         Add("projects.delete", "Delete a project (its sessions are detached): { id } → true", req =>

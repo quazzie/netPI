@@ -35,7 +35,7 @@ internal static class SectionUtil
     }
 }
 
-/// <summary>Who the agent is (order 0). <c>context.customPrompt</c> replaces it.</summary>
+/// <summary>Who the agent is (order 0): the session's profile text (<c>meta.identity</c>), else <c>context.customPrompt</c>, else the built-in text.</summary>
 internal sealed class IdentitySection(ISettings settings) : IPromptSection
 {
     public const string Default =
@@ -49,7 +49,7 @@ internal sealed class IdentitySection(ISettings settings) : IPromptSection
 
     public ValueTask<string?> RenderAsync(PromptContext context, CancellationToken ct)
     {
-        var custom = SectionUtil.SettingString(settings, "context.customPrompt");
+        var custom = SessionIdentity.Of(context.Session) ?? SectionUtil.SettingString(settings, "context.customPrompt");
         return ValueTask.FromResult<string?>(string.IsNullOrWhiteSpace(custom) ? Default : custom);
     }
 }

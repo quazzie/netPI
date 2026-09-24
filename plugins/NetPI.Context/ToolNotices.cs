@@ -29,7 +29,7 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
         var baseline = store.GetTools(sessionId);
         if (baseline is null)
         {
-            store.FreezeTools(sessionId, names);
+            store.FreezeTools(sessionId, names, turn.Messages.Count > 0 ? turn.Messages.Max(m => m.Seq) : 0);
             return;
         }
         var known = Known(baseline, turn.Messages);
@@ -38,7 +38,7 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
     }
 
     /// <summary>Appends a notice when the tools differ from what the context says, under a per-session lock.</summary>
-    internal bool Announce(string sessionId, IReadOnlyList<ToolDefinition> tools, IReadOnlyList<string> baseline)
+    internal bool Announce(string sessionId, IReadOnlyList<ToolDefinition> tools, ToolBaseline baseline)
     {
         lock (_gates.GetOrAdd(sessionId, _ => new object()))
         {
@@ -71,12 +71,13 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
         return sb.ToString();
     }
 
-    internal static HashSet<string> Known(IReadOnlyList<string> baseline, IReadOnlyList<ChatMessage> context)
+    internal static HashSet<string> Known(ToolBaseline baseline, IReadOnlyList<ChatMessage> context)
     {
-        var known = new HashSet<string>(baseline, StringComparer.Ordinal);
+        var known = new HashSet<string>(baseline.Names, StringComparer.Ordinal);
         foreach (var m in context)
         {
             if (m.Role != MessageRole.Notice || m.MetaString("kind") != Kind) continue;
+            if (m.Seq > 0 && m.Seq <= baseline.SinceSeq) continue; // before this baseline (a profile switch reset it)
             foreach (var n in m.Meta?["added"] as JsonArray ?? []) if (n?.GetValue<string>() is { } a) known.Add(a);
             foreach (var n in m.Meta?["removed"] as JsonArray ?? []) if (n?.GetValue<string>() is { } r) known.Remove(r);
         }

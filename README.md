@@ -21,7 +21,11 @@ headless for any browser.
   ask you first.
 - **Agents manage agents.** `agent_spawn`, `agent_wait`, `agent_send`, `agent_list`, `agent_result`, `agent_cancel`
   (plus `lanes_list` from the lanes plugin); subagents get their own (viewable, steerable) sessions and report back
-  automatically.
+  automatically. The agent that starts one chooses its tools, so a limited orchestrator can dispatch agents that can do
+  more.
+- **Profiles.** A profile is the opening of the system prompt ("You are a system administrator…") and the tools a chat
+  gets, switched on and off with checkboxes. Give one to a project and its new chats start with it; switch it in a chat
+  for free before the first message.
 - **Steering and queueing.** While an agent runs, *Enter* steers it (delivered after the current tool call) and
   *Alt+Enter* queues a follow-up; *Esc* stops.
 - **Goals.** `/goal <what must be true>` keeps the agent working: after every run it is started again until it marks
@@ -93,6 +97,7 @@ NetPI.exe (WinForms + WebView2) ─┐          ┌─ plugins/ (collectible loa
 netpi-server (headless) ─────────┴─ NetPI.Host ─┤   NetPI.Agent        agent loop, steering/queue, subagents, yield
    Kestrel 127.0.0.1 + WebSocket (token auth)   │   NetPI.Lanes        lanes, queueing, the cost ledger, the budget
    plugin manager · event bus · service/RPC/    │   NetPI.Context      system prompt (frozen per session), project notices
+                                                │   NetPI.Profiles     a chat's opening instructions and tools, a default per project
    tool/UI registries · SQLite · settings ·     │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md, announced as notices
    session store · model catalog                │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic, OpenRouter
                                                 │   NetPI.Tools.*      files, shell, agents, web, media, ssh · NetPI.Todo · NetPI.Goal

@@ -697,12 +697,12 @@ internal sealed class AgentRuntime : IAgentRuntime
         var n = Interlocked.Increment(ref _spawnCounter);
         var name = string.IsNullOrWhiteSpace(request.Name) ? $"agent-{(parentInfo?.Children.Count ?? n - 1) + 1}" : request.Name.Trim();
 
+        // The owner chooses a subagent's tools: the ones it names (tools it does not have itself included: a limited
+        // orchestrator can dispatch an agent with other tools), or by default its own (its allowlist, and the tools
+        // switched off for its session stay off).
         List<string>? allow = request.Tools is { Count: > 0 } t ? [.. t.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim())] : null;
-        if (parentInfo?.ToolAllowlist is { } parentAllow)
-            allow = allow is null ? [.. parentAllow] : allow.Where(x => parentAllow.Contains(x, StringComparer.OrdinalIgnoreCase)).ToList();
-
-        // the tools switched off for the parent's session stay off for its subagents
-        var off = SessionTools.Off(parentSession);
+        var off = allow is null ? SessionTools.Off(parentSession) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (allow is null && parentInfo?.ToolAllowlist is { } parentAllow) allow = [.. parentAllow];
         var canMessage = (allow is null || allow.Contains("agent_send", StringComparer.OrdinalIgnoreCase)) && !off.Contains("agent_send");
         var instructions = SubagentInstructions(id, name, parentInfo, request.Instructions, canMessage);
         var meta = new JsonObject

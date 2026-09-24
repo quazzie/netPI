@@ -1,0 +1,5 @@
+{
+  "id": "netpi.profiles",
+  "name": "Profiles",
+  "description": "Named instructions and tools for chats, with a default per project."
+}

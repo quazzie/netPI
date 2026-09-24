@@ -168,6 +168,30 @@ function budgetStatus() {
   };
 }
 
+/** The profiles in the settings (profiles.<id> = { name, prompt, toolsOff }), by name. */
+function profilesList() {
+  return Object.entries(store.settings.profiles ?? {})
+    .filter(([id, v]) => id !== 'defaultProfile' && id !== 'none' && v && typeof v === 'object')
+    .map(([id, v]) => ({ id, name: v.name || id, prompt: v.prompt || null, toolsOff: v.toolsOff ?? [] }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+const profileById = (id) => (id ? profilesList().find((x) => x.id === id) : null);
+/** A new chat's profile: its project's default (or "none"), else the global default. */
+function defaultProfileFor(s) {
+  const chosen = s.projectId ? store.projects.get(s.projectId)?.meta?.profile : null;
+  if (chosen === 'none') return null;
+  return profileById(chosen) ?? profileById(store.settings.profiles?.defaultProfile);
+}
+/** Apply a profile (null: none) to a session: meta.profile, meta.identity, meta.toolsOff. */
+function writeProfile(s, profile) {
+  const meta = { ...(s.meta ?? {}), profile: profile?.id ?? null };
+  if (profile?.prompt) meta.identity = profile.prompt;
+  else delete meta.identity;
+  if (profile?.toolsOff?.length) meta.toolsOff = [...profile.toolsOff].sort();
+  else delete meta.toolsOff;
+  s.meta = meta;
+}
+
 /** agent.tools for a session: the tools its agent gets, each with its switch. */
 function sessionTools(s) {
   const off = new Set((s.meta?.toolsOff ?? []).map((n) => n.toLowerCase()));
@@ -262,6 +286,12 @@ const handlers = {
     if (!pr) throw notFound('Project');
     if (p.name) pr.name = p.name;
     if (p.path) pr.path = p.path;
+    // meta is merged key by key; null removes a key
+    if (p.meta && typeof p.meta === 'object') {
+      const meta = { ...(pr.meta ?? {}) };
+      for (const [k, v] of Object.entries(p.meta)) v == null ? delete meta[k] : (meta[k] = v);
+      pr.meta = Object.keys(meta).length ? meta : null;
+    }
     pr.updatedAt = new Date().toISOString();
     publish('project.updated', { project: pr });
     return pr;
@@ -297,6 +327,9 @@ const handlers = {
       const pr = store.projects.get(s.projectId);
       if (pr) pr.lastUsedAt = new Date().toISOString();
     }
+    // like the profiles plugin: a new chat gets its project's default profile, else the global one
+    const first = defaultProfileFor(s);
+    if (first) writeProfile(s, first);
     publish('session.created', { session: s });
     return s;
   },
@@ -471,6 +504,19 @@ const handlers = {
     s.updatedAt = new Date().toISOString();
     publish('session.updated', { session: s });
     return sessionTools(s);
+  },
+  'profiles.list': () => ({ defaultProfile: profileById(store.settings.profiles?.defaultProfile)?.id ?? null, profiles: profilesList() }),
+  'profiles.apply': (p) => {
+    const s = getSession(need(p, 'sessionId'));
+    if (s.kind === 'subagent') throw new RpcError('bad_request', "Subagents don't use profiles: the agent that starts one chooses its tools.");
+    const id = p.profile && p.profile !== 'none' ? p.profile : null;
+    const profile = id ? profileById(id) : null;
+    if (id && !profile) throw notFound('Profile');
+    writeProfile(s, profile);
+    publish('session.updated', { session: s });
+    if ((s.messageCount ?? 0) > 0)
+      agent.notice(s.id, profile ? `The user switched this chat to the profile "${profile.name}": your system prompt and tools have changed.` : "The user took this chat's profile away: your system prompt and tools are the default ones now.", { kind: 'profile' });
+    return s;
   },
   'agent.queue': (p) => agent.queue(need(p, 'sessionId')),
   'agent.dequeue': (p) => agent.dequeue(need(p, 'sessionId'), need(p, 'id')),

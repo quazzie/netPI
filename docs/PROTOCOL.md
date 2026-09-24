@@ -43,7 +43,7 @@ interface ChatMessage {
   provider?: string; model?: string; stopReason?: 'stop'|'tool_use'|'length'|'aborted'|'error'|'content_filter';
   usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; reasoningTokens: number; costUsd?: number /* as the provider reported it (OpenRouter) */ };
   durationMs?: number; compacted: boolean;
-  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | tools | todo | goal | budget | nudge | agent-message | agent-result | steer | retry | error | compaction
+  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | tools | todo | goal | budget | profile | nudge | agent-message | agent-result | steer | retry | error | compaction
 }
 type Part =
   | { type: 'text'; text: string }
@@ -53,8 +53,9 @@ type Part =
   | { type: 'image'; mediaType: string; data: string /* base64 */ };
 
 interface SessionInfo { id; title; projectId?; parentSessionId?; kind: 'chat'|'subagent'; model?; reasoning?; createdAt; updatedAt; archived; messageCount; contextTokens;
-  meta?: { goal?: Goal; toolsOff?: string[] /* tools switched off for this chat */; budgetAllowedFrom?: string; agentId?; parentAgentId?; [k: string]: any } }
-interface ProjectInfo { id; name; path; createdAt; updatedAt; lastUsedAt? }
+  meta?: { goal?: Goal; toolsOff?: string[] /* tools switched off for this chat */; profile?: string|null /* its profile */;
+    identity?: string /* the opening of its system prompt, from the profile */; budgetAllowedFrom?: string; agentId?; parentAgentId?; [k: string]: any } }
+interface ProjectInfo { id; name; path; createdAt; updatedAt; lastUsedAt?; meta?: { profile?: string /* default profile of new sessions, or "none" */; [k: string]: any } }
 interface ModelInfo { provider; id; ref /* "provider/id" */; displayName?; contextWindow?; maxOutputTokens?; concurrency?;
   inputModalities: string[]; reasoning?: { supported: boolean; efforts: string[]; default?: string }; status?; isLocal: boolean }
 type AgentStatus = 'idle'|'queued'|'running'|'yielded'|'completed'|'failed'|'cancelled';
@@ -81,7 +82,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `app.info` | – | `{ version, os, osDescription, home, appDir, defaultWorkspace, settingsFile, desktop, pid, dotnet, sqlite, pathSeparator }` |
 | `projects.list` | – | `ProjectInfo[]` |
 | `projects.create` | `{ name, path, create? }` | `ProjectInfo` |
-| `projects.update` | `{ id, name?, path? }` | `ProjectInfo` |
+| `projects.update` | `{ id, name?, path?, meta? }` | `ProjectInfo` (`meta` is merged key by key; a null value removes a key) |
 | `projects.delete` | `{ id }` | `true` (its sessions are detached) |
 | `sessions.list` | `{ projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, limit?, offset? }` | `SessionInfo[]` (newest first) |
 | `sessions.create` | `{ title?, projectId?, model?, reasoning? }` | `SessionInfo` |
@@ -122,6 +123,9 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `agent.dequeue` | netpi.agent | `{ sessionId, id }` → `bool` |
 | `agents.list` | netpi.agent | `{ includeFinished? }` → `AgentInfo[]` |
 | `agent.get` | netpi.agent | `{ id? , sessionId? }` → `AgentInfo\|null` |
+| `profiles.list` | netpi.profiles | → `{ defaultProfile, profiles: { id, name, prompt, toolsOff }[] }` |
+| `profiles.apply` | netpi.profiles | `{ sessionId, profile: string\|null }` → `SessionInfo`: sets the chat's `meta.profile`, `meta.identity` and `meta.toolsOff` from the profile; in a started chat the system prompt is rendered again at the next model call (`context.reset`, one full re-read) and a `profile` notice is appended. Chats only |
+| `context.reset` | netpi.context | `{ sessionId }` → `true`: forget the session's frozen system prompt and tool baseline; the next model call renders them again |
 | `agent.tools` | netpi.agent | `{ sessionId }` → `{ sessionId, started, contextTokens, off: string[], tools: { name, label, category, description, readOnly, pluginId, on }[] }`: the tools the session's agent can have, each with its switch |
 | `agent.setTools` | netpi.agent | `{ sessionId, off?: string[], on?: string[] }` → like `agent.tools`: switches tools off (or back on) for one session (`meta.toolsOff`); a started chat gets the change at its next model call, with a `tools` notice (the model re-reads the conversation once); subagents start with their parent's list |
 | `lanes.list` | netpi.lanes | → `LanePoolInfo[]` (also `configured`, `model`, `use`, `priceInput`/`priceOutput` ($ per Mtok), `priceSource`, `free`, `spentTodayUsd`, `dailyLimitUsd`) |

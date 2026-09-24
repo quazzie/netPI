@@ -119,8 +119,9 @@ Anthropic's prompt cache alike). So nothing that was sent is ever changed; new i
   new tools' `PromptGuidelines`; removed tools are named too, and tools the user switched off for the chat as such).
   Changing the tool set is the one change that re-prefills once, because the definitions sit at the top of the request.
 
-Exceptions by necessity: compaction replaces old messages with a summary when the context is nearly full, and tool-call
-repair turns a tool call the model wrote as text into a real call.
+Exceptions by necessity: compaction replaces old messages with a summary when the context is nearly full, tool-call
+repair turns a tool call the model wrote as text into a real call, and a profile switch in a started chat (the user's
+choice) renders the system prompt again (`context.reset`; the next call re-reads the conversation once).
 
 ## Extension points (all in `src/NetPI.Abstractions`)
 

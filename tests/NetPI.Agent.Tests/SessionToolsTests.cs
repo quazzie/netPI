@@ -9,7 +9,7 @@ public static class SessionToolsTests
     {
         t.Add("session tools: switched off before the first message they are never sent (no notice); preview and agent.tools agree", BeforeStart);
         t.Add("session tools: switched off mid-session they go from the next call with a notice naming the user; on again they are new", MidSession);
-        t.Add("session tools: subagents start with their parent session's switches; an allowlist cannot bring a tool back", Subagents);
+        t.Add("session tools: a subagent gets its owner's tools, or exactly the tools it is given (even ones its owner has off)", Subagents);
         t.Add("session tools: agent.setTools adds and removes names; the last one on removes the key; unknown session", SetSemantics);
     }
 
@@ -92,12 +92,19 @@ public static class SessionToolsTests
         await Turn(h, s.Id, "hi");
         var parent = h.Runtime.GetBySession(s.Id)!;
 
-        var sub = await h.Runtime.SpawnAsync(new SpawnRequest { ParentAgentId = parent.Id, Task = "look around", Tools = ["read", "bash"] });
+        // without a tools list: its owner's tools (the owner's switched-off tools stay off)
+        var sub = await h.Runtime.SpawnAsync(new SpawnRequest { ParentAgentId = parent.Id, Task = "look around" });
         await h.StatusAsync(sub.Id, AgentStatus.Completed);
         var subSession = h.Sessions.GetSession(sub.SessionId)!;
-        Check.Equal("bash", string.Join(",", SessionTools.Off(subSession)), "the subagent session starts with the parent's switches");
+        Check.Equal("bash", string.Join(",", SessionTools.Off(subSession)), "the subagent session starts with its owner's switches");
         var sent = Sent(h, sub.SessionId);
         Check.True(sent.Contains("read") && !sent.Contains("bash"), string.Join(",", sent));
+
+        // with one: exactly those, even a tool its owner has off (a limited orchestrator dispatches an agent that can do more)
+        var worker = await h.Runtime.SpawnAsync(new SpawnRequest { ParentAgentId = parent.Id, Task = "run it", Tools = ["read", "bash"] });
+        await h.StatusAsync(worker.Id, AgentStatus.Completed);
+        Check.Equal("bash,read", string.Join(",", Sent(h, worker.SessionId)));
+        Check.Equal("", string.Join(",", SessionTools.Off(h.Sessions.GetSession(worker.SessionId))));
 
         // a top-level agent without a parent session gets every tool
         var free = await h.Runtime.SpawnAsync(new SpawnRequest { Task = "free" });
