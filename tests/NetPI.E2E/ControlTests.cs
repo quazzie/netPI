@@ -155,7 +155,7 @@ public static class ControlTests
             var notice = await env.Client.WaitFor(mark, e => e.Type == "message.added" && e.Sid == sid && e.D.P("message").S("role") == "notice", "project notice");
             Check.Equal("project", notice.D.P("message").P("meta").S("kind"));
             Check.Equal(dir, notice.D.P("message").P("meta").S("cwd"));
-            Check.True(env.Client.Since(mark).Any(e => e.Type == "session.updated" && e.D.P("session").S("id") == sid), "session.updated");
+            await env.Client.WaitFor(mark, e => e.Type == "session.updated" && e.D.P("session").S("id") == sid, "session.updated");
 
             var mockMark = await env.MockMark();
             var second = await env.Run(sid, "and now? [s:where file=where-2.txt]");

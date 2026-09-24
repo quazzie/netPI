@@ -43,7 +43,8 @@ internal static class ResponsesTransport
             if (mo.ReasoningSummary is not null) reasoning["summary"] = mo.ReasoningSummary;
             body["reasoning"] = reasoning;
         }
-        if (mo.ReplayReasoning) body["include"] = new JsonArray("reasoning.encrypted_content");
+        // OpenAI-hosted reasoning models only return replayable reasoning when asked for its encrypted form
+        if (mo.ReplayReasoning && mo.IncludeEncryptedReasoning) body["include"] = new JsonArray("reasoning.encrypted_content");
         if (req.Temperature is { } temp) body["temperature"] = temp;
         return body;
     }
@@ -189,6 +190,9 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
 
     public bool Finished { get; private set; }
 
+    /// <summary>The server's response id (from response.created / in_progress / completed / failed).</summary>
+    public string? ResponseId { get; private set; }
+
     public void Handle(SseEvent sse)
     {
         if (sse.IsDone) { if (asm.HasContent || _items.Count > 0) Finished = true; return; }
@@ -252,6 +256,7 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
     private void HandleEvent(JsonElement e, string? sseEvent)
     {
         var type = e.Str("type") ?? sseEvent ?? "";
+        if (e.Prop("response").Str("id") is { Length: > 0 } rid) ResponseId = rid;
         switch (type)
         {
             case "response.output_item.added":

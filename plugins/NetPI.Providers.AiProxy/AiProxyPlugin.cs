@@ -137,7 +137,7 @@ public sealed class AiProxyPlugin : INetPiPlugin
                 var entryId = id;
                 var provider = new OpenAiCompatibleProvider(entryId, w.Name, http, () => FindEntry(ctx, entryId),
                     new ProviderDefaults { BaseUrl = "", IsLocal = w.Key.EndsWith("|True", StringComparison.Ordinal), Transport = OpenAiTransport.Chat },
-                    ctx.Logger, ctx.Events);
+                    ctx.Logger, ctx.Events, ctx.Paths.LogsDir);
                 var reg = ctx.Services.Register<IModelProvider>(provider);
                 _extras[id] = new Extra(provider, reg, w.Key);
                 changed = true;

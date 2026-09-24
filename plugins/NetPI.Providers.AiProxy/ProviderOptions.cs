@@ -20,7 +20,8 @@ internal sealed record ModelOptions(
     bool ReplayReasoning,
     bool ParseThinkTags,
     int DefaultMaxOutputTokens,
-    string? ReasoningSummary);
+    string? ReasoningSummary,
+    bool IncludeEncryptedReasoning = false);
 
 /// <summary>
 /// A snapshot of an endpoint's settings object, parsed tolerantly. Settings are read at call time so edits
@@ -34,7 +35,11 @@ internal sealed class ProviderOptions
     public required string BaseUrl { get; init; }
     public string? ApiKey { get; init; }
     public OpenAiTransport Transport { get; init; }
-    public bool ReplayReasoning { get; init; }
+    /// <summary>Explicit setting; null = transport default (Responses: replay reasoning items, Chat: don't).</summary>
+    public bool? ReplayReasoning { get; init; }
+    /// <summary>Write the request body of failed calls to logs/failed-requests (for bug reports).</summary>
+    public bool DumpFailedRequests { get; init; } = true;
+    public bool IncludeEncryptedReasoning { get; init; }
     public int DefaultMaxOutputTokens { get; init; }
     public bool ParseThinkTags { get; init; } = true;
     public int ModelsCacheSeconds { get; init; }
@@ -59,6 +64,11 @@ internal sealed class ProviderOptions
     /// <summary>Identity of the endpoint (cache key for the model list).</summary>
     public string Fingerprint => $"{Root}|{ApiKey?.GetHashCode()}|{string.Join(",", Headers.Select(h => h.Key + "=" + h.Value))}";
 
+    private static bool? BoolOrNull(JsonObject? o, string key) =>
+        o is not null && o.TryGetPropertyValue(key, out var v) && v is JsonValue jv
+            ? (jv.TryGetValue<bool>(out var b) ? b : jv.TryGetValue<string>(out var s) && bool.TryParse(s, out var sb) ? sb : null)
+            : null;
+
     public static ProviderOptions Parse(JsonObject? o, ProviderDefaults d)
     {
         var headers = new List<KeyValuePair<string, string>>();
@@ -71,7 +81,9 @@ internal sealed class ProviderOptions
             BaseUrl = o.Str("baseUrl") is { Length: > 0 } url ? url : d.BaseUrl,
             ApiKey = ResolveSecret(o.Str("apiKey")),
             Transport = ParseTransport(o.Str("transport")) ?? d.Transport,
-            ReplayReasoning = o.Bool("replayReasoning", false),
+            ReplayReasoning = BoolOrNull(o, "replayReasoning"),
+            DumpFailedRequests = o.Bool("dumpFailedRequests", true),
+            IncludeEncryptedReasoning = o.Bool("includeEncryptedReasoning", false),
             DefaultMaxOutputTokens = o.Int("defaultMaxOutputTokens") is > 0 and var m ? m : d.DefaultMaxOutputTokens,
             ParseThinkTags = o.Bool("parseThinkTags", true),
             ModelsCacheSeconds = o.Int("modelsCacheSeconds") is >= 0 and var c ? c : d.ModelsCacheSeconds,
@@ -90,12 +102,16 @@ internal sealed class ProviderOptions
     public ModelOptions ForModel(string modelId)
     {
         var m = ModelOverride(modelId);
+        var transport = ParseTransport(m.Str("transport")) ?? Transport;
         return new ModelOptions(
-            ParseTransport(m.Str("transport")) ?? Transport,
-            m.Bool("replayReasoning", ReplayReasoning),
+            transport,
+            // Standard stateless Responses usage appends the previous response's output items (reasoning, message,
+            // function calls) to the next input; chat templates differ on reasoning replay, so chat defaults to off.
+            BoolOrNull(m, "replayReasoning") ?? ReplayReasoning ?? transport == OpenAiTransport.Responses,
             m.Bool("parseThinkTags", ParseThinkTags),
             m.Int("maxOutputTokens") is > 0 and var mx ? mx : DefaultMaxOutputTokens,
-            m.Str("reasoningSummary") ?? ReasoningSummary);
+            m.Str("reasoningSummary") ?? ReasoningSummary,
+            m.Bool("includeEncryptedReasoning", IncludeEncryptedReasoning));
     }
 
     public static OpenAiTransport? ParseTransport(string? s) => s?.Trim().ToLowerInvariant() switch

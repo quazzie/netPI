@@ -24,6 +24,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
     private readonly ProviderDefaults _defaults;
     private readonly ILogger _log;
     private readonly IEventBus? _events;
+    private readonly string? _dumpDir;
     private readonly SemaphoreSlim _listLock = new(1, 1);
 
     private volatile CacheEntry? _cache;
@@ -35,8 +36,9 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
     private volatile Dictionary<string, bool> _imageSupport = new(StringComparer.Ordinal);
 
     public OpenAiCompatibleProvider(string id, string displayName, HttpClient http, Func<JsonObject?> config,
-        ProviderDefaults? defaults = null, ILogger? logger = null, IEventBus? events = null)
+        ProviderDefaults? defaults = null, ILogger? logger = null, IEventBus? events = null, string? logsDir = null)
     {
+        _dumpDir = logsDir is null ? null : Path.Combine(logsDir, "failed-requests");
         Id = id;
         DisplayName = displayName;
         _http = http;
@@ -49,7 +51,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
     /// <summary>Provider whose settings object lives at a dotted settings path (e.g. "providers.aiproxy").</summary>
     public static OpenAiCompatibleProvider FromSettingsPath(IPluginContext ctx, HttpClient http, string id, string displayName,
         string settingsPath, ProviderDefaults? defaults = null) =>
-        new(id, displayName, http, () => ctx.Settings.GetNode(settingsPath) as JsonObject, defaults, ctx.Logger, ctx.Events);
+        new(id, displayName, http, () => ctx.Settings.GetNode(settingsPath) as JsonObject, defaults, ctx.Logger, ctx.Events, ctx.Paths.LogsDir);
 
     public string Id { get; }
     public string DisplayName { get; }
@@ -221,7 +223,93 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
 
     // ================================================================ streaming
 
+    /// <summary>What one call sent and got back, for error messages and failed-request dumps.</summary>
+    private sealed class CallInfo
+    {
+        public string? Url;
+        public string? Transport;
+        public JsonObject? Body;
+        public string? RequestId;
+        public IOpenAiStreamParser? Parser;
+        public bool Dump;
+        public string? ResponseId => (Parser as ResponsesStreamParser)?.ResponseId;
+    }
+
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
+    {
+        // Errors are reported as they are (no retries or workarounds here): the message is only extended with the
+        // server's request/response ids, and the request body is saved so the failure can be reproduced.
+        var call = new CallInfo();
+        await using var e = StreamCoreAsync(request, call, ct).GetAsyncEnumerator(ct);
+        while (true)
+        {
+            ModelStreamEvent current;
+            try
+            {
+                if (!await e.MoveNextAsync().ConfigureAwait(false)) yield break;
+                current = e.Current;
+            }
+            catch (ModelException ex) when (!ct.IsCancellationRequested)
+            {
+                throw Describe(ex, request, call);
+            }
+            yield return current;
+        }
+    }
+
+    private ModelException Describe(ModelException ex, ModelRequest request, CallInfo call)
+    {
+        var ids = new List<string>();
+        if (call.RequestId is { Length: > 0 } rq) ids.Add("request " + rq);
+        if (call.ResponseId is { Length: > 0 } rs) ids.Add("response " + rs);
+        string? dump = null;
+        if (call.Dump && call.Body is not null && ex.ErrorType is not ("network_error" or "provider_disabled" or "invalid_config"))
+            dump = DumpFailedRequest(ex, request, call);
+        if (dump is not null) ids.Add("saved " + dump);
+        if (ids.Count == 0) return ex;
+        return new ModelException($"{ex.Message} [{string.Join(", ", ids)}]", ex.Transient, ex.StatusCode, ex.ErrorType, ex)
+        {
+            ContextOverflow = ex.ContextOverflow,
+        };
+    }
+
+    private string? DumpFailedRequest(ModelException ex, ModelRequest request, CallInfo call)
+    {
+        if (_dumpDir is null) return null;
+        try
+        {
+            Directory.CreateDirectory(_dumpDir);
+            var name = $"{DateTime.Now:yyyyMMdd-HHmmss-fff}-{Safe(request.Model.Id)}.json";
+            var path = Path.Combine(_dumpDir, name);
+            var doc = new JsonObject
+            {
+                ["time"] = DateTimeOffset.Now.ToString("O"),
+                ["provider"] = Id,
+                ["model"] = request.Model.Id,
+                ["sessionId"] = request.SessionId,
+                ["url"] = call.Url,
+                ["transport"] = call.Transport,
+                ["requestId"] = call.RequestId,
+                ["responseId"] = call.ResponseId,
+                ["error"] = new JsonObject { ["message"] = ex.Message, ["type"] = ex.ErrorType, ["status"] = ex.StatusCode },
+                ["request"] = call.Body!.DeepClone(),
+            };
+            File.WriteAllText(path, doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            // keep the newest 30
+            foreach (var old in new DirectoryInfo(_dumpDir).GetFiles("*.json").OrderByDescending(f => f.Name).Skip(30))
+                try { old.Delete(); } catch { }
+            return path;
+        }
+        catch (Exception e)
+        {
+            _log.LogDebug(e, "{Provider}: could not save the failed request", Id);
+            return null;
+        }
+
+        static string Safe(string s) => string.Concat(s.Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_'));
+    }
+
+    private async IAsyncEnumerable<ModelStreamEvent> StreamCoreAsync(ModelRequest request, CallInfo call, [EnumeratorCancellation] CancellationToken ct)
     {
         var started = Stopwatch.GetTimestamp();
         var o = Options();
@@ -236,6 +324,10 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         var chat = mo.Transport == OpenAiTransport.Chat;
         var body = chat ? ChatTransport.BuildBody(request, mo, allowImages) : ResponsesTransport.BuildBody(request, mo, allowImages);
         var url = o.Root + (chat ? ChatTransport.Path : ResponsesTransport.Path);
+        call.Url = url;
+        call.Transport = chat ? "chat" : "responses";
+        call.Body = body;
+        call.Dump = o.DumpFailedRequests;
 
         using var httpReq = new HttpRequestMessage(HttpMethod.Post, url);
         httpReq.Content = new ByteArrayContent(J.Utf8(body));
@@ -251,6 +343,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
 
         using (resp)
         {
+            if (resp.Headers.TryGetValues("x-request-id", out var rid)) call.RequestId = rid.FirstOrDefault();
             if (!resp.IsSuccessStatusCode)
             {
                 var errBody = await ProviderErrors.ReadBodySafeAsync(resp, ct).ConfigureAwait(false);
@@ -263,6 +356,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
             IOpenAiStreamParser parser = chat
                 ? new ChatStreamParser(asm, DisplayName, mo.ParseThinkTags)
                 : new ResponsesStreamParser(asm, DisplayName, mo.ParseThinkTags);
+            call.Parser = parser;
 
             var mediaType = resp.Content.Headers.ContentType?.MediaType;
             if (mediaType is "application/json")

@@ -29,7 +29,9 @@ dotted paths — `providers.aiproxy.baseUrl` means `{ "providers": { "aiproxy": 
 | `baseUrl` | `http://127.0.0.1:8090` | a trailing `/v1` is fine |
 | `transport` | `responses` | `responses` (`/v1/responses`) or `chat` (`/v1/chat/completions`) |
 | `apiKey` | – | sent as Bearer; `"env:NAME"` / `"$NAME"` reads an environment variable |
-| `replayReasoning` | `false` | send previous reasoning back to the model |
+| `replayReasoning` | Responses: `true`, Chat: `false` | send previous reasoning back. Standard stateless Responses usage appends every output item of a response (reasoning → message → function calls) to the next input |
+| `includeEncryptedReasoning` | `false` | also request `include: ["reasoning.encrypted_content"]` (OpenAI-hosted reasoning models) |
+| `dumpFailedRequests` | `true` | save the request body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30) and add the server's `x-request-id` / response id to the error, for reproducing backend bugs |
 | `parseThinkTags` | `true` | split inline `<think>…</think>` into thinking blocks |
 | `defaultMaxOutputTokens` | `16384` | when the catalog says `max_output_tokens: null` |
 | `modelsCacheSeconds` | `10` | `/v1/models` cache |

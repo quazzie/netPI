@@ -262,7 +262,9 @@ await t.Run("responses: streams reasoning, text, function call and usage", async
 
 await t.Run("responses: request body (instructions, tools, effort, max tokens, input items)", async () =>
 {
-    await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy"), effort: "high"));
+    apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", false);
+    try { await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy"), effort: "high")); }
+    finally { apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", null); }
     var req = mock.Last("/v1/responses");
     var b = req.Json;
     t.Eq("qwen3.8-27b", b["model"]!.GetValue<string>(), "model");
@@ -273,7 +275,7 @@ await t.Run("responses: request body (instructions, tools, effort, max tokens, i
     var tool0 = b["tools"]![0]!;
     t.Check(tool0["type"]!.GetValue<string>() == "function" && tool0["name"]!.GetValue<string>() == "read" && tool0["strict"]!.GetValue<bool>() == false
             && tool0["parameters"]?["type"]?.GetValue<string>() == "object", "tool shape");
-    t.Check(b["include"] is null, "no include without replayReasoning");
+    t.Check(b["include"] is null, "no include without includeEncryptedReasoning");
 
     var input = b["input"]!.AsArray();
     string Kind(JsonNode? n) => n?["type"]?.GetValue<string>() ?? n?["role"]?.GetValue<string>() ?? "?";
@@ -295,6 +297,7 @@ await t.Run("responses: request body (instructions, tools, effort, max tokens, i
 await t.Run("responses: replayReasoning replays reasoning items (live settings)", async () =>
 {
     apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", true);
+    apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", true);
     try
     {
         await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));
@@ -307,7 +310,51 @@ await t.Run("responses: replayReasoning replays reasoning items (live settings)"
         t.Eq("reasoning.encrypted_content", b["include"]?[0]?.GetValue<string>(), "include");
         t.Check(b["reasoning"] is null, "no effort -> reasoning omitted");
     }
-    finally { apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", false); }
+    finally
+    {
+        apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", null);
+        apCtx.SettingsImpl.Set("providers.aiproxy.includeEncryptedReasoning", null);
+    }
+});
+
+await t.Run("responses: reasoning is replayed by default (standard stateless usage), chat does not replay it", async () =>
+{
+    await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));
+    var input = mock.Last("/v1/responses").Json["input"]!.AsArray();
+    string Kind(JsonNode? n) => n?["type"]?.GetValue<string>() ?? n?["role"]?.GetValue<string>() ?? "?";
+    t.Eq("user,reasoning,message,function_call,function_call,function_call_output,function_call_output,user,user",
+        string.Join(",", input.Select(Kind)), "reasoning → message → function calls");
+    t.Check(mock.Last("/v1/responses").Json["include"] is null, "no include by default");
+
+    apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
+    try
+    {
+        await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));
+        var msgs = mock.Last("/v1/chat/completions").Json["messages"]!.AsArray();
+        t.Check(msgs.All(m => m?["reasoning_content"] is null), "chat: no reasoning_content by default");
+    }
+    finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+});
+
+await t.Run("errors: server ids are added to the message and the failed request is saved", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "netpi-dump-" + Guid.NewGuid().ToString("N"));
+    var p = new AP.OpenAiCompatibleProvider("aiproxy", "AiProxy", new HttpClient(), () => apCtx.SettingsImpl.GetNode("providers.aiproxy") as JsonObject,
+        null, null, null, dir);
+    mock.NextResponsesFailure = ("resp_fail1", "req_abc123", "capture owner has no planning ID");
+    ModelException? caught = null;
+    try { await Collect(p, Req(Cat("qwen3.8-27b"), Conversation("aiproxy"))); }
+    catch (ModelException ex) { caught = ex; }
+    t.Check(caught is not null, "failure surfaces");
+    t.Check(caught!.Message.Contains("capture owner has no planning ID"), "server text kept");
+    t.Check(caught.Message.Contains("request req_abc123") && caught.Message.Contains("response resp_fail1"), "ids added: " + caught.Message);
+    t.Check(!caught.Transient, "response.failed is not retried");
+    var files = Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json");
+    t.Eq(1, files.Length, "one dump");
+    var dump = JsonNode.Parse(File.ReadAllText(files[0]))!;
+    t.Eq("req_abc123", dump["requestId"]?.GetValue<string>(), "dump request id");
+    t.Check(dump["request"]?["input"] is JsonArray, "dump has the request body");
+    Directory.Delete(dir, true);
 });
 
 // E2E regression: <think> tags in message text were split on the Chat transport only, so Qwen/Gemma behind a backend

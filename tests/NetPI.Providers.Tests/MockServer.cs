@@ -27,6 +27,8 @@ internal sealed class MockServer : IAsyncDisposable
     public string BaseUrl { get; private set; } = "";
     public ConcurrentQueue<RecordedRequest> Requests { get; } = new();
     public volatile bool ModelsDown;
+    /// <summary>Next /v1/responses call fails with response.failed (nInfer style: no code) and these ids.</summary>
+    public (string ResponseId, string RequestId, string Message)? NextResponsesFailure;
     private int _modelsCalls;
     public int ModelsCalls => _modelsCalls;
 
@@ -157,6 +159,17 @@ internal sealed class MockServer : IAsyncDisposable
     {
         var body = await ReadBody(ctx);
         var model = body["model"]!.GetValue<string>();
+        if (NextResponsesFailure is { } nf)
+        {
+            NextResponsesFailure = null;
+            ctx.Response.Headers["x-request-id"] = nf.RequestId;
+            await Sse(ctx,
+            [
+                D(new { type = "response.created", response = new { id = nf.ResponseId, status = "in_progress" } }),
+                D(new { type = "response.failed", response = new { id = nf.ResponseId, status = "failed", error = new { message = nf.Message } } }),
+            ]);
+            return;
+        }
         switch (model)
         {
             case "err-503":
