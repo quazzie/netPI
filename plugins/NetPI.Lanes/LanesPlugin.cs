@@ -3,13 +3,15 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Lanes;
 
 /// <summary>
-/// Lane scheduler (<see cref="ILaneScheduler"/>), daily usage and budgets.
-/// <para>Settings: <c>lanes.pools</c> <c>{ "&lt;key&gt;": { "capacity": 2, "models": ["aiproxy/qwen3.8-27b", "anthropic/*"] } }</c>,
-/// <c>lanes.cloudDefaultCapacity</c> (4), <c>lanes.localDefaultCapacity</c> (1), <c>lanes.budgets.&lt;provider&gt;.dailyTokens</c>.</para>
-/// <para>RPC: <c>lanes.list</c>, <c>usage.summary</c>. Events: <c>lanes.changed { pools }</c>. For agents: the <c>lanes_list</c>
-/// tool and a "Lanes" system prompt section (only for agents that can spawn subagents).</para>
+/// Lanes (<see cref="ILaneScheduler"/>), the ledger of every model call with its cost, and the budget.
+/// <para>Settings: <c>lanes.&lt;id&gt;</c> <c>{ model, capacity, use, budget: { limitUsd }, cost: { input, output } }</c>,
+/// <c>lanes.cloudDefaultCapacity</c> (4), <c>lanes.localDefaultCapacity</c> (1), <c>budget.*</c>; still read:
+/// <c>lanes.pools</c> (model globs) and <c>lanes.budgets.&lt;provider&gt;.dailyTokens</c>.</para>
+/// <para>RPC: <c>lanes.list</c>, <c>usage.summary</c>, <c>usage.session</c>, <c>budget.status</c>, <c>budget.allow</c>. Events:
+/// <c>lanes.changed { pools }</c>, <c>usage.changed</c> (the budget status). For agents: the <c>lanes_list</c> tool and a
+/// "Lanes" system prompt section (only for agents that can spawn subagents).</para>
 /// </summary>
-[NetPiPlugin("netpi.lanes", Name = "Lanes", Description = "Parallel lanes per model pool, priority queueing, usage and budgets", Order = 30)]
+[NetPiPlugin("netpi.lanes", Name = "Lanes", Description = "Lanes per model, priority queueing, the cost of every model call and the budget", Order = 30)]
 public sealed class LanesPlugin : INetPiPlugin
 {
     private LaneScheduler? _scheduler;
@@ -18,24 +20,45 @@ public sealed class LanesPlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
-        var usage = new UsageTracker(context);
+        var usage = new Ledger(context);
         usage.Initialize();
         var scheduler = new LaneScheduler(context, usage);
         _scheduler = scheduler;
         scheduler.Refresh();
 
         context.Services.Register<ILaneScheduler>(scheduler);
-        context.Tools.Register(new LanesListTool(scheduler));
+        context.Services.Register<IModelMiddleware>(new LedgerMiddleware(usage, scheduler));
+        context.Tools.Register(new LanesListTool(scheduler, usage));
         context.Services.Register<IPromptSection>(new LanesPromptSection());
 
         context.Rpc.Register("lanes.list", (_, _) => Task.FromResult<object?>(scheduler.Snapshot()),
-            "Lane pools with capacity, owners and waiters → LanePoolInfo[]");
+            "Lanes with capacity, owners, waiters, price and today's spend → LanePoolInfo[]");
         context.Rpc.Register("usage.summary", (_, _) => Task.FromResult<object?>(usage.Summary()),
-            "Today's token usage per provider → { day, providers: [...] }");
+            "Today's tokens per provider, the budget, this period's calls per model → { day, providers, budget, models }");
+        context.Rpc.Register("usage.session", (r, _) => Task.FromResult<object?>(usage.SessionCost(r.Required("sessionId"))),
+            "What a chat cost: { sessionId } → { costUsd, calls, withSubagentsUsd, withSubagentsCalls }");
+        context.Rpc.Register("budget.status", (_, _) => Task.FromResult<object?>(usage.BudgetStatus()),
+            "The budget: { monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, warning, exhausted }");
+        context.Rpc.Register("budget.allow", async (r, token) =>
+        {
+            var sid = r.Required("sessionId");
+            if (context.Sessions.GetSession(sid) is null) throw new RpcException("not_found", $"Session {sid} not found");
+            usage.Allow(sid);
+            // continue the chat that stopped at the budget
+            var rt = context.Services.Get<IAgentRuntime>();
+            if (rt is not null && rt.GetBySession(sid) is not { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded })
+                await rt.SendAsync(sid, new UserInput
+                {
+                    Text = "The user let this chat go over the budget until the budget period ends. Continue where you stopped.",
+                    AsNotice = true,
+                    NoticeKind = "budget",
+                    Source = "system",
+                }, DeliveryMode.Auto, token).ConfigureAwait(false);
+            return usage.BudgetStatus();
+        }, "Let a chat go over the budget until the period ends and continue it: { sessionId } (budget.onLimit \"ask\")");
 
         context.Events.Subscribe(EventTypes.SettingsChanged, _ => scheduler.Refresh());
         context.Events.Subscribe(EventTypes.ModelsChanged, _ => scheduler.Refresh());
-        context.Events.Subscribe(EventTypes.UsageRecorded, usage.Record);
 
         // Pools come from the model catalog: make sure it gets listed soon after startup so lanes.list isn't empty.
         _ = Task.Run(async () =>

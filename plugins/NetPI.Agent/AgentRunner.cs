@@ -176,6 +176,12 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             {
                 throw;
             }
+            catch (BudgetExceededException ex)
+            {
+                // the budget stopped a paid call (the ledger middleware): the UI offers "let this chat go over" when allowed
+                rt.AppendNotice(state, ex.Message, "budget", new JsonObject { ["canOverride"] = ex.CanOverride });
+                throw new RunFailedException(ex.Message, ex);
+            }
             catch (Exception ex)
             {
                 // expected provider errors: one line without a stack trace; anything else with the full exception

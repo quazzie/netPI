@@ -131,6 +131,8 @@ public sealed class Usage
     public long CacheReadTokens { get; set; }
     public long CacheWriteTokens { get; set; }
     public long ReasoningTokens { get; set; }
+    /// <summary>What the call cost in USD, when the provider reports it (OpenRouter does); null = not reported.</summary>
+    public double? CostUsd { get; set; }
 
     /// <summary>Approximate size of the context after this call (prompt + completion).</summary>
     [JsonIgnore] public long ContextTokens => InputTokens + CacheReadTokens + CacheWriteTokens + OutputTokens;
@@ -141,6 +143,7 @@ public sealed class Usage
         InputTokens += other.InputTokens; OutputTokens += other.OutputTokens;
         CacheReadTokens += other.CacheReadTokens; CacheWriteTokens += other.CacheWriteTokens;
         ReasoningTokens += other.ReasoningTokens;
+        if (other.CostUsd is { } c) CostUsd = (CostUsd ?? 0) + c;
     }
 }
 

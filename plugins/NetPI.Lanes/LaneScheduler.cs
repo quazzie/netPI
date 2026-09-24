@@ -5,10 +5,11 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Lanes;
 
 /// <summary>
-/// Parallel slots per model pool. Pools come from settings (<c>lanes.pools</c>, glob match on the model ref, first match
-/// wins), otherwise cloud providers share one pool per provider (<c>lanes.cloudDefaultCapacity</c>) and every local model
-/// gets its own pool sized by the catalog's <see cref="ModelInfo.Concurrency"/> (<c>lanes.localDefaultCapacity</c>).
-/// Waiters are served by priority (desc), then FIFO.
+/// Parallel slots per lane (called pools in the code). A lane the user set up is one model: <c>lanes.&lt;id&gt; = { model,
+/// capacity, use, budget, cost }</c>; agents choose among those. Every other model gets an automatic lane: cloud providers
+/// share one per provider (<c>lanes.cloudDefaultCapacity</c>), every local model has its own, sized by the catalog's
+/// <see cref="ModelInfo.Concurrency"/> (<c>lanes.localDefaultCapacity</c>). The older <c>lanes.pools</c> (model globs)
+/// is still read. Waiters are served by priority (desc), then FIFO.
 /// </summary>
 internal sealed class LaneScheduler : ILaneScheduler
 {
@@ -16,7 +17,7 @@ internal sealed class LaneScheduler : ILaneScheduler
     public const int DefaultLocalCapacity = 1;
 
     private readonly IPluginContext _ctx;
-    private readonly UsageTracker? _usage;
+    private readonly Ledger? _usage;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Pool> _pools = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Every model we have seen (catalog cache + models passed to <see cref="ResolvePool"/>), by ref.</summary>
@@ -25,7 +26,7 @@ internal sealed class LaneScheduler : ILaneScheduler
     private bool _stopped;
     private int _publishScheduled;
 
-    public LaneScheduler(IPluginContext ctx, UsageTracker? usage)
+    public LaneScheduler(IPluginContext ctx, Ledger? usage)
     {
         _ctx = ctx;
         _usage = usage;
@@ -36,7 +37,38 @@ internal sealed class LaneScheduler : ILaneScheduler
 
     // ---------------------------------------------------------------- pool definitions
 
-    private sealed record PoolDef(string Key, string? Provider, int Capacity, string Source);
+    private sealed record PoolDef(string Key, string? Provider, int Capacity, string Source, bool Configured = false, string? Model = null, string? Use = null);
+
+    /// <summary>Keys under <c>lanes</c> that are settings, not lane ids.</summary>
+    private static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase) { "pools", "budgets", "localDefaultCapacity", "cloudDefaultCapacity" };
+
+    /// <summary>The lanes the user set up: <c>lanes.&lt;id&gt;</c> objects with a <c>model</c>.</summary>
+    internal IEnumerable<(string Id, string Model, JsonObject Cfg)> ConfiguredLanes()
+    {
+        JsonObject? lanes = null;
+        try { lanes = _ctx.Settings.GetNode("lanes") as JsonObject; } catch { }
+        if (lanes is null) yield break;
+        foreach (var (id, cfg) in lanes)
+            if (!Reserved.Contains(id) && cfg is JsonObject o && o["model"] is JsonValue v && v.TryGetValue<string>(out var model) && model.Trim().Length > 0)
+                yield return (id, model.Trim(), o);
+    }
+
+    /// <summary>The lane a model runs on, with the lane's settings when the user set it up (else the automatic lane's key).</summary>
+    internal (string Lane, JsonObject? Cfg) LaneFor(ModelInfo model)
+    {
+        foreach (var (id, m, cfg) in ConfiguredLanes())
+            if (string.Equals(m, model.Ref, StringComparison.OrdinalIgnoreCase)) return (id, cfg);
+        return (Define(model).Key, null);
+    }
+
+    /// <summary>A model the scheduler has seen (catalog cache or a resolved lane), by ref.</summary>
+    internal ModelInfo? ModelInfo(string? modelRef)
+    {
+        if (modelRef is null) return null;
+        lock (_gate) return _models.GetValueOrDefault(modelRef);
+    }
+
+    private static string? Text(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) && s.Trim().Length > 0 ? s.Trim() : null;
 
     private sealed class Pool(string key)
     {
@@ -44,6 +76,9 @@ internal sealed class LaneScheduler : ILaneScheduler
         public string? Provider { get; set; }
         public int Capacity { get; set; } = 1;
         public string Source { get; set; } = "default";
+        public bool Configured { get; set; }
+        public string? Model { get; set; }
+        public string? Use { get; set; }
         public List<string> Models { get; } = [];
         public List<Lease> Owners { get; } = [];
         public List<Waiter> Waiters { get; } = [];
@@ -124,11 +159,17 @@ internal sealed class LaneScheduler : ILaneScheduler
             : Setting("lanes.cloudDefaultCapacity", DefaultCloudCapacity);
         var defaultSource = model.IsLocal && model.Concurrency is not null ? "catalog" : "default";
 
+        // 1. a lane the user set up for this model (a cloud lane defaults to 1 slot: it may cost money)
+        foreach (var (id, m, cfg) in ConfiguredLanes())
+            if (string.Equals(m, model.Ref, StringComparison.OrdinalIgnoreCase))
+                return new PoolDef(id, model.Provider, Math.Max(1, ReadInt(cfg["capacity"]) ?? (model.IsLocal ? defaultCapacity : 1)), "settings",
+                    true, model.Ref, Text(cfg["use"]));
+
         JsonObject? pools = null;
         try { pools = _ctx.Settings.GetNode("lanes.pools") as JsonObject; } catch { }
         if (pools is not null)
         {
-            // 1. explicit pools with model globs (first match wins)
+            // 2. lanes.pools (older): model globs, first match wins
             foreach (var (key, cfg) in pools)
             {
                 if (cfg is not JsonObject o || !o.ContainsKey("models")) continue;
@@ -137,7 +178,7 @@ internal sealed class LaneScheduler : ILaneScheduler
                 if (globs.Any(g => GlobMatch(g, model.Ref) || GlobMatch(g, model.Id)))
                     return new PoolDef(key, model.Provider, Math.Max(1, ReadInt(o["capacity"]) ?? defaultCapacity), "settings");
             }
-            // 2. a pool entry without "models" whose key is the default pool key overrides its capacity
+            // 3. a lanes.pools entry without "models" whose key is the automatic lane's key overrides its capacity
             foreach (var (key, cfg) in pools)
             {
                 if (cfg is JsonObject o && !o.ContainsKey("models") && string.Equals(key, defaultKey, StringComparison.OrdinalIgnoreCase)
@@ -180,6 +221,11 @@ internal sealed class LaneScheduler : ILaneScheduler
                 if (!defs.TryGetValue(def.Key, out var entry)) defs[def.Key] = entry = (def, []);
                 entry.Models.Add(m.Ref);
             }
+            // lanes the user set up for a model the catalog has not listed (yet): still shown, still usable
+            foreach (var (id, model, cfg) in ConfiguredLanes())
+                if (!defs.ContainsKey(id))
+                    defs[id] = (new PoolDef(id, model.Contains('/') ? model[..model.IndexOf('/')] : null, Math.Max(1, ReadInt(cfg["capacity"]) ?? 1),
+                        "settings", true, model, Text(cfg["use"])), [model]);
             foreach (var (key, (def, models)) in defs)
             {
                 var pool = GetOrCreate(key);
@@ -205,6 +251,9 @@ internal sealed class LaneScheduler : ILaneScheduler
         pool.Capacity = def.Capacity;
         pool.Provider = def.Provider;
         pool.Source = def.Source;
+        pool.Configured = def.Configured;
+        pool.Model = def.Model;
+        pool.Use = def.Use;
     }
 
     private Pool GetOrCreate(string key, string? provider = null)
@@ -227,25 +276,48 @@ internal sealed class LaneScheduler : ILaneScheduler
         lock (_gate) needRefresh = cached.Any(m => !_models.ContainsKey(m.Ref));
         if (needRefresh) Refresh();
 
+        var configs = ConfiguredLanes().ToDictionary(l => l.Id, l => l.Cfg, StringComparer.OrdinalIgnoreCase);
+        List<LanePoolInfo> list;
         lock (_gate)
         {
-            return _pools.Values
+            list = _pools.Values
                 .OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(p => new LanePoolInfo
+                .Select(p =>
                 {
-                    Key = p.Key,
-                    Provider = p.Provider,
-                    Capacity = p.Capacity,
-                    Busy = p.Owners.Count,
-                    Queued = p.Waiters.Count,
-                    Models = [.. p.Models],
-                    Owners = p.Owners.Select(o => new LaneOwnerInfo { AgentId = o.AgentId, SessionId = o.SessionId, Label = o.Label, Since = o.AcquiredAt }).ToList(),
-                    Waiters = p.Waiters.Select(w => new LaneOwnerInfo { AgentId = w.Request.AgentId, SessionId = w.Request.SessionId, Label = w.Request.Label, Since = w.Since }).ToList(),
-                    Source = p.Source,
-                    Status = StatusOf(p),
+                    var info = new LanePoolInfo
+                    {
+                        Key = p.Key,
+                        Provider = p.Provider,
+                        Capacity = p.Capacity,
+                        Busy = p.Owners.Count,
+                        Queued = p.Waiters.Count,
+                        Models = [.. p.Models],
+                        Owners = p.Owners.Select(o => new LaneOwnerInfo { AgentId = o.AgentId, SessionId = o.SessionId, Label = o.Label, Since = o.AcquiredAt }).ToList(),
+                        Waiters = p.Waiters.Select(w => new LaneOwnerInfo { AgentId = w.Request.AgentId, SessionId = w.Request.SessionId, Label = w.Request.Label, Since = w.Since }).ToList(),
+                        Source = p.Source,
+                        Status = StatusOf(p),
+                        Configured = p.Configured,
+                        Model = p.Model,
+                        Use = p.Use,
+                    };
+                    // the price of a one-model lane (a provider's automatic lane mixes models: unknown)
+                    var modelRef = p.Model ?? (p.Models.Count == 1 ? p.Models[0] : null);
+                    if (modelRef is not null && _models.TryGetValue(modelRef, out var mi))
+                    {
+                        var price = Ledger.PriceOf(mi, configs.GetValueOrDefault(p.Key));
+                        info.PriceInput = price?.Input;
+                        info.PriceOutput = price?.Output;
+                        info.PriceSource = price?.Source ?? "unknown";
+                        info.Free = !Ledger.Paid(mi, price);
+                    }
+                    info.DailyLimitUsd = Ledger.LaneLimit(configs.GetValueOrDefault(p.Key));
+                    return info;
                 })
                 .ToList();
         }
+        if (_usage is not null)
+            foreach (var info in list) info.SpentTodayUsd = Math.Round(_usage.LaneSpentToday(info.Key), 6);
+        return list;
     }
 
     private string StatusOf(Pool p)

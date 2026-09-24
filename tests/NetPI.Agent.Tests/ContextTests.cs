@@ -56,7 +56,7 @@ public static class ContextTests
         Check.Contains(prompt, "Use edit for testing.");
         Check.Contains(prompt, "Delegate independent, well-scoped work");
         Check.Contains(prompt, "call agent_wait once");
-        Check.Contains(prompt, "lanes_list shows the pools");
+        Check.Contains(prompt, "Before you delegate, look at lanes_list");
         Check.Contains(prompt, "You are \"w1\", a subagent.");
         Check.NotContains(prompt, "\n\n\n", "no empty sections");
 

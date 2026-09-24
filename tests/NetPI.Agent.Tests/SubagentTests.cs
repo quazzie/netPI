@@ -17,7 +17,7 @@ public static class SubagentTests
         t.Add("subagents: aborting a parent cancels its children", AbortCascade);
         t.Add("subagents: failed subagent reports failure", FailedChild);
         t.Add("subagents: agent tools list / result / cancel / lanes_list", ToolsMisc);
-        t.Add("subagents: an agent on a local model spawns onto a pool defined in settings (another provider)", SpawnOntoConfiguredPool);
+        t.Add("subagents: an agent on a local model spawns onto a lane set up in settings (another provider)", SpawnOntoConfiguredPool);
     }
 
     private static bool IsChild(ModelRequest r) => r.SystemPrompt?.Contains("a subagent working for") == true;
@@ -270,14 +270,14 @@ public static class SubagentTests
     private static async Task SpawnOntoConfiguredPool()
     {
         await using var h = await TestHost.StartAsync(x =>
-            x.Settings.SetQuiet("lanes.pools", JsonNode.Parse("""{ "stealth": { "capacity": 1, "models": ["cloud/big"] } }""")));
+            x.Settings.SetQuiet("lanes.stealth", JsonNode.Parse("""{ "model": "cloud/big", "capacity": 1, "use": "Research." }""")));
         h.Catalog.Handler = (r, ct) =>
         {
             if (r.Model.Ref == "cloud/big") return Reply.Text("child report: done on the stealth lane");
             var last = r.Messages[^1];
             if (last.Role == MessageRole.Tool) return Reply.Text("spawned");
             if (last.Text.Contains("<agent-result")) return Reply.Text("thanks");
-            return Reply.Tool("agent_spawn", new { task = "Look something up and report.", model = "stealth" });
+            return Reply.Tool("agent_spawn", new { task = "Look something up and report.", lane = "stealth" });
         };
         var parent = h.NewSession(); // default model: fake/local
         await h.SendAsync(parent.Id, "delegate it");
@@ -419,9 +419,9 @@ public static class SubagentTests
         await h.IdleAsync(parent.Id);
         Check.Contains(listOutput, "slowpoke");
         Check.Contains(listOutput, "task: slow job");
-        Check.Contains(lanesOutput, "fake/local: 2/2 busy");
+        Check.Contains(lanesOutput, "- fake/local · 2/2 busy");
         Check.Contains(lanesOutput, "main (you)");
-        Check.Contains(lanesOutput, "You run on pool fake/local");
+        Check.Contains(lanesOutput, "You run on lane fake/local");
         Check.Contains(resultOutput, "still running");
         Check.Contains(cancelOutput, "Cancelled slowpoke");
         var child = h.Runtime.List().Single(a => a.IsSubagent);

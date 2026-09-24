@@ -43,7 +43,7 @@ interface ChatMessage {
   provider?: string; model?: string; stopReason?: 'stop'|'tool_use'|'length'|'aborted'|'error'|'content_filter';
   usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; reasoningTokens: number };
   durationMs?: number; compacted: boolean;
-  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | tools | todo | goal | nudge | agent-message | agent-result | steer | retry | error | compaction
+  meta?: { kind?: string; [k: string]: any };   // notice kinds: project | instructions | tools | todo | goal | budget | nudge | agent-message | agent-result | steer | retry | error | compaction
 }
 type Part =
   | { type: 'text'; text: string }
@@ -114,8 +114,11 @@ interface PluginInfo { id; name; description?; version?; directory; state; error
 | `agent.dequeue` | netpi.agent | `{ sessionId, id }` → `bool` |
 | `agents.list` | netpi.agent | `{ includeFinished? }` → `AgentInfo[]` |
 | `agent.get` | netpi.agent | `{ id? , sessionId? }` → `AgentInfo\|null` |
-| `lanes.list` | netpi.lanes | → `LanePoolInfo[]` |
-| `usage.summary` | netpi.lanes | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] }` |
+| `lanes.list` | netpi.lanes | → `LanePoolInfo[]` (also `configured`, `model`, `use`, `priceInput`/`priceOutput` ($ per Mtok), `priceSource`, `free`, `spentTodayUsd`, `dailyLimitUsd`) |
+| `usage.summary` | netpi.lanes | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] /* today */, budget: BudgetStatus, models: { lane, provider, model, calls, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unknownCost }[] /* this period */ }` |
+| `usage.session` | netpi.lanes | `{ sessionId }` → `{ sessionId, costUsd, calls, withSubagentsUsd, withSubagentsCalls }` |
+| `budget.status` | netpi.lanes | → `BudgetStatus`: `{ monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, warning, exhausted }` |
+| `budget.allow` | netpi.lanes | `{ sessionId }` → `BudgetStatus`: the chat may go over the budget until the period ends, and continues (`budget.onLimit: "ask"`) |
 | `agentsmd.list` | netpi.agentsmd | `{ sessionId }` or `{ projectId }` → `{ path, bytes, scope }[]` (instruction files for the session's working directory or the project folder; scope `global`, `project` or `extra`) |
 | `compaction.run` | netpi.compaction | `{ sessionId, args? /* extra focus for the summary */ }` → `string` (error `busy` while the agent runs) |
 | `context.preview` | netpi.context | `{ sessionId }` → `{ systemPrompt, frozen, tools: {name, description}[], estimatedTokens }` (`frozen`: the prompt stored at the session's first model call) |
@@ -165,7 +168,8 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `session.context` | no | `{ sessionId, used, window }` |
 | `lanes.changed` | no | `{ pools: LanePoolInfo[] }` |
 | `models.changed`, `plugins.changed`, `ui.changed`, `settings.changed` | no | `{}` |
-| `usage.recorded` | no | `{ provider, model, usage }` |
+| `usage.recorded` | no | `{ provider, model, usage }` (agent turns) |
+| `usage.changed` | no | `BudgetStatus`, after model calls were recorded (debounced) |
 | `process.started` / `process.exited` | no | `{ process: ProcessInfo }` |
 | `ideas.changed` | no | `{ file }` |
 

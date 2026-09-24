@@ -301,8 +301,9 @@ internal sealed class OpenRouterStreamParser(MessageAssembler asm, string provid
         var usage = root.Prop("usage");
         if (usage.IsObj())
         {
-            asm.SetUsage(OpenRouterChat.Usage(usage));
-            if (usage.Prop("cost").ValueKind == JsonValueKind.Number) Cost = usage.Prop("cost").GetDouble();
+            var u = OpenRouterChat.Usage(usage);
+            if (usage.Prop("cost").ValueKind == JsonValueKind.Number) Cost = u.CostUsd = usage.Prop("cost").GetDouble();
+            asm.SetUsage(u);
         }
     }
 

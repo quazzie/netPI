@@ -55,6 +55,26 @@ public sealed class LanePoolInfo
     /// <summary>catalog | settings | default</summary>
     public string Source { get; set; } = "default";
     public string? Status { get; set; }
+    /// <summary>A lane the user set up for one model (<c>lanes.&lt;id&gt;</c>); agents choose among these.</summary>
+    public bool Configured { get; set; }
+    /// <summary>The configured lane's model ref.</summary>
+    public string? Model { get; set; }
+    /// <summary>The user's note on when to use the lane.</summary>
+    public string? Use { get; set; }
+    /// <summary>Price in USD per million input / output tokens; null = unknown.</summary>
+    public double? PriceInput { get; set; }
+    public double? PriceOutput { get; set; }
+    /// <summary>settings | catalog | local | reported (the provider reported $0) | unknown</summary>
+    public string? PriceSource { get; set; }
+    /// <summary>Costs nothing (local, or a price of 0).</summary>
+    public bool Free { get; set; }
+    public double SpentTodayUsd { get; set; }
+    /// <summary>The lane's own daily cap (<c>lanes.&lt;id&gt;.budget.limitUsd</c>).</summary>
+    public double? DailyLimitUsd { get; set; }
 }
 
-public sealed class BudgetExceededException(string message) : Exception(message);
+public sealed class BudgetExceededException(string message) : Exception(message)
+{
+    /// <summary>budget.onLimit "ask" and a chat of the user: the user may let this chat go over (<c>budget.allow</c>).</summary>
+    public bool CanOverride { get; init; }
+}

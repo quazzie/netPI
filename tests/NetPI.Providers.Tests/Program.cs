@@ -898,6 +898,7 @@ await t.Run("openrouter: stream → thinking + merged reasoning_details, text, t
     t.Check(call is { Id: "call_or1", Name: "read", Arguments: "{\"path\":\"a.txt\"}" }, "tool call assembled");
     t.Eq("tool_use", msg.StopReason, "stop reason (finish_reason repeated on the usage chunk)");
     t.Check(msg.Usage is { InputTokens: 300, CacheReadTokens: 600, CacheWriteTokens: 100, OutputTokens: 50, ReasoningTokens: 20 }, "usage: prompt = uncached + cache reads + cache writes");
+    t.Eq(0.0012, msg.Usage?.CostUsd, "the reported cost travels in the usage (the lanes plugin's ledger reads it)");
     t.Eq("""{"openrouter":{"generationId":"gen-stealth-bunny","provider":"Stealth","cost":0.0012}}""", msg.Meta?.ToJsonString(), "generation id, upstream provider, cost");
 });
 

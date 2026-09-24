@@ -376,13 +376,15 @@ internal sealed class AgentRuntime : IAgentRuntime
         return Ctx.Sessions.AppendMessage(s.Info.SessionId, m);
     }
 
-    internal void AppendNotice(AgentState s, string text, string kind)
+    internal void AppendNotice(AgentState s, string text, string kind, JsonObject? meta = null)
     {
         try
         {
             var m = ChatMessage.NoticeText(text, kind);
             m.SessionId = s.Info.SessionId;
             m.Meta!["agentId"] = s.Info.Id;
+            if (meta is not null)
+                foreach (var (k, v) in meta) m.Meta[k] = v?.DeepClone();
             Ctx.Sessions.AppendMessage(s.Info.SessionId, m);
         }
         catch (Exception ex)

@@ -100,19 +100,44 @@ turned off; models without effort levels only get on/off. Free models are limite
 
 ## Lanes
 
+A lane is a model with a number of parallel slots; every model call takes one. The lanes you set up are the ones
+agents choose from (`lanes_list`, `agent_spawn { lane }`): one model each, with a note on when to use it.
+
 ```jsonc
 "lanes": {
-  "localDefaultCapacity": 1,      // local models without a catalog concurrency
-  "cloudDefaultCapacity": 4,      // one pool per cloud provider (e.g. "anthropic")
-  "pools": {
-    // explicit pools: glob-matched model refs share one set of lanes
-    "gpu": { "capacity": 2, "models": ["aiproxy/qwen3.8-27b", "aiproxy/gemma-*"] },
-    // an entry without "models" only overrides that pool's capacity
-    "anthropic": { "capacity": 2 }
-  },
-  "budgets": { "anthropic": { "dailyTokens": 2000000 } }   // input + output + cache writes per day
+  "bunny": { "model": "openrouter/stealth/space-bunny-alpha", "capacity": 2,
+             "use": "Free. General coding, research, reading code." },
+  "opus":  { "model": "openrouter/anthropic/claude-opus-4.1", "capacity": 1,
+             "use": "Costs real money: only for hard problems the free lanes could not solve.",
+             "budget": { "limitUsd": 5 },                 // this lane, per day
+             "cost": { "input": 15, "output": 75 } },     // $ per million tokens (default: the catalog's price)
+  "localDefaultCapacity": 1,      // automatic lanes: a local model without a catalog concurrency
+  "cloudDefaultCapacity": 4,      // automatic lanes: one per cloud provider
+  "pools": { "gpu": { "capacity": 2, "models": ["aiproxy/qwen3.8-27b"] } },   // older: lanes for model globs, still read
+  "budgets": { "anthropic": { "dailyTokens": 2000000 } }                     // older: tokens per day per provider, still read
 }
 ```
+
+- **Capacity:** a lane you set up defaults to the catalog's concurrency for a local model and to 1 for a cloud one.
+- **Automatic lanes:** a model without a lane of its own gets one (one per cloud provider, one per local model); they
+  are not offered to agents.
+- **`cost`:** also accepts `cacheRead` and `cacheWrite`; the defaults are 10 % and 125 % of the input price.
+
+## Budget
+
+| key | default | |
+|---|---|---|
+| `budget.monthlyUsd` | – | spend per month on paid models; unset = no limit |
+| `budget.dailyUsd` | – | spend per day |
+| `budget.resetDay` | `1` | the day of the month the budget period starts (1–28) |
+| `budget.warnPercent` | `80` | from here `lanes_list` tells agents to use paid lanes only when you asked |
+| `budget.onLimit` | `"stop"` | when a budget is spent: `"stop"` paid calls, or `"ask"`: your chats stop with "let this chat go over" (`budget.allow`), subagents stop |
+
+Every model call is recorded with its tokens and cost (`usage_calls`: agents, compaction, anything that asks a model).
+The cost is what the provider reported (OpenRouter returns it for every call), else tokens × the price (the lane's
+`cost`, else the catalog's pricing), and $0 for local models. A cloud model without a known price counts $0 but is
+treated as paid when a budget is spent. The budget and the lanes' daily caps (`lanes.<id>.budget.limitUsd`) only
+stop paid models; free and local ones always run.
 
 ## Context and AGENTS.md
 

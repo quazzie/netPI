@@ -143,7 +143,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     {
         Name = "agent_spawn",
         Label = "Spawn agent",
-        Description = "Start a subagent on a task. It gets its own session, runs in the background on a lane of its model's pool, and ends with a final report that is returned to you. Returns immediately unless wait=true.",
+        Description = "Start a subagent on a task, on a lane (a model the user set up for agents; see lanes_list). It gets its own session, runs in the background, and ends with a final report that is returned to you. Returns immediately unless wait=true.",
         Category = "agents",
         SummaryArg = "name",
         PromptGuidelines = SpawnGuidelines,
@@ -151,7 +151,8 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         {
             ["task"] = Prop("string", "Complete, self-contained task description (the subagent does not see your conversation): goal, relevant paths and context, constraints, and what to put in the final report."),
             ["name"] = Prop("string", "Short name for the subagent, e.g. \"tests\" or \"api-research\"."),
-            ["model"] = Prop("string", "Model ref \"provider/model\" or a lane pool key (see lanes_list). Default: your model."),
+            ["lane"] = Prop("string", "Lane id from lanes_list. Required when the user has set up lanes; choose by the lane's note and cost."),
+            ["model"] = Prop("string", "Only when no lanes are set up: a model ref \"provider/model\". Default: your model."),
             ["tools"] = StringArray("Restrict the subagent to these tool names. Default: all tools."),
             ["instructions"] = Prop("string", "Extra instructions appended to the subagent's system prompt."),
             ["wait"] = Prop("boolean", "Block until the subagent finishes and return its report (yields your lane while waiting). Default false."),
@@ -163,11 +164,29 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     {
         var task = ToolArgs.Str(args, "task", "prompt", "description", "message");
         if (string.IsNullOrWhiteSpace(task)) return ToolResult.Error("Missing 'task': describe the subagent's task completely.");
+
+        // the lanes the user set up are the menu: one of them is required; without any, a model ref or your model
+        var laneArg = ToolArgs.Str(args, "lane", "laneId", "pool");
+        var modelArg = ToolArgs.Str(args, "model");
+        var lanes = (context.Services.Get<ILaneScheduler>()?.Snapshot() ?? []).Where(p => p.Configured).ToList();
+        string? spawnModel;
+        if (lanes.Count > 0)
+        {
+            var wanted = laneArg ?? modelArg;
+            var lane = wanted is null ? null : lanes.FirstOrDefault(p =>
+                string.Equals(p.Key, wanted, StringComparison.OrdinalIgnoreCase) || string.Equals(p.Model, wanted, StringComparison.OrdinalIgnoreCase));
+            if (lane is null)
+                return ToolResult.Error((wanted is null ? "agent_spawn needs a lane." : $"There is no lane \"{wanted}\".") +
+                                        " The lanes:\n" + LaneMenu(lanes) + "\nPass one of these ids as lane (lanes_list also shows the budget).");
+            spawnModel = lane.Model;
+        }
+        else spawnModel = laneArg ?? modelArg;
+
         var info = await runtime.SpawnAsync(new SpawnRequest
         {
             Task = task,
             Name = ToolArgs.Str(args, "name"),
-            Model = ToolArgs.Str(args, "model"),
+            Model = spawnModel,
             Tools = ToolArgs.List(args, "tools", "allowedTools"),
             Instructions = ToolArgs.Str(args, "instructions", "systemPrompt"),
             ParentAgentId = context.AgentId,
@@ -187,13 +206,21 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         if (model is not null) sb.Append(" on ").Append(model);
         if (PoolOf(context, info) is { } pool)
         {
-            sb.Append(" — lane pool ").Append(pool.Key).Append(": ").Append(pool.Busy).Append('/').Append(pool.Capacity).Append(" busy");
+            sb.Append(" — lane ").Append(pool.Key).Append(": ").Append(pool.Busy).Append('/').Append(pool.Capacity).Append(" busy");
             if (pool.Queued > 0) sb.Append(", ").Append(pool.Queued).Append(" queued");
         }
         sb.Append(".\nIt works in the background; its final report is delivered to you automatically when it finishes. ")
           .Append("Call agent_wait to block until it is done (this yields your lane).");
         return ToolResult.Ok(sb.ToString(), Details(runtime.Get(info.Id) ?? info));
     }
+
+    private static string LaneMenu(IEnumerable<LanePoolInfo> lanes) => string.Join("\n", lanes.Select(p =>
+        $"- {p.Key} · {p.Model} · " +
+        (p.Free ? "free"
+            : p.PriceInput is { } pi && p.PriceOutput is { } po
+                ? $"${pi.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} / ${po.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} per Mtok"
+                : "price unknown") +
+        (string.IsNullOrWhiteSpace(p.Use) ? "" : $" · \"{p.Use.Trim()}\"")));
 }
 
 // ------------------------------------------------------------------ agent_wait

@@ -1,6 +1,6 @@
 # Plan: lanes you set up per model, and a settings dialog with real controls, 2026-09-24
 
-Status: proposed, simplified with the user; waiting for "go".
+Status: agreed with the user (2026-09-24); being built in the order below.
 
 ## Where we are
 
@@ -61,10 +61,14 @@ or policy fields:
 
   The cost travels in an additive `Usage.CostUsd`, and the rows go in SQLite.
 - **One global budget:**
-  - `budget.monthlyUsd` (calendar month, resets on the 1st) and optionally `budget.dailyUsd`, with a warning at
-    `budget.warnPercent` (80);
+  - `budget.monthlyUsd` (the month starts on `budget.resetDay`, default the 1st) and optionally `budget.dailyUsd`, with a
+    warning at `budget.warnPercent` (80);
   - a lane's `budget.limitUsd` stays an optional extra cap ("Opus at most $5 a day");
-  - when a budget is spent, paid lanes refuse new runs with a clear message; free and local lanes are never blocked.
+  - when a budget is spent, `budget.onLimit` decides:
+    - `stop` (default): paid calls stop, with a clear message;
+    - `ask`: your own chats stop with "allow this chat to go over", which continues it; subagents stop either way.
+
+    Free and local lanes are never blocked.
 - **Agents see it:**
   - `lanes_list` starts with `Budget: $12.40 of $50 this month (25 %), $1.10 today; free lanes don't count`, and every
     lane shows its price and spend;
@@ -100,10 +104,6 @@ or policy fields:
 2. Lanes: the new shape, `lanes_list` with budget and prices, `agent_spawn { lane }`, the prompt rule.
 3. The settings schema, the renderer and the simple sections, Budget included.
 4. Providers, the lanes editor, the tool and plugin switches, the usage view in the Work tab.
-
-Open budget questions:
-- Is the budget period the calendar month, or should it reset on a chosen day (a billing date)?
-- When the budget is spent, should paid calls stop, or should you be asked in your own chats (agents stop either way)?
 
 Tests:
 - Lanes suite: lanes from settings, automatic lanes, the ledger (reported, estimated and free costs), the global and per-lane

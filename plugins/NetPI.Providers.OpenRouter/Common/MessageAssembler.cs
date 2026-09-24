@@ -148,7 +148,7 @@ internal sealed class MessageAssembler
     public static Usage Clone(Usage u) => new()
     {
         InputTokens = u.InputTokens, OutputTokens = u.OutputTokens, CacheReadTokens = u.CacheReadTokens,
-        CacheWriteTokens = u.CacheWriteTokens, ReasoningTokens = u.ReasoningTokens,
+        CacheWriteTokens = u.CacheWriteTokens, ReasoningTokens = u.ReasoningTokens, CostUsd = u.CostUsd,
     };
 
     /// <summary>Build the final assistant message.</summary>
