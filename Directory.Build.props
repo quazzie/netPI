@@ -15,6 +15,9 @@
     <Version>0.1.0</Version>
     <Authors>NetPI</Authors>
     <Deterministic>true</Deterministic>
+    <!-- No commit hash in the informational version: after a commit, unchanged projects stay byte-identical, so a running
+         NetPI does not hot-reload every plugin, and build.ps1 can tell whether the host really changed. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 </Project>
