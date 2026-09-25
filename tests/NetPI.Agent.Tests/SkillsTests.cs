@@ -12,6 +12,7 @@ public static class SkillsTests
         t.Add("skills: the catalog arrives as notices: all at first, then only changes, again after compaction with what was loaded", CatalogNotices);
         t.Add("skills: the skill tool returns the instructions with the folder and its files, once; refuses unknown, off and user-only skills", SkillTool);
         t.Add("skills: /skill:name at the start of a message loads that skill for it", SlashSkill);
+        t.Add("skills: a chat with the skill tool switched off gets no catalog until it is on again; /skill:name still works", ToolSwitchedOff);
     }
 
     private sealed record Setup(TestHost Host, string Repo, string Sub, string User, SessionInfo Session);
@@ -169,11 +170,10 @@ public static class SkillsTests
 
         await Turn(h, s.Id, "hi");
         var first = Notices(h, s.Id, "skills").Single();
-        Check.Contains(first.Text, "Skills: instructions for specific tasks");
+        Check.Contains(first.Text, "Skills: instructions for specific tasks. When a task matches a skill's description, load it with the skill tool before you start and follow it.");
         Check.Contains(first.Text, "<available_skills>");
-        Check.Contains(first.Text, "<name>deploy</name>");
-        Check.Contains(first.Text, "<description>Deploy the app &lt;safely&gt; &amp; quickly.</description>");
-        Check.Contains(first.Text, $"<location>{Path.Combine(deploy, "SKILL.md")}</location>");
+        Check.Contains(first.Text, "<name>deploy</name>\n    <description>Deploy the app &lt;safely&gt; &amp; quickly.</description>\n  </skill>");
+        Check.NotContains(first.Text, deploy, "no locations: the skill tool returns the folder");
         Check.Contains(first.Text, "<name>review</name>");
         Check.NotContains(first.Text, "manual", "user-only skills are not listed");
         var r1 = h.Catalog.Requests.Last();
@@ -266,6 +266,24 @@ public static class SkillsTests
         Check.Contains(cut, fileLines[line - 2], "the line before is in");
         Check.NotContains(cut, fileLines[line - 1], "the line it names is not");
         Check.True(cut.Length < 20_000, "under the runtime's limit for a tool result");
+    }
+
+    private static async Task ToolSwitchedOff()
+    {
+        var (h, repo, _, _, s) = await StartAsync();
+        await using var __ = h;
+        Skill(Path.Combine(repo, ".agents", "skills"), "deploy", "name: deploy\ndescription: Deploy the app.", "Ship it carefully.");
+        await h.Rpc.CallAsync("agent.setTools", new { sessionId = s.Id, off = new[] { "skill" } });
+
+        await Turn(h, s.Id, "hi");
+        Check.False(h.Catalog.Requests.Last().Tools.Any(t => t.Name == "skill"), "the tool is off");
+        Check.Equal(0, Notices(h, s.Id, "skills").Count, "no catalog without the tool");
+        await Turn(h, s.Id, "/skill:deploy now");
+        Check.Contains(Notices(h, s.Id, "skill").Single().Text, "Ship it carefully.", "the user can still load a skill");
+
+        await h.Rpc.CallAsync("agent.setTools", new { sessionId = s.Id, on = new[] { "skill" } });
+        await Turn(h, s.Id, "tool back");
+        Check.Contains(Notices(h, s.Id, "skills").Single().Text, "<name>deploy</name>", "announced once the tool is on");
     }
 
     private static async Task SlashSkill()

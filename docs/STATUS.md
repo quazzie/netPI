@@ -2,7 +2,7 @@
 
 ## Verified on Windows
 - The desktop shell builds and runs; Git Bash, pwsh, winsqlite3 and window placement work.
-- Unit suites (Debug, built into a scratch app folder while NetPI ran): Providers 41 (330 checks), Tools 54, Agent 92,
+- Unit suites (Debug, built into a scratch app folder while NetPI ran): Providers 41 (330 checks), Tools 54, Agent 93,
   Aux 104, Host 39, all passing.
 - E2E suite: 58 tests / 755 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
   (`npm run e2e`) 191/191.

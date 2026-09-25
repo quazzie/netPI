@@ -36,35 +36,42 @@ strict YAML rejects. Problems are reported (`skills.list`, the Diagnostics Conte
   `compatibility` over 500; a name another skill already has (this one is not used)
 
 Fields used: `name`, `description`, `disable-model-invocation: true` (a skill only you load, with `/skill:name`; agents
-don't see it), and `license`, `compatibility`, `allowed-tools` (shown in `skills.list`, not enforced). Other fields are
-ignored. Parsed files are cached by path, time and size.
+don't see it), and `license`, `compatibility`, `allowed-tools` (shown in `skills.list`). `allowed-tools` is the
+standard's experimental list of tools a skill may use without asking (e.g. `Bash(git:*) Read`); NetPI has no tool
+approvals to skip, so it does nothing here, and it doesn't limit the tools either. Other fields are ignored. Parsed files
+are cached by path, time and size.
 
 ## What agents get
 
-- **The catalog** in a `skills` notice before the first model call of a session (never in the system prompt, which is
-  frozen per session; see [PLUGINS.md](PLUGINS.md), "Never rewrite what was sent"):
+The `skill` tool is the switch: it is a tool like any other (the chat's tools button, `tools.disabled`, a profile's or a
+subagent's tool list), and a chat without it gets no catalog.
+
+- **The catalog** in a `skills` notice before the first model call that has the tool (never in the system prompt, which
+  is frozen per session; see [PLUGINS.md](PLUGINS.md), "Never rewrite what was sent"):
   ```
-  Skills: instructions for specific tasks, each in a SKILL.md. When a task matches a skill's description, load the skill
-  before you start (the skill tool, or read its SKILL.md) and follow it. Relative paths in a skill resolve against its folder.
+  Skills: instructions for specific tasks. When a task matches a skill's description, load it with the skill tool before
+  you start and follow it.
 
   <available_skills>
     <skill>
       <name>release-notes</name>
       <description>Write release notes from the git log since the last tag. Use when preparing a release.</description>
-      <location>C:\Users\me\.agents\skills\release-notes\SKILL.md</location>
     </skill>
   </available_skills>
   ```
-  Afterwards only changes are appended ("The skills changed. New or changed: … No longer available: …"), e.g. after a
-  project switch or when a skill is added, edited or removed. What the model has is read from the notices still in the
-  context, so after compaction the catalog is announced again, naming the skills it had loaded before ("Load a skill again
-  if you still need its instructions"). No skills: no notice. Meta: `skills: [{ name, hash, path }]`, `removed: [name]`.
+  No locations: the tool returns the skill's folder. Afterwards only changes are appended ("The skills changed. New or
+  changed: … No longer available: …"), e.g. after a project switch or when a skill is added, renamed or its description
+  edited. What the model has is read from the notices still in the context, so after compaction the catalog is announced
+  again, naming the skills it had loaded before ("Load a skill again if you still need its instructions"). No skills: no
+  notice. A tool switched on later brings the catalog with it; switched off, the tools notice says so. Meta:
+  `skills: [{ name, hash, path }]`, `removed: [name]`.
 - **The `skill` tool** loads one (see [TOOLS.md](TOOLS.md)). Its guideline in the "# Tools" section: when a task matches
-  a skill's description, load it before you start and follow it. Without the tool (switched off for the chat) the model
-  can read the `location`.
+  a skill's description, load it before you start and follow it. Like every tool definition it is part of every request
+  (about 165 tokens with the guideline); the backend's prompt cache keeps it, so it is processed once per chat.
 - **`/skill:name …`** at the start of your message: the message is sent as you typed it and a `skill` notice with that
   skill's instructions follows it ("The user loaded the skill "x" for their message: follow its instructions."), also
-  for a message that steers a running agent. User-only skills work here. An unknown or switched-off name gets a notice
+  for a message that steers a running agent. This is you asking, so it works with the skill tool switched off, and for
+  user-only skills. An unknown or switched-off (`skills.disabled`) name gets a notice
   saying so, with the skills there are. Meta: `skill`, `hash`, `path`, `for` (the message id), `missing`.
 
 A loaded skill, from the tool or from `/skill:`, reads:

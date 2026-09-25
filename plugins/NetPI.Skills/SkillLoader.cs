@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NetPI.Skills;
 
-/// <summary>A skill that applies to a working directory. <see cref="Hash"/> covers what the catalog shows (name, description, path).</summary>
+/// <summary>A skill that applies to a working directory. <see cref="Hash"/> covers what the catalog shows (name, description).</summary>
 internal sealed record Skill(
     string Name, string Description, string Path, string Dir, string Scope, bool ModelInvocable, bool Disabled,
     string? License, string? Compatibility, IReadOnlyList<string> AllowedTools, string Hash)
@@ -133,7 +133,7 @@ internal sealed partial class SkillLoader(IPluginContext ctx, string? userHome =
                 }
                 var dir = System.IO.Path.GetDirectoryName(file)!;
                 var skill = new Skill(p.Name, p.Description, file, dir, scope, p.ModelInvocable, disabled.Contains(p.Name),
-                    p.License, p.Compatibility, p.AllowedTools, Hash(p.Name + "\n" + p.Description + "\n" + file));
+                    p.License, p.Compatibility, p.AllowedTools, Hash(p.Name + "\n" + p.Description));
                 byName[p.Name] = skill;
                 skills.Add(skill);
             }

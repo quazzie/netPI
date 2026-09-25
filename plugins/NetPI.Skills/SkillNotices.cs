@@ -7,10 +7,11 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Skills;
 
 /// <summary>
-/// Before each model call: (1) the skill catalog in a "skills" notice, appended only (the conversation's cached prefix
-/// survives): every listed skill when a session first calls the model, afterwards only what changed. What the model has
-/// is read from the notices still in the context, so after compaction it is announced again, with the skills it had
-/// loaded before. Meta: <c>skills: [{ name, hash, path }]</c>, <c>removed: [name]</c>. (2) A user message that starts
+/// Before each model call: (1) the skill catalog in a "skills" notice, only while the chat has the skill tool (switched
+/// like any tool: per chat, <c>tools.disabled</c>, a subagent's tool list), appended only (the conversation's cached
+/// prefix survives): every listed skill when a session first calls the model with the tool, afterwards only what changed.
+/// What the model has is read from the notices still in the context, so after compaction it is announced again, with the
+/// skills it had loaded before. Meta: <c>skills: [{ name, hash, path }]</c>, <c>removed: [name]</c>. (2) A user message that starts
 /// with <c>/skill:name</c> gets a "skill" notice with that skill's instructions right after it. Meta: <c>skill</c>,
 /// <c>hash</c>, <c>path</c>, <c>for</c> (the message id); <c>missing: true</c> when there is no such skill.
 /// </summary>
@@ -31,7 +32,7 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
         lock (_gates.GetOrAdd(turn.Run.Session.Id, _ => new object()))
         {
             var set = loader.Discover(turn.Run.Cwd);
-            if (Catalog(turn.Run.Session.Id, turn.Messages, set) is { } catalog)
+            if (turn.Tools.Any(t => t.Name == SkillTool.Name) && Catalog(turn.Run.Session.Id, turn.Messages, set) is { } catalog)
             {
                 ctx.Sessions.AppendMessage(turn.Run.Session.Id, catalog);
                 appended = true;
@@ -59,8 +60,8 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
         var sb = new StringBuilder();
         if (first)
         {
-            sb.Append("Skills: instructions for specific tasks, each in a SKILL.md. When a task matches a skill's description, load the skill " +
-                      "before you start (the skill tool, or read its SKILL.md) and follow it. Relative paths in a skill resolve against its folder.\n\n");
+            sb.Append("Skills: instructions for specific tasks. When a task matches a skill's description, load it with the skill tool " +
+                      "before you start and follow it.\n\n");
             sb.Append(List(changed));
             var lost = LoadedBefore(sessionId, context).Where(n => current.Any(s => string.Equals(s.Name, n, StringComparison.OrdinalIgnoreCase))).ToList();
             if (lost.Count > 0)
@@ -86,8 +87,7 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
         foreach (var s in skills)
         {
             sb.Append("  <skill>\n    <name>").Append(SecurityElement.Escape(s.Name)).Append("</name>\n");
-            sb.Append("    <description>").Append(SecurityElement.Escape(s.Description)).Append("</description>\n");
-            sb.Append("    <location>").Append(SecurityElement.Escape(s.Path)).Append("</location>\n  </skill>\n");
+            sb.Append("    <description>").Append(SecurityElement.Escape(s.Description)).Append("</description>\n  </skill>\n");
         }
         return sb.Append("</available_skills>").ToString();
     }
