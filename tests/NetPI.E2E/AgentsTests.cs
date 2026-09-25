@@ -185,21 +185,31 @@ public static class AgentsTests
             var sid = s.S("id")!;
             var mark = env.Client.Mark();
             var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "Pick one [s:ask]" });
-            var asked = await env.Client.WaitFor(mark, e => e.Type == "ask.asked" && e.D.S("sessionId") == sid, "ask.asked", 20_000);
-            Check.True(asked.Sid is null, "ask.asked is unscoped");
-            var callId = asked.D.S("callId")!;
-            Check.Equal("Which way?", asked.D.Arr("questions").Single().S("question"));
-            Check.Equal("Thorough", asked.D.Arr("questions").Single().Arr("options").Last().S("label"));
-            var info = await env.Rpc("agent.get", new { sessionId = sid });
-            Check.Equal("yielded", info.S("status"));
-            Check.Equal("waiting for your answer", info.S("activity"));
-            Check.Equal(callId, (await env.Rpc("ask.pending", new { sessionId = sid })).Arr().Single().S("callId"));
-            Check.True((await env.Rpc("ask.answer", new { callId, answers = new[] { new[] { "Thorough" } } })).GetBoolean());
+            var answered = false;
+            try
+            {
+                var asked = await env.Client.WaitFor(mark, e => e.Type == "ask.asked" && e.D.S("sessionId") == sid, "ask.asked", 20_000);
+                Check.True(asked.Sid is null, "ask.asked is unscoped");
+                var callId = asked.D.S("callId")!;
+                Check.Equal("Which way?", asked.D.Arr("questions").Single().S("question"));
+                Check.Equal("Thorough", asked.D.Arr("questions").Single().Arr("options").Last().S("label"));
+                // the question is out a moment before the runtime shows the agent as yielded
+                var yielded = await env.Client.WaitFor(mark, e => e.Type == "agent.status" && e.D.P("agent").S("sessionId") == sid
+                                                                  && e.D.P("agent").S("status") == "yielded", "the agent yielded", 5000);
+                Check.Equal("waiting for your answer", yielded.D.P("agent").S("activity"));
+                Check.Equal(callId, (await env.Rpc("ask.pending", new { sessionId = sid })).Arr().Single().S("callId"));
+                Check.True((await env.Rpc("ask.answer", new { callId, answers = new[] { new[] { "Thorough" } } })).GetBoolean());
+                answered = true;
+            }
+            finally
+            {
+                if (!answered) await env.Rpc("agent.abort", new { sessionId = sid }); // a question left waiting holds its run
+            }
             var done = await env.WaitIdle(sid, mark, agent.L("runs"), 30_000);
             var run = await env.Result(sid, mark, done);
             Check.Contains(run.FinalText, "Answer received: The user answered: Thorough");
             Check.Contains(run.FinalText, "ASK-DONE");
-            var closed = await env.Client.WaitFor(mark, e => e.Type == "ask.closed" && e.D.S("callId") == callId, "ask.closed", 5000);
+            var closed = await env.Client.WaitFor(mark, e => e.Type == "ask.closed" && e.D.S("sessionId") == sid, "ask.closed", 5000);
             Check.Equal("answered", closed.D.S("status"));
             Check.Equal(0, (await env.Rpc("ask.pending", new { })).Arr().Count());
         });

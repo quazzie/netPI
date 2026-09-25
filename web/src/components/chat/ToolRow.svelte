@@ -10,6 +10,8 @@
   import TodoView from './tools/TodoView.svelte';
   import { parseArgs, toolMeta, toolSummary, toolBadge, pathArg } from '../../lib/tools.js';
   import { openFile } from '../../lib/openFile.js';
+  import { asks, answerApproval } from '../../lib/state/asks.svelte.js';
+  import { toast } from '../../lib/state/ui.svelte.js';
   import { duration } from '../../lib/format.js';
   import { app } from '../../lib/state/app.svelte.js';
 
@@ -30,7 +32,8 @@
     const a = app.agents.get(chat.id);
     return a?.status === 'running' && typeof a.activity === 'string' && /^tool:/.test(a.activity) && a.activity.includes(call.name);
   });
-  // calls that never ran (steering skipped them, the run was aborted/stopped) are not failures
+  // calls that never ran (steering skipped them, the run was aborted/stopped, a hook such as a guardrail blocked them)
+  // are not failures
   const skipped = $derived(
     !result
       ? null
@@ -39,12 +42,29 @@
             ? 'steer'
             : /^(Aborted:|Not executed)/.test(result.content ?? '')
               ? 'aborted'
-              : null)),
+              : /^Blocked:/.test(result.content ?? '')
+                ? 'blocked'
+                : null)),
   );
+  // a guardrail asks the user before this call runs (plugins/NetPI.Guardrails)
+  const approval = $derived(asks.approvals.get(call.id) ?? null);
+  let deciding = $state(false);
+  async function decide(allow) {
+    deciding = true;
+    try {
+      await answerApproval(call.id, allow);
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      deciding = false;
+    }
+  }
   const status = $derived(
     step.preparing
       ? 'preparing'
-      : result
+      : approval
+        ? 'approval'
+        : result
         ? skipped
           ? 'skipped'
           : result.isError
@@ -109,7 +129,7 @@
       {#if status === 'running' || status === 'preparing'}
         <span class="np-spinner"></span>
       {:else}
-        <Icon name={status === 'error' ? 'circle-x' : status === 'cancelled' || status === 'skipped' ? 'ban' : meta.icon} size={14} />
+        <Icon name={status === 'error' ? 'circle-x' : status === 'cancelled' || status === 'skipped' ? 'ban' : status === 'approval' ? 'alert' : meta.icon} size={14} />
       {/if}
     </span>
     <span class="label">{meta.label}</span>
@@ -124,12 +144,27 @@
       {/if}
     {/if}
     {#if status === 'preparing'}<span class="state">preparing…</span>{/if}
+    {#if status === 'approval'}<span class="state asks">needs your OK</span>{/if}
     {#if status === 'pending'}<span class="state">queued</span>{/if}
     {#if status === 'cancelled'}<span class="state">no result</span>{/if}
-    {#if status === 'skipped'}<span class="state">{skipped === 'steer' ? 'skipped · new message' : skipped === 'stopped' ? 'not run' : 'aborted'}</span>{/if}
+    {#if status === 'skipped'}<span class="state">{skipped === 'steer' ? 'skipped · new message' : skipped === 'stopped' ? 'not run' : skipped === 'blocked' ? 'blocked' : 'aborted'}</span>{/if}
     {#if dur != null && status !== 'skipped'}<span class="dur np-mono">{duration(dur)}</span>{/if}
     <span class="chev" class:open><Icon name="chevron-right" size={12} /></span>
   </button>
+
+  {#if approval}
+    <div class="approve">
+      <span class="why">
+        {#if approval.kind === 'path'}It touches <span class="np-mono subj">{approval.subject}</span>: a guardrail asks you first{:else}A
+          guardrail asks you first{/if}
+        (<span class="np-mono rule">{approval.rule}</span>)
+      </span>
+      <span class="btns">
+        <button class="np-btn np-btn-sm" disabled={deciding} onclick={() => decide(false)}>No</button>
+        <button class="np-btn np-btn-sm np-btn-primary" disabled={deciding} onclick={() => decide(true)}>Allow</button>
+      </span>
+    </div>
+  {/if}
 
   {#if tail}
     <pre class="tail np-mono">{tail}</pre>
@@ -244,6 +279,40 @@
     flex: none;
     font-size: var(--fs-xs);
     color: var(--fg-dim);
+  }
+  .state.asks,
+  .tool[data-status='approval'] .ic {
+    color: var(--warn);
+  }
+  /* a guardrail asks the user first: why, and Allow / No, under the row (it wraps on a narrow chat) */
+  .approve {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    margin: 0 0 6px 20px;
+    padding: 6px 10px;
+    border-left: 2px solid var(--warn);
+    background: var(--warn-soft);
+    border-radius: 0 6px 6px 0;
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+  }
+  .why {
+    flex: 1 1 180px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .rule,
+  .subj {
+    color: var(--fg);
+    font-size: 11.5px;
+  }
+  .btns {
+    display: flex;
+    flex: none;
+    gap: 6px;
+    margin-left: auto;
   }
   .dur {
     flex: none;

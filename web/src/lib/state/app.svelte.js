@@ -9,7 +9,7 @@ import { toast, syncUiStateFromHost, composer } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick, firstLine } from '../notify.js';
-import { loadAsks, askEvent, pendingIn } from './asks.svelte.js';
+import { loadAsks, askEvent, pendingIn, approvalIn } from './asks.svelte.js';
 
 const TABS_KEY = 'netpi.openTabs';
 
@@ -63,9 +63,9 @@ export function isBusy(sessionId) {
   return !!a && BUSY.has(a.status);
 }
 
-/** Status for tab dots: asking (a question of the agent's waits for the user) | running | queued | yielded | error | unread | idle */
+/** Status for tab dots: asking (a question, or a tool call, waits for the user) | running | queued | yielded | error | unread | idle */
 export function sessionStatus(sessionId) {
-  if (pendingIn(sessionId)) return 'asking';
+  if (pendingIn(sessionId) || approvalIn(sessionId)) return 'asking';
   const a = app.agents.get(sessionId);
   if (a) {
     if (a.status === 'running') return 'running';
@@ -474,6 +474,12 @@ function askNotification(d) {
   notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), `Asks: ${firstLine(q[0].question)}${q.length > 1 ? ` (+${q.length - 1} more)` : ''}`);
 }
 
+// A tool call waits for the user's OK (a guardrails ask rule).
+function approvalNotification(d) {
+  const what = d?.kind === 'path' ? `Wants to change ${d.subject}` : `Wants to run: ${firstLine(d?.subject ?? '')}`;
+  notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), what);
+}
+
 // The budget stopped a paid call and asks whether this chat may go over it.
 function messageNotification(sid, m) {
   if (m?.role !== 'notice' || m.meta?.kind !== 'budget' || !m.meta?.canOverride) return;
@@ -562,8 +568,11 @@ function onEvent(d, env) {
       break;
     case 'ask.asked':
     case 'ask.closed':
+    case 'guard.asked':
+    case 'guard.closed':
       askEvent(type, d);
       if (type === 'ask.asked') askNotification(d);
+      else if (type === 'guard.asked') approvalNotification(d);
       break;
     default:
       break;

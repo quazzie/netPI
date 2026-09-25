@@ -631,6 +631,11 @@ const handlers = {
     return { path: full, action: 'open' };
   },
   'mock.filesOpened': () => filesOpened,
+  'guard.pending': (p = {}) => agent.pendingApprovals(p.sessionId),
+  'guard.answer': (p = {}) => {
+    if (agent.answerApproval(need(p, 'callId'), p.allow) === 'not_found') throw new RpcError('not_found', 'No tool call waits for your OK with that id.');
+    return true;
+  },
   'ask.pending': (p = {}) => agent.pendingAsks(p.sessionId),
   'ask.answer': (p = {}) => {
     const r = agent.answerAsk(need(p, 'callId'), p.answers, p.text);

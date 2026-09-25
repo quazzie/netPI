@@ -602,6 +602,20 @@ log('ask_user: questions in the chat');
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
 }
 
+log('guardrails: a tool call waits for your OK');
+{
+  await ta.fill('[guard] push it');
+  await ta.press('Enter');
+  const bar = page.locator('.tool .approve').last();
+  await bar.waitFor({ timeout: 15_000 }).catch(() => {});
+  check('guardrails: the tool row asks for your OK', (await bar.count()) === 1 && (await bar.innerText()).includes('ask: ^git push'));
+  check('guardrails: the chat tab shows that something waits', (await page.locator('.tab.active .np-dot[data-status="asking"]').count()) === 1);
+  await shot(page, '48-guardrail-approval');
+  await bar.locator('button', { hasText: 'Allow' }).click();
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
+  check('guardrails: allowed, it ran', (await page.locator('.content:visible .item').last().innerText()).includes('Pushed'));
+}
+
 log('narrow side panels');
 {
   // drag both panels to ~230px (the user's layout is 230–340px) and check every tab for sideways overflow

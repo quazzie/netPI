@@ -1,0 +1,5 @@
+{
+  "id": "netpi.guardrails",
+  "name": "Guardrails",
+  "description": "Checks tool calls before they run: blocks dangerous commands and changes to protected paths, or asks you first."
+}

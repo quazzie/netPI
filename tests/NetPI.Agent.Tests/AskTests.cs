@@ -50,9 +50,9 @@ public static class AskTests
         Check.Equal("Which parser?", (string?)asked["questions"]![0]!["question"]);
         Check.Equal("Patch", (string?)asked["questions"]![0]!["options"]![1]!["label"]);
 
-        var a = h.Runtime.GetBySession(s.Id)!;
-        Check.Equal(AgentStatus.Yielded, a.Status, "the run waits with its slot given back");
-        Check.Equal("waiting for your answer", a.Activity);
+        // the question is out a moment before the runtime shows the agent as yielded
+        await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the run waits with its slot given back");
+        Check.Equal("waiting for your answer", h.Runtime.GetBySession(s.Id)!.Activity);
         await h.SendAsync(other.Id, "meanwhile");
         await h.IdleAsync(other.Id);
         Check.Equal("other chat ran", h.Messages(other.Id)[^1].Text, "another chat took the only slot meanwhile");

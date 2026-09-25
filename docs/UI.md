@@ -224,6 +224,11 @@ into locals first, because after the parent clears the modal state or the row re
      card is one line, `Question · question → answer` (the answer keeps its room on a narrow chat), which opens to every
      question and its answer; a stopped run or a new message instead reads "not answered". The run status line says
      "Waiting for your answer", and the chat's tab and session row get an `asking` dot (warn colour).
+   - **Guardrails.** A tool call that waits for the user's OK (a guardrails `ask:` rule; `asks.approvals` from
+     `guard.pending`, `guard.asked`, `guard.closed`) shows "needs your OK" on its row, with a bar under it: why (the
+     rule; for a path, the path) and **No** / **Allow** (`guard.answer`). Its steps group stays open while it waits. A
+     call that a hook blocked reads "blocked" (the ban icon), like a skipped one: it never ran. The tab dot is `asking`,
+     the run status line says "Waiting for your OK", and a Windows toast says what it wants to run or change.
    - **Model turns.** Under the last step of each model turn (an assistant message that ended in tool calls; under its
      question card when asking was the last thing it did), a dim line (`TurnLine`, `lib/turn.js`) gives that turn's
      numbers: the time to its first token (`meta.ttftMs`), how
@@ -661,7 +666,8 @@ names or an inline `<svg …>` string.
   (with the window placement) and restores it. `desktop.zoom { factor? }` reads or sets it (the Settings dialog).
 - **Notifications.** When a chat needs the user, the page posts `{ type: 'notify', sessionId, title, body }`
   (`lib/notify.js`): a top-level chat's run finished or failed (unless it goes on by itself within 1.5 s or its goal
-  is active), its goal was completed or is blocked, the budget asks, an agent asks a question (`Asks: …`); after one
+  is active), its goal was completed or is blocked, the budget asks, an agent asks a question (`Asks: …`), a tool call
+  waits for the user's OK (`Wants to run: …`, `Wants to change …`); after one
   of these no "Finished" follows for that chat. The shell shows it
   only while its window is not the active one: a tray icon's balloon, which Windows shows as a toast, and a flashing
   taskbar button. Clicking the toast brings the window up and replies `{ type: 'openSession', sessionId }`. The

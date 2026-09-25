@@ -28,9 +28,12 @@ all are, this plan moves to `docs/archive/`.
    waits with its instance freed (like `agent_wait`, through the additive `IAgentRuntime.WaitYieldedAsync`); a Windows
    toast and an `asking` tab dot say that a chat needs you. Subagents can't ask. `plugins/NetPI.Ask`; see
    `docs/TOOLS.md` and `docs/UI.md` (Questions).
-6. **Guardrails**: fast checks before a tool runs (blocked command patterns, protected paths such as `~/.netpi`,
+6. **Guardrails** (done): fast checks before a tool runs (blocked command patterns, protected paths such as `~/.netpi`,
    optional "ask first" rules). Pattern and path checks only: no model call and no prompt change, so tokens per second
-   stay the same. Blocking suits unattended runs better than asking.
+   stay the same. Blocking suits unattended runs better than asking. `plugins/NetPI.Guardrails`: the defaults block only
+   catastrophic commands and changes to `~/.ssh`, and ask before changes to `~/.netpi`; an `ask:` rule asks on the
+   tool's row (Allow / No) with the instance freed, and blocks in a subagent. Before-tool hooks now chain (changed
+   arguments pass on; a block ends it), so the guard, running last, checks what runs. See `docs/SETTINGS.md`.
 7. **Ideas plugin**:
    - the file moves from the project root to `.netpi/ideas.json` (like `.netpi/skills`), and an existing
      `ideas.json` is moved there;

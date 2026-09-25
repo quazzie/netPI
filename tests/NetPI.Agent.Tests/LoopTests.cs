@@ -663,6 +663,7 @@ public static class LoopTests
         await using var h = await TestHost.StartAsync();
         var echo = Echo();
         h.AddTool(echo);
+        var seen = new List<string>();
         var hook = new Hook
         {
             Order = 5,
@@ -672,17 +673,26 @@ public static class LoopTests
                 return ValueTask.CompletedTask;
             },
             OnError = (t, e) => new ModelErrorDecision { Retry = true },
-            BeforeTool = c => c.Name == "echo" && c.Arguments.Contains("secret") ? new ToolCallDecision { Block = true, Reason = "no secrets" } : null,
+            BeforeTool = c =>
+            {
+                lock (seen) seen.Add(c.Arguments);
+                return c.Name == "echo" && c.Arguments.Contains("secret") ? new ToolCallDecision { Block = true, Reason = "no secrets" } : null;
+            },
         };
-        // a second hook with a lower order runs first and is consulted first for decisions
-        var first = new Hook { Order = -1, BeforeTool = c => c.Arguments.Contains("fixme") ? new ToolCallDecision { Arguments = "{\"text\":\"fixed\"}" } : null };
+        // a second hook with a lower order runs first; the arguments it changes are what the next hook sees
+        var first = new Hook
+        {
+            Order = -1,
+            BeforeTool = c => c.Arguments.Contains("fixme") ? new ToolCallDecision { Arguments = "{\"text\":\"fixed\"}" }
+                : c.Arguments.Contains("leak") ? new ToolCallDecision { Arguments = "{\"text\":\"secret leak\"}" } : null,
+        };
         h.Services.Register<IAgentHook>(hook);
         h.Services.Register<IAgentHook>(first);
         var calls = 0;
         h.Catalog.Handler = (r, ct) => Interlocked.Increment(ref calls) switch
         {
             1 => Reply.Fail(new ModelException("context overflow", false) { ContextOverflow = true }),
-            2 => Reply.Tools(Reply.Call("echo", new { text = "secret" }), Reply.Call("echo", new { text = "fixme" })),
+            2 => Reply.Tools(Reply.Call("echo", new { text = "secret" }), Reply.Call("echo", new { text = "fixme" }), Reply.Call("echo", new { text = "leak" })),
             _ => Reply.Text("done"),
         };
         var s = h.NewSession();
@@ -694,10 +704,13 @@ public static class LoopTests
         Check.True(results[0].IsError);
         Check.Contains(results[0].Content, "no secrets");
         Check.Equal("echo:fixed", results[1].Content);
+        Check.True(seen.Contains("{\"text\":\"fixed\"}") && !seen.Any(a => a.Contains("fixme")), "the later hook saw the changed arguments: " + string.Join(" ", seen));
+        Check.Contains(results[2].Content, "no secrets", "blocked on the arguments the first hook made");
         var assistant = h.Messages(s.Id).First(m => m.Role == MessageRole.Assistant);
-        Check.Contains(assistant.ToolCalls.Last().Arguments, "fixed");
+        Check.Contains(assistant.ToolCalls.ElementAt(1).Arguments, "fixed");
+        Check.NotContains(assistant.ToolCalls.ElementAt(2).Arguments, "secret", "a blocked call keeps the arguments the model sent");
         Check.False(h.Messages(s.Id).Any(m => m.MetaString("kind") == "error"), "no error notice after retry");
-        Check.Equal("start|tool:echo|tool:echo|end:completed", string.Join("|", hook.Log));
+        Check.Equal("start|tool:echo|tool:echo|tool:echo|end:completed", string.Join("|", hook.Log));
     }
 
     private sealed class CountingMiddleware : IModelMiddleware

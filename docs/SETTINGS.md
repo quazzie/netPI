@@ -250,6 +250,25 @@ used: the chat stays as it was. Beyond pi: a transcript too long for the summari
 | `shell.timeoutSeconds` | `120` | default per command (max 1800) |
 | `ideas.fileName` | `ideas.json` | in the project folder (sessions without project: `~/.netpi/ideas.json`) |
 
+## Guardrails
+
+`plugins/NetPI.Guardrails` checks every tool call before it runs: patterns and paths only (no model call, no change to
+the prompt), so it costs microseconds. A matching rule blocks the call (the model reads why; nothing ran); a rule that
+starts with `ask:` asks you first on the tool's row in the chat (Allow / No) while the run waits with its instance given
+back; in a subagent an ask rule blocks, since nobody watches its chat. `block:` may start a rule, `#` a comment line. The
+checks catch the plain cases (a command built at run time gets through): they are not a sandbox.
+
+| key | default | |
+|---|---|---|
+| `guardrails.enabled` | `true` | check tool calls against the rules below |
+| `guardrails.commands` | catastrophic commands (below) | regular expressions, tried on each part of a `bash`, `pwsh` or `ssh_run` command (split at new lines, `;`, `&&`, `\|\|`, `\|`, `&`), ignoring case |
+| `guardrails.paths` | `["ask: ~/.netpi", "~/.ssh"]` | files and folders the agent may not change: `write` and `edit` refuse them, and so do `bash` and `pwsh` commands that name them, in any spelling a shell uses (`~/.netpi`, `$HOME/.netpi`, `%USERPROFILE%\.netpi`, `$env:USERPROFILE\.netpi`, `C:\Users\me\.netpi`, `/c/Users/me/.netpi`); the `read` tool still reads them. `~` is your home |
+
+The default commands: `rm -r` of `/`, `/*`, `~` or `$HOME`; deleting a drive root (`rm`, `rd`, `del`, `Remove-Item` of
+`C:\`, `/c`); `mkfs`; `dd … of=/dev/…` (not `/dev/null`); `format C:`; `shutdown`, `reboot`, `poweroff`, `halt`,
+`Stop-Computer`, `Restart-Computer`; a fork bomb. Each is anchored at the start of a command part, so `grep shutdown` or
+`echo 'rm -rf /'` pass.
+
 ## Web tools
 
 | key | default | |

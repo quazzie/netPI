@@ -17,6 +17,7 @@
     <Project Path="plugins/NetPI.Skills/NetPI.Skills.csproj" />
     <Project Path="plugins/NetPI.Todo/NetPI.Todo.csproj" />
     <Project Path="plugins/NetPI.Goal/NetPI.Goal.csproj" />
+    <Project Path="plugins/NetPI.Guardrails/NetPI.Guardrails.csproj" />
     <Project Path="plugins/NetPI.ToolRepair/NetPI.ToolRepair.csproj" />
     <Project Path="plugins/NetPI.Tools.Agents/NetPI.Tools.Agents.csproj" />
     <Project Path="plugins/NetPI.Tools.Files/NetPI.Tools.Files.csproj" />

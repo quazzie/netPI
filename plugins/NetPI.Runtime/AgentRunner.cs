@@ -746,21 +746,24 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         var prepared = new PreparedCall { Call = call, Tool = tool };
         var changed = false;
 
-        ToolCallDecision? decision = null;
+        // every hook in order: changed arguments pass on to the next one (a guard with a late Order checks what runs), and
+        // a block ends it
+        var original = call.Arguments;
         foreach (var hook in rt.Hooks())
         {
-            decision = await SafeAsync(() => hook.OnBeforeToolCallAsync(turn, call), "OnBeforeToolCall", ct).ConfigureAwait(false);
-            if (decision is not null) break;
-        }
-        if (decision?.Block == true)
-        {
-            prepared.Early = ToolResult.Error("Blocked: " + (string.IsNullOrWhiteSpace(decision.Reason) ? "this tool call was blocked by a policy hook." : decision.Reason));
-            return (prepared, false);
-        }
-        if (decision?.Arguments is { } newArgs && newArgs != call.Arguments)
-        {
-            call.Arguments = newArgs;
-            changed = true;
+            var decision = await SafeAsync(() => hook.OnBeforeToolCallAsync(turn, call), "OnBeforeToolCall", ct).ConfigureAwait(false);
+            if (decision is null) continue;
+            if (decision.Block)
+            {
+                call.Arguments = original;
+                prepared.Early = ToolResult.Error("Blocked: " + (string.IsNullOrWhiteSpace(decision.Reason) ? "this tool call was blocked by a policy hook." : decision.Reason));
+                return (prepared, false);
+            }
+            if (decision.Arguments is { } newArgs && newArgs != call.Arguments)
+            {
+                call.Arguments = newArgs;
+                changed = true;
+            }
         }
         if (tool is null)
         {

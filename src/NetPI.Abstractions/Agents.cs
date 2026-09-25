@@ -206,7 +206,8 @@ public sealed class ModelErrorDecision
 /// <summary>
 /// Agent lifecycle hooks (pi-style extension points). Register implementations with
 /// <c>context.Services.Register&lt;IAgentHook&gt;(...)</c>. Hooks run in ascending <see cref="Order"/>.
-/// For decision hooks the first non-null decision wins.
+/// For decision hooks the first non-null decision wins, except <see cref="OnBeforeToolCallAsync"/>: every hook sees the
+/// call, with the arguments the hooks before it changed, and a block ends it.
 /// </summary>
 public interface IAgentHook
 {

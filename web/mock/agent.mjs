@@ -12,6 +12,7 @@ const ABORT = Symbol('abort');
 export function createAgentRuntime({ publish, work, log = () => {} }) {
   const runs = new Map(); // sessionId -> { ac, turn }
   const asks = new Map(); // callId -> { entry, resolve }: ask_user questions waiting for ask.answer
+  const approvals = new Map(); // callId -> { entry, resolve }: tool calls waiting for the user's OK (guardrails)
 
   const sleep = (ms, run) =>
     new Promise((resolve, reject) => {
@@ -493,6 +494,52 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     return outcome;
   }
 
+  // a guardrails ask rule, like plugins/NetPI.Guardrails: the call waits (guard.asked, unscoped) with the agent yielded,
+  // until guard.answer, a new message from the user (steered) or an abort
+  async function approve(sid, run, tool, rule) {
+    const a = agentFor(sid);
+    const entry = { sessionId: sid, callId: tool.id, agentId: a.id, tool: tool.name, kind: 'command', subject: tool.args.command, rule, askedAt: new Date().toISOString() };
+    setStatus(sid, { status: 'yielded', activity: 'waiting for your OK' });
+    let outcome;
+    try {
+      outcome = await new Promise((resolve, reject) => {
+        approvals.set(tool.id, { entry, resolve });
+        publish('guard.asked', entry);
+        run.ac.signal.addEventListener('abort', () => reject(ABORT), { once: true });
+      });
+    } catch (e) {
+      approvals.delete(tool.id);
+      publish('guard.closed', { sessionId: sid, callId: tool.id, status: 'cancelled' });
+      append(sid, 'tool', [result(tool.id, tool.name, 'Aborted: the run was cancelled before this tool call completed.', null, { isError: true })]);
+      throw e;
+    }
+    approvals.delete(tool.id);
+    if (outcome.steered) publish('guard.closed', { sessionId: sid, callId: tool.id, status: 'steered' });
+    setStatus(sid, { status: 'running', activity: null });
+    return outcome;
+  }
+
+  async function guardScript(sid, run) {
+    const push = { id: newId('call'), name: 'bash', label: 'Bash', args: { command: 'git push origin main' } };
+    await streamAssistant(sid, run, { thinking: 'The fix is committed; push it.', text: 'Committed. Pushing to origin:', tools: [push] });
+    const o = await approve(sid, run, push, 'ask: ^git push');
+    if (o.steered) {
+      append(sid, 'tool', [result(push.id, push.name, 'Blocked: the user wrote a new message instead of answering whether it may run; the message follows. Nothing ran.', null, { isError: true })]);
+      return;
+    }
+    if (!o.allow) {
+      append(sid, 'tool', [result(push.id, push.name, 'Blocked: the user said no to `git push origin main`. Nothing ran.', null, { isError: true })]);
+      await streamAssistant(sid, run, { text: 'OK, I did not push. The commit is local.', fast: true });
+      return;
+    }
+    await runTool(sid, run, push, {
+      content: 'To github.com:me/netpi.git\n   9187441..5e4d3d8  main -> main',
+      details: { command: push.args.command, shell: 'bash', cwd: projectPath(sid), exitCode: 0, durationMs: 600, truncated: false, background: false },
+      duration: 600,
+    });
+    await streamAssistant(sid, run, { text: 'Pushed.', fast: true });
+  }
+
   async function askScript(sid, run, input) {
     const questions = [
       {
@@ -518,6 +565,7 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
 
   async function script(sid, run, input) {
     if (/\[ask2?\]/i.test(input)) return askScript(sid, run, input);
+    if (/\[guard\]/i.test(input)) return guardScript(sid, run);
     if (/\[web\]/i.test(input)) return webScript(sid, run);
     if (/\[compact\]/i.test(input)) return compactScript(sid, run);
     if (/\[fast\]/i.test(input)) return fastScript(sid, run);
@@ -650,8 +698,19 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
       queueOf(sid).push({ id: newId('in'), text: p.text ?? '', mode: mode === 'queue' ? 'queue' : 'steer', source: 'user', createdAt: new Date().toISOString() });
       publishQueue(sid);
       // a message instead of an answer ends the question waiting in this chat
-      if (mode !== 'queue') for (const w of asks.values()) if (w.entry.sessionId === sid) w.resolve({ steered: true });
+      if (mode !== 'queue') for (const w of [...asks.values(), ...approvals.values()]) if (w.entry.sessionId === sid) w.resolve({ steered: true });
       return agentFor(sid);
+    },
+    /** guard.pending: the tool calls waiting for the user's OK. */
+    pendingApprovals: (sid) => [...approvals.values()].map((w) => w.entry).filter((e) => !sid || e.sessionId === sid),
+    /** guard.answer: 'not_found' | true */
+    answerApproval(callId, allow) {
+      const w = approvals.get(callId);
+      if (!w) return 'not_found';
+      approvals.delete(callId);
+      publish('guard.closed', { sessionId: w.entry.sessionId, callId, status: allow ? 'allowed' : 'denied' });
+      w.resolve({ allow: !!allow });
+      return true;
     },
     /** ask.pending: the questions waiting (in one chat, or all). */
     pendingAsks: (sid) => [...asks.values()].map((w) => w.entry).filter((e) => !sid || e.sessionId === sid),
