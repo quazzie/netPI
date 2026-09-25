@@ -632,6 +632,12 @@ names or an inline `<svg …>` string.
   Files and Diagnostics tabs offer it only when `window.chrome.webview` exists.
 - **Zoom.** The WebView zooms with Ctrl + wheel and Ctrl + / − / 0; the shell saves the factor in `window.json`
   (with the window placement) and restores it. `desktop.zoom { factor? }` reads or sets it (the Settings dialog).
+- **Notifications.** When a chat needs the user, the page posts `{ type: 'notify', sessionId, title, body }`
+  (`lib/notify.js`): a top-level chat's run finished or failed (unless it goes on by itself within 1.5 s or its goal
+  is active), its goal was completed or is blocked, the budget asks (then no "Finished" after it). The shell shows it
+  only while its window is not the active one: a tray icon's balloon, which Windows shows as a toast, and a flashing
+  taskbar button. Clicking the toast brings the window up and replies `{ type: 'openSession', sessionId }`. The
+  preference `notifications` (Settings → General, desktop app only) turns them off.
 
 ## What the UI expects from the host (beyond PROTOCOL.md)
 

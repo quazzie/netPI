@@ -17,6 +17,7 @@ const defaultPrefs = {
   enterSends: true, // false → Ctrl+Enter sends, Enter = newline
   expandThinking: false,
   spellcheck: true, // spell checking in the composer
+  notifications: true, // desktop app: a Windows notification when a chat needs you while NetPI is in the background
 };
 
 const CHAT_WIDTH = { normal: '900px', wide: '1200px', full: 'none' };

@@ -1398,6 +1398,50 @@ log('plugin tab hot reload / error');
   }
 }
 
+// ------------------------------------------------------------------ notifications: what the UI asks the desktop app for
+// A page of its own with a stand-in for the desktop app's bridge (chrome.webview), so no other section sees it.
+log('notifications');
+{
+  const p = await page.context().newPage();
+  await p.addInitScript(() => {
+    const listeners = [];
+    window.__posted = [];
+    window.chrome = window.chrome || {};
+    window.chrome.webview = {
+      postMessage: (m) => window.__posted.push(JSON.parse(JSON.stringify(m))),
+      addEventListener: (type, f) => type === 'message' && listeners.push(f),
+      emit: (data) => listeners.forEach((f) => f({ data })),
+    };
+  });
+  await p.goto(`${BASE}/?token=dev`);
+  await p.waitForSelector('.srow', { timeout: 15_000 }).catch(() => {});
+  const box = p.locator('textarea').first();
+  const run = async (text) => {
+    await box.fill(text);
+    await box.press('Enter');
+    await p.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
+    await p.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 });
+    await p.waitForTimeout(2200); // the UI waits 1.5 s: a chat that goes on by itself says nothing
+  };
+  await p.keyboard.press('Control+t');
+  await p.waitForSelector('.intro');
+  await run('[fast] notify me');
+  const done = await p.evaluate(() => window.__posted.filter((m) => m.type === 'notify'));
+  check('notifications: a finished run asks for one', done.length === 1 && done[0].body === 'Finished' && /notify me/.test(done[0].title), JSON.stringify(done));
+  await p.keyboard.press('Control+t');
+  await p.waitForSelector('.intro');
+  await run('[budget] Summarize the repo with the paid model.');
+  const budget = await p.evaluate(() => window.__posted.filter((m) => m.type === 'notify').slice(1));
+  check('notifications: the budget ask is one, without a "Finished" after it', budget.length === 1 && /budget/.test(budget[0].body), JSON.stringify(budget));
+  // clicking the notification (the desktop app says openSession) opens that chat
+  await p.keyboard.press('Control+t');
+  await p.waitForSelector('.intro');
+  await p.evaluate((sessionId) => window.chrome.webview.emit({ type: 'openSession', sessionId }), done[0]?.sessionId);
+  await p.waitForTimeout(500);
+  check('notifications: a click opens the chat', (await p.locator('.topbar .tab.active').getAttribute('data-tab')) === done[0]?.sessionId);
+  await p.close();
+}
+
 // ------------------------------------------------------------------ reconnect
 if (!EXTERNAL) {
   log('reconnect');

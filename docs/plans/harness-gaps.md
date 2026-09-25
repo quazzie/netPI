@@ -10,19 +10,23 @@ all are, this plan moves to `docs/archive/`.
    backoff and got refused again. `ModelException.RetryAfter` (additive) is set by every provider from the response
    header (seconds or a date), the wrappers that rebuild the exception keep it, and the retry middleware waits at
    least that long, within `retry.maxTotalSeconds` (a longer wait gives up at once).
-2. **Windows toasts** from the desktop app when the NetPI window is not in front: a run finished or failed, a goal was
-   completed or is blocked, `ask_user` waits, the budget asks. No new dependency.
-3. **Cache reuse and time to first token per turn**, shown in the chat: how much of each prompt the backend reused
+2. **Windows toasts** (done) from the desktop app when the NetPI window is not in front: a run finished or failed, a
+   goal was completed or is blocked, the budget asks (`ask_user` adds its own). The web UI decides and posts `notify`
+   to the shell; a tray balloon (shown as a toast) and a flashing taskbar button, no new dependency. See `docs/UI.md`
+   (Desktop integration).
+3. **Files tab** (asked for on 2026-09-25): a click on a file opens it; an `@` button inserts it into the chat as a
+   mention; a git line shows the uncommitted changes since the last commit (e.g. `+13 −400`).
+4. **Cache reuse and time to first token per turn**, shown in the chat: how much of each prompt the backend reused
    and how long the first token took (TTFT is not recorded yet: the runner can store it in the message meta).
-4. **`ask_user`**: the agent asks the user questions with options. The questions sit **inline in the chat** as its
+5. **`ask_user`**: the agent asks the user questions with options. The questions sit **inline in the chat** as its
    newest item, below the agent's message that gives their context; nothing overlays the chat. The card is expanded
    while it waits and collapses to one line (question and answer) once answered; to read the context the user scrolls
    up. Answer by clicking an option or typing in the composer. The run waits with its instance freed (like
    `agent_wait`).
-5. **Guardrails**: fast checks before a tool runs (blocked command patterns, protected paths such as `~/.netpi`,
+6. **Guardrails**: fast checks before a tool runs (blocked command patterns, protected paths such as `~/.netpi`,
    optional "ask first" rules). Pattern and path checks only: no model call and no prompt change, so tokens per second
    stay the same. Blocking suits unattended runs better than asking.
-6. **Ideas plugin**:
+7. **Ideas plugin**:
    - the file moves from the project root to `.netpi/ideas.json` (like `.netpi/skills`), and an existing
      `ideas.json` is moved there;
    - one `ideas` tool with an action instead of five (deleting stays in the tab);
@@ -30,7 +34,7 @@ all are, this plan moves to `docs/archive/`.
    It stays JSON in the project: it travels with the repository, stays readable without NetPI or with the plugin off,
    and a backlog is too small to need a database. NetPI's own backlog stays in the docs (`docs/STATUS.md`), since the
    plugin can be disabled.
-7. **Forking a chat**: a new chat with the conversation up to a message; the original stays. Conversation only (files
+8. **Forking a chat**: a new chat with the conversation up to a message; the original stays. Conversation only (files
    exist once).
 
 Later: a language server behind a tool (errors in the changed files in about a second instead of a build; where a

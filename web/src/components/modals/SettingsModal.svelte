@@ -280,6 +280,15 @@
             <div class="lbl"><div>Spellcheck</div><div class="np-dim np-small">Underline misspelled words in the message box</div></div>
             <input type="checkbox" checked={prefs.spellcheck} onchange={(e) => setPref('spellcheck', e.currentTarget.checked)} />
           </label>
+          {#if app.info?.desktop}
+            <label class="row check">
+              <div class="lbl">
+                <div>Notifications</div>
+                <div class="np-dim np-small">A Windows notification when a chat finishes, fails, completes its goal or needs you while NetPI is in the background</div>
+              </div>
+              <input type="checkbox" checked={prefs.notifications} onchange={(e) => setPref('notifications', e.currentTarget.checked)} />
+            </label>
+          {/if}
         </div>
         {#each layout.general as s (s.id)}{@render sectionBlock(s)}{/each}
       {:else if section === 'json'}

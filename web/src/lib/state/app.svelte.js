@@ -8,6 +8,7 @@ import { getChat, peekChat, dropChat, allChats } from './chat.svelte.js';
 import { toast, syncUiStateFromHost, composer } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
+import { notify, onNotificationClick, firstLine } from '../notify.js';
 
 const TABS_KEY = 'netpi.openTabs';
 
@@ -426,7 +427,49 @@ function setAgent(a) {
   if (wasBusy && !nowBusy) {
     peekChat(a.sessionId)?.runEnded();
     if (a.sessionId !== app.activeId && app.openTabs.includes(a.sessionId)) app.unread.add(a.sessionId);
+    runEndedNotification(a);
   }
+}
+
+// ------------------------------------------------------------------------------------------ notifications (notify.js)
+
+const titleOf = (s) => s?.title || 'New session';
+const saidJustNow = new Map(); // sessionId -> when a specific notification (goal, budget) went out
+
+function notifyAbout(sid, s, body) {
+  saidJustNow.set(sid, Date.now());
+  notify(sid, titleOf(s), body);
+}
+
+// A chat's run ended. Not when it goes on by itself right away (a queued message, a subagent's report waking it), not
+// while its goal runs (the goal says when it is complete or blocked), and not right after a specific notification about
+// it (the goal was completed, the budget asks): that one says why the run ended.
+function runEndedNotification(a) {
+  if (a.isSubagent) return;
+  const sid = a.sessionId;
+  setTimeout(() => {
+    const now = app.agents.get(sid);
+    if (!now || BUSY.has(now.status)) return;
+    const s = app.sessionsById.get(sid);
+    if (s?.meta?.goal?.status === 'active' || Date.now() - (saidJustNow.get(sid) ?? 0) < 10_000) return;
+    notify(sid, titleOf(s), now.status === 'failed' ? `Failed${now.error ? `: ${firstLine(now.error)}` : ''}` : 'Finished');
+  }, 1500);
+}
+
+// A chat's goal was completed or is blocked (session meta "goal", plugins/NetPI.Goal).
+function goalNotification(before, s) {
+  const g = s?.meta?.goal;
+  if (!before || !g || s.kind === 'subagent' || g.status === before.meta?.goal?.status) return;
+  if (g.status === 'complete') notifyAbout(s.id, s, 'Goal complete');
+  else if (g.status === 'blocked') notifyAbout(s.id, s, `Goal blocked${g.reason ? `: ${firstLine(g.reason)}` : ''}`);
+}
+
+// The budget stopped a paid call and asks whether this chat may go over it.
+function messageNotification(sid, m) {
+  if (m?.role !== 'notice' || m.meta?.kind !== 'budget' || !m.meta?.canOverride) return;
+  const s = app.sessionsById.get(sid);
+  if (s?.kind === 'subagent') return;
+  notifyAbout(sid, s, firstLine((m.parts ?? []).filter((p) => p.type === 'text').map((p) => p.text).join('\n')));
 }
 
 // ------------------------------------------------------------------------------------------ events
@@ -459,6 +502,7 @@ function onEvent(d, env) {
       const m = d?.message;
       if (m && ((m.role === 'notice' && m.meta?.kind === 'error') || m.stopReason === 'error')) app.errored.add(sid);
     }
+    if (type === 'message.added') messageNotification(sid, d?.message);
     const chat = peekChat(sid);
     if (chat) chat.handle(type, d ?? {});
     else if (type === 'message.added' && sid !== app.activeId && app.openTabs.includes(sid)) {
@@ -469,6 +513,7 @@ function onEvent(d, env) {
   switch (type) {
     case 'session.created':
     case 'session.updated':
+      goalNotification(app.sessionsById.get(d.session?.id), d.session);
       upsertSession(d.session);
       break;
     case 'session.deleted':
@@ -516,5 +561,6 @@ export function startApp() {
   started = true;
   bus.on('*', onEvent);
   onOpen(loadAll);
+  onNotificationClick((id) => openSession(id));
   connect();
 }

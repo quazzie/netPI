@@ -364,6 +364,9 @@ internal sealed class MainForm : Form
             case "revealPath":
                 if (Str(msg, "path") is { } p) RevealInExplorer(p);
                 break;
+            case "notify":
+                ShowNotification(Str(msg, "title"), Str(msg, "body"), Str(msg, "sessionId"));
+                break;
         }
     }
 
@@ -447,6 +450,59 @@ internal sealed class MainForm : Form
         BringToFront();
     }
 
+    // ---------------------------------------------------------------- notifications (the web UI asks: "notify")
+
+    private NotifyIcon? _tray;
+    private string? _notifySession;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FlashInfo
+    {
+        public uint Size;
+        public IntPtr Hwnd;
+        public uint Flags;
+        public uint Count;
+        public uint Timeout;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool FlashWindowEx(ref FlashInfo info);
+
+    /// <summary>
+    /// A Windows notification and a flashing taskbar button, only while the window is not the active one. The notification
+    /// is a tray icon's balloon, which Windows 10 and 11 show as a toast (no package needed); clicking it brings the
+    /// window up and opens the chat. The tray icon goes away once the window is active again.
+    /// </summary>
+    private void ShowNotification(string? title, string? body, string? sessionId)
+    {
+        if (ActiveForm == this && WindowState != FormWindowState.Minimized) return; // the user is looking at NetPI
+        _notifySession = sessionId;
+        if (_tray is null)
+        {
+            _tray = new NotifyIcon { Icon = Icon, Text = "netPI" };
+            _tray.BalloonTipClicked += (_, _) => OpenFromNotification();
+            _tray.MouseClick += (_, _) => OpenFromNotification();
+        }
+        _tray.Visible = true;
+        _tray.ShowBalloonTip(10_000, string.IsNullOrWhiteSpace(title) ? "netPI" : title,
+            string.IsNullOrWhiteSpace(body) ? " " : body, ToolTipIcon.None);
+        // flash the taskbar button until the window comes to the front (FLASHW_TRAY | FLASHW_TIMERNOFG)
+        var flash = new FlashInfo { Size = (uint)Marshal.SizeOf<FlashInfo>(), Hwnd = Handle, Flags = 0x2 | 0xC };
+        FlashWindowEx(ref flash);
+    }
+
+    private void OpenFromNotification()
+    {
+        BringToFrontNow();
+        if (_notifySession is { } sessionId) Post(new JsonObject { ["type"] = "openSession", ["sessionId"] = sessionId });
+    }
+
+    protected override void OnActivated(EventArgs e)
+    {
+        base.OnActivated(e);
+        if (_tray is not null) _tray.Visible = false; // seen
+    }
+
     // ---------------------------------------------------------------- shutdown
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -469,6 +525,8 @@ internal sealed class MainForm : Form
         try
         {
             _activateWait?.Unregister(null);
+            _tray?.Dispose(); // else its icon lingers in the tray until the mouse passes over it
+            _tray = null;
             _web.Dispose();
             var server = _server;
             if (server is not null)
@@ -491,6 +549,7 @@ internal sealed class MainForm : Form
         if (disposing)
         {
             _activate?.Dispose();
+            _tray?.Dispose();
             _web.Dispose();
             _status.Dispose();
         }
