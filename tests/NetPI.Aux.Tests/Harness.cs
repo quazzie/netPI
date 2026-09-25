@@ -395,7 +395,7 @@ public sealed class FakeModelCatalog : IModelCatalog
     public ConcurrentQueue<ModelRequest> Requests { get; } = new();
     public Func<ModelRequest, ChatMessage> Responder { get; set; } = _ => new ChatMessage
     {
-        Role = MessageRole.Assistant, Parts = [new TextPart { Text = "## Goal\nSUMMARY" }], StopReason = "stop",
+        Role = MessageRole.Assistant, Parts = [new TextPart { Text = "## Task\nSUMMARY" }], StopReason = "stop",
     };
     public string? DefaultModelRef { get; set; }
 

@@ -212,7 +212,7 @@ public static class CompactionTests
             Check.Contains(prompt, "[Thinking] SECRET_THINKING 0");
             Check.True(prompt.StartsWith("<conversation>\n") && prompt.Contains("</conversation>"), "the conversation in tags");
             Check.Contains(prompt, "Create a structured context checkpoint summary");
-            foreach (var h in new[] { "## Goal", "## Constraints & Preferences", "## Progress", "### Done", "### In Progress", "### Blocked", "## Key Decisions", "## Next Steps", "## Critical Context" })
+            foreach (var h in new[] { "## Task", "## Constraints & Preferences", "## Progress", "### Done", "### In Progress", "### Blocked", "## Key Decisions", "## Next Steps", "## Critical Context" })
                 Check.Contains(prompt, h);
 
             var store = env.Ctx.SessionsFake;
@@ -220,7 +220,7 @@ public static class CompactionTests
             Check.Equal(session.Id, sid);
             var summary = store.Appended.Last();
             Check.Equal(MessageRole.Summary, summary.Role);
-            Check.True(summary.Text.StartsWith("## Goal\nSUMMARY\n\n<read-files>\nsrc/f0.cs\n"), summary.Text);
+            Check.True(summary.Text.StartsWith("## Task\nSUMMARY\n\n<read-files>\nsrc/f0.cs\n"), summary.Text);
             Check.Equal("src/f0.cs", summary.Meta!["readFiles"]![0]!.GetValue<string>());
             Check.Equal("compaction", summary.MetaString("kind"));
             Check.Equal(upTo, (long)summary.Meta!["coversUpToSeq"]!);
@@ -360,10 +360,10 @@ public static class CompactionTests
             var (read, modified) = FileLists.Collect(msgs, prev);
             Check.Equal("a.cs,nuc:/etc/hosts,old.cs", string.Join(",", read), "read, minus what was modified");
             Check.Equal("done.cs,x.cs", string.Join(",", modified));
-            var text = "## Goal\nG" + FileLists.Format(read, modified);
+            var text = "## Task\nG" + FileLists.Format(read, modified);
             Check.Contains(text, "<read-files>\na.cs\nnuc:/etc/hosts\nold.cs\n</read-files>");
             Check.Contains(text, "<modified-files>\ndone.cs\nx.cs\n</modified-files>");
-            Check.Equal("## Goal\nG", FileLists.Strip(text));
+            Check.Equal("## Task\nG", FileLists.Strip(text));
         });
 
         r.Add("compaction: a turn too long to keep gets its start summarized apart (split turn)", async () =>
@@ -397,11 +397,48 @@ public static class CompactionTests
             Check.Equal(MessageRole.Assistant, firstKept.Role);
         });
 
+        // Real-model regression: a chat that was one long turn had only the project and instruction notices before it; the
+        // summary of those said "No explicit task yet … awaiting the user's actual task", above the turn's real summary.
+        r.Add("compaction: notices before a split turn are not summarized (their plugins announce them again)", async () =>
+        {
+            var env = new Env();
+            env.Add(ChatMessage.NoticeText("Working directory: C:/p (project \"p\").", "project"));
+            env.Add(ChatMessage.NoticeText("Instruction files that apply here: " + new string('i', 3000), "instructions"));
+            env.Add(T.User("LONG TASK: migrate the parser"));
+            for (var i = 0; i < 12; i++)
+            {
+                env.Add(T.Assistant($"step {i}", T.Call($"s{i}", "read", $"{{\"path\":\"p{i}.cs\"}}")));
+                env.Add(T.ToolResult(($"s{i}", "read", new string('r', 7000))));
+            }
+            env.Ctx.ModelsFake.Responder = req => new ChatMessage
+            {
+                Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "PREFIX-SUMMARY" }],
+            };
+            var result = await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            Check.True(result.Compacted, result.Message);
+            var reqs = env.Ctx.ModelsFake.Requests.ToList();
+            Check.Equal(1, reqs.Count, "only the turn prefix is summarized");
+            Check.Contains(reqs[0].Messages[0].Text, "PREFIX of a turn");
+            Check.True(result.Summary!.Text.StartsWith("No earlier history.\n\n---\n\n**Turn Context (split turn):**\n\nPREFIX-SUMMARY"), result.Summary.Text);
+        });
+
+        r.Add("compaction: nothing but notices to summarize is nothing to compact", async () =>
+        {
+            var env = new Env();
+            env.Add(ChatMessage.NoticeText("Instruction files that apply here: " + new string('i', 40_000), "instructions"));
+            env.Add(T.User("hi"));
+            env.Add(T.Assistant("hello"));
+            var result = await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            Check.False(result.Compacted, result.Message);
+            Check.Contains(result.Message, "Nothing to compact");
+            Check.Equal(0, env.Ctx.ModelsFake.Requests.Count(), "no summarizer call");
+        });
+
         r.Add("compaction: a summary cut off at the output limit is refused and nothing changes", async () =>
         {
             var env = new Env();
             env.Conversation(13);
-            env.Ctx.ModelsFake.Responder = req => new ChatMessage { Role = MessageRole.Assistant, StopReason = "length", Parts = [new TextPart { Text = "## Goal\nhalf a" }] };
+            env.Ctx.ModelsFake.Responder = req => new ChatMessage { Role = MessageRole.Assistant, StopReason = "length", Parts = [new TextPart { Text = "## Task\nhalf a" }] };
             var before = env.Ctx.Sessions.GetContextMessages(env.Session.Id).Count;
             try
             {
@@ -511,7 +548,7 @@ public static class CompactionTests
             var result = await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
             Check.True(result.Compacted, result.Message);
             var prompt = env.Ctx.ModelsFake.Requests.Last().Messages[0].Text;
-            Check.Contains(prompt, "<previous-summary>\n## Goal\nSUMMARY\n</previous-summary>");
+            Check.Contains(prompt, "<previous-summary>\n## Task\nSUMMARY\n</previous-summary>");
             Check.NotContains(prompt, "[Summary of the earlier conversation]");
             Check.NotContains(prompt, "<read-files>"); // the lists come from the meta, not through the model
             Check.Contains(prompt, "NEW conversation messages to incorporate");

@@ -211,11 +211,13 @@ with their guidelines. The global file is `~/.netpi/AGENTS.md`.
 
 Compaction works like pi's. When fewer than `compaction.reserveTokens` are left in the window, the older part of the
 chat is summarized and the last `compaction.keepRecentTokens` are kept as they are (never a tool call without its
-result). The summary is a structured checkpoint (Goal, Constraints & Preferences, Progress: Done / In Progress /
-Blocked, Key Decisions, Next Steps, Critical Context) written at the chat's reasoning effort from a transcript that
-includes the model's thinking (tool results cut to 2000 characters). An earlier summary is merged by rule (keep
-everything, move finished work to Done, update the next steps). When the kept part starts inside one long turn, the
-start of that turn gets its own summary. The files read and modified are listed from the tool calls themselves
+result). The summary is a structured checkpoint (Task, Constraints & Preferences, Progress: Done / In Progress /
+Blocked, Key Decisions, Next Steps, Critical Context; pi's "Goal" is "Task" so it can't be taken for a /goal) written
+at the chat's reasoning effort from a transcript that includes the model's thinking (tool results cut to 2000
+characters). An earlier summary is merged by rule (keep everything, move finished work to Done, update the next steps).
+When the kept part starts inside one long turn, the start of that turn gets its own summary; what came before it is
+summarized only if it holds conversation, not just notices (their plugins announce them again after a compaction, and
+nothing but notices to summarize is nothing to compact). The files read and modified are listed from the tool calls themselves
 (`<read-files>`, `<modified-files>`) and carried from summary to summary. A summary cut off at its output limit is not
 used: the chat stays as it was. Beyond pi: a transcript too long for the summarizer is summarized in rolling parts, and
 `compaction.model` can summarize with another model.

@@ -8,6 +8,7 @@ namespace NetPI.Compaction;
 /// <summary>
 /// The summarizer's prompts, after pi's: a structured checkpoint the next model continues from; with an earlier summary,
 /// strict rules to merge the new messages into it; for the start of a turn too long to keep, a separate prefix summary.
+/// pi's "## Goal" is "## Task" here: a goal is what the user sets with /goal, which a summary must not look like.
 /// </summary>
 public static class SummaryPrompts
 {
@@ -22,7 +23,7 @@ public static class SummaryPrompts
 
     public const string Format =
         """
-        ## Goal
+        ## Task
         [What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
 
         ## Constraints & Preferences

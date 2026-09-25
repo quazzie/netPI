@@ -136,7 +136,7 @@ public sealed class CompactionService(IPluginContext ctx)
 
         var plan = CompactionPlanner.Plan(context, keep, maxKeep);
         var tokensBefore = req.TokensBefore ?? req.OverheadTokens + msgTokens;
-        if (plan is null || plan.SummarizeTokens < minGain)
+        if (plan is null || plan.SummarizeTokens < minGain || !plan.ToSummarize.Any(IsConversation))
             return new CompactionResult { Message = $"Nothing to compact (context ≈ {Fmt(tokensBefore)} tokens).", TokensBefore = tokensBefore, TokensAfter = tokensBefore };
 
         Notice(req.SessionId, "info", $"Compacting context (~{Fmt(tokensBefore)} tokens, {plan.SummarizeCount} messages)…");
@@ -254,7 +254,7 @@ public sealed class CompactionService(IPluginContext ctx)
         if (prefix.Count > 0)
         {
             var historyText = previousText ?? "No earlier history.";
-            if (history.Count > 0)
+            if (history.Any(IsConversation))
             {
                 (historyText, var n) = await RollAsync(history, previousText, false, model, effort, req, o, o.MaxSummaryTokens, ct).ConfigureAwait(false);
                 calls += n;
@@ -313,6 +313,13 @@ public sealed class CompactionService(IPluginContext ctx)
         }
         return (summary!, chunks.Count);
     }
+
+    /// <summary>
+    /// Something to summarize. Notices alone are not: the project, instruction files, skills and the like are announced
+    /// again by their plugins once their notices are compacted away, and a summary of them only invents a task ("no
+    /// explicit task yet") that contradicts the turn that follows.
+    /// </summary>
+    private static bool IsConversation(ChatMessage m) => m.Role is MessageRole.User or MessageRole.Assistant;
 
     /// <summary>The chat's reasoning effort when the summarizer offers it, else the model's default (null).</summary>
     public static string? EffortFor(ModelInfo model, string? sessionEffort)

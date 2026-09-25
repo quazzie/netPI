@@ -498,7 +498,7 @@ public sealed partial class ScenarioEngine
         var tags = ScenarioTag.All(prompt).Distinct().ToList();
         var steps = LongStepRx().Matches(prompt).Select(m => (K: int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), N: m.Groups[2].Value)).ToList();
         var sb = new StringBuilder();
-        sb.Append("## Goal\nContinue the scripted mock scenario (MOCK-SUMMARY of ").Append(prompt.Length).Append(" prompt characters).\n");
+        sb.Append("## Task\nContinue the scripted mock scenario (MOCK-SUMMARY of ").Append(prompt.Length).Append(" prompt characters).\n");
         sb.Append("## Current state & next steps\n");
         if (tags.Count > 0) sb.Append("Scenario: ").Append(tags[^1]).Append('\n');
         if (steps.Count > 0)
