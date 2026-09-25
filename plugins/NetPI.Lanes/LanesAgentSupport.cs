@@ -6,21 +6,21 @@ using System.Text.Json.Nodes;
 namespace NetPI.Lanes;
 
 /// <summary>
-/// <c>lanes_list</c>: the lanes as an agent sees them. First the budget, then the lanes the user set up (cheapest first:
-/// id, model, busy/capacity, price, today's spend, context window, the user's note on when to use it), then other models
-/// in use. Registered by the lanes plugin, so it disappears (with the lanes section of the system prompt) when lanes are
-/// disabled.
+/// <c>agent_choices</c>: the agents the user set up, as an agent that delegates sees them. First the budget, then the
+/// agents (active first, then cheapest: id, model, busy/instances, state, price, today's spend, context window, the user's
+/// note on when to use it), then other model calls in progress. Registered by the lanes plugin, so it disappears (with
+/// the agents section of the system prompt) when the plugin is off.
 /// </summary>
-internal sealed class LanesListTool(LaneScheduler scheduler, Ledger ledger) : IAgentTool
+internal sealed class AgentChoicesTool(LaneScheduler scheduler, Ledger ledger) : IAgentTool
 {
     public ToolDefinition Definition { get; } = new()
     {
-        Name = "lanes_list",
-        Label = "Lanes",
+        Name = "agent_choices",
+        Label = "Agents",
         Description =
-            "List the lanes: the models the user set up for agents, each with its parallel slots (busy/capacity), a note on " +
-            "when to use it, its price and today's spend, cheapest first; and the budget. Pass a lane's id to agent_spawn. " +
-            "Also shows who holds the lanes.",
+            "List the agents the user set up to run subagents on: each is a model with a number of instances (runs at once), " +
+            "its state (active, busy, not loaded, switched off), a note on when to use it, its price and today's spend; and " +
+            "the budget. Pass an agent's id to agent_spawn. Also shows who runs on them.",
         ReadOnly = true,
         Category = "agents",
         Parameters = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() },
@@ -34,29 +34,30 @@ internal sealed class LanesListTool(LaneScheduler scheduler, Ledger ledger) : IA
         string Who(LaneOwnerInfo o) => (names.TryGetValue(o.AgentId, out var n) ? n : o.Label ?? "?") + (o.AgentId == context.AgentId ? " (you)" : "");
 
         var sb = new StringBuilder(ledger.BudgetLine()).Append("\n\n");
-        var configured = pools.Where(p => p.Configured)
-            .OrderBy(p => p.Free ? 0 : p.PriceInput is null ? 2 : 1)
+        var agents = pools.Where(p => p.Configured)
+            .OrderBy(p => p.Available ? 0 : 1)
+            .ThenBy(p => p.Free ? 0 : p.PriceInput is null ? 2 : 1)
             .ThenBy(p => (p.PriceInput ?? 0) + (p.PriceOutput ?? 0))
             .ThenBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        if (configured.Count > 0)
+        var others = pools.Where(p => !p.Configured && (p.Busy > 0 || p.Queued > 0)).ToList();
+        if (agents.Count > 0)
         {
-            sb.Append("Lanes (pass the id to agent_spawn):\n");
-            foreach (var p in configured) Line(sb, p, withModels: false, Who);
-            var others = pools.Where(p => !p.Configured && (p.Busy > 0 || p.Queued > 0)).ToList();
+            sb.Append("Agents (pass the id to agent_spawn):\n");
+            foreach (var p in agents) Line(sb, p, withModels: false, Who);
             if (others.Count > 0)
             {
-                sb.Append("\nOther models in use (automatic lanes, not for subagents):\n");
+                sb.Append("\nOther model calls in progress (not agents):\n");
                 foreach (var p in others) Line(sb, p, withModels: true, Who);
             }
         }
         else
         {
-            sb.Append("No lanes are set up for agents: a subagent runs on your model unless you pass agent_spawn a model ref.\n");
-            if (pools.Count > 0) sb.Append("Automatic lanes (busy/capacity):\n");
-            foreach (var p in pools) Line(sb, p, withModels: true, Who);
+            sb.Append("No agents are set up: a subagent runs on your model unless you pass agent_spawn a model ref.\n");
+            if (others.Count > 0) sb.Append("Model calls in progress (busy/slots):\n");
+            foreach (var p in others) Line(sb, p, withModels: true, Who);
         }
-        if (runtime?.Get(context.AgentId)?.Pool is { } myPool) sb.Append("\nYou run on lane ").Append(myPool).Append('.');
+        if (runtime?.Get(context.AgentId)?.Pool is { } myPool && agents.Any(p => p.Key == myPool)) sb.Append("\nYou run on the agent ").Append(myPool).Append('.');
         return Task.FromResult(ToolResult.Ok(sb.ToString().TrimEnd(), new JsonObject
         {
             ["pools"] = NetPiJson.ToNode(pools),
@@ -70,7 +71,7 @@ internal sealed class LanesListTool(LaneScheduler scheduler, Ledger ledger) : IA
         if (p.Configured && p.Model is not null) sb.Append(" · ").Append(p.Model);
         sb.Append(" · ").Append(p.Busy).Append('/').Append(p.Capacity).Append(" busy");
         if (p.Queued > 0) sb.Append(", ").Append(p.Queued).Append(" queued");
-        if (p.Status is "offline" or "stopped") sb.Append(" [").Append(p.Status).Append(']');
+        if (p.Configured && !p.Available) sb.Append(" · NOT ACTIVE: ").Append(p.Disabled ? "switched off by the user" : p.Unavailable);
         var model = scheduler.ModelInfo(p.Model ?? (p.Models.Count == 1 ? p.Models[0] : null));
         if (model?.IsLocal == true) sb.Append(" · local");
         if (p.Free) sb.Append(" · free");
@@ -95,21 +96,21 @@ internal sealed class LanesListTool(LaneScheduler scheduler, Ledger ledger) : IA
     }
 }
 
-/// <summary>How lanes work, for agents that can start subagents (order 300). Contributed only while the lanes plugin runs.</summary>
-internal sealed class LanesPromptSection : IPromptSection
+/// <summary>How agents work, for agents that can start subagents (order 300). Contributed only while the lanes plugin runs.</summary>
+internal sealed class AgentsPromptSection : IPromptSection
 {
-    public string Id => "lanes";
+    public string Id => "agents";
     public int Order => 300;
 
     public ValueTask<string?> RenderAsync(PromptContext c, CancellationToken ct)
     {
         bool Has(string name) => c.Tools.Any(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
         if (!Has("agent_spawn")) return ValueTask.FromResult<string?>(null);
-        var sb = new StringBuilder("# Lanes\n");
-        sb.Append("- A lane is a model with a fixed number of parallel slots; an agent holds a slot for its whole run and queues when none is free. The user sets up lanes for agents, each with a note on when to use it, and a budget for paid models.");
-        if (Has("lanes_list"))
-            sb.Append("\n- Before you delegate, look at lanes_list: the lanes, their notes, price and today's spend, and the budget. Choose by the note and the cost: prefer free lanes; a paid lane spends the user's money, so use it only when the task needs what it is good at, and above the budget's warning level only when the user asked. Pass the lane's id to agent_spawn.");
-        if (Has("agent_wait")) sb.Append("\n- While you wait in agent_wait, your lane goes to your subagents and you get it back with priority.");
+        var sb = new StringBuilder("# Agents\n");
+        sb.Append("- The user sets up agents to run on: each is a model with a number of instances (runs at once), a note on when to use it, and for paid models a price and a budget. A run holds an instance for its whole run and queues while all are busy. An agent is active only while its model is loaded (local models) and the user hasn't switched it off.");
+        if (Has("agent_choices"))
+            sb.Append("\n- Before you delegate, look at agent_choices: the agents, their state, notes, price and today's spend, and the budget. Choose an active agent by its note and cost: prefer free ones; a paid agent spends the user's money, so use it only when the task needs what it is good at, and above the budget's warning level only when the user asked. Pass the agent's id to agent_spawn.");
+        if (Has("agent_wait")) sb.Append("\n- While you wait in agent_wait, your instance goes to your subagents and you get it back with priority.");
         return ValueTask.FromResult<string?>(sb.ToString());
     }
 }

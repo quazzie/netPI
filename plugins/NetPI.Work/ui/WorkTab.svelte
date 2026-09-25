@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { Section, Empty, IconButton, tokens, usd } from '@netpi/kit';
-  import LanePool from './LanePool.svelte';
+  import AgentPool from './AgentPool.svelte';
   import AgentNode from './AgentNode.svelte';
   import RecentAgent from './RecentAgent.svelte';
   import ProcessRow from './ProcessRow.svelte';
@@ -15,7 +15,6 @@
   let processes = $state.raw(null);
   let usage = $state.raw(null);
   let errors = $state.raw({});
-  let models = $state.raw(new Map()); // ref -> ModelInfo (for model status dots)
   let loading = $state(true);
   let failed = $state('');
   let updatedAt = $state(null);
@@ -75,13 +74,6 @@
     titles = m;
   }
 
-  async function loadModels() {
-    try {
-      const res = await ctx.rpc('models.list');
-      models = new Map((res?.models ?? []).map((m) => [m.ref ?? `${m.provider}/${m.id}`, m]));
-    } catch {}
-  }
-
   /** Called by main.js (onShow / onHide). Events are ignored while hidden; a fresh snapshot is taken on show. */
   export function setVisible(v) {
     visible = v;
@@ -90,7 +82,6 @@
 
   onMount(() => {
     refresh();
-    loadModels();
     loadTitles();
     const offs = [
       ctx.on('agent.status', (d) => {
@@ -112,7 +103,6 @@
       // a turn's tokens, then the ledger's costs (coalesced into one refresh)
       ctx.on('usage.recorded', () => scheduleRefresh(400)),
       ctx.on('usage.changed', () => scheduleRefresh(400)),
-      ctx.on('models.changed', loadModels),
       ctx.on('session.created', (d) => setTitle(d?.session)),
       ctx.on('session.updated', (d) => setTitle(d?.session)),
       ctx.on('plugins.changed', () => scheduleRefresh(600)),
@@ -161,6 +151,10 @@
 
   const busySlots = $derived((lanes ?? []).reduce((n, p) => n + (p.busy ?? 0), 0));
   const queuedSlots = $derived((lanes ?? []).reduce((n, p) => n + (p.queued ?? 0), 0));
+  // the agents the user set up (always listed) and model calls without an agent (listed while they run)
+  const setUp = $derived((lanes ?? []).filter((p) => p.configured));
+  const others = $derived((lanes ?? []).filter((p) => !p.configured));
+  const activeCapacity = $derived(setUp.filter((p) => p.available !== false).reduce((n, p) => n + (p.capacity ?? 0), 0));
   const todayTokens = $derived(
     (usage?.providers ?? []).reduce((n, p) => n + (p.inputTokens ?? 0) + (p.outputTokens ?? 0), 0),
   );
@@ -170,9 +164,9 @@
   <div class="summary">
     <!-- stats that do not fit are dropped whole, least important last -->
     <span class="stats np-fit">
-      <span class="stat" title="Active agents (running, queued or waiting)"><b>{active.length}</b> agents</span>
-      <span class="stat" title="Busy lane slots{queuedSlots ? ` · ${queuedSlots} waiting for a slot` : ''}"
-        ><b>{busySlots}</b> slots{#if queuedSlots}<span class="warn">&nbsp;+{queuedSlots}</span>{/if}</span
+      <span class="stat" title="Active runs (running, queued or waiting)"><b>{active.length}</b> runs</span>
+      <span class="stat" title="Busy agent instances{queuedSlots ? ` · ${queuedSlots} waiting for one` : ''}"
+        ><b>{busySlots}</b> busy{#if queuedSlots}<span class="warn">&nbsp;+{queuedSlots}</span>{/if}</span
       >
       <span class="stat" title="Running shell processes"><b>{running.length}</b> proc</span>
       <span class="stat" title="Input + output tokens today"><b>{tokens(todayTokens) || 0}</b> tok</span>
@@ -185,23 +179,32 @@
   {:else if loading && !agents && !lanes}
     <Empty><span class="np-spinner"></span></Empty>
   {:else}
-    <!-- ---------------------------------------------------------------- lanes -->
-    <Section title="Lanes" count={lanes ? `${busySlots}/${lanes.reduce((n, p) => n + (p.capacity ?? 0), 0)}` : null} collapsible storageKey="work.lanes">
+    <!-- ---------------------------------------------------------------- agents (the ones the user set up) -->
+    <Section title="Agents" count={setUp.length ? `${busySlots}/${activeCapacity}` : null} collapsible storageKey="work.lanes">
       {#if !lanes}
-        <div class="na">Lanes not available{errors.lanes ? ` — ${errors.lanes}` : ''}</div>
+        <div class="na">Agents not available{errors.lanes ? ` — ${errors.lanes}` : ''}</div>
       {:else}
-        {#each lanes as pool (pool.key)}
-          <LanePool {pool} {agentById} {titles} {models} {ctx} />
+        {#each setUp as pool (pool.key)}
+          <AgentPool {pool} {agentById} {titles} {ctx} />
         {:else}
-          <div class="na">No lane pools yet — they appear with the first model call.</div>
+          <div class="na">
+            No agents set up: chats run on their model.
+            {#if ctx.app.openSettings}<button class="link" onclick={() => ctx.app.openSettings('agents')}>Set up agents</button>{/if}
+          </div>
         {/each}
+        {#if others.length}
+          <div class="sub">{setUp.length ? 'Other model calls' : 'Model calls'}</div>
+          {#each others as pool (pool.key)}
+            <AgentPool {pool} {agentById} {titles} {ctx} />
+          {/each}
+        {/if}
       {/if}
     </Section>
 
-    <!-- ---------------------------------------------------------------- agents -->
-    <Section title="Agents" count={active.length || null} collapsible storageKey="work.agents">
+    <!-- ---------------------------------------------------------------- runs -->
+    <Section title="Runs" count={active.length || null} collapsible storageKey="work.agents">
       {#if !agents}
-        <div class="na">Agents not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
+        <div class="na">Runs not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
       {:else}
         {#each roots as a (a.id)}
           <AgentNode agent={a} {childrenOf} {titles} {ctx} depth={0} />
@@ -251,7 +254,7 @@
       {#if usage?.budget && (usage.budget.monthlyUsd || usage.budget.dailyUsd || usage.budget.spentUsd > 0)}
         {@const b = usage.budget}
         {@const frac = b.monthlyUsd ? Math.min(1, b.spentUsd / b.monthlyUsd) : null}
-        <div class="usage budget" title="Paid models since {b.periodStart}; the budget is set in Settings → Lanes & budget">
+        <div class="usage budget" title="Paid models since {b.periodStart}; the budget is set in Settings → Agents & budget">
           <div class="uline np-line">
             <span class="uprov np-grow">This month</span>
             <span class="np-mono" class:warn={b.warning && !b.exhausted} class:err={b.exhausted}
@@ -334,6 +337,17 @@
     padding: 4px 0 2px;
     font-size: var(--fs-sm);
     color: var(--fg-dim);
+  }
+  .link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+  }
+  .link:hover {
+    text-decoration: underline;
   }
   .sub {
     margin: 10px 0 2px;

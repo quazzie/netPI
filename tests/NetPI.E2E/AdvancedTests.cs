@@ -229,8 +229,6 @@ public static class AdvancedTests
             await env.Rpc("settings.set", new { path = "retry.maxAttempts", value = 2 });
             try
             {
-                var pool = await Pool(env, "aiproxy/qwen38-27b-iq3s");
-                Check.Equal("stopped", pool.S("status"), "lanes show the stopped backend");
                 var s2 = await env.NewSession(model: "aiproxy/qwen38-27b-iq3s");
                 var run2 = await env.Run(s2.S("id")!, "hi", 30_000);
                 var notice2 = run2.Role("notice").Single();

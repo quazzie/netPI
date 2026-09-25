@@ -259,8 +259,8 @@ public sealed partial class ScenarioEngine
         if (step == 0)
             return new Plan
             {
-                Thinking = "I should check the lane pools.",
-                Text = "I'll check the lanes first.\n<tool_call>\n<function=lanes_list>\n</function>\n</tool_call>",
+                Thinking = "I should check the agents.",
+                Text = "I'll check the agents first.\n<tool_call>\n<function=agent_choices>\n</function>\n</tool_call>",
             };
         var result = ToolResults(after).LastOrDefault();
         return result is null

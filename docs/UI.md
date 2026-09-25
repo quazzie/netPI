@@ -33,7 +33,7 @@ node web/mock/fake-openai.mjs [port]  # scripted OpenAI-compatible model server 
   The host then bumps the tab `version` and emits `ui.changed`, and the tab remounts without a .NET build.
 - **Real host without a model:** start `node web/mock/fake-openai.mjs 7468`, then point the host at it with
   `settings.set { path: "providers.aiproxy", value: { baseUrl: "http://127.0.0.1:7468", transport: "chat" } }`.
-  Sending `[demo] …` to a session produces real subagents (2 lane slots, so one queues), a background and a
+  Sending `[demo] …` to a session produces real subagents (a model with 2 slots, so one queues), a background and a
   foreground `bash`, usage and an `agent_wait`, which is enough to exercise every section of the Work tab.
 - In a normal browser, `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab` and `Ctrl+1…9` are taken by the browser. In WebView2 they
   reach the app. The command palette (`Ctrl+K`) and the `+` button do the same things.
@@ -74,20 +74,20 @@ web/
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
                ToolRow, NoticeRow, StatusRow, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
-      composer/ Composer, ProfilePicker, ModelPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing, QueueChips, GoalStrip,
+      composer/ Composer, ProfilePicker, AgentPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing, QueueChips, GoalStrip,
                TodoStrip
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
                Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
-               SettingInfo), SettingsRow, LanesEditor + LaneDialog, BudgetView, ProfilesEditor + ProfileDialog,
+               SettingInfo), SettingsRow, AgentsEditor + AgentDialog, BudgetView, ProfilesEditor + ProfileDialog,
                PluginSwitches
   mock/
     server.mjs  store.mjs  agent.mjs  content.mjs    mock host (HTTP + WS + scripted agent)
-    work.mjs  ideas.mjs  diag.mjs                     mock lanes/processes/usage, ideas backlog, plugin manager
+    work.mjs  ideas.mjs  diag.mjs                     mock running calls/processes/usage, ideas backlog, plugin manager
     fake-openai.mjs                                  scripted model server for the real host
     sample-plugin/ui/{main.js,SampleTab.svelte}      example plugin UI (Svelte tab + vanilla tab)
     e2e.mjs  pw.mjs  screenshots/                    Playwright walkthrough
 plugins/<P>/ui/                  built-in plugin tab sources → plugins/<P>/wwwroot/ui.js
-  NetPI.Work/ui/                 WorkTab, LanePool, AgentNode, RecentAgent, ProcessRow, util.js
+  NetPI.Work/ui/                 WorkTab, AgentPool, AgentNode, RecentAgent, ProcessRow, util.js
   NetPI.Ideas/ui/                IdeasTab, IdeaCard, NewIdea, SectionEditor, model.js
   NetPI.Diagnostics/ui/          DiagTab + Plugins/Tools/Rpc/Events/Logs/Context views
   NetPI.Tools.Files/ui/          FilesTab (left panel)
@@ -246,16 +246,20 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 - **Enter** sends. While the agent runs, Enter **steers** and **Alt+Enter** **queues**. **Shift+Enter** inserts
   a newline. **Esc** stops the run (`agent.abort`); Esc in another field (a title rename, the session search) only
   leaves that field. Settings can switch sending to **Ctrl+Enter**; the hints follow.
-- `/` opens the commands popup: the built-ins `/new /rename /model /project /goal /settings /help /abort`, plus
+- `/` opens the commands popup: the built-ins `/new /rename /agent /project /goal /settings /help /abort`, plus
   commands from `ui.commands`. A command with `rpc` is called with `{ sessionId, args }`, and a string result
   is shown as a toast. A command with `clientAction` is handled by the client:
   `openTab:<pluginId/tabId>`, `insert:<text>` or `settings`.
 - `@` opens a file popup backed by `files.search`; picking a file inserts `@rel/path`.
 - Images can be attached with the button, pasted or dropped. They show as thumbnails and are sent as
   `{ mediaType, data }`.
-- The model picker groups models by provider and shows each one's status dot, context window and concurrency, with a
-  filter and arrow keys (`ModelMenu`, also behind every model field in the settings: `ModelSelect`); choosing one calls
-  `sessions.update { model }`. The effort picker offers "default" plus
+- The agent picker (`AgentPicker`, from `lanes.list` / `lanes.changed`: `app.pools`) shows the chat's agent with its
+  state dot; a chat without one shows the agent it would take (the first on its model), or "Choose an agent". The menu
+  lists the agents (state: ready, busy, N waiting, not loaded, switched off; busy/instances; price), filters past three,
+  and ends with **New agent…** (`ModelMenu`: the model list grouped by provider with status, context and slots, also
+  behind every model field in the settings as `ModelSelect`; the new agent's id is a slug of the model, and the chat runs
+  on it) and **Manage agents** (Settings → Agents & budget). Choosing one calls `agents.use` (the chat's `meta.agent` and
+  model). New chats start on the agent chosen last while it is active, else the first active one. The effort picker offers "default" plus
   `model.reasoning.efforts` and calls `sessions.update { reasoning }`; `''` means the model default.
 - The profile picker (shown once there are profiles) sets the chat's profile (`profiles.apply`): free before the first
   message; in a started chat it says the system prompt and tools change and the chat is read again (with its size).
@@ -270,7 +274,7 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 
 ### Settings dialog
 
-The pages: **General**, **Lanes & budget**, **Profiles**, **Models**, **Agents**, **Context**, **Tools**, **Plugins**, then
+The pages: **General**, **Agents & budget**, **Profiles**, **Models**, **Runs**, **Context**, **Tools**, **Plugins**, then
 **settings.json** and **About**. Host settings are controls rendered from `settings.schema` (the host's and each
 plugin's `SettingsSection`, placed on the page of its group; a plugin's section comes and goes with the plugin).
 `SettingField` renders one control per type (switch, number with unit and range, text, secret with an eye, choice,
@@ -280,14 +284,16 @@ applies (`restart`, `new sessions`). Defaults are shown as they are, never as "b
 text (the opening of the system prompt, the AGENTS.md guidance) shows that text to edit, and stays unset while it is
 unchanged; a path that is found at runtime (bash, pwsh, ssh, the browser) shows the path found.
 
-The Lanes, Profiles, Models and Tools pages list their items as rows (`SettingsRow`: a title, a line under it, badges);
+The Agents, Profiles, Models and Tools pages list their items as rows (`SettingsRow`: a title, a line under it, badges);
 each row opens its own dialog over the settings. Esc closes only the top one (popovers such as the model list are on
 the same Esc stack, `escLayer()` in `Modal.svelte`).
 
-- **Lanes & budget:** `LanesEditor` has one row per lane (`lanes.<id>`: id, model, slots, price); `LaneDialog` edits one
-  (the model with the searchable list, slots, the note on when to use it, price overrides and a daily cap; the price,
-  context, local/cloud and today's spend come from `lanes.list`); "Add lane" opens the model list and then the new
-  lane's dialog (the id is a slug of the model). `BudgetView` shows this period against the monthly
+- **Agents & budget:** `AgentsEditor` has one row per agent (`agents.<id>`: id, model, the note, badges for off / not
+  loaded / busy, instances, price); `AgentDialog` edits one: its name (a new name moves it), on/off (`input.np-switch`,
+  with its state), the model with the searchable list, instances (default: the model's slots, 1 on a cloud model; a
+  warning when the agents on one local model have more instances than it serves), the note on when to use it, price
+  overrides and a daily cap; the price, context, local/cloud and today's spend come from `lanes.list`. "Add agent" opens
+  the model list and then the new agent's dialog (the id is a slug of the model). `BudgetView` shows this period against the monthly
   and daily budgets and what each model cost (`usage.summary`), above the budget settings.
 - **Profiles:** `ProfilesEditor` has "New chats start with" (`profiles.defaultProfile`) and one row per profile (its name,
   the first line of its instructions, its tools); `ProfileDialog` edits one: the name, the instructions that replace the
@@ -388,14 +394,16 @@ sizes (minified; Svelte runtime and kit included): Work 88KB, Ideas 88KB, Diagno
 **Work** (`netpi.work`, right). One `work.snapshot` feeds four collapsible sections, each with a count. The
 open or closed state of each section is remembered (`storageKey`).
 
-- A summary line shows active agents, busy slots (+ queued), running processes and today's tokens.
-- **Lanes:** one row per pool with capacity pips (a bar when capacity is over 8), `busy/capacity`, a status pill
-  (`queued` `full` `busy` `idle` `offline` `stopped`), the pool's models with their load-status dot from
-  `models.list`, and the owners and waiters with elapsed time. Clicking an owner opens its session.
-- **Agents:** the active agents as a tree (subagents nest under their parent). Each row shows a status dot,
+- A summary line shows active runs, busy instances (+ queued), running processes and today's tokens.
+- **Agents** (`AgentPool`): every agent the user set up, always: a state dot and pill (`ready` `busy` `full` `queued`
+  `not loaded` `off`), the model, an on/off switch (`agents.setEnabled`), why an inactive one can't take work, capacity
+  pips (a bar when over 8) with `busy/instances`, and the runs on it and the ones waiting, with elapsed time (clicking
+  one opens its session). Model calls without an agent follow under "Other model calls" while they run. Without agents:
+  "No agents set up" and a link to the settings (`ctx.app.openSettings('agents')`).
+- **Runs:** the active runs as a tree (subagents nest under their parent). Each row shows a status dot,
   activity, elapsed time, the session title (or the task, for a subagent) and a one-line meta: model · turns ·
-  tools · tokens · lane. Clicking a row opens the session, and the stop button calls `agent.abort { sessionId }`.
-  Finished agents are listed below under **Recent** (result or error, TimeAgo), with **Show all** past 6.
+  tools · tokens · agent. Clicking a row opens the session, and the stop button calls `agent.abort { sessionId }`.
+  Finished runs are listed below under **Recent** (result or error, TimeAgo), with **Show all** past 6.
 - **Processes:** running processes first, then **Recent**. Expanding a row fetches `processes.output` (tail
   300 lines) and appends live `process.output` chunks. It falls back to polling every 2s when no chunk has
   arrived for 3s, and fetches once more on `process.exited`. The kill button is a two-step `ConfirmButton`
@@ -613,7 +621,7 @@ names or an inline `<svg …>` string.
   budget stopped a paid call and `budget.onLimit` is `ask`) offers "Let this chat go over" while it is the chat's
   latest budget notice; after a confirm it calls `budget.allow`. The top bar shows the budget (`BudgetPill`:
   `budget.status`, then `usage.changed`) only once it needs attention, amber from `budget.warnPercent`, red when spent;
-  a click opens Settings on Lanes & budget (`modals.settings = 'lanes'`).
+  a click opens Settings on Agents & budget (`modals.settings = 'agents'`).
 - Assistant messages that stop with `stopReason: 'error'` may carry `meta.error`, which is shown in the error
   row.
 - `agent_*` tool results carry `details.sessionId` (and `name`, `status`) for the subagent link, or
@@ -627,5 +635,5 @@ names or an inline `<svg …>` string.
   today it reloads the tail instead.
 - A `UiTabInfo.panel` sent as a number (enum without a string converter) is accepted: `0` is left, `1` is right.
 - The Work tab reads `usage.summary` providers' `budgetTokens` and `budgetUsed` (input + output + cache write),
-  `LanePool.status`, `LaneOwner.label`/`since`, and `ProcessInfo.outputBytes`/`background`/`agentId`.
+  `LanePoolInfo.status`/`available`/`unavailable`/`disabled`, `LaneOwner.label`/`since`, and `ProcessInfo.outputBytes`/`background`/`agentId`.
 - The Ideas tab expects `ideas.changed { file }` after every write, including writes made by agents.

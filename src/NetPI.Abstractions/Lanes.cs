@@ -7,8 +7,18 @@ namespace NetPI;
 /// </summary>
 public interface ILaneScheduler
 {
-    /// <summary>Pool key for a model (configured pool or "provider/model").</summary>
+    /// <summary>Pool key for a model call without an agent (a slot per model).</summary>
     string ResolvePool(ModelInfo model);
+
+    /// <summary>Pool key for a run on an agent (<c>agents.&lt;id&gt;</c>); null or an unknown id: as <see cref="ResolvePool(ModelInfo)"/>.</summary>
+    string ResolvePool(ModelInfo model, string? agent) => ResolvePool(model);
+
+    /// <summary>
+    /// The agent a run on <paramref name="model"/> goes to: <paramref name="agent"/> when it runs that model, else an agent on
+    /// the model (a free one first). Null when no agents are set up (every model then runs on a slot per model). Throws
+    /// <see cref="LaneUnavailableException"/> when agents are set up and none runs the model.
+    /// </summary>
+    string? ChooseAgent(ModelInfo model, string? agent) => null;
     IReadOnlyList<LanePoolInfo> Snapshot();
     /// <summary>Wait for a lane (FIFO within priority). Throws <see cref="BudgetExceededException"/> if the provider is over budget.</summary>
     ValueTask<ILaneLease> AcquireAsync(LaneRequest request, CancellationToken ct);
@@ -55,8 +65,14 @@ public sealed class LanePoolInfo
     /// <summary>catalog | settings | default</summary>
     public string Source { get; set; } = "default";
     public string? Status { get; set; }
-    /// <summary>A lane the user set up for one model (<c>lanes.&lt;id&gt;</c>); agents choose among these.</summary>
+    /// <summary>An agent the user set up (<c>agents.&lt;id&gt;</c>, the key is its id); chats and subagents run on these.</summary>
     public bool Configured { get; set; }
+    /// <summary>The agent can take work now: not disabled, and its model loaded (local) or reachable (cloud).</summary>
+    public bool Available { get; set; } = true;
+    /// <summary>Why the agent can't take work ("qwen3.8-27b isn't loaded", "disabled").</summary>
+    public string? Unavailable { get; set; }
+    /// <summary>Switched off by the user (<c>agents.&lt;id&gt;.disabled</c>).</summary>
+    public bool Disabled { get; set; }
     /// <summary>The configured lane's model ref.</summary>
     public string? Model { get; set; }
     /// <summary>The user's note on when to use the lane.</summary>
@@ -69,8 +85,20 @@ public sealed class LanePoolInfo
     /// <summary>Costs nothing (local, or a price of 0).</summary>
     public bool Free { get; set; }
     public double SpentTodayUsd { get; set; }
-    /// <summary>The lane's own daily cap (<c>lanes.&lt;id&gt;.budget.limitUsd</c>).</summary>
+    /// <summary>The agent's own daily cap (<c>agents.&lt;id&gt;.budget.limitUsd</c>).</summary>
     public double? DailyLimitUsd { get; set; }
+}
+
+/// <summary>A run asked for an agent that can't take work now (disabled, or its model isn't loaded).</summary>
+public sealed class LaneUnavailableException(string message) : Exception(message);
+
+/// <summary>The agent (<c>agents.&lt;id&gt;</c>) a session runs on: <c>meta.agent</c>.</summary>
+public static class SessionAgent
+{
+    public const string MetaKey = "agent";
+
+    public static string? Of(SessionInfo? session) =>
+        session?.Meta?[MetaKey] is System.Text.Json.Nodes.JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;
 }
 
 public sealed class BudgetExceededException(string message) : Exception(message)

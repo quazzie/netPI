@@ -26,9 +26,9 @@ public static class SettingsTests
             Check.Equal("http://127.0.0.1:8090", s.Get<string>("providers.aiproxy.baseUrl"));
             Check.Equal("responses", s.Get<string>("providers.aiproxy.transport"));
             Check.Equal("", s.Get<string>("providers.anthropic.apiKey"));
-            Check.Equal(1, s.Get<int>("lanes.localDefaultCapacity"));
-            Check.Equal(4, s.Get<int>("lanes.cloudDefaultCapacity"));
-            Check.True(s.GetNode("lanes.pools") is JsonObject);
+            Check.Equal("aiproxy/qwen3.8-27b", s.Get<string>("agents.qwen.model"), "an agent for the default model");
+            Check.Equal(null, s.GetNode("agents.qwen.instances"), "its instances follow the model's slots");
+            Check.Equal(null, s.GetNode("lanes"), "no lanes (they became agents)");
             Check.True(s.Get<bool>("compaction.enabled"));
             Check.True(s.Get<bool>("nudge.enabled"));
             Check.Equal(6, s.Get<int>("retry.maxAttempts"));

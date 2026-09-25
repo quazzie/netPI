@@ -24,13 +24,13 @@ export async function setSetting(key, value) {
   }
 }
 
-/** The dialog's pages: Lanes & budget first among the host settings, then the schema's groups. */
+/** The dialog's pages: Agents & budget first among the host settings, then the schema's groups. */
 export function pagesOf(schema) {
   const pages = [
-    { id: 'lanes', title: 'Lanes & budget', icon: 'layers', sections: [] },
+    { id: 'agents', title: 'Agents & budget', icon: 'bot', sections: [] },
     { id: 'profiles', title: 'Profiles', icon: 'user', sections: [] },
     { id: 'Models', title: 'Models', icon: 'cpu', sections: [] },
-    { id: 'Agents', title: 'Agents', icon: 'bot', sections: [] },
+    { id: 'Agents', title: 'Runs', icon: 'activity', sections: [] },
     { id: 'Context', title: 'Context', icon: 'file-text', sections: [] },
     { id: 'Tools', title: 'Tools', icon: 'wrench', sections: [] },
     { id: 'plugins', title: 'Plugins', icon: 'puzzle', sections: [] },
@@ -38,7 +38,7 @@ export function pagesOf(schema) {
   const byId = Object.fromEntries(pages.map((p) => [p.id, p]));
   const general = [];
   for (const s of schema ?? []) {
-    if (s.id === 'lanes' || s.id === 'budget') byId.lanes.sections.push(s);
+    if (s.id === 'budget') byId.agents.sections.push(s);
     else if (s.group === 'General') general.push(s);
     else (byId[s.group] ?? byId.Tools).sections.push(s);
   }

@@ -1,6 +1,7 @@
 // Slash commands: built-ins (client side) + server commands from ui.commands.
 import { rpc } from './rpc.svelte.js';
 import { app, newSession, updateSession, abortAgent } from './state/app.svelte.js';
+import { agentList, useAgent } from './agents.js';
 import { modals, toast, composer, promptDialog } from './state/ui.svelte.js';
 import { openPanelTab } from './state/tabs.svelte.js';
 import { editGoal } from './goal.js';
@@ -35,21 +36,18 @@ const BUILTIN = [
     },
   },
   {
-    name: 'model',
-    description: 'Switch the model for this session',
-    argsHint: '[provider/model]',
+    name: 'agent',
+    description: 'Run this chat on another agent',
+    argsHint: '[name]',
     source: 'builtin',
     run: async (args, { sessionId, ui }) => {
       if (!sessionId) return;
-      if (!args) return ui?.openModelPicker?.();
+      if (!args) return ui?.openAgentPicker?.();
       const q = args.trim().toLowerCase();
-      const m =
-        app.models.find((x) => (x.ref ?? `${x.provider}/${x.id}`).toLowerCase() === q) ??
-        app.models.find((x) => x.id.toLowerCase() === q) ??
-        app.models.find((x) => (x.ref ?? `${x.provider}/${x.id}`).toLowerCase().includes(q));
-      if (!m) return toast(`Unknown model “${args}”`, 'warn');
-      await updateSession(sessionId, { model: m.ref ?? `${m.provider}/${m.id}` });
-      toast(`Model: ${m.displayName || m.id}`);
+      const agents = agentList();
+      const a = agents.find((x) => x.key.toLowerCase() === q) ?? agents.find((x) => x.key.toLowerCase().includes(q) || (x.model ?? '').toLowerCase().includes(q));
+      if (!a) return toast(`No agent “${args}”`, 'warn');
+      if (await useAgent(sessionId, a.key)) toast(`Agent: ${a.key}${a.available ? '' : ` (${a.disabled ? 'switched off' : a.unavailable})`}`);
     },
   },
   {

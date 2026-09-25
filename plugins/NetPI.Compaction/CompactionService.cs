@@ -153,9 +153,10 @@ public sealed class CompactionService(IPluginContext ctx)
         var lanes = ctx.Services.Get<ILaneScheduler>();
         if (lanes is not null)
         {
-            var pool = lanes.ResolvePool(summarizer);
-            if (!req.HoldsLane || pool != lanes.ResolvePool(req.Model))
+            // the chat's own model: its run already holds the slot (another slot on the same local model could wait forever)
+            if (!req.HoldsLane || !string.Equals(summarizer.Ref, req.Model.Ref, StringComparison.OrdinalIgnoreCase))
             {
+                var pool = lanes.ResolvePool(summarizer);
                 lease = await lanes.AcquireAsync(new LaneRequest
                 {
                     PoolKey = pool, AgentId = req.AgentId ?? $"compaction:{req.SessionId}", SessionId = req.SessionId,

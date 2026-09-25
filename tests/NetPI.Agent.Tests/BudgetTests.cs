@@ -3,14 +3,14 @@ using NetPI.Lanes;
 
 namespace NetPI.Agent.Tests;
 
-/// <summary>The ledger of model calls with their cost, the budget, and lanes set up per model (the lanes plugin).</summary>
+/// <summary>The ledger of model calls with their cost, the budget, and the agents (the lanes plugin).</summary>
 public static class BudgetTests
 {
     public static void Register(TestRunner t)
     {
         t.Add("ledger: every call with its cost (reported, from the price, free for local); a chat's cost with its subagents", Ledger);
         t.Add("budget: a spent monthly budget stops paid calls, not local ones; \"ask\" lets a chat go over and continues it", MonthlyBudget);
-        t.Add("lanes: set up per model, lanes_list shows the budget, price, spend and note; agent_spawn needs a lane; a lane's daily cap", LanesAndCap);
+        t.Add("agents: agent_choices shows the budget, state, price, spend and note; agent_spawn needs an active agent; an agent's daily cap", LanesAndCap);
         t.Add("budget: the period starts on budget.resetDay", Period);
     }
 
@@ -151,20 +151,22 @@ public static class BudgetTests
         {
             Priced(x);
             x.Settings.SetQuiet("budget.monthlyUsd", JsonValue.Create(50));
-            x.Settings.SetQuiet("lanes.big", JsonNode.Parse("""{ "model": "cloud/big", "capacity": 1, "use": "Costly: hard problems only.", "budget": { "limitUsd": 0.01 } }"""));
-            x.Settings.SetQuiet("lanes.small", JsonNode.Parse("""{ "model": "fake/local", "capacity": 2, "use": "Free: searches and small edits." }"""));
+            x.Settings.SetQuiet("agents.big", JsonNode.Parse("""{ "model": "cloud/big", "use": "Costly: hard problems only.", "budget": { "limitUsd": 0.01 } }"""));
+            x.Settings.SetQuiet("agents.small", JsonNode.Parse("""{ "model": "fake/local", "use": "Free: searches and small edits." }"""));
+            x.Settings.SetQuiet("agents.solo", JsonNode.Parse("""{ "model": "fake/solo", "disabled": true }"""));
         }, db: db);
 
         var lanes = h.Lanes!.Snapshot().Where(p => p.Configured).OrderBy(p => p.Key).ToList();
-        Check.Equal("big,small", string.Join(",", lanes.Select(p => p.Key)));
+        Check.Equal("big,small,solo", string.Join(",", lanes.Select(p => p.Key)));
         Check.Equal(1, lanes[0].Capacity);
         Check.Equal(3.0, lanes[0].PriceInput);
         Check.False(lanes[0].Free);
         Check.True(lanes[1].Free);
         Check.Equal(0.01, lanes[0].DailyLimitUsd);
 
-        // the orchestrator asks for the lanes, then delegates without a lane (refused, the error lists them), then with one
-        string? listing = null, refused = null;
+        // the orchestrator asks for the agents, then delegates without an agent and on a switched-off one (refused, the
+        // error lists them), then on one
+        string? listing = null, refused = null, off = null;
         var step = 0;
         h.Catalog.Handler = (r, ct) =>
         {
@@ -173,41 +175,46 @@ public static class BudgetTests
             if (last.Role == MessageRole.Tool)
             {
                 var result = last.ToolResults.Single();
-                if (result.Name == "lanes_list") listing = result.Content;
-                if (result.Name == "agent_spawn" && result.IsError) refused = result.Content;
+                if (result.Name == "agent_choices") listing = result.Content;
+                if (result.Name == "agent_spawn" && result.IsError) { if (refused is null) refused = result.Content; else off = result.Content; }
             }
             if (last.Text.Contains("<agent-result")) return Reply.Text("thanks");
             return Interlocked.Increment(ref step) switch
             {
-                1 => Reply.Tool("lanes_list"),
+                1 => Reply.Tool("agent_choices"),
                 2 => Reply.Tool("agent_spawn", new { task = "hard problem" }),
-                3 => Reply.Tool("agent_spawn", new { task = "hard problem", lane = "big" }),
+                3 => Reply.Tool("agent_spawn", new { task = "hard problem", agent = "solo" }),
+                4 => Reply.Tool("agent_spawn", new { task = "hard problem", agent = "big" }),
                 _ => Reply.Text("waiting for it"),
             };
         };
-        var s = h.NewSession(); // on fake/local = lane "small"
+        var s = h.NewSession(); // on fake/local = the agent "small"
         await h.SendAsync(s.Id, "solve it");
         await Wait.Until(() => h.Messages(s.Id).Any(m => m.Text == "thanks"), "report back");
         await h.IdleAsync(s.Id);
 
-        Check.Contains(listing, "Budget: $0.00 of $50 this month (0 %), $0.00 today. Free lanes don't count.");
-        Check.Contains(listing, "Lanes (pass the id to agent_spawn):");
+        Check.Contains(listing, "Budget: $0.00 of $50 this month (0 %), $0.00 today. Free models don't count.");
+        Check.Contains(listing, "Agents (pass the id to agent_spawn):");
         Check.Contains(listing, "- small · fake/local · 1/2 busy · local · free · 100k ctx · \"Free: searches and small edits.\"");
         Check.Contains(listing, "- big · cloud/big · 0/1 busy · $3 / $15 per Mtok in/out · $0.00 today (cap $0.01) · 200k ctx · \"Costly: hard problems only.\"");
+        Check.Contains(listing, "- solo · fake/solo · 0/1 busy · NOT ACTIVE: switched off by the user · local · free · 50k ctx");
         Check.True(listing!.IndexOf("- small", StringComparison.Ordinal) < listing.IndexOf("- big", StringComparison.Ordinal), "cheapest first");
-        Check.Contains(listing, "You run on lane small.");
-        Check.Contains(refused, "agent_spawn needs a lane. The lanes:");
-        Check.Contains(refused, "- big · cloud/big · $3 / $15 per Mtok · \"Costly: hard problems only.\"");
+        Check.True(listing.IndexOf("- big", StringComparison.Ordinal) < listing.IndexOf("- solo", StringComparison.Ordinal), "active first");
+        Check.Contains(listing, "You run on the agent small.");
+        Check.Contains(refused, "agent_spawn needs an agent. The agents:");
+        Check.Contains(refused, "- big · cloud/big · 0/1 busy · $3 / $15 per Mtok · \"Costly: hard problems only.\"");
+        Check.Contains(refused, "- solo · fake/solo · not active (switched off) · free");
+        Check.Contains(off, "The agent \"solo\" can't take work now: the user switched it off.");
         var child = h.Runtime.List().Single(a => a.IsSubagent);
         Check.Equal("cloud/big", child.Model);
         Check.Equal("big", child.Pool);
         Check.Equal(0.02, Math.Round(h.Lanes!.Snapshot().Single(p => p.Key == "big").SpentTodayUsd, 8));
 
-        // the lane's daily cap ($0.01) is spent: the next call on it is refused, other lanes go on
+        // the agent's daily cap ($0.01) is spent: the next call on it is refused, other agents go on
         var direct = h.NewSession(model: "cloud/big");
         await h.SendAsync(direct.Id, "more");
         await h.IdleAsync(direct.Id);
-        Check.Contains(h.Messages(direct.Id)[^1].Text, "Lane big has spent its $0.01 for today ($0.02).");
+        Check.Contains(h.Messages(direct.Id)[^1].Text, "The agent big has spent its $0.01 for today ($0.02).");
     }
 
     private static void Period()

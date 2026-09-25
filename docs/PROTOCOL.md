@@ -54,16 +54,21 @@ type Part =
 
 interface SessionInfo { id; title; projectId?; parentSessionId?; kind: 'chat'|'subagent'; model?; reasoning?; createdAt; updatedAt; archived; messageCount; contextTokens;
   meta?: { goal?: Goal; toolsOff?: string[] /* tools switched off for this chat */; profile?: string|null /* its profile */;
-    identity?: string /* the opening of its system prompt, from the profile */; budgetAllowedFrom?: string; agentId?; parentAgentId?; [k: string]: any } }
+    identity?: string /* the opening of its system prompt, from the profile */; agent?: string /* the agent it runs on (agents.<id>) */;
+    budgetAllowedFrom?: string; agentId?; parentAgentId?; [k: string]: any } }
 interface ProjectInfo { id; name; path; createdAt; updatedAt; lastUsedAt?; meta?: { profile?: string /* default profile of new sessions, or "none" */; [k: string]: any } }
 interface ModelInfo { provider; id; ref /* "provider/id" */; displayName?; contextWindow?; maxOutputTokens?; concurrency?;
   inputModalities: string[]; reasoning?: { supported: boolean; efforts: string[]; default?: string }; status?; isLocal: boolean }
 type AgentStatus = 'idle'|'queued'|'running'|'yielded'|'completed'|'failed'|'cancelled';
-interface AgentInfo { id; sessionId; name; parentAgentId?; parentSessionId?; isSubagent; depth; status: AgentStatus; model?; pool?;
+interface AgentInfo { id; sessionId; name; parentAgentId?; parentSessionId?; isSubagent; depth; status: AgentStatus; model?; pool? /* the agent (agents.<id>) or slot it runs on */;
   activity?; createdAt; startedAt?; finishedAt?; runs; turns; toolCalls; inputTokens; outputTokens; queuedMessages; task?; result?; error?; children: string[] }
 interface QueuedInput { id; text; mode: 'steer'|'queue'; source; createdAt }
-interface LanePoolInfo { key; provider?; capacity; busy; queued; models: string[]; owners: LaneOwner[]; waiters: LaneOwner[]; source; status?;
-  configured: boolean /* a lane set up in settings (lanes.<id>) */; model?; use? /* the note on when to use it */;
+// an agent (configured: key = its id, capacity = its instances) or the slots of model calls without an agent (listed while busy)
+interface LanePoolInfo { key; provider?; capacity; busy; queued; models: string[]; owners: LaneOwner[]; waiters: LaneOwner[]; source;
+  status?: 'idle'|'busy'|'full'|'queued'|'disabled'|'unavailable';
+  configured: boolean /* an agent set up in settings (agents.<id>) */; model?; use? /* the note on when to use it */;
+  available: boolean /* can take work: not switched off, its model loaded (local) or reachable (cloud) */;
+  unavailable?: string /* why not: "disabled", "qwen3.8-27b isn't loaded", … */; disabled: boolean;
   priceInput?; priceOutput? /* $ per Mtok */; priceSource?: 'settings'|'catalog'|'local'|'unknown'; free: boolean; spentTodayUsd?; dailyLimitUsd? }
 interface LaneOwner { agentId; sessionId?; label?; since }
 interface UiTabInfo { id; title; panel: 'left'|'right'; icon?; module; export?; order; pluginId; version }
@@ -128,7 +133,9 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `context.reset` | netpi.context | `{ sessionId }` → `true`: forget the session's frozen system prompt and tool baseline; the next model call renders them again |
 | `agent.tools` | netpi.agent | `{ sessionId }` → `{ sessionId, started, contextTokens, off: string[], tools: { name, label, category, description, readOnly, pluginId, on }[] }`: the tools the session's agent can have, each with its switch |
 | `agent.setTools` | netpi.agent | `{ sessionId, off?: string[], on?: string[] }` → like `agent.tools`: switches tools off (or back on) for one session (`meta.toolsOff`); a started chat gets the change at its next model call, with a `tools` notice (the model re-reads the conversation once); subagents start with their parent's list |
-| `lanes.list` | netpi.lanes | → `LanePoolInfo[]` (also `configured`, `model`, `use`, `priceInput`/`priceOutput` ($ per Mtok), `priceSource`, `free`, `spentTodayUsd`, `dailyLimitUsd`) |
+| `lanes.list` | netpi.lanes | → `LanePoolInfo[]`: the agents (always, with `available`/`unavailable`/`disabled`, `priceInput`/`priceOutput` ($ per Mtok), `priceSource`, `free`, `spentTodayUsd`, `dailyLimitUsd`), then model calls without an agent while they run |
+| `agents.use` | netpi.lanes | `{ sessionId, agent: string\|null }` → `SessionInfo`: the chat runs on the agent (`meta.agent`) and its model; `null` clears it (the chat then takes an agent on its model at its next run) |
+| `agents.setEnabled` | netpi.lanes | `{ id, enabled }` → `LanePoolInfo[]`: switch an agent off (`agents.<id>.disabled`; runs on it finish, new ones stop with a notice) or back on |
 | `usage.summary` | netpi.lanes | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] /* today */, budget: BudgetStatus, models: { lane, provider, model, calls, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unknownCost }[] /* this period */ }` |
 | `usage.session` | netpi.lanes | `{ sessionId }` → `{ sessionId, costUsd, calls, withSubagentsUsd, withSubagentsCalls }` |
 | `budget.status` | netpi.lanes | → `BudgetStatus`: `{ monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, warning, exhausted }` |
@@ -180,7 +187,7 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `agent.queue` | yes | `{ sessionId, items: QueuedInput[] }` |
 | `agent.notice` | yes | `{ sessionId, level: 'info'\|'warn'\|'error', text }` – transient (retry countdown etc.) |
 | `session.context` | no | `{ sessionId, used, window }` |
-| `lanes.changed` | no | `{ pools: LanePoolInfo[] }` |
+| `lanes.changed` | no | `{ pools: LanePoolInfo[] }` – what `lanes.list` returns, whenever a run takes or frees an instance or an agent's state changes |
 | `models.changed`, `plugins.changed`, `ui.changed`, `settings.changed` | no | `{}` |
 | `usage.recorded` | no | `{ provider, model, usage }` (agent turns) |
 | `usage.changed` | no | `BudgetStatus`, after model calls were recorded (debounced) |
@@ -215,6 +222,7 @@ export function mount(el, ctx) {
     newSession(opts?: { projectId?: string }): Promise<void>,
     insertText(text: string): void,              // into the composer
     openTab(tabKey: string): void,               // "pluginId/tabId"
+    openSettings(page?: string): void,           // the settings dialog, on a page ("agents", "profiles", …)
     toast(text: string, level?: 'info'|'warn'|'error'): void,
   }
 }

@@ -7,6 +7,60 @@ public static class LaneTests
 {
     public static void Register(TestRunner r, Env env)
     {
+        r.Add("agents: set up in settings, active while their model is loaded; a chat on an agent; switched off; a stopped backend", async () =>
+        {
+            const string stopped = "aiproxy/qwen38-27b-iq3s";
+            await env.Rpc("settings.set", new { path = "agents.e2e-qwen", value = new { model = CoreTests.Qwen, use = "The loaded one." } });
+            await env.Rpc("settings.set", new { path = "agents.e2e-iq3", value = new { model = stopped } });
+            try
+            {
+                var pools = (await env.Rpc("lanes.list")).Arr().ToList();
+                var q = pools.FirstOrDefault(p => p.S("key") == "e2e-qwen");
+                Check.True(q.B("configured") && q.B("available"), "e2e-qwen active: " + q.GetRawText());
+                Check.Equal(2L, q.L("capacity"), "instances: the model's slots");
+                Check.Equal("idle", q.S("status"));
+                Check.Equal("The loaded one.", q.S("use"));
+                var iq = pools.FirstOrDefault(p => p.S("key") == "e2e-iq3");
+                Check.False(iq.B("available"), "the stopped backend's agent is inactive");
+                Check.Contains(iq.S("unavailable"), "isn't loaded");
+
+                // a chat on an agent: its model follows
+                var sid = (await env.NewSession()).S("id")!;
+                var used = await env.Rpc("agents.use", new { sessionId = sid, agent = "e2e-qwen" });
+                Check.Equal(CoreTests.Qwen, used.S("model"));
+                Check.Equal("e2e-qwen", used.P("meta").S("agent"));
+                var run = await env.Run(sid, "hello [s:echo]");
+                Check.Contains(run.FinalText, "ECHO-DONE");
+                Check.True(run.OfType("agent.status").Any(e => e.D.P("agent").S("pool") == "e2e-qwen"), "ran on the agent");
+
+                // switched off: the chat stops at once with a notice
+                var mark = env.Client.Mark();
+                var listed = await env.Rpc("agents.setEnabled", new { id = "e2e-qwen", enabled = false });
+                Check.True(listed.Arr().First(p => p.S("key") == "e2e-qwen").B("disabled"));
+                await env.Client.WaitFor(mark, e => e.Type == "lanes.changed" && e.D.Arr("pools").Any(p => p.S("key") == "e2e-qwen" && p.B("disabled")), "lanes.changed: switched off", 5000);
+                var off = await env.Run(sid, "again [s:echo]");
+                Check.Contains(RunResult.Text(off.Role("notice").Last(n => n.P("meta").S("kind") == "error")), "The agent \"e2e-qwen\" is disabled.");
+                await env.Rpc("agents.setEnabled", new { id = "e2e-qwen", enabled = true });
+
+                // an agent whose model isn't loaded: refused at once, the backend never sees a request
+                await env.Rpc("agents.use", new { sessionId = sid, agent = "e2e-iq3" });
+                var mockMark = await env.MockMark();
+                var notLoaded = await env.Run(sid, "hi [s:echo]");
+                Check.Contains(RunResult.Text(notLoaded.Role("notice").Last(n => n.P("meta").S("kind") == "error")), "isn't loaded");
+                Check.Equal(0, (await env.MockLog(mockMark)).Count, "no request reached the backend");
+
+                // a chat on a model no agent runs
+                var claude = await env.NewSession(model: "anthropic/claude-haiku-4-5");
+                var none = await env.Run(claude.S("id")!, "hi [s:echo]");
+                Check.Contains(RunResult.Text(none.Role("notice").Last(n => n.P("meta").S("kind") == "error")), "No agent runs anthropic/claude-haiku-4-5.");
+            }
+            finally
+            {
+                await env.Rpc("settings.set", new { path = "agents.e2e-qwen", value = (object?)null });
+                await env.Rpc("settings.set", new { path = "agents.e2e-iq3", value = (object?)null });
+            }
+        }, 60);
+
         r.Add("lanes: 3 subagents on qwen (capacity 2): max 2 concurrent at the backend, queueing, parent yields and resumes", async () =>
         {
             var s = await env.NewSession(model: CoreTests.Qwen);
@@ -71,7 +125,7 @@ public static class LaneTests
             // nobody got agent-result notices: the parent consumed the results with agent_wait
             Check.False(run.Role("notice").Any(n => n.P("meta").S("kind") == "agent-result"), "no duplicate agent-result notices");
             var lanes = await env.Rpc("lanes.list");
-            Check.Equal(0L, lanes.Arr().First(p => p.S("key") == CoreTests.Qwen).L("busy"), "all lanes released");
+            Check.Equal(0L, lanes.Arr().Where(p => p.S("key") == CoreTests.Qwen).Sum(p => p.L("busy")), "all lanes released");
             Check.True(env.Client.Since(mark).Any(e => e.Type == "lanes.changed"), "lanes.changed events");
         }, 120);
 
@@ -101,7 +155,7 @@ public static class LaneTests
             var q = (await env.MockStats()).P("models").P("qwen3.8-27b");
             Check.True(q.L("maxInflight") <= 2, "never more than 2 requests in flight");
             Check.Equal(0L, q.L("overCapacity"));
-            Check.Equal(0L, (await env.Rpc("lanes.list")).Arr().First(p => p.S("key") == CoreTests.Qwen).L("busy"), "all lanes released");
+            Check.Equal(0L, (await env.Rpc("lanes.list")).Arr().Where(p => p.S("key") == CoreTests.Qwen).Sum(p => p.L("busy")), "all lanes released");
         }, 90);
 
         r.Add("agent-result: a background subagent's report wakes the idle parent", async () =>

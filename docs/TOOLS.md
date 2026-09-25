@@ -362,11 +362,32 @@ details: { items: { text, status }[], done, total }
 
 ---
 
+## Agents (`category: "agents"`)
+
+`plugins/NetPI.Tools.Agents` (`agent_spawn`, `agent_wait`, `agent_send`, `agent_list`, `agent_result`, `agent_cancel`) and
+`plugins/NetPI.Lanes` (`agent_choices`, and the "# Agents" section of the system prompt for agents that can spawn).
+
+### `agent_choices` (read-only)
+
+The agents the user set up (`agents.<id>`) as an agent that delegates sees them: the budget line, then each agent (active
+first, then free before paid, cheapest first): id · model · busy/instances · "NOT ACTIVE: <why>" · local · price per Mtok
+· today's spend and cap · context window · images · the user's note, with who runs on it and who waits; then model calls
+without an agent that are running. Without agents: "No agents are set up", and a subagent runs on the caller's model.
+`details: { pools: LanePoolInfo[], budget: BudgetStatus }`.
+
+### `agent_spawn` (summary arg `name`)
+
+`{ task, name?, agent?, model?, tools?, instructions?, wait?, timeoutSeconds? }`. With agents set up `agent` is required
+(an id from `agent_choices`; `lane` and a model ref are accepted as the agent on that model); an agent that can't take
+work is refused with the list. The subagent's session keeps the agent (`meta.agent`) and queues while all its
+instances are busy. Without agents, `model` (default: the caller's). `tools`: the subagent's tools, which may include
+tools the caller doesn't have (default: the caller's). `details`: the subagent's `AgentInfo`.
+
 ## Goal (`category: "goal"`)
 
 `plugins/NetPI.Goal`. The user sets a goal for a session (`/goal`, `goal.set`); after every run the agent is started
 again with a "goal" notice until it calls `goal_update` with status complete (or blocked). Each continuation is a new
-run: a run holds its lane until it ends, and every run gets the per-run limits (`agent.maxTurns`). The state is the
+run: a run holds an instance of its agent until it ends, and every run gets the per-run limits (`agent.maxTurns`). The state is the
 session's `meta.goal` (shown above the composer). The model hears about the goal only through appended notices
 (`kind: "goal"`, with `goalId`, `version` and `status` in their meta): when it is set (the notice starts a run when the
 agent is idle), on each continuation ("automatic continuation N", with the objective and short rules: work from

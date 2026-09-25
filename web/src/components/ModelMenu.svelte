@@ -1,7 +1,7 @@
 <script>
   /**
    * The model list in a popover: a filter, models grouped by provider (status dot, reasoning, images, slots, context
-   * window), arrow keys and Enter, a refresh. Used by the composer's model picker and by model fields in the settings.
+   * window), arrow keys and Enter, a refresh. Used by "New agent…" in the composer's agent picker and by model fields in the settings.
    * none: a label for a first entry that chooses nothing (onchoose(null)), e.g. "the default model".
    */
   import Icon from '../lib/kit/Icon.svelte';
@@ -71,7 +71,7 @@
 <Popover {anchor} {placement} {width} {onclose}>
   <div class="head">
     <Icon name="search" size={13} />
-    <input class="filter" placeholder="Filter models" bind:value={q} onkeydown={onKey} use:focus spellcheck="false" aria-label="Filter models" />
+    <input class="filter" placeholder="Filter models" bind:value={q} oninput={() => (index = 0)} onkeydown={onKey} use:focus spellcheck="false" aria-label="Filter models" />
     <button class="np-icon-btn np-btn-sm" title="Refresh model list" onclick={refresh} disabled={refreshing}>
       {#if refreshing}<span class="np-spinner"></span>{:else}<Icon name="refresh" size={13} />{/if}
     </button>

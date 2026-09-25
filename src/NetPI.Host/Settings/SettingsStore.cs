@@ -298,11 +298,10 @@ internal static class DefaultSettings
             ["aiproxy"] = new JsonObject { ["baseUrl"] = "http://127.0.0.1:8090", ["transport"] = "responses" },
             ["anthropic"] = new JsonObject { ["apiKey"] = "" },
         },
-        ["lanes"] = new JsonObject
+        // chats and subagents run on agents: the default model with its own number of slots
+        ["agents"] = new JsonObject
         {
-            ["pools"] = new JsonObject(),
-            ["localDefaultCapacity"] = 1,
-            ["cloudDefaultCapacity"] = 4,
+            ["qwen"] = new JsonObject { ["model"] = "aiproxy/qwen3.8-27b", ["use"] = "The local model: free, for everyday work." },
         },
         ["compaction"] = new JsonObject { ["enabled"] = true },
         ["nudge"] = new JsonObject { ["enabled"] = true },

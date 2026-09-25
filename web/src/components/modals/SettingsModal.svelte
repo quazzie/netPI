@@ -3,7 +3,7 @@
   import Modal from './Modal.svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import SettingField from './SettingField.svelte';
-  import LanesEditor from './LanesEditor.svelte';
+  import AgentsEditor from './AgentsEditor.svelte';
   import ProfilesEditor from './ProfilesEditor.svelte';
   import SettingsRow from './SettingsRow.svelte';
   import BudgetView from './BudgetView.svelte';
@@ -14,15 +14,14 @@
   import { bus } from '../../lib/bus.js';
   import { pagesOf, getAt, settingDefault, sectionState } from '../../lib/settings.js';
 
-  /** page: the page to open on (a page id such as 'lanes'; modals.settings may hold one). */
+  /** page: the page to open on (a page id such as 'agents'; modals.settings may hold one). */
   let { onclose, page: startPage = 'general' } = $props();
 
   let section = $state(untrack(() => startPage));
 
-  // host settings as controls: the schema (host + plugins), the document, the lanes as the scheduler sees them
+  // host settings as controls: the schema (host + plugins) and the document; the agents' states are app.pools
   let schema = $state([]);
   let doc = $state({});
-  let lanesInfo = $state([]);
   const layout = $derived(pagesOf(schema));
   const page = $derived(layout.pages.find((p) => p.id === section) ?? null);
   // Models and Tools list their sections as rows; each opens its own dialog
@@ -43,20 +42,12 @@
       doc = (await rpc('settings.get'))?.settings ?? {};
     } catch {}
   }
-  async function loadLanes() {
-    try {
-      lanesInfo = (await rpc('lanes.list')) ?? [];
-    } catch {
-      lanesInfo = [];
-    }
-  }
   $effect(() => {
     rpc('settings.schema')
       .then((s) => (schema = s ?? []))
       .catch(() => (schema = []));
     loadDoc();
-    loadLanes();
-    const offs = [bus.on('lanes.changed', (d) => (lanesInfo = d?.pools ?? lanesInfo)), bus.on('plugins.changed', () => rpc('settings.schema').then((s) => (schema = s ?? [])))];
+    const offs = [bus.on('plugins.changed', () => rpc('settings.schema').then((s) => (schema = s ?? [])))];
     return () => offs.forEach((off) => off());
   });
   let raw = $state('');
@@ -175,7 +166,7 @@
   <div class="layout">
     <nav class="nav">
       <button class:active={section === 'general'} onclick={() => (section = 'general')}><Icon name="sliders" size={14} /> General</button>
-      {#each layout.pages.filter((p) => p.sections.length || p.id === 'lanes' || p.id === 'profiles' || p.id === 'plugins') as p (p.id)}
+      {#each layout.pages.filter((p) => p.sections.length || p.id === 'agents' || p.id === 'profiles' || p.id === 'plugins') as p (p.id)}
         <button class:active={section === p.id} onclick={() => (section = p.id)}><Icon name={p.icon} size={14} /> {p.title}</button>
       {/each}
       <div class="nav-gap"></div>
@@ -184,14 +175,14 @@
     </nav>
     <div class="content">
       {#if page}
-        {#if page.id === 'lanes'}
-          <section class="sec">
-            <div class="sec-title">Your lanes</div>
+        {#if page.id === 'agents'}
+          <section class="sec" data-section="agents">
+            <div class="sec-title">Agents</div>
             <div class="sec-help np-dim">
-              A lane is a model agents may use, with parallel slots and a note on when to use it. Agents see the lanes, their
-              price and the budget in lanes_list and pick one for each subagent.
+              An agent is a model with a number of instances (runs at once) and a note on when to use it. Chats and subagents
+              run on agents; an agent is active while its model is loaded (local) or reachable (cloud), unless you switch it off.
             </div>
-            <LanesEditor {doc} lanes={lanesInfo} />
+            <AgentsEditor {doc} />
           </section>
           {#each page.sections.filter((s) => s.id === 'budget') as s (s.id)}
             <section class="sec" data-section="budget">

@@ -8,7 +8,7 @@ public static class ContextTests
     {
         t.Add("context: system prompt sections in order", PromptSections);
         t.Add("context: no date or time in the system prompt (identical on every turn)", NoDateOrTime);
-        t.Add("context: plugins add the guidance for what they own (lanes, agent tools)", PluginOwnedGuidance);
+        t.Add("context: plugins add the guidance for what they own (agents, agent tools)", PluginOwnedGuidance);
         t.Add("context: AGENTS.md arrives as notices: all at first, then only changes, again after compaction", AgentsMdNotices);
         t.Add("context: working directory and project arrive as notices (first call, switch, moved, compaction)", ProjectNoticesFlow);
         t.Add("context: the system prompt is frozen per session; settings changes reach new sessions", FrozenPrompt);
@@ -46,7 +46,7 @@ public static class ContextTests
         var identity = Idx("coding agent running in NetPI");
         var env = Idx("# Environment");
         var tools = Idx("# Tools");
-        var lanes = Idx("# Lanes");
+        var lanes = Idx("# Agents");
         var role = Idx("# Your role");
         Check.True(identity < env && env < tools && tools < lanes && lanes < role, "section order");
         Check.NotContains(prompt, h.Workspace, "no working directory (a notice brings it)");
@@ -56,14 +56,14 @@ public static class ContextTests
         Check.Contains(prompt, "Use edit for testing.");
         Check.Contains(prompt, "Delegate independent, well-scoped work");
         Check.Contains(prompt, "call agent_wait once");
-        Check.Contains(prompt, "Before you delegate, look at lanes_list");
+        Check.Contains(prompt, "Before you delegate, look at agent_choices");
         Check.Contains(prompt, "You are \"w1\", a subagent.");
         Check.NotContains(prompt, "\n\n\n", "no empty sections");
 
         // no project, no tools: the bare base only
         var bare = await builder.BuildAsync(Ctx(h, h.NewSession(), []), CancellationToken.None);
         Check.NotContains(bare, "# Tools");
-        Check.NotContains(bare, "# Lanes");
+        Check.NotContains(bare, "# Agents");
         Check.NotContains(bare, "# Your role");
     }
 
@@ -78,14 +78,14 @@ public static class ContextTests
         }
 
         var (noLanes, noLanesTools) = await Build(TestHost.Plugins.All & ~TestHost.Plugins.Lanes);
-        Check.False(noLanesTools.Any(t => t.Name == "lanes_list"), "lanes_list comes from the lanes plugin");
+        Check.False(noLanesTools.Any(t => t.Name == "agent_choices"), "agent_choices comes from the lanes plugin");
         Check.Contains(noLanes, "Delegate independent, well-scoped work", "the agent tools still bring their tips");
-        Check.NotContains(noLanes, "# Lanes");
+        Check.NotContains(noLanes, "# Agents");
         Check.NotContains(noLanes, "lane", "nothing about lanes without the lanes plugin");
 
         var (noAgentTools, _) = await Build(TestHost.Plugins.All & ~TestHost.Plugins.AgentTools);
         Check.NotContains(noAgentTools, "agent_spawn", "no delegation tips without the agent tools");
-        Check.NotContains(noAgentTools, "# Lanes", "no lanes section for an agent that cannot spawn");
+        Check.NotContains(noAgentTools, "# Agents", "no agents section for an agent that cannot spawn");
     }
 
     // Real-model regression: the date line (to the minute) changed the prompt's first ~100 tokens every minute, so the
@@ -411,7 +411,7 @@ public static class ContextTests
             var prompt = h.Catalog.Requests.Single().SystemPrompt!;
             Check.Contains(prompt, "FROM A PLUGIN");
             Check.True(prompt.IndexOf("# Tools", StringComparison.Ordinal) < prompt.IndexOf("# Extra", StringComparison.Ordinal)
-                       && prompt.IndexOf("# Extra", StringComparison.Ordinal) < prompt.IndexOf("# Lanes", StringComparison.Ordinal), "ordered by Order");
+                       && prompt.IndexOf("# Extra", StringComparison.Ordinal) < prompt.IndexOf("# Agents", StringComparison.Ordinal), "ordered by Order");
         }
 
         // without the context plugin the runtime uses its minimal built-in prompt
@@ -423,6 +423,6 @@ public static class ContextTests
         Check.Contains(fallback, "NetPI");
         Check.Contains(fallback, "Working directory: " + h2.Workspace);
         Check.NotContains(fallback, DateTimeOffset.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), "no date in the built-in prompt");
-        Check.Equal("lanes_list", string.Join(",", h2.Catalog.Requests.Single().Tools.Select(t => t.Name)), "only the lanes plugin's tool");
+        Check.Equal("agent_choices", string.Join(",", h2.Catalog.Requests.Single().Tools.Select(t => t.Name)), "only the lanes plugin's tool");
     }
 }

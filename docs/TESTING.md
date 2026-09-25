@@ -39,7 +39,7 @@ from a private copy of `artifacts/app`, so it is not affected by (and does not a
 ```bash
 dotnet tests/NetPI.Providers.Tests/bin/Debug/NetPI.Providers.Tests.dll   # AiProxy (Responses/Chat), Anthropic, OpenRouter against a scripted HTTP mock
 dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll           # read/write/edit/grep/find/ls, bash/pwsh, processes, files.open
-dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll           # agent loop, steering/queue/abort, subagents, lanes, persistence, context notices, goals
+dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll           # agent loop, steering/queue/abort, subagents, agents, persistence, context notices, goals
 dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll               # retry, nudge, tool repair, compaction, ideas, work, diagnostics, todo, web, media, ssh
 tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests                        # kernel: SQLite, settings, bus, registries, sessions, catalog, server, plugins
 ```
@@ -102,7 +102,7 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:where file=]` | `bash pwd` + `write file`, answers `PWD=<output>` |
 | `[s:slow ms=6000]` | thinking + text streamed slowly over `ms` (steering, queue, abort) |
 | `[s:slowtools]` | three sequential `bash` calls, the first sleeps 2 s (steering mid-batch, abort during a tool) |
-| `[s:textcall]` | a Qwen-style textual `<tool_call><function=lanes_list>` in the text (tool-call repair) |
+| `[s:textcall]` | a Qwen-style textual `<tool_call><function=agent_choices>` in the text (tool-call repair) |
 | `[s:cutoff]` | only thinking, then `incomplete` / `length` / `max_tokens` (nudge) |
 | `[s:empty]` | an empty answer (nudge) |
 | `[s:thinktags]` | `<think>…</think>` inline in the text, as Qwen without a reasoning parser |
@@ -168,7 +168,7 @@ SQLite database and the project folders stay for inspection).
 Coverage (run `--list` for the names):
 
 - **startup / catalog**: all 17 plugins `running`, UI tabs, slash commands, tools, plugin UI bundles served; mock models with
-  context/concurrency/efforts/status; default model = first loaded local model; lane pools from the catalog.
+  context/concurrency/efforts/status; default model = first loaded local model; no agents set up (the suite's settings have none: a slot per model).
 - **chat loop**: `stream.start` → thinking/text `stream.delta` → `stream.end` → `message.added`, `agent.status`
   running → idle, `session.context`, `usage.recorded`; streamed text = persisted text; usage and thinking duration persisted.
 - **tools**: `ls`/`read`/`edit`/`write` really run in a project folder, a CRLF file keeps CRLF, results persisted in call order,
@@ -189,7 +189,11 @@ Coverage (run `--list` for the names):
   `tiny-ctx` (summary, `compacted` flags, `messages.compacted`, context meter drops), overflow recovery when the backend's
   window is smaller than advertised, `/compact`; disabling/enabling a plugin; AGENTS.md and the working directory as
   notices (an edited AGENTS.md is appended, the prefix stays byte-identical).
-- **lanes / subagents**: 3 workers on `qwen3.8-27b` (2 lanes) → at most 2 requests in flight at the backend, one worker
+- **agents**: agents set up with `settings.set` are listed with their state (instances from the catalog, the one on the
+  stopped backend inactive); `agents.use` runs a chat on one; switched off (`agents.setEnabled`, `lanes.changed`) the chat
+  stops at once with a notice; an agent whose model isn't loaded is refused without a request to the backend; a model
+  no agent runs.
+- **lanes / subagents** (no agents: a slot per model): 3 workers on `qwen3.8-27b` (2 slots) → at most 2 requests in flight at the backend, one worker
   queued, the parent yields and resumes with the reports, `lanes.list` / `work.snapshot` mid-flight, no duplicate
   `agent-result` notices; a background worker's report wakes the idle parent; steering interrupts `agent_wait` and the late
   report arrives as a notice; aborting the orchestrator cancels its workers; aborting one worker; nested

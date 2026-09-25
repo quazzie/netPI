@@ -14,6 +14,7 @@ internal static class CoreSettings
             Settings =
             [
                 SettingInfo.ModelRef("defaultModel", "Default model", "For sessions that have none.", "first available"),
+                SettingInfo.Int("models.refreshSeconds", "Refresh the model list every", 10, "Model states (a local model loaded or not) follow within this time; agents are active only while their model is loaded. 0 = only on changes.", 0, 3600, "s"),
                 SettingInfo.Folder("workspace.default", "Default working folder", "For sessions without a project.", defaultWorkspace),
                 SettingInfo.Choice("logging.level", "Log level", "Information", ["Trace", "Debug", "Information", "Warning", "Error"],
                     "Host log in ~/.netpi/logs."),

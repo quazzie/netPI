@@ -20,6 +20,8 @@ const ONLY = argVal('--only') ? new Set(argVal('--only').split(',')) : null;
 const EXTERNAL = argVal('--url');
 const PORT = 7432;
 const BASE = EXTERNAL ?? `http://127.0.0.1:${PORT}`;
+const rpcCall = (method, params = {}) =>
+  fetch(`${BASE}/api/rpc/${method}`, { method: 'POST', headers: { 'X-NetPI-Token': 'dev', 'content-type': 'application/json' }, body: JSON.stringify(params) }).then((r) => r.json());
 fs.mkdirSync(OUT, { recursive: true });
 
 const results = [];
@@ -217,12 +219,36 @@ await page.locator('.srow .kids').first().click();
 await page.waitForTimeout(250);
 await shot(page, '09-subagents-notices');
 
-// ------------------------------------------------------------------ popups: model picker, commands, mentions
+// ------------------------------------------------------------------ popups: agent picker, commands, mentions
 log('composer popups');
-await page.locator('.composer .pick').first().click();
-await page.waitForTimeout(200);
-await shot(page, '10-model-picker');
-await page.keyboard.press('Escape');
+{
+  const sid0 = await page.evaluate(() => location.hash);
+  const agentBtn = page.locator('.composer button[aria-label="Agent"]');
+  await agentBtn.click();
+  await page.waitForSelector('.popover .agent-pop', { timeout: 3000 }).catch(() => {});
+  await page.waitForTimeout(200);
+  await shot(page, '10-agent-picker');
+  const gemmaOpt = page.locator('.popover .opt[data-agent="gemma"]');
+  check('the agent picker lists the agents with their state', (await page.locator('.popover .opt[data-agent="qwen"]').count()) === 1 && /isn't loaded/.test(await gemmaOpt.innerText()), await gemmaOpt.innerText().catch(() => ''));
+  await gemmaOpt.click();
+  await page.waitForTimeout(250);
+  check('choosing an agent shows it on the button', (await agentBtn.innerText()).includes('gemma'));
+  // New agent…: the model list, then the chat runs on the new agent
+  await agentBtn.click();
+  await page.locator('.popover .foot button', { hasText: 'New agent' }).click();
+  await page.locator('.popover input[aria-label="Filter models"]').fill('gemma');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(400);
+  const made = (await rpcCall('settings.get')).settings.agents ?? {};
+  check('"New agent…" sets up an agent on the model and runs the chat on it', !!made['gemma-4'] && (await agentBtn.innerText()).includes('gemma-4'),
+    `agents: ${Object.keys(made).join(', ')}; button: ${await agentBtn.innerText()}; model menus open: ${await page.locator('.popover input[aria-label="Filter models"]').count()}`);
+  if (await page.locator('.popover input[aria-label="Filter models"]').count()) await page.keyboard.press('Escape');
+  await agentBtn.click();
+  await page.locator('.popover .opt[data-agent="qwen"]').click();
+  await page.waitForTimeout(200);
+  check('back on qwen', (await agentBtn.innerText()).includes('qwen'), sid0);
+  await rpcCall('settings.set', { path: 'agents.gemma-4', value: null });
+}
 await ta.fill('');
 await ta.type('/');
 await page.waitForTimeout(150);
@@ -282,8 +308,6 @@ async function openStripTab(side, name) {
 }
 const right = page.locator('.panel.right > .body');
 const leftBody = page.locator('.panel.left > .body');
-const rpcCall = (method, params = {}) =>
-  fetch(`${BASE}/api/rpc/${method}`, { method: 'POST', headers: { 'X-NetPI-Token': 'dev', 'content-type': 'application/json' }, body: JSON.stringify(params) }).then((r) => r.json());
 await openStripTab('left', 'Sessions');
 await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
 await page.waitForTimeout(200);
@@ -300,6 +324,15 @@ log('plugin tab: Work');
   const ownerNames = await qwen.locator('.owner .name').allInnerTexts();
   check('work: a top-level lane owner shows its session title, not "main"',
     ownerNames.includes('Index docs for semantic search') && !ownerNames.includes('main') && ownerNames.includes('surveyor'), ownerNames.join(' | '));
+  // the agents are always listed; an inactive one says why; each has a switch
+  const gemma = page.locator('.work .pool[data-agent="gemma"]');
+  check('work: an agent whose model is not loaded is listed as such', (await gemma.locator('.st').innerText()) === 'not loaded' && /isn't loaded/.test(await gemma.locator('.why').innerText()));
+  await gemma.locator('input.np-switch').click();
+  await page.waitForTimeout(300);
+  check('work: the switch takes an agent off (agents.setEnabled)', (await rpcCall('settings.get')).settings.agents?.gemma?.disabled === true && (await gemma.locator('.st').innerText()) === 'off');
+  await gemma.locator('input.np-switch').click();
+  await page.waitForTimeout(300);
+  check('work: and back on', !(await rpcCall('settings.get')).settings.agents?.gemma?.disabled);
   const nodes = await page.locator('.work .node').count();
   check('work: agent tree incl. subagents', nodes >= 3 && (await page.locator('.work .node .kids .node').count()) > 0, `${nodes} nodes`);
   await shot(page, '25-work-tab');
@@ -624,12 +657,12 @@ log('projects dialog');
   await page.waitForTimeout(300);
 }
 
-// ------------------------------------------------------------------ settings as controls: fields, lanes, budget, tools
-log('settings: controls, lanes, budget, tools');
+// ------------------------------------------------------------------ settings as controls: fields, agents, budget, tools
+log('settings: controls, agents, budget, tools');
 {
   await page.keyboard.press('Control+,');
   await page.waitForSelector('.dialog');
-  await page.locator('.nav button', { hasText: 'Agents' }).click();
+  await page.locator('.nav button', { hasText: 'Runs' }).click();
   const turnsField = page.locator('.field', { hasText: 'Model calls per run' });
   const turns = turnsField.locator('input');
   check('an unset setting shows its default', (await turns.getAttribute('placeholder')) === '200');
@@ -645,35 +678,49 @@ log('settings: controls, lanes, budget, tools');
   await page.waitForTimeout(200);
   check('a number out of range is refused, not saved', (await turnsField.locator('.bad-msg').count()) === 1 && (await rpcCall('settings.get')).settings.agent?.maxTurns === undefined);
 
-  await page.locator('.nav button', { hasText: 'Lanes & budget' }).click();
-  // Add lane: the searchable model list, then the lane's own dialog
-  await page.locator('.lanes .add button', { hasText: 'Add lane' }).click();
+  await page.locator('.nav button', { hasText: 'Agents & budget' }).click();
+  check('the agents are rows, an inactive one says so', (await page.locator('.setting-row[data-agent="qwen"]').count()) === 1 && /not loaded/.test(await page.locator('.setting-row[data-agent="gemma"]').innerText()));
+  // Add agent: the searchable model list, then the agent's own dialog
+  await page.locator('.dialog .agents .add button', { hasText: 'Add agent' }).click();
   await page.locator('.popover input[aria-label="Filter models"]').fill('sonnet');
   await page.keyboard.press('Enter');
-  const laneDialog = page.locator('.dialog.lane-dialog');
-  await laneDialog.waitFor({ timeout: 3000 }).catch(() => {});
-  check('a lane is added from the model search and opens in its dialog, with its price', (await laneDialog.count()) === 1 && (await laneDialog.locator('.facts').innerText()).includes('$3 / $15 per Mtok'));
-  await laneDialog.locator('textarea.use').fill('Costs money: only for hard problems.');
-  await laneDialog.locator('textarea.use').blur();
+  const agentDialog = page.locator('.dialog.agent-dialog');
+  await agentDialog.waitFor({ timeout: 3000 }).catch(() => {});
+  check('an agent is added from the model search and opens in its dialog, with its price', (await agentDialog.count()) === 1 && (await agentDialog.locator('.facts').innerText()).includes('$3 / $15 per Mtok'));
+  await agentDialog.locator('textarea.use').fill('Costs money: only for hard problems.');
+  await agentDialog.locator('textarea.use').blur();
   await page.waitForTimeout(300);
-  check('the lane note is saved', (await rpcCall('settings.get')).settings.lanes?.['claude-sonnet-4-6']?.use === 'Costs money: only for hard problems.');
-  await laneDialog.locator('button[aria-label="Model"]').click();
+  check('the agent note is saved', (await rpcCall('settings.get')).settings.agents?.['claude-sonnet-4-6']?.use === 'Costs money: only for hard problems.');
+  await agentDialog.locator('button[aria-label="Model"]').click();
   await page.waitForSelector('.popover input[aria-label="Filter models"]');
   await page.waitForTimeout(300);
-  await shot(page, '40a-lane-dialog');
+  await shot(page, '40a-agent-dialog');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
-  check('Esc closes the model list, not the lane dialog', (await laneDialog.count()) === 1 && (await page.locator('.popover input[aria-label="Filter models"]').count()) === 0);
-  await laneDialog.locator('.foot button', { hasText: 'Done' }).click();
+  check('Esc closes the model list, not the agent dialog', (await agentDialog.count()) === 1 && (await page.locator('.popover input[aria-label="Filter models"]').count()) === 0);
+  // switched off in the dialog, then a new name
+  await agentDialog.locator('input.np-switch').click();
+  await page.waitForTimeout(300);
+  check('the dialog switches an agent off', (await rpcCall('settings.get')).settings.agents?.['claude-sonnet-4-6']?.disabled === true);
+  await agentDialog.locator('input.np-switch').click();
   await page.waitForTimeout(200);
-  const laneRow = page.locator('.setting-row[data-lane="claude-sonnet-4-6"]');
-  check('the lane is one row: model, slots, price', (await laneRow.count()) === 1 && /1 slot/.test(await laneRow.innerText()) && (await laneRow.innerText()).includes('$3 / $15'));
+  const nameInput = agentDialog.locator('input[aria-label="Name"]');
+  await nameInput.fill('Sonnet');
+  await nameInput.press('Enter');
+  await page.waitForTimeout(400);
+  const agentsNow = (await rpcCall('settings.get')).settings.agents ?? {};
+  check('a new name moves the agent', !!agentsNow.sonnet && !agentsNow['claude-sonnet-4-6'] && agentsNow.sonnet.use === 'Costs money: only for hard problems.' && !agentsNow.sonnet.disabled);
+  check('the dialog follows the new name', (await agentDialog.locator('.title, h2, header').first().innerText().catch(() => '')).includes('sonnet') || (await agentDialog.innerText()).includes('Agent sonnet'));
+  await agentDialog.locator('.foot button', { hasText: 'Done' }).click();
+  await page.waitForTimeout(200);
+  const agentRow = page.locator('.setting-row[data-agent="sonnet"]');
+  check('the agent is one row: model, instances, price', (await agentRow.count()) === 1 && /1 instance/.test(await agentRow.innerText()) && (await agentRow.innerText()).includes('$3 / $15'));
   const monthly = page.locator('.field', { hasText: 'Monthly budget' }).locator('input');
   await monthly.fill('50');
   await monthly.press('Enter');
   await page.waitForTimeout(400);
   check('the budget shows this month against the limit', (await page.locator('.dialog .budget').innerText()).includes('of $50'));
-  await shot(page, '40-settings-lanes');
+  await shot(page, '40-settings-agents');
 
   // Models: one row per provider, its options in a dialog
   await page.locator('.nav button', { hasText: 'Models' }).click();
@@ -798,7 +845,7 @@ log('budget: chat cost, Work tab, a chat stopped by the budget');
   await shot(page, '44-budget-pill');
   await pill.click();
   await page.waitForSelector('.dialog');
-  check('the pill opens the budget settings', (await page.locator('.nav button.active').innerText()).includes('Lanes & budget'));
+  check('the pill opens the budget settings', (await page.locator('.nav button.active').innerText()).includes('Agents & budget'));
   await page.keyboard.press('Escape');
   await rpcCall('settings.set', { path: 'budget.monthlyUsd', value: 50 });
   await page.waitForTimeout(400);

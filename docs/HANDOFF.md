@@ -1,4 +1,4 @@
-# NetPI: handoff to Claude Code (2026-09-24)
+# NetPI: handoff to Claude Code (2026-09-25)
 
 NetPI was built in a Linux cloud sandbox by several agents working in parallel, then brought up on Windows and run against the real model stack. This page covers where things are, the current state, the decisions that must hold, and what to do next. Test results and open issues are in `docs/STATUS.md`; completed plans are archived in `docs/archive/`.
 
@@ -18,7 +18,7 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 ## Current state
 
 - **Windows:** all five unit suites and the E2E suite (UI smoke included) pass; counts are in `docs/STATUS.md`.
-- **Real models:** runs on nInfer (`qwen3.8-27b`) and on OpenRouter behave: lanes and queueing, subagents, steering,
+- **Real models:** runs on nInfer (`qwen3.8-27b`) and on OpenRouter behave: queueing, subagents, steering,
   and cache reuse across turns, project switches and AGENTS.md edits (every turn reuses the previous prompt + output).
 - **Not yet verified:** the Anthropic provider against the real API, and Linux/macOS since the Windows work.
 - **Agent tools:** `web_fetch`, `web_search` (SearXNG / Brave), `screenshot` and `todo_write` work live with `qwen3.8-27b`;
@@ -26,10 +26,14 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
   `~/.ssh/config` (tested live on `nuc` and `server`).
 - **Goals** (`plugins/NetPI.Goal`, `/goal`): the agent is started again after every run until it marks the goal
   complete; tested with a scripted model, not yet with a real one.
-- **Lanes, budget, settings** (built 2026-09-24, not yet deployed to the user's NetPI): a lane per model with slots, a
-  note on when to use it and a price (inferred, editable); agents pick one by id (`lanes_list`, `agent_spawn { lane }`).
-  Every model call is recorded with its cost against one monthly budget (paid calls stop or ask when it is spent).
-  The settings dialog renders the host's and every plugin's settings as controls; each chat switches its own tools.
+- **Agents, budget, settings** (built 2026-09-24/25, not yet deployed to the user's NetPI): an agent is a model with
+  instances and a note on when to use it; chats run on agents (the composer's agent picker) and subagents pick one
+  (`agent_choices`, `agent_spawn { agent }`). An agent is active only while its model is loaded (NetPI never loads a
+  model) and can be switched off in Settings or the Work tab. The user's lanes become agents on the first start. Every
+  model call is recorded with its cost against one monthly budget (paid calls stop or ask when it is spent). The
+  settings dialog renders the host's and every plugin's settings as controls; each chat switches its own tools.
+- **Compaction works like pi's** (built 2026-09-25, not yet deployed): a structured checkpoint at the chat's reasoning
+  effort, the files read and modified, split turns; long tool results go to a file the agent reads from.
 - **Profiles** (built 2026-09-24, not yet deployed): the opening of a chat's system prompt and its tools; a default per
   project; switching is free before the first message and one full re-read after it.
 - **Chat UI:** the streamed answer is laid out as the finished one will be, so nothing jumps between steps; a Steps
@@ -38,7 +42,8 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
   `docs/archive/2026-09-24-windows-bringup.md`; the agent tools and projects UI in `docs/archive/2026-09-24-agent-tools.md`;
   the SSH tools in `docs/archive/2026-09-24-ssh-tools.md`; goals and the steady chat in
   `docs/archive/2026-09-24-goals.md`; lanes, the budget and the settings dialog in
-  `docs/archive/2026-09-24-lanes-budget-settings.md`; profiles in `docs/archive/2026-09-24-profiles.md`.
+  `docs/archive/2026-09-24-lanes-budget-settings.md`; profiles in `docs/archive/2026-09-24-profiles.md`; agents instead of
+  lanes in `docs/archive/2026-09-25-agents.md`.
 
 ## Decisions and preferences to keep
 
@@ -51,8 +56,11 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 - **Profiles hold instructions and tools, not the model; subagents get no profile.** The agent that starts a subagent
   chooses its tools, including ones it lacks itself (a limited orchestrator dispatches agents that can do more); by
   default its own (decided 2026-09-24).
-- **Lanes are models the user sets up, and one global budget guards the money.** Agents choose a lane by its note
-  and price; paid calls are recorded and stop (or ask) when the monthly budget is spent (decided 2026-09-24).
+- **Chats and subagents run on agents the user sets up, and one global budget guards the money.** An agent is a model
+  with instances; to use a model you set up an agent on it (no temporary agents). An agent is active only while its
+  model is loaded: NetPI never makes AiProxy load a model, since that would unload what the other agents run on.
+  Profiles stay separate (the role, not where it runs). Paid calls are recorded and stop (or ask) when the monthly
+  budget is spent (decided 2026-09-24/25).
 - **The Responses transport is standard and stateless.** It sends `store:false` and the full input every call, and replays reasoning items (`reasoning` → `message` → `function_call`). No `previous_response_id` chaining.
 - **No workarounds that hide backend problems.** No retries or self-healing for backend failures.
   - Errors show up unchanged, with the server's `x-request-id` and response id.
@@ -75,9 +83,11 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Suggested next steps
 
-0. **Deploy lanes, the budget, the settings dialog and profiles.** Close NetPI, `build` (cmd) or `.\build.ps1`, restart. Then set up a lane for
-   the free stealth model and one for a paid model with a note, set a monthly budget, and watch a local agent pick
-   lanes (and a paid OpenRouter call's cost reach the ledger).
+0. **Deploy agents, the budget, the settings dialog, profiles and the new compaction.** Close NetPI, `build` (cmd) or
+   `.\build.ps1`, restart. Then: the two lanes should now be agents (Settings → Agents & budget; the log says "Lanes
+   became agents"); switch the model in AiSwitcher and watch the Work tab's agents follow within ~10 s; set up an agent
+   for the free stealth model and one for a paid model with a note, set a monthly budget, and watch a local agent pick
+   agents (and a paid OpenRouter call's cost reach the ledger).
 1. **Goals with a real model.** Run a goal on `qwen3.8-27b` (a throwaway server or the user's NetPI): does it keep
    working, call `goal_update` complete only when done, stay within the no-progress rule? Then consider an
    independent check of "complete" (a verifier subagent) if it declares done too early.

@@ -91,7 +91,7 @@ export function togglePanel(side) {
 // ------------------------------------------------------------------------------------------ modals
 
 export const modals = $state({
-  settings: false, // true, or the page to open on (e.g. 'lanes')
+  settings: false, // true, or the page to open on (e.g. 'agents')
   palette: false,
   help: false,
   folder: null, // { initial, title, resolve }

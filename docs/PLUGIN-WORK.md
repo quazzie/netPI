@@ -1,6 +1,7 @@
 # Work plugin (`netpi.work`)
 
-The **Work** tab (right panel) shows what is running right now: agents and subagents, lane pools, shell processes and
+The **Work** tab (right panel) shows what is running right now: the agents you set up (always, with their state and an
+on/off switch), runs and subagents, shell processes and
 today's token usage. The plugin owns no state. It has one RPC method that collects data from the plugins that provide
 it.
 
@@ -30,7 +31,8 @@ Takes no parameters and returns:
 - The shapes are the ones in `docs/PROTOCOL.md`:
 
 ```ts
-interface LanePoolInfo { key; provider?; capacity; busy; queued; models: string[]; owners: LaneOwner[]; waiters: LaneOwner[]; source; status? }
+interface LanePoolInfo { key; provider?; capacity; busy; queued; models: string[]; owners: LaneOwner[]; waiters: LaneOwner[]; source; status?;
+  configured; model?; use?; available; unavailable?; disabled }   // an agent (configured) or model calls without one (see PROTOCOL.md)
 interface LaneOwner { agentId; sessionId?; label?; since }
 interface AgentInfo { id; sessionId; name; parentAgentId?; parentSessionId?; isSubagent; depth; status; model?; pool?; activity?;
   createdAt; startedAt?; finishedAt?; runs; turns; toolCalls; inputTokens; outputTokens; queuedMessages; task?; result?; error?; children: string[] }

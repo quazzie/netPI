@@ -681,8 +681,28 @@ internal sealed class AgentRuntime : IAgentRuntime
     // ---------------------------------------------------------------- lanes
 
     /// <summary>
-    /// Acquire a lane for <paramref name="model"/> (status Queued while waiting). Returns null without a scheduler.
-    /// Survives a scheduler reload (its waiters are cancelled → re-resolve and retry). Throws <see cref="BudgetExceededException"/>.
+    /// The agent (<c>agents.&lt;id&gt;</c>) the session's run on <paramref name="model"/> goes to, chosen by the scheduler: the
+    /// chat's own agent when it runs the model, else an agent on the model, saved as the chat's agent (<c>meta.agent</c>).
+    /// Null when no agents are set up. Throws <see cref="LaneUnavailableException"/> when none runs the model.
+    /// </summary>
+    internal string? AgentFor(string sessionId, ModelInfo model, ILaneScheduler scheduler)
+    {
+        var session = Ctx.Sessions.GetSession(sessionId);
+        var current = SessionAgent.Of(session);
+        var agent = scheduler.ChooseAgent(model, current);
+        if (agent is not null && session is not null && !string.Equals(agent, current, StringComparison.Ordinal))
+            Ctx.Sessions.UpdateSession(sessionId, x =>
+            {
+                x.Meta ??= new JsonObject();
+                x.Meta[SessionAgent.MetaKey] = agent;
+            });
+        return agent;
+    }
+
+    /// <summary>
+    /// Acquire a slot for <paramref name="model"/> on the session's agent (status Queued while waiting). Returns null without
+    /// a scheduler. Survives a scheduler reload (its waiters are cancelled → re-resolve and retry). Throws
+    /// <see cref="BudgetExceededException"/>, and <see cref="LaneUnavailableException"/> when the agent can't take work.
     /// </summary>
     internal async Task<ILaneLease?> AcquireLaneAsync(AgentState s, RunState run, ModelInfo model, int priority, CancellationToken ct)
     {
@@ -697,7 +717,8 @@ internal sealed class AgentRuntime : IAgentRuntime
                 SetStatus(s, AgentStatus.Running, null, keepActivity: true);
                 return null;
             }
-            var pool = scheduler.ResolvePool(model);
+            var agent = AgentFor(s.Info.SessionId, model, scheduler);
+            var pool = scheduler.ResolvePool(model, agent);
             Update(s, i => i.Pool = pool);
             var request = new LaneRequest
             {
@@ -714,7 +735,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 SetStatus(s, AgentStatus.Running, null, keepActivity: true);
                 return lease;
             }
-            SetStatus(s, AgentStatus.Queued, $"waiting for lane {pool}");
+            SetStatus(s, AgentStatus.Queued, agent is null ? $"waiting for lane {pool}" : $"waiting for agent {agent}");
             try
             {
                 lease = await scheduler.AcquireAsync(request, ct).ConfigureAwait(false);
@@ -747,7 +768,21 @@ internal sealed class AgentRuntime : IAgentRuntime
             throw new InvalidOperationException($"Maximum subagent depth ({maxDepth}) reached: this agent cannot spawn subagents (setting agents.maxDepth).");
 
         var parentSession = parentInfo is null ? null : Ctx.Sessions.GetSession(parentInfo.SessionId);
-        var modelRef = await ResolveSpawnModelAsync(request.Model, parentSession, ct).ConfigureAwait(false);
+        // an agent the user set up (named by agent, or by model as the older lane ids were): the subagent runs on it
+        var agent = SetUpAgent(request.Agent ?? request.Model);
+        string? modelRef;
+        if (agent is not null)
+        {
+            if (!agent.Available)
+                throw new InvalidOperationException(agent.Disabled
+                    ? $"The agent \"{agent.Key}\" is switched off by the user. Choose another agent (agent_choices)."
+                    : $"The agent \"{agent.Key}\" can't take work now: {agent.Unavailable}. Choose another agent (agent_choices).");
+            modelRef = agent.Model;
+        }
+        else if (!string.IsNullOrWhiteSpace(request.Agent))
+            throw new ArgumentException($"Unknown agent '{request.Agent}'. agent_choices lists the agents.");
+        else
+            modelRef = await ResolveSpawnModelAsync(request.Model, parentSession, ct).ConfigureAwait(false);
         var reasoning = request.Reasoning ?? (string.Equals(modelRef, parentSession?.Model, StringComparison.OrdinalIgnoreCase) ? parentSession?.Reasoning : null);
 
         var id = Ids.New("agt");
@@ -769,6 +804,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             ["agentInstructions"] = instructions,
         };
         if (off.Count > 0) meta[SessionTools.MetaKey] = new JsonArray([.. off.Order(StringComparer.Ordinal).Select(n => (JsonNode?)n)]);
+        if (agent is not null) meta[SessionAgent.MetaKey] = agent.Key;
         var session = Ctx.Sessions.CreateSession(new SessionInfo
         {
             Title = name,
@@ -831,6 +867,11 @@ internal sealed class AgentRuntime : IAgentRuntime
         return sb.ToString().TrimEnd();
     }
 
+    /// <summary>An agent the user set up (<c>agents.&lt;id&gt;</c>) by its id, with its state.</summary>
+    private LanePoolInfo? SetUpAgent(string? id) =>
+        string.IsNullOrWhiteSpace(id) ? null
+            : Ctx.Services.Get<ILaneScheduler>()?.Snapshot().FirstOrDefault(p => p.Configured && string.Equals(p.Key, id.Trim(), StringComparison.OrdinalIgnoreCase));
+
     private async Task<string?> ResolveSpawnModelAsync(string? requested, SessionInfo? parentSession, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(requested)) return parentSession?.Model;
@@ -853,7 +894,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 .FirstOrDefault();
             return best?.Ref ?? pool.Models[0];
         }
-        throw new ArgumentException($"Unknown model or lane pool '{requested}'. Use lanes_list to see the pools and their models.");
+        throw new ArgumentException($"Unknown agent or model '{requested}'. agent_choices lists the agents.");
     }
 
     public async Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldLane = true,

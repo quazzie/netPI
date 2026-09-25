@@ -7,6 +7,7 @@ import { load, save, persist, fetchRemote } from '../persist.js';
 import { getChat, peekChat, dropChat, allChats } from './chat.svelte.js';
 import { toast, syncUiStateFromHost, composer } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
+import { defaultAgent, useAgent } from '../agents.js';
 
 const TABS_KEY = 'netpi.openTabs';
 
@@ -17,6 +18,7 @@ class AppState {
   sessions = $state.raw([]); // all known sessions (incl. subagents), newest first
   models = $state.raw([]);
   defaultModel = $state(null);
+  pools = $state.raw([]); // lanes.list: the agents the user set up (configured) and other model calls in progress
   agents = new SvelteMap(); // sessionId -> AgentInfo (latest)
   context = new SvelteMap(); // sessionId -> { used, window }
   unread = new SvelteSet();
@@ -91,6 +93,8 @@ function upsertSession(s) {
   }
 }
 
+export const upsertSessionLocal = (s) => upsertSession(s);
+
 function upsertProject(p) {
   if (!p?.id) return;
   const i = app.projects.findIndex((x) => x.id === p.id);
@@ -130,6 +134,14 @@ export async function loadModels(refresh = false) {
     app.defaultModel = res?.defaultModel ?? null;
   } catch (e) {
     console.warn('models.list failed', e);
+  }
+}
+
+export async function loadPools() {
+  try {
+    app.pools = (await rpc('lanes.list', {}, { timeout: 8000 })) ?? [];
+  } catch {
+    app.pools = []; // the agents plugin is off
   }
 }
 
@@ -177,6 +189,7 @@ async function loadAll({ reconnect }) {
       loadProjects(),
       loadSessions(),
       loadModels(),
+      loadPools(),
       loadUiRegistry(),
       loadAgents(),
       loadTools(),
@@ -297,7 +310,11 @@ export async function newSession(opts = {}) {
     if (projectId) params.projectId = projectId;
     if (opts.title) params.title = opts.title;
     if (opts.model) params.model = opts.model;
-    const s = await rpc('sessions.create', params);
+    // a new chat runs on the agent chosen last (or the first active one) unless a model was asked for
+    const agent = opts.model ? null : defaultAgent();
+    if (agent) params.model = agent.model;
+    let s = await rpc('sessions.create', params);
+    if (agent) s = (await useAgent(s.id, agent.key)) ?? s;
     upsertSession(s);
     activate(s.id);
     queueMicrotask(() => composer.focus?.());
@@ -469,12 +486,16 @@ function onEvent(d, env) {
     case 'models.changed':
       loadModels();
       break;
+    case 'lanes.changed':
+      if (Array.isArray(d?.pools)) app.pools = d.pools;
+      break;
     case 'ui.changed':
     case 'plugins.changed':
       clearTimeout(uiReloadTimer);
       uiReloadTimer = setTimeout(() => {
         loadUiRegistry();
         loadTools();
+        loadPools();
       }, 150);
       break;
     case 'settings.changed':

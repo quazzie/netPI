@@ -7,13 +7,14 @@ commas, and is watched: edits apply live. Keys are shown as dotted paths — `pr
 
 The ⚙ settings dialog edits the same file. Most settings are real controls there: the host and each plugin declare
 theirs (`settings.schema`, see `docs/PLUGINS.md`), and a control saves one key (`settings.set`; **Reset** removes the key
-so the default applies again). Lanes and the budget have their own page; the `settings.json` page edits the whole file.
+so the default applies again). The agents and the budget have their own page; the `settings.json` page edits the whole file.
 
 ## Core
 
 | key | default | |
 |---|---|---|
-| `defaultModel` | `aiproxy/qwen3.8-27b` | model ref (`provider/model`) for sessions that have none |
+| `defaultModel` | `aiproxy/qwen3.8-27b` | model ref (`provider/model`) for sessions that have neither a model nor an agent |
+| `models.refreshSeconds` | `10` | list the models again this often (the providers answer from their own caches), so a model loaded or unloaded in AiSwitcher reaches the agents within seconds; 0 = only on changes |
 | `workspace.default` | `~/.netpi/workspace` | working directory of sessions without a project |
 | `server.port` | `7431` | a random free port is used when it is taken |
 | `server.devOrigins` | `[]` | extra allowed origins (e.g. `http://localhost:5173` for `npm run dev`) |
@@ -41,7 +42,7 @@ so the default applies again). Lanes and the budget have their own page; the `se
 | `modelsCacheSeconds` | `10` | `/v1/models` cache |
 | `reasoningSummary` | – | Responses `reasoning.summary` (nInfer rejects it with HTTP 400; leave unset for AiProxy/nInfer) |
 | `headers` | – | extra HTTP headers |
-| `enabled`, `local` | `true` | local providers take lane capacity from the catalog's `concurrency` |
+| `enabled`, `local` | `true` | a local model's `concurrency` is how many runs its agents share |
 | `models.<id>` | – | per model: `transport`, `replayReasoning`, `parseThinkTags`, `maxOutputTokens`, `contextWindow`, `concurrency`, `displayName`, `hidden` |
 
 ### `providers.openaiCompatible` (extra endpoints)
@@ -74,8 +75,7 @@ model that produced them (required for tool calls with Claude, Gemini or OpenAI 
 
 Effort levels come from the catalog: the picker lists the model's `supported_efforts`, plus `none` where reasoning can be
 turned off; models without effort levels only get on/off. Free models are limited to 20 requests per minute and 50 or
-1000 per day depending on credits bought; every agent turn is one request. The provider is one lane pool (`openrouter`,
-`lanes.cloudDefaultCapacity`).
+1000 per day depending on credits bought; every agent turn is one request. Set up an agent per model you use; its `instances` (default 1) caps the requests at once.
 
 ### `providers.anthropic` (Claude)
 
@@ -125,30 +125,45 @@ Subagents don't use profiles: the agent that starts one chooses its tools.
 | `profiles.<id>.toolsOff` | tools the chat starts without (checkboxes in the dialog); the chat's tools button can still change them |
 | `profiles.defaultProfile` | the profile of new chats whose project has none |
 
-## Lanes
+## Agents
 
-A lane is a model with a number of parallel slots; every model call takes one. The lanes you set up are the ones
-agents choose from (`lanes_list`, `agent_spawn { lane }`): one model each, with a note on when to use it.
+An agent is a named worker on one model with a number of **instances** (runs at once). Chats and subagents run on
+agents: the composer's agent picker sets a chat's agent (`agents.use`), and an agent that delegates picks one for each
+subagent (`agent_choices`, `agent_spawn { agent }`) by its note on when to use it. Profiles are separate: the agent is
+where a chat runs, the profile who it is.
 
 ```jsonc
-"lanes": {
-  "bunny": { "model": "openrouter/stealth/space-bunny-alpha", "capacity": 2,
+"agents": {
+  "qwen":  { "model": "aiproxy/qwen3.8-27b",                        // instances: the model's slots (2)
+             "use": "The local model: free, for everyday work." },
+  "bunny": { "model": "openrouter/stealth/space-bunny-alpha", "instances": 2,
              "use": "Free. General coding, research, reading code." },
-  "opus":  { "model": "openrouter/anthropic/claude-opus-4.1", "capacity": 1,
-             "use": "Costs real money: only for hard problems the free lanes could not solve.",
-             "budget": { "limitUsd": 5 },                 // this lane, per day
-             "cost": { "input": 15, "output": 75 } },     // $ per million tokens (default: the catalog's price)
-  "localDefaultCapacity": 1,      // automatic lanes: a local model without a catalog concurrency
-  "cloudDefaultCapacity": 4,      // automatic lanes: one per cloud provider
-  "pools": { "gpu": { "capacity": 2, "models": ["aiproxy/qwen3.8-27b"] } },   // older: lanes for model globs, still read
-  "budgets": { "anthropic": { "dailyTokens": 2000000 } }                     // older: tokens per day per provider, still read
+  "opus":  { "model": "openrouter/anthropic/claude-opus-4.1",       // instances: 1 on a cloud model
+             "use": "Costs real money: only for hard problems the free agents could not solve.",
+             "budget": { "limitUsd": 5 },                 // this agent, per day
+             "cost": { "input": 15, "output": 75 },       // $ per million tokens (default: the catalog's price)
+             "disabled": true },                          // switched off (Settings, or its switch in the Work tab)
+  "maxDepth": 3                                           // a setting, not an agent (how deep subagents nest)
 }
 ```
 
-- **Capacity:** a lane you set up defaults to the catalog's concurrency for a local model and to 1 for a cloud one.
-- **Automatic lanes:** a model without a lane of its own gets one (one per cloud provider, one per local model); they
-  are not offered to agents.
+- **Active:** an agent takes work only while it can without disturbing anything: a local agent while AiProxy reports its
+  model **loaded** (NetPI never loads a model: loading one could evict what another agent runs; switch in AiSwitcher and
+  the agents follow within `models.refreshSeconds`), a cloud agent while its provider answers, and neither while
+  switched off. An inactive agent stays listed with the reason; a chat on it stops at once with a notice, and waiting
+  runs are told too. Runs already going finish.
+- **Instances:** default the model's slots for a local model (its `concurrency`), 1 for a cloud one. Agents on one local
+  model share its slots: NetPI never runs more on the model than it serves (the agent dialog warns when their
+  instances add up to more).
+- **A chat without an agent** takes an agent on its model (a free one first) and keeps it; with no agent on its model it
+  stops with a notice. New chats start on the agent chosen last.
+- **With no agents at all** (a settings file without any) every model call gets a slot per model:
+  `lanes.localDefaultCapacity` (1, when the catalog doesn't say) per local model, `lanes.cloudDefaultCapacity` (4) per
+  cloud provider. The same slots serve model calls without an agent (a `compaction.model` on another model).
+- **Upgrade:** on the first start after lanes became agents, the lanes you set up (`lanes.<id>`, `capacity` → `instances`)
+  become agents, plus one for `defaultModel` when none runs it; `lanes.<id>` and `lanes.pools` are removed.
 - **`cost`:** also accepts `cacheRead` and `cacheWrite`; the defaults are 10 % and 125 % of the input price.
+- `lanes.budgets.<provider>.dailyTokens` (older: tokens per day per provider) is still read.
 
 ## Budget
 
@@ -157,13 +172,13 @@ agents choose from (`lanes_list`, `agent_spawn { lane }`): one model each, with 
 | `budget.monthlyUsd` | – | spend per month on paid models; unset = no limit |
 | `budget.dailyUsd` | – | spend per day |
 | `budget.resetDay` | `1` | the day of the month the budget period starts (1–28) |
-| `budget.warnPercent` | `80` | from here `lanes_list` tells agents to use paid lanes only when you asked |
+| `budget.warnPercent` | `80` | from here `agent_choices` tells agents to use paid agents only when you asked |
 | `budget.onLimit` | `"stop"` | when a budget is spent: `"stop"` paid calls, or `"ask"`: your chats stop with "let this chat go over" (`budget.allow`), subagents stop |
 
 Every model call is recorded with its tokens and cost (`usage_calls`: agents, compaction, anything that asks a model).
-The cost is what the provider reported (OpenRouter returns it for every call), else tokens × the price (the lane's
+The cost is what the provider reported (OpenRouter returns it for every call), else tokens × the price (the agent's
 `cost`, else the catalog's pricing), and $0 for local models. A cloud model without a known price counts $0 but is
-treated as paid when a budget is spent. The budget and the lanes' daily caps (`lanes.<id>.budget.limitUsd`) only
+treated as paid when a budget is spent. The budget and the agents' daily caps (`agents.<id>.budget.limitUsd`) only
 stop paid models; free and local ones always run.
 
 ## Context and AGENTS.md

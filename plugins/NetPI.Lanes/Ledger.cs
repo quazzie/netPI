@@ -10,12 +10,12 @@ namespace NetPI.Lanes;
 /// <list type="bullet">
 /// <item><c>usage_calls</c>: one row per call (agents, compaction, anything that asks a model), recorded by
 /// <see cref="LedgerMiddleware"/>. The cost is what the provider reported (<see cref="Usage.CostUsd"/>: OpenRouter),
-/// else tokens × the price (the lane's <c>cost</c>, else the catalog's pricing); local models are free; other cloud
+/// else tokens × the price (the agent's <c>cost</c>, else the catalog's pricing); local models are free; other cloud
 /// models without a price are "unknown" ($0, but paid when a budget is spent).</item>
 /// <item><c>lanes_usage</c>: tokens per day, provider and model (the Work tab, the legacy
 /// <c>lanes.budgets.&lt;provider&gt;.dailyTokens</c>).</item>
 /// <item>Budgets: <c>budget.monthlyUsd</c> (the month starts on <c>budget.resetDay</c>), <c>budget.dailyUsd</c> and a
-/// lane's <c>lanes.&lt;id&gt;.budget.limitUsd</c> per day. When one is spent, calls to paid models throw
+/// agent's <c>agents.&lt;id&gt;.budget.limitUsd</c> per day. When one is spent, calls to paid models throw
 /// <see cref="BudgetExceededException"/>; <c>budget.onLimit</c> "ask" lets the user allow a chat to go over
 /// (<c>session.meta.budgetAllowedFrom</c> = the start of the period).</item>
 /// </list>
@@ -326,7 +326,7 @@ internal sealed class Ledger
         else if (o.DailyUsd is { } day && today >= day)
             why = $"Today's budget is spent: {Usd(today)} of {Usd(day)}.";
         else if (lane is not null && LaneLimit(laneCfg) is { } cap && LaneSpentToday(lane) is var spent && spent >= cap)
-            why = $"Lane {lane} has spent its {Usd(cap)} for today ({Usd(spent)}).";
+            why = $"The agent {lane} has spent its {Usd(cap)} for today ({Usd(spent)}).";
         if (why is null) return;
 
         var session = request.SessionId is null ? null : _ctx.Sessions.GetSession(request.SessionId);
@@ -334,10 +334,10 @@ internal sealed class Ledger
         if (ask && AllowedNow(session!)) return;
         throw new BudgetExceededException(why + (ask
             ? " You can let this chat go over, or switch it to a free model."
-            : " Raise the budget in Settings → Budget (budget.*), or use a free lane.")) { CanOverride = ask };
+            : " Raise the budget in Settings → Budget (budget.*), or use a free agent.")) { CanOverride = ask };
     }
 
-    /// <summary>A lane's own daily cap: <c>lanes.&lt;id&gt;.budget.limitUsd</c>.</summary>
+    /// <summary>An agent's own daily cap: <c>agents.&lt;id&gt;.budget.limitUsd</c>.</summary>
     internal static double? LaneLimit(JsonObject? laneCfg) => Positive((laneCfg?["budget"] as JsonObject)?["limitUsd"]);
 
     private DateTime PeriodStart
@@ -398,10 +398,10 @@ internal sealed class Ledger
             ? $"{Usd(period)} of {Usd(m)} this month ({Math.Round(period / m * 100).ToString("0", CultureInfo.InvariantCulture)} %)"
             : $"{Usd(period)} this month (no monthly limit)");
         parts.Add(o.DailyUsd is { } d ? $"{Usd(today)} of {Usd(d)} today" : $"{Usd(today)} today");
-        var line = "Budget: " + string.Join(", ", parts) + ". Free lanes don't count.";
+        var line = "Budget: " + string.Join(", ", parts) + ". Free models don't count.";
         var status = BudgetStatus();
-        if (status["exhausted"]?.GetValue<bool>() == true) line += " The budget is spent: paid lanes are stopped.";
-        else if (status["warning"]?.GetValue<bool>() == true) line += $" Over {o.WarnPercent} %: use paid lanes only when the user asked.";
+        if (status["exhausted"]?.GetValue<bool>() == true) line += " The budget is spent: paid models are stopped.";
+        else if (status["warning"]?.GetValue<bool>() == true) line += $" Over {o.WarnPercent} %: use paid agents only when the user asked.";
         return line;
     }
 
@@ -599,7 +599,7 @@ internal sealed class LedgerMiddleware(Ledger ledger, LaneScheduler scheduler) :
 
     public async IAsyncEnumerable<ModelStreamEvent> InvokeAsync(ModelRequest request, ModelCallDelegate next, [EnumeratorCancellation] CancellationToken ct)
     {
-        var (lane, cfg) = scheduler.LaneFor(request.Model);
+        var (lane, cfg) = scheduler.LaneFor(request.Model, request.SessionId);
         ledger.Check(request, lane, cfg);
         await foreach (var e in next(request, ct).WithCancellation(ct).ConfigureAwait(false))
         {

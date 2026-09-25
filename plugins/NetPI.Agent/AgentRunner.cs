@@ -81,7 +81,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
             // 1. session, model, project, cwd: re-read every turn (they can change mid-run)
             var session = Ctx.Sessions.GetSession(SessionId) ?? throw new RunFailedException("The session no longer exists.");
-            var modelRef = session.Model ?? await DefaultModelRefAsync(ct).ConfigureAwait(false);
+            var modelRef = session.Model ?? AgentModelRef(session) ?? await DefaultModelRefAsync(ct).ConfigureAwait(false);
             ModelInfo? model = null;
             if (!string.IsNullOrWhiteSpace(modelRef))
             {
@@ -137,7 +137,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             {
                 await EnsureLaneAsync(model, ct).ConfigureAwait(false);
             }
-            catch (BudgetExceededException ex)
+            catch (Exception ex) when (ex is BudgetExceededException or LaneUnavailableException)
             {
                 rt.AppendNotice(state, ex.Message, "error");
                 throw new RunFailedException(ex.Message, ex);
@@ -249,6 +249,14 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
     /// The default model. Without a <c>defaultModel</c> setting it is derived from the catalog cache, which is empty until
     /// the first model listing finishes (right after startup, or after a provider reload): list once, then ask again.
     /// </summary>
+    /// <summary>The model of the chat's agent (<c>agents.&lt;id&gt;.model</c>) when the chat has no model of its own.</summary>
+    private string? AgentModelRef(SessionInfo session)
+    {
+        if (SessionAgent.Of(session) is not { } agent || agent.Contains('.')) return null;
+        try { return Ctx.Settings.Get<string>($"agents.{agent}.model") is { Length: > 0 } m ? m.Trim() : null; }
+        catch { return null; }
+    }
+
     private async Task<string?> DefaultModelRefAsync(CancellationToken ct)
     {
         var modelRef = Ctx.Models.DefaultModelRef;
@@ -336,7 +344,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             if (Info.Status != AgentStatus.Running) rt.SetStatus(state, AgentStatus.Running, null, keepActivity: true);
             return;
         }
-        var pool = scheduler.ResolvePool(model);
+        var pool = scheduler.ResolvePool(model, rt.AgentFor(SessionId, model, scheduler));
         if (run.Lease is { IsReleased: false } lease && string.Equals(lease.PoolKey, pool, StringComparison.OrdinalIgnoreCase))
         {
             run.Model = model;

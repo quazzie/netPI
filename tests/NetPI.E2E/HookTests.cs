@@ -12,21 +12,21 @@ public static class HookTests
         r.Add("tool repair: a textual <tool_call> becomes a real call that runs", async () =>
         {
             var s = await env.NewSession();
-            var run = await env.Run(s.S("id")!, "Check the lanes [s:textcall]");
+            var run = await env.Run(s.S("id")!, "Check the agents [s:textcall]");
             Check.Contains(run.FinalText, "TEXTCALL-DONE");
             var repaired = run.Role("assistant").First();
             Check.True(repaired.P("meta").B("repaired"), "meta.repaired");
             Check.Equal("tool_use", repaired.S("stopReason"));
             var call = repaired.Arr("parts").Single(p => p.S("type") == "tool_call");
-            Check.Equal("lanes_list", call.S("name"));
+            Check.Equal("agent_choices", call.S("name"));
             Check.NotContains(RunResult.Text(repaired), "<tool_call>");
-            Check.Contains(RunResult.Text(repaired), "check the lanes");
+            Check.Contains(RunResult.Text(repaired), "check the agents");
             var result = run.Parts("tool_result").Single();
             Check.Equal(call.S("id"), result.S("callId"));
             Check.False(result.B("isError"));
-            Check.Contains(result.S("content"), "You run on lane");
+            Check.Contains(result.S("content"), "No agents are set up");
             Check.True(run.OfType("message.updated").Any(e => e.D.P("message").P("meta").B("repaired")), "message.updated with the repaired message");
-            Check.True(run.OfType("tool.start").Any(e => e.D.S("name") == "lanes_list"), "tool.start for the repaired call");
+            Check.True(run.OfType("tool.start").Any(e => e.D.S("name") == "agent_choices"), "tool.start for the repaired call");
             Check.False(run.Role("notice").Any(), "no nudge for a repaired call");
         });
 

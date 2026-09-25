@@ -2,7 +2,7 @@
 import { rpc } from './rpc.svelte.js';
 import { bus } from './bus.js';
 import { app, openSession, newSession } from './state/app.svelte.js';
-import { composer, toast } from './state/ui.svelte.js';
+import { composer, toast, modals } from './state/ui.svelte.js';
 import { openPanelTab } from './state/tabs.svelte.js';
 
 const appListeners = new Set();
@@ -64,6 +64,9 @@ export function createPluginCtx(tab) {
       },
       openTab: (key) => {
         openPanelTab(key);
+      },
+      openSettings: (page) => {
+        modals.settings = page || true;
       },
       toast: (text, level = 'info') => {
         toast(text, level);

@@ -1,7 +1,7 @@
 <script>
   import { onMount, tick } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
-  import ModelPicker from './ModelPicker.svelte';
+  import AgentPicker from './AgentPicker.svelte';
   import EffortPicker from './EffortPicker.svelte';
   import ProfilePicker from './ProfilePicker.svelte';
   import ToolsPicker from './ToolsPicker.svelte';
@@ -21,7 +21,7 @@
   let root = $state();
   let fileInput = $state();
   let dragOver = $state(false);
-  let modelOpen = $state(false);
+  let agentOpen = $state(false);
   let effortOpen = $state(false);
   let popup = $state(null); // { type: 'command'|'mention', items, index, start, query, loading }
 
@@ -164,7 +164,7 @@
     return cmd.run(args, {
       sessionId: session.id,
       ui: {
-        openModelPicker: () => (modelOpen = true),
+        openAgentPicker: () => (agentOpen = true),
         openProjectPicker: () => (modals.projectPicker = { sessionId: session.id, anchor: root }),
       },
     });
@@ -416,7 +416,7 @@
         <button class="tb" title="Mention a file (@)" onclick={() => triggerPopup('@')}><Icon name="at" size={15} /></button>
         <span class="sep"></span>
         <ProfilePicker {session} />
-        <ModelPicker {session} bind:open={modelOpen} />
+        <AgentPicker {session} bind:open={agentOpen} />
         <EffortPicker {session} {model} bind:open={effortOpen} />
         <ToolsPicker {session} />
         <span class="spacer"></span>

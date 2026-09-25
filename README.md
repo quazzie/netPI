@@ -1,26 +1,28 @@
 # netPI
 
 A fast, minimal LLM agent harness in the spirit of [pi](https://pi.dev): a small .NET 10 core where **everything is a
-runtime-reloadable plugin** — model providers, tools, the agent loop, lanes, compaction, retries, the panel tabs —
+runtime-reloadable plugin** — model providers, tools, the agent loop, agents, compaction, retries, the panel tabs —
 and a Svelte UI shown in a WebView2 window. The desktop app starts its own server; the same server also runs
 headless for any browser.
 
-![netPI running three subagents on a 2-lane local model](docs/images/netpi-subagents.png)
+![netPI running three subagents on a local model that serves two at once](docs/images/netpi-subagents.png)
 
 ## Highlights
 
 - **Sessions first, projects switchable.** A session is the unit of work; a project is just a name + folder. Switch
   the project mid-session and the agent gets a short notice with its new working directory. Open sessions are tabs.
-- **Lanes.** A lane is a model you set up for agents, with parallel slots and a note on when to use it ("free: research
-  and reading code", "costs money: only for hard problems"); agents pick one by its note and price for each subagent.
-  Every other model gets an automatic lane (your local `qwen3.8-27b` via AiProxy reports `concurrency: 2` → 2 slots).
-  Agents hold a slot per run and queue when the lane is full; an orchestrator that waits for its workers **yields** its
-  slot to them and resumes with only their final reports.
+- **Agents.** An agent is a model you set up with a number of instances and a note on when to use it ("free: research
+  and reading code", "costs money: only for hard problems"). Chats run on agents (the composer's agent picker), and an
+  agent that delegates picks one by its note and price for each subagent. Two agents on your local `qwen3.8-27b`
+  (AiProxy reports `concurrency: 2`) share its two slots. An agent is active only while its model is loaded: NetPI
+  never loads a model (that could evict what another agent runs), so when you switch models in AiSwitcher the agents
+  follow. Runs queue when all instances are busy; an orchestrator that waits for its workers **yields** its instance to
+  them and resumes with only their final reports. Switch an agent off in its dialog or in the Work tab.
 - **A budget for paid models.** Every model call is recorded with its cost (OpenRouter reports it; otherwise tokens ×
   price). Set a monthly budget: agents see it, each chat shows what it cost, and when it is spent paid calls stop, or
   ask you first.
 - **Agents manage agents.** `agent_spawn`, `agent_wait`, `agent_send`, `agent_list`, `agent_result`, `agent_cancel`
-  (plus `lanes_list` from the lanes plugin); subagents get their own (viewable, steerable) sessions and report back
+  (plus `agent_choices` from the agents plugin); subagents get their own (viewable, steerable) sessions and report back
   automatically. The agent that starts one chooses its tools, so a limited orchestrator can dispatch agents that can do
   more.
 - **Profiles.** A profile is the opening of the system prompt ("You are a system administrator…") and the tools a chat
@@ -80,14 +82,15 @@ Headless: `artifacts\app\netpi-server.exe --open` (prints and opens a tokenized 
 |---|---|
 | *Enter* / *Shift+Enter* | send / newline |
 | *Enter* while running · *Alt+Enter* · *Esc* | steer · queue a follow-up · stop |
-| `/` | commands: `/new /rename /model /project /compact /idea /reload /settings /help /abort` |
+| `/` | commands: `/new /rename /agent /project /compact /idea /reload /settings /help /abort` |
 | `@` | mention a file of the session's workspace |
 | *Ctrl+T*, *Ctrl+W*, *Ctrl+Tab*, *Ctrl+1…9* | new, close, cycle, pick session tabs |
 | *Ctrl+B* / *Ctrl+Alt+B* | toggle left / right panel · *Ctrl+K* command palette |
 
-The model, reasoning-effort and tools pickers, the chat's cost and the context meter sit in the composer. Settings
-(*Ctrl+,*) has real controls for the host's and every plugin's settings, lanes and the budget. The **Work** tab shows
-lanes (busy/capacity, queues), agents (active and recent), processes (with live output and kill) and this month's spend; **Diagnostics** shows
+The agent, reasoning-effort and tools pickers, the chat's cost and the context meter sit in the composer. Settings
+(*Ctrl+,*) has real controls for the host's and every plugin's settings, the agents and the budget. The **Work** tab shows
+the agents (state, busy/instances, queues, an on/off switch), runs (active and recent), processes (with live output and
+kill) and this month's spend; **Diagnostics** shows
 plugins (reload/enable/disable), tools, RPC methods, the live event bus, logs and the exact system prompt.
 
 ## Architecture
@@ -95,7 +98,7 @@ plugins (reload/enable/disable), tools, RPC methods, the live event bus, logs an
 ```
 NetPI.exe (WinForms + WebView2) ─┐          ┌─ plugins/ (collectible load contexts, hot reload)
 netpi-server (headless) ─────────┴─ NetPI.Host ─┤   NetPI.Agent        agent loop, steering/queue, subagents, yield
-   Kestrel 127.0.0.1 + WebSocket (token auth)   │   NetPI.Lanes        lanes, queueing, the cost ledger, the budget
+   Kestrel 127.0.0.1 + WebSocket (token auth)   │   NetPI.Lanes        agents, queueing, the cost ledger, the budget
    plugin manager · event bus · service/RPC/    │   NetPI.Context      system prompt (frozen per session), project notices
                                                 │   NetPI.Profiles     a chat's opening instructions and tools, a default per project
    tool/UI registries · SQLite · settings ·     │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md, announced as notices

@@ -21,7 +21,7 @@ public sealed class AgentPlugin : INetPiPlugin
     {
         context.Services.Register(new SettingsSection
         {
-            Id = "agents", Title = "Agents", Group = "Agents", Order = 10,
+            Id = "agents", Title = "Runs", Group = "Agents", Order = 10,
             Settings =
             [
                 SettingInfo.Int("agent.maxTurns", "Model calls per run", 200, "A run stops after this many.", 1, 10000),

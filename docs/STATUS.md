@@ -1,15 +1,15 @@
-# Status (2026-09-24)
+# Status (2026-09-25)
 
 ## Verified on Windows
 - The desktop shell builds and runs; Git Bash, pwsh, winsqlite3 and window placement work.
-- Unit suites (Debug, built into a scratch app folder while NetPI ran): Providers 41 (330 checks), Tools 54, Agent 82,
-  Aux 97, Host 38, all passing.
-- E2E suite: 55 tests / 703 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
-  (`npm run e2e`) 173/173.
+- Unit suites (Debug, built into a scratch app folder while NetPI ran): Providers 41 (330 checks), Tools 54, Agent 84,
+  Aux 100, Host 38, all passing.
+- E2E suite: 56 tests / 716 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
+  (`npm run e2e`) 185/185.
 - Plugins hot-reload while NetPI runs (they load from shadow copies); only the host DLLs are locked. `build.ps1` then
   builds everything except the host, and a rebuild after a commit no longer reloads unchanged plugins.
-- Real model (AiProxy → nInfer `qwen3.8-27b`, 2 lanes): two concurrent agents, one spawning a subagent, the other
-  steered mid-run. Lanes, queueing and yielding are correct, the steer arrives at the next turn boundary, and continuation
+- Real model (AiProxy → nInfer `qwen3.8-27b`, 2 slots, before agents replaced lanes): two concurrent agents, one spawning a subagent, the other
+  steered mid-run. Slots, queueing and yielding are correct, the steer arrives at the next turn boundary, and continuation
   turns reuse the previous prompt + output exactly. No failed requests.
 - OpenRouter, live (`stealth/space-bunny-alpha`, free): the same run works, with `reasoning_details` replayed on later
   turns and 86–99.6 % of each prompt cached after the first turn.
@@ -31,17 +31,26 @@
   and the UI mock: every model call recorded with its cost, the monthly, daily and per-lane stops, "ask" and going
   over; `agent_spawn { lane }` from a local agent onto a cloud lane; settings saved and reset from the dialog; tools
   switched per chat (before the first message, mid-chat with a notice, inherited by subagents).
+- Agents, with the real runner and a scripted model (Agent, Host and E2E suites) and the UI mock: agents listed with
+  their states (instances from the catalog, switched off, a model not loaded, not listed), agents on one local model
+  sharing its slots, a chat taking a free agent on its model and keeping it, `agents.use` / `agents.setEnabled`, an
+  inactive agent stopping a chat at once without a request to the backend, the upgrade of lanes into agents,
+  `agent_choices` / `agent_spawn { agent }`; in the UI the picker with "New agent…", the Work tab switch, the settings
+  rows and the agent dialog.
+- Compaction like pi's, with the real runner and a scripted model (Aux and E2E suites): the checkpoint format, merging
+  an earlier summary, the file lists, split turns, a summary cut off at its limit refused.
 - Profiles, with the real runner and a scripted model and in the UI mock: a new chat gets its project's default; the
   profile's text opens the prompt and its tools are off; a switch after the first message renders the prompt again
   with a notice and no stray tools notice; subagents get their owner's tools or exactly the ones it names.
 - Numbers and details: `docs/archive/2026-09-24-windows-bringup.md`, `docs/archive/2026-09-24-agent-tools.md`,
   `docs/archive/2026-09-24-ssh-tools.md`, `docs/archive/2026-09-24-goals.md`,
-  `docs/archive/2026-09-24-lanes-budget-settings.md`, `docs/archive/2026-09-24-profiles.md`.
+  `docs/archive/2026-09-24-lanes-budget-settings.md`, `docs/archive/2026-09-24-profiles.md`, `docs/archive/2026-09-25-agents.md`.
 
 ## Not yet verified
-- Lanes, the budget, the settings dialog, per-chat tools and profiles in the real app: the host and the contracts changed, so
-  they need NetPI closed, `.\build.ps1` and a restart. Then: costs from a paid OpenRouter model (`usage.cost`), and
-  whether `qwen3.8-27b` picks lanes by their notes and avoids the paid one.
+- Agents, the budget, the settings dialog, per-chat tools, profiles and the new compaction in the real app: the host
+  and the contracts changed, so they need NetPI closed, `.\build.ps1` and a restart. Then: the user's lanes becoming
+  agents, the agents following a model switch in AiSwitcher, costs from a paid OpenRouter model (`usage.cost`), and
+  whether `qwen3.8-27b` picks agents by their notes and avoids the paid one.
 - Goals with a real model (only the scripted model so far): whether `qwen3.8-27b` follows the continuation
   notices and calls `goal_update` at the right time.
 - The desktop zoom setting (`desktop.zoom`, zoom kept in `window.json`): built, but needs NetPI closed for
@@ -54,9 +63,10 @@
 - OpenRouter: a 429 reports its `Retry-After`, but the retry plugin keeps its own backoff; the catalog offers every tool-capable model (~390; narrow it with
   `providers.openrouter.include`).
 - Per-turn cache reuse and TTFT are not shown in the UI (usage is in each assistant message; TTFT is not recorded).
-- Steering an orchestrator that is waiting on its workers makes it stop waiting, but it still needs a lane back;
-  if its own workers hold every lane of the pool, the reply waits for one of them to finish.
-- Reloading the lanes plugin mid-run can briefly let a pool run more requests than its capacity.
+- Steering an orchestrator that is waiting on its workers makes it stop waiting, but it still needs an instance of its
+  agent back; if its own workers hold every one, the reply waits for one of them to finish.
+- Reloading the agents plugin (`netpi.lanes`) mid-run can briefly let an agent run more than its instances.
+- A chat on an inactive agent (its model not loaded) stops with a notice; it doesn't wait for the model.
 - Small context windows are tight: with every plugin on, the system prompt and the 36 tool schemas take about 7k tokens.
   Switch tools off per chat to make room; compaction keeps fewer recent messages when that overhead is large.
 - Changing the tool set mid-session (a tool plugin enabled, disabled or reloaded with new tools; `tools.disabled`; the

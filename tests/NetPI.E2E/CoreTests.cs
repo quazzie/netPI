@@ -41,7 +41,7 @@ public static class CoreTests
             var commands = (await env.Rpc("ui.commands")).Arr().Select(c => c.S("name")).ToList();
             foreach (var c in new[] { "compact", "reload", "idea" }) Check.True(commands.Contains(c), $"slash command /{c}");
             var tools = (await env.Rpc("tools.list")).Arr().Where(t => t.B("active")).Select(t => t.S("name")).ToList();
-            foreach (var t in new[] { "read", "write", "edit", "grep", "find", "ls", "bash", "agent_spawn", "agent_wait", "lanes_list", "idea_add" })
+            foreach (var t in new[] { "read", "write", "edit", "grep", "find", "ls", "bash", "agent_spawn", "agent_wait", "agent_choices", "idea_add" })
                 Check.True(tools.Contains(t), $"tool {t} active");
             // plugin UI bundles are served
             foreach (var id in new[] { "netpi.work", "netpi.ideas", "netpi.diagnostics", "netpi.tools.files" })
@@ -54,7 +54,7 @@ public static class CoreTests
             Check.Equal(Path.GetFullPath(env.Home), Path.GetFullPath(info.S("home")!), "app.info home");
         });
 
-        r.Add("models: mock catalog, default model and lane pools", async () =>
+        r.Add("models: mock catalog, default model; no agents set up, nothing running", async () =>
         {
             var list = await env.Rpc("models.list", new { refresh = true });
             var models = list.Arr("models").ToList();
@@ -76,12 +76,7 @@ public static class CoreTests
             Check.Equal(Qwen, list.S("defaultModel"), "default model = first loaded local model");
 
             var pools = await env.Rpc("lanes.list");
-            var pool = pools.Arr().FirstOrDefault(p => p.S("key") == Qwen);
-            Check.True(pool.ValueKind == JsonValueKind.Object, "qwen pool: " + pools.GetRawText());
-            Check.Equal(2L, pool.L("capacity"));
-            Check.Equal("catalog", pool.S("source"));
-            var anthropicPool = pools.Arr().FirstOrDefault(p => p.S("key") == "anthropic");
-            Check.Equal(4L, anthropicPool.L("capacity"), "cloud providers share one pool");
+            Check.False(pools.Arr().Any(p => p.B("configured")), "the suite's settings set up no agents: " + pools.GetRawText());
         });
 
         r.Add("chat: default model streams thinking + markdown, events in order, message persisted", async () =>

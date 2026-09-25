@@ -34,7 +34,7 @@
 </script>
 
 {#if show}
-  <button class="budget-pill" class:spent={b.exhausted} {title} onclick={() => (modals.settings = 'lanes')}>
+  <button class="budget-pill" class:spent={b.exhausted} {title} onclick={() => (modals.settings = 'agents')}>
     <Icon name="dollar" size={13} />
     {#if b.monthlyUsd}
       <span>{usd(b.spentUsd)}&nbsp;/ {usd(b.monthlyUsd)}</span>

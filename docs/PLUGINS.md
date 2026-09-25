@@ -1,6 +1,6 @@
 # Writing plugins
 
-Everything in NetPI except the small host kernel is a plugin: providers, tools, the agent loop, lanes, compaction,
+Everything in NetPI except the small host kernel is a plugin: providers, tools, the agent loop, agents, compaction,
 the right-panel tabs. A plugin is a .NET assembly in its own folder under `<app>/plugins/` (or `~/.netpi/plugins/`),
 loaded into a collectible `AssemblyLoadContext`. When its DLL changes the host **hot-reloads** it: everything it
 registered is removed, the old code is unloaded and the new build starts — no restart.
@@ -33,7 +33,7 @@ public sealed class MyPlugin : INetPiPlugin
         // a tool for agents
         ctx.Tools.Register(new WordCountTool());
 
-        // a section of the system prompt (ordered: 0 identity, 100 environment, 200 tool guidelines, 300 lanes,
+        // a section of the system prompt (ordered: 0 identity, 100 environment, 200 tool guidelines, 300 agents,
         // 800 subagent role, 900 appended prompt); rendered once per session, see "Never rewrite what was sent"
         ctx.Services.Register<IPromptSection>(new MySection());
 
@@ -96,7 +96,7 @@ its own (`agent.setTools`, see `docs/TOOLS.md`).
 The context plugin only provides a bare base (who the agent is, the environment it runs in, how harness notices look).
 Guidance for a feature comes from the plugin that owns it, so it disappears with the plugin: tool tips as the tool's
 `PromptGuidelines` (listed under "# Tools" while the tool is active), anything else as the plugin's own section (the lanes
-plugin adds "# Lanes" for agents that can spawn subagents).
+plugin adds "# Agents" for agents that can spawn subagents).
 
 ### Never rewrite what was sent
 

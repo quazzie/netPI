@@ -9,6 +9,8 @@ namespace NetPI.Host.Models;
 /// (5 s timeout each; a failing provider keeps its last known models) and caches the result until a provider registers,
 /// unregisters or publishes <c>models.changed</c>. Streaming normalizes the transcript and runs the
 /// <see cref="IModelMiddleware"/> pipeline (lowest <see cref="IModelMiddleware.Order"/> outermost).
+/// Every <c>models.refreshSeconds</c> (10) the list is taken again with the providers' own caches, so model states (a local
+/// model loaded or unloaded) reach <c>models.changed</c> within seconds; agents follow them.
 /// </summary>
 internal sealed class ModelCatalog : IModelCatalog, IDisposable
 {
@@ -22,12 +24,15 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
     private readonly Lock _gate = new();
     private readonly Debouncer _refresh;
     private readonly Dictionary<string, IReadOnlyList<ModelInfo>> _lastByProvider = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Providers whose last listing failed: logged once, not on every poll.</summary>
+    private readonly HashSet<string> _failing = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<ModelInfo> _cached = [];
     private string _signature = "";
     private bool _dirty = true;
     private Task<IReadOnlyList<ModelInfo>>? _inflight;
     private int _generation;
     private bool _disposed;
+    private readonly Timer _poll;
 
     public ModelCatalog(IServiceRegistry services, ISettings settings, IEventBus bus, ILogger log)
     {
@@ -36,6 +41,25 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
         _bus = bus;
         _log = log;
         _refresh = new Debouncer(TimeSpan.FromMilliseconds(250), () => _ = RefreshQuietlyAsync());
+        _poll = new Timer(_ => Poll(), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(1));
+    }
+
+    private DateTimeOffset _lastPoll = DateTimeOffset.UtcNow;
+
+    /// <summary>Every models.refreshSeconds: list again (providers answer from their own caches until those expire).</summary>
+    private void Poll()
+    {
+        if (_disposed) return;
+        int seconds;
+        try { seconds = _settings.Get("models.refreshSeconds", 10); } catch { seconds = 10; }
+        if (seconds <= 0 || DateTimeOffset.UtcNow - _lastPoll < TimeSpan.FromSeconds(seconds)) return;
+        _lastPoll = DateTimeOffset.UtcNow;
+        lock (_gate)
+        {
+            if (_inflight is not null) return;
+            _dirty = true;
+        }
+        _ = RefreshQuietlyAsync();
     }
 
     public IReadOnlyList<ModelInfo> Cached => Volatile.Read(ref _cached);
@@ -199,12 +223,21 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
             var listed = await provider.ListModelsAsync(refresh, cts.Token).WaitAsync(cts.Token).ConfigureAwait(false);
             // Own copy: the provider's collection object may be a plugin type (it must not outlive a plugin unload).
             IReadOnlyList<ModelInfo> models = listed is null ? [] : listed.Where(m => m is not null).ToList();
-            lock (_gate) _lastByProvider[provider.Id] = models;
+            bool recovered;
+            lock (_gate)
+            {
+                _lastByProvider[provider.Id] = models;
+                recovered = _failing.Remove(provider.Id);
+            }
+            if (recovered) _log.LogInformation("Model provider '{Provider}' lists its models again", provider.Id);
             return models;
         }
         catch (Exception ex)
         {
-            if (ex is OperationCanceledException) _log.LogWarning("Model provider '{Provider}' did not list its models within {Timeout}s", provider.Id, ProviderTimeout.TotalSeconds);
+            bool first;
+            lock (_gate) first = _failing.Add(provider.Id);
+            if (!first) _log.LogDebug("Model provider '{Provider}' still fails to list models: {Error}", provider.Id, ex.Message);
+            else if (ex is OperationCanceledException) _log.LogWarning("Model provider '{Provider}' did not list its models within {Timeout}s", provider.Id, ProviderTimeout.TotalSeconds);
             else _log.LogWarning("Model provider '{Provider}' failed to list models: {Error}", provider.Id, ex.Message);
             lock (_gate) return _lastByProvider.GetValueOrDefault(provider.Id) ?? [];
         }
@@ -221,6 +254,7 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
     public void Dispose()
     {
         _disposed = true;
+        _poll.Dispose();
         _refresh.Dispose();
     }
 }

@@ -67,6 +67,8 @@ public sealed class SpawnRequest
     public string? ParentAgentId { get; init; }
     /// <summary>Project for the subagent session (default: parent's project).</summary>
     public string? ProjectId { get; init; }
+    /// <summary>The agent (<c>agents.&lt;id&gt;</c>) the subagent runs on; its model is <see cref="Model"/>.</summary>
+    public string? Agent { get; init; }
     /// <summary>The subagent's tools, chosen by its owner (null = the owner's tools: its allowlist and the tools switched off for its session).</summary>
     public IReadOnlyList<string>? Tools { get; init; }
     /// <summary>Appended to the subagent system prompt.</summary>

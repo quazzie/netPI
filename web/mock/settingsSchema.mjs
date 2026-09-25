@@ -25,17 +25,6 @@ export const SETTINGS_SCHEMA = [
     ],
   },
   {
-    id: 'lanes',
-    title: 'Lanes',
-    group: 'Models',
-    order: 10,
-    help: 'Every other model gets an automatic lane.',
-    settings: [
-      S('lanes.localDefaultCapacity', 'int', 'Automatic lanes: slots per local model', { default: 1, min: 1, max: 64 }),
-      S('lanes.cloudDefaultCapacity', 'int', 'Automatic lanes: slots per cloud provider', { default: 4, min: 1, max: 64 }),
-    ],
-  },
-  {
     id: 'budget',
     title: 'Budget',
     group: 'Models',
@@ -80,7 +69,7 @@ export const SETTINGS_SCHEMA = [
   },
   {
     id: 'agents',
-    title: 'Agents',
+    title: 'Runs',
     group: 'Agents',
     order: 10,
     settings: [

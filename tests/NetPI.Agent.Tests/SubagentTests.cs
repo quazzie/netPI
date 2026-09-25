@@ -13,11 +13,11 @@ public static class SubagentTests
         t.Add("subagents: user steering interrupts agent_wait", SteerInterruptsWait);
         t.Add("subagents: agent-to-agent message wakes an idle agent", AgentMessage);
         t.Add("subagents: agent_send to parent", SendToParent);
-        t.Add("subagents: model by pool key, tools allowlist, max depth", SpawnOptions);
+        t.Add("subagents: another model, tools allowlist, max depth", SpawnOptions);
         t.Add("subagents: aborting a parent cancels its children", AbortCascade);
         t.Add("subagents: failed subagent reports failure", FailedChild);
-        t.Add("subagents: agent tools list / result / cancel / lanes_list", ToolsMisc);
-        t.Add("subagents: an agent on a local model spawns onto a lane set up in settings (another provider)", SpawnOntoConfiguredPool);
+        t.Add("subagents: agent tools list / result / cancel / agent_choices", ToolsMisc);
+        t.Add("subagents: a chat on a local agent spawns onto an agent on another provider; the subagent keeps that agent", SpawnOntoConfiguredPool);
     }
 
     private static bool IsChild(ModelRequest r) => r.SystemPrompt?.Contains("a subagent working for") == true;
@@ -75,7 +75,7 @@ public static class SubagentTests
         Check.Contains(pm[^1].Text, "Parent done:");
         Check.False(pm.Any(m => m.MetaString("kind") == "agent-result"), "no duplicate notification");
         Check.Equal(1, p.Runs);
-        Check.Equal(0, h.Lanes!.Snapshot().Single(x => x.Key == "fake/solo").Busy);
+        Check.Equal(0, h.Lanes!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy));
         // parent went Yielded → Queued/Running again
         var parentStatuses = h.Bus.OfType(EventTypes.AgentStatus).Select(FakeBus.Data)
             .Where(d => (string?)d["agent"]!["id"] == p.Id).Select(d => (string)d["agent"]!["status"]!).ToList();
@@ -263,21 +263,24 @@ public static class SubagentTests
     }
 
     /// <summary>
-    /// The user's setup: a "stealth" lane in lanes.pools for one model of a cloud provider; the main agent runs on the local
-    /// model and delegates with agent_spawn { model: "stealth" }. No per-lane permission is involved: provider credentials
-    /// are global and any agent may use any lane (limits: agents.maxDepth, lane capacity, lanes.budgets).
+    /// The user's setup: a "stealth" agent on one model of a cloud provider; the chat runs on the local agent and delegates
+    /// with agent_spawn { agent: "stealth" }. No per-agent permission is involved: provider credentials are global and any
+    /// run may use any agent (limits: agents.maxDepth, instances, the budget).
     /// </summary>
     private static async Task SpawnOntoConfiguredPool()
     {
         await using var h = await TestHost.StartAsync(x =>
-            x.Settings.SetQuiet("lanes.stealth", JsonNode.Parse("""{ "model": "cloud/big", "capacity": 1, "use": "Research." }""")));
+        {
+            x.Settings.SetQuiet("agents.main", JsonNode.Parse("""{ "model": "fake/local" }"""));
+            x.Settings.SetQuiet("agents.stealth", JsonNode.Parse("""{ "model": "cloud/big", "use": "Research." }"""));
+        });
         h.Catalog.Handler = (r, ct) =>
         {
             if (r.Model.Ref == "cloud/big") return Reply.Text("child report: done on the stealth lane");
             var last = r.Messages[^1];
             if (last.Role == MessageRole.Tool) return Reply.Text("spawned");
             if (last.Text.Contains("<agent-result")) return Reply.Text("thanks");
-            return Reply.Tool("agent_spawn", new { task = "Look something up and report.", lane = "stealth" });
+            return Reply.Tool("agent_spawn", new { task = "Look something up and report.", agent = "stealth" });
         };
         var parent = h.NewSession(); // default model: fake/local
         await h.SendAsync(parent.Id, "delegate it");
@@ -287,7 +290,9 @@ public static class SubagentTests
         Check.Equal("cloud/big", child.Model);
         Check.Equal("stealth", child.Pool);
         Check.Equal("child report: done on the stealth lane", child.Result);
-        Check.True(h.Lanes!.Snapshot().Any(x => x.Key == "stealth" && x.Capacity == 1), "the configured pool exists with its capacity");
+        Check.True(h.Lanes!.Snapshot().Any(x => x.Key == "stealth" && x.Capacity == 1), "the agent with its instances");
+        Check.Equal("stealth", SessionAgent.Of(h.Sessions.GetSession(child.SessionId)), "the subagent's chat keeps its agent");
+        Check.Equal("main", SessionAgent.Of(h.Sessions.GetSession(parent.Id)));
         await Wait.Until(() => h.Messages(parent.Id).Any(m => m.Role == MessageRole.Assistant && m.Text == "thanks"), "the parent got the report");
         Check.Equal("fake/local", h.Catalog.Requests.First(r => r.SessionId == parent.Id).Model.Ref);
     }
@@ -303,10 +308,10 @@ public static class SubagentTests
         await h.SendAsync(parent.Id, "go");
         var p = h.Runtime.GetBySession(parent.Id)!;
 
-        // pool key "cloud" → the cloud provider's model; tool allowlist
+        // another model; tool allowlist
         var child = await h.Runtime.SpawnAsync(new SpawnRequest
         {
-            Task = "cloud work", Model = "cloud", Tools = ["echo", "agent_spawn", "agent_send"], ParentAgentId = p.Id, Instructions = "Be extra careful.",
+            Task = "cloud work", Model = "cloud/big", Tools = ["echo", "agent_spawn", "agent_send"], ParentAgentId = p.Id, Instructions = "Be extra careful.",
         });
         Check.Equal("cloud/big", child.Model);
         Check.Equal("agent-1", child.Name);
@@ -401,7 +406,7 @@ public static class SubagentTests
             switch (last?.Name)
             {
                 case "agent_list": listOutput = last.Content; break;
-                case "lanes_list": lanesOutput = last.Content; break;
+                case "agent_choices": lanesOutput = last.Content; break;
                 case "agent_result": resultOutput = last.Content; break;
                 case "agent_cancel": cancelOutput = last.Content; break;
             }
@@ -409,7 +414,7 @@ public static class SubagentTests
             {
                 1 => Reply.Tool("agent_spawn", new { task = "slow job", name = "slowpoke" }),
                 2 => Reply.Tool("agent_list", new { }),
-                3 => Reply.Tool("lanes_list", new { }),
+                3 => Reply.Tool("agent_choices", new { }),
                 4 => Reply.Tool("agent_result", new { id = "slowpoke" }),
                 5 => Reply.Tool("agent_cancel", new { id = "slowpoke" }),
                 _ => Reply.Text("done"),
@@ -419,9 +424,9 @@ public static class SubagentTests
         await h.IdleAsync(parent.Id);
         Check.Contains(listOutput, "slowpoke");
         Check.Contains(listOutput, "task: slow job");
+        Check.Contains(lanesOutput, "No agents are set up: a subagent runs on your model unless you pass agent_spawn a model ref.");
         Check.Contains(lanesOutput, "- fake/local · 2/2 busy");
         Check.Contains(lanesOutput, "main (you)");
-        Check.Contains(lanesOutput, "You run on lane fake/local");
         Check.Contains(resultOutput, "still running");
         Check.Contains(cancelOutput, "Cancelled slowpoke");
         var child = h.Runtime.List().Single(a => a.IsSubagent);

@@ -20,6 +20,10 @@ export const store = {
   uiState: new Map(),
   settings: {
     defaultModel: 'aiproxy/qwen3.8-27b',
+    agents: {
+      qwen: { model: 'aiproxy/qwen3.8-27b', use: 'The local model: free, for everyday work.' },
+      gemma: { model: 'aiproxy/gemma-4', use: 'Quick answers.' },
+    },
     providers: {
       aiproxy: { baseUrl: 'http://127.0.0.1:8090/v1', transport: 'responses' },
       anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY', concurrency: 4 },

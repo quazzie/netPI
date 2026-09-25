@@ -73,7 +73,7 @@ function log(level, category, message, exception) {
   if (logs.length > 500) logs.shift();
 }
 
-const work = createWork({ publish, log, lanesView: () => lanesWithConfigured() });
+const work = createWork({ publish, log, lanesView: () => agentPools() });
 work.start();
 const ideas = createIdeas({ publish });
 ideas.seed();
@@ -128,28 +128,44 @@ function getSession(id) {
   if (!s) throw notFound(`Session ${id}`);
   return s;
 }
-// ------------------------------------------------------------------------------------------ lanes you set up, budget
-const LANE_RESERVED = new Set(['pools', 'budgets', 'localDefaultCapacity', 'cloudDefaultCapacity']);
+// ------------------------------------------------------------------------------------------ agents you set up, budget
+const AGENT_RESERVED = new Set(['maxDepth']);
 /** Mock prices ($ per Mtok) for the cloud models; local models are free. */
 const MOCK_PRICES = { 'anthropic/claude-sonnet-4-6': [3, 15] };
 const MOCK_SPEND = [{ lane: 'anthropic', provider: 'anthropic', model: 'claude-sonnet-4-6', calls: 12, inputTokens: 180000, outputTokens: 9000, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.675, unknownCost: false }];
-function lanesWithConfigured() {
+/** The agents in the settings (agents.<id>), each with its state; like the host: always listed, active while its model is loaded. */
+function agentsInSettings() {
+  return Object.entries(store.settings.agents ?? {}).filter(([id, v]) => !AGENT_RESERVED.has(id) && v && typeof v === 'object' && typeof v.model === 'string');
+}
+function agentPools() {
   const pools = work.lanes();
-  const cfg = store.settings.lanes ?? {};
-  const configured = Object.entries(cfg)
-    .filter(([id, v]) => !LANE_RESERVED.has(id) && v && typeof v === 'object' && typeof v.model === 'string')
-    .map(([id, v]) => {
-      const m = MODELS.find((x) => x.ref === v.model);
-      const price = v.cost?.input != null ? [v.cost.input, v.cost.output ?? 0] : MOCK_PRICES[v.model] ?? (m?.isLocal ? [0, 0] : null);
-      return {
-        key: id, provider: v.model.split('/')[0], capacity: v.capacity ?? 1, busy: 0, queued: 0, models: [v.model], owners: [], waiters: [],
-        source: 'settings', status: 'idle', configured: true, model: v.model, use: v.use || null,
-        priceInput: price?.[0] ?? null, priceOutput: price?.[1] ?? null, priceSource: v.cost ? 'settings' : m?.isLocal ? 'local' : price ? 'catalog' : 'unknown',
-        free: !!price && price[0] === 0 && price[1] === 0, spentTodayUsd: 0, dailyLimitUsd: v.budget?.limitUsd ?? null,
-      };
-    });
-  const taken = new Set(configured.map((c) => c.model));
-  return [...configured, ...pools.filter((p) => !p.models.every((m) => taken.has(m)))];
+  const onModel = new Set(); // the mock's running calls go to the first agent on their model
+  const agents = agentsInSettings().map(([id, v]) => {
+    const m = MODELS.find((x) => x.ref === v.model);
+    const price = v.cost?.input != null ? [v.cost.input, v.cost.output ?? 0] : MOCK_PRICES[v.model] ?? (m?.isLocal ? [0, 0] : null);
+    const running = onModel.has(v.model) ? null : pools.find((p) => p.models.includes(v.model));
+    onModel.add(v.model);
+    const capacity = v.instances ?? (m?.isLocal ? (m.concurrency ?? 1) : 1);
+    const disabled = !!v.disabled;
+    const unavailable = disabled
+      ? 'disabled'
+      : !m
+        ? `${v.model} is not in the model list`
+        : m.isLocal && m.status !== 'loaded'
+          ? `${m.id} isn't loaded`
+          : null;
+    const owners = running?.owners ?? [];
+    const waiters = running?.waiters ?? [];
+    const status = waiters.length ? 'queued' : owners.length >= capacity ? 'full' : owners.length ? 'busy' : disabled ? 'disabled' : unavailable ? 'unavailable' : 'idle';
+    return {
+      key: id, provider: v.model.split('/')[0], capacity, busy: owners.length, queued: waiters.length, models: [v.model], owners, waiters,
+      source: 'settings', status, configured: true, model: v.model, use: v.use || null, available: !unavailable, unavailable, disabled,
+      priceInput: price?.[0] ?? null, priceOutput: price?.[1] ?? null, priceSource: v.cost ? 'settings' : m?.isLocal ? 'local' : price ? 'catalog' : 'unknown',
+      free: !!price && price[0] === 0 && price[1] === 0, spentTodayUsd: 0, dailyLimitUsd: v.budget?.limitUsd ?? null,
+    };
+  });
+  const others = pools.filter((p) => (p.busy || p.queued) && !p.models.every((m) => onModel.has(m))).map((p) => ({ ...p, configured: false, available: true }));
+  return [...agents, ...others];
 }
 function budgetStatus() {
   const b = store.settings.budget ?? {};
@@ -522,7 +538,7 @@ const handlers = {
   'agent.dequeue': (p) => agent.dequeue(need(p, 'sessionId'), need(p, 'id')),
   // like the Work plugin: lanes.list and usage.summary
   'work.snapshot': () => ({
-    lanes: lanesWithConfigured(),
+    lanes: agentPools(),
     agents: [...store.agents.values()],
     processes: work.procList(),
     usage: { ...work.usageSummary(), budget: budgetStatus(), models: MOCK_SPEND },
@@ -639,7 +655,30 @@ const handlers = {
   'processes.list': () => work.procList(),
   'processes.output': (p) => work.procOutputTail(need(p, 'id'), p.tail ?? 500),
   'processes.kill': (p) => work.procKill(need(p, 'id')),
-  'lanes.list': () => lanesWithConfigured(),
+  'lanes.list': () => agentPools(),
+  'agents.use': (p) => {
+    const s = getSession(need(p, 'sessionId'));
+    const id = p.agent || null;
+    if (id) {
+      const a = agentsInSettings().find(([k]) => k === id)?.[1];
+      if (!a) throw new RpcError('not_found', `There is no agent "${id}"`);
+      s.meta = { ...(s.meta ?? {}), agent: id };
+      s.model = a.model;
+    } else if (s.meta) delete s.meta.agent;
+    s.updatedAt = new Date().toISOString();
+    publish('session.updated', { session: s });
+    return s;
+  },
+  'agents.setEnabled': (p) => {
+    const id = need(p, 'id');
+    const a = agentsInSettings().find(([k]) => k === id)?.[1];
+    if (!a) throw new RpcError('not_found', `There is no agent "${id}"`);
+    if (p.enabled) delete a.disabled;
+    else a.disabled = true;
+    publish('settings.changed', {});
+    work.lanesChanged();
+    return agentPools();
+  },
   'logs.recent': (p = {}) => logs.slice(-(p.max ?? 200)),
   // test helper: back to the seeded state
   'mock.reset': () => {

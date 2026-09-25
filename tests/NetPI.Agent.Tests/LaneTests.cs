@@ -8,11 +8,13 @@ public static class LaneTests
     public static void Register(TestRunner t)
     {
         t.Add("lanes: capacity 2 → third agent queues", ThirdQueues);
-        t.Add("lanes: snapshot lists idle pools from the catalog", SnapshotIdlePools);
-        t.Add("lanes: settings pools with globs and capacity overrides", SettingsPools);
+        t.Add("agents: listed always with their state (instances, switched off, model not loaded); other model calls while busy", AgentsListed);
+        t.Add("agents: agents on one local model share its slots; the choice for a chat; switched off refuses at once", SharedModelSlots);
+        t.Add("agents: chats run on their agent (taken, agents.use, agents.setEnabled); an inactive agent stops the chat at once", ChatsOnAgents);
+        t.Add("agents: the lanes of earlier versions become agents, once", Upgrade);
         t.Add("lanes: priority, FIFO, cancellation, idempotent release", PriorityAndCancel);
-        t.Add("lanes: live capacity increase wakes waiters", CapacityIncrease);
-        t.Add("lanes: lanes.changed is debounced", Debounce);
+        t.Add("agents: more instances wake waiters; instances follow the catalog", CapacityIncrease);
+        t.Add("lanes: lanes.changed is debounced, and only sent on changes", Debounce);
         t.Add("lanes: stop fails waiters; runs survive a lanes reload", ReloadDuringWait);
         t.Add("lanes: budget exceeded + usage.summary", Budget);
         t.Add("lanes: runs without the lanes plugin", NoLanes);
@@ -51,57 +53,185 @@ public static class LaneTests
         await Task.Delay(250);
         await h.Bus.DrainAsync();
         var last = FakeBus.Data(h.Bus.OfType(EventTypes.LanesChanged).Last());
-        var lp = ((JsonArray)last["pools"]!).Single(p => (string?)p!["key"] == "fake/local")!;
-        Check.Equal(0, lp["busy"]!.GetValue<int>());
-        Check.Equal(0, lp["queued"]!.GetValue<int>());
+        Check.Equal(0, ((JsonArray)last["pools"]!).Count, "no agents, nothing running");
     }
 
-    private static async Task SnapshotIdlePools()
-    {
-        await using var h = await TestHost.StartAsync();
-        var pools = h.Lanes!.Snapshot();
-        Check.Equal("cloud|fake/local|fake/solo", string.Join("|", pools.Select(p => p.Key)));
-        Check.Equal(4, pools[0].Capacity);
-        Check.Equal("default", pools[0].Source);
-        Check.Equal("cloud", pools[0].Provider);
-        Check.Equal(2, pools[1].Capacity);
-        Check.Equal(1, pools[2].Capacity);
-        Check.True(pools.All(p => p.Busy == 0 && p.Status == "idle"));
-        // a model that appears later shows up too
-        h.Catalog.AddModel(new ModelInfo { Provider = "fake", Id = "new", IsLocal = true, Status = "offline" });
-        var again = h.Lanes.Snapshot();
-        var np = again.Single(p => p.Key == "fake/new");
-        Check.Equal(1, np.Capacity, "local default capacity");
-        Check.Equal("offline", np.Status);
-    }
+    private static JsonNode J(string json) => JsonNode.Parse(json)!;
 
-    private static async Task SettingsPools()
+    private static async Task AgentsListed()
     {
         await using var h = await TestHost.StartAsync(x =>
         {
-            x.Settings.SetQuiet("lanes.pools", JsonNode.Parse("""
-                {
-                  "gpu": { "capacity": 3, "models": ["fake/*"] },
-                  "cloud": { "capacity": 7 }
-                }
-                """));
-            x.Settings.SetQuiet("lanes.cloudDefaultCapacity", 5);
+            x.Settings.SetQuiet("agents.coder", J("""{ "model": "fake/local" }"""));
+            x.Settings.SetQuiet("agents.solo", J("""{ "model": "fake/solo", "instances": 3, "use": "One at a time." }"""));
+            x.Settings.SetQuiet("agents.big", J("""{ "model": "cloud/big" }"""));
+            x.Settings.SetQuiet("agents.off", J("""{ "model": "cloud/big", "disabled": true }"""));
+            x.Settings.SetQuiet("agents.gone", J("""{ "model": "fake/nope" }"""));
+            x.Settings.SetQuiet("agents.maxDepth", 3);
         });
+        var pools = h.Lanes!.Snapshot();
+        Check.Equal("big|coder|gone|off|solo", string.Join("|", pools.Select(p => p.Key)), "the agents, always; nothing else while idle");
+        var by = pools.ToDictionary(p => p.Key);
+        Check.True(pools.All(p => p.Configured && p.Source == "settings"));
+        Check.Equal(2, by["coder"].Capacity, "instances: the local model's slots");
+        Check.Equal("fake/local", by["coder"].Model);
+        Check.Equal(1, by["big"].Capacity, "instances: 1 on a cloud model");
+        Check.Equal(3, by["solo"].Capacity);
+        Check.Equal("One at a time.", by["solo"].Use);
+        Check.True(by["coder"].Available && by["big"].Available);
+        Check.Equal("idle", by["coder"].Status);
+        Check.False(by["off"].Available);
+        Check.True(by["off"].Disabled);
+        Check.Equal("disabled", by["off"].Status);
+        Check.False(by["gone"].Available);
+        Check.Contains(by["gone"].Unavailable, "not in the model list");
+
+        // a local agent is active only while its model is loaded
+        var local = h.Catalog.Cached.Single(m => m.Ref == "fake/local");
+        local.Status = "unloaded";
+        ((IEventBus)h.Bus).Publish(EventTypes.ModelsChanged, new JsonObject());
+        await h.Bus.DrainAsync();
+        var coder = h.Lanes.Snapshot().Single(p => p.Key == "coder");
+        Check.False(coder.Available);
+        Check.Equal("unavailable", coder.Status);
+        Check.Equal("local isn't loaded", coder.Unavailable);
+        local.Status = "loaded";
+        ((IEventBus)h.Bus).Publish(EventTypes.ModelsChanged, new JsonObject());
+        await h.Bus.DrainAsync();
+        Check.True(h.Lanes.Snapshot().Single(p => p.Key == "coder").Available);
+
+        // other model calls show while they run
+        var lease = await h.Lanes.AcquireAsync(Req(h.Lanes.ResolvePool(TestHost.SoloModel()), "summarizer"), CancellationToken.None);
+        var busy = h.Lanes.Snapshot().Single(p => p.Key == "fake/solo");
+        Check.False(busy.Configured);
+        Check.Equal(1, busy.Busy);
+        lease.Dispose();
+        Check.False(h.Lanes.Snapshot().Any(p => p.Key == "fake/solo"));
+    }
+
+    private static async Task SharedModelSlots()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 2 }"""));
+            x.Settings.SetQuiet("agents.b", J("""{ "model": "fake/local", "instances": 2 }"""));
+        }, plugins: TestHost.Plugins.Lanes);
         var s = h.Lanes!;
-        Check.Equal("gpu", s.ResolvePool(TestHost.LocalModel()));
-        Check.Equal("gpu", s.ResolvePool(TestHost.SoloModel()));
-        Check.Equal("cloud", s.ResolvePool(TestHost.CloudModel()));
-        var pools = s.Snapshot();
-        var gpu = pools.Single(p => p.Key == "gpu");
-        Check.Equal(3, gpu.Capacity);
-        Check.Equal("settings", gpu.Source);
-        Check.Equal("fake/local,fake/solo", string.Join(",", gpu.Models.OrderBy(m => m)));
-        Check.Equal(7, pools.Single(p => p.Key == "cloud").Capacity, "capacity override without models");
-        Check.True(LaneScheduler.GlobMatch("anthropic/*", "Anthropic/claude-x"));
-        Check.False(LaneScheduler.GlobMatch("fake/l?cal", "fake/solo"));
-        // another provider uses the cloud default
-        h.Catalog.AddModel(new ModelInfo { Provider = "other", Id = "m", IsLocal = false });
-        Check.Equal(5, h.Lanes!.Snapshot().Single(p => p.Key == "other").Capacity);
+        Check.Equal("a", s.ResolvePool(TestHost.LocalModel(), "a"));
+        Check.Equal("b", s.ResolvePool(TestHost.LocalModel(), "b"));
+        Check.Equal("fake/local", s.ResolvePool(TestHost.LocalModel(), "nope"), "an unknown agent: a slot per model");
+        var a1 = await s.AcquireAsync(Req("a", "A1"), CancellationToken.None);
+        var b1 = await s.AcquireAsync(Req("b", "B1"), CancellationToken.None);
+        // the model serves two at once: a third run waits although "a" has an instance free
+        Check.False(s.TryAcquire(Req("a", "A2"), out _), "the model's slots are taken");
+        var a2 = s.AcquireAsync(Req("a", "A2"), CancellationToken.None).AsTask();
+        await Task.Delay(50);
+        Check.False(a2.IsCompleted);
+        Check.Equal("queued", s.Snapshot().Single(p => p.Key == "a").Status);
+        b1.Dispose();
+        var la2 = await a2.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // the scheduler's choice for a chat: its own agent on the model, else the least busy agent on the model
+        Check.Equal("a", s.ChooseAgent(TestHost.LocalModel(), "a"));
+        Check.Equal("b", s.ChooseAgent(TestHost.LocalModel(), null), "a is full");
+        Check.Equal("b", s.ChooseAgent(TestHost.LocalModel(), "elsewhere"));
+        try { s.ChooseAgent(TestHost.SoloModel(), null); throw new AssertException("expected LaneUnavailableException"); }
+        catch (LaneUnavailableException ex) { Check.Contains(ex.Message, "No agent runs fake/solo."); }
+
+        // switched off: new runs are refused at once, waiters are told
+        var b2 = s.AcquireAsync(Req("b", "B2"), CancellationToken.None).AsTask();
+        h.Settings.Set("agents.b.disabled", JsonValue.Create(true));
+        await h.Bus.DrainAsync();
+        try { await b2.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected LaneUnavailableException"); }
+        catch (LaneUnavailableException ex) { Check.Contains(ex.Message, "The agent \"b\" is disabled."); }
+        try { await s.AcquireAsync(Req("b", "B3"), CancellationToken.None); throw new AssertException("expected LaneUnavailableException"); }
+        catch (LaneUnavailableException) { }
+        Check.False(s.TryAcquire(Req("b", "B4"), out _));
+        Check.Equal("a", s.ChooseAgent(TestHost.LocalModel(), null), "an active agent first");
+        a1.Dispose();
+        la2.Dispose();
+        Check.Equal(0, s.Snapshot().Sum(p => p.Busy + p.Queued));
+    }
+
+    private static async Task ChatsOnAgents()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 1 }"""));
+            x.Settings.SetQuiet("agents.b", J("""{ "model": "fake/local", "instances": 1 }"""));
+            x.Settings.SetQuiet("agents.solo", J("""{ "model": "fake/solo" }"""));
+        });
+        var gate = new TaskCompletionSource();
+        h.Catalog.Handler = (r, ct) => Reply.Text("x", c => gate.Task.WaitAsync(c));
+        // chats without an agent take a free agent on their model, and keep it
+        var s1 = h.NewSession();
+        var s2 = h.NewSession();
+        await h.SendAsync(s1.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 1, "first running");
+        await h.SendAsync(s2.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 2, "the second chat runs on the other agent");
+        Check.Equal("a", SessionAgent.Of(h.Sessions.GetSession(s1.Id)));
+        Check.Equal("b", SessionAgent.Of(h.Sessions.GetSession(s2.Id)));
+        Check.Equal("a", h.Runtime.GetBySession(s1.Id)!.Pool);
+        gate.SetResult();
+        await h.IdleAsync(s1.Id);
+        await h.IdleAsync(s2.Id);
+
+        // agents.use: the chat runs on the agent and its model
+        var s3 = h.NewSession();
+        var used = (await h.Rpc.CallAsync("agents.use", new { sessionId = s3.Id, agent = "solo" }))!;
+        Check.Equal("fake/solo", (string?)used["model"]);
+        Check.Equal("solo", SessionAgent.Of(h.Sessions.GetSession(s3.Id)));
+        await h.SendAsync(s3.Id, "go");
+        Check.Equal("solo", (await h.IdleAsync(s3.Id)).Pool);
+        Check.Equal(3, h.Catalog.Calls);
+
+        // switched off (agents.setEnabled): the chat stops at once with a notice
+        await h.Rpc.CallAsync("agents.setEnabled", new { id = "solo", enabled = false });
+        Check.True(h.Settings.Get<bool>("agents.solo.disabled"));
+        await h.SendAsync(s3.Id, "again");
+        var off = await h.IdleAsync(s3.Id);
+        Check.Contains(off.Error, "The agent \"solo\" is disabled.");
+        Check.Equal("error", h.Messages(s3.Id)[^1].MetaString("kind"));
+        Check.Equal(3, h.Catalog.Calls, "no model call");
+
+        // on again, but its model isn't loaded
+        var listed = (JsonArray)(await h.Rpc.CallAsync("agents.setEnabled", new { id = "solo", enabled = true }))!;
+        Check.True(listed.Single(p => (string?)p!["key"] == "solo")!["available"]!.GetValue<bool>());
+        h.Catalog.Cached.Single(m => m.Ref == "fake/solo").Status = "unloaded";
+        ((IEventBus)h.Bus).Publish(EventTypes.ModelsChanged, new JsonObject());
+        await h.Bus.DrainAsync();
+        await h.SendAsync(s3.Id, "and again");
+        Check.Contains((await h.IdleAsync(s3.Id)).Error, "solo isn't loaded. Load its model (AiSwitcher) or choose another agent.");
+        Check.Equal(3, h.Catalog.Calls);
+
+        // a model no agent runs
+        var s4 = h.NewSession(model: "cloud/big");
+        await h.SendAsync(s4.Id, "hi");
+        Check.Contains((await h.IdleAsync(s4.Id)).Error, "No agent runs cloud/big.");
+
+        // an unknown agent is refused
+        try { await h.Rpc.CallAsync("agents.use", new { sessionId = s4.Id, agent = "nope" }); throw new AssertException("expected not_found"); }
+        catch (RpcException ex) { Check.Equal("not_found", ex.Code); }
+    }
+
+    private static async Task Upgrade()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("defaultModel", "fake/solo");
+            x.Settings.SetQuiet("lanes.pools", new JsonObject());
+            x.Settings.SetQuiet("lanes.cloudDefaultCapacity", 4);
+            x.Settings.SetQuiet("lanes.Fast One", J("""{ "model": "fake/local", "capacity": 2, "use": "Quick.", "budget": { "limitUsd": 1 } }"""));
+            x.Settings.SetQuiet("agents.maxDepth", 2);
+        }, plugins: TestHost.Plugins.Lanes);
+        var agents = (JsonObject)h.Settings.GetNode("agents")!;
+        Check.Equal("fast-one,maxDepth,solo", string.Join(",", agents.Select(kv => kv.Key).Order(StringComparer.Ordinal)));
+        Check.Equal("""{"model":"fake/local","instances":2,"use":"Quick.","budget":{"limitUsd":1}}""", agents["fast-one"]!.ToJsonString());
+        Check.Equal("""{"model":"fake/solo"}""", agents["solo"]!.ToJsonString(), "an agent for the default model");
+        Check.Equal("""{"cloudDefaultCapacity":4}""", h.Settings.GetNode("lanes")!.ToJsonString(), "the lanes are gone");
+        Check.Equal("fast-one|solo", string.Join("|", h.Lanes!.Snapshot().Select(p => p.Key)));
+        Check.Equal(0, AgentUpgrade.Run(h.Settings).Count, "nothing to do the next time");
     }
 
     private static async Task PriorityAndCancel()
@@ -134,36 +264,35 @@ public static class LaneTests
         var lc = await c.WaitAsync(TimeSpan.FromSeconds(2));
         Check.Equal(1, s.Snapshot().Single(p => p.Key == pool).Busy);
         lc.Dispose();
-        Check.Equal(0, s.Snapshot().Single(p => p.Key == pool).Busy);
+        Check.Equal(0, s.Snapshot().Where(p => p.Key == pool).Sum(p => p.Busy));
         Check.True(s.TryAcquire(Req(pool, "Z"), out var z) && z is not null);
         z!.Dispose();
     }
 
     private static async Task CapacityIncrease()
     {
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Lanes);
+        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 1 }""")),
+            plugins: TestHost.Plugins.Lanes);
         var s = h.Lanes!;
-        var pool = s.ResolvePool(TestHost.SoloModel());
-        var a = await s.AcquireAsync(Req(pool, "A"), CancellationToken.None);
-        var b = s.AcquireAsync(Req(pool, "B"), CancellationToken.None).AsTask();
+        var a = await s.AcquireAsync(Req("a", "A"), CancellationToken.None);
+        var b = s.AcquireAsync(Req("a", "B"), CancellationToken.None).AsTask();
         await Task.Delay(50);
         Check.False(b.IsCompleted);
-        h.Settings.Set("lanes.pools", JsonNode.Parse("""{ "fake/solo": { "capacity": 2 } }"""));
+        h.Settings.Set("agents.a.instances", 2);
         var lb = await b.WaitAsync(TimeSpan.FromSeconds(3));
-        var info = s.Snapshot().Single(p => p.Key == pool);
+        var info = s.Snapshot().Single(p => p.Key == "a");
         Check.Equal(2, info.Capacity);
         Check.Equal(2, info.Busy);
-        Check.Equal("settings", info.Source);
         a.Dispose();
         lb.Dispose();
 
-        // models.changed: the catalog reports a new concurrency
-        h.Settings.Set("lanes.pools", null);
+        // models.changed: without instances an agent follows the catalog's concurrency
+        h.Settings.Set("agents.a.instances", null);
         await h.Bus.DrainAsync();
-        h.Catalog.Cached.Single(m => m.Ref == "fake/solo").Concurrency = 3;
+        h.Catalog.Cached.Single(m => m.Ref == "fake/local").Concurrency = 3;
         ((IEventBus)h.Bus).Publish(EventTypes.ModelsChanged, new JsonObject());
         await h.Bus.DrainAsync();
-        Check.Equal(3, s.Snapshot().Single(p => p.Key == pool).Capacity);
+        Check.Equal(3, s.Snapshot().Single(p => p.Key == "a").Capacity);
     }
 
     private static async Task Debounce()
@@ -181,7 +310,12 @@ public static class LaneTests
         var after = h.Bus.OfType(EventTypes.LanesChanged).Count;
         Check.True(after - before is >= 1 and <= 2, $"coalesced into {after - before} event(s)");
         var pools = (JsonArray)FakeBus.Data(h.Bus.OfType(EventTypes.LanesChanged).Last())["pools"]!;
-        Check.True(pools.Count >= 3);
+        Check.Equal(0, pools.Count, "nothing busy");
+        // a settings change that changes nothing here sends nothing
+        h.Settings.Set("ui.theme", "dark");
+        await Task.Delay(250);
+        await h.Bus.DrainAsync();
+        Check.Equal(after, h.Bus.OfType(EventTypes.LanesChanged).Count);
     }
 
     private static async Task ReloadDuringWait()
