@@ -39,7 +39,7 @@ from a private copy of `artifacts/app`, so it is not affected by (and does not a
 ```bash
 dotnet tests/NetPI.Providers.Tests/bin/Debug/NetPI.Providers.Tests.dll   # AiProxy (Responses/Chat), Anthropic, OpenRouter against a scripted HTTP mock
 dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll           # read/write/edit/grep/find/ls, bash/pwsh, processes, files.open
-dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll           # agent loop, steering/queue/abort, subagents, agents, persistence, context notices, goals
+dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll           # agent loop, steering/queue/abort, subagents, agents, persistence, context notices, goals, skills
 dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll               # retry, nudge, tool repair, compaction, ideas, work, diagnostics, todo, web, media, ssh
                                                                          # (its load tests load the built plugins from artifacts/app, or from NETPI_APP_DIR)
 tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests                        # kernel: SQLite, settings, bus, registries, sessions, catalog, server, plugins
@@ -199,6 +199,8 @@ Coverage (run `--list` for the names):
   `agent-result` notices; a background worker's report wakes the idle parent; steering interrupts `agent_wait` and the late
   report arrives as a notice; aborting the orchestrator cancels its workers; aborting one worker; nested
   orchestrator → lead → helper (the lead's spawn waits) without deadlock, `agent_send`; three top-level chats on one model.
+- **skills**: a project's `.agents/skills` skill in `skills.list`, the `skills` catalog notice and `/skill:name` with the
+  skill's instructions sent to the model (not in the system prompt), the notice tied to its message.
 - **ideas**: `idea_add` writes `<project>/ideas.json`, `ideas.list`, `ideas.changed`, `ideas.add`.
 - **hot reload**: overwriting `NetPI.Nudge.dll` → `plugins.changed`, reload, `plugins.unloaded { collected: true }`, still
   works; `plugins.reload` of providers/tools/hooks/agents/context; reloading the agent runtime mid-run; reloading the provider

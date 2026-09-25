@@ -26,9 +26,10 @@ const META = {
   ssh_hosts: { label: 'SSH hosts', icon: 'list', arg: null, view: 'generic' },
   goal_update: { label: 'Goal', icon: 'target', arg: 'status', view: 'generic' },
   goal_set: { label: 'Set goal', icon: 'target', arg: 'objective', view: 'generic' },
+  skill: { label: 'Skill', icon: 'sparkle', arg: 'name', view: 'generic' },
 };
 
-const CATEGORY_ICON = { files: 'file', shell: 'terminal', agents: 'bot', ideas: 'idea', web: 'globe', todo: 'list', media: 'image', ssh: 'terminal', goal: 'target', general: 'wrench' };
+const CATEGORY_ICON = { files: 'file', shell: 'terminal', agents: 'bot', ideas: 'idea', web: 'globe', todo: 'list', media: 'image', ssh: 'terminal', goal: 'target', skills: 'sparkle', general: 'wrench' };
 const SUMMARY_KEYS = ['path', 'command', 'pattern', 'query', 'url', 'name', 'task', 'id', 'text', 'title'];
 
 /** Server tool definitions (from tools.list), filled by the app store. */

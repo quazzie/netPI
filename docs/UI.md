@@ -58,6 +58,7 @@ web/
       chatItems.js             ChatMessage[] → render items (steps groups, tool pairing)
       tools.js  diff.js        tool labels/icons/summaries, unified diff parser
       commands.js              slash commands (built-ins + ui.commands)
+      skills.js                the session's skills as /skill:name entries of the / popup
       pluginCtx.js             ctx object for plugin tabs
       folderPicker.js          WebView2 native picker or fs.dirs modal
       openFile.js              open a path with the OS (files.open): chat file links, "Open file", the file tree
@@ -161,7 +162,7 @@ AGENTS.md plugin an `instructions` notice if other instruction files apply.
 **Projects dialog** (`ProjectsModal`, opened with `openProjects({ view, id?, sessionId?, select? })`). One dialog with
 three views: `list` (filter, new session, edit, remove), `new` (folder with Browse…, name, create-folder) and `edit`
 (name and folder, the project's sessions, the instruction files for its folder from `agentsmd.list { projectId }`,
-remove). The pickers' footer opens it (Edit "current"…, New project…, Manage projects…), as do the Projects tab (+,
+its skills and their problems from `skills.list { projectId }`, remove). The pickers' footer opens it (Edit "current"…, New project…, Manage projects…), as do the Projects tab (+,
 row click, the edit button) and the command palette. A project created from a picker is attached to that session, or
 in select mode becomes the project new sessions start in. Dialogs can stack (a confirm or the folder picker over the
 projects dialog): `Modal` keeps a stack, and Esc closes only the top one.
@@ -249,7 +250,9 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 - `/` opens the commands popup: the built-ins `/new /rename /agent /project /goal /settings /help /abort`, plus
   commands from `ui.commands`. A command with `rpc` is called with `{ sessionId, args }`, and a string result
   is shown as a toast. A command with `clientAction` is handled by the client:
-  `openTab:<pluginId/tabId>`, `insert:<text>` or `settings`.
+  `openTab:<pluginId/tabId>`, `insert:<text>` or `settings`. The session's skills are listed too, as `/skill:name`
+  (`lib/skills.js`: `skills.list`, cached for 10 s per session); choosing one inserts `/skill:name ` and the message is
+  sent as typed (the skills plugin loads the skill for it).
 - `@` opens a file popup backed by `files.search`; picking a file inserts `@rel/path`.
 - Images can be attached with the button, pasted or dropped. They show as thumbnails and are sent as
   `{ mediaType, data }`.
@@ -457,8 +460,8 @@ set, uptime, threads, framework; the full details are in its tooltip). A segment
 - **Logs:** `logs.recent { max: 400 }`, polled every 3s while visible, newest first, with a level filter
   (All, Info+, Warn, Error, with counts). Exceptions expand.
 - **Context:** for the active session, `context.preview` (estimated tokens, system prompt size, tool count,
-  the system prompt with copy and expand, the tool list) and `agentsmd.list` (instruction files with scope
-  badges, copy path and reveal).
+  the system prompt with copy and expand, the tool list), `agentsmd.list` (instruction files with scope
+  badges, copy path and reveal) and `skills.list` (the skills with scope, name and description, then their problems).
 
 **Files** (`netpi.tools.files`, left). A lazy tree of the active session's working folder.
 

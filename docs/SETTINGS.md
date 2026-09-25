@@ -195,11 +195,14 @@ stop paid models; free and local ones always run.
 | `context.toolDescriptions` | `false` | also describe every tool in the system prompt (they are always in the tool schemas) |
 | `agentsMd.fileNames` | `["AGENTS.md", "CLAUDE.md"]` | first match per directory, from the file system root down to the working directory |
 | `agentsMd.extraFiles` | `[]` | always included |
+| `skills.paths` | `[]` | more skill folders, or one skill's folder (`~` is your home; relative to the working directory). See [PLUGIN-SKILLS.md](PLUGIN-SKILLS.md) |
+| `skills.claudeCode` | `false` | also Claude Code's skills: `.claude/skills` in the project and `~/.claude/skills` |
+| `skills.disabled` | `[]` | skill names switched off: agents don't see them, the `skill` tool and `/skill:` refuse them |
 | `agentsMd.guidance` | built in | the "# Instruction files" prompt section: how agents use and keep AGENTS.md (lean, pointers to deeper docs, durable learnings as one line). Replaces the text; `""` drops the section |
 
 A session's system prompt is rendered once, at its first model call, and kept for the whole session (the cached prefix
 of the conversation depends on it), so the `context.*` and `agentsMd.guidance` settings apply to sessions started
-afterwards. The working directory, the project and the instruction files are not in the prompt: they reach the model as
+afterwards. The working directory, the project, the instruction files and the skills are not in the prompt: they reach the model as
 notices when they first apply and whenever they change (an edited AGENTS.md is announced on the next model call). Tools
 that appear or disappear during a session (a plugin loaded or disabled, `tools.disabled`) are announced the same way,
 with their guidelines. The global file is `~/.netpi/AGENTS.md`.

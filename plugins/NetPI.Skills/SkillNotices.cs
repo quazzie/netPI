@@ -1,0 +1,195 @@
+using System.Collections.Concurrent;
+using System.Security;
+using System.Text;
+using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
+
+namespace NetPI.Skills;
+
+/// <summary>
+/// Before each model call: (1) the skill catalog in a "skills" notice, appended only (the conversation's cached prefix
+/// survives): every listed skill when a session first calls the model, afterwards only what changed. What the model has
+/// is read from the notices still in the context, so after compaction it is announced again, with the skills it had
+/// loaded before. Meta: <c>skills: [{ name, hash, path }]</c>, <c>removed: [name]</c>. (2) A user message that starts
+/// with <c>/skill:name</c> gets a "skill" notice with that skill's instructions right after it. Meta: <c>skill</c>,
+/// <c>hash</c>, <c>path</c>, <c>for</c> (the message id); <c>missing: true</c> when there is no such skill.
+/// </summary>
+internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAgentHook
+{
+    public const string CatalogKind = "skills";
+    public const string SkillKind = "skill";
+    public const string Command = "/skill:";
+
+    private readonly ConcurrentDictionary<string, object> _gates = new(StringComparer.Ordinal);
+
+    /// <summary>After the working-directory notice (500) and the instruction files (510).</summary>
+    public int Order => 520;
+
+    public async ValueTask OnBeforeModelCallAsync(AgentTurnContext turn)
+    {
+        var appended = false;
+        lock (_gates.GetOrAdd(turn.Run.Session.Id, _ => new object()))
+        {
+            var set = loader.Discover(turn.Run.Cwd);
+            if (Catalog(turn.Run.Session.Id, turn.Messages, set) is { } catalog)
+            {
+                ctx.Sessions.AppendMessage(turn.Run.Session.Id, catalog);
+                appended = true;
+            }
+            foreach (var notice in Invocations(turn.Messages, set))
+            {
+                ctx.Sessions.AppendMessage(turn.Run.Session.Id, notice);
+                appended = true;
+            }
+        }
+        if (appended) await turn.ReloadMessagesAsync().ConfigureAwait(false);
+    }
+
+    // ---------------------------------------------------------------- catalog
+
+    private ChatMessage? Catalog(string sessionId, IReadOnlyList<ChatMessage> context, SkillSet set)
+    {
+        var known = Known(context);
+        var current = set.Listed.ToList();
+        var changed = current.Where(s => !known.TryGetValue(s.Name, out var h) || h != s.Hash).ToList();
+        var removed = known.Keys.Where(k => !current.Any(s => string.Equals(s.Name, k, StringComparison.OrdinalIgnoreCase))).ToList();
+        if (changed.Count == 0 && removed.Count == 0) return null;
+
+        var first = known.Count == 0;
+        var sb = new StringBuilder();
+        if (first)
+        {
+            sb.Append("Skills: instructions for specific tasks, each in a SKILL.md. When a task matches a skill's description, load the skill " +
+                      "before you start (the skill tool, or read its SKILL.md) and follow it. Relative paths in a skill resolve against its folder.\n\n");
+            sb.Append(List(changed));
+            var lost = LoadedBefore(sessionId, context).Where(n => current.Any(s => string.Equals(s.Name, n, StringComparison.OrdinalIgnoreCase))).ToList();
+            if (lost.Count > 0)
+                sb.Append("\n\nBefore the conversation was compacted you had loaded: ").Append(string.Join(", ", lost))
+                  .Append(". Load a skill again if you still need its instructions.");
+        }
+        else
+        {
+            sb.Append("The skills changed.");
+            if (changed.Count > 0) sb.Append(" New or changed:\n\n").Append(List(changed));
+            if (removed.Count > 0) sb.Append(changed.Count > 0 ? "\n\n" : " ").Append("No longer available: ").Append(string.Join(", ", removed)).Append('.');
+        }
+
+        var notice = ChatMessage.NoticeText(sb.ToString(), CatalogKind);
+        notice.Meta!["skills"] = new JsonArray([.. changed.Select(s => (JsonNode)new JsonObject { ["name"] = s.Name, ["hash"] = s.Hash, ["path"] = s.Path })]);
+        if (removed.Count > 0) notice.Meta["removed"] = new JsonArray([.. removed.Select(r => (JsonNode)JsonValue.Create(r))]);
+        return notice;
+    }
+
+    internal static string List(IEnumerable<Skill> skills)
+    {
+        var sb = new StringBuilder("<available_skills>\n");
+        foreach (var s in skills)
+        {
+            sb.Append("  <skill>\n    <name>").Append(SecurityElement.Escape(s.Name)).Append("</name>\n");
+            sb.Append("    <description>").Append(SecurityElement.Escape(s.Description)).Append("</description>\n");
+            sb.Append("    <location>").Append(SecurityElement.Escape(s.Path)).Append("</location>\n  </skill>\n");
+        }
+        return sb.Append("</available_skills>").ToString();
+    }
+
+    /// <summary>Name → hash of the catalog the model has: the "skills" notices still in the context, in order.</summary>
+    private static Dictionary<string, string> Known(IReadOnlyList<ChatMessage> context)
+    {
+        var known = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in context)
+        {
+            if (m.Role != MessageRole.Notice || m.MetaString("kind") != CatalogKind) continue;
+            if (m.Meta?["skills"] is JsonArray skills)
+                foreach (var s in skills.OfType<JsonObject>())
+                    if (s["name"]?.GetValue<string>() is { } name && s["hash"]?.GetValue<string>() is { } hash) known[name] = hash;
+            if (m.Meta?["removed"] is JsonArray removed)
+                foreach (var r in removed)
+                    if (r?.GetValue<string>() is { } name) known.Remove(name);
+        }
+        return known;
+    }
+
+    /// <summary>Skills loaded earlier in the session whose instructions are no longer in the context (compacted away).</summary>
+    private List<string> LoadedBefore(string sessionId, IReadOnlyList<ChatMessage> context)
+    {
+        var inContext = Loaded(context);
+        var all = Loaded(ctx.Sessions.GetMessages(sessionId));
+        return all.Where(n => !inContext.Contains(n)).ToList();
+    }
+
+    /// <summary>The names of the skills whose instructions these messages hold (skill tool results and "skill" notices), in order.</summary>
+    internal static List<string> Loaded(IEnumerable<ChatMessage> messages)
+    {
+        var names = new List<string>();
+        void Add(string? n)
+        {
+            if (!string.IsNullOrEmpty(n) && !names.Contains(n, StringComparer.OrdinalIgnoreCase)) names.Add(n);
+        }
+        foreach (var m in messages)
+        {
+            if (m.Role == MessageRole.Notice && m.MetaString("kind") == SkillKind && m.Meta?["missing"] is null) Add(m.MetaString("skill"));
+            else if (m.Role == MessageRole.Tool)
+                foreach (var r in m.ToolResults)
+                    if (r.Name == SkillTool.Name && !r.IsError && r.Details is JsonObject d && d["name"] is JsonValue v && v.TryGetValue<string>(out var n)) Add(n);
+        }
+        return names;
+    }
+
+    // ---------------------------------------------------------------- /skill:name
+
+    /// <summary>A notice for each user message since the model last answered that starts with /skill:name and has none yet.</summary>
+    private static List<ChatMessage> Invocations(IReadOnlyList<ChatMessage> context, SkillSet set)
+    {
+        var start = 0;
+        for (var i = context.Count - 1; i >= 0; i--)
+            if (context[i].Role == MessageRole.Assistant) { start = i + 1; break; }
+        var handled = context.Where(m => m.Role == MessageRole.Notice && m.MetaString("kind") == SkillKind)
+            .Select(m => m.Meta?["for"]?.ToString()).Where(x => x is not null).ToHashSet(StringComparer.Ordinal);
+        var notices = new List<ChatMessage>();
+        for (var i = start; i < context.Count; i++)
+        {
+            var m = context[i];
+            if (m.Role != MessageRole.User || Parse(m.Text) is not { } name || handled.Contains(m.Id.ToString())) continue;
+            notices.Add(Invocation(m, name, set));
+        }
+        return notices;
+    }
+
+    /// <summary>The skill name of "/skill:name …", or null.</summary>
+    internal static string? Parse(string text)
+    {
+        var t = text.TrimStart();
+        if (!t.StartsWith(Command, StringComparison.OrdinalIgnoreCase)) return null;
+        var rest = t[Command.Length..];
+        var end = 0;
+        while (end < rest.Length && !char.IsWhiteSpace(rest[end])) end++;
+        return end == 0 ? null : rest[..end];
+    }
+
+    private static ChatMessage Invocation(ChatMessage message, string name, SkillSet set)
+    {
+        var skill = set.Find(name);
+        var loaded = skill is { Disabled: false } ? SkillContent.Load(skill) : null;
+        ChatMessage notice;
+        if (skill is null || loaded is null)
+        {
+            var names = set.Skills.Where(s => !s.Disabled).Select(s => s.Name).ToList();
+            var why = skill is { Disabled: true } ? "it is switched off in the settings"
+                : skill is not null ? $"its SKILL.md can't be read ({skill.Path})"
+                : "there is no such skill here";
+            notice = ChatMessage.NoticeText($"The user asked for the skill \"{name}\", but {why}. " +
+                (names.Count > 0 ? "The skills: " + string.Join(", ", names) + "." : "No skills are available here."), SkillKind);
+            notice.Meta!["missing"] = true;
+            notice.Meta["skill"] = skill?.Name ?? name;
+        }
+        else
+        {
+            notice = ChatMessage.NoticeText($"The user loaded the skill \"{skill.Name}\" for their message: follow its instructions.\n\n{loaded.Text}", SkillKind);
+            notice.Meta!["skill"] = skill.Name;
+            notice.Meta["hash"] = loaded.Hash;
+            notice.Meta["path"] = skill.Path;
+        }
+        notice.Meta["for"] = message.Id.ToString();
+        return notice;
+    }
+}

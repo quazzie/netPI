@@ -441,6 +441,20 @@ details: { goal: { id, objective, status, reason, tokenBudget, tokensUsed, conti
 
 ---
 
+## Skills (`category: "skills"`)
+
+`plugins/NetPI.Skills`; how skills are found and announced: [PLUGIN-SKILLS.md](PLUGIN-SKILLS.md).
+
+### `skill` (read-only, summary arg `name`)
+
+`{ name }`: the instructions of a skill listed in the `<available_skills>` notices, as `<skill_content name="…">` with the
+SKILL.md body (frontmatter removed; over 16000 characters cut at a line, with where to read on), the skill directory
+(relative paths resolve against it) and `<skill_resources>` (up to 50 bundled files, listed, not read). The name is
+checked when the tool runs (case-insensitive), not with an enum in the schema, so the definition never changes; an
+unknown, switched-off (`skills.disabled`) or user-only (`disable-model-invocation`) skill is refused with the skills there
+are. A skill whose instructions are in the context unchanged (an earlier result or a `/skill:` notice) gets "already
+loaded above" instead of a second copy. `details: { name, path, dir, scope, hash, already? }`.
+
 ## Media (`category: "media"`)
 
 ### `show_image` (read-only, summary arg `source`)

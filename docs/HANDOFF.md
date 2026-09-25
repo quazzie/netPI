@@ -34,6 +34,10 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
   settings dialog renders the host's and every plugin's settings as controls; each chat switches its own tools.
 - **Compaction works like pi's** (built 2026-09-25, not yet deployed): a structured checkpoint at the chat's reasoning
   effort, the files read and modified, split turns; long tool results go to a file the agent reads from.
+- **Skills** (`plugins/NetPI.Skills`, built 2026-09-25, not yet deployed): the Agent Skills standard. SKILL.md folders
+  in the project (`.agents/skills`, `.netpi/skills`, up to the git root) and globally (`~/.agents/skills`,
+  `~/.netpi/skills`); the catalog reaches agents as a `skills` notice, the `skill` tool loads one, `/skill:name` loads one
+  for the user's message. Tested with a scripted model, not yet with a real one. See `docs/PLUGIN-SKILLS.md`.
 - **Profiles** (built 2026-09-24, not yet deployed): the opening of a chat's system prompt and its tools; a default per
   project; switching is free before the first message and one full re-read after it.
 - **Chat UI:** the streamed answer is laid out as the finished one will be, so nothing jumps between steps; a Steps

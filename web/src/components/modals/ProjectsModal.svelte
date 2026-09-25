@@ -24,7 +24,7 @@
    * - list: every project, with new session / edit / remove
    * - new: create a project; opened from a picker it is then attached to `sessionId`, or with `select` it becomes the
    *   project new sessions start in
-   * - edit: one project (`id`): name and folder, its sessions, the instruction files that apply to its folder
+   * - edit: one project (`id`): name and folder, its sessions, the instruction files and skills that apply to its folder
    */
   let { data, onclose } = $props();
 
@@ -41,6 +41,7 @@
   let form = $state({ name: '', path: '', create: false });
   let files = $state(null); // instruction files of the edited project; null while loading
   let filesError = $state('');
+  let skills = $state(null); // skills.list of the edited project; null while loading or without the skills plugin
   // profiles (the profiles plugin): the one new sessions of the edited project start with
   let profiles = $state(null);
   rpc('profiles.list')
@@ -99,6 +100,10 @@
   async function loadFiles(id) {
     files = null;
     filesError = '';
+    skills = null;
+    rpc('skills.list', { projectId: id })
+      .then((r) => id === editId && (skills = r))
+      .catch(() => {});
     try {
       const res = await rpc('agentsmd.list', { projectId: id });
       if (id === editId) files = Array.isArray(res) ? res : [];
@@ -337,6 +342,34 @@
         <p class="hint">Agents get these as notices; edits are announced at their next turn.</p>
       {/if}
     </section>
+
+    {#if skills}
+      <section>
+        <div class="np-section-title">
+          Skills <span class="np-section-count">{skills.skills.length}</span>
+        </div>
+        {#each skills.skills as s (s.path)}
+          <div class="frow" title={s.description}>
+            <span class="scope" data-s={s.scope}>{s.scope}</span>
+            <span class="skname np-mono" class:off={s.disabled}>{s.name}</span>
+            <span class="sdesc">{s.disabled ? 'switched off' : s.userOnly ? '/skill: only' : s.description}</span>
+            {#if desktop.available}
+              <IconButton icon="external" size="sm" title="Show in Explorer" onclick={() => desktop.revealPath(s.path)} />
+            {/if}
+          </div>
+        {:else}
+          <p class="hint">No skills here: put them in .agents/skills (a folder with a SKILL.md each).</p>
+        {/each}
+        {#each skills.problems as p (p.path + p.message)}
+          <div class="problem" data-level={p.level} title={p.path}>
+            <Icon name={p.level === 'error' ? 'alert-circle' : 'alert'} size={12} />
+            <span class="np-mono pfile">{p.path.split(/[\\/]/).slice(-2).join('/')}</span>
+            <span>{p.message}</span>
+          </div>
+        {/each}
+        {#if skills.skills.length}<p class="hint">Agents see them as notices and load one when a task matches; /skill:name loads one for your message.</p>{/if}
+      </section>
+    {/if}
   {:else}
     <div class="np-empty">
       <Icon name="folder" size={22} />
@@ -511,6 +544,46 @@
     color: var(--fg-muted);
     font-size: 10px;
     line-height: 16px;
+  }
+  .skname {
+    flex: none;
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+  .skname.off {
+    color: var(--fg-dim);
+    text-decoration: line-through;
+  }
+  .sdesc {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-dim);
+    font-size: var(--fs-xs);
+  }
+  .problem {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: var(--fs-xs);
+    color: var(--warn);
+  }
+  .problem[data-level='error'] {
+    color: var(--err);
+  }
+  .problem :global(svg) {
+    flex: none;
+    align-self: center;
+  }
+  .pfile {
+    flex: none;
+    color: var(--fg-muted);
   }
   .scope[data-s='project'] {
     background: var(--accent-soft);

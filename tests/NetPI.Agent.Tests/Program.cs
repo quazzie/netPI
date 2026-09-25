@@ -14,6 +14,7 @@ GoalTests.Register(runner);
 BudgetTests.Register(runner);
 SessionToolsTests.Register(runner);
 ProfilesTests.Register(runner);
+SkillsTests.Register(runner);
 var code = await runner.RunAsync(filters);
 try { Directory.Delete(Path.Combine(Path.GetTempPath(), "netpi-agent-tests"), recursive: true); } catch { }
 return code;

@@ -327,6 +327,36 @@ public static class AdvancedTests
             Check.True(preview.L("estimatedTokens") > 1000, "preview estimate");
         });
 
+        r.Add("skills: a project's skill is announced in a notice, /skill:name loads it for the message, skills.list", async () =>
+        {
+            var p = await env.NewProject("skills", d =>
+            {
+                Directory.CreateDirectory(Path.Combine(d, ".git"));
+                var dir = Path.Combine(d, ".agents", "skills", "e2e-skill");
+                Directory.CreateDirectory(Path.Combine(dir, "scripts"));
+                File.WriteAllText(Path.Combine(dir, "SKILL.md"), "---\nname: e2e-skill\ndescription: Use when: the E2E suite asks for it.\n---\n\n# E2E skill\nE2E-SKILL-BODY\n");
+                File.WriteAllText(Path.Combine(dir, "scripts", "run.sh"), "echo ok\n");
+            });
+            var sid = (await env.NewSession(projectId: p.S("id"))).S("id")!;
+            var skill = (await env.Rpc("skills.list", new { sessionId = sid })).Arr("skills").First();
+            Check.Equal("e2e-skill", skill.S("name"), "the project's skill comes first");
+            Check.Equal("project", skill.S("scope"));
+            Check.Equal("Use when: the E2E suite asks for it.", skill.S("description"));
+
+            var mark = await env.MockMark();
+            var run = await env.Run(sid, "/skill:e2e-skill go [s:echo]");
+            Check.Contains(run.FinalText, "ECHO-DONE");
+            var request = await env.MockRequest((await env.MockLog(mark)).Last().L("seq"));
+            var input = request.Arr("input").Select(i => i.GetRawText()).ToList();
+            Check.True(input.Any(i => i.Contains("kind=\\\"skills\\\"") && i.Contains("<name>e2e-skill</name>")), "the catalog notice was sent");
+            Check.True(input.Any(i => i.Contains("kind=\\\"skill\\\"") && i.Contains("E2E-SKILL-BODY") && i.Contains("<file>scripts/run.sh</file>")), "the skill for the message was sent");
+            Check.NotContains(request.S("instructions"), "<name>e2e-skill</name>", "the catalog is not in the system prompt");
+            var notice = run.AllMessages.Single(m => m.S("role") == "notice" && m.P("meta").S("kind") == "skill");
+            Check.Equal("e2e-skill", notice.P("meta").S("skill"));
+            var user = run.AllMessages.Single(m => m.S("role") == "user");
+            Check.Equal(user.L("id").ToString(), notice.P("meta").S("for"), "tied to the message");
+        });
+
         r.Add("retry: a stalled stream is abandoned after retry.stallTimeoutSeconds and retried", async () =>
         {
             await env.Rpc("settings.set", new { path = "retry.stallTimeoutSeconds", value = 1.5 });

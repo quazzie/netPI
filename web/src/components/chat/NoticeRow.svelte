@@ -12,6 +12,8 @@
   const KINDS = {
     project: { icon: 'folder', tone: 'info' },
     instructions: { icon: 'file-text', tone: 'info', label: 'Instructions', expand: true },
+    skills: { icon: 'sparkle', tone: 'info', label: 'Skills', expand: true },
+    skill: { icon: 'sparkle', tone: 'accent', expand: true },
     tools: { icon: 'wrench', tone: 'info', label: 'Tools changed', expand: true },
     todo: { icon: 'list', tone: 'info', label: 'Todo list', expand: true },
     goal: { icon: 'target', tone: 'accent', label: 'Goal' },
@@ -33,7 +35,15 @@
   const who = $derived(msg.meta?.agentName ?? msg.meta?.from ?? msg.meta?.name ?? null);
   const label = $derived(
     k.label ??
-      (kind === 'agent-message' ? `Message from ${who ?? 'agent'}` : kind === 'agent-result' ? `${who ?? 'Subagent'} finished` : null),
+      (kind === 'agent-message'
+        ? `Message from ${who ?? 'agent'}`
+        : kind === 'agent-result'
+          ? `${who ?? 'Subagent'} finished`
+          : kind === 'skill'
+            ? msg.meta?.missing
+              ? `No skill “${msg.meta?.skill ?? ''}”`
+              : `Skill: ${msg.meta?.skill ?? ''}`
+            : null),
   );
   const linkSession = $derived(msg.meta?.sessionId && msg.meta.sessionId !== msg.sessionId ? msg.meta.sessionId : null);
   const long = $derived(k.expand || text.length > 140 || text.includes('\n'));

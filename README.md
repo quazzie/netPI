@@ -49,6 +49,9 @@ headless for any browser.
   `AGENTS.md`/`CLAUDE.md` from the file system root down to the project) arrive as notices when they apply or change,
   so the backend's prompt cache survives a project switch or an edited AGENTS.md. Tools from a plugin loaded mid-session
   are announced the same way.
+- **Skills** ([Agent Skills](https://agentskills.io) standard): folders with a `SKILL.md` in the project
+  (`.agents/skills`, `.netpi/skills`) or globally (`~/.agents/skills`, `~/.netpi/skills`). Agents get the catalog as a
+  notice and load a skill with the `skill` tool when a task matches; `/skill:name` loads one for your message.
 - **Ideas backlog:** agents and you park research, plans and requirements in `ideas.json` in the project folder
   (tools `idea_*` + the Ideas tab); "send to chat" when it's time to implement.
 - **UI:** left and right panels with vertical, pluggable tabs (Sessions, Projects, Files | Work, Ideas,
@@ -102,6 +105,7 @@ netpi-server (headless) ─────────┴─ NetPI.Host ─┤   Ne
    plugin manager · event bus · service/RPC/    │   NetPI.Context      system prompt (frozen per session), project notices
                                                 │   NetPI.Profiles     a chat's opening instructions and tools, a default per project
    tool/UI registries · SQLite · settings ·     │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md, announced as notices
+                                                │   NetPI.Skills       Agent Skills: the catalog notice, the skill tool, /skill:name
    session store · model catalog                │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic, OpenRouter
                                                 │   NetPI.Tools.*      files, shell, agents, web, media, ssh · NetPI.Todo · NetPI.Goal
 NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Retry · NetPI.ToolRepair
@@ -109,7 +113,7 @@ web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Ideas · NetPI.Work 
                                                 └─ ~/.netpi/plugins/ (your own)
 ```
 
-Data: `~/.netpi/` — `settings.json`, `netpi.db` (sessions, messages, projects, agents, usage), `AGENTS.md`,
+Data: `~/.netpi/` — `settings.json`, `netpi.db` (sessions, messages, projects, agents, usage), `AGENTS.md`, `skills/`,
 `logs/`, `webview/`, `window.json`, `workspace/` (cwd of sessions without a project).
 
 ## Develop
@@ -131,6 +135,7 @@ npm run dev                          # UI dev server against a running NetPI (se
 | [docs/UI.md](docs/UI.md) | the Svelte app and the plugin tab kit |
 | [docs/TESTING.md](docs/TESTING.md) | unit suites, the mock model server, the end-to-end suite |
 | [docs/PLUGIN-WORK.md](docs/PLUGIN-WORK.md), [IDEAS](docs/PLUGIN-IDEAS.md), [DIAGNOSTICS](docs/PLUGIN-DIAGNOSTICS.md) | the Work, Ideas and Diagnostics plugins and tabs |
+| [docs/PLUGIN-SKILLS.md](docs/PLUGIN-SKILLS.md) | skills: where they are found, what agents get, `/skill:name` |
 | [docs/AIPROXY-AGENT-GUIDE.md](docs/AIPROXY-AGENT-GUIDE.md) | the local AiProxy server |
 | [docs/HANDOFF.md](docs/HANDOFF.md), [docs/STATUS.md](docs/STATUS.md) | current state, decisions and next steps; what is verified, known limitations |
 | [docs/archive/](docs/archive/) | records of completed plans |

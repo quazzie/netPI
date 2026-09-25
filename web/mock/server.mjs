@@ -635,6 +635,24 @@ const handlers = {
     if (pr) out.push({ path: path.join(pr.path, 'AGENTS.md'), bytes: 4210, scope: 'project' }, { path: path.join(pr.path, 'web', 'AGENTS.md'), bytes: 612, scope: 'directory' });
     return out;
   },
+  'skills.list': (p = {}) => {
+    const s = p.sessionId ? store.sessions.get(p.sessionId) : null;
+    const pr = p.projectId ? store.projects.get(p.projectId) : s?.projectId ? store.projects.get(s.projectId) : null;
+    if (p.projectId && !pr) throw notFound('Project');
+    const at = (root, name) => path.join(root, name, 'SKILL.md');
+    const home = path.join(os.homedir(), '.agents', 'skills');
+    const skills = [
+      { name: 'release-notes', description: 'Write release notes from the git log since the last tag. Use when preparing a release.', path: at(home, 'release-notes'), scope: 'global', listed: true, userOnly: false, disabled: false },
+      { name: 'handoff', description: 'Write a handoff for the next agent.', path: at(home, 'handoff'), scope: 'global', listed: false, userOnly: true, disabled: false },
+    ];
+    const problems = [];
+    if (pr) {
+      const proj = path.join(pr.path, '.agents', 'skills');
+      skills.unshift({ name: 'svelte-tab', description: 'Build a plugin tab for NetPI with the tab kit. Use when adding UI to a plugin.', path: at(proj, 'svelte-tab'), scope: 'project', listed: true, userOnly: false, disabled: false });
+      problems.push({ path: at(proj, 'draft'), level: 'error', message: 'No description: skipped (agents choose a skill by its description).' });
+    }
+    return { skills, problems };
+  },
   'context.preview': (p) => {
     const s = store.sessions.get(p?.sessionId);
     const pr = s?.projectId ? store.projects.get(s.projectId) : null;

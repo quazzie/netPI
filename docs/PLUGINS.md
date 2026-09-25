@@ -110,7 +110,7 @@ Anthropic's prompt cache alike). So nothing that was sent is ever changed; new i
 - **State that changes during a session is appended as a notice by the plugin that owns it**: the context plugin
   announces the working directory and project (`project` notices: at the first model call, on a switch, when a project
   folder moves), the AGENTS.md plugin the instruction files (`instructions` notices: all at first, later only edited,
-  new or removed files). Pattern: an `IAgentHook` whose `OnBeforeModelCallAsync` (Order above compaction's -100) compares
+  new or removed files), the skills plugin the skill catalog (`skills` notices, the same way). Pattern: an `IAgentHook` whose `OnBeforeModelCallAsync` (Order above compaction's -100) compares
   the current state with the last notice still in `turn.Messages` and, if they differ, appends a notice and calls
   `turn.ReloadMessagesAsync()`; react to events (e.g. `session.project`) to announce right away.
 - **Tools are sent sorted by name**, so a plugin reload does not reorder them. Every request carries the tools that are

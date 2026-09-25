@@ -2,12 +2,13 @@
   import { onMount, untrack } from 'svelte';
   import { Section, Empty, IconButton, bytes, tokens, copyText, desktop, basename } from '@netpi/kit';
 
-  /** What the model sees for the active session: context.preview + agentsmd.list. */
+  /** What the model sees for the active session: context.preview + agentsmd.list + skills.list. */
   let { ctx, visible = true } = $props();
 
   let sid = $state(untrack(() => ctx.app.activeSessionId));
   let preview = $state.raw(null);
   let files = $state.raw(null);
+  let skills = $state.raw(null); // null without the skills plugin
   let error = $state('');
   let loading = $state(false);
   let full = $state(false);
@@ -15,15 +16,20 @@
   async function load() {
     sid = ctx.app.activeSessionId;
     if (!sid) {
-      preview = files = null;
+      preview = files = skills = null;
       return;
     }
     loading = true;
     const id = sid;
-    const [p, f] = await Promise.allSettled([ctx.rpc('context.preview', { sessionId: id }), ctx.rpc('agentsmd.list', { sessionId: id })]);
+    const [p, f, k] = await Promise.allSettled([
+      ctx.rpc('context.preview', { sessionId: id }),
+      ctx.rpc('agentsmd.list', { sessionId: id }),
+      ctx.rpc('skills.list', { sessionId: id }),
+    ]);
     if (id !== sid) return;
     preview = p.status === 'fulfilled' ? p.value : null;
     files = f.status === 'fulfilled' ? f.value : null;
+    skills = k.status === 'fulfilled' ? k.value : null;
     error = p.status === 'rejected' ? p.reason?.message : '';
     loading = false;
   }
@@ -72,6 +78,29 @@
         <div class="np-dim np-small">No instruction files apply to this session.</div>
       {/each}
     </Section>
+
+    {#if skills}
+      <Section title="Skills" count={skills.skills.length} collapsible storageKey="diag.ctx.skills">
+        {#each skills.skills as s (s.path)}
+          <div class="file np-line np-hover-row" title={`${s.description}\n${s.path}`}>
+            <span class="scope" data-s={s.scope}>{s.scope}</span>
+            <span class="sname np-mono" class:off={s.disabled}>{s.name}</span>
+            <span class="np-dim np-small np-grow np-ellipsis">{s.disabled ? 'switched off' : s.userOnly ? '/skill: only' : s.description}</span>
+            <span class="np-hover-actions">
+              <IconButton icon="copy" title="Copy path" size="sm" onclick={() => copyText(s.path)} />
+              {#if desktop.available}<IconButton icon="folder-open" title="Reveal" size="sm" onclick={() => desktop.revealPath(s.path)} />{/if}
+            </span>
+          </div>
+        {:else}
+          <div class="np-dim np-small">No skills apply to this session.</div>
+        {/each}
+        {#each skills.problems as p (p.path + p.message)}
+          <div class="problem" data-level={p.level} title={p.path}>
+            <span class="np-mono">{basename(p.path.replace(/[\\/]SKILL\.md$/i, ''))}</span> {p.message}
+          </div>
+        {/each}
+      </Section>
+    {/if}
 
     <Section title="System prompt" collapsible storageKey="diag.ctx.prompt">
       {#snippet actions()}
@@ -153,6 +182,28 @@
     direction: rtl;
     text-align: left;
     font-size: 11px;
+  }
+  .sname {
+    flex: none;
+    max-width: 50%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11.5px;
+  }
+  .sname.off {
+    color: var(--fg-dim);
+    text-decoration: line-through;
+  }
+  .problem {
+    padding: 2px 0;
+    font-size: var(--fs-xs);
+    line-height: 1.4;
+    color: var(--warn);
+    overflow-wrap: anywhere;
+  }
+  .problem[data-level='error'] {
+    color: var(--err);
   }
   .size {
     flex: none;

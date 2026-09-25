@@ -1,0 +1,5 @@
+{
+  "id": "netpi.skills",
+  "name": "Skills",
+  "description": "Agent Skills (SKILL.md folders): agents see the skills that apply as notices and load one with the skill tool; /skill:name loads one for your message."
+}

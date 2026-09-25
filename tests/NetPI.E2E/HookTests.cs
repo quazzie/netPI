@@ -145,8 +145,12 @@ public static class HookTests
                 await env.Rpc("models.list", new { refresh = true });
                 var s = await env.NewSession(model: Tiny);
                 var sid = s.S("id")!;
+                // only bash, which the scenario uses: the tool definitions would take most of the 12k window, and how much
+                // depends on how many tools the plugins register, not on what this test is about
+                var all = (await env.Rpc("agent.tools", new { sessionId = sid })).P("tools").EnumerateArray().Select(t => t.S("name")!).ToArray();
+                await env.Rpc("agent.setTools", new { sessionId = sid, off = all.Where(n => n != "bash").ToArray() });
                 var mockMark = await env.MockMark();
-                var run = await env.Run(sid, "Produce lots of output [s:long n=12 lines=40]", 120_000);
+                var run = await env.Run(sid, "Produce lots of output [s:long n=12 lines=80]", 120_000);
                 var log = await env.MockLog(mockMark);
                 var rejected = log.Where(e => e.L("status") == 400).ToList();
                 Check.True(rejected.Count >= 1, "the backend rejected an oversized prompt");

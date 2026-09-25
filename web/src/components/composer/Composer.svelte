@@ -13,6 +13,7 @@
   import { app, isBusy, modelFor, sendMessage, abortAgent } from '../../lib/state/app.svelte.js';
   import { composer, modals, prefs, toast } from '../../lib/state/ui.svelte.js';
   import { allCommands, parseCommand } from '../../lib/commands.js';
+  import { skillCommands } from '../../lib/skills.js';
   import { rpc } from '../../lib/rpc.svelte.js';
 
   let { chat, session, onsent } = $props();
@@ -98,7 +99,9 @@
     const cm = /^\/([\w:.-]*)$/.exec(before);
     if (cm) {
       const q = cm[1].toLowerCase();
-      const items = allCommands()
+      // the session's skills too: /skill:name (a refresh that arrives while the popup is open updates it)
+      const skills = skillCommands(session.id, () => popup?.type === 'command' && updatePopup());
+      const items = [...allCommands(), ...skills]
         .filter((c) => c.name.toLowerCase().startsWith(q) || (q.length > 1 && c.name.toLowerCase().includes(q)))
         .slice(0, 12);
       popup = items.length ? { type: 'command', items, index: 0, start: 0, query: q } : null;

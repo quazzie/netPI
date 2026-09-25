@@ -309,14 +309,14 @@ public sealed class RunResult
 {
     public required string SessionId { get; init; }
     public required List<Ev> Events { get; init; }
-    /// <summary>The transcript without the context notices (working directory, instruction files), which have their own tests.</summary>
+    /// <summary>The transcript without the context notices (working directory, instruction files, tools, skills), which have their own tests.</summary>
     public required List<JsonElement> Messages { get; init; }
     /// <summary>The whole transcript.</summary>
     public required List<JsonElement> AllMessages { get; init; }
     public JsonElement Final { get; init; }
 
     public static bool IsContextNotice(JsonElement m) =>
-        m.S("role") == "notice" && m.P("meta").S("kind") is "project" or "instructions" or "tools";
+        m.S("role") == "notice" && m.P("meta").S("kind") is "project" or "instructions" or "tools" or "skills";
 
     public IEnumerable<JsonElement> Role(string role) => Messages.Where(m => m.S("role") == role);
     public JsonElement LastAssistant => Messages.LastOrDefault(m => m.S("role") == "assistant");
