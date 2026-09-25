@@ -7,7 +7,8 @@ namespace NetPI.Retry;
 
 /// <summary>
 /// Outermost model middleware: retries a model call when the connection is lost (transient
-/// <see cref="ModelException"/>, <see cref="HttpRequestException"/>, <see cref="IOException"/>...) or the stream stalls.
+/// <see cref="ModelException"/>, <see cref="HttpRequestException"/>, <see cref="IOException"/>...) or the stream stalls,
+/// after at least the wait the server asked for (<see cref="ModelException.RetryAfter"/>).
 /// Caller cancellation and non-transient errors are never retried. Between attempts it yields
 /// <see cref="StreamReset"/> (when something was already emitted) and a <see cref="StreamNotice"/> countdown.
 /// </summary>
@@ -119,11 +120,14 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
                 ExceptionDispatchInfo.Capture(failure!).Throw();
             }
 
+            // the server said how long to wait (Retry-After): sooner is only refused again
+            var asked = RetryAfterOf(failure!);
             var delay = Backoff(attempt, o);
+            if (asked > delay) delay = asked.Value;
             if (o.MaxTotal != Timeout.InfiniteTimeSpan && started.Elapsed + delay > o.MaxTotal)
             {
-                logger?.LogWarning("Model call failed after {Attempts} attempts in {Seconds:0}s (retry.maxTotalSeconds): {Reason}",
-                    attempt, started.Elapsed.TotalSeconds, reason);
+                logger?.LogWarning("Model call failed after {Attempts} attempts in {Seconds:0}s (retry.maxTotalSeconds): {Reason}{Asked}",
+                    attempt, started.Elapsed.TotalSeconds, reason, asked is null ? "" : $" (the server asked to wait {asked.Value.TotalSeconds:0}s)");
                 ExceptionDispatchInfo.Capture(failure!).Throw();
             }
             logger?.LogWarning("Model call to {Model} failed (attempt {Attempt}/{Max}): {Reason}. Retrying in {Delay} ms",
@@ -135,7 +139,9 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
                 yield return new StreamReset(reason);
             }
             var secsText = Math.Max(0, (int)Math.Ceiling(delay.TotalSeconds));
-            yield return new StreamNotice($"Connection lost ({reason}). Retrying in {secsText}s (attempt {attempt + 1}/{maxAttempts})…", "warn");
+            yield return new StreamNotice(asked is null
+                ? $"Connection lost ({reason}). Retrying in {secsText}s (attempt {attempt + 1}/{maxAttempts})…"
+                : $"{reason}: the server asked to wait. Retrying in {secsText}s (attempt {attempt + 1}/{maxAttempts})…", "warn");
             if (delay > TimeSpan.Zero) await Task.Delay(delay, ct).ConfigureAwait(false);
         }
     }
@@ -149,6 +155,14 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
         ms *= 0.8 + Random.Shared.NextDouble() * 0.4;
         return TimeSpan.FromMilliseconds(Math.Min(ms, maxMs));
     }
+
+    /// <summary>How long the server asked to wait before the next attempt (a provider's <c>Retry-After</c>), if it did.</summary>
+    public static TimeSpan? RetryAfterOf(Exception ex) => ex switch
+    {
+        ModelException { RetryAfter: { } wait } => wait,
+        AggregateException { InnerExceptions.Count: 1 } a => RetryAfterOf(a.InnerExceptions[0]),
+        _ => null,
+    };
 
     /// <summary>True for errors that mean "the connection to the model was lost" and are worth retrying.</summary>
     public static bool IsTransient(Exception ex) => ex switch

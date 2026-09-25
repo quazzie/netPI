@@ -81,6 +81,8 @@ public sealed class ModelException(string message, bool transient, int? statusCo
     public string? ErrorType { get; } = errorType;
     /// <summary>True when the provider reported a context-length overflow.</summary>
     public bool ContextOverflow { get; init; }
+    /// <summary>How long the server asked to wait before trying again (HTTP <c>Retry-After</c>), when it said.</summary>
+    public TimeSpan? RetryAfter { get; init; }
 }
 
 public delegate IAsyncEnumerable<ModelStreamEvent> ModelCallDelegate(ModelRequest request, CancellationToken ct);

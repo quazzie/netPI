@@ -99,10 +99,9 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 2. **Claude provider live test.** Needs an Anthropic API key (none available yet): thinking, tools, prompt caching, and the
    adaptive-thinking settings (`docs/SETTINGS.md`). Claude through OpenRouter (paid) would exercise OpenRouter's side of
    it (signed `reasoning_details`, `cache_control`), not the native provider.
-3. **Per-turn cache reuse and TTFT** in the chat or the Work tab. Cached/prompt tokens are in each assistant message's
-   `usage`; TTFT is not recorded yet (the agent runner could store the time to the first delta in the message meta).
-4. **OpenRouter follow-up:** let the retry plugin honor `Retry-After` (an additive `ModelException` field).
-5. **Open items** in `docs/STATUS.md`, under "Known limitations / ideas".
+3. **The agreed list in `docs/plans/harness-gaps.md`** (toasts, cache reuse and TTFT per turn, `ask_user`,
+   guardrails, the ideas plugin, forking a chat), in its order.
+4. **Open items** in `docs/STATUS.md`, under "Known limitations / ideas".
 
 ## Working rules
 

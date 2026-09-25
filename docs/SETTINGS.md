@@ -234,7 +234,7 @@ used: the chat stays as it was. Beyond pi: a transcript too long for the summari
 | `nudge.enabled` / `nudge.maxPerRun` | `true` / `3` | "continue" when a turn ends empty, cut off, or announces an action without doing it |
 | `toolRepair.enabled` | `true` | execute tool calls a model wrote as text (`<tool_call>…`) |
 | `retry.enabled` / `retry.maxAttempts` | `true` / `6` | retries lost connections and stalled streams |
-| `retry.baseDelayMs` / `retry.maxDelayMs` | `1000` / `30000` | exponential backoff with jitter |
+| `retry.baseDelayMs` / `retry.maxDelayMs` | `1000` / `30000` | exponential backoff with jitter; when the server says how long to wait (`Retry-After`, e.g. with a 429 or 529), at least that long |
 | `retry.firstEventTimeoutSeconds` | `600` | silence before the first token (slow prefill) |
 | `retry.stallTimeoutSeconds` | `180` | silence between tokens |
 | `retry.maxTotalSeconds` | `300` | give up after this long (AiProxy may hold each attempt 2 min) |

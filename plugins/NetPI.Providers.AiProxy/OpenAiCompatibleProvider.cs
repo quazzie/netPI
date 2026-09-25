@@ -127,7 +127,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         ApplyHeaders(req, o);
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-            throw ProviderErrors.FromHttp(DisplayName, (int)resp.StatusCode, resp.ReasonPhrase, await ProviderErrors.ReadBodySafeAsync(resp, cts.Token).ConfigureAwait(false));
+            throw ProviderErrors.FromHttp(DisplayName, resp, await ProviderErrors.ReadBodySafeAsync(resp, cts.Token).ConfigureAwait(false));
         var json = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -270,6 +270,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         return new ModelException($"{ex.Message} [{string.Join(", ", ids)}]", ex.Transient, ex.StatusCode, ex.ErrorType, ex)
         {
             ContextOverflow = ex.ContextOverflow,
+            RetryAfter = ex.RetryAfter,
         };
     }
 
@@ -349,7 +350,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
                 var errBody = await ProviderErrors.ReadBodySafeAsync(resp, ct).ConfigureAwait(false);
                 ct.ThrowIfCancellationRequested();
                 if ((int)resp.StatusCode == 404) InvalidateModels();
-                throw ProviderErrors.FromHttp(DisplayName, (int)resp.StatusCode, resp.ReasonPhrase, errBody);
+                throw ProviderErrors.FromHttp(DisplayName, resp, errBody);
             }
 
             var asm = new MessageAssembler();

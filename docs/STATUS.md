@@ -60,8 +60,7 @@
 - Linux/macOS: the suites last ran in the Linux sandbox, before the Windows work, and have not been re-run since.
 
 ## Known limitations / ideas
-- OpenRouter: a 429 reports its `Retry-After`, but the retry plugin keeps its own backoff; the catalog offers every tool-capable model (~390; narrow it with
-  `providers.openrouter.include`).
+- OpenRouter: the catalog offers every tool-capable model (~390; narrow it with `providers.openrouter.include`).
 - Per-turn cache reuse and TTFT are not shown in the UI (usage is in each assistant message; TTFT is not recorded).
 - Steering an orchestrator that is waiting on its workers makes it stop waiting, but it still needs an instance of its
   agent back; if its own workers hold every one, the reply waits for one of them to finish.

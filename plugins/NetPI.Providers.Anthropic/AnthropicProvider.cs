@@ -98,7 +98,7 @@ public sealed class AnthropicProvider : IModelProvider
         ApplyHeaders(req, o);
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-            throw ProviderErrors.FromHttp("Anthropic", (int)resp.StatusCode, resp.ReasonPhrase, await ProviderErrors.ReadBodySafeAsync(resp, cts.Token).ConfigureAwait(false));
+            throw ProviderErrors.FromHttp("Anthropic", resp, await ProviderErrors.ReadBodySafeAsync(resp, cts.Token).ConfigureAwait(false));
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false));
         var list = new List<ModelInfo>();
         foreach (var e in doc.RootElement.Prop("data").Items())
@@ -150,7 +150,7 @@ public sealed class AnthropicProvider : IModelProvider
             {
                 var errBody = await ProviderErrors.ReadBodySafeAsync(resp, ct).ConfigureAwait(false);
                 ct.ThrowIfCancellationRequested();
-                throw ProviderErrors.FromHttp("Anthropic", (int)resp.StatusCode, resp.ReasonPhrase, errBody);
+                throw ProviderErrors.FromHttp("Anthropic", resp, errBody);
             }
 
             Stream stream;

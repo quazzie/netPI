@@ -59,7 +59,11 @@ internal static partial class ProviderErrors
         return (msg, root.Str("type") is { } rt && rt != "error" ? rt : root.Str("code"));
     }
 
-    public static ModelException FromHttp(string provider, int status, string? reason, string? body)
+    /// <summary>A failed response, with how long the server asked to wait (<c>Retry-After</c>).</summary>
+    public static ModelException FromHttp(string provider, HttpResponseMessage resp, string? body) =>
+        FromHttp(provider, (int)resp.StatusCode, resp.ReasonPhrase, body, RetryAfterOf(resp));
+
+    public static ModelException FromHttp(string provider, int status, string? reason, string? body, TimeSpan? retryAfter = null)
     {
         var (message, type) = ExtractError(body);
         var detail = message ?? J.Truncate(body?.Trim(), MaxBodyChars);
@@ -69,8 +73,16 @@ internal static partial class ProviderErrors
         var overflow = (status is 400 or 413 or 422 && LooksLikeContextOverflow(message ?? body))
                        || (type is not null && OverflowTypes.Contains(type));
         var transient = !overflow && (TransientStatus.Contains(status) || (type is not null && TransientTypes.Contains(type)));
-        return new ModelException(text, transient, status, type) { ContextOverflow = overflow };
+        return new ModelException(text, transient, status, type) { ContextOverflow = overflow, RetryAfter = retryAfter };
     }
+
+    /// <summary>The response's <c>Retry-After</c> (seconds, or a date), when it has one.</summary>
+    public static TimeSpan? RetryAfterOf(HttpResponseMessage resp) => resp.Headers.RetryAfter switch
+    {
+        { Delta: { } delta } => delta > TimeSpan.Zero ? delta : TimeSpan.Zero,
+        { Date: { } date } => date - DateTimeOffset.UtcNow is var wait && wait > TimeSpan.Zero ? wait : TimeSpan.Zero,
+        _ => null,
+    };
 
     /// <summary>An error reported inside an otherwise successful stream.</summary>
     public static ModelException FromStream(string provider, string? type, string? message, int? status = null)

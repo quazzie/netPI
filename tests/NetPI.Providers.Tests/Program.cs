@@ -144,6 +144,17 @@ await t.Run("Error classification (HTTP)", () =>
     t.Check(ovl.Transient && ovl.ErrorType == "overloaded_error", "529 overloaded");
     var big = AP.ProviderErrors.FromHttp("X", 500, null, new string('x', 10_000));
     t.Check(big.Message.Length < 2200, "body truncated");
+
+    // Retry-After, in seconds or as a date, goes onto the error for the retry plugin
+    using var r429 = new HttpResponseMessage((System.Net.HttpStatusCode)429) { ReasonPhrase = "Too Many Requests" };
+    r429.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(12));
+    var e429 = AN.ProviderErrors.FromHttp("Anthropic", r429, """{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}""");
+    t.Check(e429 is { Transient: true, StatusCode: 429, ErrorType: "rate_limit_error" } && e429.RetryAfter == TimeSpan.FromSeconds(12), "Retry-After in seconds: " + e429.RetryAfter);
+    r429.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(DateTimeOffset.UtcNow.AddSeconds(30));
+    var byDate = AP.ProviderErrors.FromHttp("X", r429, "{}").RetryAfter;
+    t.Check(byDate > TimeSpan.FromSeconds(25) && byDate <= TimeSpan.FromSeconds(30), "Retry-After as a date: " + byDate);
+    r429.Headers.RetryAfter = null;
+    t.Check(AP.ProviderErrors.FromHttp("X", r429, "{}").RetryAfter is null, "no header: the retry plugin's own backoff");
     return Task.CompletedTask;
 });
 
@@ -943,6 +954,7 @@ await t.Run("openrouter: errors keep the server's text and add generation id, up
     t.Check(mid!.Message.Contains("upstream provider UpstreamX") && mid.Message.Contains("generation gen-vendor-mid-error"), "upstream + generation id: " + mid.Message);
     var rate = await Fails(openrouter, Req(M("openrouter", "vendor/rate-limited")));
     t.Check(rate is { Transient: true, StatusCode: 429 } && rate.Message.Contains("free-models-per-min") && rate.Message.Contains("retry after 7 s"), "429: " + rate?.Message);
+    t.Check(rate!.RetryAfter == TimeSpan.FromSeconds(7), "Retry-After kept for the retry plugin: " + rate.RetryAfter);
     var bad = await Fails(openrouter, Req(M("openrouter", "vendor/upstream-502")));
     t.Check(bad is { StatusCode: 502 } && bad.Message.Contains("upstream provider SomeHost") && bad.Message.Contains("upstream exploded"), "502: " + bad?.Message);
     var dumps = Directory.GetFiles(Path.Combine(orDumps, "failed-requests"), "*.json");

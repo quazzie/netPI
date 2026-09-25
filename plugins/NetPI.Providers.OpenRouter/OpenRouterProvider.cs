@@ -120,7 +120,7 @@ public sealed class OpenRouterProvider : IModelProvider
         ApplyHeaders(req, o);
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-            throw ProviderErrors.FromHttp(DisplayName, (int)resp.StatusCode, resp.ReasonPhrase, await ProviderErrors.ReadBodySafeAsync(resp, cts.Token).ConfigureAwait(false));
+            throw ProviderErrors.FromHttp(DisplayName, resp, await ProviderErrors.ReadBodySafeAsync(resp, cts.Token).ConfigureAwait(false));
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false));
         var list = new List<ModelInfo>();
         foreach (var e in doc.RootElement.Prop("data").Items())
@@ -250,7 +250,11 @@ public sealed class OpenRouterProvider : IModelProvider
             && DumpFailedRequest(ex, request, call) is { } dump)
             ids.Add("saved " + dump);
         if (ids.Count == 0) return ex;
-        return new ModelException($"{ex.Message} [{string.Join(", ", ids)}]", ex.Transient, ex.StatusCode, ex.ErrorType, ex) { ContextOverflow = ex.ContextOverflow };
+        return new ModelException($"{ex.Message} [{string.Join(", ", ids)}]", ex.Transient, ex.StatusCode, ex.ErrorType, ex)
+        {
+            ContextOverflow = ex.ContextOverflow,
+            RetryAfter = ex.RetryAfter,
+        };
     }
 
     private string? DumpFailedRequest(ModelException ex, ModelRequest request, CallInfo call)
@@ -370,7 +374,7 @@ public sealed class OpenRouterProvider : IModelProvider
     /// <summary>An HTTP error with what OpenRouter adds: the upstream provider (and its raw error) and Retry-After.</summary>
     private ModelException HttpError(HttpResponseMessage resp, string errBody)
     {
-        var ex = ProviderErrors.FromHttp(DisplayName, (int)resp.StatusCode, resp.ReasonPhrase, errBody);
+        var ex = ProviderErrors.FromHttp(DisplayName, resp, errBody);
         var notes = new List<string>();
         try
         {
@@ -380,11 +384,12 @@ public sealed class OpenRouterProvider : IModelProvider
             if (metadata.Str("raw") is { Length: > 0 } raw) notes.Add("upstream: " + J.Truncate(raw.Trim(), 400));
         }
         catch (JsonException) { }
-        if (resp.Headers.RetryAfter?.Delta is { } delta) notes.Add($"retry after {delta.TotalSeconds.ToString("0", CultureInfo.InvariantCulture)} s");
+        if (ex.RetryAfter is { } wait) notes.Add($"retry after {wait.TotalSeconds.ToString("0", CultureInfo.InvariantCulture)} s");
         if (notes.Count == 0) return ex;
         return new ModelException($"{ex.Message} ({string.Join("; ", notes)})", ex.Transient, ex.StatusCode, ex.ErrorType, ex.InnerException)
         {
             ContextOverflow = ex.ContextOverflow,
+            RetryAfter = ex.RetryAfter,
         };
     }
 

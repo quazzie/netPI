@@ -230,6 +230,33 @@ public static class RetryTests
             Check.Contains(text, "(attempt 2/5)");
         });
 
+        // A 429 or 529 says how long to wait: retrying sooner is only refused again
+        r.Add("retry: waits at least as long as the server asked (Retry-After)", async () =>
+        {
+            var script = new Script((n, _) => n == 1
+                ? Fail(new ModelException("OpenRouter: HTTP 429: rate limited", true, 429) { RetryAfter = TimeSpan.FromMilliseconds(400) })
+                : Events(Done()));
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var events = await Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, script.Next, CancellationToken.None));
+            Check.True(clock.ElapsedMilliseconds >= 390, $"waited {clock.ElapsedMilliseconds} ms (the backoff alone is 1 ms)");
+            Check.Equal(2, script.Calls);
+            var notice = events.OfType<StreamNotice>().Single().Text;
+            Check.Contains(notice, "OpenRouter: HTTP 429: rate limited: the server asked to wait. Retrying in 1s (attempt 2/4)");
+            Check.Equal(TimeSpan.FromSeconds(3), RetryMiddleware.RetryAfterOf(new AggregateException(new ModelException("x", true) { RetryAfter = TimeSpan.FromSeconds(3) })));
+            Check.True(RetryMiddleware.RetryAfterOf(new IOException("x")) is null);
+        });
+
+        r.Add("retry: a Retry-After beyond retry.maxTotalSeconds gives up at once", async () =>
+        {
+            var script = new Script((_, _) => Fail(new ModelException("rate limited", true, 429) { RetryAfter = TimeSpan.FromMinutes(10) }));
+            var o = new RetryOptions { MaxAttempts = 5, BaseDelay = TimeSpan.FromMilliseconds(1), MaxDelay = TimeSpan.FromMilliseconds(5), MaxTotal = TimeSpan.FromSeconds(60) };
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var ex = await Check.ThrowsAsync<ModelException>(() => Collect(new RetryMiddleware(() => o).InvokeAsync(Request, script.Next, CancellationToken.None)));
+            Check.Equal("rate limited", ex.Message);
+            Check.Equal(1, script.Calls);
+            Check.True(clock.ElapsedMilliseconds < 2000, "no waiting");
+        });
+
         r.Add("retry: a stream that ends without StreamCompleted is retried", async () =>
         {
             var script = new Script((n, _) => n == 1 ? Events(new TextDelta("cut")) : Events(Done()));
