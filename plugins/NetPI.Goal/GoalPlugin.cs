@@ -113,10 +113,7 @@ internal sealed class GoalUpdateTool(Goals goals) : IAgentTool
             },
             ["required"] = new JsonArray("status", "summary"),
         },
-        PromptGuidelines =
-        [
-            "While a goal is active you are started again after every answer: call goal_update with status complete only when every part is done and verified, blocked only when you need the user.",
-        ],
+        // no guideline: every notice of an active goal says when to call it
     };
 
     public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)

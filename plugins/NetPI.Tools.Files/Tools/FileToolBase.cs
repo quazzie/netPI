@@ -10,6 +10,12 @@ public abstract class FileToolBase(ISettings? settings) : IAgentTool
     /// <summary>Files larger than this are not loaded for editing/diffing.</summary>
     public const long MaxEditableBytes = 64L * 1024 * 1024;
 
+    // Guidelines the file tools share: every tool a line concerns carries it, and the prompt lists it once.
+    internal const string UseFileTools =
+        "Use the file tools for files, not cat, sed, grep, find or echo > in the shell. They handle line endings, encodings and BOMs: never convert them yourself.";
+    internal const string ChangeFiles =
+        "Change existing files with edit, copying oldText verbatim from read output, and make all the changes to a file in one call; use write only for new files and complete rewrites of small ones.";
+
     protected ISettings? Settings { get; } = settings;
 
     public abstract ToolDefinition Definition { get; }

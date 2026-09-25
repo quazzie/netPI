@@ -64,8 +64,7 @@ internal sealed class TodoWriteTool(IPluginContext ctx) : IAgentTool
         Description =
             "Keep a checklist for the current task. Send the whole list every time: it replaces the previous one. " +
             "Status is pending, in_progress or done. Keep one item in_progress while you work on it and mark it done as soon " +
-            "as it is finished; add, drop or reword items when the plan changes. The user sees the list. Use it for work with " +
-            "three or more steps, not for simple requests. An empty list clears it.",
+            "as it is finished; add, drop or reword items when the plan changes. The user sees the list. An empty list clears it.",
         Parameters = new JsonObject
         {
             ["type"] = "object",
@@ -91,7 +90,7 @@ internal sealed class TodoWriteTool(IPluginContext ctx) : IAgentTool
         },
         PromptGuidelines =
         [
-            "For work with several steps, plan it with todo_write and keep the list current: one item in_progress at a time, done as soon as it is finished.",
+            "For work with three or more steps, plan it with todo_write and keep the list current; not for simple requests.",
         ],
     };
 

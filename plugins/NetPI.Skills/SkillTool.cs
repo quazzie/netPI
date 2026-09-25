@@ -18,7 +18,7 @@ internal sealed class SkillTool(SkillLoader loader, IPluginContext ctx) : IAgent
         Name = Name,
         Label = "Skill",
         Description = "Load a skill: the instructions of one of the skills listed in <available_skills> notices, with its folder and the files it " +
-                      "bundles. Call it when a task matches a skill's description, before you start on the task, then follow the instructions.",
+                      "bundles.",
         Category = "skills",
         ReadOnly = true,
         SummaryArg = "name",

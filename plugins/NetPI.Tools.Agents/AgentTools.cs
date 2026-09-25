@@ -122,17 +122,12 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
         return model is null ? null : pools.FirstOrDefault(p => p.Models.Contains(model, StringComparer.OrdinalIgnoreCase));
     }
 
-    // Delegation guidance lives with the tools (only agents that have them see it); the agents plugin explains the agents.
+    // When to delegate lives with the tools (only agents that have them see it); how the tools work is in their
+    // definitions, and the agents plugin says how to choose an agent.
     protected static readonly string[] SpawnGuidelines =
     [
-        "Delegate independent, well-scoped work (research, exploring code, separate modules) to subagents with agent_spawn. A subagent has its own session and does not see this conversation: give it a complete, self-contained task.",
-        "agent_spawn waits for its subagents and returns their reports. While it waits your own instance is free: one of the subagents can run on your agent. To run several at the same time, start them in one call (subagents: [...]); separate agent_spawn calls run one after the other.",
-        "Only when you have other work to do meanwhile, pass background: true: the call returns at once and each report arrives later on its own (an <agent-result> notice), or collect them with agent_wait. Don't delegate what you can do in a couple of tool calls.",
-    ];
-
-    protected static readonly string[] WaitGuidelines =
-    [
-        "After background spawns, call agent_wait once to collect every report that is not in yet (it also returns reports that arrived while you were busy); you resume with only their final reports.",
+        "Delegate independent, well-scoped work (research, exploring code, separate modules) to subagents with agent_spawn; don't delegate what you can do in a couple of tool calls.",
+        "Start subagents that should run at the same time in one agent_spawn call: separate calls run one after the other. Pass background: true only when you have other work to do meanwhile.",
     ];
 }
 
@@ -144,7 +139,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     {
         ["task"] = Prop("string", "Complete, self-contained task description (the subagent does not see your conversation): goal, relevant paths and context, constraints, and what to put in the final report."),
         ["name"] = Prop("string", "Short name for the subagent, e.g. \"tests\" or \"api-research\"."),
-        ["agent"] = Prop("string", "The agent to run on: an id from agent_choices. Required when the user has set up agents; choose an active one by its note and cost. On a busy agent the subagent waits for a free instance."),
+        ["agent"] = Prop("string", "The agent to run on: an id from agent_choices (required when the user has set up agents). On a busy agent the subagent waits for a free instance."),
         ["model"] = Prop("string", "Only when no agents are set up: a model ref \"provider/model\". Default: your model."),
         ["tools"] = StringArray("The subagent's tools, by name; they may include tools you do not have yourself (e.g. give a remote-work agent the ssh_* tools). Default: the tools you have."),
         ["instructions"] = Prop("string", "Extra instructions appended to the subagent's system prompt."),
@@ -168,7 +163,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
                 ["description"] = "Several subagents to start together, each { task, name?, agent?, model?, tools?, instructions? } (instead of the single task above).",
                 ["items"] = Schema(ItemProperties(), "task"),
             },
-            ["background"] = Prop("boolean", "true: return at once and keep working; each report arrives later on its own (or collect them with agent_wait). Default false: wait for all of them, with your instance free for them meanwhile (one can run on your own agent), and get every report back."),
+            ["background"] = Prop("boolean", "true: return at once; each report arrives later on its own (or collect them with agent_wait). Default false: wait for all of them."),
             ["timeoutSeconds"] = Prop("integer", "When waiting: maximum seconds to wait (the ones still running then report later on their own)."),
         }),
     };
@@ -311,7 +306,6 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
         Label = "Wait for agents",
         Description = "Wait for subagents to finish and return their final reports. While waiting your instance is released (yielded) so other runs, typically the ones you wait for, can use it; afterwards you resume with priority. Without ids it waits for all of your running subagents and also returns the reports that arrived while you were busy and you have not seen yet. A new user message interrupts the wait.",
         Category = "agents",
-        PromptGuidelines = WaitGuidelines,
         Parameters = Schema(new JsonObject
         {
             ["ids"] = StringArray("Agent ids (or names) to wait for. Default: all of your running subagents, plus finished ones whose report you have not seen."),

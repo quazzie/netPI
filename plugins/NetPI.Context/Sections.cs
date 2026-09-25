@@ -85,9 +85,10 @@ internal sealed class EnvironmentSection : IPromptSection
 }
 
 /// <summary>
-/// The guideline bullets the active tools contribute (order 200); with <c>context.toolDescriptions</c> also one line per
-/// tool (descriptions and schemas are always sent with the tool definitions). Everything feature-specific comes from the
-/// plugin that owns it: tools bring their own bullets, other plugins register their own sections.
+/// The guideline bullets the active tools contribute (order 200), grouped by category, each line once (tools that share a
+/// line carry the same text); with <c>context.toolDescriptions</c> also one line per tool (descriptions and schemas are
+/// always sent with the tool definitions). Everything feature-specific comes from the plugin that owns it: tools bring
+/// their own bullets, other plugins register their own sections.
 /// </summary>
 internal sealed class ToolsSection(ISettings settings) : IPromptSection
 {
@@ -96,15 +97,20 @@ internal sealed class ToolsSection(ISettings settings) : IPromptSection
 
     public ValueTask<string?> RenderAsync(PromptContext c, CancellationToken ct)
     {
+        var tools = c.Tools.OrderBy(t => t.Category, StringComparer.Ordinal).ToList(); // stable: by name within a category
         var sb = new StringBuilder();
         if (settings.Get("context.toolDescriptions", false))
-            foreach (var t in c.Tools)
+            foreach (var t in tools)
                 sb.Append("- ").Append(t.Name).Append(": ").Append(SectionUtil.Summary(t.Description)).Append('\n');
-        foreach (var g in c.Tools.SelectMany(t => t.PromptGuidelines ?? []).Where(g => !string.IsNullOrWhiteSpace(g))
-                     .Select(g => g.Trim()).Distinct(StringComparer.Ordinal))
+        foreach (var g in Guidelines(tools))
             sb.Append("- ").Append(g).Append('\n');
         return ValueTask.FromResult<string?>(sb.Length == 0 ? null : "# Tools\n" + sb.ToString().TrimEnd());
     }
+
+    /// <summary>The tools' guideline lines, trimmed, each once.</summary>
+    internal static IEnumerable<string> Guidelines(IEnumerable<ToolDefinition> tools) =>
+        tools.SelectMany(t => t.PromptGuidelines ?? []).Where(g => !string.IsNullOrWhiteSpace(g))
+            .Select(g => g.Trim()).Distinct(StringComparer.Ordinal);
 }
 
 /// <summary>Subagent role / extra instructions (order 800): <see cref="PromptContext.Instructions"/> or the session's stored instructions.</summary>

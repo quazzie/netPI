@@ -37,7 +37,7 @@ internal sealed partial class WebSearchTool(IPluginContext ctx, HttpClient http)
             },
             ["required"] = new JsonArray("query"),
         },
-        PromptGuidelines = ["Use web_search to find current information or documentation, then web_fetch the best results before relying on them."],
+        PromptGuidelines = ["Use web_search to find current information or documentation."],
     };
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)

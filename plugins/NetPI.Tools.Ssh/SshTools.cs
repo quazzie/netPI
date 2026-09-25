@@ -115,7 +115,7 @@ internal sealed class SshHostsTool(IPluginContext ctx) : SshToolBase(ctx, new Pr
         Category = "ssh",
         ReadOnly = true,
         Description = "List the remote hosts the ssh_* tools can use: the aliases in the user's ~/.ssh/config, with user and address.",
-        PromptGuidelines = ["For work on other machines use the ssh_* tools rather than ssh in bash: scripts and file contents go through as they are, without quoting."],
+        PromptGuidelines = ["For work on other machines use the ssh_* tools, not ssh in bash."],
     };
 
     protected override Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)

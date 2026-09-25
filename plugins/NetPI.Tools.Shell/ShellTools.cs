@@ -6,6 +6,12 @@ namespace NetPI.Tools.Shell;
 
 public abstract class ShellToolBase : IAgentTool
 {
+    // Guidelines the shell tools share: every tool a line concerns carries it, and the prompt lists it once.
+    internal const string FreshShell =
+        "Every shell call is fresh and non-interactive: cd and variables don't persist (use cwd or `cd dir && …`), pass -y style flags, and never start editors, pagers, REPLs or prompts.";
+    internal const string BackgroundProcesses =
+        "Check background processes with process_output instead of sleeping, and kill the ones you no longer need; don't append `&` to a command.";
+
     public abstract ToolDefinition Definition { get; }
 
     internal abstract Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct);
@@ -77,14 +83,9 @@ public sealed class ShellTool : ShellToolBase
     private static ToolDefinition BashDefinition()
     {
         var win = OperatingSystem.IsWindows();
-        var guidelines = new List<string>
-        {
-            "Use bash for programs, builds, tests, git and package managers; use the file tools (not cat/sed/grep/find) for files.",
-            "Every shell call is fresh and non-interactive: cd/variables don't persist (use cwd or `cd dir && …`), pass -y style flags, never start editors, pagers or REPLs.",
-            "Servers/watchers: background=true, then process_output / process_kill (don't append `&`). Long output is truncated to its tail; the full output is saved to a file.",
-        };
+        var guidelines = new List<string> { FreshShell, BackgroundProcesses };
         if (win)
-            guidelines.Insert(1, "bash is Git Bash: use forward slashes (C:/x or /c/x); POSIX tools work, cmd built-ins (dir, copy) don't; Windows programs (dotnet, npm, git) work normally.");
+            guidelines.Insert(0, "bash is Git Bash: use forward slashes (C:/x or /c/x); cmd built-ins (dir, copy) don't work, Windows programs (dotnet, npm, git) do.");
         return new ToolDefinition
         {
             Name = "bash",
@@ -113,7 +114,9 @@ public sealed class ShellTool : ShellToolBase
         Parameters = Parameters("The PowerShell script to run."),
         PromptGuidelines =
         [
-            "Use pwsh for Windows-specific work (registry, services, cmdlets, .NET APIs); prefer bash otherwise. Never prompt (Read-Host).",
+            "Use pwsh for Windows-specific work (registry, services, cmdlets, .NET APIs); prefer bash otherwise.",
+            FreshShell,
+            BackgroundProcesses,
         ],
     };
 }
@@ -156,7 +159,7 @@ public sealed class ProcessOutputTool(ProcessRegistry registry) : ShellToolBase
         Parameters = Schema.Object(
             ("id", Schema.Str("Process id (proc_…) as returned by bash/pwsh with background=true."), true),
             ("tail", Schema.Int($"Number of trailing lines to return (default {DefaultTail}, max {OutputFormat.ModelMaxLines})."), false)),
-        PromptGuidelines = ["Check background processes with process_output instead of sleeping in the shell; kill the ones you no longer need."],
+        PromptGuidelines = [BackgroundProcesses],
     };
 
     internal override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
@@ -187,7 +190,7 @@ public sealed class ProcessKillTool(ProcessRegistry registry) : ShellToolBase
         SummaryArg = "id",
         Description = "Kill a background process and all of its child processes.",
         Parameters = Schema.Object(("id", Schema.Str("Process id (proc_…)."), true)),
-        PromptGuidelines = [],
+        PromptGuidelines = [BackgroundProcesses],
     };
 
     internal override async Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)

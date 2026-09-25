@@ -37,7 +37,7 @@ internal sealed class ScreenshotTool(IPluginContext ctx) : IAgentTool
                 ["delay_ms"] = new JsonObject { ["type"] = "integer", ["description"] = "Extra wait after loading (default 500)" },
             },
         },
-        PromptGuidelines = ["Use screenshot to check UI work visually (your own dev server, or the NetPI window with no url)."],
+        PromptGuidelines = ["Use screenshot to check UI work visually."],
     };
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)

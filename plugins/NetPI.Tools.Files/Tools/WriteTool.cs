@@ -19,10 +19,7 @@ public sealed class WriteTool(ISettings? settings = null) : FileToolBase(setting
         Parameters = Schema.Object(
             ("path", Schema.Str("File path, absolute or relative to the working directory."), true),
             ("content", Schema.Str("The complete new file content."), true)),
-        PromptGuidelines =
-        [
-            "Use write for new files or complete rewrites of small files; change existing files with edit.",
-        ],
+        PromptGuidelines = [UseFileTools, ChangeFiles],
     };
 
     protected override async Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)

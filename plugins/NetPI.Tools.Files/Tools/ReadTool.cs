@@ -24,11 +24,7 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
             ("path", Schema.Str("File path, absolute or relative to the working directory."), true),
             ("offset", Schema.Int("1-based line number to start from (default 1). Negative values count from the end."), false),
             ("limit", Schema.Int($"Maximum number of lines to return (default and max {MaxLines})."), false)),
-        PromptGuidelines =
-        [
-            "Read a file (with read, not cat) before editing it; page large files with offset/limit.",
-            "Line endings (CRLF/LF), encodings and BOMs are handled automatically by the file tools; never convert them yourself.",
-        ],
+        PromptGuidelines = [UseFileTools],
     };
 
     protected override async Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)

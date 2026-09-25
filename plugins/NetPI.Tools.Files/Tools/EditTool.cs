@@ -35,10 +35,7 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
             ("oldText", Schema.Str("Shorthand for a single edit: text to find."), false),
             ("newText", Schema.Str("Shorthand for a single edit: replacement text."), false),
             ("replaceAll", Schema.Bool("Shorthand for a single edit: replace every occurrence."), false)),
-        PromptGuidelines =
-        [
-            "edit: copy oldText verbatim from read output; keep it small but unique (add neighbouring lines if needed); replaceAll for renames; batch changes to one file in a single call (all-or-nothing).",
-        ],
+        PromptGuidelines = [UseFileTools, ChangeFiles],
     };
 
     /// <summary>Parse the edits array or the single-edit shorthand. Returns an error message on invalid input.</summary>

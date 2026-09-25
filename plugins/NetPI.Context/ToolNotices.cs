@@ -65,8 +65,9 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
         var gone = removed.Where(n => switchedOff?.Contains(n) != true).ToList();
         if (byUser.Count > 0) sb.Append(" The user switched off for this session: ").Append(string.Join(", ", byUser)).Append('.');
         if (gone.Count > 0) sb.Append(" No longer available: ").Append(string.Join(", ", gone)).Append('.');
-        var guidelines = tools.Where(t => added.Contains(t.Name)).SelectMany(t => t.PromptGuidelines ?? [])
-            .Where(g => !string.IsNullOrWhiteSpace(g)).Select(g => g.Trim()).Distinct(StringComparer.Ordinal).ToList();
+        // a line the new tools share with tools the model already has is in its context already (prompt or earlier notice)
+        var had = ToolsSection.Guidelines(tools.Where(t => !added.Contains(t.Name))).ToHashSet(StringComparer.Ordinal);
+        var guidelines = ToolsSection.Guidelines(tools.Where(t => added.Contains(t.Name))).Where(g => !had.Contains(g)).ToList();
         if (guidelines.Count > 0) sb.Append("\nGuidelines for the new tools:").Append(string.Concat(guidelines.Select(g => "\n- " + g)));
         return sb.ToString();
     }

@@ -15,6 +15,8 @@ public static class ContextTests
         t.Add("context: every system prompt a session is sent is kept with its tools (context.prompts, context.prompt event)", SentPrompts);
         t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
+        t.Add("context: a tools notice leaves out the guidelines the model already has", ToolNoticeKnownGuidelines);
+        t.Add("context: tool guidelines are grouped by category, a line tools share listed once", GuidelineGroups);
         t.Add("context: guidance on using and keeping AGENTS.md (setting replaces or drops it)", InstructionGuidance);
         t.Add("context: custom and appended prompt settings", CustomPrompt);
         t.Add("context: context.preview", Preview);
@@ -56,12 +58,11 @@ public static class ContextTests
         Check.Contains(prompt, "<system-notice>");
         Check.Contains(prompt, "Use edit for testing.");
         Check.Contains(prompt, "Delegate independent, well-scoped work");
-        Check.Contains(prompt, "call agent_wait once");
-        Check.Contains(prompt, "agent_spawn waits for its subagents and returns their reports. While it waits your own instance is free");
-        Check.Contains(prompt, "Only when you have other work to do meanwhile, pass background: true");
-        Check.Contains(prompt, "Before you delegate, look at agent_choices");
-        Check.Contains(prompt, "your instance is free for them: count it as a free instance of your own agent");
-        Check.Contains(prompt, "start them in one call (subagents: [...])");
+        Check.Contains(prompt, "in one agent_spawn call: separate calls run one after the other");
+        Check.Contains(prompt, "Pass background: true only when you have other work to do meanwhile");
+        Check.Contains(prompt, "Before you delegate, look at agent_choices and choose an active agent by its note and cost");
+        // how the agent tools work is in their definitions (agent_choices marks the caller's free instance), not here
+        Check.NotContains(prompt, "instance is free");
         Check.Contains(prompt, "You are \"w1\", a subagent.");
         Check.NotContains(prompt, "\n\n\n", "no empty sections");
 
@@ -369,6 +370,40 @@ public static class ContextTests
         await Turn(h, s.Id, "gone?");
         Check.Equal("Your tools changed. No longer available: web_probe.", Notices(h, s.Id, "tools").Last().Text);
         Check.Equal(2, Notices(h, s.Id, "tools").Count);
+    }
+
+    // Tools of one plugin share lines (the file tools' "use the file tools, not the shell"): a new tool's shared line is in
+    // the context already when a tool that carries it was there before.
+    private static async Task ToolNoticeKnownGuidelines()
+    {
+        await using var h = await TestHost.StartAsync();
+        Task<ToolResult> Ok(ToolContext c, System.Text.Json.JsonElement a, CancellationToken t) => Task.FromResult(ToolResult.Ok(""));
+        h.AddTool(new FakeTool("probe_a", Ok, guidelines: ["Shared probe line."]));
+        var s = h.NewSession();
+        await Turn(h, s.Id, "hi");
+        Check.Contains(h.Catalog.Requests.Last().SystemPrompt!, "- Shared probe line.");
+
+        using var b = h.Tools.Register(new FakeTool("probe_b", Ok, guidelines: ["Shared probe line.", "Use probe_b for testing."]));
+        using var c = h.Tools.Register(new FakeTool("probe_c", Ok, guidelines: ["Shared probe line."]));
+        await Turn(h, s.Id, "more tools?");
+        Check.Equal("Your tools changed. New: probe_b, probe_c.\nGuidelines for the new tools:\n- Use probe_b for testing.",
+            Notices(h, s.Id, "tools").Single().Text);
+    }
+
+    private static async Task GuidelineGroups()
+    {
+        await using var h = await TestHost.StartAsync();
+        Task<ToolResult> Ok(ToolContext c, System.Text.Json.JsonElement a, CancellationToken t) => Task.FromResult(ToolResult.Ok(""));
+        // sorted by name, as the runner passes them
+        var tools = new[]
+        {
+            new FakeTool("aa_run", Ok, category: "shell", guidelines: ["Shared shell line."]).Definition,
+            new FakeTool("mm_read", Ok, category: "files", guidelines: ["  Files line. ", ""]).Definition,
+            new FakeTool("zz_run", Ok, category: "shell", guidelines: ["Shared shell line.", "Only zz_run."]).Definition,
+        };
+        var prompt = await h.Services.Get<ISystemPromptBuilder>()!.BuildAsync(Ctx(h, h.NewSession(), tools), CancellationToken.None);
+        Check.Contains(prompt, "# Tools\n- Files line.\n- Shared shell line.\n- Only zz_run.\n\n");
+        Check.Equal(1, prompt.Split("Shared shell line.").Length - 1, "a shared line once");
     }
 
     private static async Task InstructionGuidance()

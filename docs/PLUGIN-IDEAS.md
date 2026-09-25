@@ -182,7 +182,7 @@ empty `args` gives `bad_request` with `"Usage: /idea <title>"`.
 
 | tool | args | notes |
 |---|---|---|
-| `idea_add` | `{ title, summary?, priority?, tags?, sections?: [{kind, title?, content}] }` | `createdBy: "agent:<id>"`. Prompt guideline: *"When research/plans are deferred or not feasible now, record them with idea_add instead of losing them."* |
+| `idea_add` | `{ title, summary?, priority?, tags?, sections?: [{kind, title?, content}] }` | `createdBy: "agent:<id>"`. Prompt guideline: *"Record research and plans that are deferred, out of scope or not feasible now with idea_add; check idea_list before larger work."* |
 | `idea_list` (read-only) | `{ status?, tag?, query? }` | Compact lines: `- idea-… [status · priority] Title — summary #tags (n sections)`. By default done and rejected ideas are hidden, with a count of how many were hidden. `status` also takes `active` and `all`, or a comma-separated list. `query` needs every word to appear in the title, summary, tags or sections. |
 | `idea_get` (read-only) | `{ id }` | Full markdown. Section headings carry the section ids: `## Plan: Rollout [sec-4f0a]`. |
 | `idea_update` | `{ id, title?, summary?, status?, priority?, tags?, addSections?, updateSections?, removeSectionIds? }` | For tools, a `sections` argument is treated as `addSections`, and unknown fields are ignored. The session id is added to `sessionIds`. |

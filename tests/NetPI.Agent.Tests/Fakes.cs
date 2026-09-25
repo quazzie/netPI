@@ -602,7 +602,8 @@ public static class Reply
 
 // ------------------------------------------------------------------ fake tool
 
-public sealed class FakeTool(string name, Func<ToolContext, JsonElement, CancellationToken, Task<ToolResult>> exec, bool readOnly = false, string category = "general") : IAgentTool
+public sealed class FakeTool(string name, Func<ToolContext, JsonElement, CancellationToken, Task<ToolResult>> exec, bool readOnly = false, string category = "general",
+    IReadOnlyList<string>? guidelines = null) : IAgentTool
 {
     public int Calls;
     public ToolDefinition Definition { get; } = new()
@@ -612,7 +613,7 @@ public sealed class FakeTool(string name, Func<ToolContext, JsonElement, Cancell
         ReadOnly = readOnly,
         Category = category,
         Label = name.ToUpperInvariant(),
-        PromptGuidelines = [$"Use {name} for testing."],
+        PromptGuidelines = guidelines ?? [$"Use {name} for testing."],
     };
 
     public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)

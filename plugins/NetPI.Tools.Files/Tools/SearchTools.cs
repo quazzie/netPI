@@ -17,7 +17,7 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
             "node_modules/bin/obj/.git/dist/build. Output: `path:line: text` (context lines use `path-line- text`). " +
             "Line endings never matter: `$` matches at the end of each line in CRLF and LF files.",
         Parameters = Schema.Object(
-            ("pattern", Schema.Str("Regular expression (or plain text with literal=true)."), true),
+            ("pattern", Schema.Str("Regular expression: escape ( ) [ ] . * + ? to match them, or pass literal=true for plain text."), true),
             ("path", Schema.Str("File or directory to search (default: working directory)."), false),
             ("glob", Schema.Str("Filter files by glob, e.g. \"*.cs\", \"**/*.{ts,tsx}\", \"!**/*.test.ts\". Several globs may be separated by spaces."), false),
             ("ignoreCase", Schema.Bool("Case-insensitive search."), false),
@@ -26,10 +26,7 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
             ("maxResults", Schema.Int("Maximum matching lines (content) or files (files/count). Default 200."), false),
             ("outputMode", Schema.Str("content (default): matching lines; files: only file paths; count: matches per file.", "content", "files", "count"), false),
             ("multiline", Schema.Bool("Let the pattern span lines (use \\n in the pattern; (?s) makes . match newlines)."), false)),
-        PromptGuidelines =
-        [
-            "Use the grep/find/ls tools instead of their shell equivalents. grep takes .NET regexes (escape ( ) [ ] . * + ? or pass literal=true).",
-        ],
+        PromptGuidelines = [UseFileTools],
     };
 
     protected override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
@@ -130,10 +127,7 @@ public sealed class FindTool(ISettings? settings = null) : FileToolBase(settings
             ("pattern", Schema.Str("Glob pattern, relative to path."), true),
             ("path", Schema.Str("Directory to search in (default: working directory)."), false),
             ("maxResults", Schema.Int($"Maximum results (default {DefaultMax})."), false)),
-        PromptGuidelines =
-        [
-
-        ],
+        PromptGuidelines = [UseFileTools],
     };
 
     protected override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
@@ -204,10 +198,7 @@ public sealed class LsTool(ISettings? settings = null) : FileToolBase(settings)
         Parameters = Schema.Object(
             ("path", Schema.Str("Directory to list (default: working directory)."), false),
             ("all", Schema.Bool("Also show ignored entries (.git, node_modules, bin, gitignored files…)."), false)),
-        PromptGuidelines =
-        [
-
-        ],
+        PromptGuidelines = [UseFileTools],
     };
 
     protected override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)

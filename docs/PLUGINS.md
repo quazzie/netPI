@@ -98,6 +98,11 @@ Guidance for a feature comes from the plugin that owns it, so it disappears with
 `PromptGuidelines` (listed under "# Tools" while the tool is active), anything else as the plugin's own section (the agents
 plugin adds "# Agents" for agents that can spawn subagents).
 
+Say each thing once. A tool's description and parameters reach the model with every request, so its guidelines add only
+what they don't say: when to reach for the tool, which tool to prefer, and rules that span tools. A line several tools
+need goes on each of them with the same text: "# Tools" lists it once (grouped by category), and a `tools` notice leaves
+it out when the model has it already. A plugin's section doesn't repeat the tools' definitions either.
+
 ### Never rewrite what was sent
 
 A request starts with the system prompt, the tool definitions and every earlier message; the backend reuses its cache
@@ -116,7 +121,8 @@ Anthropic's prompt cache alike). So nothing that was sent is ever changed; new i
 - **Tools are sent sorted by name**, so a plugin reload does not reorder them. Every request carries the tools that are
   registered right now, so a tool from a plugin loaded mid-session is callable at the next model call. Its guidelines
   are not in the frozen prompt, so the context plugin appends a `tools` notice ("Your tools changed. New: …", with the
-  new tools' `PromptGuidelines`; removed tools are named too, and tools the user switched off for the chat as such).
+  new tools' `PromptGuidelines` that the model doesn't have yet; removed tools are named too, and tools the user
+  switched off for the chat as such).
   Changing the tool set is the one change that re-prefills once, because the definitions sit at the top of the request.
 
 Exceptions by necessity: compaction replaces old messages with a summary when the context is nearly full, tool-call

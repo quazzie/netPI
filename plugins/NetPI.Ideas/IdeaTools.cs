@@ -153,10 +153,10 @@ public sealed class IdeaAddTool(IdeasStore store, IdeasLocator locator) : IdeaTo
         SummaryArg = "title",
         Description =
             "Record an idea, research result or plan in the project's ideas backlog (ideas.json) so it is not lost. " +
-            "Use it for work that is deferred, out of scope or not feasible right now. Put findings, plans and requirements into sections.",
+            "Put findings, plans and requirements into sections.",
         PromptGuidelines =
         [
-            "Record deferred or not-yet-feasible research/plans with idea_add (put findings in sections); check idea_list before larger work.",
+            "Record research and plans that are deferred, out of scope or not feasible now with idea_add; check idea_list before larger work.",
         ],
         Parameters = new JsonObject
         {

@@ -65,9 +65,10 @@ subagent's tool list), and a chat without it gets no catalog.
   again, naming the skills it had loaded before ("Load a skill again if you still need its instructions"). No skills: no
   notice. A tool switched on later brings the catalog with it; switched off, the tools notice says so. Meta:
   `skills: [{ name, hash, path }]`, `removed: [name]`.
-- **The `skill` tool** loads one (see [TOOLS.md](TOOLS.md)). Its guideline in the "# Tools" section: when a task matches
-  a skill's description, load it before you start and follow it. Like every tool definition it is part of every request
-  (about 165 tokens with the guideline); the backend's prompt cache keeps it, so it is processed once per chat.
+- **The `skill` tool** loads one (see [TOOLS.md](TOOLS.md)). Its guideline in the "# Tools" section says when: when a
+  task matches a skill's description, load it before you start and follow it (the description only says what it loads).
+  Like every tool definition it is part of every request (about 135 tokens with the guideline); the backend's prompt
+  cache keeps it, so it is processed once per chat.
 - **`/skill:name …`** at the start of your message: the message is sent as you typed it and a `skill` notice with that
   skill's instructions follows it ("The user loaded the skill "x" for their message: follow its instructions."), also
   for a message that steers a running agent. This is you asking, so it works with the skill tool switched off, and for
