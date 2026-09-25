@@ -81,7 +81,7 @@ public static class UnloadTests
                 if (r.SystemPrompt?.Contains("a subagent working for") == true) return Reply.Text("child report");
                 return Reply.HasToolResult(r)
                     ? Reply.Text("parent done")
-                    : Reply.Tools(Reply.Call("agent_choices"), Reply.Call("agent_spawn", new { task = "work", name = "w", wait = true }));
+                    : Reply.Tools(Reply.Call("agent_choices"), Reply.Call("agent_spawn", new { task = "work", name = "w" }));
             };
             var runtime = h.Services.Get<IAgentRuntime>()!;
             Check.True(runtime.GetType().Assembly.IsCollectible, "runtime comes from a collectible context");

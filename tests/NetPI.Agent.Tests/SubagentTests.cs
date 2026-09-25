@@ -20,12 +20,12 @@ public static class SubagentTests
         t.Add("subagents: a chat on a local agent spawns onto an agent on another provider; the subagent keeps that agent", SpawnOntoConfiguredPool);
         t.Add("subagents: one agent_spawn starts several together; waiting frees the caller's instance for one of them", BatchSpawn);
         t.Add("subagents: a batch with a bad entry starts none of them", BatchRefused);
-        t.Add("subagents: a report that arrives before agent_wait still reaches the parent", ReportBeforeWait);
+        t.Add("subagents: agent_wait without ids also returns a report that arrived while the parent was busy, once", ReportBeforeWait);
     }
 
     /// <summary>
     /// The user's story test: two subagents; the quick one finishes while the parent is still thinking about its next
-    /// step, then the parent calls agent_wait (for its running ones). Both reports must reach the model.
+    /// step, then the parent calls agent_wait without ids: it returns both reports, and the quick one arrives only once.
     /// </summary>
     private static async Task ReportBeforeWait()
     {
@@ -38,11 +38,11 @@ public static class SubagentTests
                 return Reply.LastUser(r).Contains("quick")
                     ? Reply.Text("QUICK REPORT", async _ => { await Task.Yield(); })
                     : Reply.Text("SLOW REPORT", c => slowGate.Task.WaitAsync(c));
-            var transcript = string.Join("\n", r.Messages.Select(m => m.Text));
+            var transcript = string.Join("\n", r.Messages.Select(m => string.Join("\n", m.ToolResults.Select(x => x.Content).Prepend(m.Text))));
             lock (seen) seen.Add(transcript);
             var results = r.Messages.Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Select(x => x.Name).ToList();
             if (results.Count == 0)
-                return Reply.Tool("agent_spawn", new { subagents = new object[] { new { task = "quick part", name = "quick" }, new { task = "slow part", name = "slow" } } });
+                return Reply.Tool("agent_spawn", new { subagents = new object[] { new { task = "quick part", name = "quick" }, new { task = "slow part", name = "slow" } }, background = true });
             if (results.Count == 1)
                 // the parent thinks until the quick one is done, then waits
                 return Reply.Stream(Reply.Message([Reply.Call("agent_wait", new { })]), async c =>
@@ -56,15 +56,21 @@ public static class SubagentTests
         var parent = h.NewSession();
         await h.SendAsync(parent.Id, "go");
         await h.IdleAsync(parent.Id, 15_000);
-        // the model call right after agent_wait: it has both reports (the wait's, and the quick one's notice)
+        // the model call right after agent_wait: it has both reports
         var afterWait = seen[2];
         Check.Contains(afterWait, "SLOW REPORT");
         Check.Contains(afterWait, "QUICK REPORT", "the quick one's report reached the model with the wait's result");
+        // agent_wait without ids returned the quick one too (its report was still queued, unseen), and it arrived once
+        var wait = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Single(x => x.Name == "agent_wait");
+        Check.Contains(wait.Content, "2 agents finished.");
+        Check.Contains(wait.Content, "QUICK REPORT");
+        Check.Contains(wait.Content, "SLOW REPORT");
+        Check.Equal(1, h.Messages(parent.Id).Count(m => m.Text.Contains("QUICK REPORT") || m.ToolResults.Any(x => x.Content.Contains("QUICK REPORT"))), "once");
     }
 
     /// <summary>
-    /// The user's story test: a chat on "a" (2 instances, the chat holds one) starts three subagents in one call with
-    /// wait=true: one on "a", one more on "a" (it gets the chat's instance once the chat waits) and one on "b". All three
+    /// The user's story test: a chat on "a" (2 instances, the chat holds one) starts three subagents in one call (which
+    /// waits): one on "a", one more on "a" (it gets the chat's instance once the chat waits) and one on "b". All three
     /// run at the same time; the call returns every report.
     /// </summary>
     private static async Task BatchSpawn()
@@ -97,7 +103,6 @@ public static class SubagentTests
                         new { task = "part two", name = "two", agent = "a" },
                         new { task = "part three", name = "three", agent = "b" },
                     },
-                    wait = true,
                 });
             return Reply.Text("all done");
         };
@@ -156,7 +161,7 @@ public static class SubagentTests
             }
             return Reply.HasToolResult(r)
                 ? Reply.Text("Parent done: " + r.Messages[^1].ToolResults.Single().Content)
-                : Reply.Tool("agent_spawn", new { task = "Count the files.", name = "counter", wait = true });
+                : Reply.Tool("agent_spawn", new { task = "Count the files.", name = "counter" });
         };
         await h.SendAsync(parent.Id, "delegate");
         var p = await h.IdleAsync(parent.Id, 15_000);
@@ -207,7 +212,7 @@ public static class SubagentTests
         {
             if (IsChild(r)) return Reply.Text("BG RESULT", c => childGate.Task.WaitAsync(c));
             if (Reply.LastUser(r).Contains("<agent-result")) return Reply.Text("got it");
-            return Reply.HasToolResult(r) ? Reply.Text("spawned, carrying on") : Reply.Tool("agent_spawn", new { task = "background job", name = "bg" });
+            return Reply.HasToolResult(r) ? Reply.Text("spawned, carrying on") : Reply.Tool("agent_spawn", new { task = "background job", name = "bg", background = true });
         };
         await h.SendAsync(parent.Id, "start a background job");
         var p = await h.IdleAsync(parent.Id);
@@ -246,7 +251,7 @@ public static class SubagentTests
             if (IsChild(r)) return Reply.Text("child finished");
             return Interlocked.Increment(ref parentCalls) switch
             {
-                1 => Reply.Tool("agent_spawn", new { task = "quick job", name = "quick" }),
+                1 => Reply.Tool("agent_spawn", new { task = "quick job", name = "quick", background = true }),
                 2 => Reply.Tools(Reply.Call("slow"), Reply.Call("slow")),
                 _ => Reply.Text("final"),
             };
@@ -287,9 +292,9 @@ public static class SubagentTests
             }
             if (!Reply.HasToolResult(r))
                 return Reply.Tools(
-                    Reply.Call("agent_spawn", new { task = "job A", name = "a" }),
-                    Reply.Call("agent_spawn", new { task = "job B", name = "b" }),
-                    Reply.Call("agent_spawn", new { task = "job C", name = "c" }));
+                    Reply.Call("agent_spawn", new { task = "job A", name = "a", background = true }),
+                    Reply.Call("agent_spawn", new { task = "job B", name = "b", background = true }),
+                    Reply.Call("agent_spawn", new { task = "job C", name = "c", background = true }));
             var last = r.Messages[^1].ToolResults.Last();
             return last.Name == "agent_wait" ? Reply.Text("summary") : Reply.Tool("agent_wait", new { });
         };
@@ -318,7 +323,7 @@ public static class SubagentTests
             if (IsChild(r)) return Reply.Text("child done", c => childGate.Task.WaitAsync(c));
             if (Reply.LastUser(r) == "status?") return Reply.Text("still working on it");
             if (Reply.LastUser(r).Contains("<agent-result")) return Reply.Text("child reported");
-            return Reply.Tool("agent_spawn", new { task = "long job", name = "long", wait = true });
+            return Reply.Tool("agent_spawn", new { task = "long job", name = "long" });
         };
         await h.SendAsync(parent.Id, "go");
         await Wait.Until(() => h.Runtime.GetBySession(parent.Id)?.Status == AgentStatus.Yielded, "parent waiting");
@@ -363,7 +368,7 @@ public static class SubagentTests
                 return Reply.HasToolResult(r) ? Reply.Text("child final") : Reply.Tool("agent_send", new { to = "parent", message = "progress: 50%" });
             if (Reply.LastUser(r).Contains("<agent-message")) return Reply.Text("noted progress");
             if (Reply.LastUser(r).Contains("<agent-result")) return Reply.Text("noted result");
-            return Reply.HasToolResult(r) ? Reply.Text("spawned") : Reply.Tool("agent_spawn", new { task = "report progress", name = "reporter" });
+            return Reply.HasToolResult(r) ? Reply.Text("spawned") : Reply.Tool("agent_spawn", new { task = "report progress", name = "reporter", background = true });
         };
         await h.SendAsync(parent.Id, "go");
         await Wait.Until(() => h.Messages(parent.Id).Any(m => m.Text == "noted result"), "parent got the final result");
@@ -396,7 +401,7 @@ public static class SubagentTests
             var last = r.Messages[^1];
             if (last.Role == MessageRole.Tool) return Reply.Text("spawned");
             if (last.Text.Contains("<agent-result")) return Reply.Text("thanks");
-            return Reply.Tool("agent_spawn", new { task = "Look something up and report.", agent = "stealth" });
+            return Reply.Tool("agent_spawn", new { task = "Look something up and report.", agent = "stealth", background = true });
         };
         var parent = h.NewSession(); // default model: fake/local
         await h.SendAsync(parent.Id, "delegate it");
@@ -472,7 +477,7 @@ public static class SubagentTests
         h.Catalog.Handler = (r, ct) =>
         {
             if (IsChild(r)) return Reply.Text("never", c => Task.Delay(Timeout.Infinite, c));
-            return Reply.Tool("agent_spawn", new { task = "hang", name = "hanger", wait = true });
+            return Reply.Tool("agent_spawn", new { task = "hang", name = "hanger" });
         };
         await h.SendAsync(parent.Id, "go");
         await Wait.Until(() => h.Runtime.GetBySession(parent.Id)?.Status == AgentStatus.Yielded, "parent yielded");
@@ -495,7 +500,7 @@ public static class SubagentTests
         h.Catalog.Handler = (r, ct) =>
         {
             if (IsChild(r)) return Reply.Fail(new ModelException("child model broke", false, 503));
-            return Reply.HasToolResult(r) ? Reply.Text("handled") : Reply.Tool("agent_spawn", new { task = "doomed", name = "doomed", wait = true });
+            return Reply.HasToolResult(r) ? Reply.Text("handled") : Reply.Tool("agent_spawn", new { task = "doomed", name = "doomed" });
         };
         await h.SendAsync(parent.Id, "go");
         await h.IdleAsync(parent.Id);
@@ -528,7 +533,7 @@ public static class SubagentTests
             }
             return Interlocked.Increment(ref step) switch
             {
-                1 => Reply.Tool("agent_spawn", new { task = "slow job", name = "slowpoke" }),
+                1 => Reply.Tool("agent_spawn", new { task = "slow job", name = "slowpoke", background = true }),
                 2 => Reply.Tool("agent_list", new { }),
                 3 => Reply.Tool("agent_choices", new { }),
                 4 => Reply.Tool("agent_result", new { id = "slowpoke" }),

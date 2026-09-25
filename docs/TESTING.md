@@ -113,9 +113,9 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:midfail n=1]` | an error inside the stream: `response.failed` / error chunk / Anthropic `overloaded_error` |
 | `[s:error status=503 n=1]` | the first `n` attempts fail with an HTTP error |
 | `[s:fail]` | HTTP 400 (non-retryable) |
-| `[s:spawn n=3 delay=1500 stagger=0 model=]` | `agent_spawn` × n (workers run `[s:sub]` for `delay + (i-1)·stagger` ms) → `agent_wait` → summary of the reports |
+| `[s:spawn n=3 delay=1500 stagger=0 model=]` | `agent_spawn background` × n (workers run `[s:sub]` for `delay + (i-1)·stagger` ms) → `agent_wait` → summary of the reports |
 | `[s:spawnbg delay=]` | one background worker, the parent ends its turn; the report arrives later as an `agent-result` notice |
-| `[s:nest delay=]` | orchestrator → `lead` (`[s:subspawn]`: `agent_send` to the parent, `agent_spawn wait=true` of a `helper`) |
+| `[s:nest delay=]` | orchestrator → `lead` (`[s:subspawn]`: `agent_send` to the parent, `agent_spawn` of a `helper`, which waits for it) |
 | `[s:sub i= delay=]` | subagent: thinks for `delay` ms, reports `Report from <name>: i squared is i²` (also the default for subagents) |
 | `[s:ideas title=]` | `idea_add` with tags, priority and a section |
 | `[s:long n=8 lines=60]` | `n` turns of `bash` output (`LONGSTEP k/n`) to fill the context (compaction on `tiny-ctx`) |
@@ -198,7 +198,7 @@ Coverage (run `--list` for the names):
   queued, the parent yields and resumes with the reports, `agents.list` / `work.snapshot` mid-flight, no duplicate
   `agent-result` notices; a background worker's report wakes the idle parent; steering interrupts `agent_wait` and the late
   report arrives as a notice; aborting the orchestrator cancels its workers; aborting one worker; nested
-  orchestrator → lead → helper (`wait=true`) without deadlock, `agent_send`; three top-level chats on one model.
+  orchestrator → lead → helper (the lead's spawn waits) without deadlock, `agent_send`; three top-level chats on one model.
 - **ideas**: `idea_add` writes `<project>/ideas.json`, `ideas.list`, `ideas.changed`, `ideas.add`.
 - **hot reload**: overwriting `NetPI.Nudge.dll` → `plugins.changed`, reload, `plugins.unloaded { collected: true }`, still
   works; `plugins.reload` of providers/tools/hooks/agents/context; reloading the agent runtime mid-run; reloading the provider

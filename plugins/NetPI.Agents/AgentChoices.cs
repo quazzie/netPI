@@ -112,7 +112,7 @@ internal sealed class AgentsPromptSection : IPromptSection
         sb.Append("- The user sets up agents to run on: each is a model with a number of instances (runs at once), a note on when to use it, and for paid models a price and a budget. A run holds an instance for its whole run and queues while all are busy. An agent is active only while its model is loaded (local models) and the user hasn't switched it off.");
         if (Has("agent_choices"))
             sb.Append("\n- Before you delegate, look at agent_choices: the agents, their state, notes, price and today's spend, and the budget. Choose an active agent by its note and cost: prefer free ones; a paid agent spends the user's money, so use it only when the task needs what it is good at, and above the budget's warning level only when the user asked. Pass the agent's id to agent_spawn.");
-        sb.Append("\n- While you wait for subagents (agent_wait, or agent_spawn with wait=true), your instance is free for them: count it as a free instance of your own agent, so one of them can run there. You get it back with priority when they are done.");
+        sb.Append("\n- While you wait for subagents (agent_spawn, which waits unless you pass background: true, or agent_wait), your instance is free for them: count it as a free instance of your own agent, so one of them can run there. You get it back with priority when they are done.");
         return ValueTask.FromResult<string?>(sb.ToString());
     }
 }

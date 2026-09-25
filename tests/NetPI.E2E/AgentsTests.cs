@@ -129,7 +129,7 @@ public static class AgentsTests
             Check.True(env.Client.Since(mark).Any(e => e.Type == "agents.changed"), "agents.changed events");
         }, 120);
 
-        r.Add("nested subagents: orchestrator → lead → helper (spawn wait=true) on a model with 2 slots, no deadlock, agent_send", async () =>
+        r.Add("nested subagents: orchestrator → lead → helper (the lead's spawn waits) on a model with 2 slots, no deadlock, agent_send", async () =>
         {
             await Wait.UntilAsync(async () => (await env.Rpc("agents.list")).Arr().FirstOrDefault(p => p.S("key") == CoreTests.Qwen).L("busy") == 0 ? "ok" : null, "idle qwen pool");
             await env.MockReset();

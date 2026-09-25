@@ -30,9 +30,14 @@ function script(first, turn) {
         text: 'Starting the dev server and spawning three subagents for the survey.',
         calls: [
           call('bash', { command: 'for i in $(seq 1 900); do echo "[vite] hmr update /src/App.svelte ($i)"; sleep 1; done', background: true }),
-          call('agent_spawn', { name: 'surveyor', task: '[sub-slow] Survey plugins/ and list every plugin with its start order and the RPC methods it registers.' }),
-          call('agent_spawn', { name: 'reviewer', task: '[sub-slow] Review plugins/NetPI.Agents for races between Acquire and Release; report findings with file:line.' }),
-          call('agent_spawn', { name: 'docs-writer', task: '[sub-fast] Check docs/PROTOCOL.md for RPC methods that are missing from the table.' }),
+          call('agent_spawn', {
+            background: true,
+            subagents: [
+              { name: 'surveyor', task: '[sub-slow] Survey plugins/ and list every plugin with its start order and the RPC methods it registers.' },
+              { name: 'reviewer', task: '[sub-slow] Review plugins/NetPI.Agents for races between Acquire and Release; report findings with file:line.' },
+              { name: 'docs-writer', task: '[sub-fast] Check docs/PROTOCOL.md for RPC methods that are missing from the table.' },
+            ],
+          }),
         ],
       },
       {

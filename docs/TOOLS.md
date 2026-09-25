@@ -377,18 +377,30 @@ without an agent that are running. Without agents: "No agents are set up", and a
 
 ### `agent_spawn` (summary arg `name`)
 
-`{ task, name?, agent?, model?, tools?, instructions?, wait?, timeoutSeconds? }`. With agents set up `agent` is required
+`{ task, name?, agent?, model?, tools?, instructions?, background?, timeoutSeconds? }`. With agents set up `agent` is required
 (an id from `agent_choices`; a model ref is accepted as an agent on that model); an agent that can't take
 work is refused with the list. The subagent's session keeps the agent (`meta.agent`) and queues while all its
 instances are busy. Without agents, `model` (default: the caller's). `tools`: the subagent's tools, which may include
 tools the caller doesn't have (default: the caller's). `details`: the subagent's `{ agentId, sessionId, name, status }`.
 
-Several at once: `{ subagents: [{ task, name?, agent?, model?, tools?, instructions? }, …], wait?, timeoutSeconds? }`. Every
-entry is checked first (a bad one starts none of them: "subagents[1] (name): …"), then they all start together; with
-`wait=true` one wait covers all of them and the result has every report. A turn's tool calls run one after the other, so
-separate `agent_spawn` calls with `wait=true` would each wait before the next starts. While the caller waits its instance
-is free for its subagents (`agent_choices` marks it: "one is you: free for your subagents while you wait"). `details`:
-`{ agents: [{ agentId, sessionId, name, status }] }`.
+Several at once: `{ subagents: [{ task, name?, agent?, model?, tools?, instructions? }, …], background?, timeoutSeconds? }`.
+Every entry is checked first (a bad one starts none of them: "subagents[1] (name): …"), then they all start together.
+`details`: `{ agents: [{ agentId, sessionId, name, status }] }`.
+
+It waits by default: the call returns when all of them have finished, with every report, and while it waits the caller's
+instance is free for its subagents (`agent_choices` marks it: "one is you: free for your subagents while you wait"). A
+turn's tool calls run one after the other, so separate `agent_spawn` calls each wait before the next starts; to run
+several at the same time, start them in one call. `timeoutSeconds` bounds the wait (the ones still running then report
+later on their own). `background: true` is the explicit choice to keep working meanwhile: the call returns at once and
+each report arrives later as an `agent-result` notice (it wakes an idle caller, or steers a running one), unless the
+caller collects it with `agent_wait` first. An older `wait: false` means background too.
+
+### `agent_wait`
+
+`{ ids?, timeoutSeconds? }`: waits for the given subagents (ids or names) and returns their reports; the caller's
+instance is free for them meanwhile and it resumes with priority. Without ids: all of the caller's running subagents, plus
+finished ones whose `agent-result` notice is still queued unseen (the report comes back here and the queued notice is
+dropped, so it arrives once). A new user message interrupts the wait. `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.
 
 ## Goal (`category: "goal"`)
 

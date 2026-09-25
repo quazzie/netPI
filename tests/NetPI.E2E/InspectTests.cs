@@ -25,7 +25,9 @@ public static class InspectTests
             var call = calls[0];
             Check.Equal("ok", call.S("state"));
             Check.Equal("agent", call.S("purpose"));
-            Check.True(call.L("firstTokenMs") > 0 && call.L("durationMs") >= call.L("firstTokenMs"), $"first token {call.L("firstTokenMs")} ms, {call.L("durationMs")} ms in all");
+            // the mock may send its first delta at once: 0 ms is a valid first token
+            Check.True(call.TryGetProperty("firstTokenMs", out var first) && first.ValueKind == JsonValueKind.Number, "the first token is recorded");
+            Check.True(call.L("durationMs") > 0 && call.L("durationMs") >= call.L("firstTokenMs"), $"first token {call.L("firstTokenMs")} ms, {call.L("durationMs")} ms in all");
             Check.True(call.L("outputTokens") > 0, "tokens from the usage");
             var detail = await env.Rpc("diag.call", new { id = call.L("id") });
             Check.Contains(detail.P("request").S("lastUser"), "Hello, inspector");

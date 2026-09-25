@@ -388,7 +388,7 @@ public sealed partial class ScenarioEngine
                 var plan = new Plan { Thinking = $"This splits into {n} independent parts; I'll delegate them.", Text = $"Delegating to {n} workers." };
                 for (var i = 1; i <= n; i++)
                 {
-                    var args = Obj(("task", $"Worker task #{i}: square the number {i} and report the result. [s:sub i={i} delay={delay + (i - 1) * stagger}]"), ("name", $"worker-{i}"));
+                    var args = Obj(("task", $"Worker task #{i}: square the number {i} and report the result. [s:sub i={i} delay={delay + (i - 1) * stagger}]"), ("name", $"worker-{i}"), ("background", true));
                     if (model is not null) args["model"] = model;
                     plan.Call("agent_spawn", args);
                 }
@@ -416,18 +416,18 @@ public sealed partial class ScenarioEngine
     {
         if (step == 0)
             return new Plan { Text = "Starting a background worker." }
-                .Call("agent_spawn", Obj(("task", $"Background task: report the number 7. [s:sub i=7 delay={tag.PInt("delay", 800)}]"), ("name", "bg-worker")));
+                .Call("agent_spawn", Obj(("task", $"Background task: report the number 7. [s:sub i=7 delay={tag.PInt("delay", 800)}]"), ("name", "bg-worker"), ("background", true)));
         return Final("The worker runs in the background; I will report when it finishes. SPAWNBG-STARTED");
     }
 
-    /// <summary>Orchestrator → lead subagent → helper sub-subagent (spawned with wait=true), all on the same pool.</summary>
+    /// <summary>Orchestrator → lead subagent → helper sub-subagent (agent_spawn waits for it), all on the same pool.</summary>
     private static Plan Nest(ScenarioTag tag, int step, List<NMsg> after)
     {
         switch (step)
         {
             case 0:
                 return new Plan { Text = "Delegating to a lead." }
-                    .Call("agent_spawn", Obj(("task", $"Lead the work: get a helper to square 5, then report. [s:subspawn delay={tag.PInt("delay", 800)}]"), ("name", "lead")));
+                    .Call("agent_spawn", Obj(("task", $"Lead the work: get a helper to square 5, then report. [s:subspawn delay={tag.PInt("delay", 800)}]"), ("name", "lead"), ("background", true)));
             case 1:
                 return new Plan { Text = "Waiting for the lead." }.Call("agent_wait", new JsonObject());
             default:
@@ -444,7 +444,7 @@ public sealed partial class ScenarioEngine
         if (step == 0)
             return new Plan { Text = "Telling my parent, then delegating to a helper and waiting for it." }
                 .Call("agent_send", Obj(("to", "parent"), ("message", "lead started")))
-                .Call("agent_spawn", Obj(("task", $"Square 5. [s:sub i=5 delay={tag.PInt("delay", 800)}]"), ("name", "helper"), ("wait", true)));
+                .Call("agent_spawn", Obj(("task", $"Square 5. [s:sub i=5 delay={tag.PInt("delay", 800)}]"), ("name", "helper")));
         var result = ToolResults(after).LastOrDefault()?.Text ?? "";
         var report = result.Split('\n').FirstOrDefault(l => l.Contains("Report from", StringComparison.Ordinal))?.Trim() ?? "(no helper report)";
         return Final($"Lead report: helper said \"{report}\"");
