@@ -12,6 +12,7 @@ public static class ContextTests
         t.Add("context: AGENTS.md arrives as notices: all at first, then only changes, again after compaction", AgentsMdNotices);
         t.Add("context: working directory and project arrive as notices (first call, switch, moved, compaction)", ProjectNoticesFlow);
         t.Add("context: the system prompt is frozen per session; settings changes reach new sessions", FrozenPrompt);
+        t.Add("context: every system prompt a session is sent is kept with its tools (context.prompts, context.prompt event)", SentPrompts);
         t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
         t.Add("context: guidance on using and keeping AGENTS.md (setting replaces or drops it)", InstructionGuidance);
@@ -278,6 +279,53 @@ public static class ContextTests
         await Turn(h, s2.Id, "hi");
         var p2 = h.Catalog.Requests.Last().SystemPrompt!;
         Check.True(p2.StartsWith("You are someone else.") && p2.EndsWith("APPENDED LATER"), "new sessions get the new settings");
+    }
+
+    // Every prompt a session is sent is kept with its tools (context.prompts): the first, and one after each context.reset
+    // (a profile switch), which leaves the earlier ones as they were.
+    private static async Task SentPrompts()
+    {
+        using var db = TestSqlite.TryCreate();
+        if (db is null) { Console.WriteLine("    (no SQLite library: skipped)"); return; }
+        await using var h = await TestHost.StartAsync(db: db);
+        var s = h.NewSession();
+        JsonArray Prompts() => (JsonArray)h.Rpc.CallAsync("context.prompts", new { sessionId = s.Id }).GetAwaiter().GetResult()!["prompts"]!;
+        Check.Equal(0, Prompts().Count, "nothing sent yet");
+
+        await Turn(h, s.Id, "hi");
+        var r1 = h.Catalog.Requests.Last();
+        var p = Prompts();
+        Check.Equal(1, p.Count);
+        Check.Equal(1, p[0]!["version"]!.GetValue<int>());
+        Check.Equal(r1.SystemPrompt, (string?)p[0]!["systemPrompt"], "the prompt as sent");
+        var tools = ((JsonArray)p[0]!["tools"]!).OfType<JsonObject>().ToList();
+        Check.Equal(string.Join(",", r1.Tools.Select(t => t.Name)), string.Join(",", tools.Select(t => (string?)t["name"])), "the tools as sent");
+        Check.Equal(r1.Tools[0].Description, (string?)tools[0]["description"]);
+        Check.Equal(r1.Tools[0].Parameters.ToJsonString(), tools[0]["parameters"]!.ToJsonString());
+        var user = h.Messages(s.Id).First(m => m.Role == MessageRole.User);
+        Check.Equal(user.Seq, p[0]!["afterSeq"]!.GetValue<long>(), "sent after the first message");
+        var ev = h.Bus.OfType("context.prompt").Single();
+        Check.Equal(s.Id, ev.SessionId);
+
+        await Turn(h, s.Id, "again");
+        Check.Equal(1, Prompts().Count, "the same prompt: nothing new");
+
+        h.Settings.SetQuiet("context.appendPrompt", "AFTER THE SWITCH");
+        await h.Rpc.CallAsync("context.reset", new { sessionId = s.Id });
+        await Turn(h, s.Id, "switched");
+        p = Prompts();
+        Check.Equal(2, p.Count, "a new version after the reset");
+        Check.Equal(r1.SystemPrompt, (string?)p[0]!["systemPrompt"], "the first one is kept");
+        Check.True(((string?)p[1]!["systemPrompt"])!.EndsWith("AFTER THE SWITCH"), "the new one");
+        Check.True(p[1]!["afterSeq"]!.GetValue<long>() > p[0]!["afterSeq"]!.GetValue<long>(), "later in the chat");
+        Check.Equal(2, h.Bus.OfType("context.prompt").Count);
+
+        try
+        {
+            await h.Rpc.CallAsync("context.prompts", new { sessionId = "ses_missing" });
+            throw new AssertException("expected not_found");
+        }
+        catch (RpcException ex) { Check.Equal("not_found", ex.Code); }
     }
 
     // Tool definitions are part of the request prefix: sent sorted by name, not in registration order (which changes

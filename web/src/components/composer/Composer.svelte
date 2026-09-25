@@ -9,6 +9,7 @@
   import ContextRing from './ContextRing.svelte';
   import QueueChips from './QueueChips.svelte';
   import TodoStrip from './TodoStrip.svelte';
+  import RunStatus from './RunStatus.svelte';
   import GoalStrip from './GoalStrip.svelte';
   import { app, isBusy, modelFor, sendMessage, abortAgent } from '../../lib/state/app.svelte.js';
   import { composer, modals, prefs, toast } from '../../lib/state/ui.svelte.js';
@@ -313,6 +314,8 @@
 
 <div class="dock">
   <div class="dock-inner">
+    <!-- floats above the dock: appearing and going away moves nothing in the chat -->
+    <RunStatus {session} />
     {#if chat.notice}
       <div class="banner" data-level={chat.notice.level} role="status">
         <Icon name={chat.notice.level === 'error' ? 'alert' : chat.notice.level === 'warn' ? 'refresh' : 'info'} size={14} />
@@ -470,6 +473,7 @@
     padding: 0 16px 14px;
   }
   .dock-inner {
+    position: relative; /* the run status line floats above it */
     width: 100%;
     max-width: var(--chat-max);
   }

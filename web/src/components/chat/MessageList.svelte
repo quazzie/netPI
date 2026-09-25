@@ -5,21 +5,24 @@
   import AssistantText from './AssistantText.svelte';
   import StepsGroup from './StepsGroup.svelte';
   import NoticeRow from './NoticeRow.svelte';
+  import PromptRow from './PromptRow.svelte';
   import StatusRow from './StatusRow.svelte';
   import ShownImage from './ShownImage.svelte';
   import { createItemBuilder, withStream } from '../../lib/chatItems.js';
-  import { app, isBusy, projectOf } from '../../lib/state/app.svelte.js';
+  import { isBusy, projectOf } from '../../lib/state/app.svelte.js';
   import { modals } from '../../lib/state/ui.svelte.js';
-  import { duration } from '../../lib/format.js';
 
   let { chat, session } = $props();
 
   const build = createItemBuilder();
   // the streaming answer is laid out like the finished one (thinking and tool calls join the open steps group), so the
   // chat does not jump when message.added replaces it
-  const items = $derived(chat.hasNewer ? build(chat.messages) : withStream(build(chat.messages), chat.stream));
+  // with the system prompts the chat was sent (the first above the first message when the window starts there)
+  const items = $derived.by(() => {
+    const built = build(chat.messages, chat.prompts, !chat.hasMore);
+    return chat.hasNewer ? built : withStream(built, chat.stream);
+  });
   const running = $derived(isBusy(session.id));
-  const agent = $derived(app.agents.get(session.id));
   const base = $derived(projectOf(session)?.path ?? null);
   // index of the user message that started the current run (steering input does not start a new one)
   const lastUserIdx = $derived.by(() => {
@@ -118,14 +121,6 @@
     wasLoading = l;
   });
 
-  let now = $state(Date.now());
-  $effect(() => {
-    if (!running) return;
-    now = Date.now();
-    const t = setInterval(() => (now = Date.now()), 1000);
-    return () => clearInterval(t);
-  });
-
   function openImage(src) {
     modals.lightbox = { src };
   }
@@ -175,6 +170,8 @@
           <StepsGroup {item} {chat} {base} live={running && i > lastUserIdx} active={running && i === items.length - 1} />
         {:else if item.kind === 'notice'}
           <NoticeRow msg={item.msg} {chat} />
+        {:else if item.kind === 'prompt'}
+          <PromptRow prompt={item.prompt} {chat} />
         {:else if item.kind === 'status'}
           <StatusRow msg={item.msg} />
         {:else if item.kind === 'shown'}
@@ -201,14 +198,8 @@
         </button>
       </div>
     {/if}
-    <!-- one fixed-height line for the whole run (also after it, empty): it never appears or disappears between steps -->
-    <div class="working" class:on={running}>
-      {#if running}
-        <span class="np-spinner"></span>
-        <span class="np-ellipsis">{agent?.activity || (agent?.status === 'queued' ? 'Waiting for a free lane' : 'Working')}…</span>
-        {#if agent?.startedAt && now - Date.parse(agent.startedAt) >= 1000}<span class="np-dim">{duration(now - Date.parse(agent.startedAt))}</span>{/if}
-      {/if}
-    </div>
+    <!-- room below the last row: the run's status line is above the composer (RunStatus) -->
+    <div class="tail"></div>
   </div>
 </div>
 
@@ -301,16 +292,8 @@
     max-width: 320px;
     max-height: 240px;
   }
-  .working {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 28px;
-    margin-top: 10px;
-    padding: 0 2px;
-    color: var(--fg-muted);
-    font-size: var(--fs-sm);
-    min-width: 0;
+  .tail {
+    height: 24px;
   }
   .jump {
     position: absolute;

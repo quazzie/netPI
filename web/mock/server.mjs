@@ -474,7 +474,11 @@ const handlers = {
   'agent.send': (p) => {
     const sid = need(p, 'sessionId');
     getSession(sid);
-    return agent.send(sid, p);
+    const first = !(store.messages.get(sid) ?? []).some((m) => m.role === 'user');
+    const res = agent.send(sid, p);
+    // the first model call freezes the chat's system prompt (the context plugin announces it)
+    if (first) setTimeout(() => publish('context.prompt', { sessionId: sid, version: 1 }, sid), 50);
+    return res;
   },
   'agent.abort': (p) => agent.abort(need(p, 'sessionId')),
 
@@ -659,6 +663,18 @@ const handlers = {
     const systemPrompt = SYSTEM_PROMPT(pr, s);
     const tools = toolRows().filter((t) => t.active && !t.disabled).map((t) => ({ name: t.name, description: t.description }));
     return { systemPrompt, tools, estimatedTokens: Math.round(systemPrompt.length / 3.6) + tools.length * 140 + (s?.contextTokens ?? 0) };
+  },
+  // the prompt a chat was sent: once it has a user message, version 1 after it (the mock never renders it again)
+  'context.prompts': (p) => {
+    const s = getSession(need(p, 'sessionId'));
+    const firstUser = (store.messages.get(s.id) ?? []).find((m) => m.role === 'user');
+    if (!firstUser) return { prompts: [] };
+    const pr = s.projectId ? store.projects.get(s.projectId) : null;
+    const tools = toolRows()
+      .filter((t) => t.active && !t.disabled)
+      .map((t) => ({ name: t.name, description: t.description, parameters: { type: 'object', properties: {} } }))
+      .sort((a, b) => (a.name < b.name ? -1 : 1));
+    return { prompts: [{ version: 1, afterSeq: firstUser.seq, createdAt: firstUser.createdAt, systemPrompt: SYSTEM_PROMPT(pr, s), tools }] };
   },
   'files.search': async (p = {}) => {
     const root = p.cwd || sessionCwd(p.sessionId);

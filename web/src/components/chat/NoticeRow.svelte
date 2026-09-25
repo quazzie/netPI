@@ -1,12 +1,16 @@
 <script>
   import Icon from '../../lib/kit/Icon.svelte';
-  import { renderMarkdown } from '../../lib/markdown.js';
+  import SentBlock from './SentBlock.svelte';
   import { openSession } from '../../lib/state/app.svelte.js';
   import { confirmDialog, toast } from '../../lib/state/ui.svelte.js';
   import { rpc } from '../../lib/rpc.svelte.js';
   import { stamp, firstLine, truncate } from '../../lib/format.js';
 
-  /** Harness notices (role notice) and compaction summaries (role summary) as slim dividers. */
+  /**
+   * Harness notices (role notice) and compaction summaries (role summary) as slim dividers. Every one opens to exactly
+   * what the model got: a notice wrapped in <system-notice kind="…"> and a summary in <conversation-summary>, as the
+   * host's ModelMessages.Normalize sends them.
+   */
   let { msg, chat } = $props();
 
   const KINDS = {
@@ -46,7 +50,15 @@
             : null),
   );
   const linkSession = $derived(msg.meta?.sessionId && msg.meta.sessionId !== msg.sessionId ? msg.meta.sessionId : null);
-  const long = $derived(k.expand || text.length > 140 || text.includes('\n'));
+  // what the model got for this message (ModelMessages.WrapNotice, or the summary wrapper)
+  const sent = $derived(
+    msg.role === 'summary'
+      ? `<conversation-summary>\nThe earlier part of this conversation was compacted. Summary:\n\n${text}\n</conversation-summary>`
+      : `<system-notice${msg.meta?.kind ? ` kind="${msg.meta.kind}"` : ''}>\n${text.trim()}\n</system-notice>`,
+  );
+  // written to be read: opens rendered, with a toggle to see it as sent
+  const readable = $derived(kind === 'agent-result' || kind === 'agent-message' || kind === 'summary');
+  const long = true; // every notice opens to what was sent
   const key = $derived(`n${msg.id}`);
   const open = $derived(chat.expanded.get(key) ?? false);
   const oneLine = $derived(truncate(firstLine(text).replace(/[*_`#>]/g, ''), 160));
@@ -95,7 +107,7 @@
   <div class="rule"></div>
 </div>
 {#if open}
-  <div class="expanded md">{@html renderMarkdown(text)}</div>
+  <SentBlock text={sent} markdown={readable ? text : null} />
 {/if}
 
 <style>
@@ -189,14 +201,5 @@
   }
   .link:hover {
     background: var(--accent-soft);
-  }
-  .expanded {
-    margin: 6px 24px 4px;
-    padding: 10px 14px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-1);
-    font-size: 13px;
-    color: var(--fg-muted);
   }
 </style>

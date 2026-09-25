@@ -135,6 +135,8 @@ export class ChatStore {
   stream = new StreamState();
   live = new SvelteMap(); // callId -> LiveTool
   queue = $state.raw([]);
+  // the system prompts the session was sent, with their tools (context.prompts): the chat shows them as rows
+  prompts = $state.raw([]);
   // the person's own queued inputs: a subagent's report or a harness notice waiting for the agent is internal, never a chip
   ownQueue = $derived(this.queue.filter((q) => (q.source ?? 'user') === 'user'));
   notice = $state(null); // { level, text, ts }
@@ -190,6 +192,14 @@ export class ChatStore {
       .then((items) => {
         if (Array.isArray(items)) this.queue = items;
       })
+      .catch(() => {});
+    this.loadPrompts();
+  }
+
+  /** The system prompts sent so far (none without the context plugin). */
+  loadPrompts() {
+    rpc('context.prompts', { sessionId: this.id }, { timeout: 8000 })
+      .then((r) => (this.prompts = Array.isArray(r?.prompts) ? r.prompts : []))
       .catch(() => {});
   }
 
@@ -271,6 +281,9 @@ export class ChatStore {
         }
         break;
       }
+      case 'context.prompt':
+        this.loadPrompts();
+        break;
       case 'messages.compacted': {
         const upTo = d.upToSeq;
         this.messages = this.messages.map((m) => (m.seq <= upTo && !m.compacted ? { ...m, compacted: true } : m));

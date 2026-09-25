@@ -189,7 +189,10 @@ Coverage (run `--list` for the names):
   up after `retry.maxAttempts`, non-retryable errors, unknown model, budgets, a stopped backend; auto-compaction on
   `tiny-ctx` (summary, `compacted` flags, `messages.compacted`, context meter drops), overflow recovery when the backend's
   window is smaller than advertised, `/compact`; disabling/enabling a plugin; AGENTS.md and the working directory as
-  notices (an edited AGENTS.md is appended, the prefix stays byte-identical).
+  notices (an edited AGENTS.md is appended, the prefix stays byte-identical); `context.prompts` has the system prompt
+  and tools exactly as the backend got them.
+- **profiles**: a new chat gets its project's default profile, else the global default, in a `session.updated` newer
+  than the `sessions.create` result.
 - **agents**: agents set up with `settings.set` are listed with their state (instances from the catalog, the one on the
   stopped backend inactive); `agents.use` runs a chat on one; switched off (`agents.setEnabled`, `agents.changed`) the chat
   stops at once with a notice; an agent whose model isn't loaded is refused without a request to the backend; a model

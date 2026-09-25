@@ -13,10 +13,27 @@ namespace NetPI.Context;
 /// </summary>
 internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompts) : ISystemPromptBuilder
 {
+    public const string SentEvent = "context.prompt";
+
     public async ValueTask<string> BuildAsync(PromptContext context, CancellationToken ct)
     {
-        if (prompts.Get(context.Session.Id) is { } frozen) return frozen;
-        return prompts.Freeze(context.Session.Id, await RenderAsync(context, ct).ConfigureAwait(false));
+        var sessionId = context.Session.Id;
+        if (prompts.Get(sessionId) is { } frozen) return frozen;
+        var rendered = await RenderAsync(context, ct).ConfigureAwait(false);
+        var stored = prompts.Freeze(sessionId, rendered);
+        if (ReferenceEquals(stored, rendered))
+        {
+            // this call sends a new prompt: keep it with the tools it goes with, for the chat to show (context.prompts)
+            long afterSeq = 0;
+            try { afterSeq = ctx.Sessions.GetMessages(sessionId, null, 1) is [.., var last] ? last.Seq : 0; } catch { }
+            var version = prompts.RecordSent(sessionId, rendered, context.Tools, afterSeq);
+            ctx.Events.Publish(new BusEvent
+            {
+                Type = SentEvent, SessionId = sessionId,
+                Data = new JsonObject { ["sessionId"] = sessionId, ["version"] = version, ["afterSeq"] = afterSeq },
+            });
+        }
+        return stored;
     }
 
     /// <summary>What a session is sent: its stored prompt, or (before its first model call) a fresh render that is not stored.</summary>
@@ -56,6 +73,7 @@ internal sealed class PromptStore(IPluginContext ctx)
 {
     private readonly ConcurrentDictionary<string, string> _cache = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ToolBaseline> _tools = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, List<SentPrompt>> _sent = new(StringComparer.Ordinal); // without a database
     private IDatabase? _db;
 
     public void Initialize()
@@ -68,7 +86,10 @@ internal sealed class PromptStore(IPluginContext ctx)
                 // the tool names of a session's first model call: the baseline for "tools" notices
                 "CREATE TABLE IF NOT EXISTS context_tools (session_id TEXT PRIMARY KEY, tools TEXT NOT NULL)",
                 // a baseline taken later (after context.reset) ignores the "tools" notices up to this seq
-                "ALTER TABLE context_tools ADD COLUMN since_seq INTEGER NOT NULL DEFAULT 0");
+                "ALTER TABLE context_tools ADD COLUMN since_seq INTEGER NOT NULL DEFAULT 0",
+                // every prompt a session was sent (the first, and one after each context.reset) with its tool definitions
+                "CREATE TABLE IF NOT EXISTS context_sent (session_id TEXT NOT NULL, version INTEGER NOT NULL, after_seq INTEGER NOT NULL, " +
+                "prompt TEXT NOT NULL, tools TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (session_id, version))");
             _db = db;
         }
         catch (Exception ex)
@@ -142,8 +163,63 @@ internal sealed class PromptStore(IPluginContext ctx)
         return stored;
     }
 
-    /// <summary>Forget the session's prompt and tool baseline (deleted session, or <c>context.reset</c>: rendered again at the next call).</summary>
-    public void Delete(string sessionId)
+    /// <summary>
+    /// Keep a prompt the session is sent from now on, with the definitions of the tools it goes with and the last message
+    /// seq before it; returns its version (1 for the first).
+    /// </summary>
+    public int RecordSent(string sessionId, string prompt, IReadOnlyList<ToolDefinition> tools, long afterSeq)
+    {
+        var toolsJson = new JsonArray([.. tools.Select(t => (JsonNode?)new JsonObject
+        {
+            ["name"] = t.Name, ["description"] = t.Description, ["parameters"] = t.Parameters.DeepClone(),
+        })]).ToJsonString();
+        var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        if (_db is null)
+        {
+            var list = _sent.GetOrAdd(sessionId, _ => []);
+            lock (list)
+            {
+                list.Add(new SentPrompt(list.Count + 1, afterSeq, now, prompt, toolsJson));
+                return list.Count;
+            }
+        }
+        try
+        {
+            var version = (int)(_db.Scalar<long?>("SELECT MAX(version) FROM context_sent WHERE session_id = @sessionId", new { sessionId }) ?? 0) + 1;
+            _db.Execute("INSERT INTO context_sent (session_id, version, after_seq, prompt, tools, created_at) VALUES (@sessionId, @version, @afterSeq, @prompt, @toolsJson, @now)",
+                new { sessionId, version, afterSeq, prompt, toolsJson, now });
+            return version;
+        }
+        catch (Exception ex)
+        {
+            ctx.Logger.LogWarning(ex, "Keeping the prompt of {Session} failed", sessionId);
+            return 0;
+        }
+    }
+
+    /// <summary>The prompts the session was sent, oldest first (see <see cref="RecordSent"/>).</summary>
+    public List<SentPrompt> Sent(string sessionId)
+    {
+        if (_db is null)
+        {
+            if (!_sent.TryGetValue(sessionId, out var list)) return [];
+            lock (list) return [.. list];
+        }
+        try
+        {
+            return _db.Query("SELECT version, after_seq, created_at, prompt, tools FROM context_sent WHERE session_id = @sessionId ORDER BY version",
+                new { sessionId }, r => new SentPrompt((int)r.GetInt64("version"), r.GetInt64("after_seq"), r.GetString("created_at"),
+                    r.GetString("prompt"), r.GetString("tools")));
+        }
+        catch (Exception ex)
+        {
+            ctx.Logger.LogWarning(ex, "Reading the prompts of {Session} failed", sessionId);
+            return [];
+        }
+    }
+
+    /// <summary><c>context.reset</c>: forget the session's current prompt and tool baseline; the next call renders them again.</summary>
+    public void Reset(string sessionId)
     {
         _cache.TryRemove(sessionId, out _);
         _tools.TryRemove(sessionId, out _);
@@ -153,9 +229,22 @@ internal sealed class PromptStore(IPluginContext ctx)
             _db.Execute("DELETE FROM context_prompts WHERE session_id = @sessionId", new { sessionId });
             _db.Execute("DELETE FROM context_tools WHERE session_id = @sessionId", new { sessionId });
         }
-        catch (Exception ex) { ctx.Logger.LogDebug(ex, "Deleting the prompt of {Session} failed", sessionId); }
+        catch (Exception ex) { ctx.Logger.LogDebug(ex, "Resetting the prompt of {Session} failed", sessionId); }
+    }
+
+    /// <summary>A deleted session: its prompts and tool baseline, and what it was sent.</summary>
+    public void Delete(string sessionId)
+    {
+        Reset(sessionId);
+        _sent.TryRemove(sessionId, out _);
+        if (_db is null) return;
+        try { _db.Execute("DELETE FROM context_sent WHERE session_id = @sessionId", new { sessionId }); }
+        catch (Exception ex) { ctx.Logger.LogDebug(ex, "Deleting the prompts of {Session} failed", sessionId); }
     }
 }
 
 /// <summary>The tools a session's prompt was rendered with, and the last message seq at that time.</summary>
 internal sealed record ToolBaseline(IReadOnlyList<string> Names, long SinceSeq);
+
+/// <summary>A prompt a session was sent: its version, the last message seq before it, when, the prompt and the tools (JSON).</summary>
+internal sealed record SentPrompt(int Version, long AfterSeq, string CreatedAt, string Prompt, string ToolsJson);

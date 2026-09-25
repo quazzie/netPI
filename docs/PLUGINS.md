@@ -105,7 +105,7 @@ for as long as that prefix is unchanged, and any change makes it re-prefill the 
 Anthropic's prompt cache alike). So nothing that was sent is ever changed; new information is only appended:
 
 - **The system prompt is rendered once per session**, at its first model call, and then reused (the context plugin
-  stores it). Sections must not depend on session state (working directory, project, files, model, time); settings and
+  stores it, and keeps every prompt a session was sent with its tools for the chat to show: `context.prompts`). Sections must not depend on session state (working directory, project, files, model, time); settings and
   plugin changes reach new sessions. `context.preview` shows the stored prompt (`frozen: true`).
 - **State that changes during a session is appended as a notice by the plugin that owns it**: the context plugin
   announces the working directory and project (`project` notices: at the first model call, on a switch, when a project

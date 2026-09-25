@@ -2,7 +2,6 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import { app, updateSession, projectOf, modelFor, sessionModelRef, openSession } from '../../lib/state/app.svelte.js';
   import { modals } from '../../lib/state/ui.svelte.js';
-  import { duration } from '../../lib/format.js';
 
   let { session } = $props();
 
@@ -15,17 +14,6 @@
   const modelRef = $derived(sessionModelRef(session));
   const agent = $derived(app.agents.get(session.id));
   const parent = $derived(session.parentSessionId ? app.sessionsById.get(session.parentSessionId) : null);
-
-  let now = $state(Date.now());
-  $effect(() => {
-    if (agent?.status !== 'running') return;
-    now = Date.now();
-    const t = setInterval(() => (now = Date.now()), 1000);
-    return () => clearInterval(t);
-  });
-  const elapsed = $derived(
-    agent?.status === 'running' && agent.startedAt ? Math.max(0, now - Date.parse(agent.startedAt)) : null,
-  );
 
   function start() {
     value = session.title || '';
@@ -88,11 +76,11 @@
 
     <span class="spacer"></span>
 
-    {#if agent && agent.status !== 'idle' && agent.status !== 'completed'}
+    <!-- while the agent works, the status line above the composer says so (RunStatus); here only how a run ended badly -->
+    {#if agent && (agent.status === 'failed' || agent.status === 'cancelled')}
       <span class="status" data-status={agent.status}>
         <span class="np-dot" data-status={agent.status === 'failed' ? 'error' : agent.status}></span>
-        <span>{agent.activity || agent.status}</span>
-        {#if elapsed != null && elapsed >= 1000}<span class="np-dim">· {duration(elapsed)}</span>{/if}
+        <span>{agent.status}</span>
       </span>
     {/if}
   </div>

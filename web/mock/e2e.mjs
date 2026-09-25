@@ -157,6 +157,11 @@ await ta.press('Enter');
 await page.waitForSelector('.thinking.live', { timeout: 5000 });
 await page.waitForTimeout(700);
 await shot(page, '04-streaming-thinking');
+// one status line above the composer while it runs, none in the chat; the first model call brings the system prompt row
+check('the run status line is above the composer', (await page.locator('.dock .run-status').count()) === 1 && (await page.locator('.messages .working, .content .working').count()) === 0,
+  await page.locator('.dock .run-status').innerText().catch(() => ''));
+await page.waitForSelector('.item[data-kind="prompt"]', { timeout: 3000 }).catch(() => {});
+check('the system prompt row appears after the first message is sent', (await page.locator('.item[data-kind="prompt"]').count()) === 1);
 await page.waitForSelector('.tool[data-status="ok"]', { timeout: 15000 });
 
 // steer + queue while running
@@ -228,6 +233,31 @@ if (await spawnRow.count()) await spawnRow.click();
 await page.locator('.srow .kids').first().click();
 await page.waitForTimeout(250);
 await shot(page, '09-subagents-notices');
+{
+  // what the model got: the system prompt (with its tools) first, and every notice opens to exactly what was sent
+  const first = page.locator('.content:visible .item').first();
+  check('the system prompt row comes first', (await first.getAttribute('data-kind')) === 'prompt');
+  await first.locator('.pill').click();
+  const raw = await first.locator('.sent .raw').innerText();
+  check('it opens to the prompt as sent', raw.startsWith('You are a coding agent'), raw.slice(0, 60));
+  const toolRows = first.locator('.sent .tool');
+  check('with the tools sent with it', (await toolRows.count()) > 5);
+  await toolRows.first().click();
+  check('a tool opens to its definition', (await first.locator('.tjson').innerText()).includes('"parameters"'));
+  await shot(page, '09b-system-prompt');
+  await first.locator('.pill').click();
+
+  const nudge = page.locator('.content:visible .item[data-kind="notice"]', { hasText: 'Nudge' }).first();
+  await nudge.locator('.pill').click();
+  const sent = await nudge.locator('.sent .raw').innerText();
+  check('a notice opens to what was sent', sent.startsWith('<system-notice kind="nudge">') && sent.trim().endsWith('</system-notice>'), sent.slice(0, 60));
+  const report = page.locator('.content:visible .item[data-kind="notice"]', { hasText: 'explorer finished' }).first();
+  await report.locator('.pill').click();
+  check('a report opens rendered', (await report.locator('.sent .md').count()) === 1);
+  await report.locator('.sent .tb', { hasText: 'As sent' }).click();
+  check('…and as sent on request', (await report.locator('.sent .raw').innerText()).startsWith('<system-notice kind="agent-result">'));
+  await shot(page, '09c-notice-as-sent');
+}
 
 // ------------------------------------------------------------------ popups: agent picker, commands, mentions
 log('composer popups');

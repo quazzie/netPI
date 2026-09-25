@@ -73,10 +73,10 @@ web/
       ModelMenu.svelte (the searchable model list)  ModelSelect.svelte (a model field that opens it)
       panels/  SidePanel, PluginTabHost, SessionsTab, ProjectsTab
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
-               ToolRow, NoticeRow, StatusRow, TodoList, ShownImage,
+               ToolRow, NoticeRow, PromptRow, SentBlock, StatusRow, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
       composer/ Composer, ProfilePicker, AgentPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing, QueueChips, GoalStrip,
-               TodoStrip
+               TodoStrip, RunStatus
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
                Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
                SettingInfo), SettingsRow, AgentsEditor + AgentDialog, BudgetView, ProfilesEditor + ProfileDialog,
@@ -177,7 +177,7 @@ into locals first, because after the parent clears the modal state or the row re
    dropped and **Load earlier** comes back. When loading earlier pushes it past 200, the newest are dropped
    instead: new messages then only increase a counter, and **Jump to latest** reloads the tail.
 2. **Items** (`lib/chatItems.js`). The messages become render items: `user`, `text` (assistant markdown),
-   `steps`, `notice`, `status` (error/aborted/length) and `images`. Consecutive thinking and tool_call parts,
+   `steps`, `notice`, `prompt` (a system prompt the chat was sent), `status` (error/aborted/length) and `images`. Consecutive thinking and tool_call parts,
    even across several assistant messages, form one **steps** group. Tool results from `tool` messages are
    paired with their calls by `callId`. Messages are immutable objects, and an item keeps its identity while
    its inputs are unchanged, so the keyed `{#each}` only touches the items that changed. The message being
@@ -217,8 +217,19 @@ into locals first, because after the parent clears the modal state or the row re
      end a run. The user's choice to expand or collapse is kept per group in `chat.expanded`.
    - A running shell command shows its last output lines under its row once it has run for a second, so quick
      commands don't flash open and shut.
-   - **Working line.** One fixed-height line under the chat shows the run's activity and time. It stays while tools
-     run and between steps, and its height stays reserved when the run ends, so it never moves the chat.
+   - **Run status.** `RunStatus` is the one line that says the agent is busy, just above the composer: an animated
+     glyph, a word and the run's time. The word is `Thinking` or `Writing` while the model does that, the activity
+     for waits (`Waiting for agent qwen`, `Waiting for 2 agents`, `Waiting for a free instance`), otherwise a playful
+     verb chosen once per run (Tinkering, Pondering, …). The running tool shows in its steps group, not here. The line
+     floats over the chat's bottom room, so coming and going moves nothing; the chat header only shows how a run
+     ended badly (failed, cancelled).
+   - **What the model got.** Everything NetPI adds to a request can be read where it happened. A `prompt` item
+     (`PromptRow`, from `context.prompts`, refreshed on `context.prompt`) is the system prompt: the first above the
+     first message (when the window starts there), one after a profile switch where it was rendered again; it opens
+     to the prompt as sent and the tool definitions that went with it (each opens to its JSON). Every notice and
+     summary (`NoticeRow`) opens to exactly what was sent: the text wrapped in `<system-notice kind="…">` (or
+     `<conversation-summary>`), with its size and a copy button (`SentBlock`); a subagent's report, an agent's
+     message and a summary open rendered, with a toggle to see them as sent.
    - Thinking rows are collapsed by default.
 4. **Streaming.** `stream.delta` appends to plain strings inside `StreamState`; they reach `$state` at most once
    per animation frame (`lib/frame.js`, with a 120ms timer fallback when the window is hidden). The streamed text
@@ -623,8 +634,11 @@ names or an inline `<svg …>` string.
 - `runs.list { includeFinished: true }` is called at startup to seed the status dots, including failed and
   completed subagents.
 - Scoped events carry a non-null `sid`. The UI also falls back to `d.sessionId`.
-- `agent.status` is broadcast whenever `status` **or** `activity` changes. The header shows
-  `activity · elapsed`, computed from `startedAt`.
+- `agent.status` is broadcast whenever `status` **or** `activity` changes. The run status line above the composer
+  shows it in a word with the time since `startedAt`.
+- `sessions.create` returns before the profiles plugin gives the new chat its default profile (on `session.created`);
+  the `session.updated` that follows carries it. The app never replaces a session with an older copy (`updatedAt`),
+  so an RPC result that arrives after that event can't take the profile away again.
 - `message.added` for a **steering** input has `meta.kind: 'steer'` (and `'queued'` for a queued follow-up),
   so the UI can tag the input and keep the run's steps grouped. `meta.agentName` and `meta.sessionId` on
   `agent-result` and `agent-message` notices enable the "open" link. A `budget` notice with `meta.canOverride` (the

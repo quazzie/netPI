@@ -144,6 +144,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `skills.list` | netpi.skills | `{ sessionId }` or `{ projectId }` → `{ skills: [{ name, description, path, scope, listed, userOnly, disabled, license?, compatibility?, allowedTools? }], problems: [{ path, level, message }] }` (the skills for the session's working directory or the project folder, in precedence order; scope `project`, `extra` or `global`; level `warning` or `error`; see [PLUGIN-SKILLS.md](PLUGIN-SKILLS.md)) |
 | `compaction.run` | netpi.compaction | `{ sessionId, args? /* extra focus for the summary */ }` → `string` (error `busy` while the agent runs) |
 | `context.preview` | netpi.context | `{ sessionId }` → `{ systemPrompt, frozen, tools: {name, description}[], estimatedTokens }` (`frozen`: the prompt stored at the session's first model call) |
+| `context.prompts` | netpi.context | `{ sessionId }` → `{ prompts: [{ version, afterSeq, createdAt, systemPrompt, tools: [{ name, description, parameters }] }] }`: every system prompt the session was sent, oldest first, with the tool definitions sent with it: the first (at the first model call, `afterSeq` = the last message then) and one after each `context.reset`. A session frozen before these were kept has version 1 only, with its tool names. The chat shows them as "System prompt" rows |
 | `goal.get` | netpi.goal | `{ sessionId }` → `Goal\|null` (`meta.goal` unless cleared: `{ id, objective, status: active\|paused\|blocked\|complete, reason, tokenBudget, tokensUsed, continuations, noProgress, version, createdAt, updatedAt }`) |
 | `goal.set` | netpi.goal | `{ sessionId, objective (≤ 4000), tokenBudget? }` → `Goal` (a new goal; starts a run with a "goal" notice when the agent is idle; names an untitled session) |
 | `goal.edit` | netpi.goal | `{ sessionId, objective?, tokenBudget? }` → `Goal` (same goal; the model hears about it at its next call) |
@@ -198,6 +199,7 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `agent.status` | no | `{ agent: AgentInfo }` |
 | `agent.queue` | yes | `{ sessionId, items: QueuedInput[] }` |
 | `agent.notice` | yes | `{ sessionId, level: 'info'\|'warn'\|'error', text }` – transient (retry countdown etc.) |
+| `context.prompt` | yes | `{ sessionId, version, afterSeq }` – the session was sent a new system prompt (its first model call, or after `context.reset`); `context.prompts` has it |
 | `session.context` | no | `{ sessionId, used, window }` |
 | `agents.changed` | no | `{ agents: AgentSlots[] }` – what `agents.list` returns, whenever a run takes or frees an instance or an agent's state changes |
 | `models.changed`, `plugins.changed`, `ui.changed`, `settings.changed` | no | `{}` |

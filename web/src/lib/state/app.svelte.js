@@ -80,6 +80,9 @@ function upsertSession(s) {
   const list = app.sessions;
   const i = list.findIndex((x) => x.id === s.id);
   if (i >= 0) {
+    // an RPC result can arrive after a newer session.updated (e.g. sessions.create, then the default profile the server
+    // gives the new chat right away): never replace a session with an older copy of it
+    if (Date.parse(s.updatedAt) < Date.parse(list[i].updatedAt)) return;
     const next = list.slice();
     next[i] = s;
     // keep newest-first order by updatedAt
@@ -442,6 +445,7 @@ const SCOPED = new Set([
   'tool.end',
   'agent.queue',
   'agent.notice',
+  'context.prompt',
 ]);
 
 let uiReloadTimer = 0;

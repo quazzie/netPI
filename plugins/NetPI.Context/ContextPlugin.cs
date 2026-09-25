@@ -10,7 +10,9 @@ namespace NetPI.Context;
 /// changes to its tools as "tools" notices.
 /// <para>Settings: <c>context.customPrompt</c> (replaces the identity section), <c>context.appendPrompt</c>.</para>
 /// <para>RPC: <c>context.preview { sessionId }</c> → <c>{ systemPrompt, frozen, tools: [{name, description}], estimatedTokens }</c>;
-/// <c>context.reset { sessionId }</c> (a profile switch: the prompt is rendered again at the next call).</para>
+/// <c>context.reset { sessionId }</c> (a profile switch: the prompt is rendered again at the next call);
+/// <c>context.prompts { sessionId }</c> → every prompt the session was sent, with its tools (the chat shows them). Event
+/// <c>context.prompt { sessionId, version, afterSeq }</c> when a session is sent a new prompt.</para>
 /// </summary>
 [NetPiPlugin("netpi.context", Name = "Context", Description = "System prompt (frozen per session), working-directory and tool-change notices", Order = 40)]
 public sealed class ContextPlugin : INetPiPlugin
@@ -58,9 +60,13 @@ public sealed class ContextPlugin : INetPiPlugin
         // a profile switch: the next model call renders the prompt again and takes a new tool baseline (one full re-read)
         context.Rpc.Register("context.reset", (req, _) =>
         {
-            prompts.Delete(req.Required("sessionId"));
+            prompts.Reset(req.Required("sessionId"));
             return Task.FromResult<object?>(true);
         }, "Forget a session's frozen system prompt and tool baseline; its next model call renders them again: { sessionId } → true");
+
+        context.Rpc.Register("context.prompts", (req, _) =>
+            Task.FromResult<object?>(PromptsJson(context, prompts, req.Required("sessionId"))),
+            "The system prompts a session was sent, with their tools: { sessionId } → { prompts: [{ version, afterSeq, createdAt, systemPrompt, tools: [{ name, description, parameters? }] }] }");
         return Task.CompletedTask;
     }
 
@@ -106,6 +112,32 @@ public sealed class ContextPlugin : INetPiPlugin
             ["tools"] = toolArr,
             ["estimatedTokens"] = chars / 4,
         };
+    }
+
+    /// <summary>
+    /// What <c>context.prompts</c> returns: every prompt the session was sent, oldest first. A session frozen before these were
+    /// kept has its current prompt only, as version 1, with the names of its first tools.
+    /// </summary>
+    internal static JsonObject PromptsJson(IPluginContext ctx, PromptStore prompts, string sessionId)
+    {
+        if (ctx.Sessions.GetSession(sessionId) is null) throw new RpcException("not_found", $"No session {sessionId}");
+        var list = new JsonArray();
+        foreach (var p in prompts.Sent(sessionId))
+        {
+            JsonNode? tools;
+            try { tools = JsonNode.Parse(p.ToolsJson); } catch { tools = new JsonArray(); }
+            list.Add(new JsonObject
+            {
+                ["version"] = p.Version, ["afterSeq"] = p.AfterSeq, ["createdAt"] = p.CreatedAt, ["systemPrompt"] = p.Prompt, ["tools"] = tools,
+            });
+        }
+        if (list.Count == 0 && prompts.Get(sessionId) is { } frozen)
+            list.Add(new JsonObject
+            {
+                ["version"] = 1, ["afterSeq"] = 0, ["systemPrompt"] = frozen,
+                ["tools"] = new JsonArray([.. (prompts.GetTools(sessionId)?.Names ?? []).Select(n => (JsonNode?)new JsonObject { ["name"] = n })]),
+            });
+        return new JsonObject { ["prompts"] = list };
     }
 
     private static ModelInfo PlaceholderModel(string? modelRef)

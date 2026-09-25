@@ -7,6 +7,8 @@
 //   images        { kind:'images', key, msg, images }                 assistant image parts
 //   shown         { kind:'shown', key, call, result, msg }            an image the agent showed (show_image): not in a steps group
 //   notice        { kind:'notice', key, msg }                         role notice / summary
+//   prompt        { kind:'prompt', key, prompt }                      a system prompt the session was sent (context.prompts):
+//                                                                     the first at the top, a later one after the message it followed
 //   status        { kind:'status', key, msg }                         assistant stopped with error/aborted/length
 //
 // Items keep their identity across rebuilds while their inputs are unchanged (messages are immutable
@@ -23,7 +25,8 @@ function same(a, b) {
 export function createItemBuilder() {
   let prev = new Map();
 
-  return function build(messages) {
+  /** atStart: the window begins with the session's first message (the first system prompt goes above it). */
+  return function build(messages, prompts = [], atStart = false) {
     const next = new Map();
     const stable = (item, deps) => {
       const old = prev.get(item.key);
@@ -44,6 +47,12 @@ export function createItemBuilder() {
     }
 
     const items = [];
+    // the first prompt only when the window starts at the session's start; a later one only when it falls inside the window
+    const first = messages[0]?.seq ?? 0;
+    const pending = prompts
+      .filter((p) => (p.version === 1 ? atStart : atStart || p.afterSeq >= first - 1))
+      .sort((a, b) => a.version - b.version);
+    const promptItem = (p) => stable({ kind: 'prompt', key: `p${p.version}`, prompt: p }, [p]);
     let steps = null;
     let groupKey = null;
     let startMs = 0;
@@ -69,6 +78,11 @@ export function createItemBuilder() {
     };
 
     for (const m of messages) {
+      // a system prompt sent before this message (the first one: before everything)
+      while (pending.length && (pending[0].version === 1 || pending[0].afterSeq < m.seq)) {
+        flush();
+        items.push(promptItem(pending.shift()));
+      }
       const kindMeta = m.meta?.kind;
       switch (m.role) {
         case 'user':
@@ -139,6 +153,8 @@ export function createItemBuilder() {
       }
     }
     flush();
+    // sent after the last loaded message (the window starts at the session's first message, or a later version)
+    for (const p of pending) if (!messages.length || p.afterSeq >= messages[messages.length - 1].seq) items.push(promptItem(p));
     prev = next;
     return items;
   };
