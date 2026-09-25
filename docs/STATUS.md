@@ -61,7 +61,6 @@
 
 ## Known limitations / ideas
 - OpenRouter: the catalog offers every tool-capable model (~390; narrow it with `providers.openrouter.include`).
-- Per-turn cache reuse and TTFT are not shown in the UI (usage is in each assistant message; TTFT is not recorded).
 - Steering an orchestrator that is waiting on its workers makes it stop waiting, but it still needs an instance of its
   agent back; if its own workers hold every one, the reply waits for one of them to finish.
 - Reloading the agents plugin (`netpi.agents`) mid-run can briefly let an agent run more than its instances.

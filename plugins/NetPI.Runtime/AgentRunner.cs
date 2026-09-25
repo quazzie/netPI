@@ -455,6 +455,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         var partial = new PartialMessage();
         var sw = Stopwatch.StartNew();
         long? thinkStart = null, thinkEnd = null;
+        long? firstToken = null; // the call's first thinking, text or tool call (as diag.calls measures it)
         Usage? lastUsage = null;
         ChatMessage? final = null;
 
@@ -474,18 +475,21 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 switch (ev)
                 {
                     case ThinkingDelta d:
+                        firstToken ??= sw.ElapsedMilliseconds;
                         thinkStart ??= sw.ElapsedMilliseconds;
                         partial.Add<ThinkingPart>(d.Text);
                         emitter.Delta("thinking", d.Text);
                         rt.SetActivity(state, "thinking");
                         break;
                     case TextDelta d:
+                        firstToken ??= sw.ElapsedMilliseconds;
                         EndThinking();
                         partial.Add<TextPart>(d.Text);
                         emitter.Delta("text", d.Text);
                         rt.SetActivity(state, "writing");
                         break;
                     case ToolCallStarted t:
+                        firstToken ??= sw.ElapsedMilliseconds;
                         EndThinking();
                         emitter.Flush();
                         partial.ToolCall(t.Id, t.Name);
@@ -536,6 +540,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                     DurationMs = sw.ElapsedMilliseconds,
                     Meta = new JsonObject { ["agentId"] = AgentId },
                 };
+                if (firstToken is { } firstMs) aborted.Meta["ttftMs"] = firstMs;
                 try
                 {
                     Ctx.Sessions.AppendMessage(SessionId, aborted);
@@ -567,6 +572,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             think.DurationMs = (thinkEnd ?? sw.ElapsedMilliseconds) - start;
         final.Meta ??= new JsonObject();
         final.Meta["agentId"] = AgentId;
+        if (firstToken is { } ttft) final.Meta["ttftMs"] = ttft;
 
         final = Ctx.Sessions.AppendMessage(SessionId, final);
         if (!string.IsNullOrWhiteSpace(final.Text)) run.LastAssistantText = final.Text;
@@ -620,6 +626,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         replacement.StopReason ??= original.StopReason;
         replacement.Meta ??= original.Meta?.DeepClone() as JsonObject ?? new JsonObject();
         replacement.Meta["agentId"] = AgentId;
+        if (replacement.Meta["ttftMs"] is null && original.Meta?["ttftMs"] is { } ttft) replacement.Meta["ttftMs"] = ttft.DeepClone(); // the same model call
         try { Ctx.Sessions.UpdateMessage(replacement); }
         catch (Exception ex) { Ctx.Logger.LogWarning(ex, "Failed to update the replaced assistant message"); }
         if (!string.IsNullOrWhiteSpace(replacement.Text)) run.LastAssistantText = replacement.Text;

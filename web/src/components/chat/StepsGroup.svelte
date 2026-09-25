@@ -2,6 +2,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import ThinkingRow from './ThinkingRow.svelte';
   import ToolRow from './ToolRow.svelte';
+  import TurnLine from './TurnLine.svelte';
   import { prefs } from '../../lib/state/ui.svelte.js';
   import { stepCounts } from '../../lib/chatItems.js';
   import { toolMeta, toolSummary, parseArgs } from '../../lib/tools.js';
@@ -22,6 +23,12 @@
   const span = $derived(Number.isFinite(item.startMs) && item.endMs > item.startMs ? item.endMs - item.startMs : null);
   const counts = $derived(collapsible ? stepCounts(item.steps) : null);
   const failed = $derived(item.steps.reduce((a, s) => a + (s.kind === 'tool' && s.result?.isError ? 1 : 0), 0));
+  // the numbers of a model turn go under its last step: a tool call of a message that ended in tool_use (its thinking
+  // can sit in an earlier group, before its text; a turn that ends in an answer has them in the answer's footer)
+  const endsTurn = (i) => {
+    const s = item.steps[i];
+    return s.kind === 'tool' && s.msg?.stopReason === 'tool_use' && item.steps[i + 1]?.msg?.id !== s.msg.id;
+  };
   const latest = $derived.by(() => {
     if (!active || !collapsible || open) return null;
     const s = item.steps[n - 1];
@@ -62,12 +69,13 @@
   {/if}
   {#if open}
     <div class="steps">
-      {#each item.steps as step (step.key)}
+      {#each item.steps as step, i (step.key)}
         {#if step.kind === 'thinking'}
           <ThinkingRow {step} {chat} />
         {:else}
           <ToolRow {step} {chat} {base} {live} />
         {/if}
+        {#if prefs.turnDetails && endsTurn(i)}<TurnLine msg={step.msg} />{/if}
       {/each}
     </div>
   {/if}

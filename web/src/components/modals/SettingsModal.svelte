@@ -253,6 +253,16 @@
             <div class="lbl"><div>Expand thinking</div><div class="np-dim np-small">Show reasoning blocks expanded by default, also while they stream</div></div>
             <input type="checkbox" checked={prefs.expandThinking} onchange={(e) => setPref('expandThinking', e.currentTarget.checked)} />
           </label>
+          <label class="row check">
+            <div class="lbl">
+              <div>Model turn details</div>
+              <div class="np-dim np-small">
+                A line under each model turn's steps: time to the first token, how much of the prompt the backend reused from
+                its cache, output speed, tokens in and out. An answer's footer has them too.
+              </div>
+            </div>
+            <input type="checkbox" checked={prefs.turnDetails} onchange={(e) => setPref('turnDetails', e.currentTarget.checked)} />
+          </label>
           <div class="row">
             <div class="lbl"><div>Chat width</div><div class="np-dim np-small">How wide messages get on a large window</div></div>
             <div class="np-seg">

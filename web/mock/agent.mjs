@@ -67,6 +67,8 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     let thinkingText = '';
     let body = '';
     let thinkingMs = 0;
+    let firstAt = 0; // the first thinking, text or tool call (meta.ttftMs, like the runner)
+    const first = () => (firstAt ||= Date.now());
     try {
       if (spec.firstTokenMs) {
         setStatus(sid, { activity: 'waiting for model' });
@@ -77,6 +79,7 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
         const tt = Date.now();
         for (const chunk of chunks(spec.thinking, 3)) {
           await sleep(28, run);
+          first();
           thinkingText += chunk;
           publish('stream.delta', { sessionId: sid, kind: 'thinking', text: chunk }, sid);
         }
@@ -86,11 +89,13 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
         setStatus(sid, { activity: 'writing' });
         for (const chunk of chunks(spec.text, spec.fast ? 14 : 6)) {
           await sleep(30, run);
+          first();
           body += chunk;
           publish('stream.delta', { sessionId: sid, kind: 'text', text: chunk }, sid);
         }
       }
       for (const t of spec.tools ?? []) {
+        first();
         publish('stream.tool', { sessionId: sid, callId: t.id, name: t.name }, sid);
         await sleep(220, run);
       }
@@ -101,7 +106,7 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
       const parts = [];
       if (thinkingText) parts.push(thinking(thinkingText, thinkingMs || Date.now() - t0));
       if (body) parts.push(text(body));
-      append(sid, 'assistant', parts, { provider, model, stopReason: 'aborted', durationMs: Date.now() - t0, usage: usage(8000, Math.round(body.length / 4)) });
+      append(sid, 'assistant', parts, { provider, model, stopReason: 'aborted', durationMs: Date.now() - t0, usage: usage(8000, Math.round(body.length / 4)), ...(firstAt ? { meta: { ttftMs: firstAt - t0 } } : {}) });
       throw e;
     }
     publish('stream.end', { sessionId: sid }, sid);
@@ -121,6 +126,7 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
       stopReason: spec.tools?.length ? 'tool_use' : 'stop',
       usage: u,
       durationMs: Date.now() - t0,
+      ...(firstAt ? { meta: { ttftMs: firstAt - t0 } } : {}),
     });
     const s = store.sessions.get(sid);
     if (s) {

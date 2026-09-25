@@ -10,6 +10,7 @@ public static class LoopTests
     public static void Register(TestRunner t)
     {
         t.Add("loop: simple text reply", SimpleReply);
+        t.Add("loop: the time to the first token is kept in the message meta", FirstToken);
         t.Add("loop: stream deltas are coalesced", Coalescing);
         t.Add("loop: tool loop with a fake tool", ToolLoop);
         t.Add("loop: parallel read-only batch", ParallelReadOnly);
@@ -38,6 +39,27 @@ public static class LoopTests
 
     private static FakeTool Echo() => new("echo", (ctx, args, ct) =>
         Task.FromResult(ToolResult.Ok("echo:" + (args.TryGetProperty("text", out var v) ? v.GetString() : ""), new { len = 3 })));
+
+    private static async Task FirstToken()
+    {
+        await using var h = await TestHost.StartAsync();
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Late(ct);
+        await h.SendAsync(s.Id, "hi");
+        await h.IdleAsync(s.Id);
+
+        var m = h.Messages(s.Id).Last(x => x.Role == MessageRole.Assistant);
+        var ttft = m.Meta?["ttftMs"]?.GetValue<long>();
+        Check.True(ttft is >= 60, $"from the call's start to the first delta: {ttft} ms");
+        Check.True(m.DurationMs - ttft >= 30, $"the rest of the call is not in it: {m.DurationMs} ms in all");
+
+        // prefill 80ms, then the answer takes another 40ms
+        static async IAsyncEnumerable<ModelStreamEvent> Late([EnumeratorCancellation] CancellationToken ct)
+        {
+            await Task.Delay(80, ct);
+            await foreach (var e in Reply.Stream(Reply.Message(new TextPart { Text = "late" }), async c => await Task.Delay(40, c), ct)) yield return e;
+        }
+    }
 
     private static async Task SimpleReply()
     {

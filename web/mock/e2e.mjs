@@ -221,6 +221,14 @@ if (await edit.count()) await edit.scrollIntoViewIfNeeded();
 await page.waitForTimeout(200);
 await shot(page, '08-expanded-tools');
 check('diff view rendered', (await page.locator('.diff .dl.add').count()) > 0);
+const turnLines = await page.locator('.group .turn').allInnerTexts();
+check(
+  'model turns: time to the first token and cache reuse under each turn',
+  turnLines.length > 0 && turnLines.every((t) => /first token \d/.test(t) && /\d+% cached/.test(t)),
+  turnLines[0],
+);
+const answerInfo = await page.locator('.assistant .foot .info').last().innerText();
+check('the answer footer has its turn numbers too', /first token \d/.test(answerInfo) && /\d+% cached/.test(answerInfo), answerInfo);
 
 // ------------------------------------------------------------------ showcase session (subagents, notices)
 log('showcase session');

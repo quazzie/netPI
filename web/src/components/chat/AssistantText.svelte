@@ -3,6 +3,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import { renderMarkdown, highlight, copyText } from '../../lib/markdown.js';
   import { duration, tokens, stamp } from '../../lib/format.js';
+  import { turnStats, turnTitle, cachedText, speedText } from '../../lib/turn.js';
 
   /**
    * item: { kind:'text', msg, text, last }, or while the answer streams { kind:'text', text, stream, msg:null }: then the
@@ -13,7 +14,7 @@
   const streaming = $derived(!!item.stream);
   const html = $derived(streaming ? '' : renderMarkdown(item.text));
   const m = $derived(item.msg);
-  const u = $derived(m?.usage);
+  const ts = $derived(m ? turnStats(m) : null);
 
   let liveHtml = $state('');
   let timer = 0;
@@ -55,14 +56,15 @@
   {#if item.last && m.stopReason !== 'tool_use'}
     <div class="foot">
       <button class="act" onclick={copy} title="Copy message"><Icon name={copied ? 'check' : 'copy'} size={12} /></button>
-      <span class="info np-mono">
+      <!-- the answer's model turn (see TurnLine); on a narrow chat the items at the end are dropped whole -->
+      <span class="info np-fit np-mono" title={ts ? turnTitle(ts, m.durationMs) : undefined}>
         {#if m.model}<span>{m.model.split('/').pop()}</span>{/if}
         {#if m.durationMs}<span>{duration(m.durationMs)}</span>{/if}
-        {#if u}<span title="input · cache read · output tokens"
-            >{tokens(u.inputTokens)} in{u.cacheReadTokens ? ` (+${tokens(u.cacheReadTokens)} cached)` : ''} · {tokens(
-              u.outputTokens,
-            )} out</span
-          >{/if}
+        {#if ts?.ttft != null}<span>first token {duration(ts.ttft)}</span>{/if}
+        {#if ts?.prompt}<span>{cachedText(ts)} cached</span>{/if}
+        {#if ts?.tps}<span>{speedText(ts.tps)} tok/s</span>{/if}
+        {#if ts?.prompt}<span>{tokens(ts.prompt)} in</span>{/if}
+        {#if ts?.out != null}<span>{tokens(ts.out)} out</span>{/if}
         <span>{stamp(m.createdAt)}</span>
       </span>
     </div>
@@ -112,6 +114,10 @@
     align-items: center;
     gap: 6px;
     height: 22px;
+    /* it hangs over the top of the next item (the gap is smaller): cover it instead of printing over its text */
+    padding-right: 8px;
+    border-radius: 0 0 6px 0;
+    background: var(--bg);
     color: var(--fg-dim);
     font-size: var(--fs-xs);
     opacity: 0;
@@ -140,8 +146,7 @@
     color: var(--fg);
   }
   .info {
-    display: flex;
-    gap: 10px;
+    min-width: 0;
     font-size: 11px;
   }
 </style>

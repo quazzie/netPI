@@ -17,8 +17,10 @@ all are, this plan moves to `docs/archive/`.
 3. **Files tab** (done; asked for on 2026-09-25): a click on a file opens it; the `@` button of a row inserts it into
    the chat as a mention; a git line at the bottom (`files.git`) shows the branch and the uncommitted changes since
    the last commit (e.g. `4 files +13 −400`), and clicking it lists the changed files. See `docs/UI.md` (Files).
-4. **Cache reuse and time to first token per turn**, shown in the chat: how much of each prompt the backend reused
-   and how long the first token took (TTFT is not recorded yet: the runner can store it in the message meta).
+4. **Cache reuse and time to first token per turn** (done), shown in the chat: the runner keeps the time to the
+   first token in the message meta (`ttftMs`); a dim line under each model turn's steps shows it with the cache reuse,
+   the output speed and the tokens, and an answer's footer has the same. A preference switches the lines off. See
+   `docs/UI.md` (Model turns).
 5. **`ask_user`**: the agent asks the user questions with options. The questions sit **inline in the chat** as its
    newest item, below the agent's message that gives their context; nothing overlays the chat. The card is expanded
    while it waits and collapses to one line (question and answer) once answered; to read the context the user scrolls

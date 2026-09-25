@@ -215,6 +215,13 @@ into locals first, because after the parent clears the modal state or the row re
      also while the agent works (a folded group is one line, like a single row, so the chat stays still), and the
      group the agent is adding to shows its latest step on that line; `open` never folds. Steering input does not
      end a run. The user's choice to expand or collapse is kept per group in `chat.expanded`.
+   - **Model turns.** Under the last step of each model turn (an assistant message that ended in tool calls), a dim
+     line (`TurnLine`, `lib/turn.js`) gives that turn's numbers: the time to its first token (`meta.ttftMs`), how
+     much of the prompt the backend reused from its cache, the output speed (output tokens over the time after the
+     first token), and the tokens in (the whole prompt) and out. On a narrow chat the items at the end are dropped
+     whole; the tooltip has the exact numbers. A turn that ends in an answer has the same numbers in the answer's
+     footer (on hover: model, duration, then these, then the time), which covers the top of the next item while it
+     shows. The "Model turn details" preference (`prefs.turnDetails`, on by default) switches the lines off.
    - A running shell command shows its last output lines under its row once it has run for a second, so quick
      commands don't flash open and shut.
    - **Run status.** `RunStatus` is the one line that says the agent is busy, just above the composer: an animated
@@ -324,10 +331,10 @@ the same Esc stack, `escLayer()` in `Modal.svelte`).
   per chat (the composer's tools button).
 
 **General** holds the UI preferences (`prefs` in `lib/state/ui.svelte.js`, kept in localStorage and the host's
-`ui.state`): theme, send key, Steps (expanded / fold when done / folded), expand thinking, chat width (normal 900px,
-wide 1200px, full; the `--chat-max` token), zoom and spellcheck in the message box. Zoom: in the desktop app the
-buttons call `desktop.zoom` and the shell remembers the factor (Ctrl + wheel and Ctrl + / − / 0 too); in a
-browser its own per-site zoom does that. **settings.json** edits the host settings as JSON and reloads when the
+`ui.state`): theme, send key, Steps (expanded / fold when done / folded), expand thinking, model turn details, chat
+width (normal 900px, wide 1200px, full; the `--chat-max` token), zoom and spellcheck in the message box. Zoom: in the
+desktop app the buttons call `desktop.zoom` and the shell remembers the factor (Ctrl + wheel and Ctrl + / − / 0 too);
+in a browser its own per-site zoom does that. **settings.json** edits the host settings as JSON and reloads when the
 file changes elsewhere while it has no unsaved edits.
 
 ## Plugin tabs

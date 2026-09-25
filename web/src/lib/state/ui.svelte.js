@@ -16,6 +16,7 @@ const defaultPrefs = {
   chatWidth: 'normal', // normal (900px) | wide (1200px) | full
   enterSends: true, // false → Ctrl+Enter sends, Enter = newline
   expandThinking: false,
+  turnDetails: true, // under each model turn's steps: time to first token, cache reuse, output speed, tokens
   spellcheck: true, // spell checking in the composer
   notifications: true, // desktop app: a Windows notification when a chat needs you while NetPI is in the background
 };
