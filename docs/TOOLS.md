@@ -333,7 +333,9 @@ details: { query, provider: 'searxng'|'brave', results: { title, url, snippet, a
 `{ url?, width? (1280), height? (800), full_page?, wait_for? /* CSS selector, up to 10 s */, delay_ms? (500) }`.
 With a `url`: a headless Edge/Chrome/Chromium (`web.browserPath`, else found in the usual places) with a fresh
 profile, driven over the DevTools protocol: it loads the page, waits for the load event and `wait_for`, and captures
-the viewport (or the whole height up to 16384 px). Console errors and uncaught exceptions are reported. Without a
+the viewport (or the whole height up to 16384 px). Console errors and uncaught exceptions are reported. The browser is
+closed with `Browser.close` over DevTools, then its process is killed: Edge's launcher can hand the browser to another
+process and exit (code 0), which the tool follows through the profile's DevTools port. Without a
 `url`: the NetPI window as the user sees it, through the desktop shell's `desktop.capture` RPC (scaled to 1600 px
 wide; not available in the headless server). Models that cannot see images get an error instead of a screenshot.
 

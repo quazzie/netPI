@@ -161,6 +161,7 @@ internal sealed class HeadlessBrowser : IAsyncDisposable
     private readonly SemaphoreSlim _send = new(1, 1);
     private Task? _reader;
     private int _id;
+    private int _port;
 
     public ConcurrentQueue<string> ConsoleErrors { get; } = new();
 
@@ -243,7 +244,8 @@ internal sealed class HeadlessBrowser : IAsyncDisposable
         int port = 0;
         while (DateTime.UtcNow < until)
         {
-            if (_process.HasExited) throw new InvalidOperationException($"the browser exited (code {_process.ExitCode})");
+            // exit code 0: the launcher handed the browser to another process (Edge can), which still writes the port file
+            if (_process.HasExited && _process.ExitCode != 0) throw new InvalidOperationException($"the browser exited (code {_process.ExitCode})");
             try
             {
                 if (File.Exists(portFile) && int.TryParse((await File.ReadAllLinesAsync(portFile, ct).ConfigureAwait(false)).FirstOrDefault(), out port) && port > 0) break;
@@ -252,6 +254,7 @@ internal sealed class HeadlessBrowser : IAsyncDisposable
             await Task.Delay(100, ct).ConfigureAwait(false);
         }
         if (port <= 0) throw new TimeoutException("the browser did not open its DevTools port");
+        _port = port;
 
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         string? wsUrl = null;
@@ -373,12 +376,37 @@ internal sealed class HeadlessBrowser : IAsyncDisposable
         ConsoleErrors.Enqueue(nl > 0 && nl < line.Length - 1 ? line[..nl] + " …" : line);
     }
 
+    /// <summary>
+    /// Close the browser over DevTools (Browser.close on the browser endpoint): the launcher may have handed it to another
+    /// process, which killing the launcher would leave running.
+    /// </summary>
+    private async Task CloseBrowserAsync()
+    {
+        if (_port <= 0) return;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            var url = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{_port}/json/version", cts.Token).ConfigureAwait(false))?["webSocketDebuggerUrl"]?.GetValue<string>();
+            if (url is null) return;
+            using var ws = new ClientWebSocket();
+            await ws.ConnectAsync(new Uri(url), cts.Token).ConfigureAwait(false);
+            await ws.SendAsync(Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"Browser.close\"}"), WebSocketMessageType.Text, true, cts.Token).ConfigureAwait(false);
+            // the browser drops the connection as it exits
+            var buffer = new byte[4096];
+            while (ws.State == WebSocketState.Open)
+                if ((await ws.ReceiveAsync(buffer, cts.Token).ConfigureAwait(false)).MessageType == WebSocketMessageType.Close) break;
+        }
+        catch (Exception) { /* gone already, or it didn't answer: the process kill below is the fallback */ }
+    }
+
     public async ValueTask DisposeAsync()
     {
         _stop.Cancel();
         try { if (_ws.State == WebSocketState.Open) await _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, null, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
         catch (Exception) { }
         _ws.Dispose();
+        await CloseBrowserAsync().ConfigureAwait(false);
         try
         {
             if (!_process.HasExited)
