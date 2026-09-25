@@ -428,8 +428,8 @@
       <Icon name="branch" size={12} />
       <span class="np-line np-baseline np-grow gl">
         <span class="np-grow br">{git.branch ?? '?'}</span>
-        {#if git.ahead}<span class="ab">↑{git.ahead}</span>{/if}
-        {#if git.behind}<span class="ab">↓{git.behind}</span>{/if}
+        {#if git.ahead}<span class="ab"><Icon name="arrow-up" size={10} stroke={2} />{git.ahead}</span>{/if}
+        {#if git.behind}<span class="ab"><Icon name="arrow-down" size={10} stroke={2} />{git.behind}</span>{/if}
         {#if git.files.length}
           <span>{plural(git.files.length, 'file')}</span>
           <span class="lines np-mono"><span class="add">+{git.added}</span><span class="del">−{git.deleted}</span></span>
@@ -636,6 +636,11 @@
   }
   .ab {
     color: var(--fg-dim);
+  }
+  /* an arrow, not ↑ ↓: at this size those read as a 1 */
+  .ab :global(.np-icon) {
+    margin-right: 1px;
+    vertical-align: -1px;
   }
   .lines {
     display: inline-flex;
