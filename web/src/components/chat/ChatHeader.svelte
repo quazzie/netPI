@@ -14,6 +14,8 @@
   const modelRef = $derived(sessionModelRef(session));
   const agent = $derived(app.agents.get(session.id));
   const parent = $derived(session.parentSessionId ? app.sessionsById.get(session.parentSessionId) : null);
+  // a fork (sessions.fork): the chat it came from, while it exists
+  const forkedFrom = $derived(session.meta?.forkedFrom?.sessionId ? app.sessionsById.get(session.meta.forkedFrom.sessionId) : null);
 
   function start() {
     value = session.title || '';
@@ -38,6 +40,11 @@
         <Icon name="branch" size={12} />
         <span class="np-ellipsis">{parent.title || 'Parent'}</span>
         <Icon name="chevron-right" size={11} />
+      </button>
+    {:else if forkedFrom}
+      <button class="crumb" title="Forked from “{forkedFrom.title}”: open it" onclick={() => openSession(forkedFrom.id)}>
+        <Icon name="corner-up" size={12} />
+        <span class="np-ellipsis">{forkedFrom.title || 'Original'}</span>
       </button>
     {/if}
     {#if editing}

@@ -123,6 +123,48 @@ public static class CoreTests
             Check.True(log[0].L("tools") >= 10, "tools sent to the model");
         });
 
+        r.Add("fork: sessions.fork copies the chat up to a message; the fork goes on with its prompt, the original stays", async () =>
+        {
+            var s = await env.NewSession();
+            var sid = s.S("id")!;
+            await env.Run(sid, "First question, please echo.");
+            await env.Run(sid, "Second question, please echo.");
+            List<JsonElement> Messages(string id) => env.Rpc("sessions.messages", new { id, limit = 200 }).GetAwaiter().GetResult().Arr("messages").ToList();
+            var original = Messages(sid);
+            var firstAnswer = original.First(m => m.S("role") == "assistant").L("seq");
+
+            var mark = env.Client.Mark();
+            var fork = await env.Rpc("sessions.fork", new { id = sid, upToSeq = firstAnswer });
+            var fid = fork.S("id")!;
+            Check.Equal("e2e (fork)", fork.S("title"));
+            Check.Equal(sid, fork.P("meta").P("forkedFrom").S("sessionId"));
+            Check.Equal(firstAnswer, fork.P("meta").P("forkedFrom").L("seq"));
+            var copied = Messages(fid);
+            Check.Equal(string.Join(",", original.Where(m => m.L("seq") <= firstAnswer).Select(m => m.L("seq"))), string.Join(",", copied.Select(m => m.L("seq"))), "the same seqs");
+            Check.Equal(original.Count, Messages(sid).Count, "the original stays");
+            var forked = await env.Client.WaitFor(mark, e => e.Type == "session.forked" && e.D.S("sessionId") == fid, "session.forked", 5000);
+            Check.Equal(sid, forked.D.S("fromSessionId"));
+
+            // the prompt the original was sent goes on in the fork (the context plugin copies it on session.forked)
+            var originalPrompt = (await env.Rpc("context.prompts", new { sessionId = sid })).Arr("prompts").First().S("systemPrompt");
+            await Wait.Until(() => env.Rpc("context.prompts", new { sessionId = fid }).GetAwaiter().GetResult().Arr("prompts").Any(), "the fork's prompt", 5000);
+            Check.Equal(originalPrompt, (await env.Rpc("context.prompts", new { sessionId = fid })).Arr("prompts").Single().S("systemPrompt"));
+            var run = await env.Run(fid, "Third question, in the fork, please echo.");
+            Check.Contains(run.FinalText, "ECHO-DONE");
+            Check.Equal(1, (await env.Rpc("context.prompts", new { sessionId = fid })).Arr("prompts").Count(), "no new render: the same prompt");
+            Check.Equal("e2e (fork 2)", (await env.Rpc("sessions.fork", new { id = sid })).S("title"), "the next fork of the same chat");
+
+            // a subagent's chat is not forked
+            await env.Run(sid, "Start a background job [s:spawnbg delay=100]");
+            var sub = (await env.Rpc("sessions.list", new { includeSubagents = true, parentSessionId = sid })).Arr().First(x => x.S("kind") == "subagent");
+            try
+            {
+                await env.Rpc("sessions.fork", new { id = sub.S("id") });
+                throw new AssertException("expected bad_request");
+            }
+            catch (RpcError ex) { Check.Equal("bad_request", ex.Code); }
+        });
+
         r.Add("tools: ls/read/edit/write really run in the project (CRLF kept), results persisted, paging", async () =>
         {
             var p = await env.NewProject("tools", Seed);

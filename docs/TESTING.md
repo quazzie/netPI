@@ -158,7 +158,7 @@ dotnet tests/NetPI.E2E/bin/Debug/NetPI.E2E.dll [options] [name filter…]
   --list          list the tests
 ```
 
-60 tests, about 95 s. Build first (it runs whatever is in `artifacts/app`, including the web UI from `npm run build`).
+61 tests, about 95 s. Build first (it runs whatever is in `artifacts/app`, including the web UI from `npm run build`).
 
 What it does: starts MockLlm in-process, copies `artifacts/app` to `<temp>/netpi-e2e/<run>/app`, writes a settings file
 into a fresh home (`providers.*` → the mock, fast retry backoff), starts `dotnet app/netpi-server.dll --home … --token

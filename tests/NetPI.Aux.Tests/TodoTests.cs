@@ -60,6 +60,32 @@ public static class TodoTests
             env.Ctx.Unload();
         });
 
+        r.Add("todo: a fork's checklist is its last todo_write (session.forked), not the original's latest", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var fork = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "fork" });
+            ToolResultPart Result(string status, bool isError = false) => new()
+            {
+                CallId = "call_" + status, Name = "todo_write", IsError = isError, Content = "…",
+                Details = new JsonObject { ["items"] = new JsonArray(new JsonObject { ["text"] = "Fix the bug", ["status"] = status }) },
+            };
+            env.Ctx.SessionsFake.AppendMessage(fork.Id, new ChatMessage { Role = MessageRole.Tool, Parts = [Result("pending")] });
+            env.Ctx.SessionsFake.AppendMessage(fork.Id, new ChatMessage { Role = MessageRole.Tool, Parts = [Result("in_progress")] });
+            env.Ctx.SessionsFake.AppendMessage(fork.Id, new ChatMessage { Role = MessageRole.Tool, Parts = [Result("done", isError: true)] });
+
+            env.Ctx.Events.Publish(EventTypes.SessionForked, new { sessionId = fork.Id, fromSessionId = env.Session.Id, upToSeq = 3 });
+            JsonArray? Todo() => env.Ctx.SessionsFake.GetSession(fork.Id)?.Meta?["todo"] as JsonArray;
+            for (var i = 0; i < 100 && Todo() is null; i++) await Task.Delay(10);
+            Check.Equal("in_progress", Statuses(Todo()), "the last todo_write that worked");
+
+            var empty = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "no list" });
+            TodoPlugin.Forked(env.Ctx, empty.Id);
+            Check.True(env.Ctx.SessionsFake.GetSession(empty.Id)!.Meta?["todo"] is null, "no todo_write: no checklist");
+            TodoPlugin.Forked(env.Ctx, "ses_gone"); // a fork deleted meanwhile: nothing happens
+            env.Ctx.Unload();
+        });
+
         r.Add("todo: lenient input (strings, synonyms, other field names, a JSON string, a bare array)", async () =>
         {
             var env = new Env();

@@ -4,7 +4,8 @@
   import { stamp } from '../../lib/format.js';
 
   /** msg: ChatMessage (role user, or a steer notice) — or the optimistic { text, images } while sending */
-  let { msg, pending = false, onimage } = $props();
+  /** onfork: a new chat with the conversation before this message, and this message in its box (see MessageList) */
+  let { msg, pending = false, onimage, onfork = null } = $props();
 
   const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
@@ -38,6 +39,11 @@
       <button class="copy" onclick={copy} title="Copy">
         <Icon name={copied ? 'check' : 'copy'} size={12} />
       </button>
+      {#if onfork}
+        <button class="copy" onclick={onfork} title="Fork: a new chat with the conversation before this message, and this message in its box to change and send">
+          <Icon name="branch" size={12} />
+        </button>
+      {/if}
       <span class="time">{stamp(msg.createdAt)}</span>
     {/if}
     {#if tag}<span class="tag"><Icon name={tag === 'queued' ? 'queue' : 'steer'} size={11} />{tag}</span>{/if}

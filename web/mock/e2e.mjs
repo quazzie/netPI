@@ -616,6 +616,27 @@ log('guardrails: a tool call waits for your OK');
   check('guardrails: allowed, it ran', (await page.locator('.content:visible .item').last().innerText()).includes('Pushed'));
 }
 
+log('fork: a new chat from a message');
+{
+  await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
+  await page.waitForTimeout(300);
+  const answer = page.locator('.assistant', { has: page.locator('.foot') }).last();
+  await answer.hover();
+  await answer.locator('.foot button[title^="Fork"]').click();
+  await page.waitForTimeout(600);
+  check('fork: after an answer, the fork opens in a tab of its own', /\(fork/.test(await page.locator('.tab.active').innerText()));
+  const crumb = page.locator('.header .crumb');
+  check('fork: its header leads back to the original', ((await crumb.count()) ? await crumb.innerText() : '').includes('Fix streaming reconnect bug'));
+  await crumb.click();
+  await page.waitForTimeout(400);
+  const first = page.locator('.user', { hasText: 'After a reconnect' }).first();
+  await first.hover();
+  await first.locator('button[title^="Fork"]').click();
+  await page.waitForTimeout(600);
+  check('fork: before a user message, its text waits in the new chat\'s box', (await ta.inputValue()).startsWith('After a reconnect'));
+  await ta.fill('');
+}
+
 log('narrow side panels');
 {
   // drag both panels to ~230px (the user's layout is 230–340px) and check every tab for sideways overflow

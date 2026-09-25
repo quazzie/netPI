@@ -13,6 +13,7 @@ public static class ContextTests
         t.Add("context: working directory and project arrive as notices (first call, switch, moved, compaction)", ProjectNoticesFlow);
         t.Add("context: the system prompt is frozen per session; settings changes reach new sessions", FrozenPrompt);
         t.Add("context: every system prompt a session is sent is kept with its tools (context.prompts, context.prompt event)", SentPrompts);
+        t.Add("context: a fork goes on with the prompt the original had at the fork point", ForkPrompt);
         t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
         t.Add("context: a tools notice leaves out the guidelines the model already has", ToolNoticeKnownGuidelines);
@@ -280,6 +281,44 @@ public static class ContextTests
         await Turn(h, s2.Id, "hi");
         var p2 = h.Catalog.Requests.Last().SystemPrompt!;
         Check.True(p2.StartsWith("You are someone else.") && p2.EndsWith("APPENDED LATER"), "new sessions get the new settings");
+    }
+
+    // A fork (sessions.fork) takes the prompt the original was sent at the fork point, so its next call starts with the
+    // prefix the backend saw. Here the store is the fake one, whose ForkSession publishes no session.forked: the first
+    // call of the fork copies it (the event only does it sooner).
+    private static async Task ForkPrompt()
+    {
+        using var db = TestSqlite.TryCreate();
+        if (db is null) { Console.WriteLine("    (no SQLite library: skipped)"); return; }
+        await using var h = await TestHost.StartAsync(db: db);
+        var s = h.NewSession();
+        await Turn(h, s.Id, "hi");
+        var p1 = h.Catalog.Requests.Last().SystemPrompt;
+        await Turn(h, s.Id, "again");
+        var upTo = h.Messages(s.Id).Last().Seq;
+        h.Settings.SetQuiet("context.appendPrompt", "AFTER THE SWITCH");
+        await h.Rpc.CallAsync("context.reset", new { sessionId = s.Id });
+        await Turn(h, s.Id, "switched");
+        var p2 = h.Catalog.Requests.Last().SystemPrompt;
+        Check.True(p2!.EndsWith("AFTER THE SWITCH") && p1 != p2, "the original has a second prompt now");
+
+        ISessionStore store = h.Sessions;
+        SessionInfo Fork(long seq) => store.ForkSession(s.Id, seq, new SessionInfo
+        {
+            Title = "fork", Meta = new JsonObject { ["forkedFrom"] = new JsonObject { ["sessionId"] = s.Id, ["seq"] = seq } },
+        });
+        var early = Fork(upTo);
+        await Turn(h, early.Id, "in the fork");
+        var sent = h.Catalog.Requests.Last();
+        Check.Equal(p1, sent.SystemPrompt, "the prompt of the fork point, not a new render (which would end AFTER THE SWITCH)");
+        Check.True(sent.Messages.Any(m => m.Text == "again"), "with the conversation up to the fork point");
+        var prompts = (JsonArray)(await h.Rpc.CallAsync("context.prompts", new { sessionId = early.Id }))!["prompts"]!;
+        Check.Equal(1, prompts.Count, "the prompts sent up to the fork point are its history");
+        Check.Equal(p1, (string?)prompts[0]!["systemPrompt"]);
+
+        var late = Fork(h.Messages(s.Id).Last().Seq);
+        await Turn(h, late.Id, "later fork");
+        Check.Equal(p2, h.Catalog.Requests.Last().SystemPrompt, "a fork after the switch has the second prompt");
     }
 
     // Every prompt a session is sent is kept with its tools (context.prompts): the first, and one after each context.reset

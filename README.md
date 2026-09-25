@@ -28,6 +28,8 @@ headless for any browser.
 - **Profiles.** A profile is the opening of the system prompt ("You are a system administrator…") and the tools a chat
   gets, switched on and off with checkboxes. Give one to a project and its new chats start with it; switch it in a chat
   for free before the first message.
+- **Forks.** Fork a chat from any message into a new one (the conversation up to there, and the prompt it was sent,
+  so the backend's cache still applies); forking before one of your messages puts it in the box to change and resend.
 - **Steering and queueing.** While an agent runs, *Enter* steers it (delivered after the current tool call) and
   *Alt+Enter* queues a follow-up; *Esc* stops.
 - **Goals.** `/goal <what must be true>` keeps the agent working: after every run it is started again until it marks

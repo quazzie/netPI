@@ -99,8 +99,9 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 2. **Claude provider live test.** Needs an Anthropic API key (none available yet): thinking, tools, prompt caching, and the
    adaptive-thinking settings (`docs/SETTINGS.md`). Claude through OpenRouter (paid) would exercise OpenRouter's side of
    it (signed `reasoning_details`, `cache_control`), not the native provider.
-3. **The agreed list in `docs/plans/harness-gaps.md`**: forking a chat is left; Retry-After, the Windows toasts, the
-   Files tab, the per-turn numbers, `ask_user`, the guardrails and the ideas plugin changes are done.
+3. **Try the harness gaps with a real model** (all built, `docs/archive/2026-09-26-harness-gaps.md`): does `qwen3.8-27b`
+   use `ask_user` for real decisions and not for routine steps, close ideas when done, and keep the cache when a chat
+   is forked (the per-turn line shows it)? The guardrails' defaults block only the catastrophic; see whether they need more.
 4. **Open items** in `docs/STATUS.md`, under "Known limitations / ideas".
 
 ## Working rules

@@ -110,4 +110,25 @@ public interface ISessionStore
     IReadOnlyList<ChatMessage> GetContextMessages(string sessionId);
     /// <summary>Mark all messages with seq &lt;= upToSeq as compacted.</summary>
     void MarkCompacted(string sessionId, long upToSeq);
+
+    /// <summary>
+    /// A new session (from <paramref name="template"/>) with a copy of the session's messages up to
+    /// <paramref name="upToSeq"/>: the same seqs, times, parts, usage and meta, and compaction as it was at that point.
+    /// The host publishes session.created once the copy is complete, then session.forked. This default copies message by
+    /// message (and publishes what <see cref="AppendMessage"/> does).
+    /// </summary>
+    SessionInfo ForkSession(string sessionId, long upToSeq, SessionInfo template)
+    {
+        var fork = CreateSession(template);
+        foreach (var m in GetMessages(sessionId))
+        {
+            if (m.Seq > upToSeq) break;
+            AppendMessage(fork.Id, new ChatMessage
+            {
+                Role = m.Role, Parts = m.Parts, CreatedAt = m.CreatedAt, Provider = m.Provider, Model = m.Model, StopReason = m.StopReason,
+                Usage = m.Usage, DurationMs = m.DurationMs, Compacted = m.Compacted, Meta = m.Meta?.DeepClone() as JsonObject,
+            });
+        }
+        return GetSession(fork.Id) ?? fork;
+    }
 }

@@ -411,6 +411,112 @@ internal sealed class SessionStore : ISessionStore
         });
     }
 
+    // ------------------------------------------------------------------ fork
+
+    /// <summary>
+    /// A new session with a copy of the session's messages up to <paramref name="upToSeq"/>, in one transaction: the same
+    /// seqs (so seq references such as a summary's <c>coversUpToSeq</c> stay valid), times, parts, usage and meta. What is
+    /// compacted is what was compacted at that point (<see cref="CompactionAsOfEnd"/>), and a copied <c>meta.for</c> that
+    /// names a message id names its copy. <c>session.created</c> goes out once the copy is complete (a handler never sees
+    /// it half done), then <c>session.forked</c>.
+    /// </summary>
+    public SessionInfo ForkSession(string sessionId, long upToSeq, SessionInfo template)
+    {
+        ArgumentNullException.ThrowIfNull(template);
+        var now = Now();
+        var fork = new SessionInfo
+        {
+            Id = string.IsNullOrWhiteSpace(template.Id) ? Ids.New("ses") : template.Id,
+            Title = string.IsNullOrWhiteSpace(template.Title) ? DefaultTitle : template.Title.Trim(),
+            ProjectId = string.IsNullOrWhiteSpace(template.ProjectId) ? null : template.ProjectId,
+            ParentSessionId = string.IsNullOrWhiteSpace(template.ParentSessionId) ? null : template.ParentSessionId,
+            Kind = string.IsNullOrWhiteSpace(template.Kind) ? "chat" : template.Kind,
+            Model = template.Model,
+            Reasoning = template.Reasoning,
+            CreatedAt = now,
+            UpdatedAt = now,
+            ContextTokens = template.ContextTokens,
+            Meta = template.Meta?.DeepClone() as JsonObject,
+        };
+        _db.Transaction(_ =>
+        {
+            if (GetSession(sessionId) is null) throw new KeyNotFoundException($"Session {sessionId} not found");
+            if (fork.ProjectId is not null)
+            {
+                if (GetProject(fork.ProjectId) is null) throw new KeyNotFoundException($"Project {fork.ProjectId} not found");
+                _db.Execute("UPDATE projects SET last_used_at = @now WHERE id = @id", new { now, id = fork.ProjectId });
+            }
+            _db.Execute($"""
+                INSERT INTO sessions({SessionColumns})
+                VALUES(@Id, @Title, @ProjectId, @ParentSessionId, @Kind, @Model, @Reasoning, @CreatedAt, @UpdatedAt, @Archived, @MessageCount, @ContextTokens, @Meta)
+                """, fork);
+            fork.MessageCount = _db.Execute("""
+                INSERT INTO messages(session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta)
+                SELECT @to, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta
+                FROM messages WHERE session_id = @from AND seq <= @upToSeq ORDER BY seq
+                """, new { to = fork.Id, from = sessionId, upToSeq });
+            CompactionAsOfEnd(fork.Id);
+            MapMessageIds(sessionId, fork.Id);
+            _db.Execute("UPDATE sessions SET message_count = @MessageCount WHERE id = @Id", fork);
+        });
+        Publish(EventTypes.SessionCreated, new { session = fork });
+        _bus.Publish(new BusEvent { Type = EventTypes.SessionForked, Source = "host", Data = new { sessionId = fork.Id, fromSessionId = sessionId, upToSeq } });
+        return fork;
+    }
+
+    /// <summary>
+    /// The compaction flags of a copy as they were at its last message: the latest summary in it covers what its
+    /// <c>meta.coversUpToSeq</c> says and the summaries before it are superseded; anything after it is not compacted (a
+    /// later compaction of the original, past the copy's end, does not count). A summary without that range (written
+    /// before it was recorded) keeps the flags before it.
+    /// </summary>
+    private void CompactionAsOfEnd(string sessionId)
+    {
+        var summaries = _db.Query("SELECT seq, meta FROM messages WHERE session_id = @sessionId AND role = @role ORDER BY seq",
+            new { sessionId, role = RoleName(MessageRole.Summary) }, r => (Seq: r.GetInt64("seq"), Meta: r.GetStringOrNull("meta")));
+        if (summaries.Count == 0)
+        {
+            _db.Execute("UPDATE messages SET compacted = 0 WHERE session_id = @sessionId", new { sessionId });
+            return;
+        }
+        var (latest, meta) = summaries[^1];
+        long? covers = null;
+        try
+        {
+            if (meta is not null && JsonNode.Parse(meta)?["coversUpToSeq"] is JsonValue v && v.TryGetValue<long>(out var c)) covers = c;
+        }
+        catch (JsonException) { }
+        if (covers is { } upTo)
+            _db.Execute("""
+                UPDATE messages SET compacted = CASE WHEN seq <= @upTo OR (role = @role AND seq < @latest) THEN 1 ELSE 0 END
+                WHERE session_id = @sessionId
+                """, new { sessionId, upTo, latest, role = RoleName(MessageRole.Summary) });
+        else
+            _db.Execute("UPDATE messages SET compacted = 0 WHERE session_id = @sessionId AND seq >= @latest", new { sessionId, latest });
+    }
+
+    /// <summary>A copied message whose <c>meta.for</c> names a message of the original (a skill notice's user message) names the copy.</summary>
+    private void MapMessageIds(string from, string to)
+    {
+        var refs = _db.Query("SELECT id, meta FROM messages WHERE session_id = @to AND meta LIKE '%\"for\"%'", new { to },
+            r => (Id: r.GetInt64("id"), Meta: r.GetString("meta")));
+        if (refs.Count == 0) return;
+        var seqOf = _db.Query("SELECT id, seq FROM messages WHERE session_id = @from", new { from }, r => (Id: r.GetInt64("id"), Seq: r.GetInt64("seq")))
+            .ToDictionary(x => x.Id, x => x.Seq);
+        var idAt = _db.Query("SELECT id, seq FROM messages WHERE session_id = @to", new { to }, r => (Id: r.GetInt64("id"), Seq: r.GetInt64("seq")))
+            .ToDictionary(x => x.Seq, x => x.Id);
+        foreach (var (id, text) in refs)
+        {
+            JsonObject? meta;
+            try { meta = JsonNode.Parse(text) as JsonObject; }
+            catch (JsonException) { continue; }
+            if (meta?["for"] is not JsonValue v || !long.TryParse(v.ToString(), out var old)) continue;
+            if (!seqOf.TryGetValue(old, out var seq) || !idAt.TryGetValue(seq, out var copy)) continue;
+            meta["for"] = copy.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _db.Execute("UPDATE messages SET meta = @meta WHERE id = @id", new { meta = meta.ToJsonString(), id });
+        }
+    }
+
     // ------------------------------------------------------------------ key/value (ui.state)
 
     public string? GetValue(string key) =>

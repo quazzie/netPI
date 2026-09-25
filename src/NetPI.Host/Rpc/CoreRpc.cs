@@ -71,6 +71,19 @@ internal static class CoreRpc
                 Reasoning = req.Str("reasoning"),
             }));
 
+        Add("sessions.fork", "Fork a chat: a new chat with its messages up to a message, the original unchanged: { id, upToSeq? (the last) } → SessionInfo (publishes session.forked)", req =>
+        {
+            var id = req.Required("id");
+            var from = k.Sessions.GetSession(id) ?? throw new RpcException("not_found", $"Session {id} not found");
+            if (from.Kind == "subagent") throw new RpcException("bad_request", "A subagent's chat can't be forked: fork the chat that started it.");
+            var last = k.Sessions.GetMessages(id, null, 1).LastOrDefault()?.Seq ?? 0;
+            var upTo = Math.Clamp(req.Int64("upToSeq") ?? last, 0, last);
+            var context = SessionFork.ContextTokens(k.Sessions.GetMessages(id, upTo + 1, 50));
+            var taken = k.Sessions.ListSessions(new SessionQuery { Search = SessionFork.BaseTitle(from.Title), IncludeArchived = true, Limit = 1000 })
+                .Select(s => s.Title).ToHashSet(StringComparer.Ordinal);
+            return k.Sessions.ForkSession(id, upTo, SessionFork.Template(from, upTo, context, taken));
+        });
+
         Add("sessions.get", "One session: { id } → SessionInfo", req =>
         {
             var id = req.Required("id");

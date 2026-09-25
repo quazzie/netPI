@@ -10,7 +10,7 @@
   import ShownImage from './ShownImage.svelte';
   import AskCard from './AskCard.svelte';
   import { createItemBuilder, withStream } from '../../lib/chatItems.js';
-  import { isBusy, projectOf } from '../../lib/state/app.svelte.js';
+  import { isBusy, projectOf, forkSession } from '../../lib/state/app.svelte.js';
   import { modals } from '../../lib/state/ui.svelte.js';
 
   let { chat, session } = $props();
@@ -24,6 +24,11 @@
     return chat.hasNewer ? built : withStream(built, chat.stream);
   });
   const running = $derived(isBusy(session.id));
+  // fork: a user message forks before it (its text goes to the new chat's message box), an answer forks after it
+  const forkable = $derived(session.kind !== 'subagent');
+  const textOf = (m) => (m.parts ?? []).filter((p) => p.type === 'text').map((p) => p.text).join('\n');
+  const forkBefore = (m) => forkSession(session.id, m.seq - 1, textOf(m));
+  const forkAfter = (m) => forkSession(session.id, m.seq);
   const base = $derived(projectOf(session)?.path ?? null);
   // index of the user message that started the current run (steering input does not start a new one)
   const lastUserIdx = $derived.by(() => {
@@ -164,9 +169,9 @@
     {#each items as item, i (item.key)}
       <div class="item" data-key={item.key} data-kind={item.kind} data-stream={item.stream || item.key.startsWith('g.stream') ? '' : undefined}>
         {#if item.kind === 'user'}
-          <UserMessage msg={item.msg} onimage={openImage} />
+          <UserMessage msg={item.msg} onimage={openImage} onfork={forkable && item.msg.seq ? () => forkBefore(item.msg) : null} />
         {:else if item.kind === 'text'}
-          <AssistantText {item} />
+          <AssistantText {item} onfork={forkable && item.msg?.seq ? () => forkAfter(item.msg) : null} />
         {:else if item.kind === 'steps'}
           <StepsGroup {item} {chat} {base} live={running && i > lastUserIdx} active={running && i === items.length - 1} />
         {:else if item.kind === 'notice'}

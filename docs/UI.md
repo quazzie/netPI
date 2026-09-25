@@ -215,6 +215,10 @@ into locals first, because after the parent clears the modal state or the row re
      also while the agent works (a folded group is one line, like a single row, so the chat stays still), and the
      group the agent is adding to shows its latest step on that line; `open` never folds. Steering input does not
      end a run. The user's choice to expand or collapse is kept per group in `chat.expanded`.
+   - **Fork.** A user message's hover actions have **Fork** (`sessions.fork` up to the message before it): a new chat
+     with the conversation before it opens in a tab, with the message's text in its box to change and send again. An
+     answer's footer has **Fork** too (up to the answer). Not in a subagent's chat. A fork's header has a crumb back to
+     the chat it came from (`meta.forkedFrom`), while that one exists.
    - **Questions.** An `ask_user` call is an item of its own (`ask`, `AskCard`), below the message that gives its
      context; nothing covers the chat. While it waits (`lib/state/asks.svelte.js`: `ask.pending` on connect,
      `ask.asked` / `ask.closed`) the card is open: the questions and their options (radio buttons, or checkboxes when

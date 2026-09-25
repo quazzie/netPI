@@ -16,7 +16,28 @@ public sealed class TodoPlugin : INetPiPlugin
     {
         context.Tools.Register(new TodoWriteTool(context));
         context.Services.Register<IAgentHook>(new TodoNotices(context));
+        context.Events.Subscribe(EventTypes.SessionForked, e =>
+        {
+            if (e.As<JsonObject>()?["sessionId"]?.GetValue<string>() is { Length: > 0 } id) Forked(context, id);
+        });
         return Task.CompletedTask;
+    }
+
+    /// <summary>A fork's checklist is the one it had at the fork point: its last todo_write (the fork starts without one).</summary>
+    internal static void Forked(IPluginContext context, string sessionId)
+    {
+        try
+        {
+            var result = context.Sessions.GetMessages(sessionId).SelectMany(m => m.ToolResults)
+                .LastOrDefault(r => r.Name == "todo_write" && !r.IsError);
+            if (result?.Details?["items"] is not JsonArray items) return;
+            context.Sessions.UpdateSession(sessionId, s =>
+            {
+                s.Meta ??= new JsonObject();
+                s.Meta[TodoWriteTool.MetaKey] = items.DeepClone();
+            });
+        }
+        catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException) { } // deleted meanwhile
     }
 }
 

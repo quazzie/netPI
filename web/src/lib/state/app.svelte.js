@@ -332,6 +332,28 @@ export async function newSession(opts = {}) {
   }
 }
 
+/**
+ * Fork a chat (sessions.fork): a new chat with its messages up to upToSeq, opened in a tab; the original stays as it is.
+ * draft: text for the new chat's message box (a user message forked "before" it, to change and send again).
+ */
+export async function forkSession(sessionId, upToSeq, draft = null) {
+  try {
+    const s = await rpc('sessions.fork', { id: sessionId, upToSeq });
+    upsertSession(s);
+    activate(s.id);
+    if (draft) {
+      const chat = getChat(s.id);
+      chat.draft = draft;
+      chat.saveDraft?.();
+    }
+    queueMicrotask(() => composer.focus?.());
+    return s;
+  } catch (e) {
+    toast(`Could not fork the chat: ${e.message}`, 'error');
+    return null;
+  }
+}
+
 export async function updateSession(id, patch) {
   try {
     const s = await rpc('sessions.update', { id, ...patch });

@@ -50,6 +50,13 @@ public sealed class ContextPlugin : INetPiPlugin
         {
             if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id) prompts.Delete(id);
         });
+        // a fork goes on with the prompt the original had at the fork point (and its chat shows it right away)
+        context.Events.Subscribe(EventTypes.SessionForked, e =>
+        {
+            var d = e.As<JsonObject>();
+            if (d?["sessionId"]?.GetValue<string>() is { Length: > 0 } to && d["fromSessionId"]?.GetValue<string>() is { Length: > 0 } from)
+                prompts.Fork(from, to, d["upToSeq"]?.GetValue<long>() ?? 0);
+        });
 
         context.Rpc.Register("context.preview", async (req, token) =>
         {

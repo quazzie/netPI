@@ -54,6 +54,8 @@ public static class EventTypes
     public const string SessionCreated = "session.created";
     public const string SessionUpdated = "session.updated";
     public const string SessionDeleted = "session.deleted";
+    /// <summary>A session was forked: <c>{ sessionId, fromSessionId, upToSeq }</c> (the new session is <c>sessionId</c>).</summary>
+    public const string SessionForked = "session.forked";
     /// <summary>A session was attached to another project or detached: <c>{ sessionId, projectId, cwd }</c>. What the model is
     /// told about it is up to plugins (the context plugin appends a "project" notice).</summary>
     public const string SessionProject = "session.project";

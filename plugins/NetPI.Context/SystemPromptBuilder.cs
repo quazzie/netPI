@@ -19,6 +19,12 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
     {
         var sessionId = context.Session.Id;
         if (prompts.Get(sessionId) is { } frozen) return frozen;
+        // a fork's first call: the prompt the original had at the fork point (session.forked copies it too, but may come later)
+        if (PromptStore.ForkedFrom(context.Session) is { } fork)
+        {
+            prompts.Fork(fork.SessionId, sessionId, fork.Seq);
+            if (prompts.Get(sessionId) is { } copied) return copied;
+        }
         var rendered = await RenderAsync(context, ct).ConfigureAwait(false);
         var stored = prompts.Freeze(sessionId, rendered);
         if (ReferenceEquals(stored, rendered))
@@ -230,6 +236,63 @@ internal sealed class PromptStore(IPluginContext ctx)
             _db.Execute("DELETE FROM context_tools WHERE session_id = @sessionId", new { sessionId });
         }
         catch (Exception ex) { ctx.Logger.LogDebug(ex, "Resetting the prompt of {Session} failed", sessionId); }
+    }
+
+    /// <summary>A fork's origin (<c>meta.forkedFrom</c>, see <c>sessions.fork</c>): the session and the last seq it copied.</summary>
+    public static (string SessionId, long Seq)? ForkedFrom(SessionInfo session) =>
+        session.Meta?["forkedFrom"] is JsonObject f && f["sessionId"] is JsonValue id && id.TryGetValue<string>(out var from) && from.Length > 0
+            ? (from, f["seq"] is JsonValue s && s.TryGetValue<long>(out var seq) ? seq : 0)
+            : null;
+
+    /// <summary>
+    /// A fork (<c>session.forked</c>) goes on with the prompt the original was sent at the fork point (the latest version
+    /// sent after a message up to <paramref name="upToSeq"/>) and that call's tools as its baseline, so its next call starts
+    /// with the prefix the backend saw; the prompts sent up to then are its history. Nothing when the original had no model
+    /// call yet (the fork renders its own). Idempotent: a stored prompt, baseline or version is kept.
+    /// </summary>
+    public void Fork(string from, string to, long upToSeq)
+    {
+        var all = Sent(from);
+        var sent = all.Where(p => p.AfterSeq <= upToSeq).ToList();
+        string prompt;
+        ToolBaseline? tools = null;
+        if (sent.Count > 0)
+        {
+            var v = sent[^1];
+            prompt = v.Prompt;
+            try
+            {
+                var names = (JsonNode.Parse(v.ToolsJson) as JsonArray)?.Select(t => t?["name"]?.GetValue<string>()).OfType<string>().ToList();
+                if (names is not null) tools = new ToolBaseline(names, v.AfterSeq);
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException) { }
+        }
+        else if (all.Count == 0 && Get(from) is { } current)
+        {
+            // a session from before the prompts it was sent were kept: its prompt, and its baseline when it predates the fork
+            prompt = current;
+            if (GetTools(from) is { } b && b.SinceSeq <= upToSeq) tools = b;
+        }
+        else return;
+
+        Freeze(to, prompt);
+        if (tools is not null) FreezeTools(to, tools.Names, tools.SinceSeq);
+        if (_db is null)
+        {
+            if (sent.Count == 0) return;
+            var list = _sent.GetOrAdd(to, _ => []);
+            lock (list)
+                if (list.Count == 0) list.AddRange(sent);
+            return;
+        }
+        try
+        {
+            _db.Execute("""
+                INSERT OR IGNORE INTO context_sent (session_id, version, after_seq, prompt, tools, created_at)
+                SELECT @to, version, after_seq, prompt, tools, created_at FROM context_sent WHERE session_id = @from AND after_seq <= @upToSeq
+                """, new { to, from, upToSeq });
+        }
+        catch (Exception ex) { ctx.Logger.LogWarning(ex, "Copying the prompts of {Session} to its fork failed", from); }
     }
 
     /// <summary>A deleted session: its prompts and tool baseline, and what it was sent.</summary>

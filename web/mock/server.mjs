@@ -360,6 +360,32 @@ const handlers = {
     publish('session.created', { session: s });
     return s;
   },
+  // like the host (SessionFork): the messages up to upToSeq with their seqs, the setup's meta without the run state
+  'sessions.fork': (p = {}) => {
+    const from = getSession(need(p, 'id'));
+    if (from.kind === 'subagent') throw new RpcError('bad_request', "A subagent's chat can't be forked: fork the chat that started it.");
+    const msgs = store.messages.get(from.id) ?? [];
+    const last = msgs.at(-1)?.seq ?? 0;
+    const upTo = Math.max(0, Math.min(p.upToSeq ?? last, last));
+    const meta = structuredClone(from.meta ?? {});
+    for (const k of ['goal', 'todo', 'budgetAllowedFrom', 'agentId', 'parentAgentId', 'agentInstructions', 'forkedFrom']) delete meta[k];
+    meta.forkedFrom = { sessionId: from.id, title: from.title, seq: upTo };
+    // "Title (fork)", then "Title (fork 2)"…: the first that no chat has
+    const base = /^(.*) \(fork(?: \d+)?\)$/.exec(from.title ?? '')?.[1] ?? from.title ?? '';
+    const taken = new Set([...store.sessions.values()].map((x) => x.title));
+    let title = `${base} (fork)`;
+    for (let n = 2; taken.has(title); n++) title = `${base} (fork ${n})`;
+    const s = mkSession({ title, projectId: from.projectId, model: from.model, reasoning: from.reasoning, meta });
+    for (const x of msgs) {
+      if (x.seq > upTo) break;
+      const { id, seq, sessionId, role, parts, createdAt, ...rest } = structuredClone(x);
+      pushMessage(s.id, role, parts, rest, Date.parse(createdAt));
+    }
+    agentFor(s.id);
+    publish('session.created', { session: s });
+    publish('session.forked', { sessionId: s.id, fromSessionId: from.id, upToSeq: upTo });
+    return s;
+  },
   'sessions.get': (p) => getSession(need(p, 'id')),
   'sessions.update': (p) => {
     const s = getSession(need(p, 'id'));

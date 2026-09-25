@@ -1,4 +1,4 @@
-# What the harness misses (decided 2026-09-25)
+# What the harness misses (decided 2026-09-25, done 2026-09-26)
 
 The user asked what NetPI lacks compared with other agent harnesses. This is the list we agreed on, in order, with
 the design points settled so far, and what was dropped and why. Each item is marked done here with its commit; when
@@ -42,8 +42,11 @@ all are, this plan moves to `docs/archive/`.
    It stays JSON in the project: it travels with the repository, stays readable without NetPI or with the plugin off,
    and a backlog is too small to need a database. NetPI's own backlog stays in the docs (`docs/STATUS.md`), since the
    plugin can be disabled.
-8. **Forking a chat**: a new chat with the conversation up to a message; the original stays. Conversation only (files
-   exist once).
+8. **Forking a chat** (done): a new chat with the conversation up to a message; the original stays. Conversation only
+   (files exist once). `sessions.fork` copies the messages in one statement with their seqs, and the compaction as it
+   was at that point; the fork takes the chat's setup, not its run state, and goes on with the system prompt the
+   original was sent then (the context plugin, on `session.forked`), so the backend's cache still applies. In the chat:
+   Fork on a user message (the conversation before it, its text in the box) and on an answer. See `docs/PROTOCOL.md`.
 
 Later: a language server behind a tool (errors in the changed files in about a second instead of a build; where a
 symbol is defined and used), reading PDF and Office files, scheduled runs.

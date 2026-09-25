@@ -138,6 +138,96 @@ public static class SessionStoreTests
             Check.Equal(4, f.Store.GetMessages(s.Id, 5).Count, "beforeSeq without limit");
         });
 
+        r.Add("sessions: a fork copies the messages up to a seq (same seqs, times, parts, meta), then session.created and session.forked", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo { Title = "Chat", Model = "m1" });
+            var u1 = f.Store.AppendMessage(s.Id, ChatMessage.UserText("first"));                                        // 1
+            var skill = f.Store.AppendMessage(s.Id, new ChatMessage                                                     // 2
+            {
+                Role = MessageRole.Notice, Parts = [new TextPart { Text = "skill" }],
+                Meta = new JsonObject { ["kind"] = "skill", ["for"] = u1.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+            });
+            var a1 = f.Store.AppendMessage(s.Id, Assistant("answer"));                                                   // 3
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("second"));                                                 // 4
+            f.Store.AppendMessage(s.Id, Assistant("later"));                                                             // 5
+            await f.Bus.FlushAsync();
+            lock (f.Events) f.Events.Clear();
+
+            var fork = f.Store.ForkSession(s.Id, 3, new SessionInfo { Title = "Chat (fork)", Model = "m1", Meta = new JsonObject { ["x"] = 1 } });
+            Check.Equal(3, fork.MessageCount);
+            var copy = f.Store.GetMessages(fork.Id);
+            Check.Equal("1,2,3", string.Join(",", copy.Select(m => m.Seq)));
+            Check.Equal("first|skill|answer", string.Join("|", copy.Select(m => m.Text)));
+            Check.Equal(a1.CreatedAt, copy[2].CreatedAt, "the times of the original");
+            Check.Equal("sig", ((ThinkingPart)copy[2].Parts[0]).Signature);
+            Check.Equal(10, copy[2].Usage!.InputTokens);
+            Check.Equal("test", copy[2].MetaString("kind"));
+            Check.True(copy.All(m => m.SessionId == fork.Id) && copy[0].Id != u1.Id, "new messages");
+            Check.Equal(copy[0].Id.ToString(System.Globalization.CultureInfo.InvariantCulture), copy[1].MetaString("for"), "a message id in meta.for names the copy");
+            Check.Equal(u1.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), f.Store.GetMessage(skill.Id)!.MetaString("for"), "the original is as it was");
+            Check.Equal(5, f.Store.GetMessages(s.Id).Count);
+            Check.Equal(3, f.Store.GetSession(fork.Id)!.MessageCount);
+            Check.Equal(1, (int)f.Store.GetSession(fork.Id)!.Meta!["x"]!);
+
+            var created = (await f.EventsAsync(EventTypes.SessionCreated)).Single();
+            Check.Equal(3, JsonSerializer.SerializeToNode(created.Data, NetPiJson.Options)!["session"]!["messageCount"]!.GetValue<int>(), "session.created once the copy is complete");
+            var forked = JsonSerializer.SerializeToNode((await f.EventsAsync(EventTypes.SessionForked)).Single().Data, NetPiJson.Options)!;
+            Check.Equal(fork.Id, forked["sessionId"]!.GetValue<string>());
+            Check.Equal(s.Id, forked["fromSessionId"]!.GetValue<string>());
+            Check.Equal(3L, forked["upToSeq"]!.GetValue<long>());
+            Check.Equal(0, (await f.EventsAsync(EventTypes.MessageAdded)).Count, "copied in one statement, not message by message");
+            Check.True(f.Store.ForkSession(s.Id, 0, new SessionInfo { Title = "empty" }).MessageCount == 0, "a fork before the first message is an empty chat");
+        });
+
+        r.Add("sessions: a fork is compacted as the original was at the fork point, not by a later compaction", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo());
+            for (var i = 1; i <= 6; i++) f.Store.AppendMessage(s.Id, ChatMessage.UserText("m" + i)); // 1..6
+            // summary A at 7 covers 1..4; later m8, m9; summary B at 10 covers 1..8 and supersedes A (as the compaction plugin does)
+            var a = f.Store.AppendMessage(s.Id, new ChatMessage { Role = MessageRole.Summary, Parts = [new TextPart { Text = "summary A" }], Meta = new JsonObject { ["coversUpToSeq"] = 4 } });
+            f.Store.MarkCompacted(s.Id, 4);
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("m8"));
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("m9"));
+            f.Store.AppendMessage(s.Id, new ChatMessage { Role = MessageRole.Summary, Parts = [new TextPart { Text = "summary B" }], Meta = new JsonObject { ["coversUpToSeq"] = 8 } });
+            f.Store.MarkCompacted(s.Id, 8);
+            a.Compacted = true;
+            f.Store.UpdateMessage(a);
+            Check.Equal("summary B,m9", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)));
+
+            string Context(long upTo) => string.Join(",", f.Store.GetContextMessages(f.Store.ForkSession(s.Id, upTo, new SessionInfo()).Id).Select(m => m.Text));
+            Check.Equal("summary A,m5,m6,m8,m9", Context(9), "at 9 the original had summary A: B came later");
+            Check.Equal("m1,m2,m3,m4,m5,m6", Context(6), "before any summary nothing is compacted");
+            Check.Equal("summary B,m9", Context(10), "everything: as the original is now");
+            Check.Equal("summary B,m9", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)), "the original is untouched");
+        });
+
+        r.Add("sessions: what a fork takes along (setup yes, run state no), its title and its context size", () =>
+        {
+            var from = new SessionInfo
+            {
+                Id = "ses_a", Title = "Chat", ProjectId = "prj_1", Model = "m1", Reasoning = "high", Kind = "chat",
+                Meta = new JsonObject
+                {
+                    ["profile"] = "coder", ["identity"] = "You are…", ["toolsOff"] = new JsonArray("bash"), ["agent"] = "qwen",
+                    ["goal"] = new JsonObject { ["status"] = "active" }, ["todo"] = new JsonArray(), ["budgetAllowedFrom"] = "2026-09-01",
+                    ["forkedFrom"] = new JsonObject { ["sessionId"] = "ses_z" },
+                },
+            };
+            var t = SessionFork.Template(from, 7, 1234, new HashSet<string> { "Chat", "Chat (fork)" });
+            Check.Equal("Chat (fork 2)", t.Title, "the first free number");
+            Check.True(t is { ProjectId: "prj_1", Model: "m1", Reasoning: "high", Kind: "chat", ContextTokens: 1234 });
+            Check.Equal("agent,forkedFrom,identity,profile,toolsOff", string.Join(",", t.Meta!.Select(kv => kv.Key).Order()));
+            Check.Equal("ses_a", t.Meta!["forkedFrom"]!["sessionId"]!.GetValue<string>());
+            Check.Equal(7L, t.Meta!["forkedFrom"]!["seq"]!.GetValue<long>());
+            Check.Equal("Chat (fork)", SessionFork.Title("Chat"));
+            Check.Equal("Chat (fork 2)", SessionFork.Title("Chat (fork)"), "a fork of a fork counts on");
+            Check.Equal("Chat (fork 4)", SessionFork.Title("Chat (fork 2)", new HashSet<string> { "Chat (fork 2)", "Chat (fork 3)" }));
+            Check.Equal(17L, SessionFork.ContextTokens([ChatMessage.UserText("x"), Assistant("a"), ChatMessage.UserText("y")]), "the last model call before the fork point");
+            return Task.CompletedTask;
+        });
+
         r.Add("sessions: context = non-compacted messages with the latest summary first", async () =>
         {
             await using var f = new Fixture();

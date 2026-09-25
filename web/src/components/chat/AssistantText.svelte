@@ -10,7 +10,8 @@
    * markdown is re-rendered at most every 100ms, never highlighted, with a caret that takes no room, in the same box as
    * the finished text so nothing moves when message.added replaces it.
    */
-  let { item } = $props();
+  /** onfork: a new chat with the conversation up to this answer (see MessageList) */
+  let { item, onfork = null } = $props();
   const streaming = $derived(!!item.stream);
   const html = $derived(streaming ? '' : renderMarkdown(item.text));
   const m = $derived(item.msg);
@@ -56,6 +57,7 @@
   {#if item.last && m.stopReason !== 'tool_use'}
     <div class="foot">
       <button class="act" onclick={copy} title="Copy message"><Icon name={copied ? 'check' : 'copy'} size={12} /></button>
+      {#if onfork}<button class="act" onclick={onfork} title="Fork: a new chat with the conversation up to here"><Icon name="branch" size={12} /></button>{/if}
       <!-- the answer's model turn (see TurnLine); on a narrow chat the items at the end are dropped whole -->
       <span class="info np-fit np-mono" title={ts ? turnTitle(ts, m.durationMs) : undefined}>
         {#if m.model}<span>{m.model.split('/').pop()}</span>{/if}

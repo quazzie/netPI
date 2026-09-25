@@ -91,6 +91,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `projects.delete` | `{ id }` | `true` (its sessions are detached) |
 | `sessions.list` | `{ projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, limit?, offset? }` | `SessionInfo[]` (newest first) |
 | `sessions.create` | `{ title?, projectId?, model?, reasoning? }` | `SessionInfo` |
+| `sessions.fork` | `{ id, upToSeq? (the last) }` | `SessionInfo`: a new chat with the messages up to `upToSeq` (same seqs, times, parts and meta; compaction as it was at that point); the original is unchanged. It takes the setup (project, model, reasoning, meta such as the profile, `toolsOff`, the agent), not the run state (`goal`, `todo`, `budgetAllowedFrom`, subagent keys), and gets `meta.forkedFrom { sessionId, title, seq }` and the title "Title (fork)", "Title (fork 2)"…. A subagent's chat gives `bad_request`. Publishes `session.created` (once the copy is complete), then `session.forked` |
 | `sessions.get` | `{ id }` | `SessionInfo` |
 | `sessions.update` | `{ id, title?, model?, reasoning?, archived?, meta? }` | `SessionInfo` (null clears model / reasoning) |
 | `sessions.delete` | `{ id }` | `true` (its subagent sessions are deleted too) |
@@ -188,6 +189,7 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 |---|---|---|
 | `session.created` / `session.updated` | no | `{ session: SessionInfo }` |
 | `session.deleted` | no | `{ id }` |
+| `session.forked` | no | `{ sessionId /* the fork */, fromSessionId, upToSeq }` – after `sessions.fork`: the context plugin gives the fork the system prompt the original was sent at that point (so its next call starts with the prefix the backend saw), the todo plugin the checklist of its last `todo_write` |
 | `session.project` | no | `{ sessionId, projectId, cwd }` – attached to another project or detached |
 | `project.created` / `project.updated` | no | `{ project }` |
 | `project.deleted` | no | `{ id }` |
