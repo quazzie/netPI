@@ -6,6 +6,7 @@
 //     step        { kind:'thinking', key, part, msg } | { kind:'tool', key, call, result, resultMsg, msg }
 //   images        { kind:'images', key, msg, images }                 assistant image parts
 //   shown         { kind:'shown', key, call, result, msg }            an image the agent showed (show_image): not in a steps group
+//   ask           { kind:'ask', key, call, result, msg }              questions for the user (ask_user): a card of its own, not a step
 //   notice        { kind:'notice', key, msg }                         role notice / summary
 //   prompt        { kind:'prompt', key, prompt }                      a system prompt the session was sent (context.prompts):
 //                                                                     the first at the top, a later one after the message it followed
@@ -105,7 +106,10 @@ export function createItemBuilder() {
               addStep({ kind: 'thinking', key: `k${m.id}.${i}`, part: p, msg: m }, [p], m, i);
             } else if (p.type === 'tool_call') {
               const r = results.get(p.id);
-              if (r && p.name === 'show_image' && !r.part.isError && r.part.details?.data) {
+              if (p.name === 'ask_user') {
+                flush();
+                items.push(stable({ kind: 'ask', key: `a${p.id}`, call: p, result: r?.part ?? null, msg: m }, [p, r?.part ?? null]));
+              } else if (r && p.name === 'show_image' && !r.part.isError && r.part.details?.data) {
                 flush();
                 items.push(stable({ kind: 'shown', key: `v${p.id}`, call: p, result: r.part, msg: m }, [p, r.part]));
               } else if (r) {
@@ -166,6 +170,7 @@ export function createItemBuilder() {
  * rows stay in place when message.added replaces the stream; nothing changes height at that moment.
  *   stream step  { kind:'thinking', key:'k.stream', part, msg:null, stream } | { kind:'tool', …, preparing:true }
  *   stream text  { kind:'text', key:'t.stream', text, msg:null, last:true, stream }
+ *   stream ask   { kind:'ask', key:'a<callId>', call, result:null, msg:null, preparing:true }  (ask_user: its card, not a step)
  */
 export function withStream(items, stream) {
   if (!stream?.active || (!stream.thinking && !stream.text.trim() && !stream.tools.length)) return items;
@@ -186,8 +191,13 @@ export function withStream(items, stream) {
     flush();
     out.push({ kind: 'text', key: 't.stream', text: stream.text, msg: null, last: true, stream });
   }
-  for (const t of stream.tools)
-    push({ kind: 'tool', key: `c${t.callId}`, call: { type: 'tool_call', id: t.callId, name: t.name }, result: null, resultMsg: null, msg: null, preparing: true });
+  for (const t of stream.tools) {
+    const call = { type: 'tool_call', id: t.callId, name: t.name };
+    if (t.name === 'ask_user') {
+      flush();
+      out.push({ kind: 'ask', key: `a${t.callId}`, call, result: null, msg: null, preparing: true });
+    } else push({ kind: 'tool', key: `c${t.callId}`, call, result: null, resultMsg: null, msg: null, preparing: true });
+  }
   flush();
   return out;
 }

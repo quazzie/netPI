@@ -631,6 +631,13 @@ const handlers = {
     return { path: full, action: 'open' };
   },
   'mock.filesOpened': () => filesOpened,
+  'ask.pending': (p = {}) => agent.pendingAsks(p.sessionId),
+  'ask.answer': (p = {}) => {
+    const r = agent.answerAsk(need(p, 'callId'), p.answers, p.text);
+    if (r === 'not_found') throw new RpcError('not_found', 'No question waits with that id (it was answered, or its run ended).');
+    if (r === 'empty') throw new RpcError('bad_request', 'An answer needs an option picked or some text.');
+    return true;
+  },
   'mock.queueInternal': (p) => (agent.queueInternal(need(p, 'sessionId')), true),
   'agentsmd.list': (p = {}) => {
     const s = p.sessionId ? store.sessions.get(p.sessionId) : null;

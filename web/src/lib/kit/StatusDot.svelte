@@ -1,5 +1,5 @@
 <script>
-  /** status: running | queued | yielded | idle | unread | error | ok | warn | loaded | unloaded | stopped | offline … */
+  /** status: running | queued | yielded | asking | idle | unread | error | ok | warn | loaded | unloaded | stopped | offline … */
   let { status = 'idle', title = undefined } = $props();
 </script>
 

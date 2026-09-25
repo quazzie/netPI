@@ -11,6 +11,7 @@ const ABORT = Symbol('abort');
 
 export function createAgentRuntime({ publish, work, log = () => {} }) {
   const runs = new Map(); // sessionId -> { ac, turn }
+  const asks = new Map(); // callId -> { entry, resolve }: ask_user questions waiting for ask.answer
 
   const sleep = (ms, run) =>
     new Promise((resolve, reject) => {
@@ -444,7 +445,79 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     }
   }
 
+  // ask_user, like plugins/NetPI.Ask: the question waits (ask.asked, unscoped) with the agent yielded, until ask.answer,
+  // a new message from the user (steered: it follows) or an abort
+  async function askUser(sid, run, tool) {
+    const a = agentFor(sid);
+    publish('tool.start', { sessionId: sid, agentId: a.id, callId: tool.id, name: tool.name, label: 'Question', arguments: JSON.stringify(tool.args) }, sid);
+    const questions = tool.args.questions.map((q) => ({
+      question: q.question,
+      options: (q.options ?? []).map((o) => ({ label: o.label, description: o.description ?? null })),
+      multiple: !!q.multiple,
+    }));
+    const entry = { sessionId: sid, callId: tool.id, agentId: a.id, agentName: a.name || 'qwen', questions, askedAt: new Date().toISOString() };
+    setStatus(sid, { status: 'yielded', activity: 'waiting for your answer' });
+    const t0 = Date.now();
+    const finish = (content, details, isError = false) => {
+      publish('tool.end', { sessionId: sid, callId: tool.id, name: tool.name, isError, durationMs: Date.now() - t0 }, sid);
+      append(sid, 'tool', [result(tool.id, tool.name, content, details, { isError, durationMs: Date.now() - t0 })]);
+    };
+    let outcome;
+    try {
+      outcome = await new Promise((resolve, reject) => {
+        asks.set(tool.id, { entry, resolve });
+        publish('ask.asked', entry);
+        run.ac.signal.addEventListener('abort', () => reject(ABORT), { once: true });
+      });
+    } catch (e) {
+      asks.delete(tool.id);
+      publish('ask.closed', { sessionId: sid, callId: tool.id, status: 'cancelled', answers: null, text: null });
+      finish('Aborted: the run was stopped.', null, true);
+      throw e;
+    }
+    asks.delete(tool.id);
+    setStatus(sid, { status: 'running', activity: null });
+    if (outcome.steered) {
+      publish('ask.closed', { sessionId: sid, callId: tool.id, status: 'steered', answers: null, text: null });
+      finish('No answer: the user wrote a new message instead; it follows.', { questions, answers: null, text: null, status: 'steered' });
+    } else {
+      const picks = (i) => (outcome.answers[i]?.length ? outcome.answers[i].join(', ') : '');
+      const content =
+        questions.length === 1
+          ? picks(0)
+            ? `The user answered: ${picks(0)}${outcome.text ? `\nThey added: ${outcome.text}` : ''}`
+            : `The user answered in their own words: ${outcome.text}`
+          : ['The user answered:', ...questions.map((q, i) => `${i + 1}. ${q.question}\n   → ${picks(i) || '(nothing picked)'}`), ...(outcome.text ? [`They added: ${outcome.text}`] : [])].join('\n');
+      finish(content, { questions, answers: outcome.answers, text: outcome.text, status: 'answered' });
+    }
+    return outcome;
+  }
+
+  async function askScript(sid, run, input) {
+    const questions = [
+      {
+        question: 'Which fix should I make?',
+        options: [
+          { label: 'Retry the request', description: 'Keep the design; retry with backoff when the socket drops' },
+          { label: 'Rewrite the client', description: 'A bigger change: a client that re-subscribes by itself' },
+        ],
+      },
+    ];
+    if (/\[ask2\]/i.test(input)) questions.push({ question: 'Which tests should I run afterwards?', options: [{ label: 'unit' }, { label: 'e2e' }, { label: 'ui' }], multiple: true });
+    const ask = { id: newId('call'), name: 'ask_user', label: 'Question', args: { questions } };
+    await streamAssistant(sid, run, {
+      thinking: 'Two ways to fix this; the user should choose.',
+      text: 'The reconnect drops events because the client never re-subscribes. There are two ways to fix it:',
+      tools: [ask],
+    });
+    const outcome = await askUser(sid, run, ask);
+    if (outcome.steered) return; // the new message is the next input
+    const choice = outcome.answers[0]?.join(', ') || outcome.text;
+    await streamAssistant(sid, run, { thinking: 'The user chose; go on with that.', text: `Going with **${choice}**.`, fast: true });
+  }
+
   async function script(sid, run, input) {
+    if (/\[ask2?\]/i.test(input)) return askScript(sid, run, input);
     if (/\[web\]/i.test(input)) return webScript(sid, run);
     if (/\[compact\]/i.test(input)) return compactScript(sid, run);
     if (/\[fast\]/i.test(input)) return fastScript(sid, run);
@@ -576,7 +649,24 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
       }
       queueOf(sid).push({ id: newId('in'), text: p.text ?? '', mode: mode === 'queue' ? 'queue' : 'steer', source: 'user', createdAt: new Date().toISOString() });
       publishQueue(sid);
+      // a message instead of an answer ends the question waiting in this chat
+      if (mode !== 'queue') for (const w of asks.values()) if (w.entry.sessionId === sid) w.resolve({ steered: true });
       return agentFor(sid);
+    },
+    /** ask.pending: the questions waiting (in one chat, or all). */
+    pendingAsks: (sid) => [...asks.values()].map((w) => w.entry).filter((e) => !sid || e.sessionId === sid),
+    /** ask.answer: 'not_found' | 'empty' | true */
+    answerAsk(callId, answers, text_) {
+      const w = asks.get(callId);
+      if (!w) return 'not_found';
+      const n = w.entry.questions.length;
+      const picked = Array.from({ length: n }, (_, i) => (Array.isArray(answers?.[i]) ? answers[i].filter((x) => typeof x === 'string' && x.trim()) : []));
+      const t = typeof text_ === 'string' && text_.trim() ? text_.trim() : null;
+      if (!t && picked.every((x) => !x.length)) return 'empty';
+      asks.delete(callId);
+      publish('ask.closed', { sessionId: w.entry.sessionId, callId, status: 'answered', answers: picked, text: t });
+      w.resolve({ answers: picked, text: t });
+      return true;
     },
     abort(sid) {
       const r = runs.get(sid);

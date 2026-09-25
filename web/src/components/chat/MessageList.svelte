@@ -8,6 +8,7 @@
   import PromptRow from './PromptRow.svelte';
   import StatusRow from './StatusRow.svelte';
   import ShownImage from './ShownImage.svelte';
+  import AskCard from './AskCard.svelte';
   import { createItemBuilder, withStream } from '../../lib/chatItems.js';
   import { isBusy, projectOf } from '../../lib/state/app.svelte.js';
   import { modals } from '../../lib/state/ui.svelte.js';
@@ -176,6 +177,8 @@
           <StatusRow msg={item.msg} />
         {:else if item.kind === 'shown'}
           <ShownImage {item} onimage={openImage} />
+        {:else if item.kind === 'ask'}
+          <AskCard {item} />
         {:else if item.kind === 'images'}
           <div class="images">
             {#each item.images as img, j (j)}

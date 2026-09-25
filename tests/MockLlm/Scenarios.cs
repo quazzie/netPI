@@ -129,6 +129,7 @@ public sealed partial class ScenarioEngine
                 "subspawn" => SubSpawn(req, tag, step, after),
                 "sub" => Sub(req, tag),
                 "ideas" => Ideas(tag, step, after),
+                "ask" => Ask(step, after),
                 "long" => Long(tag, msgs),
                 _ => Echo(req, anchor >= 0 ? msgs[anchor] : msgs.LastOrDefault(m => m.Role == "user" && !m.IsNotice), step),
             };
@@ -476,6 +477,16 @@ public sealed partial class ScenarioEngine
                     ("priority", "high"),
                     ("sections", new JsonArray(Obj(("kind", "research"), ("title", "Findings"), ("content", "The mock found nothing surprising."))))));
         return Final("Idea recorded: " + FirstLine(ToolResults(after).LastOrDefault()?.Text) + "\n\nIDEAS-DONE");
+    }
+
+    private static Plan Ask(int step, List<NMsg> after)
+    {
+        if (step == 0)
+            return new Plan { Thinking = "Two ways to do this; the user decides.", Text = "I can do it two ways." }
+                .Call("ask_user", Obj(("questions", new JsonArray(Obj(
+                    ("question", "Which way?"),
+                    ("options", new JsonArray(Obj(("label", "Fast")), Obj(("label", "Thorough")))))))));
+        return Final("Answer received: " + FirstLine(ToolResults(after).LastOrDefault()?.Text) + "\n\nASK-DONE");
     }
 
     private static Plan Long(ScenarioTag tag, List<NMsg> msgs)

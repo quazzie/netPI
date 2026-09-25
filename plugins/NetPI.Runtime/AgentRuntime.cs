@@ -954,7 +954,18 @@ internal sealed class AgentRuntime : IAgentRuntime
         return results;
     }
 
-    private async Task WaitCoreAsync(AgentState? caller, List<Task> tasks, bool yieldSlot, TimeSpan? timeout, CancellationToken ct)
+    public async Task<bool> WaitYieldedAsync(string? callerAgentId, Task until, string activity, TimeSpan? timeout = null, CancellationToken ct = default)
+    {
+        await WaitCoreAsync(FindState(callerAgentId), [until], yieldSlot: true, timeout, ct, activity).ConfigureAwait(false);
+        return until.IsCompleted;
+    }
+
+    /// <summary>
+    /// Waits for <paramref name="tasks"/> with the caller's slot given back (when it holds one), until they end, the timeout
+    /// passes or the user steers the caller. <paramref name="activity"/> replaces the "waiting for N agents" countdown.
+    /// </summary>
+    private async Task WaitCoreAsync(AgentState? caller, List<Task> tasks, bool yieldSlot, TimeSpan? timeout, CancellationToken ct,
+        string? activity = null)
     {
         RunState? run = null;
         CancellationToken steer = default;
@@ -976,7 +987,8 @@ internal sealed class AgentRuntime : IAgentRuntime
             lease.Dispose();
         }
         static string WaitingFor(int n) => $"waiting for {n} agent{(n == 1 ? "" : "s")}";
-        var activity = WaitingFor(tasks.Count);
+        var countdown = activity is null;
+        activity ??= WaitingFor(tasks.Count);
         if (caller is not null)
         {
             if (yielded is not null) SetStatus(caller, AgentStatus.Yielded, activity);
@@ -985,7 +997,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         // keep the caller's activity current ("waiting for 2 agents" → "waiting for 1 agent") as workers finish
         var remaining = tasks.Count;
         var waiting = 1;
-        if (caller is not null && tasks.Count > 1)
+        if (caller is not null && countdown && tasks.Count > 1)
         {
             foreach (var task in tasks)
                 _ = task.ContinueWith(_ =>

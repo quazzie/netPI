@@ -1,7 +1,7 @@
 // Windows notifications through the desktop app, for what needs the user while NetPI is in the background: a chat's
-// run finished or failed, its goal was completed or is blocked, the budget asks. The desktop app shows one only while
-// its window is not the active one (MainForm, message "notify"); clicking it brings the window up and opens the chat.
-// In a browser there is no desktop app, and nothing happens.
+// run finished or failed, its goal was completed or is blocked, the budget asks, an agent asks a question (ask_user).
+// The desktop app shows one only while its window is not the active one (MainForm, message "notify"); clicking it
+// brings the window up and opens the chat. In a browser there is no desktop app, and nothing happens.
 import { prefs } from './state/ui.svelte.js';
 
 const webview = () => globalThis.chrome?.webview;

@@ -37,6 +37,14 @@ public static class Check
             throw new AssertException($"{message ?? "unexpected substring"}: {Show(needle)}\n      in: {Show(haystack)}");
     }
 
+    /// <summary>Runs <paramref name="body"/> and returns the <typeparamref name="T"/> it throws.</summary>
+    public static async Task<T> ThrowsAsync<T>(Func<Task> body, string? message = null) where T : Exception
+    {
+        try { await body(); }
+        catch (T ex) { return ex; }
+        throw new AssertException($"{message ?? "no exception"}: expected {typeof(T).Name}");
+    }
+
     public static string Show(object? o)
     {
         var s = o?.ToString() ?? "null";

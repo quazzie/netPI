@@ -21,11 +21,13 @@ all are, this plan moves to `docs/archive/`.
    first token in the message meta (`ttftMs`); a dim line under each model turn's steps shows it with the cache reuse,
    the output speed and the tokens, and an answer's footer has the same. A preference switches the lines off. See
    `docs/UI.md` (Model turns).
-5. **`ask_user`**: the agent asks the user questions with options. The questions sit **inline in the chat** as its
-   newest item, below the agent's message that gives their context; nothing overlays the chat. The card is expanded
-   while it waits and collapses to one line (question and answer) once answered; to read the context the user scrolls
-   up. Answer by clicking an option or typing in the composer. The run waits with its instance freed (like
-   `agent_wait`).
+5. **`ask_user`** (done): the agent asks the user questions with options. The questions sit **inline in the chat** as
+   its newest item, below the agent's message that gives their context; nothing overlays the chat. The card is
+   expanded while it waits and collapses to one line (question and answer) once answered; to read the context the user
+   scrolls up. Answer by clicking an option or typing in the composer (Alt+Enter: a new message instead). The run
+   waits with its instance freed (like `agent_wait`, through the additive `IAgentRuntime.WaitYieldedAsync`); a Windows
+   toast and an `asking` tab dot say that a chat needs you. Subagents can't ask. `plugins/NetPI.Ask`; see
+   `docs/TOOLS.md` and `docs/UI.md` (Questions).
 6. **Guardrails**: fast checks before a tool runs (blocked command patterns, protected paths such as `~/.netpi`,
    optional "ask first" rules). Pattern and path checks only: no model call and no prompt change, so tokens per second
    stay the same. Blocking suits unattended runs better than asking.

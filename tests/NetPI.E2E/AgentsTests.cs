@@ -179,6 +179,31 @@ public static class AgentsTests
             Check.Equal("user,assistant,tool,assistant,notice,assistant", string.Join(",", run.Messages.Select(m => m.S("role"))));
         }, 90);
 
+        r.Add("ask_user: the question waits with its agent yielded, every window hears of it, ask.answer goes on", async () =>
+        {
+            var s = await env.NewSession();
+            var sid = s.S("id")!;
+            var mark = env.Client.Mark();
+            var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "Pick one [s:ask]" });
+            var asked = await env.Client.WaitFor(mark, e => e.Type == "ask.asked" && e.D.S("sessionId") == sid, "ask.asked", 20_000);
+            Check.True(asked.Sid is null, "ask.asked is unscoped");
+            var callId = asked.D.S("callId")!;
+            Check.Equal("Which way?", asked.D.Arr("questions").Single().S("question"));
+            Check.Equal("Thorough", asked.D.Arr("questions").Single().Arr("options").Last().S("label"));
+            var info = await env.Rpc("agent.get", new { sessionId = sid });
+            Check.Equal("yielded", info.S("status"));
+            Check.Equal("waiting for your answer", info.S("activity"));
+            Check.Equal(callId, (await env.Rpc("ask.pending", new { sessionId = sid })).Arr().Single().S("callId"));
+            Check.True((await env.Rpc("ask.answer", new { callId, answers = new[] { new[] { "Thorough" } } })).GetBoolean());
+            var done = await env.WaitIdle(sid, mark, agent.L("runs"), 30_000);
+            var run = await env.Result(sid, mark, done);
+            Check.Contains(run.FinalText, "Answer received: The user answered: Thorough");
+            Check.Contains(run.FinalText, "ASK-DONE");
+            var closed = await env.Client.WaitFor(mark, e => e.Type == "ask.closed" && e.D.S("callId") == callId, "ask.closed", 5000);
+            Check.Equal("answered", closed.D.S("status"));
+            Check.Equal(0, (await env.Rpc("ask.pending", new { })).Arr().Count());
+        });
+
         r.Add("ideas: idea_add writes ideas.json in the project, ideas.list and ideas.changed see it", async () =>
         {
             var p = await env.NewProject("ideas");

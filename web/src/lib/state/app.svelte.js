@@ -9,6 +9,7 @@ import { toast, syncUiStateFromHost, composer } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick, firstLine } from '../notify.js';
+import { loadAsks, askEvent, pendingIn } from './asks.svelte.js';
 
 const TABS_KEY = 'netpi.openTabs';
 
@@ -62,8 +63,9 @@ export function isBusy(sessionId) {
   return !!a && BUSY.has(a.status);
 }
 
-/** Status for tab dots: running | queued | yielded | error | unread | idle */
+/** Status for tab dots: asking (a question of the agent's waits for the user) | running | queued | yielded | error | unread | idle */
 export function sessionStatus(sessionId) {
+  if (pendingIn(sessionId)) return 'asking';
   const a = app.agents.get(sessionId);
   if (a) {
     if (a.status === 'running') return 'running';
@@ -197,6 +199,7 @@ async function loadAll({ reconnect }) {
       loadUiRegistry(),
       loadAgents(),
       loadTools(),
+      loadAsks(),
     ]);
     app.info = info;
   } catch (e) {
@@ -464,6 +467,13 @@ function goalNotification(before, s) {
   else if (g.status === 'blocked') notifyAbout(s.id, s, `Goal blocked${g.reason ? `: ${firstLine(g.reason)}` : ''}`);
 }
 
+// An agent asks the user (ask_user): the question itself.
+function askNotification(d) {
+  const q = d?.questions ?? [];
+  if (!q.length) return;
+  notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), `Asks: ${firstLine(q[0].question)}${q.length > 1 ? ` (+${q.length - 1} more)` : ''}`);
+}
+
 // The budget stopped a paid call and asks whether this chat may go over it.
 function messageNotification(sid, m) {
   if (m?.role !== 'notice' || m.meta?.kind !== 'budget' || !m.meta?.canOverride) return;
@@ -549,6 +559,11 @@ function onEvent(d, env) {
       break;
     case 'settings.changed':
       app.settingsVersion++;
+      break;
+    case 'ask.asked':
+    case 'ask.closed':
+      askEvent(type, d);
+      if (type === 'ask.asked') askNotification(d);
       break;
     default:
       break;

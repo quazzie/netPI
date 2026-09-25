@@ -9,6 +9,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Tools.Shell` | `netpi.tools.shell` | `bash` `pwsh` `process_list` `process_output` `process_kill` | `processes.list`, `processes.output`, `processes.kill` |
 | `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `screenshot` | – |
 | `plugins/NetPI.Todo` | `netpi.todo` | `todo_write` | – |
+| `plugins/NetPI.Ask` | `netpi.ask` | `ask_user` | `ask.pending`, `ask.answer` |
 | `plugins/NetPI.Goal` | `netpi.goal` | `goal_update` `goal_set` | `goal.get`, `goal.set`, `goal.edit`, `goal.pause`, `goal.resume`, `goal.clear` |
 | `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
 | `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh_hosts` `ssh_run` `ssh_read` `ssh_write` `ssh_edit` `ssh_copy` | – |
@@ -361,6 +362,33 @@ the list from that result and changes it by sending the whole list again. When c
 
 ```ts
 details: { items: { text, status }[], done, total }
+```
+
+---
+
+## Ask the user
+
+### `ask_user`
+
+`plugins/NetPI.Ask`. `{ questions: { question, options?: { label, description? }[], multiple? }[] }` (1 to 4 questions,
+at most 8 options each) asks the user and waits for the answers. The questions appear in the chat below the agent's
+message, and the run waits with its instance given back, like `agent_wait` (`IAgentRuntime.WaitYieldedAsync`): the
+agent shows as yielded, "waiting for your answer", and takes an instance again, ahead of the queue, once answered.
+Lenient: one question at the top level (`question` with `options`), options as plain strings, `text`, `choices`,
+`value`, `detail`, `multiSelect`, a JSON string. The user picks options (`ask.answer { callId, answers }`, the picks per
+question), writes their own words (`text`), or both. The result is:
+
+- `The user answered: <picks>` (with `They added: <text>`), or `The user answered in their own words: <text>`; with
+  several questions, each question with its picks, `(nothing picked)` for none;
+- `No answer: the user wrote a new message instead; it follows.` when the user sends a message (a steer) instead;
+- `No answer: the question was withdrawn…` when the plugin stops. Stopping the run cancels the call like any other.
+
+Subagents can't ask (an error: nobody watches their chat). `ask.pending { sessionId? }` lists the questions that wait;
+the events `ask.asked` and `ask.closed` are unscoped, so every window hears of every chat's questions.
+
+```ts
+details: { questions: { question, options: { label, description? }[], multiple }[], answers: string[][] | null,
+  text: string | null, status: 'answered'|'steered'|'withdrawn' }
 ```
 
 ---

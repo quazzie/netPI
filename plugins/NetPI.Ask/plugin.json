@@ -1,0 +1,5 @@
+{
+  "id": "netpi.ask",
+  "name": "Ask the user",
+  "description": "ask_user: the agent asks you questions inline in the chat and waits for your answers, its instance given back meanwhile."
+}

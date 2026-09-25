@@ -215,8 +215,18 @@ into locals first, because after the parent clears the modal state or the row re
      also while the agent works (a folded group is one line, like a single row, so the chat stays still), and the
      group the agent is adding to shows its latest step on that line; `open` never folds. Steering input does not
      end a run. The user's choice to expand or collapse is kept per group in `chat.expanded`.
-   - **Model turns.** Under the last step of each model turn (an assistant message that ended in tool calls), a dim
-     line (`TurnLine`, `lib/turn.js`) gives that turn's numbers: the time to its first token (`meta.ttftMs`), how
+   - **Questions.** An `ask_user` call is an item of its own (`ask`, `AskCard`), below the message that gives its
+     context; nothing covers the chat. While it waits (`lib/state/asks.svelte.js`: `ask.pending` on connect,
+     `ask.asked` / `ask.closed`) the card is open: the questions and their options (radio buttons, or checkboxes when
+     several may be picked). A click answers a single question; otherwise Send sends the picks. The message box
+     answers too, in the user's own words (with any picks): its placeholder says so, Enter answers, and Alt+Enter (or a
+     message with images) sends a new message instead, which ends the question unanswered. Once it stops waiting the
+     card is one line, `Question · question → answer` (the answer keeps its room on a narrow chat), which opens to every
+     question and its answer; a stopped run or a new message instead reads "not answered". The run status line says
+     "Waiting for your answer", and the chat's tab and session row get an `asking` dot (warn colour).
+   - **Model turns.** Under the last step of each model turn (an assistant message that ended in tool calls; under its
+     question card when asking was the last thing it did), a dim line (`TurnLine`, `lib/turn.js`) gives that turn's
+     numbers: the time to its first token (`meta.ttftMs`), how
      much of the prompt the backend reused from its cache, the output speed (output tokens over the time after the
      first token), and the tokens in (the whole prompt) and out. On a narrow chat the items at the end are dropped
      whole; the tooltip has the exact numbers. A turn that ends in an answer has the same numbers in the answer's
@@ -651,7 +661,8 @@ names or an inline `<svg …>` string.
   (with the window placement) and restores it. `desktop.zoom { factor? }` reads or sets it (the Settings dialog).
 - **Notifications.** When a chat needs the user, the page posts `{ type: 'notify', sessionId, title, body }`
   (`lib/notify.js`): a top-level chat's run finished or failed (unless it goes on by itself within 1.5 s or its goal
-  is active), its goal was completed or is blocked, the budget asks (then no "Finished" after it). The shell shows it
+  is active), its goal was completed or is blocked, the budget asks, an agent asks a question (`Asks: …`); after one
+  of these no "Finished" follows for that chat. The shell shows it
   only while its window is not the active one: a tray icon's balloon, which Windows shows as a toast, and a flashing
   taskbar button. Clicking the toast brings the window up and replies `{ type: 'openSession', sessionId }`. The
   preference `notifications` (Settings → General, desktop app only) turns them off.

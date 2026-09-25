@@ -12,6 +12,7 @@
   import RunStatus from './RunStatus.svelte';
   import GoalStrip from './GoalStrip.svelte';
   import { app, isBusy, modelFor, sendMessage, abortAgent } from '../../lib/state/app.svelte.js';
+  import { pendingIn, answerAsk } from '../../lib/state/asks.svelte.js';
   import { composer, modals, prefs, toast } from '../../lib/state/ui.svelte.js';
   import { allCommands, parseCommand } from '../../lib/commands.js';
   import { skillCommands } from '../../lib/skills.js';
@@ -175,6 +176,10 @@
   }
 
   // ------------------------------------------------------------------ send
+  // a question of the agent's waits in this chat (ask_user): Enter answers it in the user's own words (with the options
+  // picked in its card); Alt+Enter, or a message with images, is a new message instead, which ends the question unanswered
+  const asking = $derived(pendingIn(session.id));
+
   async function submit(mode) {
     const text = chat.draft.trim();
     const images = chat.images;
@@ -188,7 +193,25 @@
         return;
       }
     }
-    const sendMode = running ? (mode === 'queue' ? 'queue' : 'steer') : 'auto';
+    if (asking && mode !== 'queue' && !images.length) {
+      const callId = asking.callId;
+      chat.draft = '';
+      popup = null;
+      chat.saveDraft();
+      tick().then(autosize);
+      onsent?.();
+      try {
+        await answerAsk(callId, text);
+      } catch (e) {
+        toast(e.message, 'error');
+        if (!chat.draft) {
+          chat.draft = text;
+          tick().then(autosize);
+        }
+      }
+      return;
+    }
+    const sendMode = asking ? 'steer' : running ? (mode === 'queue' ? 'queue' : 'steer') : 'auto';
     chat.draft = '';
     chat.images = [];
     popup = null;
@@ -405,7 +428,11 @@
         bind:this={ta}
         bind:value={chat.draft}
         rows="1"
-        placeholder={running ? `Steer the agent — ${sendKeys} to steer, Alt+Enter to queue` : 'Message — / commands, @ files'}
+        placeholder={asking
+          ? `Answer the question — ${sendKeys} to answer, Alt+Enter for a new message instead`
+          : running
+            ? `Steer the agent — ${sendKeys} to steer, Alt+Enter to queue`
+            : 'Message — / commands, @ files'}
         spellcheck={prefs.spellcheck ? 'true' : 'false'}
         oninput={onInput}
         onkeydown={onKeydown}

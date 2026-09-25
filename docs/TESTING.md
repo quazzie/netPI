@@ -118,6 +118,7 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:nest delay=]` | orchestrator → `lead` (`[s:subspawn]`: `agent_send` to the parent, `agent_spawn` of a `helper`, which waits for it) |
 | `[s:sub i= delay=]` | subagent: thinks for `delay` ms, reports `Report from <name>: i squared is i²` (also the default for subagents) |
 | `[s:ideas title=]` | `idea_add` with tags, priority and a section |
+| `[s:ask]` | `ask_user` with one question (`Which way?`: Fast, Thorough), then `Answer received: <the result>` |
 | `[s:long n=8 lines=60]` | `n` turns of `bash` output (`LONGSTEP k/n`) to fill the context (compaction on `tiny-ctx`) |
 | compaction summarizer | recognized by its system prompt: returns a summary that carries the scenario tag and the last `LONGSTEP` |
 
@@ -157,7 +158,7 @@ dotnet tests/NetPI.E2E/bin/Debug/NetPI.E2E.dll [options] [name filter…]
   --list          list the tests
 ```
 
-55 tests, about 90 s. Build first (it runs whatever is in `artifacts/app`, including the web UI from `npm run build`).
+60 tests, about 95 s. Build first (it runs whatever is in `artifacts/app`, including the web UI from `npm run build`).
 
 What it does: starts MockLlm in-process, copies `artifacts/app` to `<temp>/netpi-e2e/<run>/app`, writes a settings file
 into a fresh home (`providers.*` → the mock, fast retry backoff), starts `dotnet app/netpi-server.dll --home … --token

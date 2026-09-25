@@ -569,6 +569,39 @@ log('plugin tab: Files');
   await openStripTab('left', 'Sessions');
 }
 
+log('ask_user: questions in the chat');
+{
+  await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
+  await page.waitForTimeout(300);
+  await ta.fill('[ask2] fix the reconnect');
+  await ta.press('Enter');
+  const card = page.locator('.item[data-kind="ask"] .card').last();
+  await card.waitFor({ timeout: 15_000 }).catch(() => {});
+  const kinds = await page.locator('.content:visible .item').evaluateAll((els) => els.slice(-2).map((e) => e.dataset.kind));
+  check('ask_user: the questions come after the message that explains them', kinds.join() === 'text,ask', kinds.join());
+  check('ask_user: the message box answers', ((await ta.getAttribute('placeholder')) ?? '').startsWith('Answer the question'));
+  check('ask_user: the chat tab shows that a question waits', (await page.locator('.tab.active .np-dot[data-status="asking"]').count()) === 1);
+  await card.locator('.opt', { hasText: 'Rewrite the client' }).click();
+  await card.locator('.opt', { hasText: 'unit' }).click();
+  await shot(page, '47-ask-user');
+  await card.locator('.foot button', { hasText: 'Send' }).click();
+  const line = page.locator('.item[data-kind="ask"] button.line').last();
+  await line.waitFor({ timeout: 5000 }).catch(() => {});
+  check('ask_user: answered, the card is one line: question → answer', ((await line.count()) ? await line.innerText() : '').includes('Rewrite the client'));
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
+  await ta.fill('[ask] again');
+  await ta.press('Enter');
+  await page.locator('.item[data-kind="ask"] .card').last().waitFor({ timeout: 15_000 }).catch(() => {});
+  await ta.fill('Neither: a heartbeat');
+  await ta.press('Enter');
+  await page.waitForFunction(() => !document.querySelector('.item[data-kind="ask"] .card'), null, { timeout: 5000 }).catch(() => {});
+  check(
+    "ask_user: typed in the message box, the answer is the user's own words",
+    (await page.locator('.item[data-kind="ask"] button.line').last().innerText()).includes('Neither: a heartbeat'),
+  );
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
+}
+
 log('narrow side panels');
 {
   // drag both panels to ~230px (the user's layout is 230–340px) and check every tab for sideways overflow

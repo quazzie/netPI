@@ -106,6 +106,22 @@ public interface IAgentRuntime
     Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true,
         TimeSpan? timeout = null, CancellationToken ct = default);
 
+    /// <summary>
+    /// Wait for <paramref name="until"/> the way <see cref="WaitAsync"/> waits for agents: the caller's slot is released
+    /// while it waits and taken again (with priority) afterwards, and the agent shows as yielded with
+    /// <paramref name="activity"/> ("waiting for your answer"). False when the wait ended without it: the user steered the
+    /// caller (their message follows), or the timeout passed. This default waits without releasing anything.
+    /// </summary>
+    async Task<bool> WaitYieldedAsync(string? callerAgentId, Task until, string activity, TimeSpan? timeout = null, CancellationToken ct = default)
+    {
+        try
+        {
+            await until.WaitAsync(timeout ?? Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (TimeoutException) { return false; }
+    }
+
     /// <summary>Abort the current run of an agent (by agent id or session id).</summary>
     Task<bool> AbortAsync(string agentOrSessionId);
 

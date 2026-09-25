@@ -149,6 +149,8 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `goal.set` | netpi.goal | `{ sessionId, objective (≤ 4000), tokenBudget? }` → `Goal` (a new goal; starts a run with a "goal" notice when the agent is idle; names an untitled session) |
 | `goal.edit` | netpi.goal | `{ sessionId, objective?, tokenBudget? }` → `Goal` (same goal; the model hears about it at its next call) |
 | `goal.pause` / `goal.resume` / `goal.clear` | netpi.goal | `{ sessionId }` → `Goal` (`clear` → `null`). Pause lets the current run finish; resume resets the counters and starts a run when idle (also for an active goal whose agent is idle) |
+| `ask.pending` | netpi.ask | `{ sessionId? }` → `{ sessionId, callId, agentId, agentName, questions: { question, options: { label, description? }[], multiple }[], askedAt }[]`: the questions waiting for the user (`ask_user`) |
+| `ask.answer` | netpi.ask | `{ callId, answers?: string[][], text? }` → `true`: the options picked per question and/or the user's own words; `not_found` when nothing waits under that id, `bad_request` for an empty answer |
 | `files.search` | netpi.tools.files | `{ sessionId?, query, limit? }` → `{ path, rel, isDir }[]` (for `@` mentions) |
 | `files.open` | netpi.tools.files | `{ path, sessionId?, cwd? }` → `{ path, action: 'open'\|'edit'\|'reveal'\|'folder' }` (opens a path with the operating system; see `docs/TOOLS.md`) |
 | `files.list` | netpi.tools.files | `{ sessionId?, dir? }` → `{ root, dir, entries: {name, rel, isDir, size?, mtime?}[] }` |
@@ -198,6 +200,8 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `tool.output` | yes | `{ sessionId, callId, chunk }` – live output (shell) |
 | `tool.end` | yes | `{ sessionId, callId, name, isError, durationMs }` – result arrives via `message.added` (role tool) |
 | `agent.status` | no | `{ agent: AgentInfo }` |
+| `ask.asked` | no | `{ sessionId, callId, agentId, agentName, questions, askedAt }` – a question waits for the user (`ask_user`); unscoped, so every window hears of it |
+| `ask.closed` | no | `{ sessionId, callId, status: 'answered'\|'steered'\|'withdrawn'\|'cancelled', answers: string[][]\|null, text }` – it stopped waiting |
 | `agent.queue` | yes | `{ sessionId, items: QueuedInput[] }` |
 | `agent.notice` | yes | `{ sessionId, level: 'info'\|'warn'\|'error', text, kind?, phase?, mode? }` – transient (retry countdown etc.); a compaction's carry `kind: 'compaction'`, `phase: 'start'\|'done'\|'failed'` and `mode: 'auto'\|'overflow'\|'manual'` |
 | `context.prompt` | yes | `{ sessionId, version, afterSeq }` – the session was sent a new system prompt (its first model call, or after `context.reset`); `context.prompts` has it |

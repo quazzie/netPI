@@ -1,0 +1,188 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using NetPI.Ask;
+
+namespace NetPI.Agent.Tests;
+
+public static class AskTests
+{
+    public static void Register(TestRunner t)
+    {
+        t.Add("ask_user: waits with its instance given back; the option picked is the result", AnswerWithOption);
+        t.Add("ask_user: several questions, the user's own words, and what ask.answer refuses", AnswerWithText);
+        t.Add("ask_user: a new message from the user ends the wait; aborting cancels it", SteerAndAbort);
+        t.Add("ask_user: subagents can't ask", SubagentRefused);
+        t.Add("ask_user: lenient arguments, limits, and the answer the model reads", Parsing);
+    }
+
+    private static async Task<TestHost> StartAsync()
+    {
+        var h = await TestHost.StartAsync();
+        await h.StartPluginAsync(new AskPlugin());
+        return h;
+    }
+
+    private static object Q(string question, params string[] options) => new { question, options = options.Select(o => new { label = o }).ToArray() };
+
+    /// <summary>The newest ask.asked event of a session, once there is one.</summary>
+    private static async Task<JsonNode> AskedAsync(TestHost h, string sessionId, int count = 1)
+    {
+        List<JsonNode> asked() => [.. h.Bus.OfType("ask.asked").Select(FakeBus.Data).Where(d => (string?)d["sessionId"] == sessionId)];
+        await Wait.Until(() => asked().Count >= count, "a question waits");
+        return asked()[count - 1];
+    }
+
+    private static ToolResultPart Result(TestHost h, string sessionId) =>
+        h.Messages(sessionId).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Last(r => r.Name == "ask_user");
+
+    private static async Task AnswerWithOption()
+    {
+        await using var h = await StartAsync();
+        var s = h.NewSession(model: "fake/solo"); // 1 slot
+        var other = h.NewSession(model: "fake/solo");
+        h.Catalog.Handler = (r, ct) =>
+            r.SessionId == other.Id ? Reply.Text("other chat ran")
+            : Reply.HasToolResult(r) ? Reply.Text("Going with it.")
+            : Reply.Tool("ask_user", new { questions = new[] { Q("Which parser?", "Rewrite", "Patch") } });
+        await h.SendAsync(s.Id, "fix the parser");
+        var asked = await AskedAsync(h, s.Id);
+        var callId = (string)asked["callId"]!;
+        Check.Equal("Which parser?", (string?)asked["questions"]![0]!["question"]);
+        Check.Equal("Patch", (string?)asked["questions"]![0]!["options"]![1]!["label"]);
+
+        var a = h.Runtime.GetBySession(s.Id)!;
+        Check.Equal(AgentStatus.Yielded, a.Status, "the run waits with its slot given back");
+        Check.Equal("waiting for your answer", a.Activity);
+        await h.SendAsync(other.Id, "meanwhile");
+        await h.IdleAsync(other.Id);
+        Check.Equal("other chat ran", h.Messages(other.Id)[^1].Text, "another chat took the only slot meanwhile");
+
+        var pending = (await h.Rpc.CallAsync("ask.pending", new { sessionId = s.Id }))!.AsArray();
+        Check.Equal(callId, (string?)pending.Single()!["callId"]);
+        Check.Equal(true, await h.Rpc.InvokeAsync("ask.answer", new { callId, answers = new[] { new[] { "Patch" } } }));
+        await h.IdleAsync(s.Id);
+
+        var result = Result(h, s.Id);
+        Check.Equal("The user answered: Patch", result.Content);
+        Check.False(result.IsError);
+        Check.Equal("answered", (string?)result.Details!["status"]);
+        Check.Equal("Patch", (string?)result.Details!["answers"]![0]![0]);
+        Check.Equal("Going with it.", h.Messages(s.Id)[^1].Text);
+        var closed = FakeBus.Data(h.Bus.OfType("ask.closed").Single());
+        Check.Equal("answered", (string?)closed["status"]);
+        Check.Equal("Patch", (string?)closed["answers"]![0]![0]);
+        Check.Equal(0, (await h.Rpc.CallAsync("ask.pending", new { sessionId = s.Id }))!.AsArray().Count, "nothing waits any more");
+        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy), "the slot is free again");
+    }
+
+    private static async Task AnswerWithText()
+    {
+        await using var h = await StartAsync();
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r)
+            ? Reply.Text("ok")
+            : Reply.Tool("ask_user", new { questions = new object[] { Q("Keep the old API?", "Yes", "No"), new { question = "Which tests?", options = new[] { "unit", "e2e", "ui" }, multiple = true } } });
+        await h.SendAsync(s.Id, "go");
+        var callId = (string)(await AskedAsync(h, s.Id))["callId"]!;
+        Check.Equal(true, (bool?)(await AskedAsync(h, s.Id))["questions"]![1]!["multiple"], "options as plain strings, several may be picked");
+
+        Check.Equal("bad_request", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { callId, text = "  " }), "an empty answer")).Code);
+        Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { callId = "call_nope", text = "hi" }), "an unknown question")).Code);
+        await h.Rpc.InvokeAsync("ask.answer", new { callId, answers = new[] { Array.Empty<string>(), new[] { "unit", "e2e" } }, text = "keep it for one release" });
+        await h.IdleAsync(s.Id);
+        Check.Equal(
+            "The user answered:\n1. Keep the old API?\n   → (nothing picked)\n2. Which tests?\n   → unit, e2e\nThey added: keep it for one release",
+            Result(h, s.Id).Content);
+        Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { callId, text = "again" }), "answered already")).Code);
+    }
+
+    private static async Task SteerAndAbort()
+    {
+        await using var h = await StartAsync();
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) =>
+            Reply.LastUser(r) == "never mind, do X" ? Reply.Text("doing X")
+            : Reply.HasToolResult(r) ? Reply.Text("done")
+            : Reply.Tool("ask_user", new { questions = new[] { Q("A or B?", "A", "B") } });
+
+        // the user writes instead of answering: the wait ends, and the message follows the result
+        await h.SendAsync(s.Id, "start");
+        await AskedAsync(h, s.Id);
+        await h.SendAsync(s.Id, "never mind, do X");
+        await h.IdleAsync(s.Id);
+        var result = Result(h, s.Id);
+        Check.Equal("No answer: the user wrote a new message instead; it follows.", result.Content);
+        Check.Equal("steered", (string?)result.Details!["status"]);
+        var msgs = h.Messages(s.Id);
+        var at = msgs.FindIndex(m => m.ToolResults.Any(r => r.Name == "ask_user"));
+        Check.True(msgs.Skip(at).Any(m => m.Role == MessageRole.User && m.Text == "never mind, do X"), "the message follows");
+        Check.Equal("steered", (string?)FakeBus.Data(h.Bus.OfType("ask.closed").Last())["status"]);
+
+        // aborting the run cancels the question
+        await h.SendAsync(s.Id, "again");
+        var callId = (string)(await AskedAsync(h, s.Id, 2))["callId"]!;
+        await h.Runtime.AbortAsync(s.Id);
+        await h.IdleAsync(s.Id);
+        Check.Equal("cancelled", (string?)FakeBus.Data(h.Bus.OfType("ask.closed").Last())["status"]);
+        Check.Equal(0, (await h.Rpc.CallAsync("ask.pending", new { }))!.AsArray().Count);
+        Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { callId, text = "late" }), "the question is gone")).Code);
+    }
+
+    private static async Task SubagentRefused()
+    {
+        await using var h = await StartAsync();
+        var parent = h.NewSession();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (r.SessionId != parent.Id)
+                return Reply.HasToolResult(r) ? Reply.Text("REPORT: could not ask") : Reply.Tool("ask_user", new { questions = new[] { Q("Which?", "a", "b") } });
+            return Reply.HasToolResult(r) ? Reply.Text("parent done") : Reply.Tool("agent_spawn", new { task = "Decide something.", name = "worker" });
+        };
+        await h.SendAsync(parent.Id, "delegate");
+        var p = await h.IdleAsync(parent.Id, 15_000);
+        var child = h.Runtime.Get(p.Children.Single())!;
+        await h.IdleAsync(child.SessionId);
+        var result = Result(h, child.SessionId);
+        Check.True(result.IsError);
+        Check.Contains(result.Content, "Only the main agent can ask the user");
+        Check.Equal(0, h.Bus.OfType("ask.asked").Count, "nothing was asked");
+    }
+
+    private static Task Parsing()
+    {
+        static List<AskQuestion> Parse(string json, out string error)
+        {
+            using var doc = JsonDocument.Parse(json);
+            AskUserTool.TryParse(doc.RootElement, out var qs, out error);
+            return qs;
+        }
+
+        var one = Parse("""{ "question": "Tabs or spaces?", "options": ["tabs", "spaces", "tabs"] }""", out _);
+        Check.Equal(1, one.Count, "one question at the top level");
+        Check.Equal("tabs,spaces", string.Join(",", one[0].Options.Select(o => o.Label)), "options as strings, duplicates dropped");
+
+        var wrapped = Parse("""{ "questions": "[{\"text\": \"Deploy now?\", \"choices\": [{\"value\": \"yes\", \"detail\": \"to prod\"}], \"multiSelect\": true}]" }""", out _);
+        Check.Equal("Deploy now?", wrapped.Single().Question, "questions sent as a JSON string, text / choices / value / detail");
+        Check.Equal("to prod", wrapped[0].Options.Single().Description);
+        Check.False(wrapped[0].Multiple, "several picks need several options");
+
+        var plain = Parse("""{ "questions": ["Why?", { "question": "  " }] }""", out _);
+        Check.Equal("Why?", plain.Single().Question, "a plain string is a question without options; an empty one is skipped");
+
+        Parse("""{ "questions": [] }""", out var error);
+        Check.Contains(error, "ask_user needs \"questions\"");
+        Parse("""{ "questions": ["1", "2", "3", "4", "5"] }""", out error);
+        Check.Contains(error, "at most 4 questions");
+
+        var many = Parse("""{ "question": "Pick", "options": ["a","b","c","d","e","f","g","h","i","j"] }""", out _);
+        Check.Equal(AskUserTool.MaxOptions, many[0].Options.Count, "options are capped");
+
+        var qs = new List<AskQuestion> { new("Which?", [new("A", null)], false) };
+        Check.Equal("The user answered in their own words: whatever works", AskUserTool.Render(qs, new AskAnswer([[]], "whatever works")));
+        Check.Equal("The user answered: A\nThey added: and hurry", AskUserTool.Render(qs, new AskAnswer([["A"]], "and hurry")));
+        var two = new List<AskQuestion> { new("One?", [], false), new("Two?", [], false) };
+        Check.Equal("The user answered:\n1. One?\n   → (nothing picked)\n2. Two?\n   → (nothing picked)\nIn their own words: both fine",
+            AskUserTool.Render(two, new AskAnswer([[], []], "both fine")));
+        return Task.CompletedTask;
+    }
+}
