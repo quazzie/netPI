@@ -375,6 +375,11 @@ tab (Sessions, Projects, Files, Work, Ideas, Diagnostics) is designed for 220px 
   word-by-word. Details move into a tooltip or the expanded row.
 - **Right-hand columns** (elapsed time, size, time ago) are `flex: none`. A name keeps its width up to about
   55% of the line (`flex: none; max-width`) and the secondary text shrinks first.
+- **One baseline per line.** Centering a row's items does not line up texts of different sizes or fonts: an 11px
+  mono time next to a 12px name sits about 1px high. Texts share a baseline (`.np-baseline` on the `.np-line` or
+  `.np-fit`); in a row with a dot, icon or button, only the texts go into a baseline group
+  (`<span class="np-line np-baseline np-grow">`), and the row centers the rest. Examples: the Work tab's agent,
+  instance and process rows, the folded steps line in the chat, the chat header's model.
 - **Row actions** are icon buttons in `.np-hover-actions`. They appear on hover or keyboard focus, sit over the
   right end of the first line with a fade (`--row-bg`), and stay visible on the selected or failed row.
 - **Stats lines** use `.np-fit`, which drops whole items that do not fit (least important last) instead of
@@ -612,7 +617,7 @@ names or an inline `<svg …>` string.
 | sections | `np-section np-section-title np-section-actions np-section-count np-section-toggle np-card` |
 | lists | `np-list np-row np-row-title np-row-sub np-kv np-table` |
 | controls | `np-btn np-btn-primary np-btn-ghost np-btn-danger np-btn-sm np-icon-btn np-input np-check np-seg np-search np-chip[aria-pressed]` |
-| narrow rows | `np-line` (+ `np-grow`), `np-meta` (+ `np-meta-plain`), `np-fit`, `np-hover-row` + `np-hover-actions` (`--row-bg`) |
+| narrow rows | `np-line` (+ `np-grow`), `np-meta` (+ `np-meta-plain`), `np-fit`, `np-baseline` (on `np-line`/`np-fit`), `np-hover-row` + `np-hover-actions` (`--row-bg`) |
 | text | `np-mono np-muted np-dim np-small np-strong np-ellipsis np-kbd` |
 | status | `np-badge[data-tone] np-dot[data-status] np-empty np-spinner np-progress[style=--value]` |
 

@@ -35,10 +35,12 @@
       onkeydown={(e) => e.key === 'Enter' && ctx.app.openSession(agent.sessionId)}
     >
       <StatusDot status={agentDot(agent.status)} />
-      <span class="name">{agent.name}</span>
-      {#if agent.isSubagent && depth === 0}<span class="sub">sub</span>{/if}
-      <span class="act np-grow">{agent.activity || agent.status}</span>
-      {#if agent.startedAt}<Elapsed since={agent.startedAt} class="np-mono el" />{/if}
+      <span class="text np-line np-baseline np-grow">
+        <span class="name">{agent.name}</span>
+        {#if agent.isSubagent && depth === 0}<span class="sub">sub</span>{/if}
+        <span class="act np-grow">{agent.activity || agent.status}</span>
+        {#if agent.startedAt}<Elapsed since={agent.startedAt} class="np-mono el" />{/if}
+      </span>
     </div>
     {#if !agent.isSubagent && title}<div class="line2 np-ellipsis" title={title}>{title}</div>{/if}
     {#if agent.task && agent.isSubagent}<div class="line2 task np-ellipsis" title={agent.task}>{agent.task}</div>{/if}
@@ -83,7 +85,10 @@
     box-shadow: 0 0 0 2px var(--accent-line);
     border-radius: 4px;
   }
-  .row > .name {
+  .text {
+    gap: 7px;
+  }
+  .text > .name {
     flex: none;
     max-width: 55%;
     overflow: hidden;

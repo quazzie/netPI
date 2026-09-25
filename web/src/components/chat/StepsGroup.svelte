@@ -40,8 +40,10 @@
       {#if latest}
         <span class="latest">
           <span class="np-spinner"></span>
-          <span class="lbl">{latest.label}</span>
-          {#if latest.summary}<span class="sum np-mono">{latest.summary}</span>{/if}
+          <span class="text">
+            <span class="lbl">{latest.label}</span>
+            {#if latest.summary}<span class="sum np-mono">{latest.summary}</span>{/if}
+          </span>
         </span>
       {:else}
         <span class="summary">
@@ -142,6 +144,15 @@
     min-width: 0;
     margin-left: 4px;
     color: var(--fg-muted);
+  }
+  /* the label and the smaller mono summary share a baseline (centered, the summary would sit ~1px high); one label
+     line tall, so the pair centers like "N steps" before it and all of them stay on one baseline */
+  .latest .text {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    height: 1lh;
   }
   .latest .lbl {
     flex: none;

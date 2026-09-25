@@ -1199,10 +1199,24 @@ log('fast steps: layout stability');
     await page.evaluate(() => {
       const users = document.querySelectorAll('.item[data-kind="user"]').length;
       const rec = (window.__rec = { frames: [], on: true });
+      // a text's baseline: a zero-size inline-block at its end sits on it
+      const baseline = (el) => {
+        const p = document.createElement('span');
+        p.style.cssText = 'display:inline-block;width:0;height:0';
+        el.appendChild(p);
+        const y = p.getBoundingClientRect().bottom;
+        p.remove();
+        return y;
+      };
       (function tick() {
         const all = document.querySelectorAll('.item[data-kind="user"]');
         const u = all.length > users ? all[all.length - 1] : null;
-        rec.frames.push({ top: u ? u.getBoundingClientRect().top : null, busy: !!document.querySelector('.composer.running'), latest: document.querySelector('.group .latest')?.innerText ?? null });
+        // the folded line: its step label, the step's (smaller, mono) summary and "N steps" on one baseline
+        const lbl = document.querySelector('.group .latest .lbl');
+        const sum = document.querySelector('.group .latest .sum');
+        const cnt = lbl?.closest('.head')?.querySelector('.count');
+        const off = lbl && sum && cnt ? Math.max(Math.abs(baseline(sum) - baseline(lbl)), Math.abs(baseline(lbl) - baseline(cnt))) : null;
+        rec.frames.push({ top: u ? u.getBoundingClientRect().top : null, busy: !!document.querySelector('.composer.running'), latest: document.querySelector('.group .latest')?.innerText ?? null, off });
         if (rec.on) requestAnimationFrame(tick);
       })();
     });
@@ -1222,7 +1236,8 @@ log('fast steps: layout stability');
         if (a.top == null || b.top == null || b.top - a.top <= 1) continue;
         (busySeen && !b.busy ? downs.end : downs.run).push(Math.round(b.top - a.top));
       }
-      return { frames: f.length, downs, latest: [...new Set(f.map((x) => x.latest).filter(Boolean))] };
+      const offs = f.map((x) => x.off).filter((x) => x != null);
+      return { frames: f.length, downs, latest: [...new Set(f.map((x) => x.latest).filter(Boolean))], offFrames: offs.length, maxOff: offs.length ? Math.max(...offs) : null };
     });
   };
   await runFast('[fast] Fill the chat first.');
@@ -1237,6 +1252,7 @@ log('fast steps: layout stability');
   const folded = await runFast('[fast] Folded from the start.');
   check('folded steps: nothing moves down, during the run or when it ends', folded.frames > 30 && folded.downs.run.length + folded.downs.end.length === 0, `run: ${folded.downs.run.join(', ') || 'none'}; end: ${folded.downs.end.join(', ') || 'none'}`);
   check('folded steps: the line shows the latest step while the agent works', folded.latest.some((l) => /Bash|Read|Edit|Grep|Find|Thinking/.test(l)), folded.latest.slice(0, 4).join(' | '));
+  check('folded steps: the step, its command and "N steps" share one baseline', folded.offFrames > 0 && folded.maxOff < 0.5, `${folded.offFrames} frames, off by up to ${folded.maxOff?.toFixed(2)}px`);
   const wrapped = await page.evaluate(() =>
     [...document.querySelectorAll('.group.collapsible .head')].filter((h) => [...h.querySelectorAll('.count, .took')].some((e) => e.getClientRects().length > 1 || e.offsetHeight > 20)).length,
   );

@@ -92,16 +92,24 @@
     height: 38px;
     border-bottom: 1px solid var(--border);
     display: flex;
+    align-items: center;
     justify-content: center;
     padding: 0 16px;
   }
+  /* as tall as its content, centered by the header: the title and the model's smaller mono text share a baseline
+     (centered, the model sat ~2px high); the boxes (breadcrumb, project chip, status) center */
   .inner {
     width: 100%;
     max-width: calc(var(--chat-max) + 32px);
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 10px;
     min-width: 0;
+  }
+  .crumb,
+  .chip,
+  .status {
+    align-self: center;
   }
   .crumb {
     display: flex;
@@ -170,9 +178,10 @@
     color: var(--fg);
     border-color: var(--border-strong);
   }
+  /* its text, not the icon, gives it the baseline it shares with the title */
   .model {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 5px;
     color: var(--fg-dim);
     font-size: 11.5px;
@@ -180,6 +189,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
+  }
+  .model > :global(.np-icon) {
+    align-self: center;
   }
   .effort {
     color: var(--fg-dim);

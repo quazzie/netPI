@@ -21,6 +21,9 @@
  *
  * Narrow panels (side panels can be 200–320px wide: never wrap word-by-word, never scroll sideways)
  *   .np-line              one-line flex row (nowrap); put .np-grow on the part that may shrink (ellipsized)
+ *   .np-baseline          with .np-line or .np-fit: its texts share one baseline, which centering does not give
+ *                         texts of different sizes or fonts (an 11px mono time next to a 12px name sits ~1px high).
+ *                         In a row with a dot, icon or button, wrap just the texts: <span class="np-line np-baseline np-grow">
  *   .np-meta              one muted line of metadata; inline children are joined with " · " and the whole
  *                         line ellipsizes (use <span>s; .np-meta-end pushes a trailing item right)
  *   .np-fit               one-line flex row that drops whole items that do not fit (no clipped text)
@@ -651,6 +654,10 @@ input.np-switch:disabled {
 .np-fit > * {
   flex: none;
   line-height: 20px;
+}
+/* after .np-line and .np-fit: it overrides their centering */
+.np-baseline {
+  align-items: baseline;
 }
 .np-hover-row {
   position: relative;

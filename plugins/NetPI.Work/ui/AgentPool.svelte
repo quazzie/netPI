@@ -77,17 +77,21 @@
   {#each pool.owners ?? [] as o (o.agentId + o.since)}
     <button class="owner np-line" title="{who(o)}{note(o) ? ` — ${note(o)}` : ''} (open session)" onclick={() => o.sessionId && ctx.app.openSession(o.sessionId)}>
       <span class="slot on"></span>
-      <span class="name">{who(o)}</span>
-      <span class="label np-grow">{note(o)}</span>
-      <Elapsed since={o.since} class="np-mono el" />
+      <span class="text np-line np-baseline np-grow">
+        <span class="name">{who(o)}</span>
+        <span class="label np-grow">{note(o)}</span>
+        <Elapsed since={o.since} class="np-mono el" />
+      </span>
     </button>
   {/each}
   {#each pool.waiters ?? [] as w (w.agentId + w.since)}
     <button class="owner waiting np-line" title="{who(w)} is waiting for a free instance (open session)" onclick={() => w.sessionId && ctx.app.openSession(w.sessionId)}>
       <span class="slot"></span>
-      <span class="name">{who(w)}</span>
-      <span class="label np-grow">waiting</span>
-      <Elapsed since={w.since} class="np-mono el" />
+      <span class="text np-line np-baseline np-grow">
+        <span class="name">{who(w)}</span>
+        <span class="label np-grow">waiting</span>
+        <Elapsed since={w.since} class="np-mono el" />
+      </span>
     </button>
   {/each}
 </div>
@@ -187,7 +191,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .owner > .name {
+  .text {
+    gap: 7px;
+  }
+  .text > .name {
     flex: none;
   }
   .label {

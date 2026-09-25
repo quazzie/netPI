@@ -112,7 +112,7 @@
 <div class="diag">
   <div class="rt">
     <!-- items that do not fit are dropped whole (least important last); the tooltip has everything -->
-    <div class="np-fit facts" title={rtTip}>
+    <div class="np-fit np-baseline facts" title={rtTip}>
       {#if rt}
         <span class="np-mono">pid {rt.pid}</span>
         <span>{rt.workingSetMb} MB</span>

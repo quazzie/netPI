@@ -85,12 +85,14 @@
 <div class="proc np-hover-row" data-tone={tone} class:open>
   <div class="row np-line" role="button" tabindex="0" onclick={toggle} onkeydown={(e) => e.key === 'Enter' && toggle()} aria-expanded={open} title={proc.command}>
     <span class="ic">{#if running}<span class="np-spinner"></span>{:else}<Icon name={icon} size={13} />{/if}</span>
-    <span class="cmd np-mono np-grow">{proc.command}</span>
-    {#if running}
-      <Elapsed since={proc.startedAt} class="np-mono el" />
-    {:else}
-      <span class="res np-mono">{proc.status === 'exited' ? `exit ${proc.exitCode ?? '?'}` : proc.status}</span>
-    {/if}
+    <span class="text np-line np-baseline np-grow">
+      <span class="cmd np-mono np-grow">{proc.command}</span>
+      {#if running}
+        <Elapsed since={proc.startedAt} class="np-mono el" />
+      {:else}
+        <span class="res np-mono">{proc.status === 'exited' ? `exit ${proc.exitCode ?? '?'}` : proc.status}</span>
+      {/if}
+    </span>
   </div>
   <div class="line2 np-line">
     <span class="np-meta np-grow" title="{proc.shell} · pid {proc.pid}{proc.background ? ' · background' : ''} · {proc.cwd}">
@@ -141,6 +143,9 @@
   .row:focus-visible {
     box-shadow: 0 0 0 2px var(--accent-line);
     border-radius: 4px;
+  }
+  .text {
+    gap: 7px;
   }
   .ic {
     display: grid;

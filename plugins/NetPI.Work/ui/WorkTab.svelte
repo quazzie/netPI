@@ -255,7 +255,7 @@
         {@const b = usage.budget}
         {@const frac = b.monthlyUsd ? Math.min(1, b.spentUsd / b.monthlyUsd) : null}
         <div class="usage budget" title="Paid models since {b.periodStart}; the budget is set in Settings → Agents & budget">
-          <div class="uline np-line">
+          <div class="uline np-line np-baseline">
             <span class="uprov np-grow">This month</span>
             <span class="np-mono" class:warn={b.warning && !b.exhausted} class:err={b.exhausted}
               >{usd(b.spentUsd)}{#if b.monthlyUsd}<span class="np-dim">&nbsp;/ {usd(b.monthlyUsd)}</span>{/if}</span
@@ -279,7 +279,7 @@
           {@const used = u.budgetUsed ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0) + (u.cacheWriteTokens ?? 0)}
           {@const frac = u.budgetTokens ? Math.min(1, used / u.budgetTokens) : null}
           <div class="usage">
-            <div class="uline np-line">
+            <div class="uline np-line np-baseline">
               <span class="uprov np-grow">{u.provider}</span>
               <span class="np-mono unums" title="{(u.inputTokens ?? 0).toLocaleString()} input · {(u.outputTokens ?? 0).toLocaleString()} output · {(u.cacheReadTokens ?? 0).toLocaleString()} cache read tokens">
                 {tokens(u.inputTokens) || 0}<span class="np-dim">↑</span>
@@ -378,6 +378,10 @@
   .uline,
   .umeta {
     gap: 8px;
+  }
+  /* one line tall: the smaller mono figures share the name's baseline without making the line taller */
+  .uline {
+    height: 1lh;
   }
   @container (max-width: 259px) {
     .cached {
