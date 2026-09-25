@@ -1088,10 +1088,19 @@ internal sealed class AgentRuntime : IAgentRuntime
         lock (s.Gate) return s.QueueSnapshot();
     }
 
+    /// <summary>
+    /// Remove one of the person's queued inputs (agent.dequeue). Internal ones (a subagent's report, a harness notice) are
+    /// refused: dropping them would lose what the agent waits for.
+    /// </summary>
     public bool RemoveQueued(string sessionId, string inputId)
     {
         var s = FindState(sessionId);
-        return s is not null && RemoveQueuedInput(s, inputId);
+        if (s is null) return false;
+        string? source;
+        lock (s.Gate) source = s.Steering.Concat(s.FollowUps).FirstOrDefault(i => i.Id == inputId)?.Source;
+        if (source is not null && source != "user")
+            throw new RpcException("forbidden", $"That queued input comes from {source}, not from you: it is for the agent and can't be removed.");
+        return RemoveQueuedInput(s, inputId);
     }
 
     private bool RemoveQueuedInput(AgentState s, string inputId)

@@ -317,7 +317,7 @@
         <button class="banner-x" aria-label="Dismiss" onclick={() => (chat.notice = null)}><Icon name="x" size={12} /></button>
       </div>
     {/if}
-    {#if chat.queue.length}<QueueChips {chat} />{/if}
+    {#if chat.ownQueue.length}<QueueChips {chat} />{/if}
     <GoalStrip {session} />
     <TodoStrip {session} />
 

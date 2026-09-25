@@ -724,6 +724,22 @@ public static class LoopTests
         Check.Equal(true, removed!.GetValue<bool>());
         Check.Equal(0, ((JsonArray)(await h.Rpc.CallAsync("agent.queue", new { sessionId = s.Id }))!).Count);
 
+        // a subagent's report waiting for the agent is internal: it can't be removed (the person's own inputs can)
+        await h.Runtime.SendAsync(s.Id, new UserInput { Text = "<agent-result>report</agent-result>", AsNotice = true, NoticeKind = "agent-result", Source = "agent:agt_child" });
+        var report = ((JsonArray)(await h.Rpc.CallAsync("agent.queue", new { sessionId = s.Id }))!).Single()!;
+        Check.Equal("agent:agt_child", (string?)report["source"]);
+        try
+        {
+            await h.Rpc.CallAsync("agent.dequeue", new { sessionId = s.Id, id = (string)report["id"]! });
+            throw new AssertException("expected forbidden");
+        }
+        catch (RpcException ex)
+        {
+            Check.Equal("forbidden", ex.Code);
+            Check.Contains(ex.Message, "comes from agent:agt_child, not from you");
+        }
+        Check.Equal(1, ((JsonArray)(await h.Rpc.CallAsync("agent.queue", new { sessionId = s.Id }))!).Count, "the report stays for the agent");
+
         var byId = await h.Rpc.CallAsync("agent.get", new { id = agentId });
         Check.Equal("running", (string?)byId!["status"]);
         var bySession = await h.Rpc.CallAsync("agent.get", new { sessionId = s.Id });

@@ -167,6 +167,16 @@ await ta.press('Alt+Enter');
 await page.waitForSelector('.queue .chip', { timeout: 3000 }).catch(() => {});
 const chips = await page.locator('.queue .chip').count();
 check('queue chips while running', chips >= 1, `${chips} chip(s)`);
+{
+  // a subagent's report waiting for the agent is internal: never a chip you could remove
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  await rpcCall('mock.queueInternal', { sessionId: sid });
+  await page.waitForTimeout(300);
+  const queued = await rpcCall('agent.queue', { sessionId: sid });
+  const shown = await page.locator('.queue .chip').allInnerTexts();
+  check('an internal queued input is not shown as a chip',
+    queued.some((q) => q.source === 'agent:agt_x') && !shown.some((t) => t.includes('agent-result')), `queued: ${queued.map((q) => q.source).join(', ')}; chips: ${shown.join(' | ')}`);
+}
 await page.waitForSelector('.banner', { timeout: 8000 }).catch(() => {});
 await shot(page, '05-steer-queue-retry');
 const banner = await page.locator('.banner').count();

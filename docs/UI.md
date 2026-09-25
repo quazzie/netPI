@@ -269,7 +269,8 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 - What the chat cost on paid models (`usage.session`, with its subagents) shows next to the context ring once it is more
   than nothing, refreshed on `usage.changed`; the tooltip splits the chat from its subagents.
 - The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`.
-- Queued inputs (`agent.queue`) appear as chips; the × on a chip calls `agent.dequeue`. `agent.notice` shows
+- The person's own queued inputs (`agent.queue`, `source: "user"`) appear as chips; the × on a chip calls `agent.dequeue`.
+  Internal ones (a subagent's report, a harness notice) are never shown: they are for the agent. `agent.notice` shows
   as a transient banner, which clears when the model streams again or the run ends.
 
 ### Settings dialog

@@ -125,7 +125,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `agent.send` | netpi.runtime | `{ sessionId, text, images?: {mediaType,data}[], mode?: 'auto'\|'steer'\|'queue' }` → `AgentInfo` |
 | `agent.abort` | netpi.runtime | `{ sessionId }` → `bool` |
 | `agent.queue` | netpi.runtime | `{ sessionId }` → `QueuedInput[]` |
-| `agent.dequeue` | netpi.runtime | `{ sessionId, id }` → `bool` |
+| `agent.dequeue` | netpi.runtime | `{ sessionId, id }` → `bool`: removes one of the person's queued inputs (`source: "user"`); an internal one (a subagent's report, a harness notice) is refused with `forbidden` |
 | `runs.list` | netpi.runtime | `{ includeFinished? }` → `AgentInfo[]` |
 | `agent.get` | netpi.runtime | `{ id? , sessionId? }` → `AgentInfo\|null` |
 | `profiles.list` | netpi.profiles | → `{ defaultProfile, profiles: { id, name, prompt, toolsOff }[] }` |

@@ -550,10 +550,17 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
       return true;
     },
     queue: (sid) => queueOf(sid),
+    /** A subagent's report waiting for the agent: internal, like the host's (source agent:…). */
+    queueInternal(sid) {
+      queueOf(sid).push({ id: newId('in'), text: '<agent-result id="agt_x" name="worker">report</agent-result>', mode: 'queue', source: 'agent:agt_x', createdAt: new Date().toISOString() });
+      publishQueue(sid);
+    },
     dequeue(sid, id) {
       const q = queueOf(sid);
       const i = q.findIndex((x) => x.id === id);
       if (i < 0) return false;
+      // like the host: only the person's own inputs can be removed
+      if ((q[i].source ?? 'user') !== 'user') throw new Error("That queued input is for the agent and can't be removed.");
       q.splice(i, 1);
       publishQueue(sid);
       return true;

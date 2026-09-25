@@ -3,12 +3,15 @@
   import { dequeue } from '../../lib/state/app.svelte.js';
   import { truncate } from '../../lib/format.js';
 
-  /** Inputs waiting for the running agent (agent.queue); removable with agent.dequeue. */
+  /**
+   * The person's own inputs waiting for the running agent (agent.queue); removable with agent.dequeue. Internal inputs (a
+   * subagent's report, a harness notice) are not shown: they are the agents' business and must not be removed.
+   */
   let { chat } = $props();
 </script>
 
 <div class="queue">
-  {#each chat.queue as q (q.id)}
+  {#each chat.ownQueue as q (q.id)}
     <div class="chip" data-mode={q.mode} title={q.text}>
       <Icon name={q.mode === 'steer' ? 'steer' : 'queue'} size={12} />
       <span class="mode">{q.mode === 'steer' ? 'steer' : 'queued'}</span>

@@ -135,6 +135,8 @@ export class ChatStore {
   stream = new StreamState();
   live = new SvelteMap(); // callId -> LiveTool
   queue = $state.raw([]);
+  // the person's own queued inputs: a subagent's report or a harness notice waiting for the agent is internal, never a chip
+  ownQueue = $derived(this.queue.filter((q) => (q.source ?? 'user') === 'user'));
   notice = $state(null); // { level, text, ts }
   pendingUser = $state.raw(null); // optimistic user message while agent.send is in flight
   expanded = new SvelteMap(); // UI memory: item key -> boolean

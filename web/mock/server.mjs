@@ -626,6 +626,7 @@ const handlers = {
     return { path: full, action: 'open' };
   },
   'mock.filesOpened': () => filesOpened,
+  'mock.queueInternal': (p) => (agent.queueInternal(need(p, 'sessionId')), true),
   'agentsmd.list': (p = {}) => {
     const s = p.sessionId ? store.sessions.get(p.sessionId) : null;
     const pr = p.projectId ? store.projects.get(p.projectId) : s?.projectId ? store.projects.get(s.projectId) : null;
