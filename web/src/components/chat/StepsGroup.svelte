@@ -36,7 +36,7 @@
     <button class="head" aria-expanded={open} onclick={() => chat.expanded.set(item.key, !open)}>
       <span class="chev" class:open><Icon name="chevron-right" size={12} stroke={2} /></span>
       <span class="count">{n} steps</span>
-      {#if span}<span class="np-dim">· {duration(span)}</span>{/if}
+      {#if span}<span class="took np-dim">· {duration(span)}</span>{/if}
       {#if latest}
         <span class="latest">
           <span class="np-spinner"></span>
@@ -86,6 +86,8 @@
     margin-left: -4px;
     align-self: flex-start;
     max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
     border: 0;
     border-radius: 6px;
     background: transparent;
@@ -98,11 +100,20 @@
   }
   .chev {
     display: inline-grid;
+    flex: none;
     color: var(--fg-dim);
     transition: transform var(--t-fast);
   }
   .chev.open {
     transform: rotate(90deg);
+  }
+  /* only the latest step's summary gives way on a narrow chat; the rest never wraps */
+  .count,
+  .took,
+  .summary,
+  .failed {
+    flex: none;
+    white-space: nowrap;
   }
   .count {
     font-weight: 550;

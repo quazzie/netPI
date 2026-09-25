@@ -1186,6 +1186,10 @@ log('fast steps: layout stability');
   const folded = await runFast('[fast] Folded from the start.');
   check('folded steps: nothing moves down, during the run or when it ends', folded.frames > 30 && folded.downs.run.length + folded.downs.end.length === 0, `run: ${folded.downs.run.join(', ') || 'none'}; end: ${folded.downs.end.join(', ') || 'none'}`);
   check('folded steps: the line shows the latest step while the agent works', folded.latest.some((l) => /Bash|Read|Edit|Grep|Find|Thinking/.test(l)), folded.latest.slice(0, 4).join(' | '));
+  const wrapped = await page.evaluate(() =>
+    [...document.querySelectorAll('.group.collapsible .head')].filter((h) => [...h.querySelectorAll('.count, .took')].some((e) => e.getClientRects().length > 1 || e.offsetHeight > 20)).length,
+  );
+  check('folded steps: "N steps · time" stays on one line', wrapped === 0, `${wrapped} wrapped`);
   const lastRun = page.locator('.item[data-kind="steps"]');
   check('folded steps: every group of this run is one line', (await page.locator('.group.collapsible .steps').count()) === 0 && (await lastRun.count()) > 0);
   await shot(page, '27-folded-steps');

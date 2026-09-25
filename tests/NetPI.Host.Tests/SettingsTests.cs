@@ -21,13 +21,12 @@ public static class SettingsTests
             using var s = new SettingsStore(file, NullLogger.Instance);
             Check.True(File.Exists(file));
             var text = File.ReadAllText(file);
-            Check.Contains(text, "\"defaultModel\": \"aiproxy/qwen3.8-27b\"");
-            Check.Equal("aiproxy/qwen3.8-27b", s.Get<string>("defaultModel"));
+            Check.NotContains(text, "qwen", "nothing about one machine");
+            Check.Equal(null, s.GetNode("defaultModel"), "no default model: the first loaded local model, else the first one");
             Check.Equal("http://127.0.0.1:8090", s.Get<string>("providers.aiproxy.baseUrl"));
             Check.Equal("responses", s.Get<string>("providers.aiproxy.transport"));
             Check.Equal("", s.Get<string>("providers.anthropic.apiKey"));
-            Check.Equal("aiproxy/qwen3.8-27b", s.Get<string>("agents.qwen.model"), "an agent for the default model");
-            Check.Equal(null, s.GetNode("agents.qwen.instances"), "its instances follow the model's slots");
+            Check.Equal(null, s.GetNode("agents"), "no agents: they are set up in the app");
             Check.Equal(null, s.GetNode("lanes"), "no lanes (they became agents)");
             Check.True(s.Get<bool>("compaction.enabled"));
             Check.True(s.Get<bool>("nudge.enabled"));

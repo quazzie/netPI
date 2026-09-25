@@ -287,21 +287,15 @@ internal sealed class SettingsStore : ISettings, IDisposable
     }
 }
 
-/// <summary>The settings document written on first run.</summary>
+/// <summary>The settings document written on first run: nothing about one machine (no default model, no agents; they are set up in the app).</summary>
 internal static class DefaultSettings
 {
     public static JsonObject Create() => new()
     {
-        ["defaultModel"] = "aiproxy/qwen3.8-27b",
         ["providers"] = new JsonObject
         {
             ["aiproxy"] = new JsonObject { ["baseUrl"] = "http://127.0.0.1:8090", ["transport"] = "responses" },
             ["anthropic"] = new JsonObject { ["apiKey"] = "" },
-        },
-        // chats and subagents run on agents: the default model with its own number of slots
-        ["agents"] = new JsonObject
-        {
-            ["qwen"] = new JsonObject { ["model"] = "aiproxy/qwen3.8-27b", ["use"] = "The local model: free, for everyday work." },
         },
         ["compaction"] = new JsonObject { ["enabled"] = true },
         ["nudge"] = new JsonObject { ["enabled"] = true },

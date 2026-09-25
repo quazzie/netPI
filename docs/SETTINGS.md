@@ -13,7 +13,7 @@ so the default applies again). The agents and the budget have their own page; th
 
 | key | default | |
 |---|---|---|
-| `defaultModel` | `aiproxy/qwen3.8-27b` | model ref (`provider/model`) for sessions that have neither a model nor an agent |
+| `defaultModel` | – | model ref (`provider/model`) for sessions that have neither a model nor an agent; unset: the first loaded local model, else the first one listed |
 | `models.refreshSeconds` | `10` | list the models again this often (the providers answer from their own caches), so a model loaded or unloaded in AiSwitcher reaches the agents within seconds; 0 = only on changes |
 | `workspace.default` | `~/.netpi/workspace` | working directory of sessions without a project |
 | `server.port` | `7431` | a random free port is used when it is taken |
