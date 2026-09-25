@@ -152,6 +152,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `files.search` | netpi.tools.files | `{ sessionId?, query, limit? }` → `{ path, rel, isDir }[]` (for `@` mentions) |
 | `files.open` | netpi.tools.files | `{ path, sessionId?, cwd? }` → `{ path, action: 'open'\|'edit'\|'reveal'\|'folder' }` (opens a path with the operating system; see `docs/TOOLS.md`) |
 | `files.list` | netpi.tools.files | `{ sessionId?, dir? }` → `{ root, dir, entries: {name, rel, isDir, size?, mtime?}[] }` |
+| `files.git` | netpi.tools.files | `{ sessionId?, cwd? }` → `{ repo, branch, ahead, behind, files: { path, rel, status, added?, deleted? }[], added, deleted }\|null`: the uncommitted changes since the last commit (the Files tab's git line; see `docs/TOOLS.md`) |
 | `processes.list` | netpi.tools.shell | → `ProcessInfo[]` |
 | `processes.output` | netpi.tools.shell | `{ id, tail? }` → `string` |
 | `processes.kill` | netpi.tools.shell | `{ id }` → `bool` |

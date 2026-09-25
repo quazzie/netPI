@@ -14,8 +14,9 @@ all are, this plan moves to `docs/archive/`.
    goal was completed or is blocked, the budget asks (`ask_user` adds its own). The web UI decides and posts `notify`
    to the shell; a tray balloon (shown as a toast) and a flashing taskbar button, no new dependency. See `docs/UI.md`
    (Desktop integration).
-3. **Files tab** (asked for on 2026-09-25): a click on a file opens it; an `@` button inserts it into the chat as a
-   mention; a git line shows the uncommitted changes since the last commit (e.g. `+13 −400`).
+3. **Files tab** (done; asked for on 2026-09-25): a click on a file opens it; the `@` button of a row inserts it into
+   the chat as a mention; a git line at the bottom (`files.git`) shows the branch and the uncommitted changes since
+   the last commit (e.g. `4 files +13 −400`), and clicking it lists the changed files. See `docs/UI.md` (Files).
 4. **Cache reuse and time to first token per turn**, shown in the chat: how much of each prompt the backend reused
    and how long the first token took (TTFT is not recorded yet: the runner can store it in the message meta).
 5. **`ask_user`**: the agent asks the user questions with options. The questions sit **inline in the chat** as its

@@ -13,10 +13,13 @@
   let results = $state.raw(null); // files.search results
   let searching = $state(false);
   let showIgnored = $state(true);
+  let git = $state.raw(null); // files.git: the changes since the last commit; null outside a repository
+  let gitOpen = $state(false); // the list shows the changed files instead of the tree
   let menu = $state();
   let listEl = $state();
   let visible = true;
   let dirty = false;
+  let gitDirty = false;
   let scopeKey = '';
 
   const loc = () => (ctx.app.activeSessionId ? { sessionId: ctx.app.activeSessionId } : {});
@@ -53,27 +56,69 @@
   }
 
   async function refresh() {
+    loadGit();
     await loadDir('');
     await Promise.all([...expanded].map((d) => loadDir(d)));
     dirty = false;
   }
 
+  // The git line: loaded with the tree, after tools ran (debounced) and when the window gets the focus back (a
+  // commit made in a terminal); while the tab is hidden it only notes that it is out of date.
+  let gitSeq = 0;
+  let gitTimer = 0;
+  async function loadGit() {
+    clearTimeout(gitTimer);
+    gitDirty = false;
+    const seq = ++gitSeq;
+    let r = null;
+    try {
+      r = await ctx.rpc('files.git', loc());
+    } catch {
+      // git failed, or an older files plugin without files.git: no git line
+    }
+    if (seq !== gitSeq) return;
+    git = r ?? null;
+    if (!git) gitOpen = false;
+  }
+  function gitSoon(ms = 800) {
+    if (!visible) {
+      gitDirty = true;
+      return;
+    }
+    clearTimeout(gitTimer);
+    gitTimer = setTimeout(loadGit, ms);
+  }
+
   export function setVisible(v) {
     visible = v;
     if (v && dirty) refresh();
+    else if (v && gitDirty) loadGit();
   }
 
   onMount(() => {
     scopeKey = `${ctx.app.activeSessionId}|${ctx.app.activeProject?.path ?? ''}`;
     loadDir('');
-    return ctx.app.onChange(() => {
+    loadGit();
+    ctx.on('tool.end', () => gitSoon());
+    const onFocus = () => gitSoon(300);
+    window.addEventListener('focus', onFocus);
+    const off = ctx.app.onChange(() => {
       const key = `${ctx.app.activeSessionId}|${ctx.app.activeProject?.path ?? ''}`;
       if (key === scopeKey) return;
       scopeKey = key;
       results = null;
-      if (visible) loadDir('');
-      else dirty = true;
+      git = null;
+      gitOpen = false;
+      if (visible) {
+        loadDir('');
+        loadGit();
+      } else dirty = true;
     });
+    return () => {
+      off?.();
+      window.removeEventListener('focus', onFocus);
+      clearTimeout(gitTimer);
+    };
   });
 
   // ------------------------------------------------------------------ search
@@ -137,31 +182,44 @@
     ctx.app.insertText(`@${p.includes(' ') ? `"${p}"` : p} `);
   }
 
-  function activate(e) {
-    if (e.isDir) toggleDir(e);
-    else mention(e.rel, false);
+  /** Click or Enter: a file opens; a folder expands in the tree, or (a search result) is shown in the tree. */
+  function activate(e, flat = false) {
+    if (e.isDir) flat ? showInTree(e.rel) : toggleDir(e);
+    else if (!e.gone) openPath(e);
+  }
+
+  /** Clears the filter and expands the tree down to a folder (a search result), then focuses its row. */
+  async function showInTree(rel) {
+    const parts = rel.split('/');
+    const dirs = parts.map((_, i) => parts.slice(0, i + 1).join('/'));
+    expanded = new Set([...expanded, ...dirs]);
+    q = '';
+    gitOpen = false;
+    await Promise.all(dirs.filter((d) => !entries.has(d)).map((d) => loadDir(d)));
+    await tick();
+    listEl?.querySelector(`[data-rel="${CSS.escape(rel)}"]`)?.focus();
   }
 
   /** Open with the operating system (files.open): the default app, a folder in the file manager. */
   async function openPath(e) {
     try {
-      const r = await ctx.rpc('files.open', { ...loc(), path: e.rel });
+      const r = await ctx.rpc('files.open', { ...loc(), path: e.path ?? e.rel });
       if (r?.action === 'reveal') ctx.app.toast(`Shown in the file manager: ${r.path}`);
     } catch (err) {
       ctx.app.toast(err.message, 'error');
     }
   }
 
+  /** The row menu; `gone` = a deleted file of the changes list (nothing to open or reveal). */
   function items(e) {
     return [
-      { label: e.isDir ? 'Open folder' : 'Open', icon: 'external', onclick: () => openPath(e) },
-      { divider: true },
+      ...(e.gone ? [] : [{ label: e.isDir ? 'Open folder' : 'Open', icon: 'external', onclick: () => openPath(e) }, { divider: true }]),
       { label: 'Insert @mention', icon: 'at', onclick: () => mention(e.rel, e.isDir) },
       { label: 'Insert path', icon: 'file-text', onclick: () => ctx.app.insertText(e.rel + ' ') },
       { divider: true },
       { label: 'Copy relative path', icon: 'copy', onclick: () => copyText(e.rel) },
       { label: 'Copy absolute path', icon: 'copy', onclick: () => copyText(e.path ?? abs(e.rel)) },
-      ...(desktop.available ? [{ label: 'Reveal in Explorer', icon: 'folder-open', onclick: () => desktop.revealPath(e.path ?? abs(e.rel)) }] : []),
+      ...(desktop.available && !e.gone ? [{ label: 'Reveal in Explorer', icon: 'folder-open', onclick: () => desktop.revealPath(e.path ?? abs(e.rel)) }] : []),
       ...(e.isDir ? [{ divider: true }, { label: 'Refresh folder', icon: 'refresh', onclick: () => loadDir(e.rel) }] : []),
     ];
   }
@@ -174,8 +232,8 @@
     menu.openFor(ev.currentTarget, items(e));
   }
 
-  // keyboard navigation between rows
-  function onKey(ev, e) {
+  // keyboard navigation between rows; `flat` = a search result or a changed file
+  function onKey(ev, e, flat = false) {
     const k = ev.key;
     if (k === 'ArrowDown' || k === 'ArrowUp') {
       ev.preventDefault();
@@ -190,7 +248,7 @@
       toggleDir(e);
     } else if (k === 'Enter') {
       ev.preventDefault();
-      e ? activate(e) : null;
+      e ? activate(e, flat) : null;
     } else if (k === 'ContextMenu' || (k === 'F10' && ev.shiftKey)) {
       ev.preventDefault();
       menu.openFor(ev.currentTarget, items(e));
@@ -200,6 +258,34 @@
   const EXT_ICON = { md: 'file-text', txt: 'file-text', json: 'file-text', log: 'file-text' };
   const iconFor = (e) => (e.isDir ? (expanded.has(e.rel) ? 'folder-open' : 'folder') : EXT_ICON[e.name.split('.').pop()?.toLowerCase()] ?? 'file');
   const project = $derived(ctx.app.activeProject);
+
+  // ------------------------------------------------------------------ git
+  const STATUS = {
+    modified: ['M', 'modified'],
+    added: ['A', 'added (staged)'],
+    new: ['U', 'new (untracked)'],
+    deleted: ['D', 'deleted'],
+    renamed: ['R', 'renamed'],
+    copied: ['C', 'copied'],
+    conflict: ['!', 'conflict'],
+  };
+  const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
+  const gitTitle = $derived.by(() => {
+    if (!git) return '';
+    const lines = [`${git.repo} · ${git.branch ?? '?'}`];
+    lines.push(git.files.length ? `Uncommitted: ${plural(git.files.length, 'file')}, +${git.added} −${git.deleted} lines (staged or not, new files included)` : 'No changes since the last commit');
+    if (git.ahead) lines.push(`${plural(git.ahead, 'commit')} not pushed`);
+    if (git.behind) lines.push(`${plural(git.behind, 'commit')} to pull`);
+    lines.push(gitOpen ? 'Click to show the file tree' : 'Click to list the changed files');
+    return lines.join('\n');
+  });
+  function toggleChanges() {
+    gitOpen = !gitOpen;
+    if (gitOpen) {
+      q = '';
+      loadGit();
+    }
+  }
 </script>
 
 <Menu bind:this={menu} />
@@ -208,6 +294,14 @@
     <Icon name="folder" size={13} />
     <span class="rname" title={root}>{project?.name ?? (root ? basename(root) : 'Workspace')}</span>
     <span class="rpath np-mono" title={root}><bdi>{root}</bdi></span>
+    {#if ignoredCount}
+      <IconButton
+        icon={showIgnored ? 'eye' : 'eye-off'}
+        title="{showIgnored ? 'Hide' : 'Show'} the entries skipped by .gitignore and the built-in ignore rules"
+        size="sm"
+        onclick={() => (showIgnored = !showIgnored)}
+      />
+    {/if}
     <IconButton icon="list-tree" title="Collapse all" size="sm" disabled={!expanded.size} onclick={collapseAll} />
     <IconButton icon="refresh" title="Refresh" size="sm" onclick={refresh} />
   </div>
@@ -215,27 +309,70 @@
     <SearchInput bind:value={q} placeholder="Find files" />
   </div>
 
+  {#snippet mentionAct(e)}
+    <span class="acts">
+      <button class="act" title="Insert @{e.rel} into the chat" onclick={(ev) => (ev.stopPropagation(), mention(e.rel, e.isDir))}><Icon name="at" size={12} /></button>
+      <button class="act" title="More" onclick={(ev) => onMore(ev, e)}><Icon name="more" size={12} /></button>
+    </span>
+  {/snippet}
+
   <div class="list" bind:this={listEl} role="tree" aria-label="Files">
     {#if results}
       {#each results as r (r.path ?? r.rel)}
         {@const i = r.rel.lastIndexOf('/')}
+        {@const e = { ...r, name: basename(r.rel) }}
         <div
           class="frow flat"
           data-row
           role="treeitem"
           aria-selected="false"
           tabindex="0"
-          title="Click to insert @{r.rel}"
-          onclick={() => mention(r.rel, r.isDir)}
-          onkeydown={(ev) => onKey(ev, { ...r, name: basename(r.rel) })}
-          oncontextmenu={(ev) => onContext(ev, { ...r, name: basename(r.rel) })}
+          title={r.isDir ? `Show ${r.rel} in the tree` : r.rel}
+          onclick={() => activate(e, true)}
+          onkeydown={(ev) => onKey(ev, e, true)}
+          oncontextmenu={(ev) => onContext(ev, e)}
         >
           <span class="ic"><Icon name={r.isDir ? 'folder' : 'file'} size={13} /></span>
-          <span class="fname">{r.rel.slice(i + 1)}</span>
-          <span class="fdir np-ellipsis">{i > 0 ? r.rel.slice(0, i) : ''}</span>
+          <span class="np-line np-baseline tx">
+            <span class="fname">{r.rel.slice(i + 1)}</span>
+            <span class="fdir np-grow">{i > 0 ? r.rel.slice(0, i) : ''}</span>
+          </span>
+          {@render mentionAct(e)}
         </div>
       {:else}
         <Empty icon="search">{searching ? 'Searching…' : `No files match “${q}”`}</Empty>
+      {/each}
+    {:else if gitOpen && git}
+      <div class="ltitle">Changes since the last commit</div>
+      {#each git.files as f (f.path)}
+        {@const i = f.rel.lastIndexOf('/')}
+        {@const e = { rel: f.rel, path: f.path, name: f.rel.slice(i + 1), isDir: false, gone: f.status === 'deleted' }}
+        {@const [letter, what] = STATUS[f.status] ?? ['?', f.status]}
+        <div
+          class="frow flat change"
+          class:gone={e.gone}
+          data-row
+          data-status={f.status}
+          role="treeitem"
+          aria-selected="false"
+          tabindex="0"
+          title="{f.rel}: {what}"
+          onclick={() => activate(e, true)}
+          onkeydown={(ev) => onKey(ev, e, true)}
+          oncontextmenu={(ev) => onContext(ev, e)}
+        >
+          <span class="np-line np-baseline tx">
+            <span class="st np-mono">{letter}</span>
+            <span class="fname">{e.name}</span>
+            <span class="fdir np-grow">{i > 0 ? f.rel.slice(0, i) : ''}</span>
+            {#if f.added || f.deleted}
+              <span class="lines np-mono">{#if f.added}<span class="add">+{f.added}</span>{/if}{#if f.deleted}<span class="del">−{f.deleted}</span>{/if}</span>
+            {/if}
+          </span>
+          {@render mentionAct(e)}
+        </div>
+      {:else}
+        <Empty icon="circle-check">No changes since the last commit</Empty>
       {/each}
     {:else if error}
       <Empty icon="alert">
@@ -256,11 +393,12 @@
             class:ignored={e.ignored}
             style:--d={r.depth}
             data-row
+            data-rel={e.rel}
             role="treeitem"
             aria-selected="false"
             aria-expanded={e.isDir ? expanded.has(e.rel) : undefined}
             tabindex="0"
-            title={e.isDir ? e.rel : `Click to insert @${e.rel}`}
+            title={e.rel}
             onclick={() => activate(e)}
             onkeydown={(ev) => onKey(ev, e)}
             oncontextmenu={(ev) => onContext(ev, e)}
@@ -269,13 +407,11 @@
               {#if e.isDir}{#if loadingDirs.has(e.rel)}<span class="np-spinner" style="width:9px;height:9px"></span>{:else}<Icon name="chevron-right" size={11} stroke={2} />{/if}{/if}
             </span>
             <span class="ic"><Icon name={iconFor(e)} size={13} /></span>
-            <span class="fname">{e.name}</span>
-            <span class="np-spacer"></span>
-            {#if !e.isDir && e.size != null}<span class="size">{bytes(e.size)}</span>{/if}
-            <span class="acts">
-              <button class="act" title="Insert @mention" onclick={(ev) => (ev.stopPropagation(), mention(e.rel, e.isDir))}><Icon name="at" size={12} /></button>
-              <button class="act" title="More" onclick={(ev) => onMore(ev, e)}><Icon name="more" size={12} /></button>
+            <span class="np-line np-baseline tx">
+              <span class="fname np-grow">{e.name}</span>
+              {#if !e.isDir && e.size != null}<span class="size">{bytes(e.size)}</span>{/if}
             </span>
+            {@render mentionAct(e)}
           </div>
         {/if}
       {:else}
@@ -283,18 +419,27 @@
       {/each}
     {/if}
   </div>
-  <div class="foot np-line">
-    {#if results}
+  {#if results}
+    <div class="foot np-line">
       <span class="np-grow">{results.length}{results.length >= 200 ? '+' : ''} matches</span>
-    {:else}
-      <span class="np-grow" title="Click a file to insert @path into the composer; right-click for more">Click: <span class="np-mono">@path</span> · right-click: more</span>
-    {/if}
-    {#if ignoredCount && !results}
-      <button class="lnk" onclick={() => (showIgnored = !showIgnored)} title="Entries skipped by .gitignore / built-in ignore rules">
-        {showIgnored ? 'hide' : 'show'} ignored
-      </button>
-    {/if}
-  </div>
+    </div>
+  {:else if git}
+    <button class="foot git np-line" class:open={gitOpen} aria-expanded={gitOpen} title={gitTitle} onclick={toggleChanges}>
+      <Icon name="branch" size={12} />
+      <span class="np-line np-baseline np-grow gl">
+        <span class="np-grow br">{git.branch ?? '?'}</span>
+        {#if git.ahead}<span class="ab">↑{git.ahead}</span>{/if}
+        {#if git.behind}<span class="ab">↓{git.behind}</span>{/if}
+        {#if git.files.length}
+          <span>{plural(git.files.length, 'file')}</span>
+          <span class="lines np-mono"><span class="add">+{git.added}</span><span class="del">−{git.deleted}</span></span>
+        {:else}
+          <span>no changes</span>
+        {/if}
+      </span>
+      <Icon name={gitOpen ? 'chevron-down' : 'chevron-up'} size={11} />
+    </button>
+  {/if}
 </div>
 
 <style>
@@ -395,6 +540,14 @@
   .dir .ic {
     color: color-mix(in srgb, var(--accent) 70%, var(--fg-dim));
   }
+  /* a row's texts (name, folder, size, status, counts): one baseline, at the name's line height */
+  .tx {
+    flex: 1;
+    gap: 4px;
+    min-width: 0;
+    height: 1lh;
+    overflow: hidden;
+  }
   .fname {
     min-width: 0;
     overflow: hidden;
@@ -452,15 +605,83 @@
     font-size: var(--fs-xs);
     color: var(--fg-dim);
   }
-  .lnk {
-    padding: 0;
+  /* the git line: a button that lists the changed files */
+  .git {
+    gap: 6px;
+    width: 100%;
     border: 0;
+    border-top: 1px solid var(--border);
     background: transparent;
-    color: var(--fg-dim);
-    font: inherit;
+    font-family: inherit;
+    line-height: inherit;
+    text-align: left;
     cursor: pointer;
   }
-  .lnk:hover {
+  .git:hover,
+  .git.open {
     color: var(--fg);
+  }
+  .git:hover {
+    background: var(--bg-2);
+  }
+  .git:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 1px var(--accent-line);
+  }
+  .git .gl {
+    height: 1lh; /* the smaller mono counts would make the line taller than the search footer */
+  }
+  .git .br {
+    flex: 0 1 auto; /* shrinks for a long branch name, but the counts stay next to it */
+  }
+  .ab {
+    color: var(--fg-dim);
+  }
+  .lines {
+    display: inline-flex;
+    flex: none;
+    gap: 4px;
+    font-size: 10.5px;
+  }
+  .add {
+    color: var(--ok);
+  }
+  .del {
+    color: var(--err);
+  }
+  .ltitle {
+    padding: 2px 6px 4px;
+    font-size: var(--fs-xs);
+    color: var(--fg-dim);
+  }
+  .st {
+    flex: none;
+    width: 12px;
+    text-align: center;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--fg-dim);
+  }
+  .change[data-status='modified'] .st {
+    color: var(--warn);
+  }
+  .change[data-status='added'] .st,
+  .change[data-status='new'] .st {
+    color: var(--ok);
+  }
+  .change[data-status='deleted'] .st,
+  .change[data-status='conflict'] .st {
+    color: var(--err);
+  }
+  .change[data-status='renamed'] .st,
+  .change[data-status='copied'] .st {
+    color: var(--info);
+  }
+  .change.gone {
+    cursor: default;
+  }
+  .change.gone .fname {
+    color: var(--fg-dim);
+    text-decoration: line-through;
   }
 </style>

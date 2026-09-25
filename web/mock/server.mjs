@@ -92,6 +92,7 @@ const RPC_DOCS = {
   'ideas.list': 'Ideas of a project/session: { sessionId?, projectId? } → { file, scope, ideas, … }',
   'files.list': 'List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries }',
   'files.search': 'Fuzzy file-name search for @ mentions: { sessionId?, query, limit? } → { path, rel, isDir }[]',
+  'files.git': "The workspace's changes since the last commit, for the Files tab: { sessionId?, cwd? } → { repo, branch, ahead, behind, files, added, deleted } | null",
   'logs.recent': 'Recent log entries: { max? } → { time, level, category, message, exception? }[]',
 };
 const filesOpened = [];
@@ -715,6 +716,18 @@ const handlers = {
       });
     }
     return { root, dir: p.dir ?? '', entries: out.sort((a, b) => b.isDir - a.isDir || a.name.localeCompare(b.name)) };
+  },
+  // scripted: the same uncommitted changes in every workspace (a binary file has no line counts)
+  'files.git': (p = {}) => {
+    const root = p.cwd || sessionCwd(p.sessionId);
+    const files = [
+      { rel: 'web/src/lib/markdown.js', status: 'modified', added: 12, deleted: 3 },
+      { rel: 'web/src/lib/notify.js', status: 'new', added: 48, deleted: 0 },
+      { rel: 'docs/OLD-NOTES.md', status: 'deleted', added: 0, deleted: 397 },
+      { rel: 'web/public/logo.png', status: 'modified' },
+    ].map((f) => ({ path: path.join(root, f.rel), ...f }));
+    const sum = (k) => files.reduce((n, f) => n + (f[k] ?? 0), 0);
+    return { repo: root, branch: 'main', ahead: 2, behind: 0, files, added: sum('added'), deleted: sum('deleted') };
   },
   'processes.list': () => work.procList(),
   'processes.output': (p) => work.procOutputTail(need(p, 'id'), p.tail ?? 500),

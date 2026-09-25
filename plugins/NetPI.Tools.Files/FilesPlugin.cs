@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Tools.Files;
 
 /// <summary>
-/// File tools: read, write, edit, grep, find, ls (+ files.search / files.list / files.open RPC).
+/// File tools: read, write, edit, grep, find, ls (+ files.search / files.list / files.open / files.git RPC).
 /// Settings: <c>files.newFileEol</c> ("lf" | "crlf" | "auto").
 /// </summary>
 [NetPiPlugin("netpi.tools.files", Name = "File tools", Description = "read, write, edit (CRLF/LF agnostic), grep, find, ls", Order = 20)]
@@ -52,6 +52,10 @@ public sealed class FilesPlugin : INetPiPlugin
             FileOpener.Run(path, action);
             return Task.FromResult<object?>(new { path, action });
         }, "Open a path with the operating system (files in their default app, folders in the file manager, scripts for editing, executables only revealed): { path, sessionId?, cwd? } → { path, action }");
+
+        context.Rpc.Register("files.git", async (req, token) =>
+            await GitStatus.ReadAsync(ResolveRoot(context, req), token).ConfigureAwait(false),
+            "The workspace's changes since the last commit, for the Files tab: { sessionId?, cwd? } → { repo, branch, ahead, behind, files: { path, rel, status, added?, deleted? }[], added, deleted } | null (not a git repository)");
 
         // Left-panel file tree of the active session's workspace (UI in ui/main.js → wwwroot/ui.js).
         context.Ui.AddTab(new UiTabInfo { Id = "files", Title = "Files", Panel = UiPanel.Left, Icon = "files", Order = 30, Module = "ui.js" });

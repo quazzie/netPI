@@ -593,6 +593,58 @@ public static class FileTests
             Check.Contains(json, "\"isDir\":");
         });
 
+        r.Add("rpc: files.git — branch and the changes since the last commit, staged or not, new files counted", async () =>
+        {
+            var dir = T.TempDir("git");
+            if (!await Git(dir, "init", "-q", "-b", "main"))
+            {
+                Console.WriteLine("    (no git on PATH: skipped)");
+                return;
+            }
+            await Git(dir, "config", "user.email", "test@example.com");
+            await Git(dir, "config", "user.name", "Test");
+            T.WriteText(dir, "a.txt", "1\n2\n3\n");
+            T.WriteText(dir, "b.txt", "keep\n");
+            T.WriteText(dir, "old name.txt", "x\ny\n");
+            await Git(dir, "add", "-A");
+            await Git(dir, "commit", "-q", "-m", "first");
+            T.WriteText(dir, "a.txt", "1\nchanged\n3\n4\n"); // +2 −1, not staged
+            File.Delete(Path.Combine(dir, "b.txt")); // −1
+            await Git(dir, "mv", "old name.txt", "new name.txt"); // staged rename
+            T.WriteText(dir, "sub/fresh.md", "one\ntwo\nthree"); // new: 3 lines
+            File.WriteAllBytes(Path.Combine(dir, "bin.dat"), [0, 1, 2]); // new, binary: no lines
+
+            var ctx = new FakePluginContext(dir);
+            await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
+            var r = (GitStatus.Result?)await ctx.RpcFake.InvokeAsync("files.git", new { cwd = Path.Combine(dir, "sub") })
+                    ?? throw new AssertException("no git status");
+            Check.Equal("main", r.Branch);
+            var byName = r.Files.ToDictionary(f => Path.GetFileName(f.Path));
+            Check.Equal("modified 2 1", $"{byName["a.txt"].Status} {byName["a.txt"].Added} {byName["a.txt"].Deleted}");
+            Check.Equal("deleted 0 1", $"{byName["b.txt"].Status} {byName["b.txt"].Added} {byName["b.txt"].Deleted}");
+            Check.Equal("renamed", byName["new name.txt"].Status);
+            Check.Equal("new 3", $"{byName["fresh.md"].Status} {byName["fresh.md"].Added}");
+            Check.Equal("fresh.md", byName["fresh.md"].Rel, "relative to the workspace (a subfolder of the repository)");
+            Check.Equal("../a.txt", byName["a.txt"].Rel);
+            Check.True(byName["bin.dat"].Added is null, "a binary file has no lines");
+            Check.Equal("5 2", $"{r.Added} {r.Deleted}");
+
+            Check.True(await ctx.RpcFake.InvokeAsync("files.git", new { cwd = T.TempDir("nogit") }) is null, "not a repository");
+
+            static async Task<bool> Git(string cwd, params string[] args)
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+                foreach (var a in args) psi.ArgumentList.Add(a);
+                try
+                {
+                    using var p = System.Diagnostics.Process.Start(psi)!;
+                    await p.WaitForExitAsync();
+                    return p.ExitCode == 0;
+                }
+                catch (System.ComponentModel.Win32Exception) { return false; }
+            }
+        });
+
         r.Add("tool definitions: labels, categories, read-only flags, guidelines", () =>
         {
             foreach (var t in FilesPlugin.CreateTools(null))

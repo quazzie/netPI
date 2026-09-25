@@ -5,7 +5,7 @@ in `docs/PLUGIN-IDEAS.md`):
 
 | plugin | id | tools | RPC |
 |---|---|---|---|
-| `plugins/NetPI.Tools.Files` | `netpi.tools.files` | `read` `write` `edit` `grep` `find` `ls` | `files.search`, `files.list`, `files.open` |
+| `plugins/NetPI.Tools.Files` | `netpi.tools.files` | `read` `write` `edit` `grep` `find` `ls` | `files.search`, `files.list`, `files.open`, `files.git` |
 | `plugins/NetPI.Tools.Shell` | `netpi.tools.shell` | `bash` `pwsh` `process_list` `process_output` `process_kill` | `processes.list`, `processes.output`, `processes.kill` |
 | `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `screenshot` | – |
 | `plugins/NetPI.Todo` | `netpi.todo` | `todo_write` | – |
@@ -211,6 +211,7 @@ details: { path, entries: number, dirs: number, files: number, hidden: number, t
 | `files.search` | `{ sessionId?, cwd?, query, limit? (50, max 500) }` | `{ path /* absolute */, rel, isDir }[]`: fuzzy file-name ranking for `@` mentions. Substring in the file name beats substring in the path, which beats a subsequence; shorter paths rank first. An empty query returns shallow entries. The file list per root is cached for 10s (up to 50k entries) |
 | `files.open` | `{ path, sessionId?, cwd? }` | `{ path /* absolute */, action: 'open'\|'edit'\|'reveal'\|'folder' }`: opens a path with the operating system, like a double click in the file manager: files in their default app, folders in the file manager, scripts (`.bat`, `.ps1`, `.js`, `.py`, `.sh`…) with the "edit" verb instead of running them, executables and installers only revealed. Accepts what chat links contain: relative paths (resolved like the tools' paths), Git Bash paths, `file://` URLs, a trailing `:line[:col]` or `#L12-L20`, URL escapes. Unknown paths give `not_found`. The chat's file links, the "Open file" button of `read`/`write`/`edit` rows and the file tree's "Open" call it |
 | `files.list` | `{ sessionId?, cwd?, dir? /* relative to root */ }` | `{ root, dir /* '' for root */, entries: { name, rel, isDir, size?, mtime? /* ISO */, ignored?: true }[] }`: one directory, directories first. `.git` is omitted, and ignored entries are included with `ignored: true` so the tree can dim them |
+| `files.git` | `{ sessionId?, cwd? }` | `{ repo /* absolute */, branch /* 'detached' without one */, ahead, behind, files: { path /* absolute */, rel /* to the root, may start with ../ */, status: 'modified'\|'added'\|'deleted'\|'renamed'\|'copied'\|'conflict'\|'new', added?, deleted? }[], added, deleted }`, or `null` outside a git repository or without git: the uncommitted changes of the repository that contains the root, staged or not, against `HEAD` (the empty tree before the first commit). `added`/`deleted` are lines; a binary file has none. New (untracked) files count all their lines (text files up to 1 MB, the first 500 files). Runs `git status --porcelain=v2` and `git diff --numstat` with `GIT_OPTIONAL_LOCKS=0`, so it never takes the index lock an agent's git command needs; each git call times out after 10s. For the Files tab's git line |
 
 The root is chosen in this order: `cwd`, then the session's cwd (`ISessionStore.GetCwd`), then `Paths.DefaultWorkspace`.
 

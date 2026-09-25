@@ -484,13 +484,23 @@ set, uptime, threads, framework; the full details are in its tooltip). A segment
 
 **Files** (`netpi.tools.files`, left). A lazy tree of the active session's working folder.
 
-- `files.list { sessionId, dir }` runs per expanded folder. Ignored entries are dimmed and can be hidden.
-- The header shows the project name, the root path (shortened from the left), **collapse all** and **refresh**.
+- `files.list { sessionId, dir }` runs per expanded folder. Ignored entries are dimmed; the eye button hides them.
+- The header shows the project name, the root path (shortened from the left), the eye (when there are ignored
+  entries), **collapse all** and **refresh**.
 - The filter box calls `files.search` (debounced 140ms, 200 results) and shows a flat list.
-- Clicking a file inserts `@rel/path ` into the composer (quoted when the path has spaces; folders end in `/`).
-- The context menu (right-click or ⋯) has Insert @mention, Insert path, Copy relative path, Copy absolute path,
-  Reveal in Explorer (desktop only) and Refresh folder.
-- Keyboard: ↑ ↓ move, → ← expand and collapse, Enter inserts, and the context-menu key opens the menu.
+- Clicking a file opens it with the operating system (`files.open`: its default app). Clicking a folder expands it;
+  a folder in the filtered list is shown in the tree. The `@` button of a row (on hover or focus) inserts
+  `@rel/path ` into the composer (quoted when the path has spaces; folders end in `/`).
+- The context menu (right-click or ⋯) has Open, Insert @mention, Insert path, Copy relative path, Copy absolute
+  path, Reveal in Explorer (desktop only) and Refresh folder.
+- Keyboard: ↑ ↓ move, → ← expand and collapse, Enter opens, and the context-menu key opens the menu.
+- The git line at the bottom (`files.git`; only in a git repository): the branch, the commits not pushed (↑) or not
+  pulled (↓), and the uncommitted changes since the last commit, staged or not, in files and lines
+  (`4 files +60 −400`). Clicking it lists the changed files in place of the tree, with a status letter (M modified,
+  A added, U new, D deleted, R renamed, C copied, ! conflict) and their lines; they open and take `@` like the
+  tree's files (a deleted one only takes `@`). It reloads with the tree, 0.8s after a tool call ends (`tool.end`),
+  and when the window gets the focus back (a commit made in a terminal); while the tab is hidden, a tool call only
+  marks it for a reload when the tab is shown.
 - The tree reloads when the active session's project changes (`ctx.app.onChange`).
 
 ### Writing a tab in Svelte
