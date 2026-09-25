@@ -381,7 +381,14 @@ without an agent that are running. Without agents: "No agents are set up", and a
 (an id from `agent_choices`; a model ref is accepted as an agent on that model); an agent that can't take
 work is refused with the list. The subagent's session keeps the agent (`meta.agent`) and queues while all its
 instances are busy. Without agents, `model` (default: the caller's). `tools`: the subagent's tools, which may include
-tools the caller doesn't have (default: the caller's). `details`: the subagent's `AgentInfo`.
+tools the caller doesn't have (default: the caller's). `details`: the subagent's `{ agentId, sessionId, name, status }`.
+
+Several at once: `{ subagents: [{ task, name?, agent?, model?, tools?, instructions? }, …], wait?, timeoutSeconds? }`. Every
+entry is checked first (a bad one starts none of them: "subagents[1] (name): …"), then they all start together; with
+`wait=true` one wait covers all of them and the result has every report. A turn's tool calls run one after the other, so
+separate `agent_spawn` calls with `wait=true` would each wait before the next starts. While the caller waits its instance
+is free for its subagents (`agent_choices` marks it: "one is you: free for your subagents while you wait"). `details`:
+`{ agents: [{ agentId, sessionId, name, status }] }`.
 
 ## Goal (`category: "goal"`)
 

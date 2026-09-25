@@ -57,6 +57,8 @@ public static class ContextTests
         Check.Contains(prompt, "Delegate independent, well-scoped work");
         Check.Contains(prompt, "call agent_wait once");
         Check.Contains(prompt, "Before you delegate, look at agent_choices");
+        Check.Contains(prompt, "your instance is free for them: count it as a free instance of your own agent");
+        Check.Contains(prompt, "start them in one agent_spawn call (subagents: [...])");
         Check.Contains(prompt, "You are \"w1\", a subagent.");
         Check.NotContains(prompt, "\n\n\n", "no empty sections");
 

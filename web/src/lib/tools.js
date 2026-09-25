@@ -161,6 +161,12 @@ export function toolSummary(name, args, base) {
     case 'bash':
     case 'pwsh':
       return truncate(firstLine(String(arg(args, 'command', 'cmd', 'script') ?? '')), 200);
+    case 'agent_spawn': {
+      // several subagents in one call: how many, and their names (or the start of their tasks)
+      const list = arg(args, 'subagents');
+      if (Array.isArray(list)) return truncate(`${list.length} subagents · ${list.map((x) => x?.name || firstLine(String(x?.task ?? ''))).join(', ')}`, 160);
+      break;
+    }
     default:
       break;
   }

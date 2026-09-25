@@ -44,18 +44,18 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         if (agents.Count > 0)
         {
             sb.Append("Agents (pass the id to agent_spawn):\n");
-            foreach (var p in agents) Line(sb, p, withModels: false, Who);
+            foreach (var p in agents) Line(sb, p, withModels: false, Who, context.AgentId);
             if (others.Count > 0)
             {
                 sb.Append("\nOther model calls in progress (not agents):\n");
-                foreach (var p in others) Line(sb, p, withModels: true, Who);
+                foreach (var p in others) Line(sb, p, withModels: true, Who, context.AgentId);
             }
         }
         else
         {
             sb.Append("No agents are set up: a subagent runs on your model unless you pass agent_spawn a model ref.\n");
             if (others.Count > 0) sb.Append("Model calls in progress (busy/slots):\n");
-            foreach (var p in others) Line(sb, p, withModels: true, Who);
+            foreach (var p in others) Line(sb, p, withModels: true, Who, context.AgentId);
         }
         if (runtime?.Get(context.AgentId)?.Agent is { } mine && agents.Any(p => p.Key == mine)) sb.Append("\nYou run on the agent ").Append(mine).Append('.');
         return Task.FromResult(ToolResult.Ok(sb.ToString().TrimEnd(), new JsonObject
@@ -65,11 +65,13 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         }));
     }
 
-    private void Line(StringBuilder sb, AgentSlots p, bool withModels, Func<SlotHolder, string> who)
+    private void Line(StringBuilder sb, AgentSlots p, bool withModels, Func<SlotHolder, string> who, string you)
     {
         sb.Append("- ").Append(p.Key);
         if (p.Configured && p.Model is not null) sb.Append(" · ").Append(p.Model);
         sb.Append(" · ").Append(p.Busy).Append('/').Append(p.Capacity).Append(" busy");
+        // the caller's own instance is free for its subagents while it waits
+        if (p.Owners.Any(o => o.AgentId == you)) sb.Append(" (one is you: free for your subagents while you wait)");
         if (p.Queued > 0) sb.Append(", ").Append(p.Queued).Append(" queued");
         if (p.Configured && !p.Available) sb.Append(" · NOT ACTIVE: ").Append(p.Disabled ? "switched off by the user" : p.Unavailable);
         var model = scheduler.ModelInfo(p.Model ?? (p.Models.Count == 1 ? p.Models[0] : null));
@@ -110,7 +112,7 @@ internal sealed class AgentsPromptSection : IPromptSection
         sb.Append("- The user sets up agents to run on: each is a model with a number of instances (runs at once), a note on when to use it, and for paid models a price and a budget. A run holds an instance for its whole run and queues while all are busy. An agent is active only while its model is loaded (local models) and the user hasn't switched it off.");
         if (Has("agent_choices"))
             sb.Append("\n- Before you delegate, look at agent_choices: the agents, their state, notes, price and today's spend, and the budget. Choose an active agent by its note and cost: prefer free ones; a paid agent spends the user's money, so use it only when the task needs what it is good at, and above the budget's warning level only when the user asked. Pass the agent's id to agent_spawn.");
-        if (Has("agent_wait")) sb.Append("\n- While you wait in agent_wait, your instance goes to your subagents and you get it back with priority.");
+        sb.Append("\n- While you wait for subagents (agent_wait, or agent_spawn with wait=true), your instance is free for them: count it as a free instance of your own agent, so one of them can run there. You get it back with priority when they are done.");
         return ValueTask.FromResult<string?>(sb.ToString());
     }
 }

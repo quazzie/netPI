@@ -18,6 +18,82 @@ public static class SubagentTests
         t.Add("subagents: failed subagent reports failure", FailedChild);
         t.Add("subagents: agent tools list / result / cancel / agent_choices", ToolsMisc);
         t.Add("subagents: a chat on a local agent spawns onto an agent on another provider; the subagent keeps that agent", SpawnOntoConfiguredPool);
+        t.Add("subagents: one agent_spawn starts several together; waiting frees the caller's instance for one of them", BatchSpawn);
+        t.Add("subagents: a batch with a bad entry starts none of them", BatchRefused);
+    }
+
+    /// <summary>
+    /// The user's story test: a chat on "a" (2 instances, the chat holds one) starts three subagents in one call with
+    /// wait=true: one on "a", one more on "a" (it gets the chat's instance once the chat waits) and one on "b". All three
+    /// run at the same time; the call returns every report.
+    /// </summary>
+    private static async Task BatchSpawn()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.a", JsonNode.Parse("""{ "model": "fake/local", "instances": 2 }"""));
+            x.Settings.SetQuiet("agents.b", JsonNode.Parse("""{ "model": "cloud/big" }"""));
+        });
+        var concurrent = 0;
+        var maxConcurrent = 0;
+        var allRunning = new TaskCompletionSource();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r))
+                return Reply.Text("story " + Reply.LastUser(r), async c =>
+                {
+                    var n = Interlocked.Increment(ref concurrent);
+                    lock (h) maxConcurrent = Math.Max(maxConcurrent, n);
+                    if (n == 3) allRunning.TrySetResult();
+                    await allRunning.Task.WaitAsync(TimeSpan.FromSeconds(3), c).ContinueWith(_ => { }, TaskScheduler.Default);
+                    Interlocked.Decrement(ref concurrent);
+                });
+            if (!Reply.HasToolResult(r))
+                return Reply.Tool("agent_spawn", new
+                {
+                    subagents = new object[]
+                    {
+                        new { task = "part one", name = "one", agent = "a" },
+                        new { task = "part two", name = "two", agent = "a" },
+                        new { task = "part three", name = "three", agent = "b" },
+                    },
+                    wait = true,
+                });
+            return Reply.Text("all done");
+        };
+        var parent = h.NewSession(model: "fake/local");
+        await h.SendAsync(parent.Id, "write it with all agents");
+        var p = await h.IdleAsync(parent.Id, 15_000);
+        Check.Equal(3, maxConcurrent, "the three subagents ran at the same time");
+        Check.Equal(3, p.Children.Count);
+        var result = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).Select(m => m.ToolResults.Single()).Single();
+        Check.Contains(result.Content, "3 subagents finished.");
+        foreach (var part in new[] { "part one", "part two", "part three" }) Check.Contains(result.Content, "story " + part);
+        Check.Equal(3, ((JsonArray)result.Details!["agents"]!).Count);
+        var agents = h.Runtime.List(true).Where(a => a.IsSubagent).ToDictionary(a => a.Name, a => a.Agent);
+        Check.Equal("a,a,b", string.Join(",", new[] { "one", "two", "three" }.Select(n => agents[n])));
+        Check.False(h.Messages(parent.Id).Any(m => m.MetaString("kind") == "agent-result"), "the reports came with the call");
+        Check.Equal("all done", h.Messages(parent.Id)[^1].Text);
+        Check.Equal(0, h.Scheduler!.Snapshot().Sum(s => s.Busy + s.Queued), "every slot released");
+    }
+
+    private static async Task BatchRefused()
+    {
+        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.a", JsonNode.Parse("""{ "model": "fake/local" }""")));
+        string? refused = null;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (!Reply.HasToolResult(r))
+                return Reply.Tool("agent_spawn", new { subagents = new object[] { new { task = "fine", agent = "a" }, new { task = "wrong", name = "w", agent = "nope" } } });
+            refused = r.Messages[^1].ToolResults.Single().Content;
+            return Reply.Text("ok");
+        };
+        var parent = h.NewSession();
+        await h.SendAsync(parent.Id, "go");
+        await h.IdleAsync(parent.Id);
+        Check.Contains(refused, "subagents[1] (w): There is no agent \"nope\".");
+        Check.Contains(refused, "None of them was started.");
+        Check.False(h.Runtime.List(true).Any(a => a.IsSubagent), "nothing started");
     }
 
     private static bool IsChild(ModelRequest r) => r.SystemPrompt?.Contains("a subagent working for") == true;

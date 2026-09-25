@@ -127,6 +127,7 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
     [
         "Delegate independent, well-scoped work (research, exploring code, separate modules) to subagents with agent_spawn. A subagent has its own session and does not see this conversation: give it a complete, self-contained task.",
         "Subagents report back automatically when they finish (an <agent-result> notice); do not poll them, and don't delegate what you can do in a couple of tool calls.",
+        "To run several subagents at the same time, start them in one agent_spawn call (subagents: [...]); with wait=true you get all their reports at once. Separate agent_spawn calls run one after the other, so each with wait=true would wait before the next starts.",
     ];
 
     protected static readonly string[] WaitGuidelines =
@@ -139,36 +140,110 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
 
 internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plugin)
 {
+    private static JsonObject ItemProperties() => new()
+    {
+        ["task"] = Prop("string", "Complete, self-contained task description (the subagent does not see your conversation): goal, relevant paths and context, constraints, and what to put in the final report."),
+        ["name"] = Prop("string", "Short name for the subagent, e.g. \"tests\" or \"api-research\"."),
+        ["agent"] = Prop("string", "The agent to run on: an id from agent_choices. Required when the user has set up agents; choose an active one by its note and cost. On a busy agent the subagent waits for a free instance."),
+        ["model"] = Prop("string", "Only when no agents are set up: a model ref \"provider/model\". Default: your model."),
+        ["tools"] = StringArray("The subagent's tools, by name; they may include tools you do not have yourself (e.g. give a remote-work agent the ssh_* tools). Default: the tools you have."),
+        ["instructions"] = Prop("string", "Extra instructions appended to the subagent's system prompt."),
+    };
+
     public override ToolDefinition Definition { get; } = new()
     {
         Name = "agent_spawn",
         Label = "Spawn agent",
-        Description = "Start a subagent on a task, on one of the agents the user set up (a model with instances; see agent_choices). It gets its own session, runs in the background, and ends with a final report that is returned to you. Returns immediately unless wait=true.",
+        Description = "Start subagents on tasks, each on one of the agents the user set up (a model with instances; see agent_choices). Each gets its own session, runs in the background, and ends with a final report that is returned to you. " +
+                      "One subagent: pass task (and agent, name, …). Several at once: pass them in subagents; they all start together. " +
+                      "Returns immediately unless wait=true, which waits for all of them and returns every report.",
         Category = "agents",
         SummaryArg = "name",
         PromptGuidelines = SpawnGuidelines,
-        Parameters = Schema(new JsonObject
+        Parameters = Schema(new JsonObject(ItemProperties().Select(kv => KeyValuePair.Create(kv.Key, kv.Value?.DeepClone())))
         {
-            ["task"] = Prop("string", "Complete, self-contained task description (the subagent does not see your conversation): goal, relevant paths and context, constraints, and what to put in the final report."),
-            ["name"] = Prop("string", "Short name for the subagent, e.g. \"tests\" or \"api-research\"."),
-            ["agent"] = Prop("string", "The agent to run on: an id from agent_choices. Required when the user has set up agents; choose an active one by its note and cost. On a busy agent the subagent waits for a free instance."),
-            ["model"] = Prop("string", "Only when no agents are set up: a model ref \"provider/model\". Default: your model."),
-            ["tools"] = StringArray("The subagent's tools, by name; they may include tools you do not have yourself (e.g. give a remote-work agent the ssh_* tools). Default: the tools you have."),
-            ["instructions"] = Prop("string", "Extra instructions appended to the subagent's system prompt."),
-            ["wait"] = Prop("boolean", "Block until the subagent finishes and return its report (yields your instance while waiting). Default false."),
+            ["subagents"] = new JsonObject
+            {
+                ["type"] = "array",
+                ["description"] = "Several subagents to start together, each { task, name?, agent?, model?, tools?, instructions? } (instead of the single task above).",
+                ["items"] = Schema(ItemProperties(), "task"),
+            },
+            ["wait"] = Prop("boolean", "Block until all of them finish and return their reports. While you wait your instance is free for your subagents (one of them can run on your own agent); you get it back with priority. Default false."),
             ["timeoutSeconds"] = Prop("integer", "With wait=true: maximum seconds to wait."),
-        }, "task"),
+        }),
     };
 
     protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
-        var task = ToolArgs.Str(args, "task", "prompt", "description", "message");
-        if (string.IsNullOrWhiteSpace(task)) return ToolResult.Error("Missing 'task': describe the subagent's task completely.");
+        // one subagent (the arguments themselves) or several (subagents); all are checked before any starts
+        var batch = ToolArgs.Get(args, "subagents", "agents", "tasks") is { ValueKind: JsonValueKind.Array } list
+            ? list.EnumerateArray().Select(ToolArgs.Unwrap).ToList()
+            : null;
+        if (batch is { Count: 0 }) return ToolResult.Error("subagents is empty: give each subagent a task.");
+        var items = batch ?? [args];
+        var agents = (context.Services.Get<IAgentScheduler>()?.Snapshot() ?? []).Where(p => p.Configured).ToList();
+        var requests = new List<SpawnRequest>(items.Count);
+        for (var i = 0; i < items.Count; i++)
+        {
+            var (request, error) = Prepare(items[i], agents, context);
+            if (error is not null)
+                return ToolResult.Error(batch is null ? error : $"subagents[{i}]{(ToolArgs.Str(items[i], "name") is { } n ? $" ({n})" : "")}: {error}\nNone of them was started.");
+            requests.Add(request!);
+        }
+
+        var started = new List<AgentInfo>(requests.Count);
+        foreach (var request in requests) started.Add(await runtime.SpawnAsync(request, ct).ConfigureAwait(false));
+
+        if (ToolArgs.Bool(args, "wait") == true)
+        {
+            var timeout = ToolArgs.Num(args, "timeoutSeconds", "timeout") is { } t && t > 0 ? TimeSpan.FromSeconds(t) : (TimeSpan?)null;
+            var results = await runtime.WaitAsync(context.AgentId, [.. started.Select(a => a.Id)], yieldSlot: true, timeout, ct).ConfigureAwait(false);
+            if (batch is null)
+            {
+                var r = results.FirstOrDefault() ?? runtime.Get(started[0].Id) ?? started[0];
+                return new ToolResult { Content = Report(r), IsError = r.Status == AgentStatus.Failed, Details = Details(r) };
+            }
+            var running = results.Count(a => IsBusy(a.Status));
+            var report = new StringBuilder(running == 0
+                ? $"{results.Count} subagents finished."
+                : $"{results.Count - running} of {results.Count} subagents finished; {running} still running (the wait timed out or a new message arrived).");
+            foreach (var a in results) report.Append("\n\n").Append(Report(a));
+            return ToolResult.Ok(report.ToString(), new JsonObject { ["agents"] = new JsonArray([.. results.Select(a => (JsonNode)Details(a))]) });
+        }
+
+        var sb = new StringBuilder();
+        foreach (var a in started)
+        {
+            var info = runtime.Get(a.Id) ?? a;
+            if (sb.Length > 0) sb.Append('\n');
+            sb.Append("Spawned subagent \"").Append(info.Name).Append("\" (id ").Append(info.Id).Append(", session ").Append(info.SessionId).Append(')');
+            var model = info.Model ?? Plugin.Models.DefaultModelRef;
+            if (model is not null) sb.Append(" on ").Append(model);
+            if (PoolOf(context, info) is { } pool)
+            {
+                sb.Append(pool.Configured ? " — agent " : " — ").Append(pool.Key).Append(": ").Append(pool.Busy).Append('/').Append(pool.Capacity).Append(" busy");
+                if (pool.Queued > 0) sb.Append(", ").Append(pool.Queued).Append(" queued");
+            }
+            sb.Append('.');
+        }
+        sb.Append(started.Count == 1
+            ? "\nIt works in the background; its final report is delivered to you automatically when it finishes. "
+            : "\nThey work in the background; each final report is delivered to you automatically when it finishes. ")
+          .Append("Call agent_wait to block until they are done (your instance is free for them meanwhile).");
+        return started.Count == 1
+            ? ToolResult.Ok(sb.ToString(), Details(runtime.Get(started[0].Id) ?? started[0]))
+            : ToolResult.Ok(sb.ToString(), new JsonObject { ["agents"] = new JsonArray([.. started.Select(a => (JsonNode)Details(runtime.Get(a.Id) ?? a))]) });
+    }
+
+    /// <summary>One subagent's request, or why it can't start.</summary>
+    private (SpawnRequest? Request, string? Error) Prepare(JsonElement item, List<AgentSlots> agents, ToolContext context)
+    {
+        var task = ToolArgs.Str(item, "task", "prompt", "description", "message");
+        if (string.IsNullOrWhiteSpace(task)) return (null, "Missing 'task': describe the subagent's task completely.");
 
         // the agents the user set up are the menu: one of them is required (an active one); without any, a model ref or your model
-        var agentArg = ToolArgs.Str(args, "agent");
-        var modelArg = ToolArgs.Str(args, "model");
-        var agents = (context.Services.Get<IAgentScheduler>()?.Snapshot() ?? []).Where(p => p.Configured).ToList();
+        var agentArg = ToolArgs.Str(item, "agent");
+        var modelArg = ToolArgs.Str(item, "model");
         string? spawnAgent = null, spawnModel;
         if (agents.Count > 0)
         {
@@ -179,60 +254,39 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
                   ?? agents.Where(p => string.Equals(p.Model, wanted, StringComparison.OrdinalIgnoreCase))
                       .OrderBy(p => p.Available ? 0 : 1).ThenBy(p => p.Busy + p.Queued).FirstOrDefault();
             if (agent is null)
-                return ToolResult.Error((wanted is null ? "agent_spawn needs an agent." : $"There is no agent \"{wanted}\".") +
-                                        " The agents:\n" + AgentMenu(agents) + "\nPass one of these ids as agent (agent_choices also shows the budget).");
+                return (null, (wanted is null ? "agent_spawn needs an agent." : $"There is no agent \"{wanted}\".") +
+                              " The agents:\n" + AgentMenu(agents) + "\nPass one of these ids as agent (agent_choices also shows the budget).");
             if (!agent.Available)
-                return ToolResult.Error($"The agent \"{agent.Key}\" can't take work now: {(agent.Disabled ? "the user switched it off" : agent.Unavailable)}. " +
-                                        "The agents:\n" + AgentMenu(agents) + "\nChoose an active one.");
+                return (null, $"The agent \"{agent.Key}\" can't take work now: {(agent.Disabled ? "the user switched it off" : agent.Unavailable)}. " +
+                              "The agents:\n" + AgentMenu(agents) + "\nChoose an active one.");
             spawnAgent = agent.Key;
             spawnModel = agent.Model;
         }
         else spawnModel = agentArg ?? modelArg;
 
         // the caller may not see the tools it hands out (a limited orchestrator): unknown names get the list
-        var tools = ToolArgs.List(args, "tools", "allowedTools");
+        var tools = ToolArgs.List(item, "tools", "allowedTools");
         if (tools is { Count: > 0 })
         {
             var all = Plugin.Tools.All;
             var known = new HashSet<string>(all.Select(t => t.Definition.Name), StringComparer.OrdinalIgnoreCase);
             var unknown = tools.Where(n => !known.Contains(n.Trim())).ToList();
             if (unknown.Count > 0)
-                return ToolResult.Error($"Unknown tool{(unknown.Count > 1 ? "s" : "")}: {string.Join(", ", unknown)}. The tools:\n" +
+                return (null, $"Unknown tool{(unknown.Count > 1 ? "s" : "")}: {string.Join(", ", unknown)}. The tools:\n" +
                     string.Join("\n", all.GroupBy(t => t.Definition.Category).OrderBy(g => g.Key, StringComparer.Ordinal)
                         .Select(g => $"- {g.Key}: {string.Join(", ", g.Select(t => t.Definition.Name).Distinct().Order(StringComparer.Ordinal))}")));
         }
 
-        var info = await runtime.SpawnAsync(new SpawnRequest
+        return (new SpawnRequest
         {
             Task = task,
-            Name = ToolArgs.Str(args, "name"),
+            Name = ToolArgs.Str(item, "name"),
             Agent = spawnAgent,
             Model = spawnModel,
             Tools = tools,
-            Instructions = ToolArgs.Str(args, "instructions", "systemPrompt"),
+            Instructions = ToolArgs.Str(item, "instructions", "systemPrompt"),
             ParentAgentId = context.AgentId,
-        }, ct).ConfigureAwait(false);
-
-        if (ToolArgs.Bool(args, "wait") == true)
-        {
-            var timeout = ToolArgs.Num(args, "timeoutSeconds", "timeout") is { } t && t > 0 ? TimeSpan.FromSeconds(t) : (TimeSpan?)null;
-            var results = await runtime.WaitAsync(context.AgentId, [info.Id], yieldSlot: true, timeout, ct).ConfigureAwait(false);
-            var r = results.FirstOrDefault() ?? runtime.Get(info.Id) ?? info;
-            return new ToolResult { Content = Report(r), IsError = r.Status == AgentStatus.Failed, Details = Details(r) };
-        }
-
-        var sb = new StringBuilder();
-        sb.Append("Spawned subagent \"").Append(info.Name).Append("\" (id ").Append(info.Id).Append(", session ").Append(info.SessionId).Append(')');
-        var model = info.Model ?? Plugin.Models.DefaultModelRef;
-        if (model is not null) sb.Append(" on ").Append(model);
-        if (PoolOf(context, info) is { } pool)
-        {
-            sb.Append(pool.Configured ? " — agent " : " — ").Append(pool.Key).Append(": ").Append(pool.Busy).Append('/').Append(pool.Capacity).Append(" busy");
-            if (pool.Queued > 0) sb.Append(", ").Append(pool.Queued).Append(" queued");
-        }
-        sb.Append(".\nIt works in the background; its final report is delivered to you automatically when it finishes. ")
-          .Append("Call agent_wait to block until it is done (this yields your instance).");
-        return ToolResult.Ok(sb.ToString(), Details(runtime.Get(info.Id) ?? info));
+        }, null);
     }
 
     private static string AgentMenu(IEnumerable<AgentSlots> agents) => string.Join("\n", agents.OrderBy(p => p.Available ? 0 : 1).Select(p =>
