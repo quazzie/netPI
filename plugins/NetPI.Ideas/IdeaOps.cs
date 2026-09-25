@@ -322,7 +322,7 @@ public static class IdeaOps
             foreach (var n in upd)
             {
                 if (n is not JsonObject u || Str(u, "id") is not { } sid)
-                    throw new IdeaInputException("updateSections entries need an id (see idea_get).");
+                    throw new IdeaInputException("updateSections entries need an id (the get action shows them).");
                 var target = FindSection(sections, sid) ?? throw new IdeaInputException($"Section '{sid}' not found in this idea.");
                 if (UpdateSection(target, u)) changes.Add($"updated section {Str(target["id"])}");
             }
@@ -447,7 +447,7 @@ public static class IdeaOps
         "decision" => "Decision", "blocker" => "Blocker", "links" => "Links", "todo" => "To do", _ => "Note",
     };
 
-    /// <summary>Full markdown rendering (idea_get).</summary>
+    /// <summary>Full markdown rendering (the ideas tool's get action).</summary>
     public static string RenderMarkdown(JsonObject idea)
     {
         var sb = new StringBuilder();
@@ -484,7 +484,7 @@ public static class IdeaOps
     {
         var sb = new StringBuilder();
         sb.Append("Implement the following idea from the ideas backlog (`").Append(Str(idea["id"])).Append("` in ").Append(fileName).Append(").\n");
-        sb.Append("Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with idea_update: ")
+        sb.Append("Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with the ideas tool (action update): ")
           .Append("set the status to \"in-progress\" when you start and \"done\" when finished, and add a note section for anything important you learn.\n\n");
         sb.Append("# ").Append(Str(idea["title"])).Append('\n');
         var meta = new List<string> { "Priority: " + (Str(idea["priority"]) ?? "medium") };

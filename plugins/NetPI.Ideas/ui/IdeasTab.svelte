@@ -260,7 +260,7 @@
     {:else if !ideas.length}
       <Empty icon="idea">
         <div>No ideas yet in {list?.scope === 'project' ? `“${list.projectName}”` : 'the global backlog'}.</div>
-        <div class="np-dim">Agents add them with <span class="np-mono">idea_add</span>; you can use <span class="np-mono">/idea &lt;title&gt;</span> or the + button.</div>
+        <div class="np-dim">Agents add them with the <span class="np-mono">ideas</span> tool; you can use <span class="np-mono">/idea &lt;title&gt;</span> or the + button.</div>
         {#if !adding}<Button size="sm" icon="plus" onclick={() => (adding = true)}>New idea</Button>{/if}
       </Empty>
     {:else if !shown.length}

@@ -1,5 +1,5 @@
 {
   "id": "netpi.ideas",
   "name": "Ideas",
-  "description": "Backlog of unimplemented ideas, research and plans (ideas.json per project) for the user and agents."
+  "description": "Backlog of unimplemented ideas, research and plans (.netpi/ideas.json per project) for the user and agents."
 }

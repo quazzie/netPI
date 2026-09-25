@@ -107,7 +107,7 @@ const SYSTEM_PROMPT = (project, session) => `You are a coding agent running in N
 - Prefer read/grep/find/ls over shell commands for exploring files.
 - Use edit for small changes; include enough context for oldText to match exactly once.
 - Run the relevant build or tests before you say you're done.
-- When research or plans are deferred, record them with idea_add instead of losing them.
+- Record research and plans that are deferred, out of scope or not feasible now in the ideas backlog (ideas, action add), and look at the open ideas (action list) before larger work. When you finish the work an idea describes, set it to done (action update).
 
 # Instruction files
 AGENTS.md and CLAUDE.md files reach you as notices. They are the lean entry point for agents: the essentials, plus pointers to deeper docs. When your task touches something they point to, read that doc first.

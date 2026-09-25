@@ -34,7 +34,7 @@ all are, this plan moves to `docs/archive/`.
    catastrophic commands and changes to `~/.ssh`, and ask before changes to `~/.netpi`; an `ask:` rule asks on the
    tool's row (Allow / No) with the instance freed, and blocks in a subagent. Before-tool hooks now chain (changed
    arguments pass on; a block ends it), so the guard, running last, checks what runs. See `docs/SETTINGS.md`.
-7. **Ideas plugin**:
+7. **Ideas plugin** (done; see `docs/PLUGIN-IDEAS.md`):
    - the file moves from the project root to `.netpi/ideas.json` (like `.netpi/skills`), and an existing
      `ideas.json` is moved there;
    - one `ideas` tool with an action instead of five (deleting stays in the tab);

@@ -53,8 +53,8 @@ headless for any browser.
 - **Skills** ([Agent Skills](https://agentskills.io) standard): folders with a `SKILL.md` in the project
   (`.agents/skills`, `.netpi/skills`) or globally (`~/.agents/skills`, `~/.netpi/skills`). Agents get the catalog as a
   notice and load a skill with the `skill` tool when a task matches; `/skill:name` loads one for your message.
-- **Ideas backlog:** agents and you park research, plans and requirements in `ideas.json` in the project folder
-  (tools `idea_*` + the Ideas tab); "send to chat" when it's time to implement.
+- **Ideas backlog:** agents and you park research, plans and requirements in `.netpi/ideas.json` in the project folder
+  (the `ideas` tool + the Ideas tab); "send to chat" when it's time to implement, and the agent closes it when done.
 - **UI:** left and right panels with vertical, pluggable tabs (Sessions, Projects, Files | Work, Ideas,
   Diagnostics), collapsible thinking/tool blocks, diffs, live shell output, pruned chat history with "load earlier",
   slash commands and `@` file mentions. Window size and position are remembered.

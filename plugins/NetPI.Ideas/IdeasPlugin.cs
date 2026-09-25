@@ -4,9 +4,10 @@ using System.Text.Json.Nodes;
 namespace NetPI.Ideas;
 
 /// <summary>
-/// Backlog of unimplemented ideas, research and plans (ideas.json per project, else ~/.netpi/ideas.json):
-/// agent tools idea_add/list/get/update/remove, ideas.* RPC for the "Ideas" tab, and the /idea command.
-/// Setting: <c>ideas.fileName</c> (default "ideas.json"). Event: <c>ideas.changed { file }</c>.
+/// Backlog of unimplemented ideas, research and plans (<c>.netpi/ideas.json</c> per project, else
+/// <c>~/.netpi/ideas.json</c>): the agent tool <c>ideas</c> (list, get, add, update), ideas.* RPC for the "Ideas" tab
+/// (which also deletes), and the /idea command. Setting: <c>ideas.fileName</c> (default "ideas.json").
+/// Event: <c>ideas.changed { file }</c>.
 /// </summary>
 [NetPiPlugin("netpi.ideas", Name = "Ideas", Description = "Backlog of ideas, research and plans for the user and agents", Order = 80)]
 public sealed class IdeasPlugin : INetPiPlugin
@@ -18,18 +19,14 @@ public sealed class IdeasPlugin : INetPiPlugin
             Id = "ideas", Title = "Ideas", Group = "Tools", Order = 60,
             Settings =
             [
-                SettingInfo.Str("ideas.fileName", "Ideas file", "ideas.json", "In the project folder; ~/.netpi/ideas.json for sessions without a project."),
+                SettingInfo.Str("ideas.fileName", "Ideas file", "ideas.json", "In the project's .netpi folder; ~/.netpi/ideas.json for sessions without a project."),
             ],
         });
         var store = context.Track(new IdeasStore(context.Events, context.Logger));
         var settings = context.Settings;
         var locator = new IdeasLocator(() => context.Sessions, context.Paths, () => settings);
 
-        context.Tools.Register(new IdeaAddTool(store, locator));
-        context.Tools.Register(new IdeaListTool(store, locator));
-        context.Tools.Register(new IdeaGetTool(store, locator));
-        context.Tools.Register(new IdeaUpdateTool(store, locator));
-        context.Tools.Register(new IdeaRemoveTool(store, locator));
+        context.Tools.Register(new IdeasTool(store, locator));
 
         var rpc = new IdeasRpc(store, locator);
         rpc.Register(context.Rpc);
@@ -81,8 +78,8 @@ public sealed class IdeasRpc(IdeasStore store, IdeasLocator locator)
 
     private static void EnsureWritable(IdeasLocation loc)
     {
-        if (loc.Scope == "project" && !Directory.Exists(Path.GetDirectoryName(loc.File)))
-            throw new RpcException("not_found", $"The project folder {Path.GetDirectoryName(loc.File)} does not exist.");
+        if (loc.Scope == "project" && !Directory.Exists(loc.ProjectDir))
+            throw new RpcException("not_found", $"The project folder {loc.ProjectDir} does not exist.");
     }
 
     public Task<object?> List(RpcRequest req, CancellationToken ct) => Guard(async () =>
@@ -180,7 +177,7 @@ public sealed class IdeasRpc(IdeasStore store, IdeasLocator locator)
         return await store.ReadAsync(loc.File, f =>
         {
             var idea = IdeaOps.Find(f.Ideas, id) ?? throw new RpcException("not_found", $"Idea {id} not found");
-            return (object?)IdeaOps.ToPrompt(idea, loc.FileName);
+            return (object?)IdeaOps.ToPrompt(idea, loc.Shown);
         }, ct).ConfigureAwait(false);
     });
 

@@ -117,7 +117,7 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:spawnbg delay=]` | one background worker, the parent ends its turn; the report arrives later as an `agent-result` notice |
 | `[s:nest delay=]` | orchestrator → `lead` (`[s:subspawn]`: `agent_send` to the parent, `agent_spawn` of a `helper`, which waits for it) |
 | `[s:sub i= delay=]` | subagent: thinks for `delay` ms, reports `Report from <name>: i squared is i²` (also the default for subagents) |
-| `[s:ideas title=]` | `idea_add` with tags, priority and a section |
+| `[s:ideas title=]` | `ideas` (action `add`) with tags, priority and a section |
 | `[s:ask]` | `ask_user` with one question (`Which way?`: Fast, Thorough), then `Answer received: <the result>` |
 | `[s:long n=8 lines=60]` | `n` turns of `bash` output (`LONGSTEP k/n`) to fill the context (compaction on `tiny-ctx`) |
 | compaction summarizer | recognized by its system prompt: returns a summary that carries the scenario tag and the last `LONGSTEP` |
@@ -205,7 +205,7 @@ Coverage (run `--list` for the names):
   orchestrator → lead → helper (the lead's spawn waits) without deadlock, `agent_send`; three top-level chats on one model.
 - **skills**: a project's `.agents/skills` skill in `skills.list`, the `skills` catalog notice and `/skill:name` with the
   skill's instructions sent to the model (not in the system prompt), the notice tied to its message.
-- **ideas**: `idea_add` writes `<project>/ideas.json`, `ideas.list`, `ideas.changed`, `ideas.add`.
+- **ideas**: the `ideas` tool (add) writes `<project>/.netpi/ideas.json`, `ideas.list`, `ideas.changed`, `ideas.add`.
 - **hot reload**: overwriting `NetPI.Nudge.dll` → `plugins.changed`, reload, `plugins.unloaded { collected: true }`, still
   works; `plugins.reload` of providers/tools/hooks/agents/context; reloading the agent runtime mid-run; reloading the provider
   while a stream is open.

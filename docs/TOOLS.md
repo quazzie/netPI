@@ -1,6 +1,6 @@
 # NetPI tool plugins
 
-These plugins provide the built-in general tools (the agent tools are described in `docs/PLUGINS.md`, the ideas tools
+These plugins provide the built-in general tools (the agent tools are described in `docs/PLUGINS.md`, the `ideas` tool
 in `docs/PLUGIN-IDEAS.md`):
 
 | plugin | id | tools | RPC |

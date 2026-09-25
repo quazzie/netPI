@@ -99,8 +99,8 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 2. **Claude provider live test.** Needs an Anthropic API key (none available yet): thinking, tools, prompt caching, and the
    adaptive-thinking settings (`docs/SETTINGS.md`). Claude through OpenRouter (paid) would exercise OpenRouter's side of
    it (signed `reasoning_details`, `cache_control`), not the native provider.
-3. **The agreed list in `docs/plans/harness-gaps.md`** (the ideas plugin, forking a chat), in its order; Retry-After, the
-   Windows toasts, the Files tab, the per-turn numbers, `ask_user` and the guardrails are done.
+3. **The agreed list in `docs/plans/harness-gaps.md`**: forking a chat is left; Retry-After, the Windows toasts, the
+   Files tab, the per-turn numbers, `ask_user`, the guardrails and the ideas plugin changes are done.
 4. **Open items** in `docs/STATUS.md`, under "Known limitations / ideas".
 
 ## Working rules

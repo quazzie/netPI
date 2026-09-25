@@ -470,9 +470,10 @@ public sealed partial class ScenarioEngine
     {
         if (step == 0)
             return new Plan { Thinking = "This is worth remembering as an idea.", Text = "Recording an idea." }
-                .Call("idea_add", Obj(
+                .Call("ideas", Obj(
+                    ("action", "add"),
                     ("title", tag.P("title", "Mock idea from the E2E test")),
-                    ("summary", "Added by the mock model through the idea_add tool."),
+                    ("summary", "Added by the mock model through the ideas tool."),
                     ("tags", new JsonArray("e2e", "mock")),
                     ("priority", "high"),
                     ("sections", new JsonArray(Obj(("kind", "research"), ("title", "Findings"), ("content", "The mock found nothing surprising."))))));

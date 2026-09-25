@@ -31,7 +31,7 @@ export function createIdeas({ publish }) {
       if (!s) throw err('not_found', `Unknown session ${p.sessionId}`);
       if (s.projectId) project = store.projects.get(s.projectId) ?? null;
     }
-    const file = project ? path.join(project.path, 'ideas.json') : GLOBAL;
+    const file = project ? path.join(project.path, '.netpi', 'ideas.json') : GLOBAL;
     let doc = files.get(file);
     if (!doc) files.set(file, (doc = { ideas: [], exists: false }));
     return { file, doc, project };
@@ -152,10 +152,11 @@ export function createIdeas({ publish }) {
       return true;
     },
     'ideas.toPrompt': (p) => {
-      const idea = find(resolve(p).doc, p.id);
+      const { doc, project } = resolve(p);
+      const idea = find(doc, p.id);
       const lines = [
-        `Implement the following idea from the ideas backlog (\`${idea.id}\` in ideas.json).`,
-        'Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with idea_update: set the status to "in-progress" when you start and "done" when finished, and add a note section for anything important you learn.',
+        `Implement the following idea from the ideas backlog (\`${idea.id}\` in ${project ? '.netpi/ideas.json' : GLOBAL}).`,
+        'Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with the ideas tool (action update): set the status to "in-progress" when you start and "done" when finished, and add a note section for anything important you learn.',
         '',
         `# ${idea.title}`,
         `Priority: ${idea.priority}${idea.tags.length ? ` · Tags: ${idea.tags.join(', ')}` : ''}`,

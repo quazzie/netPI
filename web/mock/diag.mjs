@@ -137,11 +137,7 @@ export function toolRows() {
     ['agent_result', 'Agent result', 'agents', true, 'netpi.tools.agents'],
     ['agent_cancel', 'Cancel agent', 'agents', false, 'netpi.tools.agents'],
     ['agent_choices', 'Agents', 'agents', true, 'netpi.agents'],
-    ['idea_add', 'Add idea', 'ideas', false, 'netpi.ideas'],
-    ['idea_list', 'Ideas', 'ideas', true, 'netpi.ideas'],
-    ['idea_get', 'Idea', 'ideas', true, 'netpi.ideas'],
-    ['idea_update', 'Update idea', 'ideas', false, 'netpi.ideas'],
-    ['idea_remove', 'Remove idea', 'ideas', false, 'netpi.ideas'],
+    ['ideas', 'Ideas', 'ideas', false, 'netpi.ideas'],
   ].map(([name, label, category, readOnly, pluginId]) => ({
     name,
     label,

@@ -14,7 +14,7 @@ public static class IdeasTests
         public ProjectInfo Project { get; }
         public SessionInfo Session { get; }
         public SessionInfo GlobalSession { get; }
-        public string File => Path.Combine(ProjectDir, "ideas.json");
+        public string File => Path.Combine(ProjectDir, ".netpi", "ideas.json");
 
         public Env()
         {
@@ -47,14 +47,15 @@ public static class IdeasTests
 
     public static void Register(TestRunner r)
     {
-        r.Add("ideas: plugin registers tools, RPC, tab and /idea command", async () =>
+        r.Add("ideas: plugin registers one tool, RPC, tab and /idea command", async () =>
         {
             var env = new Env();
             await env.StartAsync();
-            Check.Equal("idea_add,idea_get,idea_list,idea_remove,idea_update", string.Join(",", env.Ctx.ToolsFake.Tools.Select(t => t.Definition.Name).Order()));
-            Check.True(env.Ctx.ToolsFake.Tools.All(t => t.Definition.Category == "ideas"));
-            Check.True(env.Tool("idea_list").Definition.ReadOnly && env.Tool("idea_get").Definition.ReadOnly);
-            Check.Contains(string.Join(" ", env.Tool("idea_add").Definition.PromptGuidelines!), "with idea_add");
+            Check.Equal("ideas", string.Join(",", env.Ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
+            Check.Equal("ideas", env.Tool("ideas").Definition.Category);
+            var guideline = string.Join(" ", env.Tool("ideas").Definition.PromptGuidelines!);
+            Check.Contains(guideline, "(ideas, action add)");
+            Check.Contains(guideline, "When you finish the work an idea describes, set it to done");
             foreach (var m in new[] { "ideas.list", "ideas.get", "ideas.add", "ideas.update", "ideas.delete", "ideas.reorder", "ideas.toPrompt", "ideas.quickAdd" })
                 Check.True(env.Ctx.RpcFake.Exists(m), m);
             var tab = env.Ctx.UiFake.TabList.Single();
@@ -64,12 +65,13 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: agent tools round trip (add, list, get, update sections, remove)", async () =>
+        r.Add("ideas: the ideas tool round trip (add, list, get, update sections; deleting is the user's)", async () =>
         {
             var env = new Env();
             await env.StartAsync();
-            var add = await env.Run("idea_add", new JsonObject
+            var add = await env.Run("ideas", new JsonObject
             {
+                ["action"] = "add",
                 ["title"] = "Cache model list",
                 ["summary"] = "Avoid refetching /v1/models on every session switch.",
                 ["priority"] = "high",
@@ -90,25 +92,28 @@ public static class IdeasTests
             Check.NotContains(raw, "\r\n");
             Check.True(raw.StartsWith("{\n  \"version\": 1,\n  \"ideas\": [\n"), raw[..Math.Min(60, raw.Length)]);
 
-            await env.Run("idea_add", new { title = "Old thing", tags = "misc, #old" });
-            var list = await env.Run("idea_list", new { });
+            await env.Run("ideas", new { action = "create", title = "Old thing", tags = "misc, #old" });
+            var list = await env.Run("ideas", new { action = "list" });
             Ok(list);
             Check.Contains(list.Content, $"- {id} [open · high] Cache model list — Avoid refetching");
             Check.Contains(list.Content, "#perf #providers (2 sections)");
             Check.Contains(list.Content, "project \"Demo\"");
-            Check.Contains((await env.Run("idea_list", new { tag = "old" })).Content, "Old thing");
-            Check.Contains((await env.Run("idea_list", new { query = "invalidate models" })).Content, "Cache model list");
-            Check.Contains((await env.Run("idea_list", new { query = "nomatch" })).Content, "No matching ideas");
+            Check.Contains((await env.Run("ideas", new { action = "list", tag = "old" })).Content, "Old thing");
+            Check.Contains((await env.Run("ideas", new { action = "search", query = "invalidate models" })).Content, "Cache model list");
+            Check.Contains((await env.Run("ideas", new { action = "list", query = "nomatch" })).Content, "No matching ideas");
+            Check.Contains((await env.Run("ideas", new { })).Content, "Cache model list", "without an action (and an id): list");
 
-            var get = await env.Run("idea_get", new { id });
+            var get = await env.Run("ideas", new { action = "get", id });
             Ok(get);
             Check.Contains(get.Content, "# Cache model list\n`" + id + "` · status: open · priority: high · tags: perf, providers");
             var secId = idea["sections"]![0]!["id"].Str();
             Check.Contains(get.Content, $"## Research: Findings [{secId}]\nmodels.list takes 800ms");
             Check.Contains(get.Content, "## Plan [");
 
-            var upd = await env.Run("idea_update", new JsonObject
+            Check.Contains((await env.Run("ideas", new { id })).Content, "# Cache model list", "an id alone: get");
+            var upd = await env.Run("ideas", new JsonObject
             {
+                ["action"] = "update",
                 ["id"] = id,
                 ["status"] = "in progress",
                 ["add_sections"] = "[{\"kind\":\"decision\",\"content\":\"Use IMemoryCache-free dictionary\"}]",
@@ -124,22 +129,26 @@ public static class IdeasTests
             Check.Equal("800ms measured twice.", u["sections"]![0]!["content"].Str());
             Check.Equal("decision", u["sections"]![1]!["kind"].Str());
 
-            var bad = await env.Run("idea_update", new { id, status = "maybe" });
+            var bad = await env.Run("ideas", new { action = "update", id, status = "maybe" });
             Check.True(bad.IsError);
             Check.Contains(bad.Content, "open, parked, planned, in-progress, done, rejected");
-            Check.True((await env.Run("idea_get", new { id = "idea-nope00" })).IsError);
-            Check.True((await env.Run("idea_add", new { summary = "no title" })).IsError);
+            Check.True((await env.Run("ideas", new { action = "get", id = "idea-nope00" })).IsError);
+            Check.True((await env.Run("ideas", new { action = "add", summary = "no title" })).IsError);
+            Check.Contains((await env.Run("ideas", new { action = "frobnicate" })).Content, "Unknown action \"frobnicate\"");
 
-            // done ideas are hidden by default
-            await env.Run("idea_update", new { id, status = "done" });
-            var active = await env.Run("idea_list", new { });
+            // closing an idea hides it from the list by default
+            Ok(await env.Run("ideas", new { action = "close", id }));
+            Check.Equal("done", Idea(await env.Run("ideas", new { action = "get", id }))["status"].Str(), "close: status done");
+            var active = await env.Run("ideas", new { action = "list" });
             Check.NotContains(active.Content, "Cache model list");
             Check.Contains(active.Content, "1 done/rejected hidden");
-            Check.Contains((await env.Run("idea_list", new { status = "all" })).Content, "Cache model list");
+            Check.Contains((await env.Run("ideas", new { action = "list", status = "all" })).Content, "Cache model list");
 
-            var rm = await env.Run("idea_remove", new { id });
-            Ok(rm);
-            Check.NotContains(env.Raw(), id);
+            // deleting is left to the user (the tab calls ideas.delete)
+            var rm = await env.Run("ideas", new { action = "delete", id });
+            Check.True(rm.IsError);
+            Check.Contains(rm.Content, "up to the user, in the Ideas tab");
+            Check.Contains(env.Raw(), id);
             env.Ctx.Unload();
         });
 
@@ -204,7 +213,8 @@ public static class IdeasTests
             Check.Equal("Second|First (renamed)|Third idea", string.Join("|", order));
 
             var prompt = (string?)await env.Ctx.RpcFake.Call("ideas.toPrompt", new JsonObject { ["sessionId"] = env.Session.Id, ["id"] = aid });
-            Check.Contains(prompt, "Implement the following idea from the ideas backlog (`" + aid + "` in ideas.json)");
+            Check.Contains(prompt, "Implement the following idea from the ideas backlog (`" + aid + "` in .netpi/ideas.json)");
+            Check.Contains(prompt, "Keep the idea up to date with the ideas tool (action update)");
             Check.Contains(prompt, "# First (renamed)\nPriority: low · Tags: ui");
             Check.Contains(prompt, "## To do\n- [x] a");
             Check.Contains(prompt, "## Links\nhttps://example.com");
@@ -224,7 +234,7 @@ public static class IdeasTests
         {
             var env = new Env();
             await env.StartAsync();
-            Ok(await env.Run("idea_add", new { title = "Global one" }, withProject: false));
+            Ok(await env.Run("ideas", new { action = "add", title = "Global one" }, withProject: false));
             var globalFile = Path.Combine(env.Ctx.Paths.Home, "ideas.json");
             Check.True(System.IO.File.Exists(globalFile));
             Check.False(System.IO.File.Exists(env.File));
@@ -235,8 +245,27 @@ public static class IdeasTests
             Check.Equal("global", (await env.Rpc("ideas.list", new JsonObject()))["scope"].Str());
 
             env.Ctx.SettingsFake.Set("ideas.fileName", "backlog.json");
-            Ok(await env.Run("idea_add", new { title = "Named" }));
-            Check.True(System.IO.File.Exists(Path.Combine(env.ProjectDir, "backlog.json")));
+            Ok(await env.Run("ideas", new { action = "add", title = "Named" }));
+            Check.True(System.IO.File.Exists(Path.Combine(env.ProjectDir, ".netpi", "backlog.json")));
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas: an ideas.json in the project folder moves into .netpi/, not over one that is there", async () =>
+        {
+            var env = new Env();
+            var old = Path.Combine(env.ProjectDir, "ideas.json");
+            System.IO.File.WriteAllText(old, "{\n  \"version\": 1,\n  \"ideas\": [ { \"id\": \"idea-old001\", \"title\": \"From the root\" } ]\n}\n");
+            await env.StartAsync();
+            var listed = await env.Rpc("ideas.list", new JsonObject { ["sessionId"] = env.Session.Id });
+            Check.Equal(Path.GetFullPath(env.File), listed["file"].Str());
+            Check.Equal("From the root", listed["ideas"]![0]!["title"].Str());
+            Check.False(System.IO.File.Exists(old), "moved away from the project folder");
+            Check.True(System.IO.File.Exists(env.File));
+
+            // a stray ideas.json later stays where it is: .netpi/ideas.json is the file
+            System.IO.File.WriteAllText(old, "{ \"ideas\": [] }");
+            Check.Contains((await env.Run("ideas", new { action = "list" })).Content, "From the root");
+            Check.True(System.IO.File.Exists(old));
             env.Ctx.Unload();
         });
 
@@ -248,10 +277,11 @@ public static class IdeasTests
                 "            \"title\": \"Handwritten\",\r\n            \"status\": \"open\",\r\n            \"estimate\": { \"days\": 3 },\r\n" +
                 "            \"sections\": [ { \"id\": \"sec-aa\", \"kind\": \"note\", \"content\": \"x\", \"author\": \"bob\" } ]\r\n        }\r\n    ],\r\n" +
                 "    // comments are tolerated\r\n    \"extra\": [1, 2],\r\n}\r\n";
+            Directory.CreateDirectory(Path.GetDirectoryName(env.File)!);
             System.IO.File.WriteAllBytes(env.File, [0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes(original)]);
             await env.StartAsync();
 
-            Ok(await env.Run("idea_update", new { id = "idea-abc123", priority = "high", addSections = new[] { new { kind = "plan", content = "multi\nline" } } }));
+            Ok(await env.Run("ideas", new { action = "update", id = "idea-abc123", priority = "high", addSections = new[] { new { kind = "plan", content = "multi\nline" } } }));
             var bytes = System.IO.File.ReadAllBytes(env.File);
             Check.True(bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF, "BOM kept");
             var text = Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
@@ -274,9 +304,10 @@ public static class IdeasTests
         r.Add("ideas: invalid JSON is reported and never overwritten", async () =>
         {
             var env = new Env();
+            Directory.CreateDirectory(Path.GetDirectoryName(env.File)!);
             System.IO.File.WriteAllText(env.File, "{ \"ideas\": [ { \"title\": ");
             await env.StartAsync();
-            var res = await env.Run("idea_add", new { title = "x" });
+            var res = await env.Run("ideas", new { action = "add", title = "x" });
             Check.True(res.IsError);
             Check.Contains(res.Content, "is not valid JSON");
             Check.Equal("{ \"ideas\": [ { \"title\": ", System.IO.File.ReadAllText(env.File));
@@ -290,8 +321,8 @@ public static class IdeasTests
             var env = new Env();
             await env.StartAsync();
             var bus = env.Ctx.Bus;
-            Ok(await env.Run("idea_add", new { title = "A" }));
-            Ok(await env.Run("idea_add", new { title = "B" }));
+            Ok(await env.Run("ideas", new { action = "add", title = "A" }));
+            Ok(await env.Run("ideas", new { action = "add", title = "B" }));
             var first = await bus.WaitForAsync(IdeasStore.ChangedEvent);
             Check.True(first is not null, "event after own write");
             Check.Equal(Path.GetFullPath(env.File), ((JsonObject)first!.Data!)["file"].Str());
@@ -315,7 +346,7 @@ public static class IdeasTests
         {
             var env = new Env();
             await env.StartAsync();
-            var results = await Task.WhenAll(Enumerable.Range(0, 25).Select(i => Task.Run(() => env.Run("idea_add", new { title = "T" + i }))));
+            var results = await Task.WhenAll(Enumerable.Range(0, 25).Select(i => Task.Run(() => env.Run("ideas", new { action = "add", title = "T" + i }))));
             Check.True(results.All(x => !x.IsError), string.Join("; ", results.Where(x => x.IsError).Select(x => x.Content)));
             var root = JsonNode.Parse(System.IO.File.ReadAllText(env.File))!;
             var ids = ((JsonArray)root["ideas"]!).Select(i => i!["id"].Str()).ToList();
@@ -324,8 +355,18 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: IdeaOps normalization helpers", () =>
+        r.Add("ideas: IdeaOps normalization helpers; the action from the arguments", () =>
         {
+            string A(string json) => IdeasTool.Action((JsonObject)JsonNode.Parse(json)!);
+            Check.Equal("list", A("{}"));
+            Check.Equal("add", A("{\"title\":\"x\"}"));
+            Check.Equal("get", A("{\"id\":\"idea-1\"}"));
+            Check.Equal("update", A("{\"id\":\"idea-1\",\"status\":\"done\"}"));
+            Check.Equal("update", A("{\"action\":\"Edit\",\"id\":\"idea-1\"}"));
+            Check.Equal("delete", A("{\"action\":\"remove\"}"));
+            var close = (JsonObject)JsonNode.Parse("{\"action\":\"done\",\"id\":\"idea-1\"}")!;
+            Check.Equal("update", IdeasTool.Action(close));
+            Check.Equal("done", close["status"].Str());
             Check.Equal("in-progress", IdeaOps.NormalizeStatus("In Progress"));
             Check.Equal("in-progress", IdeaOps.NormalizeStatus("wip"));
             Check.Equal("parked", IdeaOps.NormalizeStatus("deferred"));

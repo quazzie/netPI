@@ -1,25 +1,28 @@
 # Ideas plugin (`netpi.ideas`)
 
-A backlog of ideas, research, plans and deferred work for the user and for agents. Agents write to it with the
-`idea_*` tools. The user works with it in the **Ideas** tab (right panel) and through `/idea <title>`.
+A backlog of ideas, research, plans and deferred work for the user and for agents. Agents work with it through the
+`ideas` tool. The user works with it in the **Ideas** tab (right panel) and through `/idea <title>`.
 
 - Plugin: `plugins/NetPI.Ideas`, id `netpi.ideas`, start order 80.
 - Tab: `{ id: "ideas", title: "Ideas", panel: "right", icon: "idea", order: 20, module: "ui.js" }`. The UI module goes in
   `plugins/NetPI.Ideas/wwwroot/ui.js` (source in `plugins/NetPI.Ideas/ui/`) and is served at `/plugins/netpi.ideas/ui.js`.
 - Slash command: `{ name: "idea", argsHint: "<title>", rpc: "ideas.quickAdd" }`.
-- Setting: `ideas.fileName` (default `"ideas.json"`; only the file name part is used).
+- Setting: `ideas.fileName` (default `"ideas.json"`; only the file name part is used; in a project it lives in `.netpi/`).
 
 ## Where ideas are stored
 
 | Situation | File | `scope` |
 |---|---|---|
-| RPC with `projectId` | `<project.path>/ideas.json` | `"project"` |
-| RPC with `sessionId` of a session that has a project | `<project.path>/ideas.json` | `"project"` |
+| RPC with `projectId` | `<project.path>/.netpi/ideas.json` | `"project"` |
+| RPC with `sessionId` of a session that has a project | `<project.path>/.netpi/ideas.json` | `"project"` |
 | RPC with `sessionId` of a session without a project, or no ids | `~/.netpi/ideas.json` (`NetPiPaths.Home`) | `"global"` |
 | Agent tool | the call's project (`ToolContext.Project`, else the session's project), else the global file | – |
 
 `projectId` wins over `sessionId`. An unknown `projectId`/`sessionId` gives an RPC error `not_found`. Writing to a project
-whose folder no longer exists also gives `not_found`. The global file's folder is created when needed.
+whose folder no longer exists also gives `not_found`. The `.netpi` folder (like `.netpi/skills`) and the global file's
+folder are created when needed. Earlier versions kept the file in the project folder itself: the first time a project's
+ideas are used, a `<project.path>/ideas.json` moves into `.netpi/` (unless a `.netpi/ideas.json` exists already; then the
+old file stays where it is).
 
 ## File format
 
@@ -156,8 +159,8 @@ full id list after a drag-and-drop.
 `{ sessionId?, projectId?, id }` → `string`: markdown for the composer (`ctx.app.insertText(text)`), for example:
 
 ```md
-Implement the following idea from the ideas backlog (`idea-k3x9q2` in ideas.json).
-Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with idea_update: set the status to "in-progress" when you start and "done" when finished, and add a note section for anything important you learn.
+Implement the following idea from the ideas backlog (`idea-k3x9q2` in .netpi/ideas.json).
+Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with the ideas tool (action update): set the status to "in-progress" when you start and "done" when finished, and add a note section for anything important you learn.
 
 # Cache model list
 Priority: medium · Tags: perf
@@ -178,18 +181,24 @@ The status does not change on its own. The agent is asked to update it.
 `{ sessionId, args }` → `string` toast, for example `"Idea added (project Demo): Cache model list (idea-k3x9q2)"`. An
 empty `args` gives `bad_request` with `"Usage: /idea <title>"`.
 
-## Agent tools (category `ideas`)
+## The agent tool: `ideas` (category `ideas`)
 
-| tool | args | notes |
+One tool with an `action`, so a single schema goes with every request. Its prompt guideline: *"Record research and
+plans that are deferred, out of scope or not feasible now in the ideas backlog (ideas, action add), and look at the open
+ideas (action list) before larger work. When you finish the work an idea describes, set it to done (action update)."*
+
+| action | args | notes |
 |---|---|---|
-| `idea_add` | `{ title, summary?, priority?, tags?, sections?: [{kind, title?, content}] }` | `createdBy: "agent:<id>"`. Prompt guideline: *"Record research and plans that are deferred, out of scope or not feasible now with idea_add; check idea_list before larger work."* |
-| `idea_list` (read-only) | `{ status?, tag?, query? }` | Compact lines: `- idea-… [status · priority] Title — summary #tags (n sections)`. By default done and rejected ideas are hidden, with a count of how many were hidden. `status` also takes `active` and `all`, or a comma-separated list. `query` needs every word to appear in the title, summary, tags or sections. |
-| `idea_get` (read-only) | `{ id }` | Full markdown. Section headings carry the section ids: `## Plan: Rollout [sec-4f0a]`. |
-| `idea_update` | `{ id, title?, summary?, status?, priority?, tags?, addSections?, updateSections?, removeSectionIds? }` | For tools, a `sections` argument is treated as `addSections`, and unknown fields are ignored. The session id is added to `sessionIds`. |
-| `idea_remove` | `{ id }` | The description steers agents toward `status: done/rejected` instead of deleting. |
+| `add` | `{ title, summary?, priority?, tags?, sections?: [{kind, title?, content}] }` | `createdBy: "agent:<id>"` |
+| `list` | `{ status?, tag?, query? }` | Compact lines: `- idea-… [status · priority] Title — summary #tags (n sections)`. By default done and rejected ideas are hidden, with a count of how many were hidden. `status` also takes `active` and `all`, or a comma-separated list. `query` needs every word to appear in the title, summary, tags or sections. |
+| `get` | `{ id }` | Full markdown. Section headings carry the section ids: `## Plan: Rollout [sec-4f0a]`. |
+| `update` | `{ id, title?, summary?, status?, priority?, tags?, addSections?, updateSections?, removeSectionIds? }` | A `sections` argument is treated as `addSections`, and unknown fields are ignored. The session id is added to `sessionIds`. |
 
-Every tool result has `details: { file, scope, idea? }`. Invalid input comes back as an `isError` result with a hint
-(for example `Use idea_list to see the ids.`).
+Deleting is left to the user (the tab): `delete` returns an error that suggests `done` or `rejected` instead. The action
+is read leniently: synonyms (`create`, `show`, `edit`, `search`…), `close` / `done` / `complete` set the status to done,
+and without an action the arguments decide (an id with changes: update; an id alone: get; a title: add; else list).
+Every result has `details: { file, scope, idea? }`. Invalid input comes back as an `isError` result with a hint (for
+example `The list action shows the ids.`).
 
 ## UI suggestions
 

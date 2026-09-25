@@ -65,7 +65,7 @@
   agent back; if its own workers hold every one, the reply waits for one of them to finish.
 - Reloading the agents plugin (`netpi.agents`) mid-run can briefly let an agent run more than its instances.
 - A chat on an inactive agent (its model not loaded) stops with a notice; it doesn't wait for the model.
-- Small context windows are tight: with every plugin on, the system prompt and the 38 tool schemas take about 7k tokens.
+- Small context windows are tight: with every plugin on, the system prompt and the 34 tool schemas take about 6.9k tokens.
   Switch tools off per chat to make room; compaction keeps fewer recent messages when that overhead is large.
 - Changing the tool set mid-session (a tool plugin enabled, disabled or reloaded with new tools; `tools.disabled`; the
   chat's own tool switches)

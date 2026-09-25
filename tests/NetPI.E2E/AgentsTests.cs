@@ -214,7 +214,7 @@ public static class AgentsTests
             Check.Equal(0, (await env.Rpc("ask.pending", new { })).Arr().Count());
         });
 
-        r.Add("ideas: idea_add writes ideas.json in the project, ideas.list and ideas.changed see it", async () =>
+        r.Add("ideas: the ideas tool writes .netpi/ideas.json in the project, ideas.list and ideas.changed see it", async () =>
         {
             var p = await env.NewProject("ideas");
             var dir = p.S("path")!;
@@ -223,8 +223,8 @@ public static class AgentsTests
             var mark = env.Client.Mark();
             var run = await env.Run(sid, "Remember this [s:ideas title=\"Cache the model list\"]");
             Check.Contains(run.FinalText, "IDEAS-DONE");
-            var file = Path.Combine(dir, "ideas.json");
-            Check.True(File.Exists(file), "ideas.json in the project folder");
+            var file = Path.Combine(dir, ".netpi", "ideas.json");
+            Check.True(File.Exists(file), ".netpi/ideas.json in the project folder");
             using var doc = JsonDocument.Parse(File.ReadAllText(file));
             var idea = doc.RootElement.Arr("ideas").Single();
             Check.Equal("Cache the model list", idea.S("title"));
