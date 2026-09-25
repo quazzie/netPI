@@ -238,6 +238,10 @@ public static class CompactionTests
             Check.Equal(after, turn.LastContextTokens);
             Check.Equal(after, session.ContextTokens);
             var notices = env.Ctx.Bus.OfType(EventTypes.AgentNotice);
+            // tagged, so the UI keeps the banner while the summary is written and until the model answers again
+            Check.Equal("compaction/start/auto,compaction/done/auto", string.Join(",", notices.Select(n => (JsonObject)n.Data!)
+                .Select(d => $"{d["kind"].Str()}/{d["phase"].Str()}/{d["mode"].Str()}")));
+            Check.Contains(((JsonObject)notices.First().Data!)["text"].Str(), "Compacting context (~");
             Check.Contains(((JsonObject)notices.Last().Data!)["text"].Str(), "Context compacted: ~");
             Check.Equal(session.Id, notices.Last().SessionId);
             Check.Equal(1, env.Ctx.Bus.OfType(EventTypes.SessionContext).Count);
@@ -492,7 +496,9 @@ public static class CompactionTests
             env.Conversation(13);
             await env.Hook.OnBeforeModelCallAsync(env.Turn());
             Check.Equal(0, env.Ctx.SessionsFake.MarkCompactedCalls.Count);
-            Check.Contains(((JsonObject)env.Ctx.Bus.OfType(EventTypes.AgentNotice).Last().Data!)["text"].Str(), "Auto-compaction failed");
+            var failed = (JsonObject)env.Ctx.Bus.OfType(EventTypes.AgentNotice).Last().Data!;
+            Check.Contains(failed["text"].Str(), "Auto-compaction failed");
+            Check.Equal("compaction/failed/auto", $"{failed["kind"].Str()}/{failed["phase"].Str()}/{failed["mode"].Str()}", "the failure replaces the kept banner");
         });
 
         r.Add("compaction: compaction.run RPC, /compact command, busy agent, slots", async () =>

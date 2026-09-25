@@ -198,7 +198,7 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `tool.end` | yes | `{ sessionId, callId, name, isError, durationMs }` – result arrives via `message.added` (role tool) |
 | `agent.status` | no | `{ agent: AgentInfo }` |
 | `agent.queue` | yes | `{ sessionId, items: QueuedInput[] }` |
-| `agent.notice` | yes | `{ sessionId, level: 'info'\|'warn'\|'error', text }` – transient (retry countdown etc.) |
+| `agent.notice` | yes | `{ sessionId, level: 'info'\|'warn'\|'error', text, kind?, phase?, mode? }` – transient (retry countdown etc.); a compaction's carry `kind: 'compaction'`, `phase: 'start'\|'done'\|'failed'` and `mode: 'auto'\|'overflow'\|'manual'` |
 | `context.prompt` | yes | `{ sessionId, version, afterSeq }` – the session was sent a new system prompt (its first model call, or after `context.reset`); `context.prompts` has it |
 | `session.context` | no | `{ sessionId, used, window }` |
 | `agents.changed` | no | `{ agents: AgentSlots[] }` – what `agents.list` returns, whenever a run takes or frees an instance or an agent's state changes |

@@ -68,6 +68,10 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     let body = '';
     let thinkingMs = 0;
     try {
+      if (spec.firstTokenMs) {
+        setStatus(sid, { activity: 'waiting for model' });
+        await sleep(spec.firstTokenMs, run); // the model reads the whole context first
+      }
       if (spec.thinking) {
         setStatus(sid, { activity: 'thinking' });
         const tt = Date.now();
@@ -187,6 +191,30 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
       await sleep(1000, run);
     }
     publish('agent.notice', { sessionId: sid, level: 'info', text: 'Retrying now (attempt 2 of 5)…' }, sid);
+  }
+
+  /**
+   * "[compact]": auto-compaction inside a run, as the compaction plugin announces it (agent.notice with kind, phase,
+   * mode): a summarizer slower than a transient banner lasts, the summary, then a model call whose first token is slow.
+   * The waits are real seconds whatever MOCK_SPEED is: 7 s outlasts a transient banner (6 s).
+   */
+  async function compactScript(sid, run) {
+    const notice = (phase, text_) =>
+      publish('agent.notice', { sessionId: sid, level: 'info', text: text_, kind: 'compaction', phase, mode: 'auto' }, sid);
+    const msgs = store.messages.get(sid) ?? [];
+    const older = msgs.filter((m) => !m.compacted).slice(0, -1); // all but the message that started this run
+    notice('start', `Compacting context (~118k tokens, ${older.length} messages)…`);
+    await sleep(7000 * SPEED, run);
+    if (older.length) {
+      const upTo = older[older.length - 1].seq;
+      for (const m of older) m.compacted = true;
+      publish('messages.compacted', { sessionId: sid, upToSeq: upTo }, sid);
+      append(sid, 'summary', [text(`## Task\nKeep the scheduler fix going.\n\n## Progress\n### Done\n- [x] ${older.length} earlier messages summarized.`)], {
+        meta: { kind: 'compaction', coversUpToSeq: upTo, mode: 'auto' },
+      });
+    }
+    notice('done', `Context compacted: ~118k → ~24k tokens (${older.length} messages summarized).`);
+    await streamAssistant(sid, run, { firstTokenMs: 3000 * SPEED, text: 'Picking up from the summary: the scheduler fix is in, so the tests run next.' });
   }
 
   /** "[web]": a tools notice (a plugin just loaded), then todo_write, web_search, web_fetch and screenshot; file links. */
@@ -412,6 +440,7 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
 
   async function script(sid, run, input) {
     if (/\[web\]/i.test(input)) return webScript(sid, run);
+    if (/\[compact\]/i.test(input)) return compactScript(sid, run);
     if (/\[fast\]/i.test(input)) return fastScript(sid, run);
     if (/\[ssh\]/i.test(input)) return sshScript(sid, run);
     if (/\[budget\]/i.test(input)) {

@@ -139,7 +139,7 @@ export class ChatStore {
   prompts = $state.raw([]);
   // the person's own queued inputs: a subagent's report or a harness notice waiting for the agent is internal, never a chip
   ownQueue = $derived(this.queue.filter((q) => (q.source ?? 'user') === 'user'));
-  notice = $state(null); // { level, text, ts }
+  notice = $state(null); // { level, text, ts, kept } — kept: no timer, the answer or the run's end clears it
   pendingUser = $state.raw(null); // optimistic user message while agent.send is in flight
   expanded = new SvelteMap(); // UI memory: item key -> boolean
   // the user opened (true) or closed (false) the thinking of a streaming answer: later streams in this chat start that
@@ -292,17 +292,19 @@ export class ChatStore {
       case 'stream.start':
         clearTimeout(this.#endTimer);
         this.stream.start(d);
-        // a transient notice (e.g. "retrying in 3s…") is stale once the model streams again
-        if (this.notice && this.notice.level !== 'error') {
+        // a transient notice (e.g. "retrying in 3s…") is stale once the model streams again; a kept one waits for the answer
+        if (this.notice && this.notice.level !== 'error' && !this.notice.kept) {
           clearTimeout(this.#noticeTimer);
           this.#noticeTimer = setTimeout(() => (this.notice = null), 1500);
         }
         break;
       case 'stream.delta':
         this.stream.delta(d);
+        this.#answered();
         break;
       case 'stream.tool':
         this.stream.tool(d);
+        this.#answered();
         break;
       case 'stream.reset':
         this.stream.reset();
@@ -337,14 +339,24 @@ export class ChatStore {
       case 'agent.queue':
         this.queue = d.items ?? [];
         break;
-      case 'agent.notice':
-        this.notice = { level: d.level ?? 'info', text: d.text ?? '', ts: Date.now() };
+      case 'agent.notice': {
+        // a compaction's banner is kept while the summary is written, and after one inside a run until the model answers
+        // again (the summarizer and then the first token can each take minutes); a /compact in an idle chat has no turn
+        // after it, so its result goes like any notice
+        const kept = d.kind === 'compaction' && (d.phase === 'start' || (d.phase === 'done' && d.mode !== 'manual'));
+        this.notice = { level: d.level ?? 'info', text: d.text ?? '', ts: Date.now(), kept };
         clearTimeout(this.#noticeTimer);
-        this.#noticeTimer = setTimeout(() => (this.notice = null), d.level === 'error' ? 12_000 : 6_000);
+        if (!kept) this.#noticeTimer = setTimeout(() => (this.notice = null), d.level === 'error' ? 12_000 : 6_000);
         break;
+      }
       default:
         break;
     }
+  }
+
+  /** The model answers again: a kept banner (the compaction before this call) has done its job. */
+  #answered() {
+    if (this.notice?.kept) this.notice = null;
   }
 
   /** The agent run ended: drop any leftover transient state. */

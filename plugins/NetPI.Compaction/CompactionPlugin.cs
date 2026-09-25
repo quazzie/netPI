@@ -72,7 +72,7 @@ public sealed class CompactionPlugin : INetPiPlugin
         catch (Exception ex) when (ex is not (OperationCanceledException or RpcException))
         {
             context.Logger.LogWarning(ex, "Manual compaction of {Session} failed", sessionId);
-            service.Notice(sessionId, "error", "Compaction failed: " + ex.Message);
+            service.Notice(sessionId, "error", "Compaction failed: " + ex.Message, "failed", CompactionMode.Manual);
             throw new RpcException("compaction_failed", "Compaction failed: " + ex.Message);
         }
     }
@@ -121,7 +121,7 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
         {
             // Never break the run: the model call may still fit, and the overflow path is a second chance.
             logger?.LogWarning(ex, "Auto-compaction of {Session} failed", run.Session.Id);
-            service.Notice(run.Session.Id, "warn", "Auto-compaction failed: " + ex.Message);
+            service.Notice(run.Session.Id, "warn", "Auto-compaction failed: " + ex.Message, "failed", CompactionMode.Auto);
         }
     }
 
@@ -155,7 +155,7 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
         catch (Exception ex)
         {
             logger?.LogWarning(ex, "Overflow compaction of {Session} failed", run.Session.Id);
-            service.Notice(run.Session.Id, "warn", "Compaction after a context overflow failed: " + ex.Message);
+            service.Notice(run.Session.Id, "warn", "Compaction after a context overflow failed: " + ex.Message, "failed", CompactionMode.Overflow);
             return null;
         }
     }

@@ -139,7 +139,7 @@ public sealed class CompactionService(IPluginContext ctx)
         if (plan is null || plan.SummarizeTokens < minGain || !plan.ToSummarize.Any(IsConversation))
             return new CompactionResult { Message = $"Nothing to compact (context ≈ {Fmt(tokensBefore)} tokens).", TokensBefore = tokensBefore, TokensAfter = tokensBefore };
 
-        Notice(req.SessionId, "info", $"Compacting context (~{Fmt(tokensBefore)} tokens, {plan.SummarizeCount} messages)…");
+        Notice(req.SessionId, "info", $"Compacting context (~{Fmt(tokensBefore)} tokens, {plan.SummarizeCount} messages)…", "start", req.Mode);
 
         var summarizer = req.Model;
         if (o.Model is { } modelRef)
@@ -215,7 +215,7 @@ public sealed class CompactionService(IPluginContext ctx)
         });
 
         var message = $"Context compacted: ~{Fmt(tokensBefore)} → ~{Fmt(tokensAfter)} tokens ({plan.SummarizeCount} messages summarized).";
-        Notice(req.SessionId, "info", message);
+        Notice(req.SessionId, "info", message, "done", req.Mode);
         ctx.Logger.LogInformation("Session {Session}: {Message} (mode {Mode}, {Calls} summarizer call(s), up to seq {Seq})",
             req.SessionId, message, req.Mode, calls, plan.UpToSeq);
 
@@ -329,8 +329,17 @@ public sealed class CompactionService(IPluginContext ctx)
         return r.Efforts.FirstOrDefault(e => string.Equals(e, sessionEffort, StringComparison.OrdinalIgnoreCase));
     }
 
-    public void Notice(string sessionId, string level, string text) =>
-        ctx.Events.Publish(EventTypes.AgentNotice, new JsonObject { ["sessionId"] = sessionId, ["level"] = level, ["text"] = text }, sessionId);
+    /// <summary>
+    /// A compaction's transient notice for the chat (<c>agent.notice</c> with <c>kind: "compaction"</c>, <c>phase</c>
+    /// start | done | failed and <c>mode</c>): the UI keeps its banner while the summary is written, and after one
+    /// inside a run until the model answers again.
+    /// </summary>
+    public void Notice(string sessionId, string level, string text, string phase, CompactionMode mode) =>
+        ctx.Events.Publish(EventTypes.AgentNotice, new JsonObject
+        {
+            ["sessionId"] = sessionId, ["level"] = level, ["text"] = text,
+            ["kind"] = "compaction", ["phase"] = phase, ["mode"] = mode.ToString().ToLowerInvariant(),
+        }, sessionId);
 
     public static string Fmt(long tokens) =>
         tokens < 1000 ? tokens.ToString(CultureInfo.InvariantCulture)

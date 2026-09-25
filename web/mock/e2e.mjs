@@ -1252,6 +1252,34 @@ log('fast steps: layout stability');
   await page.setViewportSize(size);
 }
 
+// ------------------------------------------------------------------ compaction banner: kept until the model answers again
+log('compaction banner');
+{
+  await page.keyboard.press('Control+t');
+  await page.waitForSelector('.intro');
+  await ta.fill('hi');
+  await ta.press('Enter');
+  await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 30_000 });
+  await ta.fill('[compact] Keep going.');
+  await ta.press('Enter');
+  const texts = async () => (await page.locator('.banner .banner-text').allInnerTexts()).join(' | ');
+  await page.locator('.banner', { hasText: 'Compacting context' }).waitFor({ timeout: 5000 });
+  await page.waitForTimeout(6500); // longer than a transient banner lasts; the mock's summarizer takes 7 s
+  const summarizing = await texts();
+  check('compaction banner: kept while the summary is written', summarizing.includes('Compacting context'), summarizing || 'no banner');
+  await page.locator('.banner', { hasText: 'Context compacted' }).waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(2000); // the model call has started (a stream.start); its first token comes after 3 s
+  const reading = await texts();
+  check('compaction banner: kept until the model answers again', reading.includes('Context compacted'), reading || 'no banner');
+  await shot(page, '28-compaction-banner');
+  await page.getByText('Picking up from the summary').first().waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(300);
+  const after = await texts();
+  check('compaction banner: gone once the model answers', !after.includes('Context compacted'), after);
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 30_000 });
+}
+
 // ------------------------------------------------------------------ goals: /goal, the strip, pause, resume, achieved
 log('goals');
 {

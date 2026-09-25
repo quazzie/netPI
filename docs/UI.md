@@ -285,7 +285,10 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 - The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`.
 - The person's own queued inputs (`agent.queue`, `source: "user"`) appear as chips; the × on a chip calls `agent.dequeue`.
   Internal ones (a subagent's report, a harness notice) are never shown: they are for the agent. `agent.notice` shows
-  as a transient banner, which clears when the model streams again or the run ends.
+  as a transient banner, which clears when the model streams again or the run ends. A compaction's banner is kept
+  instead: "Compacting context…" while the summary is written, then its result until the model answers again (on a
+  local model the first token after a compaction can take a while); a `/compact` in an idle chat shows its result like
+  any notice.
 
 ### Settings dialog
 
