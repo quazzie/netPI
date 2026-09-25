@@ -1,5 +1,6 @@
 // Mirror web/dist into artifacts/app/wwwroot (when the app has been built) so a running NetPI picks up UI
 // changes without a `dotnet build`. `dotnet build` of netpi-server / NetPI does the same copy (build/WebRoot.targets).
+// NETPI_NO_COPY=1 leaves artifacts/app alone (build.ps1 -NextStart: the running NetPI gets nothing before its restart).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,10 @@ const app = path.join(repo, 'artifacts/app');
 if (!fs.existsSync(dist)) {
   console.error('sync-dist: web/dist not found (run vite build first)');
   process.exit(1);
+}
+if (process.env.NETPI_NO_COPY) {
+  console.log('sync-dist: NETPI_NO_COPY is set; artifacts/app left alone');
+  process.exit(0);
 }
 if (!fs.existsSync(app)) {
   console.log('sync-dist: artifacts/app does not exist yet; dotnet build will copy web/dist');

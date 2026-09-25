@@ -10,10 +10,12 @@
      and then puts the result in place: changed plugins hot-reload; each host file it replaces is moved into
      artifacts\app\.old (a running exe or DLL can be renamed, not overwritten), so the next start of NetPI.exe runs the
      new host. When the contracts changed, the rebuilt plugins wait in artifacts\app\.pending instead (the running
-     NetPI would load them onto its old contracts) and that next start installs them.
+     NetPI would load them onto its old contracts) and that next start installs them. With -NextStart the running
+     NetPI gets nothing: changed plugins and the web UI wait in .pending too.
 
 .EXAMPLE
   .\build.ps1              # build everything (Release)
+  .\build.ps1 -NextStart   # while NetPI runs: nothing changes in it, its next start runs the new build
   .\build.ps1 -Run         # build and start the desktop app
   .\build.ps1 -SkipWeb     # don't run npm even if it is installed
   .\build.ps1 -Test        # build and run the unit test suites
@@ -22,6 +24,7 @@
 param(
     [ValidateSet('Debug', 'Release')] [string] $Configuration = 'Release',
     [switch] $SkipWeb,
+    [switch] $NextStart,
     [switch] $Run,
     [switch] $Test
 )
@@ -38,18 +41,6 @@ if (-not (dotnet --list-sdks | Where-Object { $_ -match '^1\d\.' -and [int]($_.S
     throw '.NET 10 SDK (or newer) not found. `dotnet --list-sdks` lists what is installed.'
 }
 
-# ---- web UI (optional)
-if (-not $SkipWeb) {
-    if (Get-Command npm -ErrorAction SilentlyContinue) {
-        Step 'Web UI (npm)'
-        if (-not (Test-Path node_modules)) { npm ci; if ($LASTEXITCODE) { throw 'npm ci failed' } }
-        npm run build; if ($LASTEXITCODE) { throw 'npm run build failed' }
-    }
-    else {
-        Write-Host 'npm not found: using the prebuilt web UI (web\dist and plugins\*\wwwroot\ui.js).' -ForegroundColor Yellow
-    }
-}
-
 # ---- is NetPI running from artifacts\app? A running NetPI keeps its host DLLs open (plugins load from shadow copies).
 # A build made while it ran moved the files it replaced into .old, so the contracts a running NetPI uses are the open
 # NetPI.Abstractions.dll, here or in .old: their hashes, taken before this build moves anything.
@@ -64,6 +55,7 @@ $contracts = @(Join-Path $app 'NetPI.Abstractions.dll')
 if (Test-Path $old) { $contracts += @(Get-ChildItem $old -Recurse -File -Filter 'NetPI.Abstractions.dll' | ForEach-Object { $_.FullName }) }
 $runningContracts = @($contracts | Where-Object { Test-FileLocked $_ } | ForEach-Object { (Get-FileHash -LiteralPath $_).Hash })
 $running = $runningContracts.Count -gt 0
+$defer = $running -and $NextStart
 
 # what earlier builds moved aside is free once the NetPI that used it has exited; what is left, a running NetPI uses
 if (Test-Path $old) {
@@ -71,6 +63,21 @@ if (Test-Path $old) {
     if (-not (Get-ChildItem $old -Recurse -File -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue }
 }
 $oldHostRunning = (Test-Path $old) -and [bool](Get-ChildItem $old -Recurse -File -Force -ErrorAction SilentlyContinue)
+
+# ---- web UI (optional)
+if (-not $SkipWeb) {
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+        Step 'Web UI (npm)'
+        if (-not (Test-Path node_modules)) { npm ci; if ($LASTEXITCODE) { throw 'npm ci failed' } }
+        # npm copies the bundles into artifacts\app itself, so a running NetPI's UI updates; -NextStart: not yet
+        if ($defer) { $env:NETPI_NO_COPY = '1' }
+        try { npm run build; if ($LASTEXITCODE) { throw 'npm run build failed' } }
+        finally { if ($defer) { Remove-Item Env:NETPI_NO_COPY -ErrorAction SilentlyContinue } }
+    }
+    else {
+        Write-Host 'npm not found: using the prebuilt web UI (web\dist and plugins\*\wwwroot\ui.js).' -ForegroundColor Yellow
+    }
+}
 
 # ---- plugins that were renamed (2026-09-25: NetPI.Lanes is NetPI.Agents, NetPI.Agent is NetPI.Runtime): their old
 # output would load next to the new one. A running app keeps them until it is closed and built again.
@@ -143,23 +150,31 @@ else {
     foreach ($rel in $hostFiles) { if ($keptSymbols -notcontains $rel) { Copy-Rel $stage $app $rel } }
     $restart += @($hostFiles | Where-Object { $_ -match '\.(dll|exe|json)$' })
 
+    # what waits for the next start: -NextStart, and plugins built against contracts the running NetPI doesn't have
+    # (then every plugin's output changes); this build supersedes an earlier one's
+    $builtContracts = (Get-FileHash (Join-Path $stage 'NetPI.Abstractions.dll')).Hash
+    $newContracts = @($runningContracts | Where-Object { $_ -ne $builtContracts }).Count -gt 0
+    if (Test-Path $pending) { Remove-Item -Recurse -Force $pending }
+
     # web UI: replaced as a whole, like a normal build does (a file being served may stay; it is overwritten then)
     $web = Join-Path $app 'wwwroot'
-    if (@(Get-Changed (Join-Path $stage 'wwwroot') $web).Count) {
+    $webChanged = @(Get-Changed (Join-Path $stage 'wwwroot') $web).Count -gt 0
+    if ($webChanged -and $defer) {
+        New-Item -ItemType Directory -Force $pending | Out-Null
+        Copy-Item -Recurse (Join-Path $stage 'wwwroot') (Join-Path $pending 'wwwroot')
+    }
+    elseif ($webChanged) {
         Remove-Item -LiteralPath $web -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force $web | Out-Null
         Copy-Item -Path (Join-Path $stage 'wwwroot\*') -Destination $web -Recurse -Force
     }
 
-    # plugins: changed files go into place and the running NetPI reloads those plugins; built against contracts it
-    # doesn't have (then every plugin's output changes), they wait in .pending for its next start instead
+    # plugins: changed files go into place and the running NetPI reloads those plugins, or wait in .pending
     $stagePlugins = Join-Path $stage 'plugins'
     $pluginFiles = @(Get-Changed $stagePlugins (Join-Path $app 'plugins'))
     $pluginNames = @($pluginFiles | ForEach-Object { $_.Split('\')[0] } | Sort-Object -Unique)
-    $builtContracts = (Get-FileHash (Join-Path $stage 'NetPI.Abstractions.dll')).Hash
-    $newContracts = @($runningContracts | Where-Object { $_ -ne $builtContracts }).Count -gt 0
-    if (Test-Path $pending) { Remove-Item -Recurse -Force $pending } # this build supersedes it
-    if ($newContracts) {
+    $pluginsWait = $defer -or $newContracts
+    if ($pluginsWait) {
         foreach ($name in $pluginNames) {
             New-Item -ItemType Directory -Force (Join-Path $pending 'plugins') | Out-Null
             Copy-Item -Recurse (Join-Path $stagePlugins $name) (Join-Path $pending "plugins\$name")
@@ -170,20 +185,22 @@ else {
     }
 
     Write-Host ''
-    if ($pluginNames.Count -and -not $newContracts) {
+    if ($pluginNames.Count -and -not $pluginsWait) {
         Write-Host "Plugins updated in place (the running NetPI reloads them): $($pluginNames -join ', ')" -ForegroundColor Green
     }
-    if ($newContracts) {
-        Write-Host "The contracts changed: the running NetPI keeps its plugins, and the $($pluginNames.Count) rebuilt ones wait in artifacts\app\.pending until it starts again." -ForegroundColor Yellow
+    if ($pluginNames.Count -and $pluginsWait) {
+        $why = if ($newContracts) { 'The contracts changed: the running NetPI keeps its plugins' } else { 'The running NetPI keeps its plugins' }
+        Write-Host "$why; the rebuilt ones wait in artifacts\app\.pending for its next start: $($pluginNames -join ', ')" -ForegroundColor Yellow
     }
+    if ($webChanged -and $defer) { Write-Host 'The new web UI waits in artifacts\app\.pending for the next start.' -ForegroundColor Yellow }
     if ($keptSymbols.Count) {
         Write-Host "Symbols in use were kept: $($keptSymbols -join ', ') (stack traces lack line numbers until a build with NetPI closed)." -ForegroundColor DarkYellow
     }
-    if ($restart.Count -or $newContracts -or $oldHostRunning) {
-        $what = if ($restart.Count) { ": $($restart -join ', ')" } else { '' }
-        Write-Host "The new host is ready$what. Close NetPI and start it again (artifacts\app\NetPI.exe) to use it." -ForegroundColor Yellow
+    if ($restart.Count -or $oldHostRunning -or ($pluginsWait -and $pluginNames.Count) -or ($webChanged -and $defer)) {
+        $what = if ($restart.Count) { " The new host: $($restart -join ', ')." } else { '' }
+        Write-Host "Ready for the next start: close NetPI and start it again (artifacts\app\NetPI.exe).$what" -ForegroundColor Yellow
     }
-    elseif (-not $pluginNames.Count) {
+    elseif (-not $pluginNames.Count -and -not $webChanged) {
         Write-Host 'Nothing changed for the running NetPI.'
     }
 }

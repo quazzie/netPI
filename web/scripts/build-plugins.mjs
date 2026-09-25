@@ -10,7 +10,8 @@
 //   node web/scripts/build-plugins.mjs web/mock/sample-plugin   … plus extra plugin dirs
 //   node web/scripts/build-plugins.mjs --only <dir>…       only the given dirs
 //   node web/scripts/build-plugins.mjs --watch             rebuild on change
-//   node web/scripts/build-plugins.mjs --no-copy           leave artifacts/app alone (a running NetPI)
+//   node web/scripts/build-plugins.mjs --no-copy           leave artifacts/app alone (a running NetPI); so does
+//                                                          NETPI_NO_COPY=1 (build.ps1 -NextStart)
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,7 +23,7 @@ const kit = path.join(repo, 'web/src/lib/kit/index.js');
 const argv = process.argv.slice(2);
 const watch = argv.includes('--watch');
 const only = argv.includes('--only');
-const noCopy = argv.includes('--no-copy');
+const noCopy = argv.includes('--no-copy') || !!process.env.NETPI_NO_COPY;
 const extra = argv.filter((a) => !a.startsWith('--')).map((d) => path.resolve(d));
 
 function findEntry(dir) {

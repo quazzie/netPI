@@ -62,6 +62,7 @@ internal sealed class HostKernel : IAsyncDisposable
             var paths = BuildPaths(options, appDir, home, logsDir, settings);
             TryCreate(paths.DefaultWorkspace);
             TryCreate(paths.TempDir);
+            PendingBuild.Install(appDir, factory.CreateLogger("NetPI.Host")); // before anything loads or serves the app folder
 
             Sqlite3.ConfiguredPath = settings.Get<string>("database.sqlitePath");
             var db = new Database(paths.DatabaseFile, factory.CreateLogger("NetPI.Database"));

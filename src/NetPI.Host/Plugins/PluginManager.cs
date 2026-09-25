@@ -127,7 +127,6 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     {
         Directory.CreateDirectory(_shadowRoot);
         CleanShadowRoot();
-        InstallPendingBuild(_k.Paths.AppDir, _log);
         await _op.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -620,53 +619,6 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             if (top && (name.Equals("wwwroot", StringComparison.OrdinalIgnoreCase) || name.Equals("node_modules", StringComparison.OrdinalIgnoreCase))) continue;
             CopyDirectory(dir, Path.Combine(target, name), top: false);
         }
-    }
-
-    // ------------------------------------------------------------------ a build made while NetPI ran
-
-    /// <summary>
-    /// What build.ps1 left for this start while an earlier NetPI ran from <paramref name="appDir"/>. The plugins it built
-    /// against contracts that NetPI did not have wait in <c>.pending/plugins</c> (hot-reloaded, they would have run on
-    /// the old contracts) and move into <c>plugins</c> now; one that can't stays pending for the next start. The host
-    /// files it replaced (a running exe or DLL can be renamed, not overwritten) are in <c>.old</c>, free once that NetPI
-    /// exited.
-    /// </summary>
-    internal static void InstallPendingBuild(string appDir, ILogger log)
-    {
-        var old = Path.Combine(appDir, ".old");
-        var pendingRoot = Path.Combine(appDir, ".pending");
-        var pending = Path.Combine(pendingRoot, "plugins");
-        if (Directory.Exists(pending))
-        {
-            var plugins = Path.Combine(appDir, "plugins");
-            foreach (var dir in Directory.GetDirectories(pending))
-            {
-                var name = Path.GetFileName(dir);
-                var target = Path.Combine(plugins, name);
-                string? aside = null;
-                try
-                {
-                    Directory.CreateDirectory(plugins);
-                    if (Directory.Exists(target))
-                    {
-                        // moved, not deleted: a folder is never left half deleted
-                        aside = Path.Combine(old, $"plugins-{Environment.ProcessId}", name);
-                        Directory.CreateDirectory(Path.GetDirectoryName(aside)!);
-                        Directory.Move(target, aside);
-                    }
-                    Directory.Move(dir, target);
-                    log.LogInformation("Installed the plugin {Name}, built while an earlier NetPI ran", name);
-                }
-                catch (Exception ex)
-                {
-                    if (aside is not null && !Directory.Exists(target))
-                        try { Directory.Move(aside, target); } catch { /* reported below */ }
-                    log.LogWarning("Could not install the pending build of the plugin {Name}: {Error}", name, ex.Message);
-                }
-            }
-            if (!Directory.EnumerateFileSystemEntries(pending).Any()) PathUtil.TryDeleteDirectory(pendingRoot);
-        }
-        PathUtil.TryDeleteDirectory(old); // fails while another NetPI from this folder still uses its files
     }
 
     /// <summary>Delete shadow copies left behind by processes that are no longer running.</summary>

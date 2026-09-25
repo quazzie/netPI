@@ -22,7 +22,8 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
 - While NetPI runs: `dotnet build plugins/<Name>` (one plugin, hot-reloads) or `.\build.ps1`, which builds into
   `artifacts\build\stage` and then puts it in place: plugins hot-reload; host files it replaces go into
   `artifacts\app\.old` (a running exe or DLL can be renamed, not overwritten), so a restart of NetPI runs the new host;
-  after a contract change the plugins wait in `artifacts\app\.pending` for that restart. It prints what needs it.
+  after a contract change the plugins wait in `artifacts\app\.pending` for that restart. `-NextStart`: the running
+  NetPI gets nothing, everything waits for the restart. It prints what needs it.
 - Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
   Agent, Aux, Host. End-to-end: `dotnet tests/NetPI.E2E/bin/<Config>/NetPI.E2E.dll` (see `docs/TESTING.md`).
 - UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`.

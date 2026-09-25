@@ -151,8 +151,8 @@ public static class PluginTests
             await Wait.UntilAsync(() => server.Rpc.Exists("sample.value"), "re-enabled");
         });
 
-        // build.ps1 while NetPI runs: plugins built against new contracts wait in .pending, replaced host files in .old
-        r.Add("plugins: the next start installs a build made while NetPI ran (.pending plugins, .old files)", () =>
+        // build.ps1 while NetPI runs: what the running NetPI must not load yet waits in .pending, replaced host files in .old
+        r.Add("plugins: the next start installs a build made while NetPI ran (.pending plugins and web UI, .old files)", () =>
         {
             var app = T.TempDir("pending");
             void Put(string rel, string text)
@@ -165,30 +165,36 @@ public static class PluginTests
             Put("plugins/A/A.dll", "old A");
             Put("plugins/A/stale.txt", "only in the old build");
             Put("plugins/C/C.dll", "C, unchanged");
+            Put("wwwroot/index.html", "old UI");
+            Put("wwwroot/assets/old-123.js", "an old bundle");
             Put(".pending/plugins/A/A.dll", "new A");
             Put(".pending/plugins/B/B.dll", "new B");
+            Put(".pending/wwwroot/index.html", "new UI");
             Put(".old/20260925-120000/NetPI.Host.dll", "the host an earlier NetPI ran");
 
             var log = Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
             if (OperatingSystem.IsWindows())
             {
-                // a folder with a file in use can't be moved: that plugin stays pending, the others are installed
+                // a folder with a file in use can't be moved: that plugin stays pending, the rest is installed
                 using (File.Open(Path.Combine(app, "plugins/A/A.dll"), FileMode.Open, FileAccess.Read, FileShare.None))
-                    NetPI.Host.Plugins.PluginManager.InstallPendingBuild(app, log);
+                    PendingBuild.Install(app, log);
                 Check.Equal("old A", Text("plugins/A/A.dll"), "left as it was");
                 Check.Equal("new A", Text(".pending/plugins/A/A.dll"), "still pending");
                 Check.Equal("new B", Text("plugins/B/B.dll"));
+                Check.Equal("new UI", Text("wwwroot/index.html"));
             }
 
-            NetPI.Host.Plugins.PluginManager.InstallPendingBuild(app, log);
+            PendingBuild.Install(app, log);
             Check.Equal("new A", Text("plugins/A/A.dll"));
             Check.False(File.Exists(Path.Combine(app, "plugins/A/stale.txt")), "the whole folder is replaced");
             Check.Equal("new B", Text("plugins/B/B.dll"));
             Check.Equal("C, unchanged", Text("plugins/C/C.dll"));
+            Check.Equal("new UI", Text("wwwroot/index.html"));
+            Check.False(File.Exists(Path.Combine(app, "wwwroot/assets/old-123.js")), "the web UI is replaced as a whole");
             Check.False(Directory.Exists(Path.Combine(app, ".pending")), "nothing left pending");
-            Check.False(Directory.Exists(Path.Combine(app, ".old")), "replaced files and plugins are deleted");
+            Check.False(Directory.Exists(Path.Combine(app, ".old")), "replaced files and folders are deleted");
 
-            NetPI.Host.Plugins.PluginManager.InstallPendingBuild(app, log); // nothing pending: nothing changes
+            PendingBuild.Install(app, log); // nothing pending: nothing changes
             Check.Equal("new A", Text("plugins/A/A.dll"));
         });
 
