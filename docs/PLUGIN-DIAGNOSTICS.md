@@ -7,6 +7,9 @@ methods, the recent event stream and the log. It also provides the `/reload` com
 - Tab: `{ id: "diagnostics", title: "Diagnostics", panel: "right", icon: "bug", order: 90, module: "ui.js" }`. The UI module
   goes in `plugins/NetPI.Diagnostics/wwwroot/ui.js` (source in `plugins/NetPI.Diagnostics/ui/`).
 - Slash command: `{ name: "reload", argsHint: "[pluginId]", rpc: "diag.reload" }`.
+- It is also the way to inspect the running app from outside: the `diag.*` overview, problems, model and tool calls, the
+  event journal, runs, logs, settings and failed requests (`docs/DEBUGGING.md`). The tab shows the problems as a strip
+  above the views and the model calls in its Calls view.
 
 ## `diag.snapshot`
 

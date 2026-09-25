@@ -33,6 +33,8 @@ internal sealed class HostKernel : IAsyncDisposable
     public required HttpRegistry Http { get; init; }
     public required SessionStore Sessions { get; init; }
     public required ModelCatalog Models { get; init; }
+    /// <summary>This app's hold on its home (one NetPI per home).</summary>
+    internal HomeLock? HomeLock { get; init; }
     public PluginManager Plugins { get; private set; } = null!;
     public ILogger Log { get; private set; } = null!;
 
@@ -44,7 +46,10 @@ internal sealed class HostKernel : IAsyncDisposable
         foreach (var dir in new[] { home, logsDir, Path.Combine(home, "plugins"), Path.Combine(home, "workspace") })
             Directory.CreateDirectory(dir);
 
+        // one NetPI per home: a second one stops here, before it touches the logs, the settings or the database
+        var homeLock = HomeLock.Acquire(home);
         var created = new Stack<object>();
+        created.Push(homeLock);
         var sink = new LogSink(logsDir, options.ConsoleLogging);
         created.Push(sink);
         var factory = Microsoft.Extensions.Logging.LoggerFactory.Create(b => LoggingSetup.Configure(b, sink));
@@ -90,6 +95,7 @@ internal sealed class HostKernel : IAsyncDisposable
                 Http = new HttpRegistry(),
                 Sessions = sessions,
                 Models = models,
+                HomeLock = homeLock,
             };
             kernel.Log = factory.CreateLogger("NetPI.Host");
             kernel.Plugins = new PluginManager(kernel, factory.CreateLogger("NetPI.Plugins"));
@@ -201,5 +207,6 @@ internal sealed class HostKernel : IAsyncDisposable
         Db.Dispose();
         LoggerFactory.Dispose();
         LogSink.Dispose();
+        HomeLock?.Dispose();
     }
 }

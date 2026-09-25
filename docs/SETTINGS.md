@@ -5,6 +5,9 @@ with `NETPI_HOME`). The file is created with sensible defaults on first start, a
 commas, and is watched: edits apply live. Keys are shown as dotted paths — `providers.aiproxy.baseUrl` means
 `{ "providers": { "aiproxy": { "baseUrl": … } } }`.
 
+One NetPI runs per home (`<home>/netpi.lock`): a second one on the same home refuses to start. A running NetPI also
+writes `<home>/server.json` (its URL and this run's token) for tools that inspect it (`docs/DEBUGGING.md`).
+
 The ⚙ settings dialog edits the same file. Most settings are real controls there: the host and each plugin declare
 theirs (`settings.schema`, see `docs/PLUGINS.md`), and a control saves one key (`settings.set`; **Reset** removes the key
 so the default applies again). The agents and the budget have their own page; the `settings.json` page edits the whole file.

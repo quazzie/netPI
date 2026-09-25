@@ -7,6 +7,7 @@
   import EventsView from './EventsView.svelte';
   import LogsView from './LogsView.svelte';
   import ContextView from './ContextView.svelte';
+  import CallsView from './CallsView.svelte';
 
   let { ctx } = $props();
 
@@ -16,6 +17,9 @@
   let visible = $state(true);
   let dirty = false;
   let view = $state(load('view', 'plugins'));
+  // what looks wrong (diag.problems), polled while the tab is visible
+  let problems = $state.raw([]);
+  let problemsOpen = $state(false);
 
   function load(k, d) {
     try {
@@ -55,12 +59,23 @@
     timer = setTimeout(refresh, 300);
   }
 
+  async function loadProblems() {
+    try {
+      problems = (await ctx.rpc('diag.problems')) ?? [];
+    } catch {
+      problems = [];
+    }
+  }
+
   onMount(() => {
     refresh();
+    loadProblems();
+    const poll = setInterval(() => visible && loadProblems(), 5000);
     const offs = [ctx.on('plugins.changed', soon), ctx.on('ui.changed', soon), ctx.on('tools.changed', soon)];
     return () => {
       offs.forEach((o) => o());
       clearTimeout(timer);
+      clearInterval(poll);
     };
   });
 
@@ -82,6 +97,7 @@
     },
     { value: 'tools', label: 'Tools', icon: 'wrench', title: tools ? `Tools (${new Set(tools.map((t) => t.name)).size})` : 'Tools' },
     { value: 'rpc', label: 'RPC', icon: 'zap', title: rpcs ? `RPC methods (${rpcs.length})` : 'RPC methods' },
+    { value: 'calls', label: 'Calls', icon: 'zap', title: 'Model calls' },
     { value: 'events', label: 'Events', icon: 'activity', title: 'Live events' },
     { value: 'logs', label: 'Logs', icon: 'list', title: 'Log' },
     { value: 'context', label: 'Context', icon: 'layers', title: 'Context of the active session' },
@@ -111,6 +127,18 @@
     </div>
     <IconButton icon="refresh" title="Refresh" size="sm" disabled={loading} onclick={refresh} />
   </div>
+  {#if problems.some((p) => p.severity !== 'info')}
+    {@const worst = problems.filter((p) => p.severity !== 'info')}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="problems" data-sev={worst[0].severity} onclick={() => (problemsOpen = !problemsOpen)} title="diag.problems">
+      <div class="ptitle">{worst.length} problem{worst.length === 1 ? '' : 's'}{problemsOpen ? '' : ': ' + worst[0].message}</div>
+      {#if problemsOpen}
+        {#each problems as p, i (i)}
+          <div class="p" data-sev={p.severity}><b>{p.area}</b> {p.message}{#if p.hint}<span class="hint np-mono"> → {p.hint}</span>{/if}</div>
+        {/each}
+      {/if}
+    </div>
+  {/if}
   <div class="views">
     <Segmented {options} bind:value={view} />
   </div>
@@ -124,6 +152,8 @@
       <ToolsView {tools} error={snap?.tools?.error} />
     {:else if view === 'rpc'}
       <RpcView {rpcs} />
+    {:else if view === 'calls'}
+      <CallsView {ctx} {visible} />
     {:else if view === 'events'}
       <EventsView initial={snap?.events ?? []} {ctx} {visible} />
     {:else if view === 'logs'}
@@ -155,6 +185,40 @@
   }
   .err {
     color: var(--err);
+  }
+  .problems {
+    margin: 8px 10px 0 12px;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--warn-soft);
+    color: var(--warn);
+    font-size: var(--fs-xs);
+    cursor: pointer;
+  }
+  .problems[data-sev='error'] {
+    background: var(--err-soft);
+    color: var(--err);
+  }
+  .ptitle {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .p {
+    margin-top: 4px;
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+  }
+  .p[data-sev='error'] b {
+    color: var(--err);
+  }
+  .p[data-sev='warn'] b {
+    color: var(--warn);
+  }
+  .hint {
+    color: var(--fg-dim);
+    font-size: 10.5px;
   }
   .views {
     display: flex;

@@ -25,6 +25,10 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   Agent, Aux, Host. End-to-end: `dotnet tests/NetPI.E2E/bin/<Config>/NetPI.E2E.dll` (see `docs/TESTING.md`).
 - UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`.
 
+## Inspecting the running app
+- `node scripts/netpi.mjs` (the overview), then `diag.problems`, `diag.calls`, `diag.run`, `diag.journal`, `diag.logs`: see
+  `docs/DEBUGGING.md`. It finds the app through `<home>/server.json` and only reads unless given `--write`.
+
 ## Conventions
 - Keep the core small; new behaviour goes into a plugin. Register everything through `IPluginContext` so hot
   reload can remove it; resolve other plugins' services per use.

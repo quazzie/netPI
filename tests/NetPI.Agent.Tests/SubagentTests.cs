@@ -20,6 +20,46 @@ public static class SubagentTests
         t.Add("subagents: a chat on a local agent spawns onto an agent on another provider; the subagent keeps that agent", SpawnOntoConfiguredPool);
         t.Add("subagents: one agent_spawn starts several together; waiting frees the caller's instance for one of them", BatchSpawn);
         t.Add("subagents: a batch with a bad entry starts none of them", BatchRefused);
+        t.Add("subagents: a report that arrives before agent_wait still reaches the parent", ReportBeforeWait);
+    }
+
+    /// <summary>
+    /// The user's story test: two subagents; the quick one finishes while the parent is still thinking about its next
+    /// step, then the parent calls agent_wait (for its running ones). Both reports must reach the model.
+    /// </summary>
+    private static async Task ReportBeforeWait()
+    {
+        await using var h = await TestHost.StartAsync();
+        var slowGate = new TaskCompletionSource();
+        var seen = new List<string>();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r))
+                return Reply.LastUser(r).Contains("quick")
+                    ? Reply.Text("QUICK REPORT", async _ => { await Task.Yield(); })
+                    : Reply.Text("SLOW REPORT", c => slowGate.Task.WaitAsync(c));
+            var transcript = string.Join("\n", r.Messages.Select(m => m.Text));
+            lock (seen) seen.Add(transcript);
+            var results = r.Messages.Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Select(x => x.Name).ToList();
+            if (results.Count == 0)
+                return Reply.Tool("agent_spawn", new { subagents = new object[] { new { task = "quick part", name = "quick" }, new { task = "slow part", name = "slow" } } });
+            if (results.Count == 1)
+                // the parent thinks until the quick one is done, then waits
+                return Reply.Stream(Reply.Message([Reply.Call("agent_wait", new { })]), async c =>
+                {
+                    while (!h.Runtime.List(true).Any(a => a.Name == "quick" && a.Status == AgentStatus.Completed)) await Task.Delay(10, c);
+                    await Task.Delay(100, c);
+                    slowGate.TrySetResult();
+                });
+            return Reply.Text("both in");
+        };
+        var parent = h.NewSession();
+        await h.SendAsync(parent.Id, "go");
+        await h.IdleAsync(parent.Id, 15_000);
+        // the model call right after agent_wait: it has both reports (the wait's, and the quick one's notice)
+        var afterWait = seen[2];
+        Check.Contains(afterWait, "SLOW REPORT");
+        Check.Contains(afterWait, "QUICK REPORT", "the quick one's report reached the model with the wait's result");
     }
 
     /// <summary>

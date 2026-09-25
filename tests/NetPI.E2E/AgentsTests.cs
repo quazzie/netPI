@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace NetPI.E2E;
 
 /// <summary>Agents, subagents on their slots, parent yielding, agent-result notices, ideas and the work snapshot.</summary>
-public static class SchedulerTests
+public static class AgentsTests
 {
     public static void Register(TestRunner r, Env env)
     {

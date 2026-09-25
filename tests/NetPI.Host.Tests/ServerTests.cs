@@ -441,22 +441,45 @@ public static class ServerTests
             Check.Equal(1, (await Call("projects.list"))!.AsArray().Count);
         });
 
-        r.Add("server: a busy port falls back to a random free port; stop is idempotent", async () =>
+        r.Add("server: a busy port falls back to a random free port; server.json says where; stop is idempotent", async () =>
         {
             using var blocker = new TcpListener(IPAddress.Loopback, 0);
             blocker.Start();
             var busy = ((IPEndPoint)blocker.LocalEndpoint).Port;
+            var home = T.TempDir("home");
             var server = await NetPiServer.StartAsync(new NetPiServerOptions
             {
-                Port = busy, Home = T.TempDir("home"), WebRoot = T.TempDir("web"), ConsoleLogging = false, Token = "fixed-token",
+                Port = busy, Home = home, WebRoot = T.TempDir("web"), ConsoleLogging = false, Token = "fixed-token",
             });
             Check.True(server.Port != busy && server.Port > 0, $"port {server.Port}");
             Check.Equal("fixed-token", server.Token);
+            // tools outside find this run through <home>/server.json
+            var file = Path.Combine(home, "server.json");
+            var info = JsonNode.Parse(File.ReadAllText(file))!;
+            Check.Equal(server.BaseUrl, (string?)info["url"]);
+            Check.Equal("fixed-token", (string?)info["token"]);
+            Check.Equal(Environment.ProcessId, (int)info["pid"]!);
             using var http = NewHttp();
             Check.Equal(HttpStatusCode.OK, (await SendAsync(http, HttpMethod.Get, server.BaseUrl + "/api/health")).Status);
             await Task.WhenAll(server.StopAsync(), server.StopAsync());
             await server.DisposeAsync();
             await Check.ThrowsAsync<HttpRequestException>(() => http.GetAsync(server.BaseUrl + "/api/health"));
+            Check.False(File.Exists(file), "server.json is removed when the server stops");
+        });
+
+        r.Add("server: one NetPI per home: a second one on the same home refuses to start", async () =>
+        {
+            var home = T.TempDir("home");
+            NetPiServerOptions Options() => new() { Port = 0, Home = home, WebRoot = T.TempDir("web"), ConsoleLogging = false };
+            var first = await NetPiServer.StartAsync(Options());
+            var refused = await Check.ThrowsAsync<InvalidOperationException>(() => NetPiServer.StartAsync(Options()));
+            Check.Contains(refused.Message, $"NetPI is already running with the home {home} (pid {Environment.ProcessId}, {first.BaseUrl})");
+            Check.Contains(refused.Message, "--home <dir> or NETPI_HOME");
+            Check.Equal(first.BaseUrl, (string?)JsonNode.Parse(File.ReadAllText(Path.Combine(home, "server.json")))!["url"], "the running one keeps its server.json");
+            await first.StopAsync();
+            // the home is free again
+            var second = await NetPiServer.StartAsync(Options());
+            await second.StopAsync();
         });
     }
 }

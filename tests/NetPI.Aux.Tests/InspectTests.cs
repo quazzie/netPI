@@ -1,0 +1,225 @@
+using System.Runtime.CompilerServices;
+using System.Text.Json.Nodes;
+using NetPI.Diagnostics;
+
+namespace NetPI.Aux.Tests;
+
+/// <summary>The diag.* inspection surface of the diagnostics plugin (docs/DEBUGGING.md).</summary>
+public static class InspectTests
+{
+    public static void Register(TestRunner r)
+    {
+        r.Add("inspect: model calls through the middleware (first token, retries, tokens, errors, cancel, running)", ModelCalls);
+        r.Add("inspect: the journal leaves out per-token events and sums up messages; tool calls from tool.start/end", JournalAndTools);
+        r.Add("inspect: problems (failed plugin, waiters on an inactive agent, a long wait, errors in the log)", Problems);
+        r.Add("inspect: settings without secrets, saved failed requests, the overview lists the diag methods", SettingsFailuresOverview);
+    }
+
+    private static async Task<FakePluginContext> StartAsync()
+    {
+        var ctx = new FakePluginContext(pluginId: "netpi.diagnostics");
+        await new DiagnosticsPlugin().StartAsync(ctx, CancellationToken.None);
+        return ctx;
+    }
+
+    private static ModelRequest Request(string sid = "ses_1") => new()
+    {
+        Model = T.Model("m1"), SessionId = sid, AgentId = "agt_1", Purpose = "agent", SystemPrompt = "system",
+        Messages = [new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = "write a story" }] }],
+    };
+
+    private static async IAsyncEnumerable<ModelStreamEvent> Stream(IEnumerable<Func<Task<ModelStreamEvent?>>> steps, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        foreach (var step in steps)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (await step() is { } e) yield return e;
+        }
+    }
+
+    private static Func<Task<ModelStreamEvent?>> Yield(ModelStreamEvent e, int delayMs = 0) => async () =>
+    {
+        if (delayMs > 0) await Task.Delay(delayMs);
+        return e;
+    };
+
+    private static async Task Drain(IAsyncEnumerable<ModelStreamEvent> s)
+    {
+        await foreach (var _ in s) { }
+    }
+
+    private static async Task ModelCalls()
+    {
+        var ctx = await StartAsync();
+        var mw = ctx.ServicesFake.Get<IModelMiddleware>() ?? throw new AssertException("the call recorder is a model middleware");
+        Check.Equal(-1000, mw.Order, "outermost: one record per call as the caller saw it");
+
+        var done = new ChatMessage
+        {
+            Role = MessageRole.Assistant, StopReason = "tool_use",
+            Parts = [new TextPart { Text = "hello" }, new ToolCallPart { Id = "c1", Name = "read", Arguments = "{}" }],
+            Usage = new Usage { InputTokens = 1200, CacheReadTokens = 800, OutputTokens = 40 },
+        };
+        await Drain(mw.InvokeAsync(Request(), (_, c) => Stream(
+        [
+            Yield(new StreamReset("connection lost"), 5), Yield(new ThinkingDelta("hmm"), 30), Yield(new TextDelta("hello")),
+            Yield(new StreamCompleted(done)),
+        ], c), CancellationToken.None));
+
+        var calls = (JsonArray)(await ctx.RpcFake.Call("diag.calls"))!;
+        var ok = calls[0]!;
+        Check.Equal("ok", ok["state"].Str());
+        Check.Equal("test/m1", ok["model"].Str());
+        Check.Equal("ses_1", ok["sessionId"].Str());
+        Check.Equal("agt_1", ok["runId"].Str());
+        Check.True((long)ok["firstTokenMs"]! >= 25, $"first token after the reset and 30 ms: {ok["firstTokenMs"]}");
+        Check.True((long)ok["durationMs"]! >= (long)ok["firstTokenMs"]!);
+        Check.Equal(2, (int)ok["attempts"]!, "one reset = two attempts");
+        Check.Equal(40L, (long)ok["outputTokens"]!);
+        Check.Equal("tool_use", ok["stopReason"].Str());
+        var detail = (JsonObject)(await ctx.RpcFake.Call("diag.call", new JsonObject { ["id"] = (long)ok["id"]! }))!;
+        Check.Equal(5, (int)detail["response"]!["textChars"]!);
+        Check.Equal("read", detail["response"]!["toolCalls"]![0].Str());
+        Check.Contains(detail["resets"]![0].Str(), "connection lost");
+        Check.Equal("write a story", detail["request"]!["lastUser"].Str());
+        Check.Equal(1, (int)detail["request"]!["messages"]!);
+
+        // an error: the message, and its type and status in the detail
+        await Check.ThrowsAsync<ModelException>(() => Drain(mw.InvokeAsync(Request(), (_, c) => Stream(
+        [
+            Yield(new TextDelta("x")), () => throw new ModelException("boom [x-request-id: r1]", transient: false, statusCode: 500, errorType: "server_error"),
+        ], c), CancellationToken.None)));
+        var failed = ((JsonArray)(await ctx.RpcFake.Call("diag.calls", new JsonObject { ["errors"] = true }))!).Single()!;
+        Check.Equal("error", failed["state"].Str());
+        Check.Contains(failed["error"].Str(), "boom [x-request-id: r1]");
+        var failedDetail = (JsonObject)(await ctx.RpcFake.Call("diag.call", new JsonObject { ["id"] = (long)failed["id"]! }))!;
+        Check.Equal(500, (int)failedDetail["errorDetail"]!["status"]!);
+        Check.Equal("server_error", failedDetail["errorDetail"]!["type"].Str());
+
+        // the caller stops reading (a steer): cancelled
+        await foreach (var _ in mw.InvokeAsync(Request(), (_, c) => Stream([Yield(new TextDelta("a")), Yield(new TextDelta("b"))], c), CancellationToken.None))
+            break;
+        Check.Equal("cancelled", ((JsonArray)(await ctx.RpcFake.Call("diag.calls"))!)[0]!["state"].Str());
+
+        // in progress: listed as running, then done
+        var gate = new TaskCompletionSource();
+        var slow = Drain(mw.InvokeAsync(Request("ses_2"), (_, c) => Stream(
+            [async () => { await gate.Task; return new TextDelta("late"); }, Yield(new StreamCompleted(new ChatMessage { Role = MessageRole.Assistant }))], c), CancellationToken.None));
+        for (var i = 0; i < 100 && ((JsonArray)(await ctx.RpcFake.Call("diag.calls", new JsonObject { ["running"] = true }))!).Count == 0; i++) await Task.Delay(20);
+        var running = ((JsonArray)(await ctx.RpcFake.Call("diag.calls", new JsonObject { ["running"] = true }))!).Single()!;
+        Check.Equal("ses_2", running["sessionId"].Str());
+        Check.True(running["firstTokenMs"] is null, "no token yet");
+        gate.SetResult();
+        await slow;
+        Check.Equal("ok", ((JsonArray)(await ctx.RpcFake.Call("diag.calls", new JsonObject { ["sessionId"] = "ses_2" }))!).Single()!["state"].Str());
+    }
+
+    private static async Task JournalAndTools()
+    {
+        var ctx = await StartAsync();
+        ctx.Events.Publish(EventTypes.StreamDelta, new JsonObject { ["text"] = "token" }, "ses_1");
+        ctx.Events.Publish(EventTypes.MessageAdded, new JsonObject
+        {
+            ["message"] = new JsonObject
+            {
+                ["role"] = "assistant", ["seq"] = 3, ["stopReason"] = "stop", ["meta"] = new JsonObject { ["kind"] = "notice-kind" },
+                ["parts"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "hello world " + new string('x', 400) }),
+            },
+        }, "ses_1");
+        ctx.Events.Publish(EventTypes.ToolStart, new JsonObject { ["sessionId"] = "ses_1", ["agentId"] = "agt_1", ["callId"] = "c1", ["name"] = "bash", ["arguments"] = "{\"command\":\"ls -la\"}" }, "ses_1");
+        ctx.Events.Publish(EventTypes.ToolEnd, new JsonObject { ["sessionId"] = "ses_1", ["callId"] = "c1", ["name"] = "bash", ["isError"] = true, ["durationMs"] = 12 }, "ses_1");
+        ctx.Events.Publish(EventTypes.ToolStart, new JsonObject { ["sessionId"] = "ses_1", ["callId"] = "c2", ["name"] = "read", ["arguments"] = "{}" }, "ses_1");
+
+        var journal = (JsonArray)(await ctx.RpcFake.Call("diag.journal", new JsonObject { ["sessionId"] = "ses_1" }))!;
+        Check.Equal("message.added,tool.start,tool.end,tool.start", string.Join(",", journal.Select(e => e!["type"].Str())), "oldest first, no stream.delta");
+        var msg = journal[0]!["data"]!;
+        Check.Equal("assistant", msg["role"].Str());
+        Check.Equal("notice-kind", msg["kind"].Str());
+        Check.True(msg["text"].Str()!.Length <= 161 && msg["text"].Str()!.StartsWith("hello world"), "a preview, not the message");
+
+        var tools = (JsonArray)(await ctx.RpcFake.Call("diag.tools"))!;
+        Check.Equal("c2,c1", string.Join(",", tools.Select(t => t!["callId"].Str())), "newest first");
+        Check.Equal("running", tools[0]!["state"].Str());
+        Check.Equal("error", tools[1]!["state"].Str());
+        Check.Equal(12L, (long)tools[1]!["durationMs"]!);
+        Check.Contains(tools[1]!["arguments"].Str(), "ls -la");
+        Check.Equal(1, ((JsonArray)(await ctx.RpcFake.Call("diag.tools", new JsonObject { ["errors"] = true }))!).Count);
+    }
+
+    private sealed class FakeScheduler(List<AgentSlots> slots) : IAgentScheduler
+    {
+        public string Resolve(ModelInfo model) => model.Ref;
+        public IReadOnlyList<AgentSlots> Snapshot() => slots;
+        public ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct) => throw new NotSupportedException();
+        public bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease) { lease = null; return false; }
+    }
+
+    private static async Task Problems()
+    {
+        var ctx = new FakePluginContext(pluginId: "netpi.diagnostics");
+        var pm = new FakePluginManager();
+        var broken = FakePluginManager.Info("netpi.broken", "Broken");
+        broken.State = "failed";
+        broken.Error = "TypeLoadException: IOld";
+        pm.Plugins.Add(broken);
+        ctx.ServicesFake.Register<IPluginManager>(pm);
+        var long_ = DateTimeOffset.UtcNow.AddMinutes(-3);
+        ctx.ServicesFake.Register<IAgentScheduler>(new FakeScheduler(
+        [
+            new AgentSlots
+            {
+                Key = "qwen", Configured = true, Model = "aiproxy/qwen", Capacity = 2, Available = false, Unavailable = "qwen isn't loaded",
+                Waiters = [new SlotHolder { AgentId = "agt_w", Label = "story-b", Since = long_ }],
+            },
+        ]));
+        ctx.Rpc.Register("logs.recent", (_, _) => Task.FromResult<object?>(new JsonArray(
+            new JsonObject { ["time"] = DateTimeOffset.Now.ToString("O"), ["level"] = "err", ["category"] = "plugin:x", ["message"] = "bad thing" },
+            new JsonObject { ["time"] = DateTimeOffset.Now.AddHours(-2).ToString("O"), ["level"] = "err", ["category"] = "old", ["message"] = "long ago" })));
+        await new DiagnosticsPlugin().StartAsync(ctx, CancellationToken.None);
+
+        var problems = (JsonArray)(await ctx.RpcFake.Call("diag.problems"))!;
+        string Find(string text) => problems.Select(p => $"{p!["severity"]} {p["message"]}").FirstOrDefault(p => p.Contains(text)) ?? throw new AssertException($"no problem with '{text}': {problems.ToJsonString()}");
+        Check.True(Find("netpi.broken failed").StartsWith("error"));
+        Check.True(Find("wait on agent qwen, which can't take work: qwen isn't loaded").StartsWith("error"));
+        Check.True(Find("story-b (agt_w) has waited").StartsWith("warn"));
+        Check.Contains(Find("1 error(s) logged"), "bad thing");
+        Check.Equal("error", problems[0]!["severity"].Str(), "worst first");
+    }
+
+    private static async Task SettingsFailuresOverview()
+    {
+        var ctx = await StartAsync();
+        ctx.SettingsFake.Set("providers.openrouter.apiKey", "sk-or-123456");
+        ctx.SettingsFake.Set("providers.anthropic.apiKey", "env:ANTHROPIC_API_KEY");
+        ctx.SettingsFake.Set("providers.custom.password", "");
+        ctx.SettingsFake.Set("tools.web.searxUrl", "http://127.0.0.1:8888");
+        var settings = ((JsonObject)(await ctx.RpcFake.Call("diag.settings"))!)["settings"]!;
+        Check.Equal("<secret, 12 chars>", settings["providers"]!["openrouter"]!["apiKey"].Str());
+        Check.Equal("env:ANTHROPIC_API_KEY", settings["providers"]!["anthropic"]!["apiKey"].Str(), "a reference is not a secret");
+        Check.Equal("", settings["providers"]!["custom"]!["password"].Str());
+        Check.Equal("http://127.0.0.1:8888", settings["tools"]!["web"]!["searxUrl"].Str());
+
+        var dir = Path.Combine(ctx.Paths.LogsDir, "failed-requests");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "20260925-024000-000-qwen.json"), new JsonObject
+        {
+            ["time"] = "2026-09-25T02:40:00+02:00", ["provider"] = "aiproxy", ["model"] = "qwen", ["requestId"] = "req_1",
+            ["error"] = new JsonObject { ["message"] = "backend_unavailable", ["status"] = 503 }, ["request"] = new JsonObject { ["input"] = "long" },
+        }.ToJsonString());
+        var failures = (JsonArray)(await ctx.RpcFake.Call("diag.failures"))!;
+        Check.Equal("20260925-024000-000-qwen.json", failures.Single()!["name"].Str());
+        Check.Equal("req_1", failures[0]!["requestId"].Str());
+        Check.Equal(503, (int)failures[0]!["error"]!["status"]!);
+        Check.False(((JsonObject)failures[0]!).ContainsKey("request"), "the list leaves the body out");
+        var one = (JsonObject)(await ctx.RpcFake.Call("diag.failure", new JsonObject { ["name"] = "20260925-024000-000-qwen.json" }))!;
+        Check.Contains(one["content"].Str(), "\"input\"");
+        var bad = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("diag.failure", new JsonObject { ["name"] = "../settings.json" }));
+        Check.Equal("bad_request", bad.Code);
+
+        var overview = (JsonObject)(await ctx.RpcFake.Call("diag.overview"))!;
+        foreach (var key in new[] { "app", "process", "plugins", "models", "agents", "runs", "calls", "tools", "problems", "more" })
+            Check.True(((JsonObject)overview).ContainsKey(key), key);
+        Check.True((int)overview["process"]!["pid"]! > 0);
+        Check.True(((JsonArray)overview["more"]!).Any(m => m.Str()!.StartsWith("diag.calls: ")), "it points at the other diag methods");
+    }
+}

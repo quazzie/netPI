@@ -155,6 +155,17 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `processes.kill` | netpi.tools.shell | `{ id }` → `bool` |
 | `ideas.list` `ideas.get` `ideas.add` `ideas.update` `ideas.delete` `ideas.reorder` `ideas.toPrompt` `ideas.quickAdd` | netpi.ideas | see `docs/PLUGIN-IDEAS.md` |
 | `work.snapshot` | netpi.work | → `{ agents, runs, processes, usage, time, errors? }` (each part `null` when unavailable; see `docs/PLUGIN-WORK.md`) |
+| `diag.overview` | netpi.diagnostics | → `{ time, app, process, plugins, models, agents, runs, calls: { running, last15m }, tools, processes, problems, more }`: start here (see `docs/DEBUGGING.md`) |
+| `diag.problems` | netpi.diagnostics | → `{ severity: 'error'|'warn'|'info', area, message, hint? }[]`, worst first |
+| `diag.calls` | netpi.diagnostics | `{ limit?, sessionId?, runId?, agent?, errors?, running?, detail? }` → `{ id, startedAt, state: running|ok|error|cancelled|incomplete, model, purpose, agent, sessionId, runId, firstTokenMs, durationMs, attempts, inputTokens, cacheReadTokens, outputTokens, stopReason, error }[]` (newest first) |
+| `diag.call` | netpi.diagnostics | `{ id }` → the `diag.calls` fields plus `reasoningEffort, request: { messages, tools, systemPromptChars, inputChars, lastUser }, response: { textChars, thinkingChars, toolCalls, cacheWriteTokens, reasoningTokens, costUsd }, resets, notices, errorDetail?: { type, status, transient, contextOverflow }` |
+| `diag.tools` | netpi.diagnostics | `{ limit?, sessionId?, name?, errors?, running? }` → `{ callId, name, sessionId, runId, startedAt, state, durationMs, arguments }[]` |
+| `diag.journal` | netpi.diagnostics | `{ limit?, type?, sessionId?, sinceSeq? }` → `{ seq, time, type, sessionId, source, data }[]` oldest first, no per-token events, `data` summed up |
+| `diag.run` | netpi.diagnostics | `{ sessionId | agentId }` → `{ run, statusSince, session, slot, queue, children, calls, tools, journal, messages }` |
+| `diag.settings` | netpi.diagnostics | → `{ file, settings }` without secrets |
+| `diag.logs` | netpi.diagnostics | `{ limit?, level?, category?, contains?, sinceMinutes? }` → log entries, oldest first |
+| `diag.failures` | netpi.diagnostics | `{ limit? }` → the saved failed requests: `{ name, time, bytes, provider, model, sessionId, transport, requestId, responseId, error }[]` |
+| `diag.failure` | netpi.diagnostics | `{ name, maxChars? }` → `{ name, bytes, truncated, content }` |
 | `diag.snapshot` | netpi.diagnostics | `{ events? }` → `{ plugins, tools, rpc, events, logs, runtime, time }` (see `docs/PLUGIN-DIAGNOSTICS.md`) |
 | `diag.event` | netpi.diagnostics | `{ seq }` → `{ seq, type, sessionId?, time, source?, ui, data }` |
 | `diag.reload` | netpi.diagnostics | `{ args?: pluginId }` → `string` (`/reload`; no id = all plugins) |

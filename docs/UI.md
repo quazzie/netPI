@@ -89,7 +89,7 @@ web/
 plugins/<P>/ui/                  built-in plugin tab sources → plugins/<P>/wwwroot/ui.js
   NetPI.Work/ui/                 WorkTab, AgentPool, AgentNode, RecentAgent, ProcessRow, util.js
   NetPI.Ideas/ui/                IdeasTab, IdeaCard, NewIdea, SectionEditor, model.js
-  NetPI.Diagnostics/ui/          DiagTab + Plugins/Tools/Rpc/Events/Logs/Context views
+  NetPI.Diagnostics/ui/          DiagTab + Plugins/Tools/Rpc/Calls/Events/Logs/Context views
   NetPI.Tools.Files/ui/          FilesTab (left panel)
 ```
 
@@ -435,6 +435,12 @@ open or closed state of each section is remembered (`storageKey`).
 **Diagnostics** (`netpi.diagnostics`, right). `diag.snapshot { events: 300 }` plus a runtime line (pid, working
 set, uptime, threads, framework; the full details are in its tooltip). A segmented control (buttons carry
 `data-value`) switches views, and the last view is remembered.
+
+- **Problems:** `diag.problems`, polled every 5s while visible; when there are errors or warnings a strip above the views
+  shows how many and the worst one, and a click lists them all with their hints.
+- **Calls:** `diag.calls { limit: 150 }`, polled every 2s while visible, newest first, with All / Running / Errors: the
+  state, the model, time to the first token, the duration, the agent, tokens and the error. A click shows `diag.call`
+  (the request's size, the response, retries, the error's status) and opens the chat.
 
 - **Plugins:** filter, state counts, failed plugins first with their error, a reload button
   (`diag.reload { args: id }`), and a ⋯ menu with Reload, Enable/Disable (`plugins.setEnabled`), Copy id, Copy

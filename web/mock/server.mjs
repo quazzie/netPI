@@ -167,6 +167,16 @@ function agentPools() {
   const others = pools.filter((p) => (p.busy || p.queued) && !p.models.every((m) => onModel.has(m))).map((p) => ({ ...p, configured: false, available: true }));
   return [...agents, ...others];
 }
+/** Sample model calls for diag.calls: one running, one finished after a retry, one failed. */
+function mockCalls() {
+  const at = (s) => new Date(Date.now() - s * 1000).toISOString();
+  return [
+    { id: 3, startedAt: at(4), state: 'running', model: 'aiproxy/qwen3.8-27b', purpose: 'agent', agent: 'qwen', sessionId: null, runId: 'agt_s', firstTokenMs: 900, durationMs: 4000, attempts: 1 },
+    { id: 2, startedAt: at(60), state: 'ok', model: 'aiproxy/qwen3.8-27b', purpose: 'agent', agent: 'qwen', sessionId: null, runId: 'agt_m', firstTokenMs: 1400, durationMs: 22800, attempts: 2, inputTokens: 4200, cacheReadTokens: 38000, outputTokens: 910, stopReason: 'tool_use' },
+    { id: 1, startedAt: at(300), state: 'error', model: 'aiproxy/qwen38-27b-iq3s', purpose: 'agent', agent: null, sessionId: null, runId: 'agt_t', firstTokenMs: null, durationMs: 310, attempts: 1, error: 'HTTP 503 backend_unavailable [x-request-id: req_7f2]' },
+  ];
+}
+
 function budgetStatus() {
   const b = store.settings.budget ?? {};
   const now = new Date();
@@ -574,6 +584,25 @@ const handlers = {
     runtime: diag.runtime(),
     time: new Date().toISOString(),
   }),
+  // the inspection RPCs (docs/DEBUGGING.md), with sample data: a running call, a finished one, a failed one
+  'diag.problems': () => [
+    { severity: 'warn', area: 'agents', message: 'reviewer (agt_r) has waited 2 min for qwen (2/2 busy: surveyor, Index docs for semantic search).', hint: 'diag.run { agentId } of the holders: are they stuck?' },
+    { severity: 'info', area: 'agents', message: "Agent gemma is inactive: gemma-4 isn't loaded." },
+  ],
+  'diag.calls': (p = {}) => mockCalls().filter((c) => (!p.errors || c.state === 'error') && (!p.running || c.state === 'running')),
+  'diag.call': (p) => {
+    const c = mockCalls().find((x) => x.id === Number(p?.id));
+    if (!c) throw new RpcError('not_found', `Call ${p?.id} is no longer in the call log`);
+    return {
+      ...c,
+      reasoningEffort: 'medium',
+      request: { messages: 42, tools: 21, systemPromptChars: 9400, inputChars: 180000, lastUser: 'Run the tests and fix whatever fails.' },
+      response: { textChars: 1810, thinkingChars: 2600, toolCalls: ['bash'] },
+      resets: c.attempts > 1 ? ['8400 ms: connection lost'] : [],
+      notices: [],
+      errorDetail: c.error ? { type: 'server_error', status: 503, transient: true } : undefined,
+    };
+  },
   'diag.event': (p) => {
     const e = recent.find((x) => x.seq === Number(p?.seq));
     if (!e) throw new RpcError('not_found', `Event ${p?.seq} is no longer in the buffer`);

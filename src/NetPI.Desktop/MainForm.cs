@@ -170,7 +170,9 @@ internal sealed class MainForm : Form
         catch (Exception ex)
         {
             ShowStatus("netPI could not start:\n\n" + ex.Message);
-            MessageBox.Show(this, ex.ToString(), "netPI failed to start", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            // another NetPI on this home says so in its message; anything unexpected shows its stack too
+            MessageBox.Show(this, ex.Message.StartsWith("NetPI is already running", StringComparison.Ordinal) ? ex.Message : ex.ToString(),
+                "netPI failed to start", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 

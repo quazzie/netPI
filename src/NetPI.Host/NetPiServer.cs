@@ -52,6 +52,8 @@ public sealed class NetPiServer : IAsyncDisposable
             await kernel.Plugins.StartAsync(ct).ConfigureAwait(false);
             kernel.Models.Invalidate();
             kernel.Log.LogInformation("NetPI {Version} ready at {Url} in {Ms} ms (home: {Home})", HostInfo.Version, web.BaseUrl, sw.ElapsedMilliseconds, kernel.Paths.Home);
+            // how tools outside find this run (url and token): docs/DEBUGGING.md
+            ServerFile.Write(kernel.Paths, web.BaseUrl, kernel.Token, options.Desktop, kernel.Log);
             return new NetPiServer(kernel, web);
         }
         catch
@@ -89,6 +91,7 @@ public sealed class NetPiServer : IAsyncDisposable
     private async Task StopCoreAsync()
     {
         _kernel.Log.LogInformation("NetPI stopping");
+        ServerFile.Remove(_kernel.Paths, _kernel.Log);
         try { await _web.DisposeAsync().ConfigureAwait(false); }
         catch (Exception ex) { _kernel.Log.LogWarning(ex, "Stopping the web server failed"); }
         await _kernel.DisposeAsync().ConfigureAwait(false);
