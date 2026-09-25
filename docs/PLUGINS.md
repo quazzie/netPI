@@ -171,4 +171,9 @@ dotnet build plugins\MyPlugin              # while NetPI runs → the plugin hot
 npm run build:plugins                      # tab UI → the tab reloads
 ```
 
+`.\build.ps1` works while NetPI runs too. A new host goes in place for the next start (the running files are moved
+into `artifacts\app\.old`). After a contract change every plugin's output changes, and hot-reloaded they would run on
+the old contracts, so they wait in `artifacts\app\.pending` and the next start installs them
+(`PluginManager.InstallPendingBuild`).
+
 `/reload [pluginId]` in the chat, or the Diagnostics tab, reloads plugins on demand.

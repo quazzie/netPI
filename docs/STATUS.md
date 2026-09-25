@@ -48,13 +48,13 @@
 
 ## Not yet verified
 - Agents, the budget, the settings dialog, per-chat tools, profiles and the new compaction in the real app: the host
-  and the contracts changed, so they need NetPI closed, `.\build.ps1` and a restart. Then: the user's lanes becoming
+  and the contracts changed, so they need `.\build.ps1` (it can run while NetPI runs) and a restart. Then: the user's lanes becoming
   agents, the agents following a model switch in AiSwitcher, costs from a paid OpenRouter model (`usage.cost`), and
   whether `qwen3.8-27b` picks agents by their notes and avoids the paid one.
 - Goals with a real model (only the scripted model so far): whether `qwen3.8-27b` follows the continuation
   notices and calls `goal_update` at the right time.
-- The desktop zoom setting (`desktop.zoom`, zoom kept in `window.json`): built, but needs NetPI closed for
-  `.\build.ps1` and a restart.
+- The desktop zoom setting (`desktop.zoom`, zoom kept in `window.json`): built, but needs `.\build.ps1` and a
+  restart.
 - The Anthropic provider was tested against a mock of the Messages API only (the adaptive-thinking request shape
   and the fallback model ids are best guesses; both are configurable).
 - Linux/macOS: the suites last ran in the Linux sandbox, before the Windows work, and have not been re-run since.

@@ -151,6 +151,47 @@ public static class PluginTests
             await Wait.UntilAsync(() => server.Rpc.Exists("sample.value"), "re-enabled");
         });
 
+        // build.ps1 while NetPI runs: plugins built against new contracts wait in .pending, replaced host files in .old
+        r.Add("plugins: the next start installs a build made while NetPI ran (.pending plugins, .old files)", () =>
+        {
+            var app = T.TempDir("pending");
+            void Put(string rel, string text)
+            {
+                var path = Path.Combine(app, rel);
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, text);
+            }
+            string Text(string rel) => File.ReadAllText(Path.Combine(app, rel));
+            Put("plugins/A/A.dll", "old A");
+            Put("plugins/A/stale.txt", "only in the old build");
+            Put("plugins/C/C.dll", "C, unchanged");
+            Put(".pending/plugins/A/A.dll", "new A");
+            Put(".pending/plugins/B/B.dll", "new B");
+            Put(".old/20260925-120000/NetPI.Host.dll", "the host an earlier NetPI ran");
+
+            var log = Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
+            if (OperatingSystem.IsWindows())
+            {
+                // a folder with a file in use can't be moved: that plugin stays pending, the others are installed
+                using (File.Open(Path.Combine(app, "plugins/A/A.dll"), FileMode.Open, FileAccess.Read, FileShare.None))
+                    NetPI.Host.Plugins.PluginManager.InstallPendingBuild(app, log);
+                Check.Equal("old A", Text("plugins/A/A.dll"), "left as it was");
+                Check.Equal("new A", Text(".pending/plugins/A/A.dll"), "still pending");
+                Check.Equal("new B", Text("plugins/B/B.dll"));
+            }
+
+            NetPI.Host.Plugins.PluginManager.InstallPendingBuild(app, log);
+            Check.Equal("new A", Text("plugins/A/A.dll"));
+            Check.False(File.Exists(Path.Combine(app, "plugins/A/stale.txt")), "the whole folder is replaced");
+            Check.Equal("new B", Text("plugins/B/B.dll"));
+            Check.Equal("C, unchanged", Text("plugins/C/C.dll"));
+            Check.False(Directory.Exists(Path.Combine(app, ".pending")), "nothing left pending");
+            Check.False(Directory.Exists(Path.Combine(app, ".old")), "replaced files and plugins are deleted");
+
+            NetPI.Host.Plugins.PluginManager.InstallPendingBuild(app, log); // nothing pending: nothing changes
+            Check.Equal("new A", Text("plugins/A/A.dll"));
+        });
+
         r.Add("plugins: real built plugins (tools + providers) load from artifacts/app/plugins", async () =>
         {
             var root = Path.Combine(T.RepoRoot, "artifacts", "app", "plugins");
