@@ -40,7 +40,7 @@ void RegisterAll(Env e)
     CoreTests.Register(runner, e);
     ControlTests.Register(runner, e);
     HookTests.Register(runner, e);
-    LaneTests.Register(runner, e);
+    SchedulerTests.Register(runner, e);
     AdvancedTests.Register(runner, e);
     RealismTests.Register(runner, e);
     ReloadTests.Register(runner, e);

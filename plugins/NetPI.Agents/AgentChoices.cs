@@ -3,15 +3,15 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace NetPI.Lanes;
+namespace NetPI.Agents;
 
 /// <summary>
 /// <c>agent_choices</c>: the agents the user set up, as an agent that delegates sees them. First the budget, then the
 /// agents (active first, then cheapest: id, model, busy/instances, state, price, today's spend, context window, the user's
-/// note on when to use it), then other model calls in progress. Registered by the lanes plugin, so it disappears (with
+/// note on when to use it), then other model calls in progress. Registered by the agents plugin, so it disappears (with
 /// the agents section of the system prompt) when the plugin is off.
 /// </summary>
-internal sealed class AgentChoicesTool(LaneScheduler scheduler, Ledger ledger) : IAgentTool
+internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) : IAgentTool
 {
     public ToolDefinition Definition { get; } = new()
     {
@@ -31,7 +31,7 @@ internal sealed class AgentChoicesTool(LaneScheduler scheduler, Ledger ledger) :
         var pools = scheduler.Snapshot();
         var runtime = context.Services.Get<IAgentRuntime>();
         var names = runtime?.List(true).ToDictionary(a => a.Id, a => a.Name) ?? [];
-        string Who(LaneOwnerInfo o) => (names.TryGetValue(o.AgentId, out var n) ? n : o.Label ?? "?") + (o.AgentId == context.AgentId ? " (you)" : "");
+        string Who(SlotHolder o) => (names.TryGetValue(o.AgentId, out var n) ? n : o.Label ?? "?") + (o.AgentId == context.AgentId ? " (you)" : "");
 
         var sb = new StringBuilder(ledger.BudgetLine()).Append("\n\n");
         var agents = pools.Where(p => p.Configured)
@@ -57,15 +57,15 @@ internal sealed class AgentChoicesTool(LaneScheduler scheduler, Ledger ledger) :
             if (others.Count > 0) sb.Append("Model calls in progress (busy/slots):\n");
             foreach (var p in others) Line(sb, p, withModels: true, Who);
         }
-        if (runtime?.Get(context.AgentId)?.Pool is { } myPool && agents.Any(p => p.Key == myPool)) sb.Append("\nYou run on the agent ").Append(myPool).Append('.');
+        if (runtime?.Get(context.AgentId)?.Agent is { } mine && agents.Any(p => p.Key == mine)) sb.Append("\nYou run on the agent ").Append(mine).Append('.');
         return Task.FromResult(ToolResult.Ok(sb.ToString().TrimEnd(), new JsonObject
         {
-            ["pools"] = NetPiJson.ToNode(pools),
+            ["agents"] = NetPiJson.ToNode(pools),
             ["budget"] = ledger.BudgetStatus(),
         }));
     }
 
-    private void Line(StringBuilder sb, LanePoolInfo p, bool withModels, Func<LaneOwnerInfo, string> who)
+    private void Line(StringBuilder sb, AgentSlots p, bool withModels, Func<SlotHolder, string> who)
     {
         sb.Append("- ").Append(p.Key);
         if (p.Configured && p.Model is not null) sb.Append(" · ").Append(p.Model);
@@ -96,7 +96,7 @@ internal sealed class AgentChoicesTool(LaneScheduler scheduler, Ledger ledger) :
     }
 }
 
-/// <summary>How agents work, for agents that can start subagents (order 300). Contributed only while the lanes plugin runs.</summary>
+/// <summary>How agents work, for agents that can start subagents (order 300). Contributed only while the agents plugin runs.</summary>
 internal sealed class AgentsPromptSection : IPromptSection
 {
     public string Id => "agents";

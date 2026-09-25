@@ -46,9 +46,9 @@ public static class ContextTests
         var identity = Idx("coding agent running in NetPI");
         var env = Idx("# Environment");
         var tools = Idx("# Tools");
-        var lanes = Idx("# Agents");
+        var agents = Idx("# Agents");
         var role = Idx("# Your role");
-        Check.True(identity < env && env < tools && tools < lanes && lanes < role, "section order");
+        Check.True(identity < env && env < tools && tools < agents && agents < role, "section order");
         Check.NotContains(prompt, h.Workspace, "no working directory (a notice brings it)");
         Check.NotContains(prompt, "Demo", "no project");
         Check.NotContains(prompt, "fake/local", "no model");
@@ -77,11 +77,11 @@ public static class ContextTests
             return (await h.Services.Get<ISystemPromptBuilder>()!.BuildAsync(Ctx(h, h.NewSession(), tools), CancellationToken.None), tools);
         }
 
-        var (noLanes, noLanesTools) = await Build(TestHost.Plugins.All & ~TestHost.Plugins.Lanes);
-        Check.False(noLanesTools.Any(t => t.Name == "agent_choices"), "agent_choices comes from the lanes plugin");
-        Check.Contains(noLanes, "Delegate independent, well-scoped work", "the agent tools still bring their tips");
-        Check.NotContains(noLanes, "# Agents");
-        Check.NotContains(noLanes, "lane", "nothing about lanes without the lanes plugin");
+        var (noAgents, noAgentsTools) = await Build(TestHost.Plugins.All & ~TestHost.Plugins.Agents);
+        Check.False(noAgentsTools.Any(t => t.Name == "agent_choices"), "agent_choices comes from the agents plugin");
+        Check.Contains(noAgents, "Delegate independent, well-scoped work", "the agent tools still bring their tips");
+        Check.NotContains(noAgents, "# Agents");
+        Check.NotContains(noAgents, "agent_choices", "nothing about the agents without the agents plugin");
 
         var (noAgentTools, _) = await Build(TestHost.Plugins.All & ~TestHost.Plugins.AgentTools);
         Check.NotContains(noAgentTools, "agent_spawn", "no delegation tips without the agent tools");
@@ -415,7 +415,7 @@ public static class ContextTests
         }
 
         // without the context plugin the runtime uses its minimal built-in prompt
-        await using var h2 = await TestHost.StartAsync(plugins: TestHost.Plugins.Lanes | TestHost.Plugins.Agent);
+        await using var h2 = await TestHost.StartAsync(plugins: TestHost.Plugins.Agents | TestHost.Plugins.Runtime);
         var s2 = h2.NewSession();
         await h2.SendAsync(s2.Id, "hi");
         await h2.IdleAsync(s2.Id);
@@ -423,6 +423,6 @@ public static class ContextTests
         Check.Contains(fallback, "NetPI");
         Check.Contains(fallback, "Working directory: " + h2.Workspace);
         Check.NotContains(fallback, DateTimeOffset.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), "no date in the built-in prompt");
-        Check.Equal("agent_choices", string.Join(",", h2.Catalog.Requests.Single().Tools.Select(t => t.Name)), "only the lanes plugin's tool");
+        Check.Equal("agent_choices", string.Join(",", h2.Catalog.Requests.Single().Tools.Select(t => t.Name)), "only the agents plugin's tool");
     }
 }

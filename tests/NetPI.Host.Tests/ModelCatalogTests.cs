@@ -74,7 +74,8 @@ public static class ModelCatalogTests
             Check.Equal("unknown", (await catalog.FindAsync("fake/unlisted"))!.Status, "unlisted id of a known provider");
             Check.True(await catalog.FindAsync("nope/x") is null);
 
-            Check.Equal("aiproxy/qwen3.8-27b", catalog.DefaultModelRef, "settings.defaultModel");
+            settings.Set("defaultModel", "other/org/c");
+            Check.Equal("other/org/c", catalog.DefaultModelRef, "settings.defaultModel");
             settings.Set("defaultModel", null);
             Check.Equal("fake/b", catalog.DefaultModelRef, "first loaded local model");
 

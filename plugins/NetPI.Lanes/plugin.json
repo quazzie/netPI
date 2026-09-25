@@ -1,5 +1,0 @@
-{
-  "id": "netpi.lanes",
-  "name": "Lanes",
-  "description": "Lane scheduler: parallel slots per model pool, priority queueing, daily usage and token budgets."
-}

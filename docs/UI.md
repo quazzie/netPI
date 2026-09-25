@@ -253,7 +253,7 @@ Timings from `npm run e2e` against the mock (headless Chromium):
 - `@` opens a file popup backed by `files.search`; picking a file inserts `@rel/path`.
 - Images can be attached with the button, pasted or dropped. They show as thumbnails and are sent as
   `{ mediaType, data }`.
-- The agent picker (`AgentPicker`, from `lanes.list` / `lanes.changed`: `app.pools`) shows the chat's agent with its
+- The agent picker (`AgentPicker`, from `agents.list` / `agents.changed`: `app.slots`) shows the chat's agent with its
   state dot; a chat without one shows the agent it would take (the first on its model), or "Choose an agent". The menu
   lists the agents (state: ready, busy, N waiting, not loaded, switched off; busy/instances; price), filters past three,
   and ends with **New agent…** (`ModelMenu`: the model list grouped by provider with status, context and slots, also
@@ -292,7 +292,7 @@ the same Esc stack, `escLayer()` in `Modal.svelte`).
   loaded / busy, instances, price); `AgentDialog` edits one: its name (a new name moves it), on/off (`input.np-switch`,
   with its state), the model with the searchable list, instances (default: the model's slots, 1 on a cloud model; a
   warning when the agents on one local model have more instances than it serves), the note on when to use it, price
-  overrides and a daily cap; the price, context, local/cloud and today's spend come from `lanes.list`. "Add agent" opens
+  overrides and a daily cap; the price, context, local/cloud and today's spend come from `agents.list`. "Add agent" opens
   the model list and then the new agent's dialog (the id is a slug of the model). `BudgetView` shows this period against the monthly
   and daily budgets and what each model cost (`usage.summary`), above the budget settings.
 - **Profiles:** `ProfilesEditor` has "New chats start with" (`profiles.defaultProfile`) and one row per profile (its name,
@@ -374,9 +374,9 @@ Per-tab narrow layouts:
 
 - **Sessions:** search box and **+** share one row. Line 2 shows the project · message count · `› N`
   subagents (the word "subagents" only when the panel is ≥ 260px). Subagent rows are one line.
-- **Work:** a pool reads `model provider` (so truncation eats the provider), with a status pill. Line 2 shows
-  `busy/capacity`, pips and `+queued`, plus the models only when they differ from the pool. Agents use three
-  lines: name + activity + elapsed, title or task, and meta. A process shows its command + elapsed/exit, then
+- **Work:** an agent reads its name, a status pill and its switch; line 2 shows `busy/instances` and the model (a model
+  call without an agent: the model, then `busy/slots` and the provider). Runs use three lines: name + activity +
+  elapsed, title or task, and meta. A process shows its command + elapsed/exit, then
   pid · bg · size · cwd … time ago.
 - **Ideas:** a full-width title, a 2-line summary, then one meta line: status pill · priority · tags ·
   sections · time. In an expanded card the actions are **Send to chat**, **+ Section**, edit, and ⋯ (move
@@ -410,7 +410,7 @@ open or closed state of each section is remembered (`storageKey`).
   that calls `processes.kill`.
 - **Usage today:** this month's spend on paid models against the budget (`usage.summary.budget`: a bar, today's spend,
   "spent" when it is), then per provider input ↑, output ↓, cache read, plus a token budget bar when `budgetTokens` is set.
-- Updates: `agent.status`, `lanes.changed` and `process.started/exited` are applied in place, and a debounced
+- Updates: `agent.status`, `agents.changed` and `process.started/exited` are applied in place, and a debounced
   `work.snapshot` (250ms; 400ms after `usage.recorded` and `usage.changed`) reconciles them. A 30s timer refreshes the snapshot
   while the tab is visible; while it is hidden, events only mark it dirty and it refreshes on show.
 
@@ -487,7 +487,7 @@ export function mount(el, ctx) {
   import { Section, StatusDot, TimeAgo, Empty } from '@netpi/kit';
   let { ctx } = $props();
   let agents = $state([]);
-  export async function refresh() { agents = await ctx.rpc('agents.list', {}); }
+  export async function refresh() { agents = await ctx.rpc('runs.list', {}); }
   onMount(() => {
     refresh();
     return ctx.on('agent.status', ({ agent }) => {
@@ -610,7 +610,7 @@ names or an inline `<svg …>` string.
   archived list and unarchiving depend on it.
 - `sessions.update { model: '' }` and `{ reasoning: '' }` must reset to the default. The UI sends an empty
   string for "default".
-- `agents.list { includeFinished: true }` is called at startup to seed the status dots, including failed and
+- `runs.list { includeFinished: true }` is called at startup to seed the status dots, including failed and
   completed subagents.
 - Scoped events carry a non-null `sid`. The UI also falls back to `d.sessionId`.
 - `agent.status` is broadcast whenever `status` **or** `activity` changes. The header shows
@@ -635,5 +635,5 @@ names or an inline `<svg …>` string.
   today it reloads the tail instead.
 - A `UiTabInfo.panel` sent as a number (enum without a string converter) is accepted: `0` is left, `1` is right.
 - The Work tab reads `usage.summary` providers' `budgetTokens` and `budgetUsed` (input + output + cache write),
-  `LanePoolInfo.status`/`available`/`unavailable`/`disabled`, `LaneOwner.label`/`since`, and `ProcessInfo.outputBytes`/`background`/`agentId`.
+  `AgentSlots.status`/`available`/`unavailable`/`disabled`, `SlotHolder.label`/`since`, and `ProcessInfo.outputBytes`/`background`/`agentId`.
 - The Ideas tab expects `ideas.changed { file }` after every write, including writes made by agents.

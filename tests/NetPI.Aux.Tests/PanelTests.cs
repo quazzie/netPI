@@ -16,7 +16,7 @@ public static class PanelTests
             var tab = ctx.UiFake.TabList.Single();
             Check.True(tab is { Id: "work", Title: "Work", Panel: UiPanel.Right, Icon: "work", Order: 10 });
             var snap = (JsonObject)(await ctx.RpcFake.Call("work.snapshot"))!;
-            foreach (var key in new[] { "lanes", "agents", "processes", "usage" })
+            foreach (var key in new[] { "agents", "runs", "processes", "usage" })
                 Check.True(snap.ContainsKey(key) && snap[key] is null, key);
             Check.True(DateTimeOffset.TryParse(snap["time"].Str(), out _));
             Check.False(snap.ContainsKey("errors"));
@@ -26,19 +26,19 @@ public static class PanelTests
         {
             var ctx = new FakePluginContext();
             await new WorkPlugin().StartAsync(ctx, CancellationToken.None);
-            JsonElement agentsParams = default;
-            ctx.Rpc.Register("lanes.list", (_, _) => Task.FromResult<object?>(new List<LanePoolInfo> { new() { Key = "test/m1", Capacity = 2, Busy = 1 } }));
-            ctx.Rpc.Register("agents.list", (req, _) =>
+            JsonElement runsParams = default;
+            ctx.Rpc.Register("agents.list", (_, _) => Task.FromResult<object?>(new List<AgentSlots> { new() { Key = "test/m1", Capacity = 2, Busy = 1 } }));
+            ctx.Rpc.Register("runs.list", (req, _) =>
             {
-                agentsParams = req.Params.Clone();
+                runsParams = req.Params.Clone();
                 return Task.FromResult<object?>(new List<AgentInfo> { new() { Id = "agt_1", Name = "main", Status = AgentStatus.Running } });
             });
             ctx.Rpc.Register("processes.list", (_, _) => throw new InvalidOperationException("registry gone"));
             var snap = (JsonObject)(await ctx.RpcFake.Call("work.snapshot"))!;
-            Check.Equal("test/m1", snap["lanes"]![0]!["key"].Str());
-            Check.Equal(2, (int)snap["lanes"]![0]!["capacity"]!);
-            Check.Equal("running", snap["agents"]![0]!["status"].Str());
-            Check.True(agentsParams.GetProperty("includeFinished").GetBoolean(), "agents.list gets includeFinished:true");
+            Check.Equal("test/m1", snap["agents"]![0]!["key"].Str());
+            Check.Equal(2, (int)snap["agents"]![0]!["capacity"]!);
+            Check.Equal("running", snap["runs"]![0]!["status"].Str());
+            Check.True(runsParams.GetProperty("includeFinished").GetBoolean(), "runs.list gets includeFinished:true");
             Check.True(snap["processes"] is null);
             Check.Contains(snap["errors"]!["processes"].Str(), "registry gone");
             Check.True(snap["usage"] is null);

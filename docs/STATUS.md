@@ -5,7 +5,7 @@
 - Unit suites (Debug, built into a scratch app folder while NetPI ran): Providers 41 (330 checks), Tools 54, Agent 84,
   Aux 100, Host 38, all passing.
 - E2E suite: 56 tests / 716 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
-  (`npm run e2e`) 185/185.
+  (`npm run e2e`) 186/186.
 - Plugins hot-reload while NetPI runs (they load from shadow copies); only the host DLLs are locked. `build.ps1` then
   builds everything except the host, and a rebuild after a commit no longer reloads unchanged plugins.
 - Real model (AiProxy → nInfer `qwen3.8-27b`, 2 slots, before agents replaced lanes): two concurrent agents, one spawning a subagent, the other
@@ -27,9 +27,9 @@
 - Goals, with the real runner and a scripted model (Agent suite): the loop until `goal_update` complete, and the
   pauses on stop, failure (also before the first model call), no progress, `goal.maxContinuations` and the token
   budget; notices after edits, resumes and compaction. The UI mock covers `/goal`, the strip, pause and resume.
-- Lanes, the budget and the settings dialog, with the real runner and a scripted model (Agent, Host and E2E suites)
-  and the UI mock: every model call recorded with its cost, the monthly, daily and per-lane stops, "ask" and going
-  over; `agent_spawn { lane }` from a local agent onto a cloud lane; settings saved and reset from the dialog; tools
+- The budget and the settings dialog, with the real runner and a scripted model (Agent, Host and E2E suites)
+  and the UI mock: every model call recorded with its cost, the monthly, daily and per-agent stops, "ask" and going
+  over; `agent_spawn { agent }` from a local agent onto a cloud agent; settings saved and reset from the dialog; tools
   switched per chat (before the first message, mid-chat with a notice, inherited by subagents).
 - Agents, with the real runner and a scripted model (Agent, Host and E2E suites) and the UI mock: agents listed with
   their states (instances from the catalog, switched off, a model not loaded, not listed), agents on one local model
@@ -65,7 +65,7 @@
 - Per-turn cache reuse and TTFT are not shown in the UI (usage is in each assistant message; TTFT is not recorded).
 - Steering an orchestrator that is waiting on its workers makes it stop waiting, but it still needs an instance of its
   agent back; if its own workers hold every one, the reply waits for one of them to finish.
-- Reloading the agents plugin (`netpi.lanes`) mid-run can briefly let an agent run more than its instances.
+- Reloading the agents plugin (`netpi.agents`) mid-run can briefly let an agent run more than its instances.
 - A chat on an inactive agent (its model not loaded) stops with a notice; it doesn't wait for the model.
 - Small context windows are tight: with every plugin on, the system prompt and the 36 tool schemas take about 7k tokens.
   Switch tools off per chat to make room; compaction keeps fewer recent messages when that overhead is large.
@@ -75,7 +75,7 @@
   carries the new tools' guidelines.
 - `screenshot` without a url needs the desktop app's `desktop.capture` (a desktop shell built after 2026-09-24); in the
   headless server it asks for a url.
-- Not built from the lanes plan: a dollar budget for goals (`goal.budgetUsd`) and a "test" button per provider.
+- Not built from the lanes/budget plan: a dollar budget for goals (`goal.budgetUsd`) and a "test" button per provider.
 - `sessions.messages` has no `afterSeq`: after paging far back, "jump to latest" reloads the newest page.
 - Projects live in the host (the store, the `projects.*` RPC and the Projects panel); only what the model is told about
   them comes from plugins. Moving projects entirely into a plugin was discussed on 2026-09-24 but not decided.

@@ -61,7 +61,7 @@ public sealed class CompactionPlugin : INetPiPlugin
                 Mode = CompactionMode.Manual,
                 Instructions = req.Str("args") ?? req.Str("instructions"),
                 AgentId = agent?.Id,
-                HoldsLane = false,
+                HoldsSlot = false,
                 TokensBefore = session.ContextTokens > 0
                     ? Math.Max(session.ContextTokens, CompactionPlanner.Estimate(context.Sessions.GetContextMessages(sessionId)))
                     : null,
@@ -110,7 +110,7 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
             var result = await service.CompactAsync(new CompactionRequest
             {
                 SessionId = run.Session.Id, Model = run.Model, Mode = CompactionMode.Auto, OverheadTokens = overhead,
-                TokensBefore = estimate, AgentId = run.Agent.Id, HoldsLane = true,
+                TokensBefore = estimate, AgentId = run.Agent.Id, HoldsSlot = true,
             }, run.CancellationToken).ConfigureAwait(false);
             if (!result.Compacted) return;
             await turn.ReloadMessagesAsync().ConfigureAwait(false);
@@ -144,7 +144,7 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
             {
                 SessionId = run.Session.Id, Model = run.Model, Mode = CompactionMode.Overflow, OverheadTokens = overhead,
                 TokensBefore = Math.Max(EstimateContext(turn, overhead), CompactionService.WindowFor(run.Model, o)),
-                AgentId = run.Agent.Id, HoldsLane = true,
+                AgentId = run.Agent.Id, HoldsSlot = true,
             }, run.CancellationToken).ConfigureAwait(false);
             if (!result.Compacted) return null;
             await turn.ReloadMessagesAsync().ConfigureAwait(false);

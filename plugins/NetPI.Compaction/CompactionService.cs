@@ -57,8 +57,8 @@ public sealed class CompactionRequest
     /// <summary>Extra focus instructions for the summary (/compact args).</summary>
     public string? Instructions { get; init; }
     public string? AgentId { get; init; }
-    /// <summary>The caller already holds a lane of <see cref="Model"/>'s pool (the agent loop).</summary>
-    public bool HoldsLane { get; init; }
+    /// <summary>The caller already holds a slot for <see cref="Model"/> (the agent loop).</summary>
+    public bool HoldsSlot { get; init; }
 }
 
 public sealed class CompactionResult
@@ -149,18 +149,18 @@ public sealed class CompactionService(IPluginContext ctx)
             else ctx.Logger.LogWarning("compaction.model '{Model}' not found; using {Fallback}", modelRef, req.Model.Ref);
         }
 
-        ILaneLease? lease = null;
-        var lanes = ctx.Services.Get<ILaneScheduler>();
-        if (lanes is not null)
+        IAgentSlot? lease = null;
+        var scheduler = ctx.Services.Get<IAgentScheduler>();
+        if (scheduler is not null)
         {
             // the chat's own model: its run already holds the slot (another slot on the same local model could wait forever)
-            if (!req.HoldsLane || !string.Equals(summarizer.Ref, req.Model.Ref, StringComparison.OrdinalIgnoreCase))
+            if (!req.HoldsSlot || !string.Equals(summarizer.Ref, req.Model.Ref, StringComparison.OrdinalIgnoreCase))
             {
-                var pool = lanes.ResolvePool(summarizer);
-                lease = await lanes.AcquireAsync(new LaneRequest
+                var pool = scheduler.Resolve(summarizer);
+                lease = await scheduler.AcquireAsync(new AgentSlotRequest
                 {
-                    PoolKey = pool, AgentId = req.AgentId ?? $"compaction:{req.SessionId}", SessionId = req.SessionId,
-                    Label = "compaction", Priority = req.HoldsLane ? 100 : 0, Provider = summarizer.Provider,
+                    Key = pool, AgentId = req.AgentId ?? $"compaction:{req.SessionId}", SessionId = req.SessionId,
+                    Label = "compaction", Priority = req.HoldsSlot ? 100 : 0, Provider = summarizer.Provider,
                 }, ct).ConfigureAwait(false);
             }
         }

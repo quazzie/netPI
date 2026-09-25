@@ -1,17 +1,17 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
-namespace NetPI.Agent;
+namespace NetPI.Runtime;
 
 /// <summary>
 /// The agent runtime (<see cref="IAgentRuntime"/>) and its RPC methods: <c>agent.send</c>, <c>agent.abort</c>,
-/// <c>agent.queue</c>, <c>agent.dequeue</c>, <c>agents.list</c>, <c>agent.get</c>, and the per-session tool switches
+/// <c>agent.queue</c>, <c>agent.dequeue</c>, <c>runs.list</c>, <c>agent.get</c>, and the per-session tool switches
 /// <c>agent.tools</c>, <c>agent.setTools</c>.
 /// <para>Settings: <c>agent.maxTurns</c> (200), <c>agent.defaultMaxOutputTokens</c> (16384), <c>agent.maxToolResultChars</c> (20000),
 /// <c>agent.parallelReadOnlyTools</c> (true), <c>agents.maxDepth</c> (3).</para>
 /// </summary>
-[NetPiPlugin("netpi.agent", Name = "Agent runtime", Description = "Model/tool loop, steering and follow-ups, subagents and lanes", Order = 50)]
-public sealed class AgentPlugin : INetPiPlugin
+[NetPiPlugin("netpi.runtime", Name = "Agent runtime", Description = "The model/tool loop of chats and subagents (runs), steering and follow-ups, waiting for subagents", Order = 50)]
+public sealed class RuntimePlugin : INetPiPlugin
 {
     private AgentRuntime? _runtime;
 
@@ -68,7 +68,7 @@ public sealed class AgentPlugin : INetPiPlugin
             Task.FromResult<object?>(runtime.RemoveQueued(req.Required("sessionId"), req.Required("id"))),
             "Remove a pending input: { sessionId, id } → bool");
 
-        context.Rpc.Register("agents.list", (req, _) =>
+        context.Rpc.Register("runs.list", (req, _) =>
             Task.FromResult<object?>(runtime.List(req.Bool("includeFinished") ?? true)),
             "Agents (active and recent): { includeFinished? } → AgentInfo[]");
 

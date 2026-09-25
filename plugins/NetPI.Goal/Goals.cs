@@ -95,7 +95,7 @@ internal sealed class GoalException(string message) : Exception(message);
 
 /// <summary>
 /// Goal state, notices and the continuation loop. When a run ends while the session's goal is active, the next run is
-/// started with a "goal" notice once the agent is idle (a new run, so the lane is released in between and every
+/// started with a "goal" notice once the agent is idle (a new run, so its slot is released in between and every
 /// continuation gets the per-run limits). The runtime, not the model, pauses the goal: on stop, on a failed run, after
 /// <c>goal.noProgressLimit</c> continuation runs without a successful tool call, at <c>goal.maxContinuations</c> and at
 /// the goal's token budget.
@@ -383,7 +383,7 @@ internal sealed class Goals(IPluginContext ctx)
     {
         try
         {
-            await rt.WaitAsync(null, [agentId], yieldLane: false, ct: ctx.Stopping).ConfigureAwait(false);
+            await rt.WaitAsync(null, [agentId], yieldSlot: false, ct: ctx.Stopping).ConfigureAwait(false);
             if (_started.TryGetValue(sessionId, out var started) && started >= run) return; // RunEnded decided
             var now = rt.GetBySession(sessionId);
             PauseQuietly(sessionId, goalId, string.IsNullOrEmpty(now?.Error) ? "Stopped." : $"The run failed: {now.Error}");

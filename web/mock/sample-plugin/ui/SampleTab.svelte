@@ -25,8 +25,8 @@
 
   async function refresh() {
     try {
-      agents = (await ctx.rpc('agents.list', { includeFinished: true })) ?? [];
-      lanes = (await ctx.rpc('lanes.list')) ?? [];
+      agents = (await ctx.rpc('runs.list', { includeFinished: true })) ?? [];
+      lanes = (await ctx.rpc('agents.list')) ?? [];
     } catch (e) {
       ctx.app.toast(`Sample: ${e.message}`, 'error');
     }
@@ -43,7 +43,7 @@
       if (i >= 0) agents[i] = d.agent;
       else agents = [d.agent, ...agents];
     });
-    const offLanes = ctx.on('lanes.changed', (d) => (lanes = d.pools ?? lanes));
+    const offLanes = ctx.on('agents.changed', (d) => (lanes = d.agents ?? lanes));
     return () => {
       offChange();
       offStatus();

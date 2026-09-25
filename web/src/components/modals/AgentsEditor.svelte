@@ -16,7 +16,7 @@
   const configured = $derived(
     Object.entries(doc?.agents ?? {}).filter(([id, v]) => !RESERVED.has(id) && v && typeof v === 'object' && typeof v.model === 'string'),
   );
-  const infoOf = (id) => app.pools.find((p) => p.configured && p.key === id) ?? null;
+  const infoOf = (id) => app.slots.find((p) => p.configured && p.key === id) ?? null;
 
   let openId = $state(null);
   let addBtn = $state();

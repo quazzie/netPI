@@ -40,7 +40,7 @@ public sealed class MyPlugin : INetPiPlugin
         // an RPC method for the UI (and for other plugins: ctx.Rpc.InvokeAsync("my.hello"))
         ctx.Rpc.Register("my.hello", (req, _) => Task.FromResult<object?>(new { hello = req.Str("name") ?? "world" }));
 
-        // listen to the event bus (agent.status, message.added, tool.end, lanes.changed, …)
+        // listen to the event bus (agent.status, message.added, tool.end, agents.changed, …)
         ctx.Events.Subscribe("tool.end", e => ctx.Logger.LogInformation("tool finished: {Data}", e.Data));
 
         // a tab in the right panel, a slash command
@@ -95,7 +95,7 @@ its own (`agent.setTools`, see `docs/TOOLS.md`).
 
 The context plugin only provides a bare base (who the agent is, the environment it runs in, how harness notices look).
 Guidance for a feature comes from the plugin that owns it, so it disappears with the plugin: tool tips as the tool's
-`PromptGuidelines` (listed under "# Tools" while the tool is active), anything else as the plugin's own section (the lanes
+`PromptGuidelines` (listed under "# Tools" while the tool is active), anything else as the plugin's own section (the agents
 plugin adds "# Agents" for agents that can spawn subagents).
 
 ### Never rewrite what was sent
@@ -134,7 +134,7 @@ choice) renders the system prompt again (`context.reset`; the next call re-reads
 | `IPromptSection` | `ctx.Services.Register<IPromptSection>` | system prompt sections |
 | `ToolResultLimit` | `ToolResultLimit.Fit(ctx.Settings, ownCap)` | a tool that pages or tails its own output stays under the tool result limit (the runner saves longer results to a file) |
 | `SettingsSection` | `ctx.Services.Register(new SettingsSection { … })` | the plugin's settings as controls in the settings dialog (`settings.schema`): `SettingInfo.Bool/Int/Number/Str/Text/Secret/Choice/List/ModelRef/Folder/FilePath`; `Group` picks the page (General, Models, Agents, Context, Tools); `Applies` says when a change takes effect (`"restart"`, `"new sessions"`). Show the real default: `Default` for fixed values and built-in texts (the dialog shows a text in full, to edit), `Placeholder` for what is found at runtime (the path found), never a vague "built in" |
-| `ISystemPromptBuilder`, `ILaneScheduler`, `IAgentRuntime` | `ctx.Services.Register<…>(impl, priority)` | replace a core plugin's service |
+| `ISystemPromptBuilder`, `IAgentScheduler`, `IAgentRuntime` | `ctx.Services.Register<…>(impl, priority)` | replace a core plugin's service |
 | RPC / events / HTTP | `ctx.Rpc`, `ctx.Events`, `ctx.Http` | UI and inter-plugin communication |
 | UI tabs / commands | `ctx.Ui` | left/right panel tabs, slash commands |
 

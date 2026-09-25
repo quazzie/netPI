@@ -89,7 +89,9 @@ public static class LoadTests
         var d = new DirectoryInfo(AppContext.BaseDirectory);
         while (d is not null && !File.Exists(Path.Combine(d.FullName, "NetPI.slnx"))) d = d.Parent;
         if (d is null) throw new AssertException("repository root not found");
-        var dir = Path.Combine(d.FullName, "artifacts", "app", "plugins", project);
+        // NETPI_APP_DIR: another build of the app (e.g. a scratch folder while NetPI runs from artifacts/app)
+        var app = Environment.GetEnvironmentVariable("NETPI_APP_DIR") is { Length: > 0 } custom ? custom : Path.Combine(d.FullName, "artifacts", "app");
+        var dir = Path.Combine(app, "plugins", project);
         if (!File.Exists(Path.Combine(dir, project + ".dll"))) throw new AssertException($"{project} is not built ({dir})");
         return dir;
     }

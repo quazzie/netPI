@@ -55,6 +55,18 @@ function Test-FileLocked([string] $path) {
 $app = Join-Path $PSScriptRoot 'artifacts\app'
 $running = Test-FileLocked (Join-Path $app 'NetPI.Host.dll')
 
+# ---- plugins that were renamed (2026-09-25: NetPI.Lanes is NetPI.Agents, NetPI.Agent is NetPI.Runtime): their old
+# output would load next to the new one. A running app keeps them until it is closed and built again.
+if (-not $running) {
+    foreach ($old in 'NetPI.Lanes', 'NetPI.Agent') {
+        $dir = Join-Path $app "plugins\$old"
+        if (Test-Path $dir) {
+            Remove-Item -Recurse -Force $dir
+            Write-Host "Removed the old plugin output $dir" -ForegroundColor Yellow
+        }
+    }
+}
+
 # ---- .NET
 Step "dotnet build ($Configuration)"
 if ($running) {

@@ -23,7 +23,7 @@
   // agents on one local model share its slots: warn when their instances add up to more than it serves
   const sharing = $derived.by(() => {
     if (!m?.isLocal || !m.concurrency) return null;
-    const on = app.pools.filter((p) => p.configured && p.model === agent?.model && !p.disabled);
+    const on = app.slots.filter((p) => p.configured && p.model === agent?.model && !p.disabled);
     const total = on.reduce((n, p) => n + (p.key === id ? (agent?.instances ?? p.capacity) : p.capacity), 0);
     return total > m.concurrency ? { total, slots: m.concurrency, names: on.map((p) => p.key) } : null;
   });

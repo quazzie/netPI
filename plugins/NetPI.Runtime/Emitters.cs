@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 
-namespace NetPI.Agent;
+namespace NetPI.Runtime;
 
 /// <summary>
 /// Coalesces <c>stream.delta</c> events: text of the same kind is buffered and flushed every ~33ms, on a kind change,

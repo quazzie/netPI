@@ -97,8 +97,8 @@ plugins (reload/enable/disable), tools, RPC methods, the live event bus, logs an
 
 ```
 NetPI.exe (WinForms + WebView2) ─┐          ┌─ plugins/ (collectible load contexts, hot reload)
-netpi-server (headless) ─────────┴─ NetPI.Host ─┤   NetPI.Agent        agent loop, steering/queue, subagents, yield
-   Kestrel 127.0.0.1 + WebSocket (token auth)   │   NetPI.Lanes        agents, queueing, the cost ledger, the budget
+netpi-server (headless) ─────────┴─ NetPI.Host ─┤   NetPI.Runtime        agent loop, steering/queue, subagents, yield
+   Kestrel 127.0.0.1 + WebSocket (token auth)   │   NetPI.Agents        agents, queueing, the cost ledger, the budget
    plugin manager · event bus · service/RPC/    │   NetPI.Context      system prompt (frozen per session), project notices
                                                 │   NetPI.Profiles     a chat's opening instructions and tools, a default per project
    tool/UI registries · SQLite · settings ·     │   NetPI.AgentsMd     AGENTS.md / CLAUDE.md, announced as notices

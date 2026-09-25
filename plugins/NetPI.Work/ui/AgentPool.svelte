@@ -4,7 +4,7 @@
    * in use and who runs on them, who waits, and a switch to take it off or back on (agents.setEnabled). Model calls
    * without an agent (a summarizer on another model) show the same way while they run, without the switch.
    */
-  import { Pips, Elapsed, StatusDot } from '@netpi/kit';
+  import { Elapsed, StatusDot } from '@netpi/kit';
   import { shortModel } from './util.js';
 
   let { pool, agentById, titles, ctx } = $props();
@@ -18,7 +18,7 @@
     if (pool.busy) return { dot: 'running', chip: 'busy', tone: 'accent' };
     return { dot: 'loaded', chip: 'ready', tone: 'dim' };
   });
-  // an agent reads "name model"; another model call "model provider": truncation eats the second part
+  // line 1: the agent (another model call: its model); line 2: busy/instances and the model (the provider)
   const slash = $derived(pool.key.indexOf('/'));
   const name = $derived(agent ? pool.key : slash > 0 ? pool.key.slice(slash + 1) : pool.key);
   const second = $derived(agent ? shortModel(pool.model) : slash > 0 ? pool.key.slice(0, slash) : '');
@@ -53,7 +53,7 @@
     title="{agent ? `Agent ${pool.key} on ${pool.model}` : pool.key} — {pool.busy}/{pool.capacity} busy{pool.queued ? `, ${pool.queued} queued` : ''}{pool.use ? `\n${pool.use}` : ''}"
   >
     <StatusDot status={look.dot} />
-    <span class="key np-mono np-grow"><b>{name}</b>{#if second}<span class="second">{second}</span>{/if}</span>
+    <span class="key np-mono np-grow"><b>{name}</b></span>
     <span class="st" data-tone={look.tone}>{look.chip}</span>
     {#if agent}
       <input
@@ -67,14 +67,12 @@
       />
     {/if}
   </div>
+  <div class="cap np-line">
+    <span class="nums np-mono">{pool.busy}/{pool.capacity}</span>
+    {#if second}<span class="second np-mono np-grow" title={agent ? pool.model : pool.provider}>{second}</span>{/if}
+  </div>
   {#if agent && pool.available === false && !pool.disabled && pool.unavailable}
     <div class="why">{pool.unavailable}</div>
-  {/if}
-  {#if pool.available !== false || pool.busy || pool.queued}
-    <div class="cap np-line">
-      <span class="nums np-mono">{pool.busy}/{pool.capacity}</span>
-      <Pips busy={pool.busy} capacity={pool.capacity} queued={pool.queued} max={6} />
-    </div>
   {/if}
   {#each pool.owners ?? [] as o (o.agentId + o.since)}
     <button class="owner np-line" title="{who(o)}{note(o) ? ` — ${note(o)}` : ''} (open session)" onclick={() => o.sessionId && ctx.app.openSession(o.sessionId)}>
@@ -116,12 +114,15 @@
     color: var(--fg-muted);
   }
   .second {
-    margin-left: 6px;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     color: var(--fg-dim);
     font-size: 11px;
   }
   .why {
-    margin: 1px 0 2px 14px;
+    margin: 0 0 2px;
     font-size: var(--fs-xs);
     color: var(--fg-dim);
   }

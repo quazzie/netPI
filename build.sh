@@ -23,6 +23,9 @@ if [ "$WEB" = 1 ] && command -v npm >/dev/null; then
   npm run build
 fi
 
+# plugins that were renamed (NetPI.Lanes is NetPI.Agents, NetPI.Agent is NetPI.Runtime): their old output would load next to the new one
+rm -rf artifacts/app/plugins/NetPI.Lanes artifacts/app/plugins/NetPI.Agent
+
 echo "== dotnet build (every project except the Windows desktop shell)"
 B="dotnet build -nologo -v q -clp:ErrorsOnly -p:BuildProjectReferences=false"
 $B src/NetPI.Abstractions/NetPI.Abstractions.csproj

@@ -70,7 +70,7 @@ public static class LoopTests
         Check.Equal(100L, a.InputTokens);
         Check.Equal(10L, a.OutputTokens);
         Check.Equal("fake/local", a.Model);
-        Check.Equal("fake/local", a.Pool);
+        Check.Equal("fake/local", a.Agent);
         Check.Equal(110L, h.Sessions.GetSession(s.Id)!.ContextTokens);
 
         var req = h.Catalog.Requests.Single();
@@ -333,7 +333,7 @@ public static class LoopTests
         Check.Equal("thinking...", last.Parts.OfType<ThinkingPart>().Single().Text);
         Check.Equal(1, h.Bus.OfType(EventTypes.StreamEnd).Count);
         Check.False(await h.Runtime.AbortAsync(s.Id), "already idle");
-        Check.Equal(0, h.Lanes!.Snapshot().Sum(p => p.Busy), "lane released");
+        Check.Equal(0, h.Scheduler!.Snapshot().Sum(p => p.Busy), "slot released");
     }
 
     private static async Task AbortDuringTool()
@@ -448,7 +448,7 @@ public static class LoopTests
         Check.Equal(AgentStatus.Idle, a.Status);
         Check.Contains(a.Error, "backend exploded");
         Check.Equal(1, h.Bus.OfType(EventTypes.StreamEnd).Count);
-        Check.Equal(0, h.Lanes!.Snapshot().Sum(p => p.Busy), "lane released");
+        Check.Equal(0, h.Scheduler!.Snapshot().Sum(p => p.Busy), "slot released");
 
         // the next message clears the error
         h.Catalog.Handler = (r, ct) => Reply.Text("fine now");
@@ -551,8 +551,8 @@ public static class LoopTests
         Check.Equal("fake/local", reqs[0].Model.Ref);
         Check.Equal("cloud/big", reqs[1].Model.Ref);
         Check.Equal("answered by cloud/big", h.Messages(s.Id)[^1].Text);
-        Check.Equal("cloud", a.Pool, "moved to the cloud provider's pool");
-        Check.Equal(0, h.Lanes!.Snapshot().Sum(p => p.Busy));
+        Check.Equal("cloud", a.Agent, "moved to the cloud provider's slots");
+        Check.Equal(0, h.Scheduler!.Snapshot().Sum(p => p.Busy));
     }
 
     // ---------------------------------------------------------------- hooks
@@ -729,14 +729,14 @@ public static class LoopTests
         var bySession = await h.Rpc.CallAsync("agent.get", new { sessionId = s.Id });
         Check.Equal(agentId, (string?)bySession!["id"]);
         Check.Equal(null, await h.Rpc.CallAsync("agent.get", new { sessionId = "ses_none" }));
-        var active = (JsonArray)(await h.Rpc.CallAsync("agents.list", new { includeFinished = false }))!;
+        var active = (JsonArray)(await h.Rpc.CallAsync("runs.list", new { includeFinished = false }))!;
         Check.Equal(1, active.Count);
 
         var aborted = await h.Rpc.CallAsync("agent.abort", new { sessionId = s.Id });
         Check.Equal(true, aborted!.GetValue<bool>());
         await h.IdleAsync(s.Id);
-        Check.Equal(0, ((JsonArray)(await h.Rpc.CallAsync("agents.list", new { includeFinished = false }))!).Count);
-        Check.Equal(1, ((JsonArray)(await h.Rpc.CallAsync("agents.list", new { }))!).Count);
+        Check.Equal(0, ((JsonArray)(await h.Rpc.CallAsync("runs.list", new { includeFinished = false }))!).Count);
+        Check.Equal(1, ((JsonArray)(await h.Rpc.CallAsync("runs.list", new { }))!).Count);
 
         try
         {
@@ -757,8 +757,8 @@ public static class LoopTests
             await h.SendAsync(s.Id, "go");
             await Wait.Until(() => h.Catalog.Calls == 2, "both running");
             await Wait.Until(() => h.Bus.OfType(EventTypes.StreamDelta).Count(e => ((string?)FakeBus.Data(e)["text"])?.Contains("answer") == true) >= 2, "both streamed");
-            var runtime = h.Plugin<AgentPlugin>().Runtime!;
-            await h.StopPluginAsync("netpi.agent");
+            var runtime = h.Plugin<RuntimePlugin>().Runtime!;
+            await h.StopPluginAsync("netpi.runtime");
             Check.Equal(null, h.Services.Get<IAgentRuntime>());
             var main = runtime.GetBySession(s.Id)!;
             Check.Equal(AgentStatus.Idle, main.Status);
@@ -766,7 +766,7 @@ public static class LoopTests
             Check.Equal(AgentStatus.Cancelled, subInfo.Status);
             Check.Equal("plugin reloaded", subInfo.Error);
             Check.Equal("aborted", h.Messages(s.Id)[^1].StopReason);
-            Check.Equal(0, h.Lanes!.Snapshot().Sum(p => p.Busy), "lanes released");
+            Check.Equal(0, h.Scheduler!.Snapshot().Sum(p => p.Busy), "slots released");
             try
             {
                 await runtime.SendAsync(s.Id, new UserInput { Text = "x" });

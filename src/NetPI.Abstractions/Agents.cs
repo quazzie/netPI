@@ -4,10 +4,10 @@ public enum AgentStatus
 {
     /// <summary>Waiting for input (main chat agents between runs).</summary>
     Idle,
-    /// <summary>Waiting for a free lane.</summary>
+    /// <summary>Waiting for a free slot on its agent.</summary>
     Queued,
     Running,
-    /// <summary>Gave its lane away while waiting for other agents.</summary>
+    /// <summary>Gave its slot away while waiting for other agents.</summary>
     Yielded,
     /// <summary>Subagent finished its task.</summary>
     Completed,
@@ -26,7 +26,8 @@ public sealed class AgentInfo
     public int Depth { get; set; }
     public AgentStatus Status { get; set; }
     public string? Model { get; set; }
-    public string? Pool { get; set; }
+    /// <summary>The agent (<c>agents.&lt;id&gt;</c>) it runs on, or the model's slot key when no agents are set up.</summary>
+    public string? Agent { get; set; }
     /// <summary>What it is doing right now: "thinking", "writing", "tool: bash", "waiting for 2 agents"...</summary>
     public string? Activity { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
@@ -61,7 +62,7 @@ public sealed class SpawnRequest
 {
     public required string Task { get; init; }
     public string? Name { get; init; }
-    /// <summary>"provider/model" or a lane pool key. Null = parent's model.</summary>
+    /// <summary>"provider/model" (without agents set up). Null = parent's model.</summary>
     public string? Model { get; init; }
     public string? Reasoning { get; init; }
     public string? ParentAgentId { get; init; }
@@ -99,10 +100,10 @@ public interface IAgentRuntime
     Task<AgentInfo> SpawnAsync(SpawnRequest request, CancellationToken ct = default);
 
     /// <summary>
-    /// Wait for agents to finish their current run. When <paramref name="yieldLane"/> is true and the caller
-    /// holds a lane, the lane is released while waiting and re-acquired (with priority) afterwards.
+    /// Wait for agents to finish their current run. When <paramref name="yieldSlot"/> is true and the caller
+    /// holds a slot, the slot is released while waiting and re-acquired (with priority) afterwards.
     /// </summary>
-    Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldLane = true,
+    Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true,
         TimeSpan? timeout = null, CancellationToken ct = default);
 
     /// <summary>Abort the current run of an agent (by agent id or session id).</summary>

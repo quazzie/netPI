@@ -1,5 +1,5 @@
 using System.Text.Json.Nodes;
-using NetPI.Lanes;
+using NetPI.Agents;
 
 namespace NetPI.Agent.Tests;
 
@@ -8,7 +8,7 @@ public static class PersistenceTests
     public static void Register(TestRunner t)
     {
         t.Add("persistence: agent records survive a restart (sqlite)", AgentRecords);
-        t.Add("persistence: lane usage survives a restart (sqlite)", UsageRecords);
+        t.Add("persistence: usage survives a restart (sqlite)", UsageRecords);
     }
 
     private static async Task AgentRecords()
@@ -35,9 +35,9 @@ public static class PersistenceTests
             VALUES ('agt_stale', 'ses_stale', 'ghost', 'running', '2026-01-01T00:00:00.0000000Z')
             """);
 
-        await h.StopPluginAsync("netpi.agent");
+        await h.StopPluginAsync("netpi.runtime");
         await h.StopPluginAsync("netpi.tools.agents");
-        await h.StartPluginAsync(new AgentPlugin());
+        await h.StartPluginAsync(new RuntimePlugin());
         await h.StartPluginAsync(new NetPI.Tools.Agents.AgentToolsPlugin());
 
         var rt = h.Runtime;
@@ -88,8 +88,8 @@ public static class PersistenceTests
         await h.Bus.DrainAsync();
         Check.Equal(2L, db.Scalar<long>("SELECT calls FROM lanes_usage WHERE provider = 'fake' AND model = 'local'"));
 
-        await h.StopPluginAsync("netpi.lanes");
-        await h.StartPluginAsync(new LanesPlugin());
+        await h.StopPluginAsync("netpi.agents");
+        await h.StartPluginAsync(new AgentsPlugin());
         var summary = (await h.Rpc.CallAsync("usage.summary"))!;
         var fake = ((JsonArray)summary["providers"]!).Single(p => (string?)p!["provider"] == "fake")!;
         Check.Equal(200L, fake["inputTokens"]!.GetValue<long>());

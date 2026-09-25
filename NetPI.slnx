@@ -1,12 +1,12 @@
 <Solution>
   <Folder Name="/plugins/">
-    <Project Path="plugins/NetPI.Agent/NetPI.Agent.csproj" />
+    <Project Path="plugins/NetPI.Runtime/NetPI.Runtime.csproj" />
     <Project Path="plugins/NetPI.AgentsMd/NetPI.AgentsMd.csproj" />
     <Project Path="plugins/NetPI.Compaction/NetPI.Compaction.csproj" />
     <Project Path="plugins/NetPI.Context/NetPI.Context.csproj" />
     <Project Path="plugins/NetPI.Diagnostics/NetPI.Diagnostics.csproj" />
     <Project Path="plugins/NetPI.Ideas/NetPI.Ideas.csproj" />
-    <Project Path="plugins/NetPI.Lanes/NetPI.Lanes.csproj" />
+    <Project Path="plugins/NetPI.Agents/NetPI.Agents.csproj" />
     <Project Path="plugins/NetPI.Nudge/NetPI.Nudge.csproj" />
     <Project Path="plugins/NetPI.Profiles/NetPI.Profiles.csproj" />
     <Project Path="plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.csproj" />

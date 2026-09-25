@@ -6,8 +6,8 @@ import { store, agentFor, mkSession, pushMessage, newId, text, REPO } from './st
 const MIN = 60_000;
 const iso = (ms) => new Date(ms).toISOString();
 
-export function createWork({ publish, log, lanesView }) {
-  // ------------------------------------------------------------------ lanes
+export function createWork({ publish, log, agentsView }) {
+  // ------------------------------------------------------------------ slots of the running calls
   const pools = [
     { key: 'aiproxy/qwen3.8-27b', provider: 'aiproxy', capacity: 2, models: ['aiproxy/qwen3.8-27b'], owners: [], waiters: [], source: 'catalog' },
     { key: 'aiproxy/gemma-4', provider: 'aiproxy', capacity: 1, models: ['aiproxy/gemma-4'], owners: [], waiters: [], source: 'catalog' },
@@ -34,9 +34,9 @@ export function createWork({ publish, log, lanesView }) {
       status,
     };
   }
-  const lanes = () => pools.map(poolInfo);
-  // lanes.changed carries what lanes.list returns (the server adds the lanes set up in settings)
-  const lanesChanged = () => publish('lanes.changed', { pools: (lanesView ?? lanes)() });
+  const slots = () => pools.map(poolInfo);
+  // agents.changed carries what agents.list returns (the server adds the agents set up in settings)
+  const agentsChanged = () => publish('agents.changed', { agents: (agentsView ?? slots)() });
 
   // ------------------------------------------------------------------ processes
   const procs = new Map(); // id -> { info, out }
@@ -136,9 +136,9 @@ export function createWork({ publish, log, lanesView }) {
     const a = agentFor(main.id);
     const e = agentFor(exp.id);
     const r = agentFor(rev.id);
-    Object.assign(a, { name: 'main', status: 'yielded', activity: 'waiting for 2 agents', startedAt: iso(now - 38 * MIN), runs: 1, turns: 14, toolCalls: 31, inputTokens: 212_000, outputTokens: 9_800, model: 'aiproxy/qwen3.8-27b', pool: 'aiproxy/qwen3.8-27b', children: [e.id, r.id] });
-    Object.assign(e, { name: 'surveyor', status: 'running', activity: 'tool: grep', startedAt: iso(now - 9 * MIN), runs: 1, turns: 6, toolCalls: 17, inputTokens: 64_000, outputTokens: 2_100, parentAgentId: a.id, parentSessionId: main.id, isSubagent: true, depth: 1, task: 'Find every place that retries a request', model: 'aiproxy/qwen3.8-27b', pool: 'aiproxy/qwen3.8-27b' });
-    Object.assign(r, { name: 'reviewer', status: 'queued', activity: 'waiting for a lane', startedAt: iso(now - 2 * MIN), runs: 1, parentAgentId: a.id, parentSessionId: main.id, isSubagent: true, depth: 1, task: 'Review the new backoff implementation', model: 'aiproxy/qwen3.8-27b', pool: 'aiproxy/qwen3.8-27b' });
+    Object.assign(a, { name: 'main', status: 'yielded', activity: 'waiting for 2 agents', startedAt: iso(now - 38 * MIN), runs: 1, turns: 14, toolCalls: 31, inputTokens: 212_000, outputTokens: 9_800, model: 'aiproxy/qwen3.8-27b', agent: 'qwen', children: [e.id, r.id] });
+    Object.assign(e, { name: 'surveyor', status: 'running', activity: 'tool: grep', startedAt: iso(now - 9 * MIN), runs: 1, turns: 6, toolCalls: 17, inputTokens: 64_000, outputTokens: 2_100, parentAgentId: a.id, parentSessionId: main.id, isSubagent: true, depth: 1, task: 'Find every place that retries a request', model: 'aiproxy/qwen3.8-27b', agent: 'qwen' });
+    Object.assign(r, { name: 'reviewer', status: 'queued', activity: 'waiting for agent qwen', startedAt: iso(now - 2 * MIN), runs: 1, parentAgentId: a.id, parentSessionId: main.id, isSubagent: true, depth: 1, task: 'Review the new backoff implementation', model: 'aiproxy/qwen3.8-27b', agent: 'qwen' });
     // more finished subagents for the "recent" list
     const doc = mkSession({ id: 'ses_bg_docs', title: 'docs-writer: update PROTOCOL.md', projectId: main.projectId, parentSessionId: main.id, kind: 'subagent', createdAt: iso(now - 30 * MIN) });
     Object.assign(agentFor(doc.id), { name: 'docs-writer', status: 'cancelled', parentAgentId: a.id, parentSessionId: main.id, isSubagent: true, depth: 1, startedAt: iso(now - 30 * MIN), finishedAt: iso(now - 26 * MIN), error: 'Cancelled by the parent agent (superseded)' });
@@ -150,7 +150,7 @@ export function createWork({ publish, log, lanesView }) {
     pushMessage(idx.id, 'user', [text('Build an embedding index of docs/ so agents can search it. Use scripts/embed.py and report the chunk count.')], {}, now - 6 * MIN);
     idx.updatedAt = iso(now - 1 * MIN);
     const ia = agentFor(idx.id);
-    Object.assign(ia, { name: 'main', status: 'running', activity: 'tool: bash', startedAt: iso(now - 6 * MIN), runs: 1, turns: 4, toolCalls: 6, inputTokens: 31_000, outputTokens: 1_900, model: 'aiproxy/qwen3.8-27b', pool: 'aiproxy/qwen3.8-27b' });
+    Object.assign(ia, { name: 'main', status: 'running', activity: 'tool: bash', startedAt: iso(now - 6 * MIN), runs: 1, turns: 4, toolCalls: 6, inputTokens: 31_000, outputTokens: 1_900, model: 'aiproxy/qwen3.8-27b', agent: 'qwen' });
 
     const pool = pools[0];
     pool.owners = [
@@ -210,7 +210,7 @@ export function createWork({ publish, log, lanesView }) {
         s.surveyor.inputTokens += 2400;
         publish('agent.status', { agent: s.surveyor });
       }
-      if (tickN % 20 === 0) log('dbg', 'NetPI.Lanes', `pool aiproxy/qwen3.8-27b: 2/2 busy, 1 waiting (reviewer ${Math.round((Date.now() - Date.parse(pools[0].waiters[0]?.since ?? Date.now())) / 1000)}s)`);
+      if (tickN % 20 === 0) log('dbg', 'NetPI.Agents', `pool aiproxy/qwen3.8-27b: 2/2 busy, 1 waiting (reviewer ${Math.round((Date.now() - Date.parse(pools[0].waiters[0]?.since ?? Date.now())) / 1000)}s)`);
     }, 1000);
   }
   function stop() {
@@ -218,8 +218,8 @@ export function createWork({ publish, log, lanesView }) {
   }
 
   return {
-    lanes,
-    lanesChanged,
+    slots,
+    agentsChanged,
     procStart,
     procOutput,
     procEnd,

@@ -1,0 +1,5 @@
+{
+  "id": "netpi.agents",
+  "name": "Agents",
+  "description": "The agents chats and subagents run on (a model with instances, active while its model is loaded), the cost of every model call and the budget."
+}

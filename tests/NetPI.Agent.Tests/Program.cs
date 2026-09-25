@@ -6,7 +6,7 @@ var filters = args.Where(a => a != "-v").ToArray();
 var runner = new TestRunner();
 LoopTests.Register(runner);
 SubagentTests.Register(runner);
-LaneTests.Register(runner);
+SchedulerTests.Register(runner);
 ContextTests.Register(runner);
 PersistenceTests.Register(runner);
 UnloadTests.Register(runner);

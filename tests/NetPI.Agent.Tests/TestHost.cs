@@ -150,7 +150,7 @@ public sealed class TestHost : IAsyncDisposable
 
     /// <summary>Which plugins <see cref="StartAsync"/> loads.</summary>
     [Flags]
-    public enum Plugins { None = 0, Lanes = 1, Context = 2, AgentsMd = 4, Agent = 8, AgentTools = 16, All = 31 }
+    public enum Plugins { None = 0, Agents = 1, Context = 2, AgentsMd = 4, Runtime = 8, AgentTools = 16, All = 31 }
 
     public static async Task<TestHost> StartAsync(Action<TestHost>? setup = null, Plugins plugins = Plugins.All, IDatabase? db = null)
     {
@@ -160,10 +160,10 @@ public sealed class TestHost : IAsyncDisposable
         h.Catalog.AddModel(CloudModel());
         h.Catalog.DefaultModelRef = "fake/local";
         setup?.Invoke(h);
-        if (plugins.HasFlag(Plugins.Lanes)) await h.StartPluginAsync(new NetPI.Lanes.LanesPlugin());
+        if (plugins.HasFlag(Plugins.Agents)) await h.StartPluginAsync(new NetPI.Agents.AgentsPlugin());
         if (plugins.HasFlag(Plugins.Context)) await h.StartPluginAsync(new NetPI.Context.ContextPlugin());
         if (plugins.HasFlag(Plugins.AgentsMd)) await h.StartPluginAsync(new NetPI.AgentsMd.AgentsMdPlugin());
-        if (plugins.HasFlag(Plugins.Agent)) await h.StartPluginAsync(new AgentPlugin());
+        if (plugins.HasFlag(Plugins.Runtime)) await h.StartPluginAsync(new RuntimePlugin());
         if (plugins.HasFlag(Plugins.AgentTools)) await h.StartPluginAsync(new NetPI.Tools.Agents.AgentToolsPlugin());
         return h;
     }
@@ -195,7 +195,7 @@ public sealed class TestHost : IAsyncDisposable
     }
 
     public IAgentRuntime Runtime => Services.Get<IAgentRuntime>() ?? throw new InvalidOperationException("no agent runtime");
-    public ILaneScheduler? Lanes => Services.Get<ILaneScheduler>();
+    public IAgentScheduler? Scheduler => Services.Get<IAgentScheduler>();
 
     public SessionInfo NewSession(string? model = null, string? projectId = null, string title = "test") =>
         Sessions.CreateSession(new SessionInfo { Title = title, Model = model, ProjectId = projectId });

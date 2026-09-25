@@ -31,7 +31,7 @@ public static class UnloadTests
         return dir?.FullName;
     }
 
-    private static readonly string[] PluginNames = ["NetPI.Lanes", "NetPI.Context", "NetPI.AgentsMd", "NetPI.Agent", "NetPI.Tools.Agents"];
+    private static readonly string[] PluginNames = ["NetPI.Agents", "NetPI.Context", "NetPI.AgentsMd", "NetPI.Runtime", "NetPI.Tools.Agents"];
 
     private static async Task LoadRunUnload()
     {
@@ -74,14 +74,14 @@ public static class UnloadTests
                 await h.StartPluginAsync((INetPiPlugin)Activator.CreateInstance(type)!);
             }
 
-            // exercise everything: a parent that spawns and waits for a subagent, tool details, lanes, prompt sections
+            // exercise everything: a parent that spawns and waits for a subagent, tool details, agents, prompt sections
             var parent = h.NewSession(model: "fake/solo");
             h.Catalog.Handler = (r, ct) =>
             {
                 if (r.SystemPrompt?.Contains("a subagent working for") == true) return Reply.Text("child report");
                 return Reply.HasToolResult(r)
                     ? Reply.Text("parent done")
-                    : Reply.Tools(Reply.Call("lanes_list"), Reply.Call("agent_spawn", new { task = "work", name = "w", wait = true }));
+                    : Reply.Tools(Reply.Call("agent_choices"), Reply.Call("agent_spawn", new { task = "work", name = "w", wait = true }));
             };
             var runtime = h.Services.Get<IAgentRuntime>()!;
             Check.True(runtime.GetType().Assembly.IsCollectible, "runtime comes from a collectible context");
@@ -90,13 +90,13 @@ public static class UnloadTests
             Check.Equal("parent done", h.Messages(parent.Id)[^1].Text);
             var preview = await h.Rpc.CallAsync("context.preview", new { sessionId = parent.Id });
             Check.Contains((string?)preview!["systemPrompt"], "# Environment");
-            await h.Rpc.CallAsync("lanes.list");
+            await h.Rpc.CallAsync("agents.list");
             await h.Rpc.CallAsync("usage.summary");
-            await h.Rpc.CallAsync("agents.list", new { });
+            await h.Rpc.CallAsync("runs.list", new { });
 
             ids.Reverse();
             foreach (var id in ids) await h.StopPluginAsync(id);
-            await Task.Delay(300); // let throttled status/lanes timers fire and finish
+            await Task.Delay(300); // let throttled status/agents timers fire and finish
             await h.Bus.DrainAsync();
             Check.Equal(null, h.Services.Get<IAgentRuntime>());
             Check.Equal(0, h.Tools.All.Count);

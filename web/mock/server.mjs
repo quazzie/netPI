@@ -73,7 +73,7 @@ function log(level, category, message, exception) {
   if (logs.length > 500) logs.shift();
 }
 
-const work = createWork({ publish, log, lanesView: () => agentPools() });
+const work = createWork({ publish, log, agentsView: () => agentPools() });
 work.start();
 const ideas = createIdeas({ publish });
 ideas.seed();
@@ -87,7 +87,7 @@ const RPC_DOCS = {
   'agent.abort': 'Abort the current run of a session\'s agent: { sessionId } → bool',
   'sessions.list': 'Sessions, newest first: { projectId?, search?, includeSubagents?, includeArchived?, limit?, offset? }',
   'sessions.messages': 'Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore }',
-  'work.snapshot': 'Aggregated overview for the Work tab → { lanes, agents, processes, usage, time, errors? }',
+  'work.snapshot': 'Aggregated overview for the Work tab → { agents, runs, processes, usage, time, errors? }',
   'diag.snapshot': 'Diagnostics overview → { plugins, tools, rpc, events, logs, runtime, time }',
   'ideas.list': 'Ideas of a project/session: { sessionId?, projectId? } → { file, scope, ideas, … }',
   'files.list': 'List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries }',
@@ -138,7 +138,7 @@ function agentsInSettings() {
   return Object.entries(store.settings.agents ?? {}).filter(([id, v]) => !AGENT_RESERVED.has(id) && v && typeof v === 'object' && typeof v.model === 'string');
 }
 function agentPools() {
-  const pools = work.lanes();
+  const pools = work.slots();
   const onModel = new Set(); // the mock's running calls go to the first agent on their model
   const agents = agentsInSettings().map(([id, v]) => {
     const m = MODELS.find((x) => x.ref === v.model);
@@ -428,7 +428,7 @@ const handlers = {
     if (p.value == null) delete o[keys.at(-1)]; // null removes the key: the default applies again
     else o[keys.at(-1)] = p.value;
     publish('settings.changed', {});
-    work.lanesChanged(); // like the host: lanes follow the settings
+    work.agentsChanged(); // like the host: lanes follow the settings
     return true;
   },
   'settings.replace': (p) => {
@@ -436,7 +436,7 @@ const handlers = {
     if (typeof s !== 'object' || Array.isArray(s)) throw new RpcError('bad_request', 'settings must be an object');
     store.settings = s;
     publish('settings.changed', {});
-    work.lanesChanged();
+    work.agentsChanged();
     return true;
   },
 
@@ -536,15 +536,15 @@ const handlers = {
   },
   'agent.queue': (p) => agent.queue(need(p, 'sessionId')),
   'agent.dequeue': (p) => agent.dequeue(need(p, 'sessionId'), need(p, 'id')),
-  // like the Work plugin: lanes.list and usage.summary
+  // like the Work plugin: agents.list and usage.summary
   'work.snapshot': () => ({
-    lanes: agentPools(),
-    agents: [...store.agents.values()],
+    agents: agentPools(),
+    runs: [...store.agents.values()],
     processes: work.procList(),
     usage: { ...work.usageSummary(), budget: budgetStatus(), models: MOCK_SPEND },
     time: new Date().toISOString(),
   }),
-  'agents.list': (p = {}) =>
+  'runs.list': (p = {}) =>
     [...store.agents.values()].filter((a) => p.includeFinished || !['completed', 'failed', 'cancelled'].includes(a.status)),
   'agent.get': (p = {}) => (p.sessionId ? (store.agents.get(p.sessionId) ?? null) : ([...store.agents.values()].find((a) => a.id === p.id) ?? null)),
 
@@ -557,7 +557,7 @@ const handlers = {
     let n = 0;
     for (const m of msgs) if (m.seq <= upTo && !m.compacted) (m.compacted = true), n++;
     publish('messages.compacted', { sessionId: sid, upToSeq: upTo }, sid);
-    const m = pushMessage(sid, 'summary', [text(`## Summary\n\n${n} earlier messages were summarized. Key points: the lane scheduler now fails with a clear error for unknown pools; tests are green.`)], { meta: { kind: 'compaction', upToSeq: upTo } });
+    const m = pushMessage(sid, 'summary', [text(`## Summary\n\n${n} earlier messages were summarized. Key points: the agent scheduler now fails with a clear error for unknown pools; tests are green.`)], { meta: { kind: 'compaction', upToSeq: upTo } });
     publish('message.added', { sessionId: sid, message: m }, sid);
     return `Compacted ${n} messages`;
   },
@@ -655,7 +655,7 @@ const handlers = {
   'processes.list': () => work.procList(),
   'processes.output': (p) => work.procOutputTail(need(p, 'id'), p.tail ?? 500),
   'processes.kill': (p) => work.procKill(need(p, 'id')),
-  'lanes.list': () => agentPools(),
+  'agents.list': () => agentPools(),
   'agents.use': (p) => {
     const s = getSession(need(p, 'sessionId'));
     const id = p.agent || null;
@@ -676,7 +676,7 @@ const handlers = {
     if (p.enabled) delete a.disabled;
     else a.disabled = true;
     publish('settings.changed', {});
-    work.lanesChanged();
+    work.agentsChanged();
     return agentPools();
   },
   'logs.recent': (p = {}) => logs.slice(-(p.max ?? 200)),

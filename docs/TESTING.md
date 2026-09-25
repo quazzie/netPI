@@ -41,10 +41,11 @@ dotnet tests/NetPI.Providers.Tests/bin/Debug/NetPI.Providers.Tests.dll   # AiPro
 dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll           # read/write/edit/grep/find/ls, bash/pwsh, processes, files.open
 dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll           # agent loop, steering/queue/abort, subagents, agents, persistence, context notices, goals
 dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll               # retry, nudge, tool repair, compaction, ideas, work, diagnostics, todo, web, media, ssh
+                                                                         # (its load tests load the built plugins from artifacts/app, or from NETPI_APP_DIR)
 tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests                        # kernel: SQLite, settings, bus, registries, sessions, catalog, server, plugins
 ```
 
-Every runner takes optional name filters (`… NetPI.Agent.Tests.dll abort lanes`) and exits with 0 when all selected
+Every runner takes optional name filters (`… NetPI.Agent.Tests.dll abort scheduler`) and exits with 0 when all selected
 tests pass. `NETPI_TEST_LOGS=1` shows host logs in the Host suite.
 
 The web tool tests serve pages and fake SearXNG / Brave endpoints from a local Kestrel server and never read your pi
@@ -190,17 +191,17 @@ Coverage (run `--list` for the names):
   window is smaller than advertised, `/compact`; disabling/enabling a plugin; AGENTS.md and the working directory as
   notices (an edited AGENTS.md is appended, the prefix stays byte-identical).
 - **agents**: agents set up with `settings.set` are listed with their state (instances from the catalog, the one on the
-  stopped backend inactive); `agents.use` runs a chat on one; switched off (`agents.setEnabled`, `lanes.changed`) the chat
+  stopped backend inactive); `agents.use` runs a chat on one; switched off (`agents.setEnabled`, `agents.changed`) the chat
   stops at once with a notice; an agent whose model isn't loaded is refused without a request to the backend; a model
   no agent runs.
-- **lanes / subagents** (no agents: a slot per model): 3 workers on `qwen3.8-27b` (2 slots) → at most 2 requests in flight at the backend, one worker
-  queued, the parent yields and resumes with the reports, `lanes.list` / `work.snapshot` mid-flight, no duplicate
+- **slots / subagents** (no agents: a slot per model): 3 workers on `qwen3.8-27b` (2 slots) → at most 2 requests in flight at the backend, one worker
+  queued, the parent yields and resumes with the reports, `agents.list` / `work.snapshot` mid-flight, no duplicate
   `agent-result` notices; a background worker's report wakes the idle parent; steering interrupts `agent_wait` and the late
   report arrives as a notice; aborting the orchestrator cancels its workers; aborting one worker; nested
-  orchestrator → lead → helper (`wait=true`) without deadlock, `agent_send`; three top-level chats on one pool.
+  orchestrator → lead → helper (`wait=true`) without deadlock, `agent_send`; three top-level chats on one model.
 - **ideas**: `idea_add` writes `<project>/ideas.json`, `ideas.list`, `ideas.changed`, `ideas.add`.
 - **hot reload**: overwriting `NetPI.Nudge.dll` → `plugins.changed`, reload, `plugins.unloaded { collected: true }`, still
-  works; `plugins.reload` of providers/tools/hooks/lanes/context; reloading the agent runtime mid-run; reloading the provider
+  works; `plugins.reload` of providers/tools/hooks/agents/context; reloading the agent runtime mid-run; reloading the provider
   while a stream is open.
 - **server**: session-scoped events only reach subscribed clients, HTTP RPC fallback and auth, external `settings.json`
   edits applied live, automatic session titles, projects CRUD, SIGTERM during a run → exit 0 → restart keeps sessions,

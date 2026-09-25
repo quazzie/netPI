@@ -8,7 +8,7 @@ public static class CoreTests
 {
     public static readonly string[] PluginIds =
     [
-        "netpi.agent", "netpi.agentsmd", "netpi.compaction", "netpi.context", "netpi.diagnostics", "netpi.ideas", "netpi.lanes",
+        "netpi.runtime", "netpi.agentsmd", "netpi.compaction", "netpi.context", "netpi.diagnostics", "netpi.ideas", "netpi.agents",
         "netpi.nudge", "netpi.providers.aiproxy", "netpi.providers.anthropic", "netpi.providers.openrouter", "netpi.retry", "netpi.toolrepair",
         "netpi.tools.agents", "netpi.tools.files", "netpi.tools.shell", "netpi.work",
     ];
@@ -75,7 +75,7 @@ public static class CoreTests
             Check.True(claude.P("reasoning").B("supported"), "claude supports thinking");
             Check.Equal(Qwen, list.S("defaultModel"), "default model = first loaded local model");
 
-            var pools = await env.Rpc("lanes.list");
+            var pools = await env.Rpc("agents.list");
             Check.False(pools.Arr().Any(p => p.B("configured")), "the suite's settings set up no agents: " + pools.GetRawText());
         });
 

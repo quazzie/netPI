@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace NetPI.Agent;
+namespace NetPI.Runtime;
 
 /// <summary>
 /// The per-session tool switches (<see cref="SessionTools"/>, <c>meta.toolsOff</c>) behind <c>agent.tools</c> and

@@ -60,17 +60,17 @@ interface ProjectInfo { id; name; path; createdAt; updatedAt; lastUsedAt?; meta?
 interface ModelInfo { provider; id; ref /* "provider/id" */; displayName?; contextWindow?; maxOutputTokens?; concurrency?;
   inputModalities: string[]; reasoning?: { supported: boolean; efforts: string[]; default?: string }; status?; isLocal: boolean }
 type AgentStatus = 'idle'|'queued'|'running'|'yielded'|'completed'|'failed'|'cancelled';
-interface AgentInfo { id; sessionId; name; parentAgentId?; parentSessionId?; isSubagent; depth; status: AgentStatus; model?; pool? /* the agent (agents.<id>) or slot it runs on */;
+interface AgentInfo { id; sessionId; name; parentAgentId?; parentSessionId?; isSubagent; depth; status: AgentStatus; model?; agent? /* the agent (agents.<id>) it runs on, or the model's slot key */;
   activity?; createdAt; startedAt?; finishedAt?; runs; turns; toolCalls; inputTokens; outputTokens; queuedMessages; task?; result?; error?; children: string[] }
 interface QueuedInput { id; text; mode: 'steer'|'queue'; source; createdAt }
 // an agent (configured: key = its id, capacity = its instances) or the slots of model calls without an agent (listed while busy)
-interface LanePoolInfo { key; provider?; capacity; busy; queued; models: string[]; owners: LaneOwner[]; waiters: LaneOwner[]; source;
+interface AgentSlots { key; provider?; capacity; busy; queued; models: string[]; owners: SlotHolder[]; waiters: SlotHolder[]; source;
   status?: 'idle'|'busy'|'full'|'queued'|'disabled'|'unavailable';
   configured: boolean /* an agent set up in settings (agents.<id>) */; model?; use? /* the note on when to use it */;
   available: boolean /* can take work: not switched off, its model loaded (local) or reachable (cloud) */;
   unavailable?: string /* why not: "disabled", "qwen3.8-27b isn't loaded", … */; disabled: boolean;
   priceInput?; priceOutput? /* $ per Mtok */; priceSource?: 'settings'|'catalog'|'local'|'unknown'; free: boolean; spentTodayUsd?; dailyLimitUsd? }
-interface LaneOwner { agentId; sessionId?; label?; since }
+interface SlotHolder { agentId; sessionId?; label?; since }
 interface UiTabInfo { id; title; panel: 'left'|'right'; icon?; module; export?; order; pluginId; version }
 interface SlashCommandInfo { name; description; rpc?; clientAction?; argsHint?; pluginId }
 interface PluginInfo { id; name; description?; version?; directory; state; error?; loadedAt?; loadCount; loadMs; order; enabled }
@@ -122,24 +122,24 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 
 | method | plugin | params → result |
 |---|---|---|
-| `agent.send` | netpi.agent | `{ sessionId, text, images?: {mediaType,data}[], mode?: 'auto'\|'steer'\|'queue' }` → `AgentInfo` |
-| `agent.abort` | netpi.agent | `{ sessionId }` → `bool` |
-| `agent.queue` | netpi.agent | `{ sessionId }` → `QueuedInput[]` |
-| `agent.dequeue` | netpi.agent | `{ sessionId, id }` → `bool` |
-| `agents.list` | netpi.agent | `{ includeFinished? }` → `AgentInfo[]` |
-| `agent.get` | netpi.agent | `{ id? , sessionId? }` → `AgentInfo\|null` |
+| `agent.send` | netpi.runtime | `{ sessionId, text, images?: {mediaType,data}[], mode?: 'auto'\|'steer'\|'queue' }` → `AgentInfo` |
+| `agent.abort` | netpi.runtime | `{ sessionId }` → `bool` |
+| `agent.queue` | netpi.runtime | `{ sessionId }` → `QueuedInput[]` |
+| `agent.dequeue` | netpi.runtime | `{ sessionId, id }` → `bool` |
+| `runs.list` | netpi.runtime | `{ includeFinished? }` → `AgentInfo[]` |
+| `agent.get` | netpi.runtime | `{ id? , sessionId? }` → `AgentInfo\|null` |
 | `profiles.list` | netpi.profiles | → `{ defaultProfile, profiles: { id, name, prompt, toolsOff }[] }` |
 | `profiles.apply` | netpi.profiles | `{ sessionId, profile: string\|null }` → `SessionInfo`: sets the chat's `meta.profile`, `meta.identity` and `meta.toolsOff` from the profile; in a started chat the system prompt is rendered again at the next model call (`context.reset`, one full re-read) and a `profile` notice is appended. Chats only |
 | `context.reset` | netpi.context | `{ sessionId }` → `true`: forget the session's frozen system prompt and tool baseline; the next model call renders them again |
-| `agent.tools` | netpi.agent | `{ sessionId }` → `{ sessionId, started, contextTokens, off: string[], tools: { name, label, category, description, readOnly, pluginId, on }[] }`: the tools the session's agent can have, each with its switch |
-| `agent.setTools` | netpi.agent | `{ sessionId, off?: string[], on?: string[] }` → like `agent.tools`: switches tools off (or back on) for one session (`meta.toolsOff`); a started chat gets the change at its next model call, with a `tools` notice (the model re-reads the conversation once); subagents start with their parent's list |
-| `lanes.list` | netpi.lanes | → `LanePoolInfo[]`: the agents (always, with `available`/`unavailable`/`disabled`, `priceInput`/`priceOutput` ($ per Mtok), `priceSource`, `free`, `spentTodayUsd`, `dailyLimitUsd`), then model calls without an agent while they run |
-| `agents.use` | netpi.lanes | `{ sessionId, agent: string\|null }` → `SessionInfo`: the chat runs on the agent (`meta.agent`) and its model; `null` clears it (the chat then takes an agent on its model at its next run) |
-| `agents.setEnabled` | netpi.lanes | `{ id, enabled }` → `LanePoolInfo[]`: switch an agent off (`agents.<id>.disabled`; runs on it finish, new ones stop with a notice) or back on |
-| `usage.summary` | netpi.lanes | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] /* today */, budget: BudgetStatus, models: { lane, provider, model, calls, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unknownCost }[] /* this period */ }` |
-| `usage.session` | netpi.lanes | `{ sessionId }` → `{ sessionId, costUsd, calls, withSubagentsUsd, withSubagentsCalls }` |
-| `budget.status` | netpi.lanes | → `BudgetStatus`: `{ monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, warning, exhausted }` |
-| `budget.allow` | netpi.lanes | `{ sessionId }` → `BudgetStatus`: the chat may go over the budget until the period ends, and continues (`budget.onLimit: "ask"`) |
+| `agent.tools` | netpi.runtime | `{ sessionId }` → `{ sessionId, started, contextTokens, off: string[], tools: { name, label, category, description, readOnly, pluginId, on }[] }`: the tools the session's agent can have, each with its switch |
+| `agent.setTools` | netpi.runtime | `{ sessionId, off?: string[], on?: string[] }` → like `agent.tools`: switches tools off (or back on) for one session (`meta.toolsOff`); a started chat gets the change at its next model call, with a `tools` notice (the model re-reads the conversation once); subagents start with their parent's list |
+| `agents.list` | netpi.agents | → `AgentSlots[]`: the agents (always, with `available`/`unavailable`/`disabled`, `priceInput`/`priceOutput` ($ per Mtok), `priceSource`, `free`, `spentTodayUsd`, `dailyLimitUsd`), then model calls without an agent while they run |
+| `agents.use` | netpi.agents | `{ sessionId, agent: string\|null }` → `SessionInfo`: the chat runs on the agent (`meta.agent`) and its model; `null` clears it (the chat then takes an agent on its model at its next run) |
+| `agents.setEnabled` | netpi.agents | `{ id, enabled }` → `AgentSlots[]`: switch an agent off (`agents.<id>.disabled`; runs on it finish, new ones stop with a notice) or back on |
+| `usage.summary` | netpi.agents | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] /* today */, budget: BudgetStatus, models: { agent, provider, model, calls, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unknownCost }[] /* this period */ }` |
+| `usage.session` | netpi.agents | `{ sessionId }` → `{ sessionId, costUsd, calls, withSubagentsUsd, withSubagentsCalls }` |
+| `budget.status` | netpi.agents | → `BudgetStatus`: `{ monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, warning, exhausted }` |
+| `budget.allow` | netpi.agents | `{ sessionId }` → `BudgetStatus`: the chat may go over the budget until the period ends, and continues (`budget.onLimit: "ask"`) |
 | `agentsmd.list` | netpi.agentsmd | `{ sessionId }` or `{ projectId }` → `{ path, bytes, scope }[]` (instruction files for the session's working directory or the project folder; scope `global`, `project` or `extra`) |
 | `compaction.run` | netpi.compaction | `{ sessionId, args? /* extra focus for the summary */ }` → `string` (error `busy` while the agent runs) |
 | `context.preview` | netpi.context | `{ sessionId }` → `{ systemPrompt, frozen, tools: {name, description}[], estimatedTokens }` (`frozen`: the prompt stored at the session's first model call) |
@@ -154,7 +154,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `processes.output` | netpi.tools.shell | `{ id, tail? }` → `string` |
 | `processes.kill` | netpi.tools.shell | `{ id }` → `bool` |
 | `ideas.list` `ideas.get` `ideas.add` `ideas.update` `ideas.delete` `ideas.reorder` `ideas.toPrompt` `ideas.quickAdd` | netpi.ideas | see `docs/PLUGIN-IDEAS.md` |
-| `work.snapshot` | netpi.work | → `{ lanes, agents, processes, usage, time, errors? }` (each part `null` when unavailable; see `docs/PLUGIN-WORK.md`) |
+| `work.snapshot` | netpi.work | → `{ agents, runs, processes, usage, time, errors? }` (each part `null` when unavailable; see `docs/PLUGIN-WORK.md`) |
 | `diag.snapshot` | netpi.diagnostics | `{ events? }` → `{ plugins, tools, rpc, events, logs, runtime, time }` (see `docs/PLUGIN-DIAGNOSTICS.md`) |
 | `diag.event` | netpi.diagnostics | `{ seq }` → `{ seq, type, sessionId?, time, source?, ui, data }` |
 | `diag.reload` | netpi.diagnostics | `{ args?: pluginId }` → `string` (`/reload`; no id = all plugins) |
@@ -187,7 +187,7 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `agent.queue` | yes | `{ sessionId, items: QueuedInput[] }` |
 | `agent.notice` | yes | `{ sessionId, level: 'info'\|'warn'\|'error', text }` – transient (retry countdown etc.) |
 | `session.context` | no | `{ sessionId, used, window }` |
-| `lanes.changed` | no | `{ pools: LanePoolInfo[] }` – what `lanes.list` returns, whenever a run takes or frees an instance or an agent's state changes |
+| `agents.changed` | no | `{ agents: AgentSlots[] }` – what `agents.list` returns, whenever a run takes or frees an instance or an agent's state changes |
 | `models.changed`, `plugins.changed`, `ui.changed`, `settings.changed` | no | `{}` |
 | `usage.recorded` | no | `{ provider, model, usage }` (agent turns) |
 | `usage.changed` | no | `BudgetStatus`, after model calls were recorded (debounced) |

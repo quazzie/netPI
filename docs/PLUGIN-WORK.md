@@ -15,12 +15,12 @@ Takes no parameters and returns:
 
 ```ts
 {
-  lanes: LanePoolInfo[] | null;      // lanes.list        (netpi.lanes)
-  agents: AgentInfo[] | null;        // agents.list { includeFinished: true }   (netpi.agent)
+  agents: AgentSlots[] | null;       // agents.list        (netpi.agents)
+  runs: AgentInfo[] | null;          // runs.list { includeFinished: true }   (netpi.runtime)
   processes: ProcessInfo[] | null;   // processes.list    (netpi.tools.shell)
-  usage: UsageSummary | null;        // usage.summary     (netpi.lanes)
+  usage: UsageSummary | null;        // usage.summary     (netpi.agents)
   time: string;                      // server time, ISO 8601 (for "x s ago" labels)
-  errors?: { lanes?: string; agents?: string; processes?: string; usage?: string };  // only when a call failed
+  errors?: { agents?: string; runs?: string; processes?: string; usage?: string };  // only when a call failed
 }
 ```
 
@@ -31,15 +31,15 @@ Takes no parameters and returns:
 - The shapes are the ones in `docs/PROTOCOL.md`:
 
 ```ts
-interface LanePoolInfo { key; provider?; capacity; busy; queued; models: string[]; owners: LaneOwner[]; waiters: LaneOwner[]; source; status?;
+interface AgentSlots { key; provider?; capacity; busy; queued; models: string[]; owners: SlotHolder[]; waiters: SlotHolder[]; source; status?;
   configured; model?; use?; available; unavailable?; disabled }   // an agent (configured) or model calls without one (see PROTOCOL.md)
-interface LaneOwner { agentId; sessionId?; label?; since }
-interface AgentInfo { id; sessionId; name; parentAgentId?; parentSessionId?; isSubagent; depth; status; model?; pool?; activity?;
+interface SlotHolder { agentId; sessionId?; label?; since }
+interface AgentInfo { id; sessionId; name; parentAgentId?; parentSessionId?; isSubagent; depth; status; model?; agent?; activity?;
   createdAt; startedAt?; finishedAt?; runs; turns; toolCalls; inputTokens; outputTokens; queuedMessages; task?; result?; error?; children: string[] }
 interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?; agentId?; background: boolean;
   status: 'running'|'exited'|'killed'|'timeout'; exitCode?; startedAt; endedAt?; outputBytes }
 interface UsageSummary { day; providers: { provider; inputTokens; outputTokens; cacheReadTokens; calls; budgetTokens? }[];
-  budget: BudgetStatus /* budget.status */; models: { lane?; provider; model; calls; inputTokens; outputTokens; costUsd; unknownCost }[] /* this period */ }
+  budget: BudgetStatus /* budget.status */; models: { agent?; provider; model; calls; inputTokens; outputTokens; costUsd; unknownCost }[] /* this period */ }
 interface BudgetStatus { monthlyUsd?; dailyUsd?; warnPercent; resetDay; onLimit: 'stop'|'ask'; periodStart; periodEnd; spentUsd; todayUsd; warning; exhausted }
 ```
 
@@ -54,7 +54,7 @@ Load `work.snapshot` when the tab is shown (`onShow`). Then patch the view from 
 | event | data | suggested handling |
 |---|---|---|
 | `agent.status` | `{ agent: AgentInfo }` | upsert the agent by `id` (no re-fetch needed) |
-| `lanes.changed` | `{ pools: LanePoolInfo[] }` | replace `lanes` with `pools` |
+| `agents.changed` | `{ agents: AgentSlots[] }` | replace `agents` |
 | `process.started` | `{ process: ProcessInfo }` | upsert by `id` |
 | `process.exited` | `{ process: ProcessInfo }` | upsert by `id` |
 | `usage.recorded` | `{ provider, model, usage }` | re-fetch (or re-fetch only `usage.summary`) |

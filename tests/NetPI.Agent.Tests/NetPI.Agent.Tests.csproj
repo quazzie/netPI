@@ -11,11 +11,15 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
+    <!-- the runtime plugin (NetPI.Runtime) is what most tests drive -->
+    <Using Include="NetPI.Runtime" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
-    <ProjectReference Include="../../plugins/NetPI.Lanes/NetPI.Lanes.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Agents/NetPI.Agents.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Context/NetPI.Context.csproj" />
     <ProjectReference Include="../../plugins/NetPI.AgentsMd/NetPI.AgentsMd.csproj" />
-    <ProjectReference Include="../../plugins/NetPI.Agent/NetPI.Agent.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Runtime/NetPI.Runtime.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Agents/NetPI.Tools.Agents.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Goal/NetPI.Goal.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Profiles/NetPI.Profiles.csproj" />

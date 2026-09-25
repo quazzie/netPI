@@ -312,7 +312,7 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
   /** "[fast]": quick steps (thinking, read/grep/bash/edit) with model latency between them, for layout stability. */
   async function fastScript(sid, run) {
     const cwd = projectPath(sid);
-    const file = 'src/NetPI.Host/Lanes/LaneScheduler.cs';
+    const file = 'src/NetPI.Host/Lanes/AgentScheduler.cs';
     const steps = [
       ['read', 'Read', { path: file }],
       ['grep', 'Grep', { pattern: 'TryAcquire', path: 'src' }],
@@ -328,7 +328,7 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
       const tool = { id: newId('call'), name, label, args };
       await sleep(300, run); // time to first token
       await streamAssistant(sid, run, { thinking: `Step ${i + 1}: ${label.toLowerCase()} next.`, text: i === 4 ? 'Found the lane files; building.' : undefined, fast: true, tools: [tool] });
-      const out = name === 'bash' ? ['M src/NetPI.Host/Lanes/LaneScheduler.cs', '?? notes.txt', 'done'] : null;
+      const out = name === 'bash' ? ['M src/NetPI.Host/Lanes/AgentScheduler.cs', '?? notes.txt', 'done'] : null;
       await runTool(sid, run, tool, {
         content: out ? out.join('\n') : name === 'edit' ? `Applied 1 edit to ${file} (+1 −1)` : `(${name} result)`,
         details:
@@ -420,7 +420,7 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
       append(sid, 'notice', [text(text_)], { meta: { kind: 'budget', canOverride: true } });
       return;
     }
-    const file = 'src/NetPI.Host/Lanes/LaneScheduler.cs';
+    const file = 'src/NetPI.Host/Lanes/AgentScheduler.cs';
     const cwd = projectPath(sid);
     const isFollowUp = run.turn > 0;
     if (/\b(short|quick|hi|hello)\b/i.test(input) || isFollowUp) {

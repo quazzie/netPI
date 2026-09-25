@@ -158,12 +158,14 @@ where a chat runs, the profile who it is.
 - **A chat without an agent** takes an agent on its model (a free one first) and keeps it; with no agent on its model it
   stops with a notice. New chats start on the agent chosen last.
 - **With no agents at all** (a settings file without any) every model call gets a slot per model:
-  `lanes.localDefaultCapacity` (1, when the catalog doesn't say) per local model, `lanes.cloudDefaultCapacity` (4) per
+  `models.localSlots` (1, when the catalog doesn't say) per local model, `models.cloudSlots` (4) per
   cloud provider. The same slots serve model calls without an agent (a `compaction.model` on another model).
-- **Upgrade:** on the first start after lanes became agents, the lanes you set up (`lanes.<id>`, `capacity` → `instances`)
-  become agents, plus one for `defaultModel` when none runs it; `lanes.<id>` and `lanes.pools` are removed.
+- **Upgrade:** settings from before agents (lanes) move once: the lanes you set up (`lanes.<id>`, `capacity` →
+  `instances`) become agents, plus one for `defaultModel` when none runs it; `lanes.localDefaultCapacity` →
+  `models.localSlots`, `lanes.cloudDefaultCapacity` → `models.cloudSlots`, `lanes.budgets` → `budget.providers`; then
+  `lanes` is removed.
 - **`cost`:** also accepts `cacheRead` and `cacheWrite`; the defaults are 10 % and 125 % of the input price.
-- `lanes.budgets.<provider>.dailyTokens` (older: tokens per day per provider) is still read.
+- `budget.providers.<provider>.dailyTokens` (older: tokens per day per provider) is still read.
 
 ## Budget
 

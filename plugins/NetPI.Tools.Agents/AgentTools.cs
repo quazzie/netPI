@@ -16,7 +16,7 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
         var runtime = context.Services.Get<IAgentRuntime>();
-        if (runtime is null) return ToolResult.Error("The agent runtime is not available (the netpi.agent plugin is not loaded).");
+        if (runtime is null) return ToolResult.Error("The agent runtime is not available (the netpi.runtime plugin is not loaded).");
         try
         {
             return await RunAsync(runtime, context, ToolArgs.Unwrap(args), ct).ConfigureAwait(false);
@@ -113,16 +113,16 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
         return sb.ToString();
     }
 
-    protected LanePoolInfo? PoolOf(ToolContext context, AgentInfo a)
+    protected AgentSlots? PoolOf(ToolContext context, AgentInfo a)
     {
-        var pools = context.Services.Get<ILaneScheduler>()?.Snapshot();
+        var pools = context.Services.Get<IAgentScheduler>()?.Snapshot();
         if (pools is null) return null;
-        if (a.Pool is not null && pools.FirstOrDefault(p => p.Key == a.Pool) is { } byKey) return byKey;
+        if (a.Agent is not null && pools.FirstOrDefault(p => p.Key == a.Agent) is { } byKey) return byKey;
         var model = a.Model ?? Plugin.Models.DefaultModelRef;
         return model is null ? null : pools.FirstOrDefault(p => p.Models.Contains(model, StringComparer.OrdinalIgnoreCase));
     }
 
-    // Delegation guidance lives with the tools (only agents that have them see it); the lanes plugin explains the agents.
+    // Delegation guidance lives with the tools (only agents that have them see it); the agents plugin explains the agents.
     protected static readonly string[] SpawnGuidelines =
     [
         "Delegate independent, well-scoped work (research, exploring code, separate modules) to subagents with agent_spawn. A subagent has its own session and does not see this conversation: give it a complete, self-contained task.",
@@ -166,9 +166,9 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         if (string.IsNullOrWhiteSpace(task)) return ToolResult.Error("Missing 'task': describe the subagent's task completely.");
 
         // the agents the user set up are the menu: one of them is required (an active one); without any, a model ref or your model
-        var agentArg = ToolArgs.Str(args, "agent", "lane", "laneId", "pool");
+        var agentArg = ToolArgs.Str(args, "agent");
         var modelArg = ToolArgs.Str(args, "model");
-        var agents = (context.Services.Get<ILaneScheduler>()?.Snapshot() ?? []).Where(p => p.Configured).ToList();
+        var agents = (context.Services.Get<IAgentScheduler>()?.Snapshot() ?? []).Where(p => p.Configured).ToList();
         string? spawnAgent = null, spawnModel;
         if (agents.Count > 0)
         {
@@ -216,7 +216,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         if (ToolArgs.Bool(args, "wait") == true)
         {
             var timeout = ToolArgs.Num(args, "timeoutSeconds", "timeout") is { } t && t > 0 ? TimeSpan.FromSeconds(t) : (TimeSpan?)null;
-            var results = await runtime.WaitAsync(context.AgentId, [info.Id], yieldLane: true, timeout, ct).ConfigureAwait(false);
+            var results = await runtime.WaitAsync(context.AgentId, [info.Id], yieldSlot: true, timeout, ct).ConfigureAwait(false);
             var r = results.FirstOrDefault() ?? runtime.Get(info.Id) ?? info;
             return new ToolResult { Content = Report(r), IsError = r.Status == AgentStatus.Failed, Details = Details(r) };
         }
@@ -235,7 +235,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         return ToolResult.Ok(sb.ToString(), Details(runtime.Get(info.Id) ?? info));
     }
 
-    private static string AgentMenu(IEnumerable<LanePoolInfo> agents) => string.Join("\n", agents.OrderBy(p => p.Available ? 0 : 1).Select(p =>
+    private static string AgentMenu(IEnumerable<AgentSlots> agents) => string.Join("\n", agents.OrderBy(p => p.Available ? 0 : 1).Select(p =>
         $"- {p.Key} · {p.Model} · " +
         (p.Available ? $"{p.Busy}/{p.Capacity} busy · " : $"not active ({(p.Disabled ? "switched off" : p.Unavailable)}) · ") +
         (p.Free ? "free"
@@ -291,7 +291,7 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
         if (ids.Count == 0) return ToolResult.Error($"Unknown agent(s): {string.Join(", ", unknown)}. Use agent_list to see your subagents.");
 
         var seconds = ToolArgs.Num(args, "timeoutSeconds", "timeout") is { } t && t > 0 ? t : 3600;
-        var results = await runtime.WaitAsync(context.AgentId, ids, yieldLane: true, TimeSpan.FromSeconds(seconds), ct).ConfigureAwait(false);
+        var results = await runtime.WaitAsync(context.AgentId, ids, yieldSlot: true, TimeSpan.FromSeconds(seconds), ct).ConfigureAwait(false);
 
         var sb = new StringBuilder();
         var running = results.Count(a => IsBusy(a.Status));
@@ -387,7 +387,7 @@ internal sealed class AgentListTool(IPluginContext plugin) : AgentToolBase(plugi
             if (a.Id == context.AgentId) sb.Append(" [you]");
             sb.Append("\n  ");
             if (a.Model is not null) sb.Append("model ").Append(a.Model).Append(", ");
-            if (a.Pool is not null) sb.Append("pool ").Append(a.Pool).Append(", ");
+            if (a.Agent is not null) sb.Append("agent ").Append(a.Agent).Append(", ");
             sb.Append(Stats(a));
             if (a.QueuedMessages > 0) sb.Append(", ").Append(a.QueuedMessages).Append(" queued messages");
             if (!string.IsNullOrWhiteSpace(a.Task)) sb.Append("\n  task: ").Append(Truncate(a.Task.ReplaceLineEndings(" "), 160, "…"));
@@ -451,7 +451,7 @@ internal sealed class AgentCancelTool(IPluginContext plugin) : AgentToolBase(plu
         if (!IsBusy(a.Status)) return ToolResult.Ok($"{a.Name} ({a.Id}) is not running (status {Status(a.Status)}).", Details(a));
         var ok = await runtime.AbortAsync(a.Id).ConfigureAwait(false);
         // Consume the result: the caller asked for the cancellation, so it needs no agent-result notice about it.
-        var final = await runtime.WaitAsync(context.AgentId, [a.Id], yieldLane: false, TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+        var final = await runtime.WaitAsync(context.AgentId, [a.Id], yieldSlot: false, TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
         var now = final.FirstOrDefault() ?? runtime.Get(a.Id) ?? a;
         return ok
             ? ToolResult.Ok($"Cancelled {now.Name} ({now.Id}); status {Status(now.Status)}.", Details(now))

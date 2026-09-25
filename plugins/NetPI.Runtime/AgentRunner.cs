@@ -5,7 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
-namespace NetPI.Agent;
+namespace NetPI.Runtime;
 
 /// <summary>One agent run: turns of (steering → context → model call → tools) until the agent stops.</summary>
 internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState run)
@@ -132,12 +132,12 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 _rc.ReasoningEffort = session.Reasoning;
             }
 
-            // 2. lane
+            // 2. a slot on the agent
             try
             {
-                await EnsureLaneAsync(model, ct).ConfigureAwait(false);
+                await EnsureSlotAsync(model, ct).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is BudgetExceededException or LaneUnavailableException)
+            catch (Exception ex) when (ex is BudgetExceededException or AgentUnavailableException)
             {
                 rt.AppendNotice(state, ex.Message, "error");
                 throw new RunFailedException(ex.Message, ex);
@@ -333,19 +333,19 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         return true;
     }
 
-    // ---------------------------------------------------------------- lane
+    // ---------------------------------------------------------------- slot
 
-    private async Task EnsureLaneAsync(ModelInfo model, CancellationToken ct)
+    private async Task EnsureSlotAsync(ModelInfo model, CancellationToken ct)
     {
-        var scheduler = Ctx.Services.Get<ILaneScheduler>();
+        var scheduler = Ctx.Services.Get<IAgentScheduler>();
         if (scheduler is null)
         {
             run.Model = model;
             if (Info.Status != AgentStatus.Running) rt.SetStatus(state, AgentStatus.Running, null, keepActivity: true);
             return;
         }
-        var pool = scheduler.ResolvePool(model, rt.AgentFor(SessionId, model, scheduler));
-        if (run.Lease is { IsReleased: false } lease && string.Equals(lease.PoolKey, pool, StringComparison.OrdinalIgnoreCase))
+        var pool = scheduler.Resolve(model, rt.AgentFor(SessionId, model, scheduler));
+        if (run.Lease is { IsReleased: false } lease && string.Equals(lease.Key, pool, StringComparison.OrdinalIgnoreCase))
         {
             run.Model = model;
             return;
@@ -355,7 +355,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             run.Lease = null;
             old.Dispose();
         }
-        run.Lease = await rt.AcquireLaneAsync(state, run, model, 0, ct).ConfigureAwait(false);
+        run.Lease = await rt.AcquireSlotAsync(state, run, model, 0, ct).ConfigureAwait(false);
     }
 
     // ---------------------------------------------------------------- tools and prompt

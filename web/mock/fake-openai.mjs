@@ -31,13 +31,13 @@ function script(first, turn) {
         calls: [
           call('bash', { command: 'for i in $(seq 1 900); do echo "[vite] hmr update /src/App.svelte ($i)"; sleep 1; done', background: true }),
           call('agent_spawn', { name: 'surveyor', task: '[sub-slow] Survey plugins/ and list every plugin with its start order and the RPC methods it registers.' }),
-          call('agent_spawn', { name: 'reviewer', task: '[sub-slow] Review plugins/NetPI.Lanes for races between Acquire and Release; report findings with file:line.' }),
+          call('agent_spawn', { name: 'reviewer', task: '[sub-slow] Review plugins/NetPI.Agents for races between Acquire and Release; report findings with file:line.' }),
           call('agent_spawn', { name: 'docs-writer', task: '[sub-fast] Check docs/PROTOCOL.md for RPC methods that are missing from the table.' }),
         ],
       },
       {
         think: 'While they work, run the test suite in the foreground.',
-        calls: [call('bash', { command: 'for i in $(seq 1 60); do echo "  ok $i - LaneScheduler handles case $i"; sleep 0.5; done; echo "60 passed"', timeout: 120 })],
+        calls: [call('bash', { command: 'for i in $(seq 1 60); do echo "  ok $i - AgentScheduler handles case $i"; sleep 0.5; done; echo "60 passed"', timeout: 120 })],
       },
       { think: 'Tests pass. Now wait for the subagents.', calls: [call('agent_wait', { timeout: 600 })] },
       { think: 'All reports are in.', text: 'Done. The dev server is still running in the background; the survey and review reports are above.' },

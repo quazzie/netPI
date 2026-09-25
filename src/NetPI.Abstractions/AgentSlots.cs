@@ -1,33 +1,33 @@
 namespace NetPI;
 
 /// <summary>
-/// Lanes: every model belongs to a pool with a fixed number of lanes (parallel slots). An agent holds
-/// a lane for the duration of a run; when all lanes are taken, agents queue. A waiting orchestrator can
-/// yield its lane to its workers and resume later with only their results.
+/// The agents' slots: every agent (<c>agents.&lt;id&gt;</c>, a model with instances) has as many slots as instances, and
+/// model calls without an agent get slots per model. A run holds a slot for its whole run; when all are taken, runs
+/// queue. A waiting orchestrator can yield its slot to its workers and resume later with only their results.
 /// </summary>
-public interface ILaneScheduler
+public interface IAgentScheduler
 {
-    /// <summary>Pool key for a model call without an agent (a slot per model).</summary>
-    string ResolvePool(ModelInfo model);
+    /// <summary>The slot key of a model call without an agent (a slot per model).</summary>
+    string Resolve(ModelInfo model);
 
-    /// <summary>Pool key for a run on an agent (<c>agents.&lt;id&gt;</c>); null or an unknown id: as <see cref="ResolvePool(ModelInfo)"/>.</summary>
-    string ResolvePool(ModelInfo model, string? agent) => ResolvePool(model);
+    /// <summary>The slot key of a run on an agent (<c>agents.&lt;id&gt;</c>); null or an unknown id: as <see cref="Resolve(ModelInfo)"/>.</summary>
+    string Resolve(ModelInfo model, string? agent) => Resolve(model);
 
     /// <summary>
     /// The agent a run on <paramref name="model"/> goes to: <paramref name="agent"/> when it runs that model, else an agent on
     /// the model (a free one first). Null when no agents are set up (every model then runs on a slot per model). Throws
-    /// <see cref="LaneUnavailableException"/> when agents are set up and none runs the model.
+    /// <see cref="AgentUnavailableException"/> when agents are set up and none runs the model.
     /// </summary>
     string? ChooseAgent(ModelInfo model, string? agent) => null;
-    IReadOnlyList<LanePoolInfo> Snapshot();
-    /// <summary>Wait for a lane (FIFO within priority). Throws <see cref="BudgetExceededException"/> if the provider is over budget.</summary>
-    ValueTask<ILaneLease> AcquireAsync(LaneRequest request, CancellationToken ct);
-    bool TryAcquire(LaneRequest request, out ILaneLease? lease);
+    IReadOnlyList<AgentSlots> Snapshot();
+    /// <summary>Wait for a slot (FIFO within priority). Throws <see cref="BudgetExceededException"/> if the provider is over budget.</summary>
+    ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct);
+    bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease);
 }
 
-public sealed class LaneRequest
+public sealed class AgentSlotRequest
 {
-    public required string PoolKey { get; init; }
+    public required string Key { get; init; }
     public required string AgentId { get; init; }
     public string? SessionId { get; init; }
     public string? Label { get; init; }
@@ -36,15 +36,15 @@ public sealed class LaneRequest
     public string? Provider { get; init; }
 }
 
-public interface ILaneLease : IDisposable
+public interface IAgentSlot : IDisposable
 {
-    string PoolKey { get; }
+    string Key { get; }
     string AgentId { get; }
     DateTimeOffset AcquiredAt { get; }
     bool IsReleased { get; }
 }
 
-public sealed class LaneOwnerInfo
+public sealed class SlotHolder
 {
     public string AgentId { get; set; } = "";
     public string? SessionId { get; set; }
@@ -52,7 +52,7 @@ public sealed class LaneOwnerInfo
     public DateTimeOffset Since { get; set; }
 }
 
-public sealed class LanePoolInfo
+public sealed class AgentSlots
 {
     public string Key { get; set; } = "";
     public string? Provider { get; set; }
@@ -60,8 +60,8 @@ public sealed class LanePoolInfo
     public int Busy { get; set; }
     public int Queued { get; set; }
     public List<string> Models { get; set; } = [];
-    public List<LaneOwnerInfo> Owners { get; set; } = [];
-    public List<LaneOwnerInfo> Waiters { get; set; } = [];
+    public List<SlotHolder> Owners { get; set; } = [];
+    public List<SlotHolder> Waiters { get; set; } = [];
     /// <summary>catalog | settings | default</summary>
     public string Source { get; set; } = "default";
     public string? Status { get; set; }
@@ -73,9 +73,9 @@ public sealed class LanePoolInfo
     public string? Unavailable { get; set; }
     /// <summary>Switched off by the user (<c>agents.&lt;id&gt;.disabled</c>).</summary>
     public bool Disabled { get; set; }
-    /// <summary>The configured lane's model ref.</summary>
+    /// <summary>The agent's model ref.</summary>
     public string? Model { get; set; }
-    /// <summary>The user's note on when to use the lane.</summary>
+    /// <summary>The user's note on when to use the agent.</summary>
     public string? Use { get; set; }
     /// <summary>Price in USD per million input / output tokens; null = unknown.</summary>
     public double? PriceInput { get; set; }
@@ -90,7 +90,7 @@ public sealed class LanePoolInfo
 }
 
 /// <summary>A run asked for an agent that can't take work now (disabled, or its model isn't loaded).</summary>
-public sealed class LaneUnavailableException(string message) : Exception(message);
+public sealed class AgentUnavailableException(string message) : Exception(message);
 
 /// <summary>The agent (<c>agents.&lt;id&gt;</c>) a session runs on: <c>meta.agent</c>.</summary>
 public static class SessionAgent

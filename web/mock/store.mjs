@@ -180,7 +180,7 @@ export function agentFor(sessionId) {
       depth: s?.kind === 'subagent' ? 1 : 0,
       status: 'idle',
       model: s?.model ?? DEFAULT_MODEL,
-      pool: 'aiproxy',
+      agent: 'qwen',
       activity: null,
       createdAt: s?.createdAt ?? new Date().toISOString(),
       startedAt: null,
@@ -226,7 +226,7 @@ function shellDetails(command, exitCode, durationMs, cwd) {
 function seedCycle(sid, i, t, cwd) {
   const prompt = C.USER_PROMPTS[i % C.USER_PROMPTS.length];
   const answer = C.ANSWERS[i % C.ANSWERS.length];
-  const file = 'src/NetPI.Host/Lanes/LaneScheduler.cs';
+  const file = 'src/NetPI.Host/Lanes/AgentScheduler.cs';
   const c1 = newId('call'),
     c2 = newId('call'),
     c3 = newId('call'),

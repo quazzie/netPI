@@ -156,7 +156,7 @@ public static class ToolRepairTests
             ["options"] = new JsonObject { ["type"] = "object" },
             ["mode"] = new JsonObject { ["enum"] = new JsonArray("a", "b") },
         }),
-        T.Tool("lanes_list"),
+        T.Tool("agent_choices"),
         T.Tool("write", new JsonObject { ["path"] = new JsonObject { ["type"] = "string" }, ["content"] = new JsonObject { ["type"] = "string" } }),
     ];
 
@@ -173,9 +173,9 @@ public static class ToolRepairTests
     {
         r.Add("toolrepair: Qwen block without parameters", () =>
         {
-            var m = Repair("<tool_call>\n<function=lanes_list>\n</function>\n</tool_call>");
+            var m = Repair("<tool_call>\n<function=agent_choices>\n</function>\n</tool_call>");
             var call = m.ToolCalls.Single();
-            Check.Equal("lanes_list", call.Name);
+            Check.Equal("agent_choices", call.Name);
             Check.Equal("{}", call.Arguments);
             Check.True(call.Id.StartsWith("call_"));
             Check.Equal("tool_use", m.StopReason);
@@ -219,8 +219,8 @@ public static class ToolRepairTests
             Check.Equal(2, m4.ToolCalls.Count());
             Check.Equal("b", Args(m4.ToolCalls.Last())["path"].Str());
 
-            var m5 = Repair("<tool_call>\n```json\n{\"function\": {\"name\": \"lanes_list\", \"arguments\": {}}}\n```\n</tool_call>");
-            Check.Equal("lanes_list", m5.ToolCalls.Single().Name);
+            var m5 = Repair("<tool_call>\n```json\n{\"function\": {\"name\": \"agent_choices\", \"arguments\": {}}}\n```\n</tool_call>");
+            Check.Equal("agent_choices", m5.ToolCalls.Single().Name);
         });
 
         r.Add("toolrepair: bare <function=…> and name=\"…\" variants", () =>
@@ -238,7 +238,7 @@ public static class ToolRepairTests
             Check.Equal(3, (int)a3["limit"]!);
 
             // A stray </tool_call> after a bare function is removed too.
-            var m4 = Repair("<function=lanes_list>\n</function>\n</tool_call>");
+            var m4 = Repair("<function=agent_choices>\n</function>\n</tool_call>");
             Check.Equal("", m4.Text);
         });
 
@@ -311,7 +311,7 @@ public static class ToolRepairTests
 
         r.Add("toolrepair: name mapping (dots, case, namespaces) and unknown tools", () =>
         {
-            Check.Equal("lanes_list", Repair("<tool_call>\n<function=lanes.list>\n</function>\n</tool_call>").ToolCalls.Single().Name);
+            Check.Equal("agent_choices", Repair("<tool_call>\n<function=agent.choices>\n</function>\n</tool_call>").ToolCalls.Single().Name);
             Check.Equal("read", Repair("<function=READ><parameter=path>a</parameter></function>").ToolCalls.Single().Name);
             Check.Equal("read", Repair("<tool_call>{\"name\":\"functions.read\",\"arguments\":{\"path\":\"a\"}}</tool_call>").ToolCalls.Single().Name);
 
@@ -372,11 +372,11 @@ public static class ToolRepairTests
             Check.True(hook.Order < new NudgeHook(() => null).Order);
             var session = ctx.SessionsFake.CreateSession(new SessionInfo());
             var turn = T.Turn(T.Run(ctx, T.Model(), session), tools: Tools);
-            var d = await hook.OnAfterModelCallAsync(turn, T.Assistant("<function=lanes_list></function>"));
+            var d = await hook.OnAfterModelCallAsync(turn, T.Assistant("<function=agent_choices></function>"));
             Check.Equal(TurnAction.Replace, d!.Action);
-            Check.Equal("lanes_list", d.Replacement!.ToolCalls.Single().Name);
+            Check.Equal("agent_choices", d.Replacement!.ToolCalls.Single().Name);
             ctx.SettingsFake.Set("toolRepair.enabled", false);
-            Check.True(await hook.OnAfterModelCallAsync(turn, T.Assistant("<function=lanes_list></function>")) is null);
+            Check.True(await hook.OnAfterModelCallAsync(turn, T.Assistant("<function=agent_choices></function>")) is null);
         });
     }
 }

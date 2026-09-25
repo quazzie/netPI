@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
-namespace NetPI.Lanes;
+namespace NetPI.Agents;
 
 /// <summary>
 /// Every model call with its tokens and cost, and the budgets.
@@ -13,7 +13,7 @@ namespace NetPI.Lanes;
 /// else tokens × the price (the agent's <c>cost</c>, else the catalog's pricing); local models are free; other cloud
 /// models without a price are "unknown" ($0, but paid when a budget is spent).</item>
 /// <item><c>lanes_usage</c>: tokens per day, provider and model (the Work tab, the legacy
-/// <c>lanes.budgets.&lt;provider&gt;.dailyTokens</c>).</item>
+/// <c>budget.providers.&lt;provider&gt;.dailyTokens</c>).</item>
 /// <item>Budgets: <c>budget.monthlyUsd</c> (the month starts on <c>budget.resetDay</c>), <c>budget.dailyUsd</c> and a
 /// agent's <c>agents.&lt;id&gt;.budget.limitUsd</c> per day. When one is spent, calls to paid models throw
 /// <see cref="BudgetExceededException"/>; <c>budget.onLimit</c> "ask" lets the user allow a chat to go over
@@ -34,7 +34,7 @@ internal sealed class Ledger
     private string _costDay = "";
     private DateTime _periodStart;
     private double _periodSpent, _todaySpent;
-    private readonly Dictionary<string, double> _laneToday = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, double> _agentToday = new(StringComparer.OrdinalIgnoreCase);
     private int _changeScheduled;
 
     public sealed class Totals
@@ -124,7 +124,7 @@ internal sealed class Ledger
         }
         catch (Exception ex)
         {
-            _ctx.Logger.LogWarning(ex, "Lane usage tables unavailable; usage is tracked in memory only");
+            _ctx.Logger.LogWarning(ex, "Usage tables unavailable; usage is tracked in memory only");
         }
     }
 
@@ -153,10 +153,10 @@ internal sealed class Ledger
 
     private static double? Positive(JsonNode? n) => Number(n) is > 0 and var d ? d : null;
 
-    /// <summary>The price of a model: the lane's <c>cost</c> ($/Mtok), else the catalog's pricing ($/token), else free for local models.</summary>
-    public static Price? PriceOf(ModelInfo model, JsonObject? lane)
+    /// <summary>The price of a model: the agent's <c>cost</c> ($/Mtok), else the catalog's pricing ($/token), else free for local models.</summary>
+    public static Price? PriceOf(ModelInfo model, JsonObject? agentCfg)
     {
-        if (lane?["cost"] is JsonObject c && (Number(c["input"]) is not null || Number(c["output"]) is not null))
+        if (agentCfg?["cost"] is JsonObject c && (Number(c["input"]) is not null || Number(c["output"]) is not null))
         {
             var input = Number(c["input"]) ?? 0;
             return new Price(input, Number(c["output"]) ?? 0, Number(c["cacheRead"]) ?? input * CacheReadShare,
@@ -188,12 +188,12 @@ internal sealed class Ledger
     // ---------------------------------------------------------------- recording
 
     /// <summary>A finished call: its cost row, the cost caches, the daily token totals, and <c>usage.changed</c>.</summary>
-    public void RecordCall(ModelRequest request, ChatMessage message, string? lane, JsonObject? laneCfg)
+    public void RecordCall(ModelRequest request, ChatMessage message, string? agent, JsonObject? agentCfg)
     {
         var u = message.Usage;
         if (u is null) return;
         var model = request.Model;
-        var (cost, source) = CostOf(model, u, laneCfg);
+        var (cost, source) = CostOf(model, u, agentCfg);
         var now = DateTime.Now;
         var day = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         Roll(now);
@@ -201,7 +201,7 @@ internal sealed class Ledger
         {
             _periodSpent += cost;
             _todaySpent += cost;
-            if (lane is not null) _laneToday[lane] = _laneToday.GetValueOrDefault(lane) + cost;
+            if (agent is not null) _agentToday[agent] = _agentToday.GetValueOrDefault(agent) + cost;
         }
         Record(message.Provider ?? model.Provider, model.Id, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens);
         if (_dbReady)
@@ -219,7 +219,7 @@ internal sealed class Ledger
                     {
                         ["ts"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ["day"] = day,
                         ["session"] = request.SessionId, ["root"] = RootSession(request.SessionId), ["agent"] = request.AgentId,
-                        ["lane"] = lane, ["provider"] = model.Provider, ["model"] = model.Id, ["purpose"] = request.Purpose,
+                        ["lane"] = agent, ["provider"] = model.Provider, ["model"] = model.Id, ["purpose"] = request.Purpose,
                         ["input"] = u.InputTokens, ["output"] = u.OutputTokens, ["cacheRead"] = u.CacheReadTokens, ["cacheWrite"] = u.CacheWriteTokens,
                         ["cost"] = cost, ["source"] = source,
                     });
@@ -229,10 +229,10 @@ internal sealed class Ledger
         ScheduleChanged();
     }
 
-    internal static (double Cost, string Source) CostOf(ModelInfo model, Usage u, JsonObject? laneCfg)
+    internal static (double Cost, string Source) CostOf(ModelInfo model, Usage u, JsonObject? agentCfg)
     {
         if (u.CostUsd is { } reported) return (Math.Max(0, reported), "reported");
-        var price = PriceOf(model, laneCfg);
+        var price = PriceOf(model, agentCfg);
         if (price is null) return (0, "unknown");
         if (price.Free) return (0, model.IsLocal ? "free" : "estimated");
         var cost = (u.InputTokens * price.Input + u.OutputTokens * price.Output + u.CacheReadTokens * price.CacheRead + u.CacheWriteTokens * price.CacheWrite) / 1_000_000;
@@ -260,7 +260,7 @@ internal sealed class Ledger
         lock (_gate)
             if (day == _costDay && start == _periodStart) return;
         double period = 0, today = 0;
-        var lanes = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var agents = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         if (_dbReady)
         {
             try
@@ -268,9 +268,9 @@ internal sealed class Ledger
                 var from = new DateTimeOffset(start).ToUnixTimeMilliseconds();
                 period = _ctx.Db.Scalar<double?>("SELECT SUM(cost_usd) FROM usage_calls WHERE ts >= @from", new Dictionary<string, object?> { ["from"] = from }) ?? 0;
                 today = _ctx.Db.Scalar<double?>("SELECT SUM(cost_usd) FROM usage_calls WHERE day = @day", new Dictionary<string, object?> { ["day"] = day }) ?? 0;
-                foreach (var (lane, cost) in _ctx.Db.Query("SELECT lane, SUM(cost_usd) AS c FROM usage_calls WHERE day = @day AND lane IS NOT NULL GROUP BY lane",
+                foreach (var (agent, cost) in _ctx.Db.Query("SELECT lane, SUM(cost_usd) AS c FROM usage_calls WHERE day = @day AND lane IS NOT NULL GROUP BY lane",
                              new Dictionary<string, object?> { ["day"] = day }, r => (r.GetString("lane"), r.GetDouble("c"))))
-                    lanes[lane] = cost;
+                    agents[agent] = cost;
             }
             catch (Exception ex) { _ctx.Logger.LogWarning(ex, "Reading the spend so far failed"); }
         }
@@ -280,8 +280,8 @@ internal sealed class Ledger
             _periodStart = start;
             _periodSpent = period;
             _todaySpent = today;
-            _laneToday.Clear();
-            foreach (var (k, v) in lanes) _laneToday[k] = v;
+            _agentToday.Clear();
+            foreach (var (k, v) in agents) _agentToday[k] = v;
         }
     }
 
@@ -291,10 +291,10 @@ internal sealed class Ledger
         lock (_gate) return (_periodSpent, _todaySpent);
     }
 
-    public double LaneSpentToday(string lane)
+    public double SpentToday(string agent)
     {
         Roll(DateTime.Now);
-        lock (_gate) return _laneToday.GetValueOrDefault(lane);
+        lock (_gate) return _agentToday.GetValueOrDefault(agent);
     }
 
     private void ScheduleChanged()
@@ -311,13 +311,13 @@ internal sealed class Ledger
     // ---------------------------------------------------------------- budget
 
     /// <summary>
-    /// Before a call to a paid model: throws when the month's or today's budget or the lane's daily cap is spent. With
+    /// Before a call to a paid model: throws when the month's or today's budget or the agent's daily cap is spent. With
     /// budget.onLimit "ask" the user's own chats may be allowed to go over (<see cref="Allow"/>).
     /// </summary>
-    public void Check(ModelRequest request, string? lane, JsonObject? laneCfg)
+    public void Check(ModelRequest request, string? agent, JsonObject? agentCfg)
     {
         var model = request.Model;
-        if (!Paid(model, PriceOf(model, laneCfg))) return;
+        if (!Paid(model, PriceOf(model, agentCfg))) return;
         var o = Options();
         var (period, today) = Spent();
         string? why = null;
@@ -325,8 +325,8 @@ internal sealed class Ledger
             why = $"The monthly budget is spent: {Usd(period)} of {Usd(month)} since {PeriodStart.ToString("d MMM", CultureInfo.InvariantCulture)}.";
         else if (o.DailyUsd is { } day && today >= day)
             why = $"Today's budget is spent: {Usd(today)} of {Usd(day)}.";
-        else if (lane is not null && LaneLimit(laneCfg) is { } cap && LaneSpentToday(lane) is var spent && spent >= cap)
-            why = $"The agent {lane} has spent its {Usd(cap)} for today ({Usd(spent)}).";
+        else if (agent is not null && DailyCap(agentCfg) is { } cap && SpentToday(agent) is var spent && spent >= cap)
+            why = $"The agent {agent} has spent its {Usd(cap)} for today ({Usd(spent)}).";
         if (why is null) return;
 
         var session = request.SessionId is null ? null : _ctx.Sessions.GetSession(request.SessionId);
@@ -338,7 +338,7 @@ internal sealed class Ledger
     }
 
     /// <summary>An agent's own daily cap: <c>agents.&lt;id&gt;.budget.limitUsd</c>.</summary>
-    internal static double? LaneLimit(JsonObject? laneCfg) => Positive((laneCfg?["budget"] as JsonObject)?["limitUsd"]);
+    internal static double? DailyCap(JsonObject? agentCfg) => Positive((agentCfg?["budget"] as JsonObject)?["limitUsd"]);
 
     private DateTime PeriodStart
     {
@@ -450,7 +450,7 @@ internal sealed class Ledger
                          new Dictionary<string, object?> { ["from"] = from },
                          r => new JsonObject
                          {
-                             ["lane"] = r.GetStringOrNull("lane"),
+                             ["agent"] = r.GetStringOrNull("lane"),
                              ["provider"] = r.GetString("provider"),
                              ["model"] = r.GetString("model"),
                              ["calls"] = r.GetInt64("calls"),
@@ -501,7 +501,7 @@ internal sealed class Ledger
         }
         catch (Exception ex)
         {
-            _ctx.Logger.LogWarning(ex, "Failed to persist lane usage");
+            _ctx.Logger.LogWarning(ex, "Failed to persist usage");
         }
     }
 
@@ -509,7 +509,7 @@ internal sealed class Ledger
     {
         try
         {
-            var node = _ctx.Settings.GetNode("lanes.budgets") as JsonObject;
+            var node = _ctx.Settings.GetNode("budget.providers") as JsonObject;
             if (node is null) return null;
             foreach (var (key, cfg) in node)
             {
@@ -538,7 +538,7 @@ internal sealed class Ledger
         var used = UsedToday(provider);
         if (used < budget) return false;
         message = $"The daily token budget for provider '{provider}' is exhausted ({used:N0} of {budget:N0} tokens used today). " +
-                  $"Raise lanes.budgets.{provider}.dailyTokens in the settings, pick a model from another provider, or wait until tomorrow.";
+                  $"Raise budget.providers.{provider}.dailyTokens in the settings, pick a model from another provider, or wait until tomorrow.";
         return true;
     }
 
@@ -560,7 +560,7 @@ internal sealed class Ledger
         // providers with a budget but no usage yet
         try
         {
-            if (_ctx.Settings.GetNode("lanes.budgets") is JsonObject budgets)
+            if (_ctx.Settings.GetNode("budget.providers") is JsonObject budgets)
                 foreach (var (key, _) in budgets)
                     if (!byProvider.ContainsKey(key)) byProvider[key] = new Totals();
         }
@@ -593,17 +593,17 @@ internal sealed class Ledger
 /// Outermost model middleware (before retries): checks the budget before a call to a paid model and records every
 /// finished call in the ledger.
 /// </summary>
-internal sealed class LedgerMiddleware(Ledger ledger, LaneScheduler scheduler) : IModelMiddleware
+internal sealed class LedgerMiddleware(Ledger ledger, AgentScheduler scheduler) : IModelMiddleware
 {
     public int Order => -100;
 
     public async IAsyncEnumerable<ModelStreamEvent> InvokeAsync(ModelRequest request, ModelCallDelegate next, [EnumeratorCancellation] CancellationToken ct)
     {
-        var (lane, cfg) = scheduler.LaneFor(request.Model, request.SessionId);
-        ledger.Check(request, lane, cfg);
+        var (agent, cfg) = scheduler.AgentOf(request.Model, request.SessionId);
+        ledger.Check(request, agent, cfg);
         await foreach (var e in next(request, ct).WithCancellation(ct).ConfigureAwait(false))
         {
-            if (e is StreamCompleted done) ledger.RecordCall(request, done.Message, lane, cfg);
+            if (e is StreamCompleted done) ledger.RecordCall(request, done.Message, agent, cfg);
             yield return e;
         }
     }

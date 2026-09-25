@@ -1,4 +1,4 @@
-namespace NetPI.Agent;
+namespace NetPI.Runtime;
 
 /// <summary>Mutable runtime state of one agent. Guard every field with <see cref="Gate"/>.</summary>
 internal sealed class AgentState(AgentInfo info)
@@ -60,8 +60,8 @@ internal sealed class RunState
     public int Id { get; } = Interlocked.Increment(ref _next);
     public CancellationTokenSource Cts { get; } = new();
     public Task? Task { get; set; }
-    /// <summary>The lane held by this run (null without a scheduler, or while yielded).</summary>
-    public ILaneLease? Lease { get; set; }
+    /// <summary>The slot held by this run (null without a scheduler, or while yielded).</summary>
+    public IAgentSlot? Lease { get; set; }
     /// <summary>The model the current lease was acquired for (to re-acquire after a yield).</summary>
     public ModelInfo? Model { get; set; }
     /// <summary>User abort (don't auto-start queued input afterwards).</summary>
@@ -86,7 +86,7 @@ internal static class AgentInfoExtensions
         Depth = a.Depth,
         Status = a.Status,
         Model = a.Model,
-        Pool = a.Pool,
+        Agent = a.Agent,
         Activity = a.Activity,
         CreatedAt = a.CreatedAt,
         StartedAt = a.StartedAt,

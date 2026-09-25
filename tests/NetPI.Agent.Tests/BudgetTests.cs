@@ -1,16 +1,16 @@
 using System.Text.Json.Nodes;
-using NetPI.Lanes;
+using NetPI.Agents;
 
 namespace NetPI.Agent.Tests;
 
-/// <summary>The ledger of model calls with their cost, the budget, and the agents (the lanes plugin).</summary>
+/// <summary>The ledger of model calls with their cost, the budget, and the agents (the agents plugin).</summary>
 public static class BudgetTests
 {
     public static void Register(TestRunner t)
     {
         t.Add("ledger: every call with its cost (reported, from the price, free for local); a chat's cost with its subagents", Ledger);
         t.Add("budget: a spent monthly budget stops paid calls, not local ones; \"ask\" lets a chat go over and continues it", MonthlyBudget);
-        t.Add("agents: agent_choices shows the budget, state, price, spend and note; agent_spawn needs an active agent; an agent's daily cap", LanesAndCap);
+        t.Add("agents: agent_choices shows the budget, state, price, spend and note; agent_spawn needs an active agent; an agent's daily cap", AgentsAndCap);
         t.Add("budget: the period starts on budget.resetDay", Period);
     }
 
@@ -143,7 +143,7 @@ public static class BudgetTests
         Check.Contains(child.Error, "budget");
     }
 
-    private static async Task LanesAndCap()
+    private static async Task AgentsAndCap()
     {
         using var db = TestSqlite.TryCreate();
         if (db is null) { Console.WriteLine("    (no SQLite library: skipped)"); return; }
@@ -156,13 +156,13 @@ public static class BudgetTests
             x.Settings.SetQuiet("agents.solo", JsonNode.Parse("""{ "model": "fake/solo", "disabled": true }"""));
         }, db: db);
 
-        var lanes = h.Lanes!.Snapshot().Where(p => p.Configured).OrderBy(p => p.Key).ToList();
-        Check.Equal("big,small,solo", string.Join(",", lanes.Select(p => p.Key)));
-        Check.Equal(1, lanes[0].Capacity);
-        Check.Equal(3.0, lanes[0].PriceInput);
-        Check.False(lanes[0].Free);
-        Check.True(lanes[1].Free);
-        Check.Equal(0.01, lanes[0].DailyLimitUsd);
+        var agents = h.Scheduler!.Snapshot().Where(p => p.Configured).OrderBy(p => p.Key).ToList();
+        Check.Equal("big,small,solo", string.Join(",", agents.Select(p => p.Key)));
+        Check.Equal(1, agents[0].Capacity);
+        Check.Equal(3.0, agents[0].PriceInput);
+        Check.False(agents[0].Free);
+        Check.True(agents[1].Free);
+        Check.Equal(0.01, agents[0].DailyLimitUsd);
 
         // the orchestrator asks for the agents, then delegates without an agent and on a switched-off one (refused, the
         // error lists them), then on one
@@ -207,8 +207,8 @@ public static class BudgetTests
         Check.Contains(off, "The agent \"solo\" can't take work now: the user switched it off.");
         var child = h.Runtime.List().Single(a => a.IsSubagent);
         Check.Equal("cloud/big", child.Model);
-        Check.Equal("big", child.Pool);
-        Check.Equal(0.02, Math.Round(h.Lanes!.Snapshot().Single(p => p.Key == "big").SpentTodayUsd, 8));
+        Check.Equal("big", child.Agent);
+        Check.Equal(0.02, Math.Round(h.Scheduler!.Snapshot().Single(p => p.Key == "big").SpentTodayUsd, 8));
 
         // the agent's daily cap ($0.01) is spent: the next call on it is refused, other agents go on
         var direct = h.NewSession(model: "cloud/big");
@@ -221,7 +221,7 @@ public static class BudgetTests
     {
         static string P(int y, int m, int d, int reset)
         {
-            var (start, end) = NetPI.Lanes.Ledger.Period(new DateTime(y, m, d, 12, 0, 0), reset);
+            var (start, end) = NetPI.Agents.Ledger.Period(new DateTime(y, m, d, 12, 0, 0), reset);
             return $"{start:yyyy-MM-dd}..{end:yyyy-MM-dd}";
         }
         Check.Equal("2026-09-01..2026-10-01", P(2026, 9, 24, 1));

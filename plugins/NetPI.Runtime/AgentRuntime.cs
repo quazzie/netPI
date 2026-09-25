@@ -3,13 +3,13 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
-namespace NetPI.Agent;
+namespace NetPI.Runtime;
 
 /// <summary>A run ended with an error that was already reported to the user (notice written).</summary>
 internal sealed class RunFailedException(string message, Exception? inner = null) : Exception(message, inner);
 
 /// <summary>
-/// <see cref="IAgentRuntime"/>: agent registry, input delivery (steer/queue), subagents, waiting with lane yielding,
+/// <see cref="IAgentRuntime"/>: agent registry, input delivery (steer/queue), subagents, waiting that yields the slot,
 /// parent notification and agent-to-agent messaging. The model/tool loop lives in <see cref="AgentRunner"/>.
 /// </summary>
 internal sealed class AgentRuntime : IAgentRuntime
@@ -678,14 +678,14 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
     }
 
-    // ---------------------------------------------------------------- lanes
+    // ---------------------------------------------------------------- slots
 
     /// <summary>
     /// The agent (<c>agents.&lt;id&gt;</c>) the session's run on <paramref name="model"/> goes to, chosen by the scheduler: the
     /// chat's own agent when it runs the model, else an agent on the model, saved as the chat's agent (<c>meta.agent</c>).
-    /// Null when no agents are set up. Throws <see cref="LaneUnavailableException"/> when none runs the model.
+    /// Null when no agents are set up. Throws <see cref="AgentUnavailableException"/> when none runs the model.
     /// </summary>
-    internal string? AgentFor(string sessionId, ModelInfo model, ILaneScheduler scheduler)
+    internal string? AgentFor(string sessionId, ModelInfo model, IAgentScheduler scheduler)
     {
         var session = Ctx.Sessions.GetSession(sessionId);
         var current = SessionAgent.Of(session);
@@ -702,27 +702,27 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// <summary>
     /// Acquire a slot for <paramref name="model"/> on the session's agent (status Queued while waiting). Returns null without
     /// a scheduler. Survives a scheduler reload (its waiters are cancelled → re-resolve and retry). Throws
-    /// <see cref="BudgetExceededException"/>, and <see cref="LaneUnavailableException"/> when the agent can't take work.
+    /// <see cref="BudgetExceededException"/>, and <see cref="AgentUnavailableException"/> when the agent can't take work.
     /// </summary>
-    internal async Task<ILaneLease?> AcquireLaneAsync(AgentState s, RunState run, ModelInfo model, int priority, CancellationToken ct)
+    internal async Task<IAgentSlot?> AcquireSlotAsync(AgentState s, RunState run, ModelInfo model, int priority, CancellationToken ct)
     {
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            var scheduler = Ctx.Services.Get<ILaneScheduler>();
+            var scheduler = Ctx.Services.Get<IAgentScheduler>();
             if (scheduler is null)
             {
-                Update(s, i => i.Pool = null);
+                Update(s, i => i.Agent = null);
                 run.Model = model;
                 SetStatus(s, AgentStatus.Running, null, keepActivity: true);
                 return null;
             }
             var agent = AgentFor(s.Info.SessionId, model, scheduler);
-            var pool = scheduler.ResolvePool(model, agent);
-            Update(s, i => i.Pool = pool);
-            var request = new LaneRequest
+            var pool = scheduler.Resolve(model, agent);
+            Update(s, i => i.Agent = pool);
+            var request = new AgentSlotRequest
             {
-                PoolKey = pool,
+                Key = pool,
                 AgentId = s.Info.Id,
                 SessionId = s.Info.SessionId,
                 Label = s.Info.Name,
@@ -735,7 +735,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 SetStatus(s, AgentStatus.Running, null, keepActivity: true);
                 return lease;
             }
-            SetStatus(s, AgentStatus.Queued, agent is null ? $"waiting for lane {pool}" : $"waiting for agent {agent}");
+            SetStatus(s, AgentStatus.Queued, agent is null ? $"waiting for a slot on {pool}" : $"waiting for agent {agent}");
             try
             {
                 lease = await scheduler.AcquireAsync(request, ct).ConfigureAwait(false);
@@ -768,7 +768,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             throw new InvalidOperationException($"Maximum subagent depth ({maxDepth}) reached: this agent cannot spawn subagents (setting agents.maxDepth).");
 
         var parentSession = parentInfo is null ? null : Ctx.Sessions.GetSession(parentInfo.SessionId);
-        // an agent the user set up (named by agent, or by model as the older lane ids were): the subagent runs on it
+        // an agent the user set up (by its id): the subagent runs on it
         var agent = SetUpAgent(request.Agent ?? request.Model);
         string? modelRef;
         if (agent is not null)
@@ -868,9 +868,9 @@ internal sealed class AgentRuntime : IAgentRuntime
     }
 
     /// <summary>An agent the user set up (<c>agents.&lt;id&gt;</c>) by its id, with its state.</summary>
-    private LanePoolInfo? SetUpAgent(string? id) =>
+    private AgentSlots? SetUpAgent(string? id) =>
         string.IsNullOrWhiteSpace(id) ? null
-            : Ctx.Services.Get<ILaneScheduler>()?.Snapshot().FirstOrDefault(p => p.Configured && string.Equals(p.Key, id.Trim(), StringComparison.OrdinalIgnoreCase));
+            : Ctx.Services.Get<IAgentScheduler>()?.Snapshot().FirstOrDefault(p => p.Configured && string.Equals(p.Key, id.Trim(), StringComparison.OrdinalIgnoreCase));
 
     private async Task<string?> ResolveSpawnModelAsync(string? requested, SessionInfo? parentSession, CancellationToken ct)
     {
@@ -880,7 +880,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         try { found = await Ctx.Models.FindAsync(requested, ct).ConfigureAwait(false); } catch (Exception ex) when (ex is not OperationCanceledException) { }
         if (found is not null) return found.Ref;
 
-        var pool = Ctx.Services.Get<ILaneScheduler>()?.Snapshot()
+        var pool = Ctx.Services.Get<IAgentScheduler>()?.Snapshot()
             .FirstOrDefault(p => string.Equals(p.Key, requested, StringComparison.OrdinalIgnoreCase));
         if (pool is { Models.Count: > 0 })
         {
@@ -897,7 +897,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         throw new ArgumentException($"Unknown agent or model '{requested}'. agent_choices lists the agents.");
     }
 
-    public async Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldLane = true,
+    public async Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true,
         TimeSpan? timeout = null, CancellationToken ct = default)
     {
         var caller = FindState(callerAgentId);
@@ -924,7 +924,7 @@ internal sealed class AgentRuntime : IAgentRuntime
 
         try
         {
-            if (tasks.Count > 0) await WaitCoreAsync(caller, tasks, yieldLane, timeout, ct).ConfigureAwait(false);
+            if (tasks.Count > 0) await WaitCoreAsync(caller, tasks, yieldSlot, timeout, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -954,7 +954,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         return results;
     }
 
-    private async Task WaitCoreAsync(AgentState? caller, List<Task> tasks, bool yieldLane, TimeSpan? timeout, CancellationToken ct)
+    private async Task WaitCoreAsync(AgentState? caller, List<Task> tasks, bool yieldSlot, TimeSpan? timeout, CancellationToken ct)
     {
         RunState? run = null;
         CancellationToken steer = default;
@@ -967,9 +967,9 @@ internal sealed class AgentRuntime : IAgentRuntime
             }
         }
 
-        ILaneLease? yielded = null;
+        IAgentSlot? yielded = null;
         var model = run?.Model;
-        if (yieldLane && run?.Lease is { IsReleased: false } lease && model is not null)
+        if (yieldSlot && run?.Lease is { IsReleased: false } lease && model is not null)
         {
             run.Lease = null;
             yielded = lease;
@@ -1011,7 +1011,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             if (caller is not null && !ct.IsCancellationRequested)
             {
                 if (yielded is not null && run is not null && model is not null)
-                    run.Lease = await AcquireLaneAsync(caller, run, model, YieldPriority, ct).ConfigureAwait(false);
+                    run.Lease = await AcquireSlotAsync(caller, run, model, YieldPriority, ct).ConfigureAwait(false);
                 else if (yielded is null)
                     SetActivity(caller, null);
             }

@@ -371,7 +371,7 @@ public static class ServerTests
 
             var models = (await Call("models.list", new { refresh = true }))!;
             Check.True(models["models"] is JsonArray);
-            Check.Equal("aiproxy/qwen3.8-27b", models["defaultModel"]!.GetValue<string>());
+            Check.True(models["defaultModel"] is null, "no default model: none is set and no provider lists one");
 
             Check.True((await Call("ui.tabs")) is JsonArray);
             Check.True((await Call("ui.commands")) is JsonArray);

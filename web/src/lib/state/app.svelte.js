@@ -18,7 +18,7 @@ class AppState {
   sessions = $state.raw([]); // all known sessions (incl. subagents), newest first
   models = $state.raw([]);
   defaultModel = $state(null);
-  pools = $state.raw([]); // lanes.list: the agents the user set up (configured) and other model calls in progress
+  slots = $state.raw([]); // agents.list: the agents the user set up (configured) and other model calls in progress
   agents = new SvelteMap(); // sessionId -> AgentInfo (latest)
   context = new SvelteMap(); // sessionId -> { used, window }
   unread = new SvelteSet();
@@ -139,9 +139,9 @@ export async function loadModels(refresh = false) {
 
 export async function loadPools() {
   try {
-    app.pools = (await rpc('lanes.list', {}, { timeout: 8000 })) ?? [];
+    app.slots = (await rpc('agents.list', {}, { timeout: 8000 })) ?? [];
   } catch {
-    app.pools = []; // the agents plugin is off
+    app.slots = []; // the agents plugin is off
   }
 }
 
@@ -156,7 +156,7 @@ export async function loadUiRegistry() {
 
 async function loadAgents() {
   try {
-    const list = await rpc('agents.list', { includeFinished: true }, { timeout: 8000 });
+    const list = await rpc('runs.list', { includeFinished: true }, { timeout: 8000 });
     app.agents.clear();
     for (const a of list ?? []) setAgent(a);
   } catch {
@@ -486,8 +486,8 @@ function onEvent(d, env) {
     case 'models.changed':
       loadModels();
       break;
-    case 'lanes.changed':
-      if (Array.isArray(d?.pools)) app.pools = d.pools;
+    case 'agents.changed':
+      if (Array.isArray(d?.agents)) app.slots = d.agents;
       break;
     case 'ui.changed':
     case 'plugins.changed':

@@ -1,24 +1,24 @@
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
-namespace NetPI.Lanes;
+namespace NetPI.Agents;
 
 /// <summary>
-/// Agents (<see cref="ILaneScheduler"/>), the ledger of every model call with its cost, and the budget.
+/// Agents (<see cref="IAgentScheduler"/>), the ledger of every model call with its cost, and the budget.
 /// <para>Settings: <c>agents.&lt;id&gt;</c> <c>{ model, instances, use, disabled, budget: { limitUsd }, cost: { input, output } }</c>,
-/// <c>budget.*</c>; still read: <c>lanes.localDefaultCapacity</c> (1) and <c>lanes.cloudDefaultCapacity</c> (4) for model calls
-/// without an agent, <c>lanes.budgets.&lt;provider&gt;.dailyTokens</c>. The lanes of earlier versions become agents on the first
+/// <c>budget.*</c>; still read: <c>models.localSlots</c> (1) and <c>models.cloudSlots</c> (4) for model calls
+/// without an agent, <c>budget.providers.&lt;provider&gt;.dailyTokens</c>. The lanes of earlier versions become agents on the first
 /// start (<see cref="AgentUpgrade"/>).</para>
-/// <para>RPC: <c>lanes.list</c>, <c>agents.use</c>, <c>agents.setEnabled</c>, <c>usage.summary</c>, <c>usage.session</c>,
-/// <c>budget.status</c>, <c>budget.allow</c>. Events: <c>lanes.changed { pools }</c>, <c>usage.changed</c> (the budget
+/// <para>RPC: <c>agents.list</c>, <c>agents.use</c>, <c>agents.setEnabled</c>, <c>usage.summary</c>, <c>usage.session</c>,
+/// <c>budget.status</c>, <c>budget.allow</c>. Events: <c>agents.changed { agents }</c>, <c>usage.changed</c> (the budget
 /// status). For agents that delegate: the <c>agent_choices</c> tool and an "Agents" system prompt section.</para>
 /// </summary>
-[NetPiPlugin("netpi.lanes", Name = "Agents", Description = "The agents chats and subagents run on (a model with instances, active while its model is loaded), the cost of every model call and the budget", Order = 30)]
-public sealed class LanesPlugin : INetPiPlugin
+[NetPiPlugin("netpi.agents", Name = "Agents", Description = "The agents chats and subagents run on (a model with instances, active while its model is loaded), the cost of every model call and the budget", Order = 30)]
+public sealed class AgentsPlugin : INetPiPlugin
 {
-    private LaneScheduler? _scheduler;
+    private AgentScheduler? _scheduler;
 
-    internal LaneScheduler? Scheduler => _scheduler;
+    internal AgentScheduler? Scheduler => _scheduler;
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
@@ -44,17 +44,17 @@ public sealed class LanesPlugin : INetPiPlugin
 
         var usage = new Ledger(context);
         usage.Initialize();
-        var scheduler = new LaneScheduler(context, usage);
+        var scheduler = new AgentScheduler(context, usage);
         _scheduler = scheduler;
         scheduler.Refresh();
 
-        context.Services.Register<ILaneScheduler>(scheduler);
+        context.Services.Register<IAgentScheduler>(scheduler);
         context.Services.Register<IModelMiddleware>(new LedgerMiddleware(usage, scheduler));
         context.Tools.Register(new AgentChoicesTool(scheduler, usage));
         context.Services.Register<IPromptSection>(new AgentsPromptSection());
 
-        context.Rpc.Register("lanes.list", (_, _) => Task.FromResult<object?>(scheduler.Snapshot()),
-            "The agents (always) and other model calls in progress, with instances, owners, waiters, state, price and today's spend → LanePoolInfo[]");
+        context.Rpc.Register("agents.list", (_, _) => Task.FromResult<object?>(scheduler.Snapshot()),
+            "The agents (always) and other model calls in progress, with instances, owners, waiters, state, price and today's spend → AgentSlots[]");
         context.Rpc.Register("agents.use", (r, _) =>
         {
             var sid = r.Required("sessionId");
@@ -78,7 +78,7 @@ public sealed class LanesPlugin : INetPiPlugin
             context.Settings.Set($"agents.{agent.Id}.disabled", enabled ? null : JsonValue.Create(true));
             scheduler.Refresh();
             return Task.FromResult<object?>(scheduler.Snapshot());
-        }, "Switch an agent on or off: { id, enabled } → LanePoolInfo[] (agents.<id>.disabled; runs on it finish, new ones are refused)");
+        }, "Switch an agent on or off: { id, enabled } → AgentSlots[] (agents.<id>.disabled; runs on it finish, new ones are refused)");
         context.Rpc.Register("usage.summary", (_, _) => Task.FromResult<object?>(usage.Summary()),
             "Today's tokens per provider, the budget, this period's calls per model → { day, providers, budget, models }");
         context.Rpc.Register("usage.session", (r, _) => Task.FromResult<object?>(usage.SessionCost(r.Required("sessionId"))),

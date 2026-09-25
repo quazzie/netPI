@@ -1,18 +1,18 @@
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
-namespace NetPI.Lanes;
+namespace NetPI.Agents;
 
 /// <summary>
-/// Parallel slots (pools in the code). The agents the user sets up are the pools: <c>agents.&lt;id&gt; = { model,
+/// Parallel slots (a pool of them per key in the code). The agents the user sets up are pools: <c>agents.&lt;id&gt; = { model,
 /// instances, use, disabled, budget, cost }</c>, one slot per instance; chats and subagents run on them. An agent takes
 /// work only while it is not disabled and its model is loaded (local: AiProxy's status) or reachable (cloud); NetPI never
 /// loads a model. Agents on one local model share its slots (the catalog's <see cref="ModelInfo.Concurrency"/>): no more
 /// runs on the model than it serves. Model calls without an agent (a separate summarizer, and every call while no agent
-/// is set up) get a slot per model while they run: a local model by its concurrency (<c>lanes.localDefaultCapacity</c>),
-/// a cloud provider's models together (<c>lanes.cloudDefaultCapacity</c>). Waiters are served by priority (desc), then FIFO.
+/// is set up) get a slot per model while they run: a local model by its concurrency (<c>models.localSlots</c>),
+/// a cloud provider's models together (<c>models.cloudSlots</c>). Waiters are served by priority (desc), then FIFO.
 /// </summary>
-internal sealed class LaneScheduler : ILaneScheduler
+internal sealed class AgentScheduler : IAgentScheduler
 {
     public const int DefaultCloudCapacity = 4;
     public const int DefaultLocalCapacity = 1;
@@ -21,20 +21,20 @@ internal sealed class LaneScheduler : ILaneScheduler
     private readonly Ledger? _usage;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Pool> _pools = new(StringComparer.OrdinalIgnoreCase);
-    /// <summary>Every model we have seen (catalog cache + models passed to <see cref="ResolvePool(ModelInfo)"/>), by ref.</summary>
+    /// <summary>Every model we have seen (catalog cache + models passed to <see cref="Resolve(ModelInfo)"/>), by ref.</summary>
     private readonly Dictionary<string, ModelInfo> _models = new(StringComparer.OrdinalIgnoreCase);
     private long _seq;
     private bool _stopped;
     private int _publishScheduled;
     private string _signature = "";
 
-    public LaneScheduler(IPluginContext ctx, Ledger? usage)
+    public AgentScheduler(IPluginContext ctx, Ledger? usage)
     {
         _ctx = ctx;
         _usage = usage;
     }
 
-    /// <summary>Delay used to coalesce <c>lanes.changed</c> events.</summary>
+    /// <summary>Delay used to coalesce <c>agents.changed</c> events.</summary>
     public int PublishDelayMs { get; init; } = 100;
 
     // ---------------------------------------------------------------- agents
@@ -69,7 +69,7 @@ internal sealed class LaneScheduler : ILaneScheduler
     /// The agent a model call is billed and capped by: the session's agent when it runs on that model, else the first
     /// agent on the model; else the call's own slot key and no agent settings.
     /// </summary>
-    internal (string Lane, JsonObject? Cfg) LaneFor(ModelInfo model, string? sessionId = null)
+    internal (string Agent, JsonObject? Cfg) AgentOf(ModelInfo model, string? sessionId = null)
     {
         var agents = Agents();
         if (sessionId is not null && SessionAgent.Of(_ctx.Sessions.GetSession(sessionId)) is { } sid
@@ -108,17 +108,17 @@ internal sealed class LaneScheduler : ILaneScheduler
 
     private sealed class Waiter
     {
-        public required LaneRequest Request { get; init; }
+        public required AgentSlotRequest Request { get; init; }
         public required long Seq { get; init; }
         public DateTimeOffset Since { get; } = DateTimeOffset.UtcNow;
-        public TaskCompletionSource<ILaneLease> Tcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<IAgentSlot> Tcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public CancellationTokenRegistration Registration { get; set; }
     }
 
-    internal sealed class Lease(LaneScheduler owner, LaneRequest request) : ILaneLease
+    internal sealed class Lease(AgentScheduler owner, AgentSlotRequest request) : IAgentSlot
     {
         private int _released;
-        public string PoolKey { get; } = request.PoolKey;
+        public string Key { get; } = request.Key;
         public string AgentId { get; } = request.AgentId;
         public string? SessionId { get; } = request.SessionId;
         public string? Label { get; } = request.Label;
@@ -166,12 +166,12 @@ internal sealed class LaneScheduler : ILaneScheduler
     private static string ModelKey(ModelInfo model) => model.IsLocal ? model.Ref : model.Provider;
 
     private int ModelKeyCapacity(ModelInfo model) => model.IsLocal
-        ? model.Concurrency ?? Setting("lanes.localDefaultCapacity", DefaultLocalCapacity)
-        : Setting("lanes.cloudDefaultCapacity", DefaultCloudCapacity);
+        ? model.Concurrency ?? Setting("models.localSlots", DefaultLocalCapacity)
+        : Setting("models.cloudSlots", DefaultCloudCapacity);
 
     /// <summary>Default instances of an agent: a local model's slots, 1 on a cloud model (it may cost money).</summary>
     internal int DefaultInstances(ModelInfo? model) =>
-        model is { IsLocal: true } ? model.Concurrency ?? Setting("lanes.localDefaultCapacity", DefaultLocalCapacity) : 1;
+        model is { IsLocal: true } ? model.Concurrency ?? Setting("models.localSlots", DefaultLocalCapacity) : 1;
 
     private void ApplyAgent(Pool pool, AgentConfig a)
     {
@@ -225,9 +225,9 @@ internal sealed class LaneScheduler : ILaneScheduler
         return m.Status is "offline" ? (false, $"{m.Provider} can't be reached") : (true, null);
     }
 
-    // ---------------------------------------------------------------- ILaneScheduler
+    // ---------------------------------------------------------------- IAgentScheduler
 
-    public string ResolvePool(ModelInfo model)
+    public string Resolve(ModelInfo model)
     {
         var key = ModelKey(model);
         lock (_gate)
@@ -254,7 +254,7 @@ internal sealed class LaneScheduler : ILaneScheduler
         if (mine is not null && string.Equals(mine.Model, model.Ref, StringComparison.OrdinalIgnoreCase)) return mine.Id;
         var onModel = agents.Where(a => string.Equals(a.Model, model.Ref, StringComparison.OrdinalIgnoreCase)).ToList();
         if (onModel.Count == 0)
-            throw new LaneUnavailableException($"No agent runs {model.Ref}. Choose an agent for this chat, or set one up on this model (Settings → Agents).");
+            throw new AgentUnavailableException($"No agent runs {model.Ref}. Choose an agent for this chat, or set one up on this model (Settings → Agents).");
         lock (_gate)
         {
             _models[model.Ref] = model;
@@ -269,9 +269,9 @@ internal sealed class LaneScheduler : ILaneScheduler
         }
     }
 
-    public string ResolvePool(ModelInfo model, string? agent)
+    public string Resolve(ModelInfo model, string? agent)
     {
-        if (Agent(agent) is not { } a) return ResolvePool(model);
+        if (Agent(agent) is not { } a) return Resolve(model);
         lock (_gate)
         {
             _models[model.Ref] = model;
@@ -318,7 +318,7 @@ internal sealed class LaneScheduler : ILaneScheduler
         foreach (var (w, reason) in refused)
         {
             w.Registration.Unregister();
-            w.Tcs.TrySetException(new LaneUnavailableException(UnavailableMessage(w.Request.PoolKey, reason)));
+            w.Tcs.TrySetException(new AgentUnavailableException(UnavailableMessage(w.Request.Key, reason)));
         }
         var signature = Signature();
         var changed = !string.Equals(signature, Interlocked.Exchange(ref _signature, signature), StringComparison.Ordinal);
@@ -326,7 +326,7 @@ internal sealed class LaneScheduler : ILaneScheduler
         return changed;
     }
 
-    /// <summary>What the Work tab shows of the agents (capacity, state): lanes.changed only when it changes.</summary>
+    /// <summary>What the Work tab shows of the agents (capacity, state): agents.changed only when it changes.</summary>
     private string Signature()
     {
         lock (_gate)
@@ -344,14 +344,14 @@ internal sealed class LaneScheduler : ILaneScheduler
         pool = new Pool(key) { Provider = provider };
         // A pool we have never resolved: guess by the key shape ("provider/model" = local model, else cloud provider).
         pool.Capacity = key.Contains('/')
-            ? Math.Max(1, Setting("lanes.localDefaultCapacity", DefaultLocalCapacity))
-            : Math.Max(1, Setting("lanes.cloudDefaultCapacity", DefaultCloudCapacity));
+            ? Math.Max(1, Setting("models.localSlots", DefaultLocalCapacity))
+            : Math.Max(1, Setting("models.cloudSlots", DefaultCloudCapacity));
         _pools[key] = pool;
         return pool;
     }
 
     /// <summary>The agents (always) and the other slots while they are busy.</summary>
-    public IReadOnlyList<LanePoolInfo> Snapshot()
+    public IReadOnlyList<AgentSlots> Snapshot()
     {
         IReadOnlyList<ModelInfo> cached;
         try { cached = _ctx.Models?.Cached ?? []; } catch { cached = []; }
@@ -360,7 +360,7 @@ internal sealed class LaneScheduler : ILaneScheduler
         if (needRefresh) Refresh();
 
         var configs = Agents().ToDictionary(a => a.Id, a => a.Cfg, StringComparer.OrdinalIgnoreCase);
-        List<LanePoolInfo> list;
+        List<AgentSlots> list;
         lock (_gate)
         {
             list = _pools.Values
@@ -370,7 +370,7 @@ internal sealed class LaneScheduler : ILaneScheduler
                 .Select(p =>
                 {
                     var (available, reason) = AvailabilityOf(p);
-                    var info = new LanePoolInfo
+                    var info = new AgentSlots
                     {
                         Key = p.Key,
                         Provider = p.Provider,
@@ -378,8 +378,8 @@ internal sealed class LaneScheduler : ILaneScheduler
                         Busy = p.Owners.Count,
                         Queued = p.Waiters.Count,
                         Models = [.. p.Models],
-                        Owners = p.Owners.Select(o => new LaneOwnerInfo { AgentId = o.AgentId, SessionId = o.SessionId, Label = o.Label, Since = o.AcquiredAt }).ToList(),
-                        Waiters = p.Waiters.Select(w => new LaneOwnerInfo { AgentId = w.Request.AgentId, SessionId = w.Request.SessionId, Label = w.Request.Label, Since = w.Since }).ToList(),
+                        Owners = p.Owners.Select(o => new SlotHolder { AgentId = o.AgentId, SessionId = o.SessionId, Label = o.Label, Since = o.AcquiredAt }).ToList(),
+                        Waiters = p.Waiters.Select(w => new SlotHolder { AgentId = w.Request.AgentId, SessionId = w.Request.SessionId, Label = w.Request.Label, Since = w.Since }).ToList(),
                         Source = p.Source,
                         Status = StatusOf(p, available),
                         Configured = p.Configured,
@@ -398,13 +398,13 @@ internal sealed class LaneScheduler : ILaneScheduler
                         info.PriceSource = price?.Source ?? "unknown";
                         info.Free = !Ledger.Paid(mi, price);
                     }
-                    info.DailyLimitUsd = Ledger.LaneLimit(configs.GetValueOrDefault(p.Key));
+                    info.DailyLimitUsd = Ledger.DailyCap(configs.GetValueOrDefault(p.Key));
                     return info;
                 })
                 .ToList();
         }
         if (_usage is not null)
-            foreach (var info in list) info.SpentTodayUsd = Math.Round(_usage.LaneSpentToday(info.Key), 6);
+            foreach (var info in list) info.SpentTodayUsd = Math.Round(_usage.SpentToday(info.Key), 6);
         return list;
     }
 
@@ -417,14 +417,14 @@ internal sealed class LaneScheduler : ILaneScheduler
         return available ? "idle" : "unavailable";
     }
 
-    public bool TryAcquire(LaneRequest request, out ILaneLease? lease)
+    public bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease)
     {
         lease = null;
-        if (_usage?.IsOverBudget(request.Provider ?? ProviderOf(request.PoolKey), out _) == true) return false;
+        if (_usage?.IsOverBudget(request.Provider ?? ProviderOf(request.Key), out _) == true) return false;
         lock (_gate)
         {
             if (_stopped) return false;
-            var pool = GetOrCreate(request.PoolKey, request.Provider);
+            var pool = GetOrCreate(request.Key, request.Provider);
             if (!AvailabilityOf(pool).Available || pool.Waiters.Count > 0 || !CanGrant(pool)) return false;
             var l = new Lease(this, request);
             pool.Owners.Add(l);
@@ -434,9 +434,9 @@ internal sealed class LaneScheduler : ILaneScheduler
         return true;
     }
 
-    public ValueTask<ILaneLease> AcquireAsync(LaneRequest request, CancellationToken ct)
+    public ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct)
     {
-        var provider = request.Provider ?? ProviderOf(request.PoolKey);
+        var provider = request.Provider ?? ProviderOf(request.Key);
         if (_usage is not null && _usage.IsOverBudget(provider, out var message))
             throw new BudgetExceededException(message!);
         ct.ThrowIfCancellationRequested();
@@ -444,16 +444,16 @@ internal sealed class LaneScheduler : ILaneScheduler
         Waiter waiter;
         lock (_gate)
         {
-            if (_stopped) throw new OperationCanceledException("The lane scheduler was stopped (plugin reload).");
-            var pool = GetOrCreate(request.PoolKey, request.Provider);
+            if (_stopped) throw new OperationCanceledException("The agent scheduler was stopped (plugin reload).");
+            var pool = GetOrCreate(request.Key, request.Provider);
             var (available, reason) = AvailabilityOf(pool);
-            if (!available) throw new LaneUnavailableException(UnavailableMessage(pool.Key, reason!));
+            if (!available) throw new AgentUnavailableException(UnavailableMessage(pool.Key, reason!));
             if (pool.Waiters.Count == 0 && CanGrant(pool))
             {
                 var lease = new Lease(this, request);
                 pool.Owners.Add(lease);
                 SchedulePublish();
-                return ValueTask.FromResult<ILaneLease>(lease);
+                return ValueTask.FromResult<IAgentSlot>(lease);
             }
             waiter = new Waiter { Request = request, Seq = ++_seq };
             // priority desc, then FIFO
@@ -463,7 +463,7 @@ internal sealed class LaneScheduler : ILaneScheduler
         if (ct.CanBeCanceled)
             waiter.Registration = ct.Register(() => Cancel(waiter, ct));
         SchedulePublish();
-        return new ValueTask<ILaneLease>(waiter.Tcs.Task);
+        return new ValueTask<IAgentSlot>(waiter.Tcs.Task);
     }
 
     private string? ProviderOf(string poolKey)
@@ -481,7 +481,7 @@ internal sealed class LaneScheduler : ILaneScheduler
         var removed = false;
         lock (_gate)
         {
-            if (_pools.TryGetValue(waiter.Request.PoolKey, out var pool))
+            if (_pools.TryGetValue(waiter.Request.Key, out var pool))
                 removed = pool.Waiters.Remove(waiter);
         }
         if (removed)
@@ -495,7 +495,7 @@ internal sealed class LaneScheduler : ILaneScheduler
     {
         lock (_gate)
         {
-            if (!_pools.TryGetValue(lease.PoolKey, out var pool) || !pool.Owners.Remove(lease)) return;
+            if (!_pools.TryGetValue(lease.Key, out var pool) || !pool.Owners.Remove(lease)) return;
             Pump(pool);
             // a slot on a shared local model: the other pools on it may go on
             if (LocalModelOf(pool) is { } model)
@@ -541,7 +541,7 @@ internal sealed class LaneScheduler : ILaneScheduler
         foreach (var w in waiters)
         {
             w.Registration.Unregister();
-            w.Tcs.TrySetException(new OperationCanceledException("The lane scheduler was stopped (plugin reload)."));
+            w.Tcs.TrySetException(new OperationCanceledException("The agent scheduler was stopped (plugin reload)."));
         }
     }
 
@@ -563,11 +563,11 @@ internal sealed class LaneScheduler : ILaneScheduler
         try
         {
             var pools = Snapshot();
-            _ctx.Events.Publish(EventTypes.LanesChanged, new JsonObject { ["pools"] = NetPiJson.ToNode(pools) });
+            _ctx.Events.Publish(EventTypes.AgentsChanged, new JsonObject { ["agents"] = NetPiJson.ToNode(pools) });
         }
         catch (Exception ex)
         {
-            _ctx.Logger.LogDebug(ex, "lanes.changed publish failed");
+            _ctx.Logger.LogDebug(ex, "agents.changed publish failed");
         }
     }
 }

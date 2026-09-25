@@ -421,29 +421,29 @@ public sealed class FakeAgentRuntime : IAgentRuntime
     public AgentInfo? GetBySession(string sessionId) => Agents.FirstOrDefault(a => a.SessionId == sessionId);
     public Task<AgentInfo> SendAsync(string sessionId, UserInput input, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default) => throw new NotSupportedException();
     public Task<AgentInfo> SpawnAsync(SpawnRequest request, CancellationToken ct = default) => throw new NotSupportedException();
-    public Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldLane = true, TimeSpan? timeout = null, CancellationToken ct = default) => throw new NotSupportedException();
+    public Task<IReadOnlyList<AgentInfo>> WaitAsync(string? callerAgentId, IReadOnlyList<string> agentIds, bool yieldSlot = true, TimeSpan? timeout = null, CancellationToken ct = default) => throw new NotSupportedException();
     public Task<bool> AbortAsync(string agentOrSessionId) => Task.FromResult(false);
     public Task<bool> MessageAsync(string fromAgentId, string toAgentId, string text, DeliveryMode mode = DeliveryMode.Auto, CancellationToken ct = default) => Task.FromResult(false);
     public IReadOnlyList<QueuedInput> GetQueue(string sessionId) => [];
     public bool RemoveQueued(string sessionId, string inputId) => false;
 }
 
-public sealed class FakeLaneScheduler : ILaneScheduler
+public sealed class FakeAgentScheduler : IAgentScheduler
 {
-    public List<LaneRequest> Acquired { get; } = [];
+    public List<AgentSlotRequest> Acquired { get; } = [];
     public int Released;
-    public string ResolvePool(ModelInfo model) => model.Ref;
-    public IReadOnlyList<LanePoolInfo> Snapshot() => [];
-    public ValueTask<ILaneLease> AcquireAsync(LaneRequest request, CancellationToken ct)
+    public string Resolve(ModelInfo model) => model.Ref;
+    public IReadOnlyList<AgentSlots> Snapshot() => [];
+    public ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct)
     {
         lock (Acquired) Acquired.Add(request);
-        return ValueTask.FromResult<ILaneLease>(new Lease(this, request));
+        return ValueTask.FromResult<IAgentSlot>(new Lease(this, request));
     }
-    public bool TryAcquire(LaneRequest request, out ILaneLease? lease) { lease = new Lease(this, request); return true; }
+    public bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease) { lease = new Lease(this, request); return true; }
 
-    private sealed class Lease(FakeLaneScheduler owner, LaneRequest r) : ILaneLease
+    private sealed class Lease(FakeAgentScheduler owner, AgentSlotRequest r) : IAgentSlot
     {
-        public string PoolKey => r.PoolKey;
+        public string Key => r.Key;
         public string AgentId => r.AgentId;
         public DateTimeOffset AcquiredAt { get; } = DateTimeOffset.UtcNow;
         public bool IsReleased { get; private set; }

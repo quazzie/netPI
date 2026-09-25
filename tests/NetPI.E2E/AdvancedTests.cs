@@ -11,10 +11,10 @@ public static class AdvancedTests
     private const string Png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
     private static async Task<List<JsonElement>> Children(Env env, string parentId) =>
-        (await env.Rpc("agents.list", new { includeFinished = true })).Arr().Where(a => a.S("parentAgentId") == parentId).ToList();
+        (await env.Rpc("runs.list", new { includeFinished = true })).Arr().Where(a => a.S("parentAgentId") == parentId).ToList();
 
     private static async Task<JsonElement> Pool(Env env, string key) =>
-        (await env.Rpc("lanes.list")).Arr().FirstOrDefault(p => p.S("key") == key);
+        (await env.Rpc("agents.list")).Arr().FirstOrDefault(p => p.S("key") == key);
 
     public static void Register(TestRunner r, Env env)
     {
@@ -23,13 +23,13 @@ public static class AdvancedTests
             var s = await env.NewSession(model: CoreTests.Qwen);
             var sid = s.S("id")!;
             var mark = env.Client.Mark();
-            // worker-1 needs ~2s, worker-2 ~4.5s; both hold the two qwen lanes while the parent is yielded
+            // worker-1 needs ~2s, worker-2 ~4.5s; both hold the two qwen slots while the parent is yielded
             var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "Two workers [s:spawn n=2 delay=2000 stagger=2500]" });
             var parentId = agent.S("id")!;
             await env.Client.WaitFor(mark, e => e.Type == "agent.status" && e.D.P("agent").S("id") == parentId && e.D.P("agent").S("status") == "yielded", "parent waiting", 20_000);
             await env.Rpc("agent.send", new { sessionId = sid, text = "How is it going? [s:echo]", mode = "steer" });
-            // the wait ends at once; the parent then queues for a lane with priority (both lanes are held by its workers)
-            await env.Client.WaitFor(mark, e => e.Type == "agent.status" && e.D.P("agent").S("id") == parentId && e.D.P("agent").S("status") == "queued", "parent re-queued for a lane", 10_000);
+            // the wait ends at once; the parent then queues for a slot with priority (both are held by its workers)
+            await env.Client.WaitFor(mark, e => e.Type == "agent.status" && e.D.P("agent").S("id") == parentId && e.D.P("agent").S("status") == "queued", "parent re-queued for a slot", 10_000);
             var idle = await env.WaitIdle(sid, mark, agent.L("runs"), 20_000);
             var kids = await Children(env, parentId);
             Check.Equal("completed,running", string.Join(",", kids.OrderBy(k => k.S("name")).Select(k => k.S("status"))), "worker-2 still runs when the parent answered");
@@ -50,10 +50,10 @@ public static class AdvancedTests
             Check.Contains(all.FinalText, "2 squared is 4");
             Check.Equal(1, all.Messages.Count(m => m.P("meta").S("kind") == "agent-result"), "worker-1's result was consumed by agent_wait, not duplicated");
             Check.True((await Children(env, parentId)).All(k => k.S("status") == "completed"), "workers completed");
-            Check.Equal(0L, (await Pool(env, CoreTests.Qwen)).L("busy"), "lanes released");
+            Check.Equal(0L, (await Pool(env, CoreTests.Qwen)).L("busy"), "slots released");
         }, 90);
 
-        r.Add("abort orchestrator: running subagents are cancelled, lanes released, no notices", async () =>
+        r.Add("abort orchestrator: running subagents are cancelled, slots released, no notices", async () =>
         {
             var s = await env.NewSession(model: CoreTests.Qwen);
             var sid = s.S("id")!;
@@ -78,7 +78,7 @@ public static class AdvancedTests
             Check.True(wait.B("isError"), "the interrupted agent_wait is recorded as aborted");
         }, 60);
 
-        r.Add("lanes: three chats on the qwen pool at once → 2 run, 1 queued, all complete", async () =>
+        r.Add("slots: three chats on qwen (2 slots) at once → 2 run, 1 queued, all complete", async () =>
         {
             await Wait.UntilAsync(async () => (await Pool(env, CoreTests.Qwen)).L("busy") == 0 ? "ok" : null, "idle qwen pool");
             await env.MockReset();
@@ -87,8 +87,8 @@ public static class AdvancedTests
             for (var i = 0; i < 3; i++) sessions.Add((await env.NewSession(model: CoreTests.Qwen)).S("id")!);
             var sends = await Task.WhenAll(sessions.Select(id => env.Rpc("agent.send", new { sessionId = id, text = "take your time [s:slow ms=1500]" })));
             var queued = await env.Client.WaitFor(mark, e => e.Type == "agent.status" && sessions.Contains(e.D.P("agent").S("sessionId") ?? "")
-                                                             && e.D.P("agent").S("status") == "queued", "one chat queued for a lane", 10_000);
-            Check.Contains(queued.D.P("agent").S("activity"), "waiting for lane");
+                                                             && e.D.P("agent").S("status") == "queued", "one chat queued for a slot", 10_000);
+            Check.Contains(queued.D.P("agent").S("activity"), "waiting for a slot on");
             for (var i = 0; i < 3; i++) await env.WaitIdle(sessions[i], mark, sends[i].L("runs"), 30_000);
             var q = (await env.MockStats()).P("models").P("qwen3.8-27b");
             Check.Equal(2L, q.L("maxInflight"), "the backend never saw more than 2");
@@ -100,7 +100,7 @@ public static class AdvancedTests
             }
         }, 60);
 
-        r.Add("lanes: aborting a chat that waits for a lane removes it from the queue without leaking a lane", async () =>
+        r.Add("slots: aborting a chat that waits for a slot removes it from the queue without leaking one", async () =>
         {
             await Wait.UntilAsync(async () => (await Pool(env, CoreTests.Qwen)).L("busy") == 0 ? "ok" : null, "idle qwen pool");
             var mark = env.Client.Mark();
@@ -115,10 +115,10 @@ public static class AdvancedTests
             await env.WaitIdle(waiting, mark, sends[sessions.IndexOf(waiting)].L("runs"), 10_000);
             var pool = await Pool(env, CoreTests.Qwen);
             Check.Equal(0L, pool.L("queued"), "no waiter left");
-            Check.Equal(2L, pool.L("busy"), "the two running chats keep their lanes");
+            Check.Equal(2L, pool.L("busy"), "the two running chats keep their slots");
             for (var i = 0; i < 3; i++)
                 if (sessions[i] != waiting) await env.WaitIdle(sessions[i], mark, sends[i].L("runs"), 30_000);
-            await Wait.UntilAsync(async () => (await Pool(env, CoreTests.Qwen)).L("busy") == 0 ? "ok" : null, "all lanes free again", 5000);
+            await Wait.UntilAsync(async () => (await Pool(env, CoreTests.Qwen)).L("busy") == 0 ? "ok" : null, "all slots free again", 5000);
             var msgs = (await env.Rpc("sessions.messages", new { id = waiting })).Arr("messages").ToList();
             Check.Equal("user", string.Join(",", msgs.Select(m => m.S("role"))), "the aborted chat never reached the model");
             var next = await env.Run(waiting, "now? [s:echo]");
@@ -148,7 +148,7 @@ public static class AdvancedTests
             Check.Contains(again.FinalText, "ECHO-DONE");
         }, 60);
 
-        r.Add("delete an orchestrator session while its subagents run: everything stops, lanes released", async () =>
+        r.Add("delete an orchestrator session while its subagents run: everything stops, slots released", async () =>
         {
             var s = await env.NewSession(model: CoreTests.Qwen);
             var sid = s.S("id")!;
@@ -160,7 +160,7 @@ public static class AdvancedTests
             Check.True((await env.Rpc("sessions.delete", new { id = sid })).GetBoolean());
             await Wait.UntilAsync(async () => (await Pool(env, CoreTests.Qwen)) is var p && p.L("busy") == 0 && p.L("queued") == 0 ? "ok" : null, "qwen pool empty", 15_000);
             await Wait.UntilAsync(async () => (await env.MockStats()).P("models").P("qwen3.8-27b").L("inflight") == 0 ? "ok" : null, "no request in flight", 10_000);
-            var busy = (await env.Rpc("agents.list", new { includeFinished = false })).Arr().ToList();
+            var busy = (await env.Rpc("runs.list", new { includeFinished = false })).Arr().ToList();
             Check.False(busy.Any(a => a.S("id") == parentId || kids.Any(k => k.S("id") == a.S("id"))), "no agent of the deleted tree still busy: " + string.Join(",", busy.Select(a => a.S("name") + ":" + a.S("status"))));
             foreach (var k in kids) await Assert404(env, "sessions.get", new { id = k.S("sessionId") });
             var log = env.ReadServerLog();
@@ -213,7 +213,7 @@ public static class AdvancedTests
 
         r.Add("budgets and stopped backends: clear error notices", async () =>
         {
-            await env.Rpc("settings.set", new { path = "lanes.budgets.anthropic.dailyTokens", value = 1 });
+            await env.Rpc("settings.set", new { path = "budget.providers.anthropic.dailyTokens", value = 1 });
             try
             {
                 // spend the tiny budget (unless earlier tests already did), then a fresh session is refused
@@ -224,7 +224,7 @@ public static class AdvancedTests
                 Check.Equal("error", notice.P("meta").S("kind"));
                 Check.Contains(RunResult.Text(notice), "daily token budget for provider 'anthropic' is exhausted");
             }
-            finally { await env.Rpc("settings.set", new { path = "lanes.budgets", value = (object?)null }); }
+            finally { await env.Rpc("settings.set", new { path = "budget.providers", value = (object?)null }); }
 
             await env.Rpc("settings.set", new { path = "retry.maxAttempts", value = 2 });
             try
@@ -369,7 +369,7 @@ public static class AdvancedTests
             {
                 await Wait.UntilAsync(async () => (await env.Rpc("plugins.list")).Arr().First(p => p.S("id") == "netpi.toolrepair").S("state") == "disabled" ? "ok" : null, "disabled");
                 var s = await env.NewSession();
-                var run = await env.Run(s.S("id")!, "lanes please [s:textcall]");
+                var run = await env.Run(s.S("id")!, "agents please [s:textcall]");
                 Check.False(run.Role("assistant").Any(m => m.P("meta").B("repaired")), "not repaired");
                 var notice = run.Role("notice").Single();
                 Check.Equal("nudge", notice.P("meta").S("kind"));
@@ -382,7 +382,7 @@ public static class AdvancedTests
             }
             await Wait.UntilAsync(async () => (await env.Rpc("plugins.list")).Arr().First(p => p.S("id") == "netpi.toolrepair").S("state") == "running" ? "ok" : null, "re-enabled");
             var s2 = await env.NewSession();
-            var again = await env.Run(s2.S("id")!, "lanes please [s:textcall]");
+            var again = await env.Run(s2.S("id")!, "agents please [s:textcall]");
             Check.Contains(again.FinalText, "TEXTCALL-DONE");
         });
 
@@ -444,8 +444,8 @@ public static class AdvancedTests
         {
             var s = await env.Rpc("sessions.create", new { });
             var sid = s.S("id")!;
-            await env.Run(sid, "Refactor the lane scheduler\nand more details [s:echo]");
-            Check.Equal("Refactor the lane scheduler", (await env.Rpc("sessions.get", new { id = sid })).S("title"));
+            await env.Run(sid, "Refactor the agent scheduler\nand more details [s:echo]");
+            Check.Equal("Refactor the agent scheduler", (await env.Rpc("sessions.get", new { id = sid })).S("title"));
             var usage = await env.Rpc("usage.summary");
             var aiproxy = usage.Arr("providers").First(p => p.S("provider") == "aiproxy");
             Check.True(aiproxy.L("calls") > 10 && aiproxy.L("inputTokens") > 10_000, "usage recorded: " + aiproxy.GetRawText());

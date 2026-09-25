@@ -4,10 +4,10 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Work;
 
 /// <summary>
-/// "Work" tab: one RPC (<c>work.snapshot</c>) that aggregates lanes, agents, processes and usage from the plugins that
+/// "Work" tab: one RPC (<c>work.snapshot</c>) that aggregates the agents, runs, processes and usage from the plugins that
 /// provide them. Each part is optional: a missing or failing method yields null (and an entry in <c>errors</c>).
 /// </summary>
-[NetPiPlugin("netpi.work", Name = "Work", Description = "Overview of running agents, lanes, processes and usage", Order = 80)]
+[NetPiPlugin("netpi.work", Name = "Work", Description = "Overview of the agents, runs, processes and usage", Order = 80)]
 public sealed class WorkPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
@@ -15,7 +15,7 @@ public sealed class WorkPlugin : INetPiPlugin
         var rpc = context.Rpc;
         var logger = context.Logger;
         context.Rpc.Register("work.snapshot", async (_, rpcCt) => await SnapshotAsync(rpc, logger, rpcCt).ConfigureAwait(false),
-            "Aggregated overview for the Work tab → { lanes, agents, processes, usage, time, errors? }");
+            "Aggregated overview for the Work tab → { agents, runs, processes, usage, time, errors? }");
         context.Ui.AddTab(new UiTabInfo { Id = "work", Title = "Work", Panel = UiPanel.Right, Icon = "work", Order = 10, Module = "ui.js" });
         return Task.CompletedTask;
     }
@@ -23,8 +23,8 @@ public sealed class WorkPlugin : INetPiPlugin
     /// <summary>Parts of the snapshot: result key → (RPC method, params).</summary>
     public static readonly (string Key, string Method, object? Params)[] Parts =
     [
-        ("lanes", "lanes.list", null),
-        ("agents", "agents.list", new JsonObject { ["includeFinished"] = true }),
+        ("agents", "agents.list", null),
+        ("runs", "runs.list", new JsonObject { ["includeFinished"] = true }),
         ("processes", "processes.list", null),
         ("usage", "usage.summary", null),
     ];

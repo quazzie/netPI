@@ -19,7 +19,7 @@ public sealed class ModelInfo
     public string? DisplayName { get; set; }
     public int? ContextWindow { get; set; }
     public int? MaxOutputTokens { get; set; }
-    /// <summary>Parallel slots the backend serves (drives lane capacity). Null = unknown.</summary>
+    /// <summary>Parallel slots the backend serves (the agents on a local model share them). Null = unknown.</summary>
     public int? Concurrency { get; set; }
     public List<string> InputModalities { get; set; } = ["text"];
     public ReasoningInfo? Reasoning { get; set; }
@@ -66,7 +66,7 @@ public interface IModelProvider
 {
     string Id { get; }
     string DisplayName { get; }
-    /// <summary>Local providers default to lane capacity from the catalog; cloud providers use settings.</summary>
+    /// <summary>Local models: their agents share the catalog's concurrency, and they are free.</summary>
     bool IsLocal { get; }
     Task<IReadOnlyList<ModelInfo>> ListModelsAsync(bool refresh, CancellationToken ct);
     IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken ct);

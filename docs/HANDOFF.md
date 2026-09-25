@@ -83,11 +83,12 @@ Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 ## Suggested next steps
 
-0. **Deploy agents, the budget, the settings dialog, profiles and the new compaction.** Close NetPI, `build` (cmd) or
-   `.\build.ps1`, restart. Then: the two lanes should now be agents (Settings → Agents & budget; the log says "Lanes
-   became agents"); switch the model in AiSwitcher and watch the Work tab's agents follow within ~10 s; set up an agent
-   for the free stealth model and one for a paid model with a note, set a monthly budget, and watch a local agent pick
-   agents (and a paid OpenRouter call's cost reach the ledger).
+0. **Deploy the renamed plugins.** The lanes plugin is now `netpi.agents` (`plugins/NetPI.Agents`) and the runtime
+   `netpi.runtime` (`plugins/NetPI.Runtime`); `agents.list` lists the agents, `runs.list` the runs. Close NetPI and
+   `build` (cmd): with NetPI closed the build removes the old `artifacts\app\plugins\NetPI.Lanes` and `NetPI.Agent`
+   output (else both would load), and the first start moves `lanes.localDefaultCapacity`/`cloudDefaultCapacity` to
+   `models.localSlots`/`cloudSlots`. Then: switch the model in AiSwitcher and watch the Work tab's agents follow within
+   ~10 s; watch a local agent pick agents (and a paid OpenRouter call's cost reach the ledger).
 1. **Goals with a real model.** Run a goal on `qwen3.8-27b` (a throwaway server or the user's NetPI): does it keep
    working, call `goal_update` complete only when done, stay within the no-progress rule? Then consider an
    independent check of "complete" (a verifier subagent) if it declares done too early.

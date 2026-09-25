@@ -33,7 +33,7 @@ public static class ReloadTests
             var unloaded = await env.Client.WaitFor(mark, e => e.Type == "plugins.unloaded" && e.D.S("id") == "netpi.nudge", "plugins.unloaded", 30_000);
             Check.True(unloaded.D.B("collected"), "the previous load context was garbage collected");
             // other plugins untouched
-            Check.Equal(1L, (await Plugin(env, "netpi.agent")).L("loadCount"));
+            Check.Equal(1L, (await Plugin(env, "netpi.runtime")).L("loadCount"));
 
             var s = await env.NewSession();
             var run = await env.Run(s.S("id")!, "Analyze [s:cutoff]");
@@ -44,7 +44,7 @@ public static class ReloadTests
         r.Add("hot reload: plugins.reload of every provider/tool/hook plugin, then a full tool run still works", async () =>
         {
             var mark = env.Client.Mark();
-            foreach (var id in new[] { "netpi.providers.aiproxy", "netpi.tools.files", "netpi.tools.shell", "netpi.retry", "netpi.toolrepair", "netpi.context", "netpi.lanes" })
+            foreach (var id in new[] { "netpi.providers.aiproxy", "netpi.tools.files", "netpi.tools.shell", "netpi.retry", "netpi.toolrepair", "netpi.context", "netpi.agents" })
             {
                 Check.True((await env.Rpc("plugins.reload", new { id }, 60_000)).GetBoolean(), "reload " + id);
                 Check.Equal("running", (await Plugin(env, id)).S("state"), id + " running");
@@ -73,8 +73,8 @@ public static class ReloadTests
             var mark = env.Client.Mark();
             await env.Rpc("agent.send", new { sessionId = sid, text = "slow [s:slow ms=6000]" });
             await env.Client.WaitFor(mark, e => e.Type == "stream.delta" && e.Sid == sid, "streaming", 20_000);
-            Check.True((await env.Rpc("plugins.reload", new { id = "netpi.agent" }, 60_000)).GetBoolean());
-            Check.Equal("running", (await Plugin(env, "netpi.agent")).S("state"));
+            Check.True((await env.Rpc("plugins.reload", new { id = "netpi.runtime" }, 60_000)).GetBoolean());
+            Check.Equal("running", (await Plugin(env, "netpi.runtime")).S("state"));
             var page = await env.Rpc("sessions.messages", new { id = sid, limit = 50 });
             var msgs = page.Arr("messages").ToList();
             Check.Equal("aborted", msgs.Last(m => m.S("role") == "assistant").S("stopReason"), "partial answer kept as aborted");
@@ -82,7 +82,7 @@ public static class ReloadTests
             Check.True(after.ValueKind == JsonValueKind.Null || after.S("status") is "idle" or "failed", "agent not running after reload: " + after.GetRawText());
             var run = await env.Run(sid, "again [s:echo]");
             Check.Contains(run.FinalText, "ECHO-DONE");
-            var unloaded = await env.Client.WaitFor(mark, e => e.Type == "plugins.unloaded" && e.D.S("id") == "netpi.agent", "agent plugin unloaded", 30_000);
+            var unloaded = await env.Client.WaitFor(mark, e => e.Type == "plugins.unloaded" && e.D.S("id") == "netpi.runtime", "agent plugin unloaded", 30_000);
             Check.True(unloaded.D.B("collected"), "the old agent runtime was collected");
         }, 120);
     }

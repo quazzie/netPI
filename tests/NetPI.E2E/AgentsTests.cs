@@ -2,8 +2,8 @@ using System.Text.Json;
 
 namespace NetPI.E2E;
 
-/// <summary>Subagents on lanes, parent yielding, agent-result notices, ideas and the work snapshot.</summary>
-public static class LaneTests
+/// <summary>Agents, subagents on their slots, parent yielding, agent-result notices, ideas and the work snapshot.</summary>
+public static class SchedulerTests
 {
     public static void Register(TestRunner r, Env env)
     {
@@ -14,7 +14,7 @@ public static class LaneTests
             await env.Rpc("settings.set", new { path = "agents.e2e-iq3", value = new { model = stopped } });
             try
             {
-                var pools = (await env.Rpc("lanes.list")).Arr().ToList();
+                var pools = (await env.Rpc("agents.list")).Arr().ToList();
                 var q = pools.FirstOrDefault(p => p.S("key") == "e2e-qwen");
                 Check.True(q.B("configured") && q.B("available"), "e2e-qwen active: " + q.GetRawText());
                 Check.Equal(2L, q.L("capacity"), "instances: the model's slots");
@@ -31,13 +31,13 @@ public static class LaneTests
                 Check.Equal("e2e-qwen", used.P("meta").S("agent"));
                 var run = await env.Run(sid, "hello [s:echo]");
                 Check.Contains(run.FinalText, "ECHO-DONE");
-                Check.True(run.OfType("agent.status").Any(e => e.D.P("agent").S("pool") == "e2e-qwen"), "ran on the agent");
+                Check.True(run.OfType("agent.status").Any(e => e.D.P("agent").S("agent") == "e2e-qwen"), "ran on the agent");
 
                 // switched off: the chat stops at once with a notice
                 var mark = env.Client.Mark();
                 var listed = await env.Rpc("agents.setEnabled", new { id = "e2e-qwen", enabled = false });
                 Check.True(listed.Arr().First(p => p.S("key") == "e2e-qwen").B("disabled"));
-                await env.Client.WaitFor(mark, e => e.Type == "lanes.changed" && e.D.Arr("pools").Any(p => p.S("key") == "e2e-qwen" && p.B("disabled")), "lanes.changed: switched off", 5000);
+                await env.Client.WaitFor(mark, e => e.Type == "agents.changed" && e.D.Arr("agents").Any(p => p.S("key") == "e2e-qwen" && p.B("disabled")), "agents.changed: switched off", 5000);
                 var off = await env.Run(sid, "again [s:echo]");
                 Check.Contains(RunResult.Text(off.Role("notice").Last(n => n.P("meta").S("kind") == "error")), "The agent \"e2e-qwen\" is disabled.");
                 await env.Rpc("agents.setEnabled", new { id = "e2e-qwen", enabled = true });
@@ -61,40 +61,40 @@ public static class LaneTests
             }
         }, 60);
 
-        r.Add("lanes: 3 subagents on qwen (capacity 2): max 2 concurrent at the backend, queueing, parent yields and resumes", async () =>
+        r.Add("slots: 3 subagents on qwen (2 slots): max 2 concurrent at the backend, queueing, parent yields and resumes", async () =>
         {
             var s = await env.NewSession(model: CoreTests.Qwen);
             var sid = s.S("id")!;
             // make sure nothing else is running on the qwen pool
-            await Wait.UntilAsync(async () => (await env.Rpc("lanes.list")).Arr().FirstOrDefault(p => p.S("key") == CoreTests.Qwen).L("busy") == 0 ? "ok" : null, "idle qwen pool");
+            await Wait.UntilAsync(async () => (await env.Rpc("agents.list")).Arr().FirstOrDefault(p => p.S("key") == CoreTests.Qwen).L("busy") == 0 ? "ok" : null, "idle qwen pool");
             await env.MockReset();
             var mark = env.Client.Mark();
             var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "Square 1..3 in parallel [s:spawn n=3 delay=2500]" });
             var parentId = agent.S("id")!;
 
-            // mid-flight: one worker queued while the parent holds a lane, then the parent yields
+            // mid-flight: one worker queued while the parent holds a slot, then the parent yields
             var queuedEv = await env.Client.WaitFor(mark, e => e.Type == "agent.status" && e.D.P("agent").B("isSubagent")
                                                                 && e.D.P("agent").S("status") == "queued", "a queued subagent", 20_000);
             Check.Equal(parentId, queuedEv.D.P("agent").S("parentAgentId"));
             var yielded = await env.Client.WaitFor(mark, e => e.Type == "agent.status" && e.D.P("agent").S("id") == parentId
-                                                              && e.D.P("agent").S("status") == "yielded", "parent yields its lane", 20_000);
+                                                              && e.D.P("agent").S("status") == "yielded", "parent yields its slot", 20_000);
             Check.Contains(yielded.D.P("agent").S("activity"), "waiting for 3 agents");
 
             // snapshots while the workers run
-            var pools = await env.Rpc("lanes.list");
+            var pools = await env.Rpc("agents.list");
             var pool = pools.Arr().First(p => p.S("key") == CoreTests.Qwen);
             Check.Equal(2L, pool.L("capacity"));
             Check.True(pool.L("busy") <= 2, "busy <= capacity");
             var work = await env.Rpc("work.snapshot");
-            foreach (var part in new[] { "lanes", "agents", "processes", "usage" })
+            foreach (var part in new[] { "agents", "runs", "processes", "usage" })
                 Check.True(work.P(part).ValueKind != JsonValueKind.Null, $"work.snapshot.{part} available: {work.S("errors")}");
-            var workAgents = work.Arr("agents").ToList();
+            var workAgents = work.Arr("runs").ToList();
             var parent = workAgents.First(a => a.S("id") == parentId);
             Check.Equal(3, parent.Arr("children").Count());
             var children = workAgents.Where(a => a.S("parentAgentId") == parentId).ToList();
             Check.Equal(3, children.Count);
-            Check.True(children.All(c => c.B("isSubagent") && c.L("depth") == 1 && c.S("pool") == CoreTests.Qwen), "children on the qwen pool");
-            Check.True(work.P("lanes").Arr().Any(p => p.S("key") == CoreTests.Qwen), "work.snapshot lanes");
+            Check.True(children.All(c => c.B("isSubagent") && c.L("depth") == 1 && c.S("agent") == CoreTests.Qwen), "children on the qwen slots");
+            Check.True(work.P("agents").Arr().Any(p => p.S("key") == CoreTests.Qwen), "work.snapshot agents");
 
             var done = await env.WaitIdle(sid, mark, agent.L("runs"), 60_000);
             var run = await env.Result(sid, mark, done);
@@ -107,13 +107,13 @@ public static class LaneTests
             // backend saw at most 2 concurrent requests, and actually 2 (parallel work happened)
             var stats = await env.MockStats();
             var q = stats.P("models").P("qwen3.8-27b");
-            Check.Equal(2L, q.L("maxInflight"), "max concurrency at the backend = lane capacity");
+            Check.Equal(2L, q.L("maxInflight"), "max concurrency at the backend = the model's slots");
             Check.Equal(0L, q.L("overCapacity"));
             var log = await env.MockLog();
             Check.Equal(3, log.Count(e => e.B("subagent")), "one request per subagent");
 
             // statuses and sessions
-            var agents = await env.Rpc("agents.list", new { includeFinished = true });
+            var agents = await env.Rpc("runs.list", new { includeFinished = true });
             var subs = agents.Arr().Where(a => a.S("parentAgentId") == parentId).ToList();
             Check.True(subs.All(a => a.S("status") == "completed"), "subagents completed");
             Check.True(subs.All(a => (a.S("result") ?? "").StartsWith("Report from")), "results recorded");
@@ -124,14 +124,14 @@ public static class LaneTests
             Check.Equal(3, sessions.Arr().Count(x => x.S("kind") == "subagent"), "3 subagent sessions under the parent");
             // nobody got agent-result notices: the parent consumed the results with agent_wait
             Check.False(run.Role("notice").Any(n => n.P("meta").S("kind") == "agent-result"), "no duplicate agent-result notices");
-            var lanes = await env.Rpc("lanes.list");
-            Check.Equal(0L, lanes.Arr().Where(p => p.S("key") == CoreTests.Qwen).Sum(p => p.L("busy")), "all lanes released");
-            Check.True(env.Client.Since(mark).Any(e => e.Type == "lanes.changed"), "lanes.changed events");
+            var slots = await env.Rpc("agents.list");
+            Check.Equal(0L, slots.Arr().Where(p => p.S("key") == CoreTests.Qwen).Sum(p => p.L("busy")), "all slots released");
+            Check.True(env.Client.Since(mark).Any(e => e.Type == "agents.changed"), "agents.changed events");
         }, 120);
 
-        r.Add("nested subagents: orchestrator → lead → helper (spawn wait=true) on one 2-lane pool, no deadlock, agent_send", async () =>
+        r.Add("nested subagents: orchestrator → lead → helper (spawn wait=true) on a model with 2 slots, no deadlock, agent_send", async () =>
         {
-            await Wait.UntilAsync(async () => (await env.Rpc("lanes.list")).Arr().FirstOrDefault(p => p.S("key") == CoreTests.Qwen).L("busy") == 0 ? "ok" : null, "idle qwen pool");
+            await Wait.UntilAsync(async () => (await env.Rpc("agents.list")).Arr().FirstOrDefault(p => p.S("key") == CoreTests.Qwen).L("busy") == 0 ? "ok" : null, "idle qwen pool");
             await env.MockReset();
             var s = await env.NewSession(model: CoreTests.Qwen);
             var sid = s.S("id")!;
@@ -139,7 +139,7 @@ public static class LaneTests
             Check.Contains(run.FinalText, "NEST-DONE");
             Check.Contains(run.FinalText, "Report from helper: 5 squared is 25");
             var parent = run.Final;
-            var agents = (await env.Rpc("agents.list", new { includeFinished = true })).Arr().ToList();
+            var agents = (await env.Rpc("runs.list", new { includeFinished = true })).Arr().ToList();
             var lead = agents.Single(a => a.S("parentAgentId") == parent.S("id"));
             var helper = agents.Single(a => a.S("parentAgentId") == lead.S("id"));
             Check.Equal("lead", lead.S("name"));
@@ -155,7 +155,7 @@ public static class LaneTests
             var q = (await env.MockStats()).P("models").P("qwen3.8-27b");
             Check.True(q.L("maxInflight") <= 2, "never more than 2 requests in flight");
             Check.Equal(0L, q.L("overCapacity"));
-            Check.Equal(0L, (await env.Rpc("lanes.list")).Arr().Where(p => p.S("key") == CoreTests.Qwen).Sum(p => p.L("busy")), "all lanes released");
+            Check.Equal(0L, (await env.Rpc("agents.list")).Arr().Where(p => p.S("key") == CoreTests.Qwen).Sum(p => p.L("busy")), "all slots released");
         }, 90);
 
         r.Add("agent-result: a background subagent's report wakes the idle parent", async () =>

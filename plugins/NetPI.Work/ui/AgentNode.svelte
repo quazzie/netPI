@@ -46,7 +46,7 @@
       <span>{shortModel(agent.model)}</span><span>{agent.turns ?? 0} turns</span><span>{agent.toolCalls ?? 0} tools</span
       >{#if agent.inputTokens || agent.outputTokens}<span>{tokens(agent.inputTokens) || 0}↑ {tokens(agent.outputTokens) || 0}↓</span>{/if}{#if agent.queuedMessages}<span
           class="q">{agent.queuedMessages} queued</span
-        >{/if}{#if agent.pool && shortModel(agent.pool) !== shortModel(agent.model)}<span>lane {agent.pool}</span>{/if}
+        >{/if}{#if agent.agent && shortModel(agent.agent) !== shortModel(agent.model)}<span>agent {agent.agent}</span>{/if}
     </div>
     <span class="np-hover-actions"><IconButton icon="stop" title="Stop ({agent.name})" size="sm" disabled={stopping} onclick={abort} /></span>
   </div>

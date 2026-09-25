@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
-namespace NetPI.Agent;
+namespace NetPI.Runtime;
 
 /// <summary>Persisted agent record (so recent agents survive restarts).</summary>
 internal sealed record AgentRecord(AgentInfo Info, string? Instructions, bool NotifyParent);

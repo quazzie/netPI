@@ -6,10 +6,10 @@ public static class SubagentTests
 {
     public static void Register(TestRunner t)
     {
-        t.Add("subagents: spawn + wait yields a 1-lane pool (no deadlock)", SpawnWaitYield);
+        t.Add("subagents: spawn + wait yields the only slot of a model (no deadlock)", SpawnWaitYield);
         t.Add("subagents: parent auto-wake with agent-result", ParentAutoWake);
         t.Add("subagents: result steers a running parent", ResultSteersRunningParent);
-        t.Add("subagents: agent_wait on several workers, one lane", WaitManyOneLane);
+        t.Add("subagents: agent_wait on several workers, one slot", WaitManyOneSlot);
         t.Add("subagents: user steering interrupts agent_wait", SteerInterruptsWait);
         t.Add("subagents: agent-to-agent message wakes an idle agent", AgentMessage);
         t.Add("subagents: agent_send to parent", SendToParent);
@@ -25,9 +25,9 @@ public static class SubagentTests
     private static async Task SpawnWaitYield()
     {
         await using var h = await TestHost.StartAsync();
-        var parent = h.NewSession(model: "fake/solo"); // 1 lane
+        var parent = h.NewSession(model: "fake/solo"); // 1 slot
         AgentStatus? parentStatusDuringChild = null;
-        List<LaneOwnerInfo>? ownersDuringChild = null;
+        List<SlotHolder>? ownersDuringChild = null;
         string? childPrompt = null;
         h.Catalog.Handler = (r, ct) =>
         {
@@ -35,7 +35,7 @@ public static class SubagentTests
             {
                 childPrompt = r.SystemPrompt;
                 parentStatusDuringChild = h.Runtime.GetBySession(parent.Id)!.Status;
-                ownersDuringChild = h.Lanes!.Snapshot().Single(p => p.Key == "fake/solo").Owners;
+                ownersDuringChild = h.Scheduler!.Snapshot().Single(p => p.Key == "fake/solo").Owners;
                 return Reply.Text("REPORT: 42 files");
             }
             return Reply.HasToolResult(r)
@@ -75,7 +75,7 @@ public static class SubagentTests
         Check.Contains(pm[^1].Text, "Parent done:");
         Check.False(pm.Any(m => m.MetaString("kind") == "agent-result"), "no duplicate notification");
         Check.Equal(1, p.Runs);
-        Check.Equal(0, h.Lanes!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy));
+        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy));
         // parent went Yielded → Queued/Running again
         var parentStatuses = h.Bus.OfType(EventTypes.AgentStatus).Select(FakeBus.Data)
             .Where(d => (string?)d["agent"]!["id"] == p.Id).Select(d => (string)d["agent"]!["status"]!).ToList();
@@ -151,7 +151,7 @@ public static class SubagentTests
         Check.Equal("final", msgs[^1].Text);
     }
 
-    private static async Task WaitManyOneLane()
+    private static async Task WaitManyOneSlot()
     {
         await using var h = await TestHost.StartAsync();
         var parent = h.NewSession(model: "fake/solo");
@@ -180,7 +180,7 @@ public static class SubagentTests
         await h.SendAsync(parent.Id, "fan out");
         var p = await h.IdleAsync(parent.Id, 15_000);
         Check.Equal(3, p.Children.Count);
-        Check.Equal(1, maxConcurrent, "one lane: children ran one at a time");
+        Check.Equal(1, maxConcurrent, "one slot: children ran one at a time");
         var wait = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).Select(m => m.ToolResults.Single()).Single(x => x.Name == "agent_wait");
         Check.Contains(wait.Content, "3 agents finished");
         Check.Contains(wait.Content, "done job A");
@@ -276,7 +276,7 @@ public static class SubagentTests
         });
         h.Catalog.Handler = (r, ct) =>
         {
-            if (r.Model.Ref == "cloud/big") return Reply.Text("child report: done on the stealth lane");
+            if (r.Model.Ref == "cloud/big") return Reply.Text("child report: done on the stealth agent");
             var last = r.Messages[^1];
             if (last.Role == MessageRole.Tool) return Reply.Text("spawned");
             if (last.Text.Contains("<agent-result")) return Reply.Text("thanks");
@@ -288,9 +288,9 @@ public static class SubagentTests
         await Wait.Until(() => h.Runtime.Get(p.Id)?.Children.Count == 1, "child spawned");
         var child = await h.StatusAsync(h.Runtime.Get(p.Id)!.Children[0], AgentStatus.Completed);
         Check.Equal("cloud/big", child.Model);
-        Check.Equal("stealth", child.Pool);
-        Check.Equal("child report: done on the stealth lane", child.Result);
-        Check.True(h.Lanes!.Snapshot().Any(x => x.Key == "stealth" && x.Capacity == 1), "the agent with its instances");
+        Check.Equal("stealth", child.Agent);
+        Check.Equal("child report: done on the stealth agent", child.Result);
+        Check.True(h.Scheduler!.Snapshot().Any(x => x.Key == "stealth" && x.Capacity == 1), "the agent with its instances");
         Check.Equal("stealth", SessionAgent.Of(h.Sessions.GetSession(child.SessionId)), "the subagent's chat keeps its agent");
         Check.Equal("main", SessionAgent.Of(h.Sessions.GetSession(parent.Id)));
         await Wait.Until(() => h.Messages(parent.Id).Any(m => m.Role == MessageRole.Assistant && m.Text == "thanks"), "the parent got the report");
@@ -369,7 +369,7 @@ public static class SubagentTests
         await Task.Delay(100);
         Check.Equal(1, h.Runtime.GetBySession(parent.Id)!.Runs, "cancelled child does not wake the parent");
         Check.False(h.Messages(parent.Id).Any(m => m.MetaString("kind") == "agent-result"));
-        Check.Equal(0, h.Lanes!.Snapshot().Sum(x => x.Busy + x.Queued));
+        Check.Equal(0, h.Scheduler!.Snapshot().Sum(x => x.Busy + x.Queued));
     }
 
     private static async Task FailedChild()
@@ -397,7 +397,7 @@ public static class SubagentTests
         await using var h = await TestHost.StartAsync();
         var parent = h.NewSession();
         var gate = new TaskCompletionSource();
-        string? listOutput = null, lanesOutput = null, resultOutput = null, cancelOutput = null;
+        string? listOutput = null, choicesOutput = null, resultOutput = null, cancelOutput = null;
         var step = 0;
         h.Catalog.Handler = (r, ct) =>
         {
@@ -406,7 +406,7 @@ public static class SubagentTests
             switch (last?.Name)
             {
                 case "agent_list": listOutput = last.Content; break;
-                case "agent_choices": lanesOutput = last.Content; break;
+                case "agent_choices": choicesOutput = last.Content; break;
                 case "agent_result": resultOutput = last.Content; break;
                 case "agent_cancel": cancelOutput = last.Content; break;
             }
@@ -424,9 +424,9 @@ public static class SubagentTests
         await h.IdleAsync(parent.Id);
         Check.Contains(listOutput, "slowpoke");
         Check.Contains(listOutput, "task: slow job");
-        Check.Contains(lanesOutput, "No agents are set up: a subagent runs on your model unless you pass agent_spawn a model ref.");
-        Check.Contains(lanesOutput, "- fake/local · 2/2 busy");
-        Check.Contains(lanesOutput, "main (you)");
+        Check.Contains(choicesOutput, "No agents are set up: a subagent runs on your model unless you pass agent_spawn a model ref.");
+        Check.Contains(choicesOutput, "- fake/local · 2/2 busy");
+        Check.Contains(choicesOutput, "main (you)");
         Check.Contains(resultOutput, "still running");
         Check.Contains(cancelOutput, "Cancelled slowpoke");
         var child = h.Runtime.List().Single(a => a.IsSubagent);

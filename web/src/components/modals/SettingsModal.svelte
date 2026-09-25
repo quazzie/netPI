@@ -19,7 +19,7 @@
 
   let section = $state(untrack(() => startPage));
 
-  // host settings as controls: the schema (host + plugins) and the document; the agents' states are app.pools
+  // host settings as controls: the schema (host + plugins) and the document; the agents' states are app.slots
   let schema = $state([]);
   let doc = $state({});
   const layout = $derived(pagesOf(schema));

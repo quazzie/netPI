@@ -51,9 +51,9 @@
       <table class="models">
         <thead><tr><th>This period</th><th>calls</th><th>tokens</th><th>cost</th></tr></thead>
         <tbody>
-          {#each models as m (`${m.lane}|${m.provider}|${m.model}`)}
+          {#each models as m (`${m.agent}|${m.provider}|${m.model}`)}
             <tr>
-              <td class="np-mono np-ellipsis" title="{m.provider}/{m.model}">{m.provider}/{m.model}{#if m.lane}<span class="np-dim">&nbsp;· {m.lane}</span>{/if}</td>
+              <td class="np-mono np-ellipsis" title="{m.provider}/{m.model}">{m.provider}/{m.model}{#if m.agent}<span class="np-dim">&nbsp;· {m.agent}</span>{/if}</td>
               <td>{m.calls}</td>
               <td>{tokens((m.inputTokens ?? 0) + (m.outputTokens ?? 0) + (m.cacheWriteTokens ?? 0))}</td>
               <td class="np-mono" title={m.unknownCost ? 'Some calls had no known price' : ''}>{usd(m.costUsd) || '–'}{m.unknownCost ? ' ?' : ''}</td>

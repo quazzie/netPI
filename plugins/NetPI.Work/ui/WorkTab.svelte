@@ -10,7 +10,7 @@
   /** ctx: host plugin API (docs/PROTOCOL.md → Plugin UI tabs) */
   let { ctx } = $props();
 
-  let lanes = $state.raw(null);
+  let slots = $state.raw(null); // the agents with their instances (agents.list)
   let agents = $state.raw(null);
   let processes = $state.raw(null);
   let usage = $state.raw(null);
@@ -34,8 +34,8 @@
     inflight = (async () => {
       try {
         const s = await ctx.rpc('work.snapshot');
-        lanes = s?.lanes ?? null;
-        agents = s?.agents ?? null;
+        slots = s?.agents ?? null;
+        agents = s?.runs ?? null;
         processes = s?.processes ?? null;
         usage = s?.usage ?? null;
         errors = s?.errors ?? {};
@@ -88,9 +88,9 @@
         if (!visible) return void (dirty = true);
         agents = upsert(agents, d?.agent);
       }),
-      ctx.on('lanes.changed', (d) => {
+      ctx.on('agents.changed', (d) => {
         if (!visible) return void (dirty = true);
-        if (Array.isArray(d?.pools)) lanes = d.pools;
+        if (Array.isArray(d?.agents)) slots = d.agents;
       }),
       ctx.on('process.started', (d) => {
         if (!visible) return void (dirty = true);
@@ -149,11 +149,11 @@
       .sort((a, b) => (Date.parse(b.endedAt ?? b.startedAt) || 0) - (Date.parse(a.endedAt ?? a.startedAt) || 0)),
   );
 
-  const busySlots = $derived((lanes ?? []).reduce((n, p) => n + (p.busy ?? 0), 0));
-  const queuedSlots = $derived((lanes ?? []).reduce((n, p) => n + (p.queued ?? 0), 0));
+  const busySlots = $derived((slots ?? []).reduce((n, p) => n + (p.busy ?? 0), 0));
+  const queuedSlots = $derived((slots ?? []).reduce((n, p) => n + (p.queued ?? 0), 0));
   // the agents the user set up (always listed) and model calls without an agent (listed while they run)
-  const setUp = $derived((lanes ?? []).filter((p) => p.configured));
-  const others = $derived((lanes ?? []).filter((p) => !p.configured));
+  const setUp = $derived((slots ?? []).filter((p) => p.configured));
+  const others = $derived((slots ?? []).filter((p) => !p.configured));
   const activeCapacity = $derived(setUp.filter((p) => p.available !== false).reduce((n, p) => n + (p.capacity ?? 0), 0));
   const todayTokens = $derived(
     (usage?.providers ?? []).reduce((n, p) => n + (p.inputTokens ?? 0) + (p.outputTokens ?? 0), 0),
@@ -174,15 +174,15 @@
     <IconButton icon="refresh" title={updatedAt ? `Refresh (updated ${new Date(updatedAt).toLocaleTimeString()})` : 'Refresh'} size="sm" onclick={refresh} />
   </div>
 
-  {#if failed && !agents && !lanes}
+  {#if failed && !agents && !slots}
     <Empty icon="alert">Work overview unavailable: {failed}</Empty>
-  {:else if loading && !agents && !lanes}
+  {:else if loading && !agents && !slots}
     <Empty><span class="np-spinner"></span></Empty>
   {:else}
     <!-- ---------------------------------------------------------------- agents (the ones the user set up) -->
-    <Section title="Agents" count={setUp.length ? `${busySlots}/${activeCapacity}` : null} collapsible storageKey="work.lanes">
-      {#if !lanes}
-        <div class="na">Agents not available{errors.lanes ? ` — ${errors.lanes}` : ''}</div>
+    <Section title="Agents" count={setUp.length ? `${busySlots}/${activeCapacity}` : null} collapsible storageKey="work.agentSlots">
+      {#if !slots}
+        <div class="na">Agents not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
       {:else}
         {#each setUp as pool (pool.key)}
           <AgentPool {pool} {agentById} {titles} {ctx} />
@@ -202,9 +202,9 @@
     </Section>
 
     <!-- ---------------------------------------------------------------- runs -->
-    <Section title="Runs" count={active.length || null} collapsible storageKey="work.agents">
+    <Section title="Runs" count={active.length || null} collapsible storageKey="work.runs">
       {#if !agents}
-        <div class="na">Runs not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
+        <div class="na">Runs not available{errors.runs ? ` — ${errors.runs}` : ''}</div>
       {:else}
         {#each roots as a (a.id)}
           <AgentNode agent={a} {childrenOf} {titles} {ctx} depth={0} />

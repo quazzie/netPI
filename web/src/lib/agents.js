@@ -1,5 +1,5 @@
 // Agents: the workers the user sets up (settings agents.<id> = { model, instances, use, disabled, cost, budget }), as the
-// scheduler reports them (lanes.list / lanes.changed: app.pools, the ones with configured = true). Chats and subagents
+// scheduler reports them (agents.list / agents.changed: app.slots, the ones with configured = true). Chats and subagents
 // run on agents; an agent is active while its model is loaded (local) or reachable (cloud), unless switched off.
 import { rpc } from './rpc.svelte.js';
 import { app, upsertSessionLocal } from './state/app.svelte.js';
@@ -12,11 +12,11 @@ export const RESERVED = new Set(['maxDepth']);
 
 /** The agents the user set up, in the scheduler's order. */
 export function agentList() {
-  return app.pools.filter((p) => p.configured);
+  return app.slots.filter((p) => p.configured);
 }
 
 export function agentById(id) {
-  return id ? (app.pools.find((p) => p.configured && p.key === id) ?? null) : null;
+  return id ? (app.slots.find((p) => p.configured && p.key === id) ?? null) : null;
 }
 
 /**
@@ -96,7 +96,7 @@ export async function useAgent(sessionId, id) {
 /** Switch an agent on or off. */
 export async function setAgentEnabled(id, enabled) {
   try {
-    app.pools = (await rpc('agents.setEnabled', { id, enabled })) ?? app.pools;
+    app.slots = (await rpc('agents.setEnabled', { id, enabled })) ?? app.slots;
     return true;
   } catch (e) {
     toast(e.message, 'error');

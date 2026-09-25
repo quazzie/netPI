@@ -1,26 +1,26 @@
 using System.Text.Json.Nodes;
-using NetPI.Lanes;
+using NetPI.Agents;
 
 namespace NetPI.Agent.Tests;
 
-public static class LaneTests
+public static class SchedulerTests
 {
     public static void Register(TestRunner t)
     {
-        t.Add("lanes: capacity 2 → third agent queues", ThirdQueues);
+        t.Add("scheduler: a model with 2 slots → the third run queues", ThirdQueues);
         t.Add("agents: listed always with their state (instances, switched off, model not loaded); other model calls while busy", AgentsListed);
         t.Add("agents: agents on one local model share its slots; the choice for a chat; switched off refuses at once", SharedModelSlots);
         t.Add("agents: chats run on their agent (taken, agents.use, agents.setEnabled); an inactive agent stops the chat at once", ChatsOnAgents);
         t.Add("agents: the lanes of earlier versions become agents, once", Upgrade);
-        t.Add("lanes: priority, FIFO, cancellation, idempotent release", PriorityAndCancel);
+        t.Add("scheduler: priority, FIFO, cancellation, idempotent release", PriorityAndCancel);
         t.Add("agents: more instances wake waiters; instances follow the catalog", CapacityIncrease);
-        t.Add("lanes: lanes.changed is debounced, and only sent on changes", Debounce);
-        t.Add("lanes: stop fails waiters; runs survive a lanes reload", ReloadDuringWait);
-        t.Add("lanes: budget exceeded + usage.summary", Budget);
-        t.Add("lanes: runs without the lanes plugin", NoLanes);
+        t.Add("scheduler: agents.changed is debounced, and only sent on changes", Debounce);
+        t.Add("scheduler: stop fails waiters; runs survive a reload of the agents plugin", ReloadDuringWait);
+        t.Add("scheduler: budget exceeded + usage.summary", Budget);
+        t.Add("scheduler: runs without the agents plugin", NoAgentsPlugin);
     }
 
-    private static LaneRequest Req(string pool, string agent, int priority = 0) => new() { PoolKey = pool, AgentId = agent, Priority = priority, Label = agent };
+    private static AgentSlotRequest Req(string pool, string agent, int priority = 0) => new() { Key = pool, AgentId = agent, Priority = priority, Label = agent };
 
     private static async Task ThirdQueues()
     {
@@ -35,16 +35,16 @@ public static class LaneTests
             return st.Count(x => x == AgentStatus.Running) == 2 && st.Count(x => x == AgentStatus.Queued) == 1;
         }, "two running, one queued");
         var queued = sessions.Select(s => h.Runtime.GetBySession(s.Id)!).Single(a => a.Status == AgentStatus.Queued);
-        Check.Equal("waiting for lane fake/local", queued.Activity);
+        Check.Equal("waiting for a slot on fake/local", queued.Activity);
         Check.Equal(2, h.Catalog.Calls, "queued agent has not called the model");
-        var pool = h.Lanes!.Snapshot().Single(p => p.Key == "fake/local");
+        var pool = h.Scheduler!.Snapshot().Single(p => p.Key == "fake/local");
         Check.Equal(2, pool.Capacity);
         Check.Equal(2, pool.Busy);
         Check.Equal(1, pool.Queued);
         Check.Equal(queued.Id, pool.Waiters.Single().AgentId);
         Check.Equal("catalog", pool.Source);
         Check.Equal("queued", pool.Status);
-        var rpc = (JsonArray)(await h.Rpc.CallAsync("lanes.list"))!;
+        var rpc = (JsonArray)(await h.Rpc.CallAsync("agents.list"))!;
         Check.Equal(2, rpc.Single(p => (string?)p!["key"] == "fake/local")!["busy"]!.GetValue<int>());
 
         gate.SetResult();
@@ -52,8 +52,8 @@ public static class LaneTests
         Check.Equal(3, h.Catalog.Calls);
         await Task.Delay(250);
         await h.Bus.DrainAsync();
-        var last = FakeBus.Data(h.Bus.OfType(EventTypes.LanesChanged).Last());
-        Check.Equal(0, ((JsonArray)last["pools"]!).Count, "no agents, nothing running");
+        var last = FakeBus.Data(h.Bus.OfType(EventTypes.AgentsChanged).Last());
+        Check.Equal(0, ((JsonArray)last["agents"]!).Count, "no agents, nothing running");
     }
 
     private static JsonNode J(string json) => JsonNode.Parse(json)!;
@@ -69,7 +69,7 @@ public static class LaneTests
             x.Settings.SetQuiet("agents.gone", J("""{ "model": "fake/nope" }"""));
             x.Settings.SetQuiet("agents.maxDepth", 3);
         });
-        var pools = h.Lanes!.Snapshot();
+        var pools = h.Scheduler!.Snapshot();
         Check.Equal("big|coder|gone|off|solo", string.Join("|", pools.Select(p => p.Key)), "the agents, always; nothing else while idle");
         var by = pools.ToDictionary(p => p.Key);
         Check.True(pools.All(p => p.Configured && p.Source == "settings"));
@@ -91,22 +91,22 @@ public static class LaneTests
         local.Status = "unloaded";
         ((IEventBus)h.Bus).Publish(EventTypes.ModelsChanged, new JsonObject());
         await h.Bus.DrainAsync();
-        var coder = h.Lanes.Snapshot().Single(p => p.Key == "coder");
+        var coder = h.Scheduler.Snapshot().Single(p => p.Key == "coder");
         Check.False(coder.Available);
         Check.Equal("unavailable", coder.Status);
         Check.Equal("local isn't loaded", coder.Unavailable);
         local.Status = "loaded";
         ((IEventBus)h.Bus).Publish(EventTypes.ModelsChanged, new JsonObject());
         await h.Bus.DrainAsync();
-        Check.True(h.Lanes.Snapshot().Single(p => p.Key == "coder").Available);
+        Check.True(h.Scheduler.Snapshot().Single(p => p.Key == "coder").Available);
 
         // other model calls show while they run
-        var lease = await h.Lanes.AcquireAsync(Req(h.Lanes.ResolvePool(TestHost.SoloModel()), "summarizer"), CancellationToken.None);
-        var busy = h.Lanes.Snapshot().Single(p => p.Key == "fake/solo");
+        var lease = await h.Scheduler.AcquireAsync(Req(h.Scheduler.Resolve(TestHost.SoloModel()), "summarizer"), CancellationToken.None);
+        var busy = h.Scheduler.Snapshot().Single(p => p.Key == "fake/solo");
         Check.False(busy.Configured);
         Check.Equal(1, busy.Busy);
         lease.Dispose();
-        Check.False(h.Lanes.Snapshot().Any(p => p.Key == "fake/solo"));
+        Check.False(h.Scheduler.Snapshot().Any(p => p.Key == "fake/solo"));
     }
 
     private static async Task SharedModelSlots()
@@ -115,11 +115,11 @@ public static class LaneTests
         {
             x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 2 }"""));
             x.Settings.SetQuiet("agents.b", J("""{ "model": "fake/local", "instances": 2 }"""));
-        }, plugins: TestHost.Plugins.Lanes);
-        var s = h.Lanes!;
-        Check.Equal("a", s.ResolvePool(TestHost.LocalModel(), "a"));
-        Check.Equal("b", s.ResolvePool(TestHost.LocalModel(), "b"));
-        Check.Equal("fake/local", s.ResolvePool(TestHost.LocalModel(), "nope"), "an unknown agent: a slot per model");
+        }, plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
+        Check.Equal("a", s.Resolve(TestHost.LocalModel(), "a"));
+        Check.Equal("b", s.Resolve(TestHost.LocalModel(), "b"));
+        Check.Equal("fake/local", s.Resolve(TestHost.LocalModel(), "nope"), "an unknown agent: a slot per model");
         var a1 = await s.AcquireAsync(Req("a", "A1"), CancellationToken.None);
         var b1 = await s.AcquireAsync(Req("b", "B1"), CancellationToken.None);
         // the model serves two at once: a third run waits although "a" has an instance free
@@ -135,17 +135,17 @@ public static class LaneTests
         Check.Equal("a", s.ChooseAgent(TestHost.LocalModel(), "a"));
         Check.Equal("b", s.ChooseAgent(TestHost.LocalModel(), null), "a is full");
         Check.Equal("b", s.ChooseAgent(TestHost.LocalModel(), "elsewhere"));
-        try { s.ChooseAgent(TestHost.SoloModel(), null); throw new AssertException("expected LaneUnavailableException"); }
-        catch (LaneUnavailableException ex) { Check.Contains(ex.Message, "No agent runs fake/solo."); }
+        try { s.ChooseAgent(TestHost.SoloModel(), null); throw new AssertException("expected AgentUnavailableException"); }
+        catch (AgentUnavailableException ex) { Check.Contains(ex.Message, "No agent runs fake/solo."); }
 
         // switched off: new runs are refused at once, waiters are told
         var b2 = s.AcquireAsync(Req("b", "B2"), CancellationToken.None).AsTask();
         h.Settings.Set("agents.b.disabled", JsonValue.Create(true));
         await h.Bus.DrainAsync();
-        try { await b2.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected LaneUnavailableException"); }
-        catch (LaneUnavailableException ex) { Check.Contains(ex.Message, "The agent \"b\" is disabled."); }
-        try { await s.AcquireAsync(Req("b", "B3"), CancellationToken.None); throw new AssertException("expected LaneUnavailableException"); }
-        catch (LaneUnavailableException) { }
+        try { await b2.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected AgentUnavailableException"); }
+        catch (AgentUnavailableException ex) { Check.Contains(ex.Message, "The agent \"b\" is disabled."); }
+        try { await s.AcquireAsync(Req("b", "B3"), CancellationToken.None); throw new AssertException("expected AgentUnavailableException"); }
+        catch (AgentUnavailableException) { }
         Check.False(s.TryAcquire(Req("b", "B4"), out _));
         Check.Equal("a", s.ChooseAgent(TestHost.LocalModel(), null), "an active agent first");
         a1.Dispose();
@@ -172,7 +172,7 @@ public static class LaneTests
         await Wait.Until(() => h.Catalog.Calls == 2, "the second chat runs on the other agent");
         Check.Equal("a", SessionAgent.Of(h.Sessions.GetSession(s1.Id)));
         Check.Equal("b", SessionAgent.Of(h.Sessions.GetSession(s2.Id)));
-        Check.Equal("a", h.Runtime.GetBySession(s1.Id)!.Pool);
+        Check.Equal("a", h.Runtime.GetBySession(s1.Id)!.Agent);
         gate.SetResult();
         await h.IdleAsync(s1.Id);
         await h.IdleAsync(s2.Id);
@@ -183,7 +183,7 @@ public static class LaneTests
         Check.Equal("fake/solo", (string?)used["model"]);
         Check.Equal("solo", SessionAgent.Of(h.Sessions.GetSession(s3.Id)));
         await h.SendAsync(s3.Id, "go");
-        Check.Equal("solo", (await h.IdleAsync(s3.Id)).Pool);
+        Check.Equal("solo", (await h.IdleAsync(s3.Id)).Agent);
         Check.Equal(3, h.Catalog.Calls);
 
         // switched off (agents.setEnabled): the chat stops at once with a notice
@@ -221,24 +221,25 @@ public static class LaneTests
         {
             x.Settings.SetQuiet("defaultModel", "fake/solo");
             x.Settings.SetQuiet("lanes.pools", new JsonObject());
-            x.Settings.SetQuiet("lanes.cloudDefaultCapacity", 4);
+            x.Settings.SetQuiet("models.cloudSlots", 4);
             x.Settings.SetQuiet("lanes.Fast One", J("""{ "model": "fake/local", "capacity": 2, "use": "Quick.", "budget": { "limitUsd": 1 } }"""));
             x.Settings.SetQuiet("agents.maxDepth", 2);
-        }, plugins: TestHost.Plugins.Lanes);
+        }, plugins: TestHost.Plugins.Agents);
         var agents = (JsonObject)h.Settings.GetNode("agents")!;
         Check.Equal("fast-one,maxDepth,solo", string.Join(",", agents.Select(kv => kv.Key).Order(StringComparer.Ordinal)));
         Check.Equal("""{"model":"fake/local","instances":2,"use":"Quick.","budget":{"limitUsd":1}}""", agents["fast-one"]!.ToJsonString());
         Check.Equal("""{"model":"fake/solo"}""", agents["solo"]!.ToJsonString(), "an agent for the default model");
-        Check.Equal("""{"cloudDefaultCapacity":4}""", h.Settings.GetNode("lanes")!.ToJsonString(), "the lanes are gone");
-        Check.Equal("fast-one|solo", string.Join("|", h.Lanes!.Snapshot().Select(p => p.Key)));
+        Check.Equal(null, h.Settings.GetNode("lanes"), "the lanes are gone");
+        Check.Equal(4, h.Settings.Get<int>("models.cloudSlots"), "lanes.cloudDefaultCapacity moved");
+        Check.Equal("fast-one|solo", string.Join("|", h.Scheduler!.Snapshot().Select(p => p.Key)));
         Check.Equal(0, AgentUpgrade.Run(h.Settings).Count, "nothing to do the next time");
     }
 
     private static async Task PriorityAndCancel()
     {
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Lanes);
-        var s = h.Lanes!;
-        var pool = s.ResolvePool(TestHost.SoloModel()); // capacity 1
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
+        var pool = s.Resolve(TestHost.SoloModel()); // capacity 1
         var a = await s.AcquireAsync(Req(pool, "A"), CancellationToken.None);
         Check.False(s.TryAcquire(Req(pool, "X"), out _), "full");
         var b = s.AcquireAsync(Req(pool, "B"), CancellationToken.None).AsTask();
@@ -272,8 +273,8 @@ public static class LaneTests
     private static async Task CapacityIncrease()
     {
         await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 1 }""")),
-            plugins: TestHost.Plugins.Lanes);
-        var s = h.Lanes!;
+            plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
         var a = await s.AcquireAsync(Req("a", "A"), CancellationToken.None);
         var b = s.AcquireAsync(Req("a", "B"), CancellationToken.None).AsTask();
         await Task.Delay(50);
@@ -297,25 +298,25 @@ public static class LaneTests
 
     private static async Task Debounce()
     {
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Lanes);
-        var s = h.Lanes!;
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
         await Task.Delay(250);
-        var before = h.Bus.OfType(EventTypes.LanesChanged).Count;
-        var pool = s.ResolvePool(TestHost.LocalModel());
-        var leases = new List<ILaneLease>();
+        var before = h.Bus.OfType(EventTypes.AgentsChanged).Count;
+        var pool = s.Resolve(TestHost.LocalModel());
+        var leases = new List<IAgentSlot>();
         for (var i = 0; i < 2; i++) leases.Add(await s.AcquireAsync(Req(pool, "A" + i), CancellationToken.None));
         foreach (var l in leases) l.Dispose();
         await Task.Delay(300);
         await h.Bus.DrainAsync();
-        var after = h.Bus.OfType(EventTypes.LanesChanged).Count;
+        var after = h.Bus.OfType(EventTypes.AgentsChanged).Count;
         Check.True(after - before is >= 1 and <= 2, $"coalesced into {after - before} event(s)");
-        var pools = (JsonArray)FakeBus.Data(h.Bus.OfType(EventTypes.LanesChanged).Last())["pools"]!;
+        var pools = (JsonArray)FakeBus.Data(h.Bus.OfType(EventTypes.AgentsChanged).Last())["agents"]!;
         Check.Equal(0, pools.Count, "nothing busy");
         // a settings change that changes nothing here sends nothing
         h.Settings.Set("ui.theme", "dark");
         await Task.Delay(250);
         await h.Bus.DrainAsync();
-        Check.Equal(after, h.Bus.OfType(EventTypes.LanesChanged).Count);
+        Check.Equal(after, h.Bus.OfType(EventTypes.AgentsChanged).Count);
     }
 
     private static async Task ReloadDuringWait()
@@ -331,27 +332,27 @@ public static class LaneTests
         await Wait.Until(() => h.Runtime.GetBySession(s2.Id)!.Status == AgentStatus.Queued, "second queued");
 
         // direct: waiters of a stopped scheduler fail with OperationCanceledException
-        var old = h.Lanes!;
+        var old = h.Scheduler!;
         var extra = old.AcquireAsync(Req("fake/solo", "extra"), CancellationToken.None).AsTask();
-        await h.StopPluginAsync("netpi.lanes");
+        await h.StopPluginAsync("netpi.agents");
         try { await extra; throw new AssertException("expected cancellation"); } catch (OperationCanceledException) { }
 
-        await h.StartPluginAsync(new LanesPlugin());
-        // the queued agent re-resolved the scheduler (or ran without lanes during the gap) and gets to run
-        await Wait.Until(() => h.Catalog.Calls == 2, "second agent got a lane after the reload");
+        await h.StartPluginAsync(new AgentsPlugin());
+        // the queued agent re-resolved the scheduler (or ran without it during the gap) and gets to run
+        await Wait.Until(() => h.Catalog.Calls == 2, "second run got a slot after the reload");
         gate.SetResult();
         await h.IdleAsync(s1.Id);
         await h.IdleAsync(s2.Id);
-        Check.Equal(0, h.Lanes!.Snapshot().Sum(p => p.Busy + p.Queued));
+        Check.Equal(0, h.Scheduler!.Snapshot().Sum(p => p.Busy + p.Queued));
     }
 
     private static async Task Budget()
     {
-        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("lanes.budgets", JsonNode.Parse("""{ "fake": { "dailyTokens": 50 } }""")));
+        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("budget.providers", JsonNode.Parse("""{ "fake": { "dailyTokens": 50 } }""")));
         var s = h.NewSession();
         await h.SendAsync(s.Id, "first");
         await h.IdleAsync(s.Id);
-        await h.Bus.DrainAsync(); // usage.recorded reached the lanes plugin
+        await h.Bus.DrainAsync(); // usage.recorded reached the agents plugin
 
         var summary = (await h.Rpc.CallAsync("usage.summary"))!;
         var fake = ((JsonArray)summary["providers"]!).Single(p => (string?)p!["provider"] == "fake")!;
@@ -367,7 +368,7 @@ public static class LaneTests
         var last = h.Messages(s.Id)[^1];
         Check.Equal("error", last.MetaString("kind"));
         Check.Contains(last.Text, "budget");
-        Check.Contains(last.Text, "lanes.budgets.fake.dailyTokens");
+        Check.Contains(last.Text, "budget.providers.fake.dailyTokens");
         Check.Contains(a.Error, "budget");
 
         // another provider is unaffected
@@ -377,13 +378,13 @@ public static class LaneTests
         Check.Equal(2, h.Catalog.Calls);
     }
 
-    private static async Task NoLanes()
+    private static async Task NoAgentsPlugin()
     {
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.All & ~TestHost.Plugins.Lanes);
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.All & ~TestHost.Plugins.Agents);
         var s = h.NewSession();
         await h.SendAsync(s.Id, "hi");
         var a = await h.IdleAsync(s.Id);
-        Check.Equal(null, a.Pool);
+        Check.Equal(null, a.Agent);
         Check.Equal("ok", h.Messages(s.Id)[^1].Text);
     }
 }

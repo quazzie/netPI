@@ -60,7 +60,7 @@ public sealed class AiProxyPlugin : INetPiPlugin
                 SettingInfo.Bool("providers.aiproxy.includeEncryptedReasoning", "Request encrypted reasoning", false, "OpenAI-hosted reasoning models only; nInfer rejects it."),
                 SettingInfo.Int("providers.aiproxy.defaultMaxOutputTokens", "Output limit when the catalog has none", 16384, null, 256, null, "tokens"),
                 SettingInfo.Int("providers.aiproxy.modelsCacheSeconds", "Model list cache", 10, null, 0, 3600, "s"),
-                SettingInfo.Bool("providers.aiproxy.local", "Local models", true, "Lanes take their size from the catalog's concurrency; local models are free."),
+                SettingInfo.Bool("providers.aiproxy.local", "Local models", true, "Their agents share the slots the catalog reports (concurrency); local models are free."),
                 SettingInfo.Bool("providers.aiproxy.enabled", "Enabled", true),
             ],
         });

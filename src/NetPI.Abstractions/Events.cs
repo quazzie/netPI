@@ -75,7 +75,7 @@ public static class EventTypes
     public const string AgentQueue = "agent.queue";
     public const string AgentNotice = "agent.notice";
     public const string SessionContext = "session.context";
-    public const string LanesChanged = "lanes.changed";
+    public const string AgentsChanged = "agents.changed";
     public const string ModelsChanged = "models.changed";
     public const string PluginsChanged = "plugins.changed";
     public const string UiChanged = "ui.changed";

@@ -419,8 +419,8 @@ public static class CompactionTests
             var small = T.Model("small", 12_000, "test");
             env.Ctx.ModelsFake.Models.Add(small);
             env.Ctx.SettingsFake.Set("compaction.model", "test/small");
-            var lanes = new FakeLaneScheduler();
-            env.Ctx.ServicesFake.Register<ILaneScheduler>(lanes);
+            var scheduler = new FakeAgentScheduler();
+            env.Ctx.ServicesFake.Register<IAgentScheduler>(scheduler);
             var n = 0;
             env.Ctx.ModelsFake.Responder = req => new ChatMessage
             {
@@ -442,10 +442,10 @@ public static class CompactionTests
                 Check.True(ModelMessages.EstimateTokens(p) < 12_000 - 3000, $"chunk {i} fits: {ModelMessages.EstimateTokens(p)}");
             }
             Check.True(env.Ctx.SessionsFake.Appended.Last().Text.StartsWith($"ROLLING-{reqs.Count}\n\n<read-files>"));
-            // A different model than the agent's → its own lane, released afterwards.
-            Check.Equal("test/small", lanes.Acquired.Single().PoolKey);
-            Check.Equal("agt_1", lanes.Acquired.Single().AgentId);
-            Check.Equal(1, lanes.Released);
+            // A different model than the agent's → its own slot, released afterwards.
+            Check.Equal("test/small", scheduler.Acquired.Single().Key);
+            Check.Equal("agt_1", scheduler.Acquired.Single().AgentId);
+            Check.Equal(1, scheduler.Released);
         });
 
         r.Add("compaction: summarizer failure never breaks the run", async () =>
@@ -458,7 +458,7 @@ public static class CompactionTests
             Check.Contains(((JsonObject)env.Ctx.Bus.OfType(EventTypes.AgentNotice).Last().Data!)["text"].Str(), "Auto-compaction failed");
         });
 
-        r.Add("compaction: compaction.run RPC, /compact command, busy agent, lanes", async () =>
+        r.Add("compaction: compaction.run RPC, /compact command, busy agent, slots", async () =>
         {
             var env = new Env();
             var ctx = env.Ctx;
@@ -469,8 +469,8 @@ public static class CompactionTests
             Check.Equal("compaction.run", cmd.Rpc);
             Check.Equal("Summarize older messages to free context", cmd.Description);
 
-            var lanes = new FakeLaneScheduler();
-            ctx.ServicesFake.Register<ILaneScheduler>(lanes);
+            var scheduler = new FakeAgentScheduler();
+            ctx.ServicesFake.Register<IAgentScheduler>(scheduler);
             var runtime = new FakeAgentRuntime();
             ctx.ServicesFake.Register<IAgentRuntime>(runtime);
 
@@ -489,9 +489,9 @@ public static class CompactionTests
             Check.Contains(req.Messages[0].Text, "Additional focus: focus on the parser");
             Check.Equal("agt_9", req.AgentId);
             Check.Equal("manual", ctx.SessionsFake.Appended.Last().MetaString("mode"));
-            Check.Equal("test/m1", lanes.Acquired.Single().PoolKey);
-            Check.Equal("compaction", lanes.Acquired.Single().Label);
-            Check.Equal(1, lanes.Released);
+            Check.Equal("test/m1", scheduler.Acquired.Single().Key);
+            Check.Equal("compaction", scheduler.Acquired.Single().Label);
+            Check.Equal(1, scheduler.Released);
 
             var nf = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("compaction.run", new JsonObject { ["sessionId"] = "ses_nope" }));
             Check.Equal("not_found", nf.Code);
