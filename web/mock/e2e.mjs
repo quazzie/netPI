@@ -1044,31 +1044,28 @@ log('profiles: settings, a project default, per chat');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
 
-  // a new chat in the project starts with it; switching before the first message is free
+  // a new chat in the project: no profile until its first message (the project's default arrives with it); the picker is free before it
   await page.keyboard.press('Control+t');
   await page.waitForTimeout(500);
   const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
   let s = await rpcCall('sessions.get', { id: sid });
   const picker = page.locator('button[aria-label="Profile"]');
-  check('a new chat starts with its project\'s profile', s.meta?.profile === 'admin' && (s.meta?.toolsOff ?? []).includes('bash') && (await picker.innerText()).includes('Admin'));
-  check('the tools button shows what the profile switched off', (await page.locator('button[aria-label="Tools for this chat"]').innerText()).includes('1 off'));
+  check('an empty chat has no profile yet (the default comes with its first message)', s.meta?.profile == null && (await picker.innerText()).includes('No profile'));
   await picker.click();
   await page.waitForSelector('.profile-pop');
   check('before the first message the change is free', (await page.locator('.profile-pop .help').innerText()).includes('free'));
-  await page.locator('.profile-pop .opt', { hasText: 'No profile' }).click();
-  await page.waitForTimeout(300);
-  s = await rpcCall('sessions.get', { id: sid });
-  check('no profile: its tools come back', s.meta?.profile == null && !s.meta?.toolsOff);
-  await picker.click();
-  await page.locator('.profile-pop .opt', { hasText: 'Admin' }).click();
-  await page.waitForTimeout(300);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
 
-  // after the first message: the picker warns, and the model is told
+  // the first message materializes the chat: the project's default profile is applied, the model is told
   const ta = page.locator('.composer textarea');
   await ta.fill('hello');
   await ta.press('Enter');
   await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 });
+  s = await rpcCall('sessions.get', { id: sid });
+  check('the first message gets the default profile of the project', s.meta?.profile === 'admin' && (s.meta?.toolsOff ?? []).includes('bash'));
+  check('the tools button shows what the profile switched off', (await page.locator('button[aria-label="Tools for this chat"]').innerText()).includes('1 off'));
   await picker.click();
   await page.waitForSelector('.profile-pop');
   check('in a started chat the picker says the chat is read again', (await page.locator('.profile-pop .help').innerText()).includes('re-reads this chat'));
@@ -1354,7 +1351,7 @@ log('fast steps: layout stability');
   );
   check('folded steps: "N steps · time" stays on one line', wrapped === 0, `${wrapped} wrapped`);
   const lastRun = page.locator('.item[data-kind="steps"]');
-  check('folded steps: every group of this run is one line', (await page.locator('.group.collapsible .steps').count()) === 0 && (await lastRun.count()) > 0);
+  check('folded steps: every group of this run is one line', (await page.locator('.group .steps').count()) === 0 && (await lastRun.count()) > 0);
   await shot(page, '27-folded-steps');
   await page.keyboard.press('Control+,');
   await page.waitForSelector('.dialog');
@@ -1542,7 +1539,8 @@ log('notifications');
 if (!EXTERNAL) {
   log('reconnect');
   await page.locator('.panel.left .strip-tab', { hasText: 'Sessions' }).click();
-  await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
+  // Forks sort ahead of the original, and disappear from the mock's memory when it restarts.
+  await page.locator('.srow', { has: page.locator('.title', { hasText: /^Fix streaming reconnect bug$/ }) }).click();
   await page.waitForTimeout(300);
   await stopServer();
   await page.waitForSelector('.conn[data-status="reconnecting"]', { timeout: 5000 }).catch(() => {});

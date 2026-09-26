@@ -9,7 +9,7 @@ import { store, pushMessage, agentFor, newId, text, thinking, call, result, usag
 const SPEED = Number(process.env.MOCK_SPEED || 1) || 1;
 const ABORT = Symbol('abort');
 
-export function createAgentRuntime({ publish, work, log = () => {} }) {
+export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessage = () => {} }) {
   const runs = new Map(); // sessionId -> { ac, turn }
   const asks = new Map(); // callId -> { entry, resolve }: ask_user questions waiting for ask.answer
   const approvals = new Map(); // callId -> { entry, resolve }: tool calls waiting for the user's OK (guardrails)
@@ -29,6 +29,8 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     });
 
   function emitMessage(sid, m) {
+    // the first message materializes a transient session (like the host: session.created, then message.added)
+    if ((store.messages.get(sid) ?? []).length === 1) onFirstMessage(sid);
     publish('message.added', { sessionId: sid, message: m }, sid);
     const s = store.sessions.get(sid);
     if (s) publish('session.updated', { session: s });

@@ -476,14 +476,14 @@ public static class AdvancedTests
             Check.Equal(CoreTests.Qwen, (await env.Rpc("models.list")).S("defaultModel"));
         });
 
-        r.Add("profiles: a new chat starts with its project's default profile, else the global default, before its first message", async () =>
+        r.Add("profiles: a new chat starts with its project's default profile, else the global default, with its first message", async () =>
         {
             await env.Rpc("settings.set", new { path = "profiles.e2e-admin", value = new { name = "E2E Admin", prompt = "You are the e2e admin." } });
             await env.Rpc("settings.set", new { path = "profiles.e2e-writer", value = new { name = "E2E Writer" } });
             try
             {
-                // the profiles plugin gives it right after sessions.create returns (on session.created): a session.updated
-                // with a later updatedAt carries it, which is why the UI keeps the newer copy of a session
+                // the profiles plugin gives it with the first message (session.created at materialization): a
+                // session.updated with a later updatedAt carries it, which is why the UI keeps the newer copy
                 async Task<string?> ProfileOf(string id)
                 {
                     string? profile = null;
@@ -494,16 +494,18 @@ public static class AdvancedTests
                 await env.Rpc("projects.update", new { id = p.S("id"), meta = new { profile = "e2e-admin" } });
                 var mark = env.Client.Mark();
                 var created = await env.NewSession(projectId: p.S("id"));
-                Check.Equal("e2e-admin", await ProfileOf(created.S("id")!), "the project's default");
+                Check.True((await env.Rpc("sessions.get", new { id = created.S("id") })).P("meta").S("profile") is null, "no profile before its first message");
+                var run = await env.Run(created.S("id")!, "hi [s:echo]");
+                Check.Contains(run.FinalText, "ECHO-DONE");
+                Check.Equal("e2e-admin", await ProfileOf(created.S("id")!), "the project's default, with the first message");
                 var updated = env.Client.Since(mark).Last(e => e.Type == "session.updated" && e.D.P("session").S("id") == created.S("id"));
                 Check.Equal("e2e-admin", updated.D.P("session").P("meta").S("profile"), "announced");
                 Check.True(string.CompareOrdinal(updated.D.P("session").S("updatedAt"), created.S("updatedAt")) > 0, "newer than the sessions.create result");
 
                 await env.Rpc("settings.set", new { path = "profiles.defaultProfile", value = "e2e-writer" });
                 var plain = await env.NewSession();
-                Check.Equal("e2e-writer", await ProfileOf(plain.S("id")!), "the global default");
-                var run = await env.Run(created.S("id")!, "hi [s:echo]");
-                Check.Contains(run.FinalText, "ECHO-DONE");
+                await env.Run(plain.S("id")!, "hi [s:echo]");
+                Check.Equal("e2e-writer", await ProfileOf(plain.S("id")!), "the global default, with the first message");
             }
             finally
             {

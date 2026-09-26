@@ -7,7 +7,8 @@
 
   let { ctx } = $props();
 
-  let list = $state.raw(null); // ideas.list result
+  let list = $state.raw(null); // ideas.list result (the single global file)
+  let projects = $state.raw([]); // projects.list
   let error = $state('');
   let loading = $state(true);
   let q = $state('');
@@ -19,13 +20,14 @@
   let dropTarget = $state(null); // { id, after }
   let visible = true;
   let dirty = false;
-  let scopeKey = '';
-
-  const loc = () => (ctx.app.activeSessionId ? { sessionId: ctx.app.activeSessionId } : {});
+  // The project filter: 'all' | 'global' | a project id. It follows the active project until the user picks one.
+  let activeProjectId = $state(ctx.app.activeProject?.id ?? null);
+  let projectFilter = $state(activeProjectId ?? 'global');
+  let followsActive = true;
 
   async function load() {
     try {
-      list = await ctx.rpc('ideas.list', loc());
+      [list, projects] = await Promise.all([ctx.rpc('ideas.list', {}), ctx.rpc('projects.list', {}).catch(() => [])]);
       error = '';
     } catch (e) {
       error = e?.message ?? String(e);
@@ -42,18 +44,15 @@
   }
 
   onMount(() => {
-    scopeKey = `${ctx.app.activeSessionId}|${ctx.app.activeProject?.id ?? ''}`;
     load();
     const offChange = ctx.app.onChange(() => {
-      const key = `${ctx.app.activeSessionId}|${ctx.app.activeProject?.id ?? ''}`;
-      if (key === scopeKey) return;
-      scopeKey = key;
-      expanded = new Set();
-      if (visible) load();
-      else dirty = true;
+      const pid = ctx.app.activeProject?.id ?? null;
+      if (pid !== activeProjectId) {
+        activeProjectId = pid;
+        if (followsActive) projectFilter = pid ?? 'global'; // the default follows the active project
+      }
     });
-    const offEv = ctx.on('ideas.changed', (d) => {
-      if (list && d?.file && d.file !== list.file) return;
+    const offEv = ctx.on('ideas.changed', () => {
       if (visible) load();
       else dirty = true;
     });
@@ -65,6 +64,7 @@
 
   // ------------------------------------------------------------------ filtering
   const ideas = $derived(list?.ideas ?? []);
+  const effProject = (i) => i.project?.id ?? null;
   const counts = $derived.by(() => {
     const c = { all: ideas.length, active: 0 };
     for (const s of STATUSES) c[s] = 0;
@@ -82,12 +82,16 @@
   const shown = $derived(
     ideas.filter(
       (i) =>
+        (projectFilter === 'all' || (projectFilter === 'global' ? !effProject(i) : effProject(i) === projectFilter)) &&
         (statusFilter === 'all' || (statusFilter === 'active' ? ACTIVE.has(i.status) : i.status === statusFilter)) &&
         (!tagFilter.size || (i.tags ?? []).some((t) => tagFilter.has(t))) &&
         matches(i, q.trim()),
     ),
   );
   const statusLabel = $derived(statusFilter === 'active' ? 'Active' : statusFilter === 'all' ? 'All' : statusFilter);
+  const projectLabel = $derived(
+    projectFilter === 'all' ? 'All projects' : projectFilter === 'global' ? 'Global' : (projects.find((p) => p.id === projectFilter)?.name ?? projectFilter),
+  );
 
   function toggleTag(t) {
     const s = new Set(tagFilter);
@@ -108,7 +112,7 @@
 
   async function call(method, params, okMsg) {
     try {
-      const r = await ctx.rpc(method, { ...loc(), ...params });
+      const r = await ctx.rpc(method, params);
       if (okMsg) ctx.app.toast(okMsg);
       return r;
     } catch (e) {
@@ -150,8 +154,10 @@
     },
   };
 
-  async function add(idea) {
-    const r = await call('ideas.add', { idea, prepend: true });
+  async function add(idea, projectId) {
+    const params = { idea, prepend: true, sessionId: ctx.app.activeSessionId || undefined };
+    if (projectId) params.projectId = projectId; // '' → omitted: the session's project is the default stamp
+    const r = await call('ideas.add', params);
     if (r) {
       list = { ...list, exists: true, ideas: [r, ...(list?.ideas ?? [])] };
       adding = false;
@@ -203,14 +209,40 @@
     { divider: true },
     ...STATUSES.map((s) => ({ label: s, hint: String(counts[s] ?? 0), checked: statusFilter === s, onclick: () => (statusFilter = s) })),
   ]);
+  const projectItems = $derived([
+    ...(activeProjectId
+      ? [{ label: `This project — ${ctx.app.activeProject?.name ?? ''}`, checked: projectFilter === activeProjectId, onclick: () => { projectFilter = activeProjectId; followsActive = true; } }]
+      : []),
+    { label: 'All projects', checked: projectFilter === 'all', onclick: () => { projectFilter = 'all'; followsActive = false; } },
+    { label: 'Global (unbound)', checked: projectFilter === 'global', onclick: () => { projectFilter = 'global'; followsActive = false; } },
+    ...(projects.length
+      ? [
+          { divider: true },
+          ...projects.filter((p) => p.id !== activeProjectId).map((p) => ({ label: p.name, checked: projectFilter === p.id, onclick: () => { projectFilter = p.id; followsActive = false; } })),
+        ]
+      : []),
+  ]);
+  const emptyWhere = $derived(
+    projectFilter === 'all' ? 'all projects' : projectFilter === 'global' ? 'the global backlog' : `“${projectLabel}”`,
+  );
 </script>
 
 <div class="ideas">
   <div class="scope np-line">
-    <span class="badge" class:global={list?.scope !== 'project'} title={list?.scope === 'project' ? `Project ${list.projectName ?? ''}` : 'Global backlog'}>
-      <Icon name={list?.scope === 'project' ? 'folder' : 'globe'} size={12} />
-      <span class="np-ellipsis">{list?.scope === 'project' ? (list.projectName ?? 'Project') : 'Global'}</span>
-    </span>
+    <Menu items={projectItems} minWidth={190}>
+      {#snippet trigger({ toggle, open })}
+        <button
+          class="badge"
+          class:global={projectFilter === 'global' && !activeProjectId}
+          aria-expanded={open}
+          onclick={toggle}
+          title="Project filter">
+          <Icon name={projectFilter === 'global' ? 'globe' : 'folder'} size={12} />
+          <span class="np-ellipsis">{projectLabel}</span>
+          <Icon name="chevron-down" size={11} />
+        </button>
+      {/snippet}
+    </Menu>
     <span class="file np-mono np-grow" title={list?.file}><bdi>{list ? list.file : ''}</bdi></span>
     <IconButton icon="plus" title="New idea" size="sm" pressed={adding} onclick={() => (adding = !adding)} />
   </div>
@@ -246,7 +278,7 @@
   {/if}
 
   {#if adding}
-    <NewIdea onadd={add} oncancel={() => (adding = false)} />
+    <NewIdea onadd={add} oncancel={() => (adding = false)} projects={projects} activeProjectId={activeProjectId ?? ''} />
   {/if}
 
   <div class="list">
@@ -259,7 +291,7 @@
       </Empty>
     {:else if !ideas.length}
       <Empty icon="idea">
-        <div>No ideas yet in {list?.scope === 'project' ? `“${list.projectName}”` : 'the global backlog'}.</div>
+        <div>No ideas yet in {emptyWhere}.</div>
         <div class="np-dim">Agents add them with the <span class="np-mono">ideas</span> tool; you can use <span class="np-mono">/idea &lt;title&gt;</span> or the + button.</div>
         {#if !adding}<Button size="sm" icon="plus" onclick={() => (adding = true)}>New idea</Button>{/if}
       </Empty>
@@ -304,15 +336,19 @@
   .badge {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    max-width: 60%;
+    gap: 4px;
+    max-width: 55%;
     height: 20px;
     padding: 0 8px;
+    border: 0;
     border-radius: 10px;
     background: var(--accent-soft);
     color: var(--accent);
+    font: inherit;
     font-size: var(--fs-sm);
     font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
   }
   .badge.global {
     background: var(--bg-3);

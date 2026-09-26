@@ -1,4 +1,4 @@
-// Ideas tab (netpi.ideas): the ideas backlog of the active session's project (or the global file).
+// Ideas tab (netpi.ideas): the global ideas backlog (one file, ideas carry a project), filtered by project.
 // Built by `npm run build:plugins` into ../wwwroot/ui.js.
 import { mount as svelteMount, unmount } from 'svelte';
 import IdeasTab from './IdeasTab.svelte';

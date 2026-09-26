@@ -21,7 +21,7 @@ public static class IdeaOps
     private static readonly HashSet<string> Protected = new(StringComparer.OrdinalIgnoreCase)
     {
         "id", "createdAt", "createdBy", "updatedAt", "sessionIds", "sections", "addSections", "updateSections", "removeSectionIds",
-        "title", "summary", "status", "priority", "tags",
+        "title", "summary", "status", "priority", "tags", "project",
     };
 
     public static string Now() => DateTimeOffset.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
@@ -98,6 +98,52 @@ public static class IdeaOps
     }
 
     public static IEnumerable<JsonObject> All(JsonArray ideas) => ideas.OfType<JsonObject>();
+
+    // ------------------------------------------------------------------ project
+
+    /// <summary>The project the idea belongs to (the id and name stored on it), or null when it is not bound ("global").</summary>
+    public static (string Id, string? Name)? ProjectOf(JsonObject idea)
+    {
+        switch (idea["project"])
+        {
+            case JsonObject o:
+                var id = Str(o["id"]);
+                return string.IsNullOrEmpty(id) ? null : (id, Str(o["name"]));
+            case JsonValue v when v.TryGetValue<string>(out var s) && s.Length > 0:
+                return (s, null); // lenient: a bare project id
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>Bind the idea to a project (recording a name snapshot), or unbind it with a null id.</summary>
+    public static void SetProject(JsonObject idea, string? id, string? name = null)
+    {
+        if (string.IsNullOrEmpty(id)) { idea.Remove("project"); return; }
+        var p = new JsonObject { ["id"] = id };
+        if (!string.IsNullOrEmpty(name)) p["name"] = name;
+        idea["project"] = p;
+    }
+
+    /// <summary>
+    /// The idea is in scope: an unbound idea passes when <paramref name="unboundOnly"/> or <paramref name="includeUnbound"/>;
+    /// a bound idea passes only when it belongs to <paramref name="projectId"/> (which must be given).
+    /// </summary>
+    public static bool MatchesProject(JsonObject idea, string? projectId, bool includeUnbound, bool unboundOnly = false)
+    {
+        var p = ProjectOf(idea);
+        if (p is null) return unboundOnly || includeUnbound;
+        if (unboundOnly) return false;
+        return projectId is not null && p.Value.Id == projectId;
+    }
+
+    /// <summary>A short project label for list lines and prompts: the stored name (or id), or "global" for unbound ideas.</summary>
+    public static string ProjectLabel(JsonObject idea)
+    {
+        var p = ProjectOf(idea);
+        if (p is null) return "global";
+        return p.Value.Name is { Length: > 0 } n ? n : p.Value.Id;
+    }
 
     // ------------------------------------------------------------------ normalization
 
@@ -339,6 +385,30 @@ public static class IdeaOps
             }
         }
 
+        if (Has(patch, "project"))
+        {
+            var raw = Pick(patch, "project");
+            string? id = null, name = null;
+            if (raw is JsonObject o)
+            {
+                id = Str(o, "id")?.Trim();
+                name = Str(o, "name")?.Trim();
+                if (string.IsNullOrEmpty(id)) throw new IdeaInputException("\"project\" must be null or an object { id, name? }.");
+                if (id is "global" or "none") { id = null; name = null; }
+            }
+            else if (raw is JsonValue v && v.TryGetValue<string>(out var s) && s.Trim().Length > 0)
+            {
+                id = s.Trim();
+                if (id is "global" or "none") id = null;
+            }
+            var old = ProjectOf(idea);
+            if (old?.Id != id)
+            {
+                SetProject(idea, id, name ?? (id == old?.Id ? old?.Name : null));
+                changes.Add(id is null ? "project (→ global)" : $"project (→ {name ?? id})");
+            }
+        }
+
         if (fromUi)
         {
             foreach (var (k, v) in patch.ToList())
@@ -425,11 +495,13 @@ public static class IdeaOps
         return true;
     }
 
-    public static string ListLine(JsonObject idea)
+    /// <summary>A compact line: <c>- id [status · priority (· project)] Title — summary #tags (n sections)</c>.</summary>
+    public static string ListLine(JsonObject idea, string? project = null)
     {
         var sb = new StringBuilder("- ");
-        sb.Append(Str(idea["id"])).Append(" [").Append(Str(idea["status"]) ?? "open").Append(" · ").Append(Str(idea["priority"]) ?? "medium")
-          .Append("] ").Append(Str(idea["title"]));
+        sb.Append(Str(idea["id"])).Append(" [").Append(Str(idea["status"]) ?? "open").Append(" · ").Append(Str(idea["priority"]) ?? "medium");
+        if (project is not null) sb.Append(" · ").Append(project);
+        sb.Append("] ").Append(Str(idea["title"]));
         var summary = OneLine(Str(idea["summary"]));
         if (summary.Length > 0) sb.Append(" — ").Append(summary.Length > 140 ? summary[..137] + "..." : summary);
         var tags = ParseTags(idea["tags"]);
@@ -453,7 +525,8 @@ public static class IdeaOps
         var sb = new StringBuilder();
         sb.Append("# ").Append(Str(idea["title"])).Append('\n');
         sb.Append('`').Append(Str(idea["id"])).Append("` · status: ").Append(Str(idea["status"]) ?? "open")
-          .Append(" · priority: ").Append(Str(idea["priority"]) ?? "medium");
+          .Append(" · priority: ").Append(Str(idea["priority"]) ?? "medium")
+          .Append(" · project: ").Append(ProjectLabel(idea));
         var tags = ParseTags(idea["tags"]);
         if (tags.Count > 0) sb.Append(" · tags: ").Append(string.Join(", ", tags));
         sb.Append('\n');
@@ -487,7 +560,7 @@ public static class IdeaOps
         sb.Append("Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with the ideas tool (action update): ")
           .Append("set the status to \"in-progress\" when you start and \"done\" when finished, and add a note section for anything important you learn.\n\n");
         sb.Append("# ").Append(Str(idea["title"])).Append('\n');
-        var meta = new List<string> { "Priority: " + (Str(idea["priority"]) ?? "medium") };
+        var meta = new List<string> { "Priority: " + (Str(idea["priority"]) ?? "medium"), "Project: " + ProjectLabel(idea) };
         var tags = ParseTags(idea["tags"]);
         if (tags.Count > 0) meta.Add("Tags: " + string.Join(", ", tags));
         sb.Append(string.Join(" · ", meta)).Append('\n');

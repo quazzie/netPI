@@ -7,22 +7,37 @@ A backlog of ideas, research, plans and deferred work for the user and for agent
 - Tab: `{ id: "ideas", title: "Ideas", panel: "right", icon: "idea", order: 20, module: "ui.js" }`. The UI module goes in
   `plugins/NetPI.Ideas/wwwroot/ui.js` (source in `plugins/NetPI.Ideas/ui/`) and is served at `/plugins/netpi.ideas/ui.js`.
 - Slash command: `{ name: "idea", argsHint: "<title>", rpc: "ideas.quickAdd" }`.
-- Setting: `ideas.fileName` (default `"ideas.json"`; only the file name part is used; in a project it lives in `.netpi/`).
+- Setting: `ideas.fileName` (default `"ideas.json"`; only the file name part is used; the file lives in `~/.netpi`).
 
 ## Where ideas are stored
 
-| Situation | File | `scope` |
-|---|---|---|
-| RPC with `projectId` | `<project.path>/.netpi/ideas.json` | `"project"` |
-| RPC with `sessionId` of a session that has a project | `<project.path>/.netpi/ideas.json` | `"project"` |
-| RPC with `sessionId` of a session without a project, or no ids | `~/.netpi/ideas.json` (`NetPiPaths.Home`) | `"global"` |
-| Agent tool | the call's project (`ToolContext.Project`, else the session's project), else the global file | – |
+**One global file for everything:** `~/.netpi/<ideas.fileName>` (name: setting `ideas.fileName`, default `ideas.json`).
+There is no per-project file anymore. Every idea carries a **`project`** property — a `{ id, name }` snapshot of the
+project it belongs to, or absent when it is not bound to a project (the "global" ideas):
 
-`projectId` wins over `sessionId`. An unknown `projectId`/`sessionId` gives an RPC error `not_found`. Writing to a project
-whose folder no longer exists also gives `not_found`. The `.netpi` folder (like `.netpi/skills`) and the global file's
-folder are created when needed. Earlier versions kept the file in the project folder itself: the first time a project's
-ideas are used, a `<project.path>/ideas.json` moves into `.netpi/` (unless a `.netpi/ideas.json` exists already; then the
-old file stays where it is).
+| Situation | File | `project` on the new idea |
+|---|---|---|
+| Agent tool, session with a project | `~/.netpi/ideas.json` | the session's project |
+| Agent tool, session without a project | `~/.netpi/ideas.json` | absent (unbound) |
+| Agent tool with a `project` argument | `~/.netpi/ideas.json` | that project (`"global"`/`"none"` → unbound) |
+| RPC `ideas.add` with `projectId` | `~/.netpi/ideas.json` | that project (a project id or name, `"global"` → unbound) |
+| RPC `ideas.add` with `sessionId` only | `~/.netpi/ideas.json` | the session's project (absent when the session has none) |
+
+`projectId` wins over `sessionId`. An unknown `projectId`, or an unknown `sessionId` in `ideas.add`/`ideas.quickAdd`,
+gives an RPC error `not_found`. The `~/.netpi` folder is created when needed.
+
+### Migrating the old per-project files
+
+Earlier versions kept one file per project (`<project.path>/.netpi/ideas.json`, and before that
+`<project.path>/ideas.json`). At start, the plugin migrates them into the global file, for every project in the
+session store:
+
+- The ideas are appended to `~/.netpi/<ideas.fileName>`, stamped with `project: { id, name }` (unless the idea already
+  has a `project` field) — an idea whose `id` already exists in the global file gets a new id.
+- A source file is deleted only after the merge has been written. While the global file is unreadable or unwritable
+  (e.g. invalid JSON), the migration is skipped (logged) and retried on the next start; the sources stay where they
+  are and are never modified.
+- The migration is idempotent: once the sources are gone, nothing happens.
 
 ## File format
 
@@ -31,12 +46,16 @@ old file stays where it is).
   "version": 1,
   "ideas": [
     {
-      "id": "idea-k3x9q2",                 // "idea-" + 6 chars [0-9a-z]
+      "id": "idea-k3x9q2",                 // "idea-" + 6 chars [0-9a-z], unique in the file
       "title": "Cache model list",
       "summary": "Avoid refetching /v1/models on every session switch.",
       "status": "open",                    // open | parked | planned | in-progress | done | rejected
-      "priority": "medium",                // low | medium | high
+      "priority": "medium",                 // low | medium | high
       "tags": ["perf"],
+      "project": {                          // absent = not bound to a project ("global")
+        "id": "proj_abc123",
+        "name": "NetPI"                    // a snapshot; refreshed when the idea is written with a known project
+      },
       "createdAt": "2026-09-23T20:15:00Z", // ISO 8601 UTC, second precision
       "updatedAt": "2026-09-23T20:15:00Z",
       "createdBy": "user",                 // "user" | "agent:<agentId>"
@@ -71,44 +90,39 @@ old file stays where it is).
 |---|---|---|
 | `ideas.changed` | no (broadcast) | `{ file: string }`: absolute path, the same string as `ideas.list().file` |
 
-The event fires after any change to a watched file, whether it came from this plugin (tools or RPC) or from an external
-editor. Changes are debounced by 250 ms, so a burst of writes produces one event. A file is watched from the first time
-any tool or RPC touches it, and the global file is watched from startup. At most 32 files are watched.
+The event fires after any change to the file, whether it came from this plugin (tools or RPC) or from an external
+editor. Changes are debounced by 250 ms, so a burst of writes produces one event. The file is watched from startup.
 
-**UI:** on `ideas.changed`, if `data.file === currentList.file`, call `ideas.list` again. Also re-list when the active
-session or project changes (`ctx.app.onChange`).
+**UI:** on `ideas.changed`, call `ideas.list` again. (There is one file, so no file comparison is needed.)
 
 ## RPC methods
 
-Every method accepts the location parameters `sessionId?` and `projectId?` (see the table above). Pass the active
-session id, or the active project id when there is no session. Results are plain JSON: ideas are returned exactly as
-stored, including unknown fields.
+There is one file, so the location parameters of earlier versions are gone: `ideas.list` takes no parameters, and the
+other methods are addressed by `id` alone (ids are unique in the file). `ideas.add` keeps `sessionId`/`projectId` to
+decide the new idea's `project` stamp. Results are plain JSON: ideas are returned exactly as stored, including
+unknown fields.
 
-Error codes: `bad_request` (invalid input: the message says what is wrong, for example the list of valid statuses),
-`not_found` (idea, session, project or project folder), `invalid_file`, `io_error`.
+Error codes: `bad_request` (invalid input: the message says what is wrong, for example the list of valid statuses or
+projects), `not_found` (idea, session or project), `invalid_file`, `io_error`.
 
 ### `ideas.list`
 
-`{ sessionId?, projectId? }` →
+`{ }` →
 
 ```ts
 {
-  file: string;                 // absolute path of the ideas file
+  file: string;                 // absolute path of the (global) ideas file
   fileName: string;             // "ideas.json"
-  scope: 'project' | 'global';
-  projectId?: string;           // only for scope "project"
-  projectName?: string;         // only for scope "project"
   exists: boolean;              // false until the first idea is written
   ideas: Idea[];                // file order (= the user's manual order)
 }
 ```
 
-No filtering happens on the server. The tab filters and searches client-side.
+No filtering happens on the server. The tab filters by project, status and tag client-side.
 
 ### `ideas.get`
 
-`{ sessionId?, projectId?, id }` → `Idea`. The id is matched exactly, then case-insensitively, then with an `idea-` prefix
-added.
+`{ id }` → `Idea`. The id is matched exactly, then case-insensitively, then with an `idea-` prefix added.
 
 ### `ideas.add`
 
@@ -118,13 +132,15 @@ added.
 - `tags` may be an array or a comma-separated string. A leading `#` is stripped and duplicates are removed
   (case-insensitive).
 - `sections` is `{ kind?, title?, content }[]`. Ids and `updatedAt` are generated.
+- The `project` stamp: `projectId` (a project id or name, case-insensitive) when given, else the session's project
+  (via `sessionId`), else absent. `"global"`/`"none"`/`""` in `projectId` means unbound.
 - `createdBy` is `"user"`. `sessionIds` is `[sessionId]` when a sessionId was passed.
 - Extra fields of `idea` (for example `color`) are stored as they are.
 - New ideas are appended, or inserted at the top when `prepend: true`.
 
 ### `ideas.update`
 
-`{ sessionId?, projectId?, id, patch }` → the updated `Idea`
+`{ id, patch }` → the updated `Idea`
 
 `patch` fields (all optional):
 
@@ -135,6 +151,7 @@ added.
 | `status` | one of the statuses (synonyms such as `"in progress"`, `"wip"`, `"deferred"` are accepted) |
 | `priority` | `low` / `medium` / `high` |
 | `tags` | replaces the tags |
+| `project` | rebind the idea: a project id or name, or `{ id, name? }` (a bare reference is resolved, the name snapshot refreshed); `null`, `""`, `"global"` or `"none"` unbinds it |
 | `sections` | **replaces all sections**, in the given order. An entry whose `id` matches an existing section updates that section: `title`, `content` and `kind`, plus any extra fields the entry carries (`null` removes one). The section's other stored fields are kept. Entries without a known id become new sections. Use this for drag-reordering and inline editing. |
 | `addSections` | `{ kind?, title?, content }[]`, appended |
 | `updateSections` | `{ id, title?, content?, kind? }[]` |
@@ -145,25 +162,25 @@ added.
 
 ### `ideas.delete`
 
-`{ sessionId?, projectId?, id }` → `true`
+`{ id }` → `true`
 
 ### `ideas.reorder`
 
-`{ sessionId?, projectId?, ids: string[] }` → `true`
+`{ ids: string[] }` → `true`
 
-The listed ideas come first, in the given order. Ideas that are not listed keep their relative order after them. Send the
-full id list after a drag-and-drop.
+The listed ideas come first, in the given order. Ideas that are not listed keep their relative order after them. Send
+the full id list after a drag-and-drop (reordering a filtered view is safe: the unlisted ideas keep their order).
 
 ### `ideas.toPrompt`
 
-`{ sessionId?, projectId?, id }` → `string`: markdown for the composer (`ctx.app.insertText(text)`), for example:
+`{ id }` → `string`: markdown for the composer (`ctx.app.insertText(text)`), for example:
 
 ```md
-Implement the following idea from the ideas backlog (`idea-k3x9q2` in .netpi/ideas.json).
+Implement the following idea from the ideas backlog (`idea-k3x9q2` in ~/.netpi/ideas.json).
 Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with the ideas tool (action update): set the status to "in-progress" when you start and "done" when finished, and add a note section for anything important you learn.
 
 # Cache model list
-Priority: medium · Tags: perf
+Priority: medium · Project: NetPI · Tags: perf
 
 Avoid refetching /v1/models on every session switch.
 
@@ -178,34 +195,44 @@ The status does not change on its own. The agent is asked to update it.
 
 ### `ideas.quickAdd` (the `/idea` command)
 
-`{ sessionId, args }` → `string` toast, for example `"Idea added (project Demo): Cache model list (idea-k3x9q2)"`. An
-empty `args` gives `bad_request` with `"Usage: /idea <title>"`.
+`{ sessionId, args }` → `string` toast, for example `"Idea added (project NetPI): Cache model list (idea-k3x9q2)"` or
+`"Idea added (global backlog): …"`. An empty `args` gives `bad_request` with `"Usage: /idea <title>"`.
 
 ## The agent tool: `ideas` (category `ideas`)
 
-One tool with an `action`, so a single schema goes with every request. Its prompt guideline: *"Record research and
-plans that are deferred, out of scope or not feasible now in the ideas backlog (ideas, action add), and look at the open
-ideas (action list) before larger work. When you finish the work an idea describes, set it to done (action update)."*
+One tool with an `action`, so a single schema goes with every request. It works on the single global file. New ideas
+are stamped with the session's project by default; the `project` argument changes that (it is the agent's way to
+reach other projects' backlogs, and `update` can move an idea between projects). Its prompt guideline: *"Record
+research and plans that are deferred, out of scope or not feasible now in the ideas backlog (ideas, action add), and
+look at the open ideas (action list) before larger work. When you finish the work an idea describes, set it to done
+(action update)."*
 
 | action | args | notes |
 |---|---|---|
-| `add` | `{ title, summary?, priority?, tags?, sections?: [{kind, title?, content}] }` | `createdBy: "agent:<id>"` |
-| `list` | `{ status?, tag?, query? }` | Compact lines: `- idea-… [status · priority] Title — summary #tags (n sections)`. By default done and rejected ideas are hidden, with a count of how many were hidden. `status` also takes `active` and `all`, or a comma-separated list. `query` needs every word to appear in the title, summary, tags or sections. |
-| `get` | `{ id }` | Full markdown. Section headings carry the section ids: `## Plan: Rollout [sec-4f0a]`. |
-| `update` | `{ id, title?, summary?, status?, priority?, tags?, addSections?, updateSections?, removeSectionIds? }` | A `sections` argument is treated as `addSections`, and unknown fields are ignored. The session id is added to `sessionIds`. |
+| `add` | `{ title, summary?, priority?, tags?, sections?: [{kind, title?, content}], project? }` | `createdBy: "agent:<id>"`. `project` (a project id/name, or `"global"`/`""` for unbound) overrides the session's project. |
+| `list` | `{ status?, tag?, query?, project? }` | `project` selects the scope: no argument → the session's project **plus** the unbound "global" ideas (an unbound session sees only the unbound ones); `"all"` → every project (each line carries a project label); `"global"` → the unbound ones; a project id or name → that project only. Unknown projects give an error listing the known ones. Compact lines: `- idea-… [status · priority (· project)] Title — summary #tags (n sections)`. By default done and rejected ideas are hidden, with a count of how many were hidden. `status` also takes `active` and `all`, or a comma-separated list. `query` needs every word to appear in the title, summary, tags or sections. |
+| `get` | `{ id }` | Full markdown (the meta line carries the project: `… · project: NetPI · …` or `… · project: global · …`). Section headings carry the section ids: `## Plan: Rollout [sec-4f0a]`. |
+| `update` | `{ id, title?, summary?, status?, priority?, tags?, project?, addSections?, updateSections?, removeSectionIds? }` | `project` (id/name, `"global"`, or `null`) rebinds/unbinds the idea. A `sections` argument is treated as `addSections`, and unknown fields are ignored. The session id is added to `sessionIds`. |
 
 Deleting is left to the user (the tab): `delete` returns an error that suggests `done` or `rejected` instead. The action
 is read leniently: synonyms (`create`, `show`, `edit`, `search`…), `close` / `done` / `complete` set the status to done,
 and without an action the arguments decide (an id with changes: update; an id alone: get; a title: add; else list).
-Every result has `details: { file, scope, idea? }`. Invalid input comes back as an `isError` result with a hint (for
-example `The list action shows the ids.`).
+Every result has `details: { file, project?, idea? }`. Invalid input comes back as an `isError` result with a hint (for
+example `Unknown project 'nope'. Known projects: NetPI, aiproxy.`).
 
-## UI suggestions
+## UI
 
-- Header: the scope badge (the project name or "Global"), then filter chips for status and tag, a search box, and a
-  "+" button (`ideas.add`).
-- Cards: title, a status pill (with a click-to-cycle menu), priority, tags and the summary. Expanding a card shows the
-  sections as rendered markdown, each with an edit button (`ideas.update` with `patch.sections` or `updateSections`).
+- Header: the project filter (the active project's name by default, following the active project until the user picks
+  another; *All projects*, *Global (unbound)*, and every known project), the file path and a **+** button.
+- Filters: search over title, summary, tags and sections; the project filter above; a status menu (**Active** = open,
+  planned, in-progress; **All**; or one status) with counts; and a **#** tag menu (multi-select). Selected tags show as
+  removable chips below the filters.
+- Cards: a project badge (folder + project name, a globe for the unbound "Global"), a status pill (with a
+  click-to-cycle menu), priority, tags and the summary. Expanding a card shows the sections as rendered markdown, each
+  with an edit button (`ideas.update` with `patch.sections` or `updateSections`).
+- New idea: title, summary, priority, a project picker (default: the active project; *Global* for unbound; any other
+  project) and tags.
 - Actions: "Send to agent" (`ideas.toPrompt` → `ctx.app.insertText`), Delete (with a confirm) and drag to reorder
   (`ideas.reorder`).
-- Refresh on the `ideas.changed` event and on active session/project changes.
+- Refresh on the `ideas.changed` event (the single file, so always) and follow the active project on
+  `ctx.app.onChange`.

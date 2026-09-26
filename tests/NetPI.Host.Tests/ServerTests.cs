@@ -258,6 +258,9 @@ public static class ServerTests
             await b.SendAsync(new { t = "sub", sessions = new[] { "ses_other" } });
             await a.SyncAsync();
             await b.SyncAsync();
+            Check.False(b.Saw("session.created"), "an empty session is not announced");
+            var emptyList = await a.RpcAsync("sessions.list", new { });
+            Check.True(emptyList["r"]!.AsArray().All(n => n?["id"]?.GetValue<string>() != sid), "an empty session is not listed");
 
             server.Sessions.AppendMessage(sid, ChatMessage.UserText("hello over the wire"));
             var ev = await a.NextAsync(n => n["t"]?.GetValue<string>() == "ev" && n["type"]?.GetValue<string>() == "message.added");
@@ -270,6 +273,8 @@ public static class ServerTests
             await b.SyncAsync();
             Check.False(b.Saw("message.added"), "session-scoped event must not reach an unsubscribed client");
             Check.True(b.Saw("session.created"), "broadcast events reach everyone");
+            var listed = await a.RpcAsync("sessions.list", new { });
+            Check.True(listed["r"]!.AsArray().Any(n => n?["id"]?.GetValue<string>() == sid), "listed once its first message materialized it");
 
             await b.SendAsync(new { t = "sub", sessions = "*" });
             await b.SyncAsync();
@@ -351,10 +356,12 @@ public static class ServerTests
             Check.Equal("Chat 2", upd["title"]!.GetValue<string>());
             Check.True(upd["model"] is null, "null clears the model");
             Check.Equal("low", upd["reasoning"]!.GetValue<string>());
-            Check.Equal(1, (await Call("sessions.list", new { projectId = pid }))!.AsArray().Count);
+            Check.Equal(0, (await Call("sessions.list", new { projectId = pid }))!.AsArray().Count, "an empty session is transient: not listed");
+            server.Sessions.AppendMessage(sid, ChatMessage.UserText("first"));
+            Check.Equal(1, (await Call("sessions.list", new { projectId = pid }))!.AsArray().Count, "its first message materializes it");
             Check.Equal(1, (await Call("sessions.list", new { search = "chat 2" }))!.AsArray().Count);
 
-            for (var i = 1; i <= 70; i++) server.Sessions.AppendMessage(sid, ChatMessage.UserText("m" + i));
+            for (var i = 2; i <= 70; i++) server.Sessions.AppendMessage(sid, ChatMessage.UserText("m" + i));
             var page = (await Call("sessions.messages", new { id = sid }))!;
             Check.Equal(60, page["messages"]!.AsArray().Count);
             Check.True(page["hasMore"]!.GetValue<bool>());

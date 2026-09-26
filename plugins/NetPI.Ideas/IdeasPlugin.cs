@@ -1,30 +1,33 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
 
 namespace NetPI.Ideas;
 
 /// <summary>
-/// Backlog of unimplemented ideas, research and plans (<c>.netpi/ideas.json</c> per project, else
-/// <c>~/.netpi/ideas.json</c>): the agent tool <c>ideas</c> (list, get, add, update), ideas.* RPC for the "Ideas" tab
-/// (which also deletes), and the /idea command. Setting: <c>ideas.fileName</c> (default "ideas.json").
-/// Event: <c>ideas.changed { file }</c>.
+/// The ideas backlog: one global file (<c>~/.netpi/ideas.json</c>), every idea carrying a <c>project</c> property.
+/// The agent tool <c>ideas</c> (list, get, add, update) stamps new ideas with the session's project by default and
+/// reaches other projects through its <c>project</c> argument; the ideas.* RPC serves the "Ideas" tab (which also
+/// deletes); <c>/idea</c> quick-adds. At start, the per-project files of earlier versions are merged into the global
+/// one. Setting: <c>ideas.fileName</c> (default "ideas.json"). Event: <c>ideas.changed { file }</c>.
 /// </summary>
-[NetPiPlugin("netpi.ideas", Name = "Ideas", Description = "Backlog of ideas, research and plans for the user and agents", Order = 80)]
+[NetPiPlugin("netpi.ideas", Name = "Ideas", Description = "Backlog of ideas, research and plans (one global file, ideas carry a project)", Order = 80)]
 public sealed class IdeasPlugin : INetPiPlugin
 {
-    public Task StartAsync(IPluginContext context, CancellationToken ct)
+    public async Task StartAsync(IPluginContext context, CancellationToken ct)
     {
         context.Services.Register(new SettingsSection
         {
             Id = "ideas", Title = "Ideas", Group = "Tools", Order = 60,
             Settings =
             [
-                SettingInfo.Str("ideas.fileName", "Ideas file", "ideas.json", "In the project's .netpi folder; ~/.netpi/ideas.json for sessions without a project."),
+                SettingInfo.Str("ideas.fileName", "Ideas file", "ideas.json", "The global ideas file in ~/.netpi (the single backlog of all projects)."),
             ],
         });
         var store = context.Track(new IdeasStore(context.Events, context.Logger));
         var settings = context.Settings;
         var locator = new IdeasLocator(() => context.Sessions, context.Paths, () => settings);
+        await MigratePerProjectFiles(context, store, locator);
 
         context.Tools.Register(new IdeasTool(store, locator));
 
@@ -37,34 +40,87 @@ public sealed class IdeasPlugin : INetPiPlugin
             Name = "idea", Description = "Add an idea to the backlog", ArgsHint = "<title>", Rpc = "ideas.quickAdd",
         });
 
-        // Start watching the global file right away so external edits are noticed.
-        try { store.Watch(locator.Global().File); } catch { }
-        return Task.CompletedTask;
+        // Start watching the (single) file right away so external edits are noticed.
+        try { store.Watch(locator.GlobalFile()); } catch { }
+    }
+
+    /// <summary>
+    /// One-time move of the per-project files of earlier versions (<c>.netpi/ideas.json</c>, and the legacy
+    /// <c>ideas.json</c> in the project folder) into the single global file: the ideas are appended, stamped with
+    /// <c>project</c> and given a new id when they collide with one already there. A source is deleted only after the
+    /// merge has been written; while the global file cannot be read or written the migration is skipped and retried on
+    /// the next start.
+    /// </summary>
+    private static async Task MigratePerProjectFiles(IPluginContext ctx, IdeasStore store, IdeasLocator locator)
+    {
+        var file = locator.GlobalFile();
+        var name = locator.FileName();
+        foreach (var p in ctx.Sessions.ListProjects().Where(p => !string.IsNullOrWhiteSpace(p.Path)))
+        {
+            var sources = new[]
+            {
+                Path.Combine(p.Path, ".netpi", name),
+                Path.Combine(p.Path, name), // the legacy place, the project folder itself
+            }.Where(File.Exists).Distinct().ToList();
+            if (sources.Count == 0) continue;
+
+            try
+            {
+                var moved = await store.UpdateAsync(file, f =>
+                {
+                    var known = new HashSet<string?>(IdeaOps.All(f.Ideas).Select(i => IdeaOps.Str(i["id"])), StringComparer.OrdinalIgnoreCase);
+                    var count = 0;
+                    foreach (var source in sources)
+                    {
+                        var doc = IdeasStore.Parse(source, File.ReadAllBytes(source));
+                        foreach (var node in doc.Ideas.OfType<JsonObject>())
+                        {
+                            var idea = (JsonObject)node.DeepClone(); // detach from the source document
+                            if (IdeaOps.ProjectOf(idea) is null) IdeaOps.SetProject(idea, p.Id, p.Name);
+                            if (IdeaOps.Str(idea["id"]) is not { } id || !known.Add(id))
+                            {
+                                var fresh = IdeaOps.NewId("idea-", known, 6);
+                                idea["id"] = fresh;
+                                known.Add(fresh);
+                            }
+                            f.Ideas.Add(idea);
+                            count++;
+                        }
+                    }
+                    return count;
+                });
+                if (moved > 0) ctx.Logger.LogInformation("Merged {Count} idea(s) from project {Project} into {File}", moved, p.Name, file);
+                foreach (var source in sources) File.Delete(source);
+            }
+            catch (IdeasFileException ex)
+            {
+                ctx.Logger.LogWarning("Ideas migration for project {Project} skipped until the global file is fixed: {Message}", p.Name, ex.Message);
+                break; // the global file is broken: nothing can be merged
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                ctx.Logger.LogWarning("Ideas migration for project {Project} skipped: {Message}", p.Name, ex.Message);
+            }
+        }
     }
 }
 
 /// <summary>ideas.* RPC handlers (see docs/PLUGIN-IDEAS.md).</summary>
 public sealed class IdeasRpc(IdeasStore store, IdeasLocator locator)
 {
+    private readonly IdeasStore _store = store;
+    private readonly IdeasLocator _locator = locator;
+
     public void Register(IRpcRegistry rpc)
     {
-        rpc.Register("ideas.list", List, "Ideas of a project/session: { sessionId?, projectId? } → { file, scope, projectId?, projectName?, exists, ideas }");
-        rpc.Register("ideas.get", Get, "{ sessionId?, projectId?, id } → idea");
-        rpc.Register("ideas.add", Add, "{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections? } } → idea");
-        rpc.Register("ideas.update", Update, "{ sessionId?, projectId?, id, patch } → idea");
-        rpc.Register("ideas.delete", Delete, "{ sessionId?, projectId?, id } → true");
-        rpc.Register("ideas.reorder", Reorder, "{ sessionId?, projectId?, ids: string[] } → true");
-        rpc.Register("ideas.toPrompt", ToPrompt, "{ sessionId?, projectId?, id } → markdown prompt text");
+        rpc.Register("ideas.list", List, "The ideas backlog (the single global file): { } → { file, fileName, exists, ideas }");
+        rpc.Register("ideas.get", Get, "{ id } → idea");
+        rpc.Register("ideas.add", Add, "{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections? }, prepend? } → idea; stamped with projectId (a project id or name, \"global\" for unbound), else the session's project");
+        rpc.Register("ideas.update", Update, "{ id, patch } → idea; patch.project: a project id/name or { id, name? } rebinds, null (or \"global\") unbinds");
+        rpc.Register("ideas.delete", Delete, "{ id } → true");
+        rpc.Register("ideas.reorder", Reorder, "{ ids: string[] } → true");
+        rpc.Register("ideas.toPrompt", ToPrompt, "{ id } → markdown prompt text");
         rpc.Register("ideas.quickAdd", QuickAdd, "/idea command: { sessionId, args } → status text");
-    }
-
-    private IdeasLocation Locate(RpcRequest req) => locator.Resolve(req.Str("sessionId"), req.Str("projectId"));
-
-    private static JsonObject ObjectParam(RpcRequest req, string name)
-    {
-        var p = req.Prop(name);
-        if (p is not { ValueKind: JsonValueKind.Object } v) throw new RpcException("bad_request", $"Missing object parameter '{name}'");
-        return JsonObject.Create(v.Clone())!;
     }
 
     private static async Task<object?> Guard(Func<Task<object?>> body)
@@ -76,48 +132,47 @@ public sealed class IdeasRpc(IdeasStore store, IdeasLocator locator)
         catch (UnauthorizedAccessException ex) { throw new RpcException("io_error", ex.Message); }
     }
 
-    private static void EnsureWritable(IdeasLocation loc)
+    /// <summary>The stamp of a new idea: an explicit projectId (id, name or "global"), else the session's project.</summary>
+    private ProjectInfo? ResolveStamp(RpcRequest req)
     {
-        if (loc.Scope == "project" && !Directory.Exists(loc.ProjectDir))
-            throw new RpcException("not_found", $"The project folder {loc.ProjectDir} does not exist.");
+        var sessionId = req.Str("sessionId");
+        var reference = req.Str("projectId");
+        if (!string.IsNullOrWhiteSpace(reference))
+        {
+            _locator.ProjectOfSession(sessionId); // validate the session even when the project is given explicitly
+            return _locator.ResolveRef(reference);
+        }
+        return _locator.ProjectOfSession(sessionId);
     }
 
     public Task<object?> List(RpcRequest req, CancellationToken ct) => Guard(async () =>
     {
-        var loc = Locate(req);
-        return await store.ReadAsync(loc.File, f =>
+        var file = _locator.GlobalFile();
+        return await _store.ReadAsync(file, f => (object?)new JsonObject
         {
-            var result = new JsonObject
-            {
-                ["file"] = loc.File,
-                ["fileName"] = loc.FileName,
-                ["scope"] = loc.Scope,
-                ["exists"] = f.Exists,
-            };
-            if (loc.ProjectId is not null) result["projectId"] = loc.ProjectId;
-            if (loc.ProjectName is not null) result["projectName"] = loc.ProjectName;
-            result["ideas"] = f.Ideas.DeepClone();
-            return (object?)result;
+            ["file"] = file,
+            ["fileName"] = Path.GetFileName(file),
+            ["exists"] = f.Exists,
+            ["ideas"] = f.Ideas.DeepClone(),
         }, ct).ConfigureAwait(false);
     });
 
     public Task<object?> Get(RpcRequest req, CancellationToken ct) => Guard(async () =>
     {
-        var loc = Locate(req);
         var id = req.Required("id");
-        return await store.ReadAsync(loc.File, f =>
+        return await _store.ReadAsync(_locator.GlobalFile(), f =>
             (object?)(IdeaOps.Find(f.Ideas, id)?.DeepClone() ?? throw new RpcException("not_found", $"Idea {id} not found")), ct).ConfigureAwait(false);
     });
 
     public Task<object?> Add(RpcRequest req, CancellationToken ct) => Guard(async () =>
     {
-        var loc = Locate(req);
-        EnsureWritable(loc);
         var input = ObjectParam(req, "idea");
+        var stamp = ResolveStamp(req);
         var sessionId = req.Str("sessionId");
-        return await store.UpdateAsync(loc.File, f =>
+        return await _store.UpdateAsync(_locator.GlobalFile(), f =>
         {
             var idea = IdeaOps.CreateIdea(input, f.Ideas, "user", sessionId, keepExtraFields: true);
+            IdeaOps.SetProject(idea, stamp?.Id, stamp?.Name);
             if (req.Bool("prepend") == true) f.Ideas.Insert(0, idea); else f.Ideas.Add(idea);
             return (object?)idea.DeepClone();
         }, ct).ConfigureAwait(false);
@@ -125,11 +180,10 @@ public sealed class IdeasRpc(IdeasStore store, IdeasLocator locator)
 
     public Task<object?> Update(RpcRequest req, CancellationToken ct) => Guard(async () =>
     {
-        var loc = Locate(req);
-        EnsureWritable(loc);
         var id = req.Required("id");
         var patch = ObjectParam(req, "patch");
-        return await store.UpdateAsync(loc.File, f =>
+        _locator.NormalizeProject(patch); // a bare project id/name in the patch → { id, name } (unknown: an error)
+        return await _store.UpdateAsync(_locator.GlobalFile(), f =>
         {
             var idea = IdeaOps.Find(f.Ideas, id) ?? throw new RpcException("not_found", $"Idea {id} not found");
             IdeaOps.ApplyPatch(idea, patch, fromUi: true);
@@ -139,10 +193,8 @@ public sealed class IdeasRpc(IdeasStore store, IdeasLocator locator)
 
     public Task<object?> Delete(RpcRequest req, CancellationToken ct) => Guard(async () =>
     {
-        var loc = Locate(req);
-        EnsureWritable(loc);
         var id = req.Required("id");
-        return await store.UpdateAsync(loc.File, f =>
+        return await _store.UpdateAsync(_locator.GlobalFile(), f =>
         {
             var idea = IdeaOps.Find(f.Ideas, id) ?? throw new RpcException("not_found", $"Idea {id} not found");
             f.Ideas.Remove(idea);
@@ -152,12 +204,10 @@ public sealed class IdeasRpc(IdeasStore store, IdeasLocator locator)
 
     public Task<object?> Reorder(RpcRequest req, CancellationToken ct) => Guard(async () =>
     {
-        var loc = Locate(req);
-        EnsureWritable(loc);
         var ids = req.Prop("ids") is { ValueKind: JsonValueKind.Array } arr
             ? arr.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()!).ToList()
             : throw new RpcException("bad_request", "Missing array parameter 'ids'");
-        return await store.UpdateAsync(loc.File, f =>
+        return await _store.UpdateAsync(_locator.GlobalFile(), f =>
         {
             // Listed ideas first in the given order, then the rest in their current order.
             var ordered = new List<JsonNode?>();
@@ -172,12 +222,11 @@ public sealed class IdeasRpc(IdeasStore store, IdeasLocator locator)
 
     public Task<object?> ToPrompt(RpcRequest req, CancellationToken ct) => Guard(async () =>
     {
-        var loc = Locate(req);
         var id = req.Required("id");
-        return await store.ReadAsync(loc.File, f =>
+        return await _store.ReadAsync(_locator.GlobalFile(), f =>
         {
             var idea = IdeaOps.Find(f.Ideas, id) ?? throw new RpcException("not_found", $"Idea {id} not found");
-            return (object?)IdeaOps.ToPrompt(idea, loc.Shown);
+            return (object?)IdeaOps.ToPrompt(idea, _locator.Shown());
         }, ct).ConfigureAwait(false);
     });
 
@@ -185,16 +234,23 @@ public sealed class IdeasRpc(IdeasStore store, IdeasLocator locator)
     {
         var title = req.Str("args")?.Trim();
         if (string.IsNullOrEmpty(title)) throw new RpcException("bad_request", "Usage: /idea <title>");
-        var loc = Locate(req);
-        EnsureWritable(loc);
+        var stamp = ResolveStamp(req);
         var sessionId = req.Str("sessionId");
-        var idea = await store.UpdateAsync(loc.File, f =>
+        var idea = await _store.UpdateAsync(_locator.GlobalFile(), f =>
         {
             var created = IdeaOps.CreateIdea(new JsonObject { ["title"] = title }, f.Ideas, "user", sessionId);
+            IdeaOps.SetProject(created, stamp?.Id, stamp?.Name);
             f.Ideas.Add(created);
             return (JsonObject)created.DeepClone();
         }, ct).ConfigureAwait(false);
-        var where = loc.Scope == "project" ? $"project {loc.ProjectName}" : "global backlog";
+        var where = IdeaOps.ProjectOf(idea) is null ? "global backlog" : $"project {IdeaOps.ProjectLabel(idea)}";
         return (object?)$"Idea added ({where}): {IdeaOps.Str(idea["title"])} ({IdeaOps.Str(idea["id"])})";
     });
+
+    private static JsonObject ObjectParam(RpcRequest req, string name)
+    {
+        var p = req.Prop(name);
+        if (p is not { ValueKind: JsonValueKind.Object } v) throw new RpcException("bad_request", $"Missing object parameter '{name}'");
+        return JsonObject.Create(v.Clone())!;
+    }
 }

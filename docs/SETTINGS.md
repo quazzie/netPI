@@ -248,7 +248,7 @@ used: the chat stays as it was. Beyond pi: a transcript too long for the summari
 | `shell.pwshPath` | auto | `pwsh` (PowerShell 7), falls back to Windows PowerShell |
 | `shell.pwshAlways` | `false` | offer `pwsh` even when no PowerShell was found |
 | `shell.timeoutSeconds` | `120` | default per command (max 1800) |
-| `ideas.fileName` | `ideas.json` | in the project's `.netpi` folder (sessions without project: `~/.netpi/ideas.json`) |
+| `ideas.fileName` | `ideas.json` | the global ideas file in `~/.netpi` (the single backlog of all projects; ideas carry a `project`) |
 
 ## Guardrails
 

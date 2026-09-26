@@ -2,18 +2,19 @@
   import { Button } from '@netpi/kit';
   import { PRIORITIES, parseTags } from './model.js';
 
-  let { onadd, oncancel } = $props();
+  let { onadd, oncancel, projects = [], activeProjectId = '' } = $props();
   let title = $state('');
   let summary = $state('');
   let priority = $state('medium');
   let tags = $state('');
+  let project = $state('');
   let busy = $state(false);
 
   async function submit(e) {
     e?.preventDefault();
     if (!title.trim() || busy) return;
     busy = true;
-    await onadd({ title: title.trim(), summary: summary.trim() || undefined, priority, tags: parseTags(tags) });
+    await onadd({ title: title.trim(), summary: summary.trim() || undefined, priority, tags: parseTags(tags) }, project || undefined);
     busy = false;
   }
   function focus(n) {
@@ -30,6 +31,11 @@
         <button type="button" aria-pressed={priority === p} onclick={() => (priority = p)}>{p}</button>
       {/each}
     </div>
+    <select class="np-input project" bind:value={project} title="Which project the idea belongs to">
+      <option value="">{activeProjectId ? 'This project' : 'Global'}</option>
+      {#if activeProjectId}<option value="global">Global (unbound)</option>{/if}
+      {#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
+    </select>
     <input class="np-input tags" placeholder="tags, comma separated" bind:value={tags} />
   </div>
   <div class="btns">
@@ -63,6 +69,12 @@
     flex: 1 1 120px;
     min-width: 0;
     height: 26px;
+  }
+  .project {
+    height: 26px;
+    min-width: 110px;
+    flex: 0 1 auto;
+    font-size: var(--fs-sm);
   }
   .btns {
     display: flex;

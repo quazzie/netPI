@@ -90,8 +90,8 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `projects.update` | `{ id, name?, path?, meta? }` | `ProjectInfo` (`meta` is merged key by key; a null value removes a key) |
 | `projects.delete` | `{ id }` | `true` (its sessions are detached) |
 | `sessions.list` | `{ projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, limit?, offset? }` | `SessionInfo[]` (newest first) |
-| `sessions.create` | `{ title?, projectId?, model?, reasoning? }` | `SessionInfo` |
-| `sessions.fork` | `{ id, upToSeq? (the last) }` | `SessionInfo`: a new chat with the messages up to `upToSeq` (same seqs, times, parts and meta; compaction as it was at that point); the original is unchanged. It takes the setup (project, model, reasoning, meta such as the profile, `toolsOff`, the agent), not the run state (`goal`, `todo`, `budgetAllowedFrom`, subagent keys), and gets `meta.forkedFrom { sessionId, title, seq }` and the title "Title (fork)", "Title (fork 2)"…. A subagent's chat gives `bad_request`. Publishes `session.created` (once the copy is complete), then `session.forked` |
+| `sessions.create` | `{ title?, projectId?, model?, reasoning? }` | `SessionInfo` — until its first message the session is **transient**: no database row, not in `sessions.list`, no `session.created`, and the project's `last_used_at` is untouched (the creating client gets the `SessionInfo` as the RPC result). The first message materializes it |
+| `sessions.fork` | `{ id, upToSeq? (the last) }` | `SessionInfo`: a new chat with the messages up to `upToSeq` (same seqs, times, parts and meta; compaction as it was at that point); the original is unchanged. It takes the setup (project, model, reasoning, meta such as the profile, `toolsOff`, the agent), not the run state (`goal`, `todo`, `budgetAllowedFrom`, subagent keys), and gets `meta.forkedFrom { sessionId, title, seq }` and the title "Title (fork)", "Title (fork 2)"…. A subagent's chat gives `bad_request`. Publishes `session.created` (once the copy is complete), then `session.forked` — unless zero messages are copied, when the fork stays transient like a fresh `sessions.create` |
 | `sessions.get` | `{ id }` | `SessionInfo` |
 | `sessions.update` | `{ id, title?, model?, reasoning?, archived?, meta? }` | `SessionInfo` (null clears model / reasoning) |
 | `sessions.delete` | `{ id }` | `true` (its subagent sessions are deleted too) |
@@ -188,7 +188,7 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 
 | type | scoped | data |
 |---|---|---|
-| `session.created` / `session.updated` | no | `{ session: SessionInfo }` |
+| `session.created` / `session.updated` | no | `{ session: SessionInfo }` – `session.created` goes out when a session gets its **first message** (materialization: `session.created` → `message.added` → `session.updated`), not for `sessions.create` of an empty chat |
 | `session.deleted` | no | `{ id }` |
 | `session.forked` | no | `{ sessionId /* the fork */, fromSessionId, upToSeq }` – after `sessions.fork`: the context plugin gives the fork the system prompt the original was sent at that point (so its next call starts with the prefix the backend saw), the todo plugin the checklist of its last `todo_write` |
 | `session.project` | no | `{ sessionId, projectId, cwd }` – attached to another project or detached |

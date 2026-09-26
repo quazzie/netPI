@@ -6,7 +6,7 @@ Three layers, all without NuGet packages (console runners, no test framework):
 |---|---|---|
 | unit suites | `tests/NetPI.{Host,Providers,Tools,Agent,Aux}.Tests` | the built projects |
 | mock model server | `tests/MockLlm` | nothing (ASP.NET shared framework) |
-| end-to-end suite | `tests/NetPI.E2E` | the built app (`artifacts/app`), the mock, and for the UI test Node 22 + Playwright + Chromium |
+| end-to-end suite | `tests/NetPI.E2E` | the built app (`artifacts/app`), the mock, and for the UI test Node 22 + Playwright (`playwright-core` devDependency; falls back to an installed Edge/Chrome) |
 
 ## Build
 
@@ -205,7 +205,8 @@ Coverage (run `--list` for the names):
   orchestrator → lead → helper (the lead's spawn waits) without deadlock, `agent_send`; three top-level chats on one model.
 - **skills**: a project's `.agents/skills` skill in `skills.list`, the `skills` catalog notice and `/skill:name` with the
   skill's instructions sent to the model (not in the system prompt), the notice tied to its message.
-- **ideas**: the `ideas` tool (add) writes `<project>/.netpi/ideas.json`, `ideas.list`, `ideas.changed`, `ideas.add`.
+- **ideas**: the `ideas` tool (add) writes the global `~/.netpi/ideas.json` stamped with the session's project,
+  `ideas.list`, `ideas.changed`, `ideas.add`.
 - **hot reload**: overwriting `NetPI.Nudge.dll` → `plugins.changed`, reload, `plugins.unloaded { collected: true }`, still
   works; `plugins.reload` of providers/tools/hooks/agents/context; reloading the agent runtime mid-run; reloading the provider
   while a stream is open.
@@ -217,10 +218,11 @@ Coverage (run `--list` for the names):
   Enter, Esc abort, a retried stream; fails on console errors or failed requests. Screenshots:
   `tests/NetPI.E2E/screenshots/ui-*.png`.
 
-The UI test needs `node` and Playwright with Chromium (`npm i -g playwright && npx playwright install chromium`, or
-`PLAYWRIGHT_BROWSERS_PATH` pointing at installed browsers). When Playwright's own Chromium build is not downloaded it
-falls back to an installed Edge or Chrome and prints `browser: msedge`. Use `--no-ui` without Playwright. It can also run
-on its own against any server: `node tests/NetPI.E2E/ui/smoke.mjs --url http://127.0.0.1:7431 --token <token> --session "<title>"`.
+The UI test needs `node` and Playwright: `playwright-core` is a devDependency (installed with the other
+dependencies), and both the E2E smoke and the mock walkthrough resolve it (see `web/mock/pw.mjs`). If Playwright's own
+Chromium build is not downloaded (`npx playwright-core install chromium`) the tests fall back to an installed Edge or
+Chrome and print `browser: msedge`. Use `--no-ui` without Playwright. It can also run on its own against any server:
+`node tests/NetPI.E2E/ui/smoke.mjs --url http://127.0.0.1:7431 --token <token> --session "<title>"`.
 
 On Windows bash scenarios run in Git Bash (which shows directories under `%TEMP%`, where the work dir lives, as
 `/tmp/…`); the shutdown test kills the process instead of sending SIGTERM and only checks persistence.

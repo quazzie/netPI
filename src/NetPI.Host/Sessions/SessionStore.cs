@@ -5,7 +5,8 @@ namespace NetPI.Host.Sessions;
 
 /// <summary>
 /// Projects, sessions and messages in SQLite (scope <c>core</c>). Publishes <c>project.*</c> / <c>session.*</c>
-/// (broadcast) and <c>message.*</c> / <c>messages.compacted</c> (session scoped) events.
+/// (broadcast) and <c>message.*</c> / <c>messages.compacted</c> (session scoped) events. A session with no messages is
+/// transient: it lives in memory until its first message materializes it, so an abandoned empty chat leaves nothing.
 /// </summary>
 internal sealed class SessionStore : ISessionStore
 {
@@ -74,6 +75,10 @@ internal sealed class SessionStore : ISessionStore
     private readonly IDatabase _db;
     private readonly IEventBus _bus;
     private readonly string _defaultWorkspace;
+
+    /// <summary>Sessions with no messages: in memory only, until the first message materializes them (AppendMessage).</summary>
+    private readonly Dictionary<string, SessionInfo> _transient = new();
+    private readonly object _transientLock = new();
 
     public SessionStore(IDatabase db, IEventBus bus, string defaultWorkspace)
     {
@@ -147,9 +152,22 @@ internal sealed class SessionStore : ISessionStore
             _db.Execute("DELETE FROM projects WHERE id = @id", new { id });
             return ids;
         });
+        // Transient (no-message) sessions have no row: detach them in memory, like the ones above
+        List<SessionInfo> detachedTransient = [];
+        lock (_transientLock)
+        {
+            var t = _transient.Values.Where(s => s.ProjectId == id).ToList();
+            if (t.Count > 0)
+            {
+                var now = Now();
+                foreach (var s in t) { s.ProjectId = null; s.UpdatedAt = now; }
+                detachedTransient = t;
+            }
+        }
         Publish(EventTypes.ProjectDeleted, new { id });
         foreach (var sid in affected)
             if (GetSession(sid) is { } s) Publish(EventTypes.SessionUpdated, new { session = s });
+        foreach (var s in detachedTransient) Publish(EventTypes.SessionUpdated, new { session = s });
     }
 
     // ------------------------------------------------------------------ sessions
@@ -193,8 +211,22 @@ internal sealed class SessionStore : ISessionStore
         return _db.Query(sql, args, ReadSession);
     }
 
-    public SessionInfo? GetSession(string id) =>
+    public SessionInfo? GetSession(string id) => TransientSession(id) ??
         _db.QuerySingle($"SELECT {SessionColumns} FROM sessions WHERE id = @id", new { id }, ReadSession);
+
+    /// <summary>A copy of a transient (no messages yet) session, or null.</summary>
+    private SessionInfo? TransientSession(string id)
+    {
+        lock (_transientLock)
+            return _transient.TryGetValue(id, out var s) ? CopySession(s) : null;
+    }
+
+    private static SessionInfo CopySession(SessionInfo s) => new()
+    {
+        Id = s.Id, Title = s.Title, ProjectId = s.ProjectId, ParentSessionId = s.ParentSessionId, Kind = s.Kind,
+        Model = s.Model, Reasoning = s.Reasoning, CreatedAt = s.CreatedAt, UpdatedAt = s.UpdatedAt, Archived = s.Archived,
+        MessageCount = s.MessageCount, ContextTokens = s.ContextTokens, Meta = s.Meta?.DeepClone() as JsonObject,
+    };
 
     public SessionInfo CreateSession(SessionInfo template)
     {
@@ -216,25 +248,29 @@ internal sealed class SessionStore : ISessionStore
             ContextTokens = template.ContextTokens,
             Meta = template.Meta?.DeepClone() as JsonObject,
         };
-        _db.Transaction(_ =>
-        {
-            if (s.ProjectId is not null)
-            {
-                if (GetProject(s.ProjectId) is null) throw new KeyNotFoundException($"Project {s.ProjectId} not found");
-                _db.Execute("UPDATE projects SET last_used_at = @now WHERE id = @id", new { now, id = s.ProjectId });
-            }
-            _db.Execute($"""
-                INSERT INTO sessions({SessionColumns})
-                VALUES(@Id, @Title, @ProjectId, @ParentSessionId, @Kind, @Model, @Reasoning, @CreatedAt, @UpdatedAt, @Archived, @MessageCount, @ContextTokens, @Meta)
-                """, s);
-        });
-        Publish(EventTypes.SessionCreated, new { session = s });
+        if (s.ProjectId is not null && GetProject(s.ProjectId) is null) throw new KeyNotFoundException($"Project {s.ProjectId} not found");
+        // No row, no session.created, no project last_used_at: the first message materializes the session (AppendMessage).
+        lock (_transientLock) _transient[s.Id] = s;
         return s;
     }
 
     public SessionInfo UpdateSession(string id, Action<SessionInfo> mutate)
     {
         ArgumentNullException.ThrowIfNull(mutate);
+        lock (_transientLock)
+        {
+            if (_transient.TryGetValue(id, out var t))
+            {
+                // A no-message session is not announced: mutate the in-memory copy, no row, no session.updated.
+                var s = CopySession(t);
+                mutate(s);
+                s.Id = id;
+                if (string.IsNullOrWhiteSpace(s.Kind)) s.Kind = "chat";
+                s.UpdatedAt = Now();
+                _transient[id] = s;
+                return s;
+            }
+        }
         var session = _db.Transaction(_ =>
         {
             var s = GetSession(id) ?? throw new KeyNotFoundException($"Session {id} not found");
@@ -256,6 +292,15 @@ internal sealed class SessionStore : ISessionStore
 
     public void DeleteSession(string id)
     {
+        lock (_transientLock)
+        {
+            if (_transient.Remove(id))
+            {
+                // No row to delete (and nothing can be a child: a subagent materializes with its task message, a fork has no parent).
+                Publish(EventTypes.SessionDeleted, new { id });
+                return;
+            }
+        }
         var deleted = _db.Transaction(_ =>
         {
             var ids = _db.Query("""
@@ -286,6 +331,17 @@ internal sealed class SessionStore : ISessionStore
     public SessionInfo SetSessionProject(string sessionId, string? projectId)
     {
         if (string.IsNullOrWhiteSpace(projectId)) projectId = null;
+        lock (_transientLock)
+        {
+            if (_transient.TryGetValue(sessionId, out var t))
+            {
+                if (t.ProjectId == projectId) return CopySession(t);
+                if (projectId is not null && GetProject(projectId) is null) throw new KeyNotFoundException($"Project {projectId} not found");
+                t.ProjectId = projectId;
+                t.UpdatedAt = Now();
+                return CopySession(t); // no row, no session.project: nothing has been announced yet
+            }
+        }
         var (session, changed) = _db.Transaction(_ =>
         {
             var s = GetSession(sessionId) ?? throw new KeyNotFoundException($"Session {sessionId} not found");
@@ -318,11 +374,49 @@ internal sealed class SessionStore : ISessionStore
     public ChatMessage AppendMessage(string sessionId, ChatMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
+        lock (_transientLock)
+        {
+            if (_transient.TryGetValue(sessionId, out var transient))
+                return MaterializeFirstMessage(sessionId, transient, message);
+        }
         SessionInfo session = null!;
         var appended = _db.Transaction(_ => AppendMessageCore(sessionId, message, out session));
         PublishMessage(EventTypes.MessageAdded, appended);
         Publish(EventTypes.SessionUpdated, new { session });
         return appended;
+    }
+
+    /// <summary>
+    /// The first message of a session materializes it: the sessions row (and the project's last_used_at) plus the
+    /// message in one transaction, then session.created (it now has a message, as <c>sessions.list</c> shows it),
+    /// message.added and session.updated. Runs under the transient gate, so a racing append for the same session
+    /// waits and then takes the DB path.
+    /// </summary>
+    private ChatMessage MaterializeFirstMessage(string sessionId, SessionInfo transient, ChatMessage message)
+    {
+        lock (_transientLock)
+        {
+            SessionInfo session = null!;
+            _db.Transaction(_ =>
+            {
+                var now = Now();
+                if (transient.ProjectId is not null)
+                {
+                    if (GetProject(transient.ProjectId) is null) throw new KeyNotFoundException($"Project {transient.ProjectId} not found");
+                    _db.Execute("UPDATE projects SET last_used_at = @now WHERE id = @id", new { now, id = transient.ProjectId });
+                }
+                _db.Execute($"""
+                    INSERT INTO sessions({SessionColumns})
+                    VALUES(@Id, @Title, @ProjectId, @ParentSessionId, @Kind, @Model, @Reasoning, @CreatedAt, @UpdatedAt, @Archived, @MessageCount, @ContextTokens, @Meta)
+                    """, transient);
+                _transient.Remove(sessionId);
+                AppendMessageCore(sessionId, message, out session);
+            });
+            Publish(EventTypes.SessionCreated, new { session });
+            PublishMessage(EventTypes.MessageAdded, message);
+            Publish(EventTypes.SessionUpdated, new { session });
+            return message;
+        }
     }
 
     /// <summary>Insert (inside a transaction), bump counters and auto-title. Returns the stored message.</summary>
@@ -438,9 +532,16 @@ internal sealed class SessionStore : ISessionStore
             ContextTokens = template.ContextTokens,
             Meta = template.Meta?.DeepClone() as JsonObject,
         };
+        if (GetSession(sessionId) is null) throw new KeyNotFoundException($"Session {sessionId} not found");
+        var copies = _db.Scalar<long>("SELECT COUNT(*) FROM messages WHERE session_id = @sid AND seq <= @upToSeq", new { sid = sessionId, upToSeq });
+        if (copies == 0)
+        {
+            // Nothing to copy: the fork stays transient, like a fresh empty chat — no row, no session.created, no session.forked.
+            lock (_transientLock) _transient[fork.Id] = fork;
+            return fork;
+        }
         _db.Transaction(_ =>
         {
-            if (GetSession(sessionId) is null) throw new KeyNotFoundException($"Session {sessionId} not found");
             if (fork.ProjectId is not null)
             {
                 if (GetProject(fork.ProjectId) is null) throw new KeyNotFoundException($"Project {fork.ProjectId} not found");

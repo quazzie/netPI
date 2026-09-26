@@ -12,16 +12,23 @@ public static class IdeasTests
         public FakePluginContext Ctx { get; }
         public string ProjectDir { get; }
         public ProjectInfo Project { get; }
+        public string Project2Dir { get; }
+        public ProjectInfo Project2 { get; }
         public SessionInfo Session { get; }
+        public SessionInfo Session2 { get; }
         public SessionInfo GlobalSession { get; }
-        public string File => Path.Combine(ProjectDir, ".netpi", "ideas.json");
+        /// <summary>The single ideas file (the global one).</summary>
+        public string File => Path.Combine(Ctx.Paths.Home, "ideas.json");
 
         public Env()
         {
             Ctx = new FakePluginContext(T.TempDir("ideas-home"));
             ProjectDir = T.TempDir("ideas-proj");
             Project = Ctx.SessionsFake.CreateProject("Demo", ProjectDir);
+            Project2Dir = T.TempDir("ideas-proj2");
+            Project2 = Ctx.SessionsFake.CreateProject("Other", Project2Dir);
             Session = Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "s", ProjectId = Project.Id });
+            Session2 = Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "s2", ProjectId = Project2.Id });
             GlobalSession = Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "g" });
         }
 
@@ -30,10 +37,13 @@ public static class IdeasTests
         public IAgentTool Tool(string name) => Ctx.ToolsFake.Get(name) ?? throw new AssertException("no tool " + name);
 
         public Task<ToolResult> Run(string tool, object args, bool withProject = true) =>
+            Run(tool, args, withProject ? Session : GlobalSession, withProject ? Project : null);
+
+        public Task<ToolResult> Run(string tool, object args, SessionInfo session, ProjectInfo? project) =>
             Tool(tool).ExecuteAsync(new ToolContext
             {
-                SessionId = withProject ? Session.Id : GlobalSession.Id, AgentId = "agt_7", CallId = "call_1",
-                Cwd = ProjectDir, Project = withProject ? Project : null, Services = Ctx.Services, Events = Ctx.Events,
+                SessionId = session.Id, AgentId = "agt_7", CallId = "call_1",
+                Cwd = project?.Path ?? Path.GetTempPath(), Project = project, Services = Ctx.Services, Events = Ctx.Events,
             }, T.Args(args), CancellationToken.None);
 
         public async Task<JsonObject> Rpc(string method, JsonObject p) => (JsonObject)(await Ctx.RpcFake.Call(method, p))!;
@@ -53,6 +63,7 @@ public static class IdeasTests
             await env.StartAsync();
             Check.Equal("ideas", string.Join(",", env.Ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
             Check.Equal("ideas", env.Tool("ideas").Definition.Category);
+            Check.Contains(env.Tool("ideas").Definition.Description, "single global file");
             var guideline = string.Join(" ", env.Tool("ideas").Definition.PromptGuidelines!);
             Check.Contains(guideline, "(ideas, action add)");
             Check.Contains(guideline, "When you finish the work an idea describes, set it to done");
@@ -65,7 +76,7 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: the ideas tool round trip (add, list, get, update sections; deleting is the user's)", async () =>
+        r.Add("ideas: the ideas tool round trip (stamps the session's project; deleting is the user's)", async () =>
         {
             var env = new Env();
             await env.StartAsync();
@@ -87,9 +98,10 @@ public static class IdeasTests
             Check.Equal("agent:agt_7", idea["createdBy"].Str());
             Check.Equal(env.Session.Id, idea["sessionIds"]![0].Str());
             Check.Equal("open", idea["status"].Str());
-            Check.True(System.IO.File.Exists(env.File));
+            Check.Equal(env.Project.Id, idea["project"]!["id"].Str(), "the session's project is the default stamp");
+            Check.Equal("Demo", idea["project"]!["name"].Str());
+            Check.True(System.IO.File.Exists(env.File), "the global ideas file");
             var raw = env.Raw();
-            Check.NotContains(raw, "\r\n");
             Check.True(raw.StartsWith("{\n  \"version\": 1,\n  \"ideas\": [\n"), raw[..Math.Min(60, raw.Length)]);
 
             await env.Run("ideas", new { action = "create", title = "Old thing", tags = "misc, #old" });
@@ -105,7 +117,7 @@ public static class IdeasTests
 
             var get = await env.Run("ideas", new { action = "get", id });
             Ok(get);
-            Check.Contains(get.Content, "# Cache model list\n`" + id + "` · status: open · priority: high · tags: perf, providers");
+            Check.Contains(get.Content, $"# Cache model list\n`{id}` · status: open · priority: high · project: Demo · tags: perf, providers");
             var secId = idea["sections"]![0]!["id"].Str();
             Check.Contains(get.Content, $"## Research: Findings [{secId}]\nmodels.list takes 800ms");
             Check.Contains(get.Content, "## Plan [");
@@ -128,6 +140,16 @@ public static class IdeasTests
             Check.Equal(2, ((JsonArray)u["sections"]!).Count);
             Check.Equal("800ms measured twice.", u["sections"]![0]!["content"].Str());
             Check.Equal("decision", u["sections"]![1]!["kind"].Str());
+
+            // reassigning the project (by name, then unbinding)
+            var moved = await env.Run("ideas", new { action = "update", id, project = "Other" });
+            Ok(moved);
+            Check.Contains(moved.Content, "project (→ Other)");
+            Check.Equal(env.Project2.Id, Idea(moved)["project"]!["id"].Str());
+            var unbound = await env.Run("ideas", new { action = "update", id, project = "global" });
+            Ok(unbound);
+            Check.Contains(unbound.Content, "project (→ global)");
+            Check.True(Idea(unbound)["project"] is null, "unbound");
 
             var bad = await env.Run("ideas", new { action = "update", id, status = "maybe" });
             Check.True(bad.IsError);
@@ -152,16 +174,75 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas: the project argument (default stamp, cross-project list/add, unknown projects)", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var demoId = Idea(await env.Run("ideas", new { action = "add", title = "In Demo" }))!["id"].Str();
+            Ok(await env.Run("ideas", new { action = "add", title = "In Other" }, env.Session2, env.Project2));
+            Ok(await env.Run("ideas", new { action = "add", title = "Unbound" }, withProject: false)); // projectless session
+
+            // the default list: the session's project plus the unbound ones
+            var list = await env.Run("ideas", new { action = "list" });
+            Check.Contains(list.Content, "In Demo");
+            Check.Contains(list.Content, "Unbound");
+            Check.NotContains(list.Content, "In Other");
+            Check.Contains(list.Content, "2 ideas in project \"Demo\" (1 global)");
+
+            // the projectless session sees only the unbound ones
+            var glist = await env.Run("ideas", new { action = "list" }, withProject: false);
+            Check.Contains(glist.Content, "Unbound");
+            Check.NotContains(glist.Content, "In Demo");
+
+            // every project, with a project label per line
+            var all = await env.Run("ideas", new { action = "list", project = "all" });
+            Check.Contains(all.Content, "3 ideas in all projects");
+            Check.Contains(all.Content, "[open · medium · Demo] In Demo");
+            Check.Contains(all.Content, "[open · medium · Other] In Other");
+            Check.Contains(all.Content, "[open · medium · global] Unbound");
+
+            var other = await env.Run("ideas", new { action = "list", project = "Other" }); // by name
+            Check.Contains(other.Content, "In Other");
+            Check.NotContains(other.Content, "In Demo");
+            var glob = await env.Run("ideas", new { action = "list", project = "global" });
+            Check.Contains(glob.Content, "Unbound");
+            Check.NotContains(glob.Content, "In Demo");
+
+            // add: the session's project by default, overridable (even to another project)
+            var cross = await env.Run("ideas", new { action = "add", title = "Cross", project = "Other" });
+            Ok(cross);
+            Check.Equal(env.Project2.Id, Idea(cross)["project"]!["id"].Str());
+            Check.NotContains((await env.Run("ideas", new { action = "list" })).Content, "Cross", "stays out of Demo's default list");
+            Check.Contains((await env.Run("ideas", new { action = "list", project = "Other" })).Content, "Cross");
+            var toGlobal = await env.Run("ideas", new { action = "add", title = "To global", project = "global" });
+            Ok(toGlobal);
+            Check.False(Idea(toGlobal).ContainsKey("project") && Idea(toGlobal)["project"] is not null, "unbound");
+
+            var unknown = await env.Run("ideas", new { action = "add", title = "X", project = "nope" });
+            Check.True(unknown.IsError);
+            Check.Contains(unknown.Content, "Unknown project 'nope'");
+            Check.Contains(unknown.Content, "Demo");
+            Check.Contains(unknown.Content, "Other");
+
+            // update: reassign by id or name, unbind with "global"
+            var re = await env.Run("ideas", new { action = "update", id = demoId, project = env.Project2.Id });
+            Ok(re);
+            Check.Equal(env.Project2.Id, Idea(re)["project"]!["id"].Str());
+            var re2 = await env.Run("ideas", new { action = "update", id = demoId, project = "Demo" });
+            Check.Equal(env.Project.Id, Idea(re2)["project"]!["id"].Str(), "name resolves to the project");
+            var un = await env.Run("ideas", new { action = "update", id = demoId, project = "global" });
+            Check.Contains(un.Content, "project (→ global)");
+            Check.False(Idea(un).ContainsKey("project"), "unbound");
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas: RPC round trip for the UI tab", async () =>
         {
             var env = new Env();
             await env.StartAsync();
-            var p = new JsonObject { ["sessionId"] = env.Session.Id };
-            var empty = await env.Rpc("ideas.list", (JsonObject)p.DeepClone());
-            Check.Equal("project", empty["scope"].Str());
-            Check.Equal("Demo", empty["projectName"].Str());
-            Check.Equal(env.Project.Id, empty["projectId"].Str());
+            var empty = await env.Rpc("ideas.list", new JsonObject());
             Check.Equal(Path.GetFullPath(env.File), empty["file"].Str());
+            Check.Equal("ideas.json", empty["fileName"].Str());
             Check.Equal(false, (bool)empty["exists"]!);
             Check.Equal(0, ((JsonArray)empty["ideas"]!).Count);
 
@@ -172,25 +253,35 @@ public static class IdeasTests
                     ["sections"] = new JsonArray(new JsonObject { ["kind"] = "todo", ["content"] = "- [ ] a" }) },
             });
             Check.Equal("user", a["createdBy"].Str());
-            Check.Equal("red", a["color"].Str()); // UI extra fields are kept
+            Check.Equal("red", a["color"].Str(), "UI extra fields are kept");
+            Check.Equal(env.Project.Id, a["project"]!["id"].Str());
+            Check.Equal("Demo", a["project"]!["name"].Str());
             var b = await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Second" } });
             Check.Equal(env.Session.Id, b["sessionIds"]![0].Str());
-            var quick = await env.Ctx.RpcFake.Call("ideas.quickAdd", new JsonObject { ["sessionId"] = env.Session.Id, ["args"] = "  Third idea " });
-            Check.Contains((string?)quick, "Idea added (project Demo): Third idea (idea-");
+            Check.Equal(env.Project.Id, b["project"]!["id"].Str(), "stamped with the session's project");
+            var c = await env.Rpc("ideas.add", new JsonObject { ["idea"] = new JsonObject { ["title"] = "Third" } });
+            Check.True(c["project"] is null || !c.ContainsKey("project"), "no session, no project → unbound");
+            var badSession = await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.Call("ideas.add", new JsonObject
+                { ["sessionId"] = "ses_missing", ["idea"] = new JsonObject { ["title"] = "x" } }));
+            Check.Equal("not_found", badSession.Code);
+
+            var quick = await env.Ctx.RpcFake.Call("ideas.quickAdd", new JsonObject { ["sessionId"] = env.Session.Id, ["args"] = "  Fourth idea " });
+            Check.Contains((string?)quick, "Idea added (project Demo): Fourth idea (idea-");
             var usage = await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.Call("ideas.quickAdd", new JsonObject { ["sessionId"] = env.Session.Id, ["args"] = "" }));
             Check.Contains(usage.Message, "Usage: /idea <title>");
 
             var aid = a["id"].Str();
             var bid = b["id"].Str();
-            var got = await env.Rpc("ideas.get", new JsonObject { ["sessionId"] = env.Session.Id, ["id"] = aid });
+            var got = await env.Rpc("ideas.get", new JsonObject { ["id"] = aid });
             Check.Equal("First", got["title"].Str());
 
             var patched = await env.Rpc("ideas.update", new JsonObject
             {
-                ["sessionId"] = env.Session.Id, ["id"] = aid,
+                ["id"] = aid,
                 ["patch"] = new JsonObject
                 {
                     ["title"] = "First (renamed)", ["priority"] = "low", ["color"] = null, ["estimate"] = "2d",
+                    ["project"] = env.Project2.Id, // a bare id in the patch is resolved
                     ["sections"] = new JsonArray(
                         new JsonObject { ["id"] = a["sections"]![0]!["id"].Str(), ["content"] = "- [x] a", ["collapsed"] = true },
                         new JsonObject { ["kind"] = "links", ["content"] = "https://example.com" }),
@@ -200,72 +291,119 @@ public static class IdeasTests
             Check.Equal("low", patched["priority"].Str());
             Check.True(patched["color"] is null && !patched.ContainsKey("color"), "null removes a UI field");
             Check.Equal("2d", patched["estimate"].Str());
+            Check.Equal(env.Project2.Id, patched["project"]!["id"].Str());
+            Check.Equal("Other", patched["project"]!["name"].Str());
             Check.Equal(2, ((JsonArray)patched["sections"]!).Count);
             Check.Equal(a["sections"]![0]!["id"].Str(), patched["sections"]![0]!["id"].Str());
             Check.Equal("- [x] a", patched["sections"]![0]!["content"].Str());
             Check.Equal("todo", patched["sections"]![0]!["kind"].Str());
             Check.Equal(true, (bool)patched["sections"]![0]!["collapsed"]!);
 
-            await env.Ctx.RpcFake.Call("ideas.reorder", new JsonObject { ["sessionId"] = env.Session.Id, ["ids"] = new JsonArray(bid) });
-            var listed = await env.Rpc("ideas.list", new JsonObject { ["sessionId"] = env.Session.Id });
+            await env.Ctx.RpcFake.Call("ideas.reorder", new JsonObject { ["ids"] = new JsonArray(bid) });
+            var listed = await env.Rpc("ideas.list", new JsonObject());
             Check.Equal(true, (bool)listed["exists"]!);
             var order = ((JsonArray)listed["ideas"]!).Select(i => i!["title"].Str()).ToList();
-            Check.Equal("Second|First (renamed)|Third idea", string.Join("|", order));
+            Check.Equal("Second|First (renamed)|Third|Fourth idea", string.Join("|", order));
 
-            var prompt = (string?)await env.Ctx.RpcFake.Call("ideas.toPrompt", new JsonObject { ["sessionId"] = env.Session.Id, ["id"] = aid });
-            Check.Contains(prompt, "Implement the following idea from the ideas backlog (`" + aid + "` in .netpi/ideas.json)");
+            var prompt = (string?)await env.Ctx.RpcFake.Call("ideas.toPrompt", new JsonObject { ["id"] = aid });
+            Check.Contains(prompt, "Implement the following idea from the ideas backlog (`" + aid + "` in");
             Check.Contains(prompt, "Keep the idea up to date with the ideas tool (action update)");
-            Check.Contains(prompt, "# First (renamed)\nPriority: low · Tags: ui");
+            Check.Contains(prompt, "# First (renamed)\nPriority: low · Project: Other · Tags: ui");
             Check.Contains(prompt, "## To do\n- [x] a");
             Check.Contains(prompt, "## Links\nhttps://example.com");
 
-            Check.Equal(true, (bool)(await env.Ctx.RpcFake.Call("ideas.delete", new JsonObject { ["sessionId"] = env.Session.Id, ["id"] = aid }))!);
-            var nf = await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.Call("ideas.get", new JsonObject { ["sessionId"] = env.Session.Id, ["id"] = aid }));
+            Check.Equal(true, (bool)(await env.Ctx.RpcFake.Call("ideas.delete", new JsonObject { ["id"] = aid }))!);
+            var nf = await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.Call("ideas.get", new JsonObject { ["id"] = aid }));
             Check.Equal("not_found", nf.Code);
-            var badSession = await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.Call("ideas.list", new JsonObject { ["sessionId"] = "ses_missing" }));
-            Check.Equal("not_found", badSession.Code);
             var badPatch = await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.Call("ideas.update", new JsonObject
-                { ["sessionId"] = env.Session.Id, ["id"] = bid, ["patch"] = new JsonObject { ["status"] = "??" } }));
+                { ["id"] = bid, ["patch"] = new JsonObject { ["status"] = "??" } }));
             Check.Equal("bad_request", badPatch.Code);
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: sessions without a project use ~/.netpi/ideas.json; ideas.fileName", async () =>
+        r.Add("ideas: one global file for all (project and projectless); ideas.fileName", async () =>
         {
             var env = new Env();
             await env.StartAsync();
             Ok(await env.Run("ideas", new { action = "add", title = "Global one" }, withProject: false));
-            var globalFile = Path.Combine(env.Ctx.Paths.Home, "ideas.json");
-            Check.True(System.IO.File.Exists(globalFile));
-            Check.False(System.IO.File.Exists(env.File));
-            var listed = await env.Rpc("ideas.list", new JsonObject { ["sessionId"] = env.GlobalSession.Id });
-            Check.Equal("global", listed["scope"].Str());
-            Check.True(!listed.ContainsKey("projectName"));
-            Check.Equal("Global one", listed["ideas"]![0]!["title"].Str());
-            Check.Equal("global", (await env.Rpc("ideas.list", new JsonObject()))["scope"].Str());
+            Ok(await env.Run("ideas", new { action = "add", title = "Project one" }));
+            Check.True(System.IO.File.Exists(env.File), "the global file");
+            Check.False(System.IO.File.Exists(Path.Combine(env.ProjectDir, ".netpi", "ideas.json")), "no per-project file");
+            var listed = await env.Rpc("ideas.list", new JsonObject());
+            var titles = ((JsonArray)listed["ideas"]!).Select(i => i!["title"].Str()).ToList();
+            Check.True(titles.Contains("Global one"));
+            Check.True(titles.Contains("Project one"));
+            var g = ((JsonArray)listed["ideas"]!).First(i => i!["title"].Str() == "Global one")!.AsObject();
+            Check.True(g["project"] is null, "the projectless session's idea is unbound");
+            var p = ((JsonArray)listed["ideas"]!).First(i => i!["title"].Str() == "Project one")!.AsObject();
+            Check.Equal(env.Project.Id, p["project"]!["id"].Str());
 
             env.Ctx.SettingsFake.Set("ideas.fileName", "backlog.json");
             Ok(await env.Run("ideas", new { action = "add", title = "Named" }));
-            Check.True(System.IO.File.Exists(Path.Combine(env.ProjectDir, ".netpi", "backlog.json")));
+            Check.True(System.IO.File.Exists(Path.Combine(env.Ctx.Paths.Home, "backlog.json")), "the setting names the global file");
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: an ideas.json in the project folder moves into .netpi/, not over one that is there", async () =>
+        r.Add("ideas: per-project and legacy root files are merged into the global one and deleted", async () =>
         {
             var env = new Env();
-            var old = Path.Combine(env.ProjectDir, "ideas.json");
-            System.IO.File.WriteAllText(old, "{\n  \"version\": 1,\n  \"ideas\": [ { \"id\": \"idea-old001\", \"title\": \"From the root\" } ]\n}\n");
-            await env.StartAsync();
-            var listed = await env.Rpc("ideas.list", new JsonObject { ["sessionId"] = env.Session.Id });
-            Check.Equal(Path.GetFullPath(env.File), listed["file"].Str());
-            Check.Equal("From the root", listed["ideas"]![0]!["title"].Str());
-            Check.False(System.IO.File.Exists(old), "moved away from the project folder");
-            Check.True(System.IO.File.Exists(env.File));
+            var dotNetPi = Path.Combine(env.ProjectDir, ".netpi");
+            Directory.CreateDirectory(dotNetPi);
+            System.IO.File.WriteAllText(Path.Combine(dotNetPi, "ideas.json"),
+                "{\n  \"version\": 1,\n  \"ideas\": [\n    { \"id\": \"idea-mig001\", \"title\": \"From .netpi\" },\n" +
+                "    { \"id\": \"idea-take01\", \"title\": \"Collides\" }\n  ]\n}\n");
+            System.IO.File.WriteAllText(Path.Combine(env.ProjectDir, "ideas.json"), // the legacy place
+                "{ \"ideas\": [ { \"id\": \"idea-root01\", \"title\": \"From the root\" } ] }\n");
+            System.IO.File.WriteAllText(env.File,
+                "{ \"version\": 1, \"ideas\": [ { \"id\": \"idea-take01\", \"title\": \"Stays\" } ] }\n");
 
-            // a stray ideas.json later stays where it is: .netpi/ideas.json is the file
-            System.IO.File.WriteAllText(old, "{ \"ideas\": [] }");
-            Check.Contains((await env.Run("ideas", new { action = "list" })).Content, "From the root");
-            Check.True(System.IO.File.Exists(old));
+            await env.StartAsync(); // migrates
+            var listed = await env.Rpc("ideas.list", new JsonObject());
+            var ideas = ((JsonArray)listed["ideas"]!).Select(i => i!.AsObject()).ToList();
+            Check.Equal(4, ideas.Count);
+            Check.Equal("Stays", ideas.Single(i => i["id"].Str() == "idea-take01")["title"].Str(), "the global one keeps its id");
+            var colliding = ideas.Single(i => i!["title"].Str() == "Collides");
+            Check.True(colliding["id"]!.Str() != "idea-take01", "the colliding one was renamed");
+            var fromDotNetPi = ideas.Single(i => i!["title"].Str() == "From .netpi");
+            Check.Equal(env.Project.Id, fromDotNetPi["project"]!["id"].Str(), "stamped");
+            Check.Equal("Demo", fromDotNetPi["project"]!["name"].Str());
+            Check.Equal(env.Project.Id, ideas.Single(i => i!["title"].Str() == "From the root")["project"]!["id"].Str());
+            Check.True(colliding.ContainsKey("project"), "the renamed one is stamped too");
+            Check.False(System.IO.File.Exists(Path.Combine(dotNetPi, "ideas.json")), "source deleted");
+            Check.False(System.IO.File.Exists(Path.Combine(env.ProjectDir, "ideas.json")), "legacy source deleted");
+
+            // a restart migrates nothing (the sources are gone)
+            env.Ctx.Unload();
+            await env.StartAsync();
+            Check.Equal(4, ((JsonArray)(await env.Rpc("ideas.list", new JsonObject()))["ideas"]!).Count);
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas: a broken global file blocks the migration until it is fixed (then it is retried)", async () =>
+        {
+            var env = new Env();
+            var dotNetPi = Path.Combine(env.ProjectDir, ".netpi");
+            Directory.CreateDirectory(dotNetPi);
+            System.IO.File.WriteAllText(Path.Combine(dotNetPi, "ideas.json"),
+                "{ \"version\": 1, \"ideas\": [ { \"id\": \"idea-wait01\", \"title\": \"Waiting\" } ] }\n");
+            System.IO.File.WriteAllText(env.File, "{ \"ideas\": [ { \"title\": ");
+
+            await env.StartAsync();
+            Check.True(System.IO.File.Exists(Path.Combine(dotNetPi, "ideas.json")), "the source stays");
+            Check.Contains(env.Ctx.Log.Lines.Where(l => l.Contains("migration")).FirstOrDefault() ?? "", "skipped", "logged");
+
+            var add = await env.Run("ideas", new { action = "add", title = "x" });
+            Check.True(add.IsError);
+            Check.Contains(add.Content, "is not valid JSON");
+            Check.Equal("{ \"ideas\": [ { \"title\": ", System.IO.File.ReadAllText(env.File), "never overwritten");
+
+            // fix the file (a user edits it), restart → the migration runs
+            System.IO.File.Delete(env.File);
+            env.Ctx.Unload();
+            await env.StartAsync();
+            var listed = await env.Rpc("ideas.list", new JsonObject());
+            Check.Contains(listed.ToJsonString(), "Waiting");
+            Check.False(System.IO.File.Exists(Path.Combine(dotNetPi, "ideas.json")));
             env.Ctx.Unload();
         });
 
@@ -277,7 +415,6 @@ public static class IdeasTests
                 "            \"title\": \"Handwritten\",\r\n            \"status\": \"open\",\r\n            \"estimate\": { \"days\": 3 },\r\n" +
                 "            \"sections\": [ { \"id\": \"sec-aa\", \"kind\": \"note\", \"content\": \"x\", \"author\": \"bob\" } ]\r\n        }\r\n    ],\r\n" +
                 "    // comments are tolerated\r\n    \"extra\": [1, 2],\r\n}\r\n";
-            Directory.CreateDirectory(Path.GetDirectoryName(env.File)!);
             System.IO.File.WriteAllBytes(env.File, [0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes(original)]);
             await env.StartAsync();
 
@@ -304,14 +441,13 @@ public static class IdeasTests
         r.Add("ideas: invalid JSON is reported and never overwritten", async () =>
         {
             var env = new Env();
-            Directory.CreateDirectory(Path.GetDirectoryName(env.File)!);
             System.IO.File.WriteAllText(env.File, "{ \"ideas\": [ { \"title\": ");
             await env.StartAsync();
             var res = await env.Run("ideas", new { action = "add", title = "x" });
             Check.True(res.IsError);
             Check.Contains(res.Content, "is not valid JSON");
             Check.Equal("{ \"ideas\": [ { \"title\": ", System.IO.File.ReadAllText(env.File));
-            var ex = await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.Call("ideas.list", new JsonObject { ["sessionId"] = env.Session.Id }));
+            var ex = await Check.ThrowsAsync<RpcException>(() => env.Ctx.RpcFake.Call("ideas.list", new JsonObject()));
             Check.Equal("invalid_file", ex.Code);
             env.Ctx.Unload();
         });
@@ -337,7 +473,7 @@ public static class IdeasTests
             System.IO.File.WriteAllText(env.File, json.ToJsonString());
             var ext = await bus.WaitForAsync(IdeasStore.ChangedEvent, skip: afterOwn);
             Check.True(ext is not null, "event after external edit");
-            var listed = await env.Rpc("ideas.list", new JsonObject { ["sessionId"] = env.Session.Id });
+            var listed = await env.Rpc("ideas.list", new JsonObject());
             Check.Contains(listed.ToJsonString(), "External");
             env.Ctx.Unload();
         });
@@ -355,13 +491,36 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: IdeaOps normalization helpers; the action from the arguments", () =>
+        r.Add("ideas: IdeaOps project helpers; the action from the arguments", () =>
         {
+            var idea = new JsonObject();
+            Check.True(IdeaOps.ProjectOf(idea) is null, "no project by default");
+            IdeaOps.SetProject(idea, "proj_x", "Demo");
+            Check.Equal(("proj_x", "Demo"), IdeaOps.ProjectOf(idea));
+            Check.Equal("Demo", IdeaOps.ProjectLabel(idea));
+            IdeaOps.SetProject(idea, null);
+            Check.True(IdeaOps.ProjectOf(idea) is null, "unbound");
+            var bound = new JsonObject { ["id"] = "idea-x", ["title"] = "t", ["project"] = new JsonObject { ["id"] = "p1", ["name"] = "P" } };
+            IdeaOps.ApplyPatch(bound, (JsonObject)JsonNode.Parse("{\"project\": null}")!, fromUi: true);
+            Check.True(IdeaOps.ProjectOf(bound) is null, "a JSON null patch unbinds");
+            Check.True(IdeaOps.MatchesProject(new JsonObject { ["project"] = new JsonObject { ["id"] = "p1" } }, "p1", false));
+            Check.True(!IdeaOps.MatchesProject(new JsonObject { ["project"] = new JsonObject { ["id"] = "p2" } }, "p1", false));
+            Check.True(IdeaOps.MatchesProject(new JsonObject(), null, true), "unbound passes includeUnbound");
+            Check.True(!IdeaOps.MatchesProject(new JsonObject { ["project"] = new JsonObject { ["id"] = "p1" } }, "p1", false, unboundOnly: true));
+
+            var line = IdeaOps.ListLine(new JsonObject
+            {
+                ["id"] = "idea-a", ["status"] = "open", ["priority"] = "medium", ["title"] = "T",
+                ["project"] = new JsonObject { ["id"] = "p1", ["name"] = "Demo" },
+            }, "Demo");
+            Check.Contains(line, "[open · medium · Demo] T");
+
             string A(string json) => IdeasTool.Action((JsonObject)JsonNode.Parse(json)!);
             Check.Equal("list", A("{}"));
             Check.Equal("add", A("{\"title\":\"x\"}"));
             Check.Equal("get", A("{\"id\":\"idea-1\"}"));
             Check.Equal("update", A("{\"id\":\"idea-1\",\"status\":\"done\"}"));
+            Check.Equal("update", A("{\"id\":\"idea-1\",\"project\":\"global\"}"));
             Check.Equal("update", A("{\"action\":\"Edit\",\"id\":\"idea-1\"}"));
             Check.Equal("delete", A("{\"action\":\"remove\"}"));
             var close = (JsonObject)JsonNode.Parse("{\"action\":\"done\",\"id\":\"idea-1\"}")!;

@@ -12,8 +12,8 @@
   /**
    * Consecutive thinking/tool rows, folded by the "Steps" preference: 'open' never folds; 'done' (default) shows every
    * row while the run is live and folds groups of more than 3 steps into "N steps · time" once it ends; 'folded' folds
-   * from the second step on, live too, so the chat does not grow row by row while the agent works (a folded group is one
-   * line, like a single row). Per-group overrides are remembered in chat.expanded. `active` = the group the agent is
+   * from the first step on, live too, so adding a second step cannot shrink an open row into a folded head line.
+   * Per-group overrides are remembered in chat.expanded. `active` = the group the agent is
    * adding to right now: folded, its line shows the latest step.
    */
   let { item, chat, base, live = false, active = false } = $props();
@@ -21,7 +21,7 @@
   const n = $derived(item.steps.length);
   // a tool call that waits for the user's OK (a guardrail) keeps its group open, so its Allow / No can be seen
   const approving = $derived(item.steps.some((s) => s.kind === 'tool' && asks.approvals.has(s.call.id)));
-  const collapsible = $derived(approving ? false : prefs.steps === 'folded' ? n > 1 : prefs.steps === 'done' ? !live && n > 3 : false);
+  const collapsible = $derived(approving ? false : prefs.steps === 'folded' ? n > 0 : prefs.steps === 'done' ? !live && n > 3 : false);
   const open = $derived(collapsible ? (chat.expanded.get(item.key) ?? false) : true);
   const span = $derived(Number.isFinite(item.startMs) && item.endMs > item.startMs ? item.endMs - item.startMs : null);
   const counts = $derived(collapsible ? stepCounts(item.steps) : null);
@@ -45,7 +45,7 @@
   {#if collapsible}
     <button class="head" aria-expanded={open} onclick={() => chat.expanded.set(item.key, !open)}>
       <span class="chev" class:open><Icon name="chevron-right" size={12} stroke={2} /></span>
-      <span class="count">{n} steps</span>
+      <span class="count">{n} {n === 1 ? 'step' : 'steps'}</span>
       {#if span}<span class="took np-dim">· {duration(span)}</span>{/if}
       {#if latest}
         <span class="latest">

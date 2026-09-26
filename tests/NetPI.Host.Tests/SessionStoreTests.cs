@@ -262,11 +262,15 @@ public static class SessionStoreTests
             Check.Equal(Path.GetFileName(projDir), p.Name);
             var s = f.Store.CreateSession(new SessionInfo());
             Check.Equal(Path.Combine(f.Dir, "workspace"), f.Store.GetCwd(s));
+            // Materialize first: an unannounced (no-message) session takes project changes without events
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("start"));
+            await f.Bus.FlushAsync();
+            lock (f.Events) f.Events.Clear();
 
             var attached = f.Store.SetSessionProject(s.Id, p.Id);
             Check.Equal(p.Id, attached.ProjectId);
             Check.Equal(p.Path, f.Store.GetCwd(attached));
-            Check.Equal(0, f.Store.GetMessages(s.Id).Count, "the host appends nothing");
+            Check.Equal(1, f.Store.GetMessages(s.Id).Count, "the host appends nothing");
             var first = (await f.EventsAsync(EventTypes.SessionProject)).Single().As<System.Text.Json.Nodes.JsonObject>()!;
             Check.Equal(s.Id, (string?)first["sessionId"]);
             Check.Equal(p.Id, (string?)first["projectId"]);
@@ -322,10 +326,20 @@ public static class SessionStoreTests
         r.Add("sessions: update mutates, persists and publishes session.updated", async () =>
         {
             await using var f = new Fixture();
+            // While transient (no messages): updates are in memory only, nothing is announced
             var s = f.Store.CreateSession(new SessionInfo { Model = "aiproxy/a", Meta = new JsonObject { ["x"] = 1 } });
-            var u = f.Store.UpdateSession(s.Id, x => { x.Model = "anthropic/b"; x.Reasoning = "high"; x.ContextTokens = 1234; x.Title = "Renamed"; });
+            f.Store.UpdateSession(s.Id, x => { x.Model = "anthropic/b"; x.Reasoning = "high"; x.Title = "Renamed"; });
+            Check.Equal("anthropic/b", f.Store.GetSession(s.Id)!.Model);
+            Check.Equal(0, (await f.EventsAsync(EventTypes.SessionUpdated)).Count, "a no-message session is not announced");
+            Check.Equal(0, (await f.EventsAsync(EventTypes.SessionCreated)).Count, "no session.created until the first message");
+
+            // Once it has a message, updates persist (the transient changes ride along) and are announced
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("hello"));
+            await f.Bus.FlushAsync();
+            lock (f.Events) f.Events.Clear();
+            var u = f.Store.UpdateSession(s.Id, x => { x.ContextTokens = 1234; });
             var back = f.Store.GetSession(s.Id)!;
-            Check.Equal("anthropic/b", back.Model);
+            Check.Equal("anthropic/b", back.Model, "the transient update survived materialization");
             Check.Equal("high", back.Reasoning);
             Check.Equal(1234L, back.ContextTokens);
             Check.Equal("Renamed", back.Title);
@@ -334,7 +348,97 @@ public static class SessionStoreTests
             Check.Throws<KeyNotFoundException>(() => f.Store.UpdateSession("ses_missing", _ => { }));
             var evs = await f.EventsAsync(EventTypes.SessionUpdated);
             Check.Equal(1, evs.Count);
+        });
+
+        r.Add("sessions: a no-message session is transient — in memory only, until its first message", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo { Title = "", Meta = new JsonObject { ["a"] = 1 } });
+            Check.True(f.Store.GetSession(s.Id) is { Title: SessionStore.DefaultTitle });
+            Check.Equal(0, f.Store.ListSessions(new SessionQuery()).Count, "not listed while empty");
+            Check.Equal(0, (await f.EventsAsync(EventTypes.SessionCreated)).Count, "not announced");
+
+            // a fresh store over the same database (a simulated restart) does not know it
+            var freshDb = new Database(Path.Combine(f.Dir, "netpi.db"));
+            var freshStore = new SessionStore(freshDb, f.Bus, Path.Combine(f.Dir, "workspace"));
+            Check.True(freshStore.GetSession(s.Id) is null, "no row in the database");
+            freshDb.Dispose();
+
+            // first message: materialized — row, title, count, and the events in order
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("the first words\nand more"));
+            Check.True(f.Store.ListSessions(new SessionQuery()).Any(x => x.Id == s.Id), "listed once it has a message");
+            Check.Equal("the first words", f.Store.GetSession(s.Id)!.Title, "auto-title at materialization");
+            Check.Equal(1L, f.Store.GetSession(s.Id)!.MessageCount);
+            var freshDb2 = new Database(Path.Combine(f.Dir, "netpi.db"));
+            var freshStore2 = new SessionStore(freshDb2, f.Bus, Path.Combine(f.Dir, "workspace"));
+            Check.Equal(1L, freshStore2.GetSession(s.Id)!.MessageCount, "visible to a fresh store");
+            freshDb2.Dispose();
+
+            await f.Bus.FlushAsync();
+            string[] seq;
+            lock (f.Events) seq = f.Events.Select(e => e.Type).ToArray();
+            var iCreated = Array.IndexOf(seq, EventTypes.SessionCreated);
+            var iAdded = Array.IndexOf(seq, EventTypes.MessageAdded);
+            var iUpdated = seq.LastIndexOf(EventTypes.SessionUpdated);
+            Check.True(iCreated >= 0 && iCreated < iAdded && iAdded < iUpdated, $"order: {string.Join(" → ", seq)}");
+
+            // deleting an abandoned (still empty) session: no error, no row, session.deleted published
+            var empty = f.Store.CreateSession(new SessionInfo());
+            f.Store.DeleteSession(empty.Id);
+            Check.True(f.Store.GetSession(empty.Id) is null);
+            Check.True(f.Store.ListSessions(new SessionQuery()).All(x => x.Id != empty.Id));
+            Check.Throws<KeyNotFoundException>(() => f.Store.DeleteSession(empty.Id));
+            var deleted = (await f.EventsAsync(EventTypes.SessionDeleted))
+                .Select(e => JsonSerializer.SerializeToNode(e.Data, NetPiJson.Options)!["id"]?.GetValue<string>())
+                .ToList();
+            Check.True(deleted.Contains(empty.Id), $"session.deleted for the transient: {string.Join(", ", deleted)}");
+        });
+
+        r.Add("sessions: a fork with nothing to copy stays transient (no row, no events); a fork of an empty source too", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo { Title = "Chat" });
+            Check.True(f.Store.GetMessages(s.Id).Count == 0);
+
+            var fork = f.Store.ForkSession(s.Id, 0, new SessionInfo { Title = "Chat (fork)" });
+            Check.Equal(0, fork.MessageCount);
+            Check.True(f.Store.GetSession(fork.Id) is not null, "resolves while the store runs");
+            Check.Equal(0, f.Store.ListSessions(new SessionQuery()).Count, "not listed");
+            Check.Equal(0, (await f.EventsAsync(EventTypes.SessionCreated)).Count, "no session.created");
+            Check.Equal(0, (await f.EventsAsync(EventTypes.SessionForked)).Count, "no session.forked");
+
+            // the fork materializes when it gets its first message, like any session
+            f.Store.AppendMessage(fork.Id, ChatMessage.UserText("now it is real"));
+            Check.True(f.Store.ListSessions(new SessionQuery()).Any(x => x.Id == fork.Id));
+
+            // and a non-empty fork still publishes as before (one created, one forked, zero message.added)
+            var src = f.Store.CreateSession(new SessionInfo { Title = "Full" });
+            f.Store.AppendMessage(src.Id, ChatMessage.UserText("one"));
+            f.Store.AppendMessage(src.Id, Assistant("two"));
+            await f.Bus.FlushAsync();
+            lock (f.Events) f.Events.Clear();
+            var fork2 = f.Store.ForkSession(src.Id, 2, new SessionInfo { Title = "Full (fork)" });
+            Check.Equal(2, fork2.MessageCount);
             Check.Equal(1, (await f.EventsAsync(EventTypes.SessionCreated)).Count);
+            Check.Equal(1, (await f.EventsAsync(EventTypes.SessionForked)).Count);
+        });
+
+        r.Add("sessions: deleting a project detaches its sessions — transient ones in memory too", async () =>
+        {
+            await using var f = new Fixture();
+            var p = f.Store.CreateProject("P", T.TempDir("proj"));
+            var persisted = f.Store.CreateSession(new SessionInfo { Title = "Real", ProjectId = p.Id });
+            f.Store.AppendMessage(persisted.Id, ChatMessage.UserText("hi"));
+            var transient = f.Store.CreateSession(new SessionInfo { Title = "Empty", ProjectId = p.Id });
+            await f.Bus.FlushAsync();
+            lock (f.Events) f.Events.Clear();
+
+            f.Store.DeleteProject(p.Id);
+            Check.True(f.Store.GetProject(p.Id) is null);
+            Check.True(f.Store.GetSession(persisted.Id)!.ProjectId is null, "persisted session detached");
+            Check.True(f.Store.GetSession(transient.Id)!.ProjectId is null, "transient session detached in memory");
+            var updated = await f.EventsAsync(EventTypes.SessionUpdated);
+            Check.Equal(2, updated.Count, "one session.updated per detached session");
         });
     }
 }

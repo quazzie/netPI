@@ -79,7 +79,7 @@ const ideas = createIdeas({ publish });
 ideas.seed();
 const diag = createDiag({ publish, log });
 diag.seed();
-const agent = createAgentRuntime({ publish, work, log });
+const agent = createAgentRuntime({ publish, work, log, onFirstMessage: materialize });
 
 // ------------------------------------------------------------------------------------------ rpc
 const RPC_DOCS = {
@@ -219,6 +219,24 @@ function writeProfile(s, profile) {
   s.meta = meta;
 }
 
+/**
+ * The first message materializes a transient session (like the host): its default profile (if it has not chosen one
+ * yet), the project's lastUsedAt, and session.created — all before the message.added that triggers it.
+ */
+function materialize(sid) {
+  const s = store.sessions.get(sid);
+  if (!s) return;
+  if (!s.meta || !('profile' in s.meta)) {
+    const p = defaultProfileFor(s);
+    if (p) writeProfile(s, p);
+  }
+  if (s.projectId) {
+    const pr = store.projects.get(s.projectId);
+    if (pr) pr.lastUsedAt = new Date().toISOString();
+  }
+  publish('session.created', { session: s });
+}
+
 /** agent.tools for a session: the tools its agent gets, each with its switch. */
 function sessionTools(s) {
   const off = new Set((s.meta?.toolsOff ?? []).map((n) => n.toLowerCase()));
@@ -333,6 +351,7 @@ const handlers = {
   'sessions.list': (p = {}) => {
     const q = (p.search ?? '').toLowerCase();
     let list = [...store.sessions.values()].filter((s) => {
+      if ((store.messages.get(s.id) ?? []).length === 0) return false; // like the host: a session without messages is not listed
       if (!p.includeArchived && s.archived) return false;
       if (!p.includeSubagents && s.kind === 'subagent' && !p.parentSessionId) return false;
       if (p.projectId && s.projectId !== p.projectId) return false;
@@ -350,14 +369,8 @@ const handlers = {
   'sessions.create': (p = {}) => {
     const s = mkSession({ title: p.title ?? '', projectId: p.projectId ?? null, model: p.model ?? null, reasoning: p.reasoning ?? null });
     agentFor(s.id);
-    if (s.projectId) {
-      const pr = store.projects.get(s.projectId);
-      if (pr) pr.lastUsedAt = new Date().toISOString();
-    }
-    // like the profiles plugin: a new chat gets its project's default profile, else the global one
-    const first = defaultProfileFor(s);
-    if (first) writeProfile(s, first);
-    publish('session.created', { session: s });
+    // like the host: a no-message session is transient — not listed and not announced (session.created); its default
+    // profile and the project's lastUsedAt arrive with its first message (materialize)
     return s;
   },
   // like the host (SessionFork): the messages up to upToSeq with their seqs, the setup's meta without the run state
@@ -376,14 +389,19 @@ const handlers = {
     let title = `${base} (fork)`;
     for (let n = 2; taken.has(title); n++) title = `${base} (fork ${n})`;
     const s = mkSession({ title, projectId: from.projectId, model: from.model, reasoning: from.reasoning, meta });
+    let copied = 0;
     for (const x of msgs) {
       if (x.seq > upTo) break;
       const { id, seq, sessionId, role, parts, createdAt, ...rest } = structuredClone(x);
       pushMessage(s.id, role, parts, rest, Date.parse(createdAt));
+      copied++;
     }
     agentFor(s.id);
-    publish('session.created', { session: s });
-    publish('session.forked', { sessionId: s.id, fromSessionId: from.id, upToSeq: upTo });
+    // like the host: a fork with no messages stays transient — no session.created, no session.forked
+    if (copied > 0) {
+      publish('session.created', { session: s });
+      publish('session.forked', { sessionId: s.id, fromSessionId: from.id, upToSeq: upTo });
+    }
     return s;
   },
   'sessions.get': (p) => getSession(need(p, 'id')),

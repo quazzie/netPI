@@ -1,4 +1,5 @@
-// Mock ideas backlog (docs/PLUGIN-IDEAS.md): one in-memory "file" per project plus the global one.
+// Mock ideas backlog (docs/PLUGIN-IDEAS.md): one global "file" (~/.netpi/ideas.json), every idea carrying
+// a project property.
 import os from 'node:os';
 import path from 'node:path';
 import { store } from './store.mjs';
@@ -19,32 +20,44 @@ function err(code, message) {
 }
 
 export function createIdeas({ publish }) {
-  const files = new Map(); // file -> { ideas: [] }
+  const file = GLOBAL;
+  const doc = { ideas: [], exists: false };
 
-  function resolve(p = {}) {
-    let project = null;
-    if (p.projectId) {
-      project = store.projects.get(p.projectId);
-      if (!project) throw err('not_found', `Unknown project ${p.projectId}`);
-    } else if (p.sessionId) {
-      const s = store.sessions.get(p.sessionId);
-      if (!s) throw err('not_found', `Unknown session ${p.sessionId}`);
-      if (s.projectId) project = store.projects.get(s.projectId) ?? null;
-    }
-    const file = project ? path.join(project.path, '.netpi', 'ideas.json') : GLOBAL;
-    let doc = files.get(file);
-    if (!doc) files.set(file, (doc = { ideas: [], exists: false }));
-    return { file, doc, project };
-  }
-  const changed = (file) => setTimeout(() => publish('ideas.changed', { file }), 250);
+  const changed = () => setTimeout(() => publish('ideas.changed', { file }), 250);
 
-  function find(doc, id) {
+  function find(id) {
     const i =
       doc.ideas.find((x) => x.id === id) ??
       doc.ideas.find((x) => x.id.toLowerCase() === String(id).toLowerCase()) ??
       doc.ideas.find((x) => x.id === `idea-${id}`);
     if (!i) throw err('not_found', `No idea ${id}. Use ideas.list to see the ids.`);
     return i;
+  }
+  // A project reference: an id or name, or "global"/"none" → null (unbound). Unknown → bad_request.
+  function resolveProject(ref) {
+    const v = String(ref ?? '').trim();
+    if (v.length === 0 || v === 'global' || v === 'none' || v === 'unbound') return null;
+    const p = store.projects.get(v) ?? [...store.projects.values()].find((x) => x.name.toLowerCase() === v.toLowerCase());
+    if (!p) {
+      const known = [...store.projects.values()].map((x) => x.name).join(', ');
+      throw err('bad_request', `Unknown project ${v}. Known projects: ${known}.`);
+    }
+    return p;
+  }
+  // The stamp of a new idea: an explicit projectId, else the session's project, else unbound.
+  function stamp(p) {
+    if (p.projectId) {
+      if (p.sessionId && !store.sessions.has(p.sessionId)) throw err('not_found', `Unknown session ${p.sessionId}`);
+      const proj = resolveProject(p.projectId);
+      return proj ? { id: proj.id, name: proj.name } : null;
+    }
+    if (p.sessionId) {
+      const s = store.sessions.get(p.sessionId);
+      if (!s) throw err('not_found', `Unknown session ${p.sessionId}`);
+      const proj = s.projectId ? store.projects.get(s.projectId) : null;
+      if (proj) return { id: proj.id, name: proj.name };
+    }
+    return null;
   }
   const status = (s) => {
     const v = SYN[String(s).toLowerCase()] ?? String(s).toLowerCase();
@@ -65,20 +78,10 @@ export function createIdeas({ publish }) {
   const section = (s) => ({ id: `sec-${rid(4)}`, kind: kind(s.kind), ...(s.title ? { title: s.title } : {}), content: s.content ?? '', updatedAt: now() });
 
   const api = {
-    'ideas.list': (p) => {
-      const { file, doc, project } = resolve(p);
-      return {
-        file,
-        fileName: 'ideas.json',
-        scope: project ? 'project' : 'global',
-        ...(project ? { projectId: project.id, projectName: project.name } : {}),
-        exists: doc.exists,
-        ideas: doc.ideas,
-      };
-    },
-    'ideas.get': (p) => find(resolve(p).doc, p.id),
+    'ideas.list': () => ({ file, fileName: 'ideas.json', exists: doc.exists, ideas: doc.ideas }),
+    'ideas.get': (p) => find(p.id),
     'ideas.add': (p) => {
-      const { file, doc } = resolve(p);
+      const proj = stamp(p);
       const i = p.idea ?? {};
       if (!i.title?.trim()) throw err('bad_request', 'title is required');
       const { sections, ...extra } = i;
@@ -96,18 +99,30 @@ export function createIdeas({ publish }) {
         sections: (sections ?? []).map(section),
         sessionIds: p.sessionId ? [p.sessionId] : [],
       };
+      if (proj) idea.project = proj;
       p.prepend ? doc.ideas.unshift(idea) : doc.ideas.push(idea);
       doc.exists = true;
-      changed(file);
+      changed();
       return idea;
     },
     'ideas.update': (p) => {
-      const { file, doc } = resolve(p);
-      const idea = find(doc, p.id);
+      const idea = find(p.id);
       const patch = p.patch ?? {};
       for (const [k, v] of Object.entries(patch)) {
         if (['id', 'createdAt', 'createdBy', 'updatedAt', 'sessionIds'].includes(k)) continue;
-        if (k === 'status') idea.status = status(v);
+        if (k === 'project') {
+          // { id, name? }, a bare id/name, or null/"global" → unbound
+          if (v && typeof v === 'object') {
+            const ref = v.id ?? v.name;
+            const proj = resolveProject(ref);
+            if (proj) idea.project = { id: v.id ?? proj.id, name: v.name ?? proj.name };
+            else delete idea.project;
+          } else {
+            const proj = resolveProject(v);
+            if (proj) idea.project = { id: proj.id, name: proj.name };
+            else delete idea.project;
+          }
+        } else if (k === 'status') idea.status = status(v);
         else if (k === 'tags') idea.tags = tags(v);
         else if (k === 'title') {
           if (!String(v).trim()) throw err('bad_request', 'title must not be empty');
@@ -133,33 +148,31 @@ export function createIdeas({ publish }) {
       }
       idea.updatedAt = now();
       if (p.sessionId && !idea.sessionIds.includes(p.sessionId)) idea.sessionIds.push(p.sessionId);
-      changed(file);
+      changed();
       return idea;
     },
     'ideas.delete': (p) => {
-      const { file, doc } = resolve(p);
-      const idea = find(doc, p.id);
+      const idea = find(p.id);
       doc.ideas = doc.ideas.filter((x) => x !== idea);
-      changed(file);
+      changed();
       return true;
     },
     'ideas.reorder': (p) => {
-      const { file, doc } = resolve(p);
       const ids = p.ids ?? [];
       const listed = ids.map((id) => doc.ideas.find((x) => x.id === id)).filter(Boolean);
       doc.ideas = [...listed, ...doc.ideas.filter((x) => !listed.includes(x))];
-      changed(file);
+      changed();
       return true;
     },
     'ideas.toPrompt': (p) => {
-      const { doc, project } = resolve(p);
-      const idea = find(doc, p.id);
+      const idea = find(p.id);
+      const proj = idea.project ? (idea.project.name ?? idea.project.id) : 'global';
       const lines = [
-        `Implement the following idea from the ideas backlog (\`${idea.id}\` in ${project ? '.netpi/ideas.json' : GLOBAL}).`,
+        `Implement the following idea from the ideas backlog (\`${idea.id}\` in ${GLOBAL}).`,
         'Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with the ideas tool (action update): set the status to "in-progress" when you start and "done" when finished, and add a note section for anything important you learn.',
         '',
         `# ${idea.title}`,
-        `Priority: ${idea.priority}${idea.tags.length ? ` · Tags: ${idea.tags.join(', ')}` : ''}`,
+        `Priority: ${idea.priority} · Project: ${proj}${idea.tags.length ? ` · Tags: ${idea.tags.join(', ')}` : ''}`,
       ];
       if (idea.summary) lines.push('', idea.summary);
       for (const s of idea.sections) lines.push('', `## ${s.kind[0].toUpperCase()}${s.kind.slice(1)}${s.title ? `: ${s.title}` : ''}`, s.content);
@@ -168,16 +181,18 @@ export function createIdeas({ publish }) {
     'ideas.quickAdd': (p) => {
       if (!p.args?.trim()) throw err('bad_request', 'Usage: /idea <title>');
       const idea = api['ideas.add']({ sessionId: p.sessionId, idea: { title: p.args.trim() } });
-      const { project } = resolve({ sessionId: p.sessionId });
-      return `Idea added (${project ? `project ${project.name}` : 'global'}): ${idea.title} (${idea.id})`;
+      const proj = idea.project ? (idea.project.name ?? idea.project.id) : null;
+      return `Idea added (${proj ? `project ${proj}` : 'global'}): ${idea.title} (${idea.id})`;
     },
   };
 
   function seed() {
-    files.clear();
-    const net = [...store.projects.values()].find((p) => p.name === 'netpi');
+    doc.ideas.length = 0;
+    const all = [...store.projects.values()];
+    const net = all.find((p) => p.name === 'netpi');
+    const ai = all.find((p) => p.name === 'aiproxy');
+    const st = (p) => (p ? { id: p.id, name: p.name } : undefined);
     if (!net) return;
-    const { doc } = resolve({ projectId: net.id });
     const t = (h) => new Date(Date.now() - h * 3600_000).toISOString().replace(/\.\d+Z$/, 'Z');
     const mk = (o) => ({
       id: `idea-${rid(6)}`,
@@ -196,6 +211,7 @@ export function createIdeas({ publish }) {
     });
     doc.ideas = [
       mk({
+        project: st(net),
         title: 'Cache the model list per provider',
         summary: 'Avoid refetching /v1/models on every session switch; AiProxy takes ~800ms to answer when a backend is cold.',
         status: 'in-progress',
@@ -211,6 +227,7 @@ export function createIdeas({ publish }) {
         ],
       }),
       mk({
+        project: st(net),
         title: 'Retry-After aware backoff in AiProxy provider',
         summary: 'Honor Retry-After on 429/503 and cap the total wait at 2 minutes.',
         status: 'planned',
@@ -219,16 +236,18 @@ export function createIdeas({ publish }) {
         age: 20,
         sections: [{ id: 'sec-q7d8', kind: 'requirements', content: '- Exponential backoff with jitter (base 2s, max 30s)\n- `Retry-After` wins when present\n- Surface the countdown through `agent.notice`', updatedAt: t(19) }],
       }),
-      mk({ title: 'Syntax-highlight diffs in the edit view', summary: 'Use the file extension to highlight both sides of the diff.', status: 'open', priority: 'low', tags: ['ui'], age: 12 }),
-      mk({ title: 'Per-project default model', summary: 'A project can pin a default model and reasoning effort.', status: 'open', tags: ['ui', 'settings'], age: 9, createdBy: 'agent:ag_show' }),
-      mk({ title: 'Semantic search over docs/', summary: 'Embed docs and expose a `docs_search` tool.', status: 'parked', priority: 'low', tags: ['agents'], age: 50 }),
-      mk({ title: 'Stream compaction summaries', summary: 'Show the summary while it is generated instead of a spinner.', status: 'done', tags: ['ui'], age: 80, upd: 40 }),
-      mk({ title: 'Replace SQLite with flat files', summary: 'Rejected: concurrent writers and search need a real store.', status: 'rejected', priority: 'low', tags: ['storage'], age: 120, upd: 100 }),
+      mk({ project: st(net), title: 'Syntax-highlight diffs in the edit view', summary: 'Use the file extension to highlight both sides of the diff.', status: 'open', priority: 'low', tags: ['ui'], age: 12 }),
+      mk({ project: st(net), title: 'Per-project default model', summary: 'A project can pin a default model and reasoning effort.', status: 'open', tags: ['ui', 'settings'], age: 9, createdBy: 'agent:ag_show' }),
+      mk({ project: st(net), title: 'Semantic search over docs/', summary: 'Embed docs and expose a `docs_search` tool.', status: 'parked', priority: 'low', tags: ['agents'], age: 50 }),
+      mk({ project: st(net), title: 'Stream compaction summaries', summary: 'Show the summary while it is generated instead of a spinner.', status: 'done', tags: ['ui'], age: 80, upd: 40 }),
+      mk({ project: st(net), title: 'Replace SQLite with flat files', summary: 'Rejected: concurrent writers and search need a real store.', status: 'rejected', priority: 'low', tags: ['storage'], age: 120, upd: 100 }),
+      // other projects share the same file: the tab filters them out
+      mk({ project: st(ai), title: 'Serve /v1/models from a snapshot', summary: 'The aiproxy backend could answer models.list in <5ms with a 60s cache.', status: 'open', tags: ['perf'], age: 10 }),
+      mk({ project: st(ai), title: 'Stream chunk size negotiation', summary: 'Accept a preferred chunk size on the /v1/responses stream.', status: 'parked', priority: 'low', tags: ['perf'], age: 25 }),
+      // unbound ("global")
+      mk({ title: 'Try a local reranker for @ mentions', summary: 'Rank files by recent edits and open tabs.', tags: ['ui'], age: 3 }),
     ];
     doc.exists = true;
-    const g = resolve({});
-    g.doc.ideas = [mk({ title: 'Try a local reranker for @ mentions', summary: 'Rank files by recent edits and open tabs.', tags: ['ui'], age: 3 })];
-    g.doc.exists = true;
   }
 
   return { api, seed };

@@ -12,6 +12,8 @@ public static class UiTests
         {
             var p = await env.NewProject("ui-demo", CoreTests.Seed);
             var s = await env.NewSession(projectId: p.S("id"), title: "UI smoke");
+            // a session with no messages is transient (not listed): give the prepared session one
+            await env.Run(s.S("id")!, "hello [s:echo]");
             var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "smoke.mjs");
             var outDir = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "screenshots");
             var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };

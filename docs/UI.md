@@ -16,7 +16,7 @@ npm run build            # build:web (→ artifacts/app/wwwroot) + build:plugins
 npm run dev              # Vite dev server on :5173, proxies /ws /api /plugins → http://127.0.0.1:7431
 npm run mock             # mock host on :7431 (serves the built UI + the sample plugin), token "dev"
 npm run e2e              # Playwright walkthrough (starts its own mock on :7432), screenshots → web/mock/screenshots
-                         # (uses a local or global `playwright` install; see web/mock/pw.mjs)
+                         # (uses the playwright-core devDependency, or a local/global `playwright`; see web/mock/pw.mjs)
 node web/scripts/build-plugins.mjs --watch            # rebuild plugin UIs on change
 node web/scripts/build-plugins.mjs web/mock/sample-plugin   # plus extra plugin dirs
 node web/mock/fake-openai.mjs [port]  # scripted OpenAI-compatible model server for exercising the real host
@@ -211,8 +211,8 @@ into locals first, because after the parent clears the modal state or the row re
      A view that shrinks (the plan strip or queue chips appearing) or content that grows never does: the resize
      observer re-pins.
    - **Steps** groups fold by the Steps preference (`prefs.steps`): `done` (default) folds a group of more than 3
-     steps into `▸ N steps · time · tool counts` once its run has finished; `folded` folds from the second step on,
-     also while the agent works (a folded group is one line, like a single row, so the chat stays still), and the
+     steps into `▸ N steps · time · tool counts` once its run has finished; `folded` folds from the first step on,
+     also while the agent works (adding a second step cannot shrink an open row into a folded head line), and the
      group the agent is adding to shows its latest step on that line; `open` never folds. Steering input does not
      end a run. The user's choice to expand or collapse is kept per group in `chat.expanded`.
    - **Fork.** A user message's hover actions have **Fork** (`sessions.fork` up to the message before it): a new chat
@@ -427,7 +427,7 @@ Per-tab narrow layouts:
   call without an agent: the model, then `busy/slots` and the provider). Runs use three lines: name + activity +
   elapsed, title or task, and meta. A process shows its command + elapsed/exit, then
   pid · bg · size · cwd … time ago.
-- **Ideas:** a full-width title, a 2-line summary, then one meta line: status pill · priority · tags ·
+- **Ideas:** a full-width title, a 2-line summary, then one meta line: status pill · project badge · priority · tags ·
   sections · time. In an expanded card the actions are **Send to chat**, **+ Section**, edit, and ⋯ (move
   up/down, copy id, delete).
 - **Diagnostics:** the runtime facts drop out as the panel narrows. The view switcher collapses to icons. A
@@ -438,7 +438,7 @@ Per-tab narrow layouts:
 ### Built-in plugin tabs
 
 Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle
-sizes (minified; Svelte runtime and kit included): Work 88KB, Ideas 88KB, Diagnostics 99KB, Files 67KB.
+sizes (minified; Svelte runtime and kit included): Work 88KB, Ideas 90KB, Diagnostics 99KB, Files 67KB.
 
 **Work** (`netpi.work`, right). One `work.snapshot` feeds four collapsible sections, each with a count. The
 open or closed state of each section is remembered (`storageKey`).
@@ -463,23 +463,25 @@ open or closed state of each section is remembered (`storageKey`).
   `work.snapshot` (250ms; 400ms after `usage.recorded` and `usage.changed`) reconciles them. A 30s timer refreshes the snapshot
   while the tab is visible; while it is hidden, events only mark it dirty and it refreshes on show.
 
-**Ideas** (`netpi.ideas`, right). Shows the backlog of the active session's project (or the global file) with
-`ideas.list { sessionId }`.
+**Ideas** (`netpi.ideas`, right). Shows the single global backlog (`~/.netpi/ideas.json`, every idea carrying a
+`project`) with `ideas.list` (no parameters) and `projects.list` for the filter.
 
-- The header shows the scope badge (project name or *global*), the file path and a **+** button.
-- Filters: search over title, summary, tags and sections; a status menu (**Active** = open, planned,
-  in-progress; **All**; or one status), each with counts; and a **#** tag menu (multi-select; an idea matches
+- The header shows the project filter (the active project by default, following the active project until the user
+  picks *All projects*, *Global (unbound)* or another project), the file path and a **+** button.
+- Filters: search over title, summary, tags and sections; the project filter above; a status menu (**Active** = open,
+  planned, in-progress; **All**; or one status), each with counts; and a **#** tag menu (multi-select; an idea matches
   when it has any of the selected tags). Selected tags show as removable chips below the filters.
-- Cards show a status pill (a menu that calls `ideas.update { patch: { status } }`), priority, tags, section
-  count, an agent icon for agent-created ideas, and the update time. Expanding a card renders the summary and
-  its sections as markdown.
+- Cards show a project badge (folder + name, a globe for the unbound *Global*), a status pill (a menu that calls
+  `ideas.update { patch: { status } }`), priority, tags, section count, an agent icon for agent-created ideas, and the
+  update time. Expanding a card renders the summary and its sections as markdown.
 - Editing: title, summary, priority and tags inline; add, edit (kind, title, markdown; Ctrl+Enter saves) and
   remove sections through `addSections`, `updateSections` and `removeSectionIds`; delete with the host confirm
-  dialog.
+  dialog. New idea also has a project picker (default: the active project; *Global* for unbound).
 - Reordering uses the grip (shown on hover; HTML5 drag with a drop indicator) or **Move up / Move down** in the
   ⋯ menu, and sends the full id order to `ideas.reorder`. Delete is in the ⋯ menu too.
 - **Send to chat** calls `ideas.toPrompt` and `ctx.app.insertText`.
-- The list refetches on `ideas.changed` for the shown file and on `ctx.app.onChange`.
+- The list refetches on `ideas.changed` (one file, so always) and the default filter follows the active project on
+  `ctx.app.onChange`.
 
 **Diagnostics** (`netpi.diagnostics`, right). `diag.snapshot { events: 300 }` plus a runtime line (pid, working
 set, uptime, threads, framework; the full details are in its tooltip). A segmented control (buttons carry
@@ -688,9 +690,11 @@ names or an inline `<svg …>` string.
 - Scoped events carry a non-null `sid`. The UI also falls back to `d.sessionId`.
 - `agent.status` is broadcast whenever `status` **or** `activity` changes. The run status line above the composer
   shows it in a word with the time since `startedAt`.
-- `sessions.create` returns before the profiles plugin gives the new chat its default profile (on `session.created`);
-  the `session.updated` that follows carries it. The app never replaces a session with an older copy (`updatedAt`),
-  so an RPC result that arrives after that event can't take the profile away again.
+- A new chat is **transient** until its first message: not saved, not listed, no `session.created`. The first message
+  materializes it (`session.created` → `message.added` → `session.updated`), and the profiles plugin gives it its
+  default profile there (the `session.updated` that follows carries it; the hook still guarantees it is set before the
+  first model call). The app never replaces a session with an older copy (`updatedAt`), so an RPC result that arrives
+  after that event can't take the profile away again.
 - `message.added` for a **steering** input has `meta.kind: 'steer'` (and `'queued'` for a queued follow-up),
   so the UI can tag the input and keep the run's steps grouped. `meta.agentName` and `meta.sessionId` on
   `agent-result` and `agent-message` notices enable the "open" link. A `budget` notice with `meta.canOverride` (the

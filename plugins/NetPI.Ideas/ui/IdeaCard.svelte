@@ -27,6 +27,7 @@
     STATUSES.map((s) => ({ label: s, checked: idea.status === s, onclick: () => s !== idea.status && api.update(idea.id, { status: s }) })),
   );
   const agentMade = $derived(String(idea.createdBy ?? '').startsWith('agent'));
+  const proj = $derived(idea.project?.id ? (idea.project.name ?? idea.project.id) : null);
 
   function startEdit(e) {
     e?.stopPropagation();
@@ -103,6 +104,9 @@
         </button>
       {/snippet}
     </Menu>
+    <span class="proj" title={proj ? `Project ${proj}` : 'Not bound to a project (global)'}>
+      <Icon name={proj ? 'folder' : 'globe'} size={11} /><span class="pname">{proj ?? 'Global'}</span>
+    </span>
     <span class="prio" data-p={idea.priority} title="Priority: {idea.priority}">
       <Icon name={idea.priority === 'high' ? 'arrow-up' : idea.priority === 'low' ? 'arrow-down' : 'more'} size={11} /><span class="plabel">{idea.priority}</span>
     </span>
@@ -315,6 +319,7 @@
   /* narrow: keep status, priority arrow, section count and time; tags are in the filter menu and the tooltip */
   @container (max-width: 279px) {
     .meta .plabel,
+    .meta .proj .pname,
     .meta .dim.agent {
       display: none;
     }
@@ -328,6 +333,18 @@
     align-items: center;
     gap: 3px;
     color: var(--fg-dim);
+  }
+  .proj {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--fg-dim);
+    max-width: 110px;
+  }
+  .proj .pname {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .prio {
     display: inline-flex;
