@@ -18,9 +18,11 @@ internal sealed record Opinion(string Model, bool Harmless, IReadOnlyDictionary<
 /// <summary>
 /// The second opinion (<c>guardrails.secondOpinion</c>, off by default): before an <c>ask:</c> rule asks the user about a
 /// shell command, a decision model reads it through <c>decide.ask</c> (the Decide plugin, AiGateway's
-/// <c>/v1/systemone</c>). A command it finds confidently read-only runs without asking: p(read_only) ≥ 1 − t and
-/// p(destructive), p(stops_process), p(remote_change) each &lt; t (<c>guardrails.secondOpinionThreshold</c>, default 0.2:
-/// on 852 real commands the Qwen decision called none of Qwen's own risky ones harmless at 0.2, docs/DECISION-MODELS.md).
+/// <c>/v1/systemone</c>). A command it finds harmless runs without asking: p(destructive), p(stops_process) and
+/// p(remote_change) each &lt; t (<c>guardrails.secondOpinionThreshold</c>, default 0.2: on 852 real commands the Qwen
+/// decision called none of Qwen's own risky ones harmless at 0.2, and none of the risky ones among 50 hand-labelled hard
+/// cases; docs/DECISION-MODELS.md, 0.4). p(read_only) is asked and shown, not required: the model underrates builds and
+/// test runs as read-only.
 /// Everything else asks as before, with the model's answer on the card. Blocking rules and write/edit are never relaxed;
 /// no answer (no Decide plugin, the model not loaded, a timeout) means the user is asked.
 /// </summary>
@@ -61,10 +63,13 @@ internal sealed class SecondOpinion(IPluginContext ctx)
         catch { return DefaultThreshold; }
     }
 
-    /// <summary>Clears a command only when it is confidently read-only and no risk question comes near yes.</summary>
+    /// <summary>
+    /// Clears a command only when no risk question comes near yes. Read-only is not required: the Qwen decision gives
+    /// <c>dotnet test</c> 0.05–0.4 read-only, so a read-only bar cleared none of the hand-labelled hard cases, while the
+    /// risk questions alone cleared 20 of their 39 read-only commands and no risky one.
+    /// </summary>
     public static bool IsHarmless(IReadOnlyDictionary<string, double> p, double threshold) =>
-        p.TryGetValue("read_only", out var ro) && ro >= 1 - threshold
-        && Risks.All(r => p.TryGetValue(r, out var v) && v < threshold);
+        Risks.All(r => p.TryGetValue(r, out var v) && v < threshold);
 
     /// <summary>Null when switched off; otherwise the model's answer, or an <see cref="Opinion.Error"/> when there is none.</summary>
     public async Task<Opinion?> AskAsync(string tool, string command, string? cwd, string? host, CancellationToken ct)

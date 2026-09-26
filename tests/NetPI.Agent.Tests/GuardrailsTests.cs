@@ -222,7 +222,7 @@ public static class GuardrailsTests
         Check.Equal(2, ran.Count, "allowed by the user");
         Check.Equal("git status --short|git push origin main", string.Join("|", decided));
 
-        // the threshold: 0.97 read-only is not enough at 0.01
+        // the threshold: risk answers of 0.02 are too much at 0.01
         h.Settings.Set("guardrails.secondOpinionThreshold", JsonValue.Create(0.01));
         await h.SendAsync(s.Id, "git status");
         await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 2, "a stricter threshold asks");
@@ -231,8 +231,9 @@ public static class GuardrailsTests
 
         Check.True(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.85, ["destructive"] = 0.1, ["stops_process"] = 0.1, ["remote_change"] = 0.19 }, 0.2));
         Check.False(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.85, ["destructive"] = 0.1, ["stops_process"] = 0.1, ["remote_change"] = 0.2 }, 0.2), "a risk at the threshold");
-        Check.False(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.79, ["destructive"] = 0, ["stops_process"] = 0, ["remote_change"] = 0 }, 0.2), "not confidently read-only");
+        Check.True(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.1, ["destructive"] = 0, ["stops_process"] = 0, ["remote_change"] = 0 }, 0.2), "read-only is shown, not required");
         Check.False(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 1 }, 0.2), "a missing answer never clears");
+        Check.False(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 1, ["destructive"] = 0, ["stops_process"] = 0 }, 0.2), "every risk must be answered");
     }
 
     private static async Task SecondOpinionLimits()
