@@ -200,6 +200,34 @@ Qwen decision destructive 49/50, stops 39/50 (8 false yes), remote 45/50; Qwen g
 48 / 46 / 10 (40 false remote); Laya 31 / 37 / 19. So the Guardrails second opinion clears on the risk questions
 only (NetPI after 2026-09-26).
 
+## CLM-8B (Contrastive Language Models), evaluated 2026-09-27
+
+A System One model from Stanford/NVIDIA (https://contrastive-lm.notion.site, github.com/Contrastive-LM/CLM): a frozen
+Qwen3-8B encoder (last-token pooling) and two trained 20M-parameter heads (state, action) scored by cosine × 100;
+answer embeddings are cached. Its server (`clm-serve`) speaks TypeSafe `/v1/systemone`, so it could sit behind
+AiGateway as a `systemone` engine. Tested on the nuc 4070: the Q8_0 encoder GGUF (czl/CLM-v0.1-8B-GGUF) in llama.cpp,
+fully on the GPU (9.0 GB; yue2 stopped for the run), the reference head `CLM_v0.1-8B.pt`. The setup reproduces the
+authors' own reference answers (their parity file's invoice anchor: billing 0.98); the base64 embedding transport and
+tokenization match; a run with the encoder partly on the CPU gave the same answers.
+
+| task | CLM-8B zero-shot | constant / random | Qwen3.8-27B decision |
+|---|---|---|---|
+| log lines (120 gold), severity / category | 0.117 / 0.233 | always "warning" 0.117, always "media" 0.242 | 0.892 / 0.675 |
+| log lines, actionable / routine (questions) | 0.850 / 0.350 | always "no" 0.850 / 0.308 | 0.875 / 0.908 |
+| log lines, actionable / routine (statements) | 0.208 / 0.683 | always "yes" 0.150 / 0.692 | – |
+| guard (50 hand-labelled), stops a process | 6/50 (44 false yes) | – | 39/50 |
+| guard, destructive (statements) | 1/50 (49 false yes) | – | 49/50 |
+| browser (475 Mind2Web steps, ranker top-20), top-1 | 0.034 | random ≈ 0.042 | 0.425 |
+| time (4 questions / one step, 4070) | 78–166 ms | | 95 ms batched (5090) |
+
+CLM answers nearly the same for every input, and its yes/no answers flip with the question's wording (questions vs
+statements), not with the content. The authors' own parity data shows modest zero-shot accuracy too (the heads pick
+the gold answer first in 51 % of their 23,858 test questions). **Not usable zero-shot for our tasks**; the decisions
+stay on NInfer (Qwen logit readout), Laya and Kev. What could still work is the architecture with our own data: a head
+trained on frozen embeddings takes about an hour (their `train/finetune.py`), and our Qwen-labelled logs, the 852
+commands and the Mind2Web training split exist. Files on the nuc: `/home/quazzie/clm` (`start.sh`, `stop.sh`,
+README); scripts `decisions-lab/scripts/clm_browser.mjs`, `p0_guard.mjs run clm|clm_s`, `serve_check.mjs`.
+
 ## Known limits and next experiments
 
 - **The log teacher is the ceiling, and the student reaches it.** Retrained on Qwen3.8-27B's labels, Laya went from
