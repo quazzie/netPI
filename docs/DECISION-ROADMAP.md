@@ -12,7 +12,7 @@ that session, in the order to do them. Results so far: `DECISION-MODELS.md`; the
 | AiGateway `/v1/systemone` bridge | `C:\ai\projects\aiswitcher` (D69; `SystemOne.cs`, `SystemOneBridge.cs`) | deployed. TypeSafe System One for NInfer models → one `/v1/decision`; Kev on the nuc router is forwarded as-is. |
 | One-NInfer guards | AiSwitcher D70 | deployed. The hub finds NInfer by image name and refuses a second start; no second crash restart while one is starting. |
 | NetPI `decide` tool + `decide.ask` RPC | `plugins/NetPI.Decide` | built and deployed. Default model `kev-9b` (nuc, manual switch that also unloads yue2); `qwen3.8-27b` works through the bridge. |
-| nuc decision models | router `quazzie/llama.cpp:kev-router` (kev-9b, kev-4b, exclusive); `laya-tasks` :8010 (`laya-logs`); Ollaya `decide` stack :11435 | running. `laya-tasks` serves **Laya-logs-qwen** as `logs` (0.78 / 0.93 / 0.93 / 0.97, was the Kev-taught 0.53 / 0.89 / 0.84 / 0.91) since 2026-09-26 (1.1). Kev-9B does not fit on the 4070 beside `laya-tasks` (OOM on load). |
+| nuc decision models | router `quazzie/llama.cpp:kev-router` (kev-9b, kev-4b, exclusive); `laya-tasks` :8010 (`laya-logs`); Ollaya `decide` stack :11435 | running. `laya-tasks` serves **Laya-logs-qwen** as `logs` (0.78 / 0.93 / 0.93 / 0.97, was the Kev-taught 0.53 / 0.89 / 0.84 / 0.91) since 2026-09-26 (1.1), weights in bf16 since 2026-09-27 (1.2 GB instead of 2.7, same answers). Kev-9B does not fit on the 4070 beside `laya-tasks` (OOM on load) and is no longer recommended for any task (`DECISION-MODELS.md`). |
 | test sets and scripts | `C:\AI\decisions-lab` (README there); nuc `/home/quazzie/train` | 120 hand-labelled log lines, 852 real commands with Qwen's guard labels, 44 Windows UIA tasks, Mind2Web on the nuc. |
 
 ## Ground rules
@@ -159,8 +159,9 @@ Needs a plugin hook on agent turns/tool calls and a way to send the same message
 3.4 **Ideas**: suggest closing an idea when a change finishes it.
 
 3.5 **Browser and computer use** (a larger project, own design): browser element choice = ranker top-20 +
-qwen3.8-27b logit readout (0.425 top-1, the best measured); Windows = UI Automation list + Kev-9B (0.89 top-1) or
-Qwen (not yet measured on Windows). Record every real step for later training.
+qwen3.8-27b `/v1/decision` (0.461 top-1 on NInfer, 124 ms; × the Qwen-taught Laya picker 0.478); Windows = UI
+Automation list + qwen3.8-27b writing the control's number (0.98 top-1, 139 ms; Kev-9B 0.89). Measured 2026-09-27
+(`DECISION-MODELS.md`, "Known limits"). Record every real step for later training.
 
 ## Phase 4: model quality (nuc)
 
