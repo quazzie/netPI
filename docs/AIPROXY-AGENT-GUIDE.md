@@ -66,6 +66,7 @@ Each model entry:
 | `input_modalities` | string[] | e.g. `["text"]` or `["text","image"]`. Only send images if `"image"` is present. |
 | `reasoning` | object\|null | `null` = model has no reasoning control (or unknown). Non-null: `supported` (bool), `efforts` (allowed reasoning-effort values, e.g. `["none","low","medium","xhigh"]`), `default` (the backend default if you don't specify). |
 | `meta.n_ctx` | int\|null | Same value as `context_window`, exposed in engine dialect. |
+| `api` | string\|null | `null` = a normal chat model. `"systemone"` = a decision model (Kev) that only answers `POST /v1/systemone` (typed questions in, probabilities out): never use it for chat. NetPI leaves these models out of its model list. |
 | `status.value` | string | Live state: `"loaded"` (resident, fast to serve), `"unloaded"` (routable but will be loaded on first request — expect a slow first response), `"stopped"` (owning backend not running — request will be held up to 2 min, then 503), `"offline"` (remote backend unreachable). |
 
 **Choosing a model, as an agent, in order:**

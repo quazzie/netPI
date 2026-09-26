@@ -147,6 +147,8 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         if (string.IsNullOrWhiteSpace(id)) return null;
         var ov = o.ModelOverride(id);
         if (ov.Bool("hidden", false)) return null;
+        // A model with a non-chat "api" (AiGateway: "systemone" for Kev decision models) can't serve a conversation.
+        if (e.Str("api") is { Length: > 0 }) return null;
 
         var modalities = new List<string>();
         var mod = e.Prop("input_modalities");

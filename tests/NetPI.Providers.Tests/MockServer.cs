@@ -64,6 +64,11 @@ internal sealed class MockServer : IAsyncDisposable
           "input_modalities": ["text", "image"],
           "reasoning": { "supported": true, "efforts": ["none", "low", "medium", "xhigh"], "default": "medium" },
           "meta": { "n_ctx": 262144 }, "status": { "value": "loaded" }
+        },
+        {
+          "id": "kev-9b", "object": "model", "owned_by": "llamacpp", "created": 1790183814,
+          "context_window": 16384, "input_modalities": null, "reasoning": null,
+          "meta": { "n_ctx": 16384 }, "status": { "value": "loaded" }, "api": "systemone"
         }
       ]
     }

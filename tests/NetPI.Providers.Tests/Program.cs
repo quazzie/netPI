@@ -191,6 +191,7 @@ await t.Run("aiproxy: /v1/models maps every catalog field", async () =>
 {
     catalog = await aiproxy.ListModelsAsync(false, CancellationToken.None);
     t.Eq(4, catalog.Count, "model count");
+    t.Check(catalog.All(m => m.Id != "kev-9b"), "a model with an api (systemone decision model) is not a chat model");
     var gemma = catalog.Single(m => m.Id == "gemma-4");
     t.Eq("aiproxy/gemma-4", gemma.Ref, "ref");
     t.Eq(65536, gemma.ContextWindow, "context_window");
