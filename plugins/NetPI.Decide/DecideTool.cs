@@ -16,7 +16,7 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         ReadOnly = true,
         SummaryArg = "file",
         Description =
-            "Ask a fast local decision model (Kev) typed questions about text: yes/no, pick one option, or a score on levels. " +
+            "Ask a fast local decision model typed questions about text: yes/no, pick one option, or a score on levels. " +
             "It never writes text; each answer comes with a probability. Give one `text`, a list of `items`, or a `file` " +
             "(every non-empty line is an item, e.g. a log). Every item gets every question; items the model is unsure " +
             "about are listed so you can check them yourself. Good for sorting logs, triaging issues, labelling many " +
