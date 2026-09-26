@@ -47,7 +47,8 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
   switch: AiGateway answers System One for NInfer models through NInfer's `/v1/decision` (fork, `local/main`, ~35 ms
   per question; it shares NInfer's two slots with the agents). The AiProxy provider leaves models
   with an `api` out of the chat model list. Which model for which task (the results matrix):
-  `docs/DECISION-MODELS.md`; every experiment behind it: `docs/archive/2026-09-26-decisions.md`.
+  `docs/DECISION-MODELS.md`; every experiment behind it: `docs/archive/2026-09-26-decisions.md`; what comes next
+  (baselines, multi-prefill in NInfer, decisions inside NetPI): `docs/DECISION-ROADMAP.md`.
 - **Chat UI:** the streamed answer is laid out as the finished one will be, so nothing jumps between steps; a Steps
   preference (expanded / fold when done / folded), chat width, zoom and spellcheck are in Settings.
 - **History:** the Windows bring-up, the first smoke tests and the prompt work are recorded in
