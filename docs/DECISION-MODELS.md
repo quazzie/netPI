@@ -110,6 +110,12 @@ another; a different set of 100 lines per row, except "warm", which repeats the 
   touching the 5090, so a log file belongs on the nuc (1.3).
 - Next to one generating agent, back-to-back decisions cut its decode from 139 to 54 tok/s (−61 %) and take 43 %
   longer themselves. With both slots generating, a decision waits for a slot (here up to one 10-s agent turn).
+- Where the time goes (NInfer's per-branch `timing`, 2026-09-26): ≈30 ms of host time per question is
+  `program_submit` (kernel launches; prefill has no CUDA graphs) and ≈22 ms is device work. Capturing a short state
+  to share it costs more than it saves (a whole ~187 MB recurrent StateImage is copied): with `share_state: false`
+  a question takes 54 ms instead of 75.5, a line 218 ms instead of 304. AiGateway now sends `share_state: false` for
+  states under 1000 characters (AiSwitcher D75). The remaining cost is per-forward overhead, so the win is running
+  all branches in one batched forward (Phase 2 Stage 2), not a tighter per-branch loop.
 
 **0.2 Two agents prefilling at once.** Stateless chat, cold prompts built from NetPI's docs.
 
@@ -146,6 +152,9 @@ the agent's next turn.
   (then the agent's context survives only as a Disposable shared prefix).
 - So in-conversation checks (3.2) need two NInfer changes: decisions rendered with the agent's reasoning effort
   (thinking on, then an empty closed think block before the answer), and decisions that fork a protected head.
+- The fork is done (NInfer fork `31443f05` + `c8735fe2`, deployed 2026-09-26): a decision on the agent's input or
+  head now forks it, and the agent's next turn stays cached (22276 of 22308 after an input decision, 22300 of 22332
+  after two head decisions, ~190 ms). The effort rendering is Phase 2 work (`reasoning_effort` in the API).
 
 **0.4 Guard accuracy.** The 852 real commands × the guard questions phrased as questions (`guard_questions_q.json`),
 state = context, tool and command. Reference: Qwen3.8-27B's generative answers with reasoning low

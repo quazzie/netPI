@@ -22,7 +22,8 @@ that session, in the order to do them. Results so far: `DECISION-MODELS.md`; the
   with loadout **Agent**. A hand-run test build uses **another port** (`--port 8097`; 8089 is VLC's web interface on
   this machine): AiHub adopts whatever answers on 8080 and restarts it when it disappears. Before AiSwitcher D74
   (deployed 2026-09-26) the hub also took a test build on another port for the engine and restarted production when it
-  stopped, even with the loadout Off.
+  stopped, even with the loadout Off; before D76 (deployed the same day) it could restart NInfer as a crash a few
+  seconds after a completed switch to Off. Stop a test build with `POST /admin/shutdown` on its port.
 - **Ask the user** before stopping or restarting NInfer, AiHub or NetPI (it drops in-flight agent work), before
   touching `%USERPROFILE%\.netpi`, and before adding a NuGet or npm package (CLAUDE.md). Measurements that only send
   requests need an idle moment, not a restart: ask for one.
@@ -59,6 +60,7 @@ Decisions are meant to read the cache, capture with Disposable retention and nev
 *Result:* reuse only when the agent's reasoning effort matches the decision's rendering (effort is part of the
 prompt; `/v1/decision` renders thinking off, so only agents at effort `none`); and a decision that reuses an agent's
 lineage consumes it (move, not fork), so the agent's next turn re-prefills. 3.2 needs both fixed in NInfer.
+*The fork is fixed and deployed (fork `31443f05` + `c8735fe2`, 2026-09-26); the effort is Phase 2 (`reasoning_effort`).*
 
 0.4 **Guard accuracy.** The 852 commands × the guard questions (phrased as questions) through `/v1/decision`, compared
 with Qwen's generative labels (`guard_qwen.jsonl`), per question; the same for Kev-9B and laya:typed-decisions on the
@@ -164,12 +166,15 @@ Qwen (not yet measured on Windows). Record every real step for later training.
 ## Phase 5: housekeeping
 
 5.1 Push the three repositories (ask first; NInfer pushes `local/main` to `origin`).
-5.2 NInfer: squash the two fixups at the next natpate/upstream sync (FORK.md).
+5.2 NInfer: squash the fixups (FORK.md items 6, 7 and 13) at the next natpate/upstream sync.
 5.3 nuc: clean up test leftovers (containers, `models.ini.pre-kev-*.bak`, old images); ask before deleting.
 
 ## Order for the next session
 
-1. 0.1 and 0.3 (an idle moment, no restart), 1.1 on the nuc alongside.
-2. 0.2 and 0.4.
-3. The Phase 2 design, shown to the user; wait for the go-ahead.
-4. Meanwhile 1.4 + 1.5 (one NInfer deploy), 1.2, 1.6, then 3.1.
+Phases 0 and 1 (except 1.3) are done and deployed, 3.1 and the loop detector are built, and the Phase 2 design is
+approved. Next:
+
+1. Phase 2b, Stage 2: all branches of a decision in one batched forward (the profiling skips Stage 1, see
+   `DECISION-MODELS.md` 0.1 and the design's §7). Then `states` and `reasoning_effort` in the API.
+2. The user labels the 50 guard commands (`guard_to_label.json`); then decide on turning 3.1 on.
+3. 1.3, and the prefix-reusing checks of 3.2 once `reasoning_effort` lands.
