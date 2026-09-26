@@ -12,7 +12,7 @@ that session, in the order to do them. Results so far: `DECISION-MODELS.md`; the
 | AiGateway `/v1/systemone` bridge | `C:\ai\projects\aiswitcher` (D69; `SystemOne.cs`, `SystemOneBridge.cs`) | deployed. TypeSafe System One for NInfer models → one `/v1/decision`; Kev on the nuc router is forwarded as-is. |
 | One-NInfer guards | AiSwitcher D70 | deployed. The hub finds NInfer by image name and refuses a second start; no second crash restart while one is starting. |
 | NetPI `decide` tool + `decide.ask` RPC | `plugins/NetPI.Decide` | built and deployed. Default model `kev-9b` (nuc, manual switch that also unloads yue2); `qwen3.8-27b` works through the bridge. |
-| nuc decision models | router `quazzie/llama.cpp:kev-router` (kev-9b, kev-4b, exclusive); `laya-tasks` :8010 (`logs`); Ollaya `decide` stack :11435 | running. `laya-tasks` serves **Laya-logs-qwen** as `logs` (0.78 / 0.93 / 0.93 / 0.97, was the Kev-taught 0.53 / 0.89 / 0.84 / 0.91) since 2026-09-26 (1.1). Kev-9B does not fit on the 4070 beside `laya-tasks` (OOM on load). |
+| nuc decision models | router `quazzie/llama.cpp:kev-router` (kev-9b, kev-4b, exclusive); `laya-tasks` :8010 (`laya-logs`); Ollaya `decide` stack :11435 | running. `laya-tasks` serves **Laya-logs-qwen** as `logs` (0.78 / 0.93 / 0.93 / 0.97, was the Kev-taught 0.53 / 0.89 / 0.84 / 0.91) since 2026-09-26 (1.1). Kev-9B does not fit on the 4070 beside `laya-tasks` (OOM on load). |
 | test sets and scripts | `C:\AI\decisions-lab` (README there); nuc `/home/quazzie/train` | 120 hand-labelled log lines, 852 real commands with Qwen's guard labels, 44 Windows UIA tasks, Mind2Web on the nuc. |
 
 ## Ground rules
@@ -67,30 +67,35 @@ user to label: `decisions-lab/results/phase0/guard_to_label.json`.
 
 ## Phase 1: quick wins (no engine work)
 
-1.1 **Serve Laya-logs-qwen.** *Done 2026-09-26: `logs` = Qwen-taught (`serve.sh` on the nuc; not a
+1.1 **Serve Laya-logs-qwen.** *Done 2026-09-26: `laya-logs` = Qwen-taught (`serve.sh` on the nuc; not a
 Dockhand stack, nothing else used the container). The Kev-taught one is not kept resident: a second model costs 1.7 GB
 of the 4070, which Kev-9B already lacks.* Register the checkpoint in `laya-tasks` as `logs-qwen`, check it with
 `serve_check.mjs` on the gold lines, then make it `logs` (keep the Kev-taught one as `logs-kev` for a while). Redeploy
 through Dockhand (container restarts are the user's call if something else uses it). Update `DECISION-MODELS.md`.
 
-1.2 **All decision models behind AiGateway.** Register `laya-tasks` (and Ollaya if useful) in AiSwitcher's lab.json
+1.2 **All decision models behind AiGateway.** *Built 2026-09-26 (AiSwitcher D73, branch `claude/decision-engines`):
+a `systemone` engine kind; `laya-nuc` / `laya-logs` in the sample and prod configs; the fit check now counts it, so
+kev-9b beside it plans as `does_not_fit` instead of an OOM. Ollaya stays out (no `/health`, weak zero-shot). Deploy:
+the user adds it to `publish/hub/lab.json`, publishes, restarts hub and gateway.* Register `laya-tasks` (and Ollaya if useful) in AiSwitcher's lab.json
 with `api: "systemone"` so NetPI reaches every decision model through one URL and model id; the gateway forwards
 System One for non-NInfer engines as-is.
 
 1.3 **Bulk vs interactive in `decide`.** Bulk work (a file of lines) belongs on the nuc (Laya: all questions in one
 pass, ~37 ms per line, no 5090); single questions and in-loop checks on NInfer. Options: a `decide.bulkModel` setting
 used above N items, or per-call guidance in the tool description. Decide after 0.1. *0.1 says bulk belongs on the
-nuc: Laya `logs` is 8.5× faster per line and back-to-back NInfer decisions cut a generating agent's decode by 61 %.*
+nuc: Laya `laya-logs` is 8.5× faster per line and back-to-back NInfer decisions cut a generating agent's decode by 61 %.*
 
-1.4 **NInfer graceful stop** (AiSwitcher `docs/COMPANION-CHANGES.md` A6): `POST /admin/shutdown?drain_ms=` (loopback
+1.4 **NInfer graceful stop** *Built 2026-09-26 (fork `7e348652`, `docs/admin.md`), not deployed yet.* (AiSwitcher `docs/COMPANION-CHANGES.md` A6): `POST /admin/shutdown?drain_ms=` (loopback
 only; stop admitting with 503 `shutting_down`, drain, exit 0) and a console Ctrl handler. AiHub already calls it and
 falls back to a kill; today it always kills. A fork-local feature: new files plus one-line hooks, like `/v1/decision`.
 
-1.5 **NInfer `/slots` busy counters for non-streaming requests** (COMPANION-CHANGES A3; AiSwitcher idea
+1.5 **NInfer `/slots` busy counters for non-streaming requests** *Built 2026-09-26 (fork `46d51b23`), not deployed
+yet.* (COMPANION-CHANGES A3; AiSwitcher idea
 `idea-k7q2vn`): `n_decoded`, `n_prompt_tokens_processed/_cache`, decode t/s are null while a non-streaming request
 runs, so the taskbar shows nothing. Deploy 1.4 and 1.5 together with one NInfer restart.
 
-1.6 **AiHub graceful quit.** The hub quits only from its tray menu; the switch-over had to kill it. A loopback
+1.6 **AiHub graceful quit.** *Built 2026-09-26 (AiSwitcher D72, branch `claude/decision-engines`; refuses during a
+switch or gateway update unless forced), not deployed yet.* The hub quits only from its tray menu; the switch-over had to kill it. A loopback
 `POST /control/hub/quit` (same path as the tray's Quit) makes publishing and restarts clean.
 
 ## Phase 2: multi-prefill in NInfer (design first, then build)
@@ -104,7 +109,9 @@ agent prefills the gain is mostly shorter waits.
 DeltaNet) state slots (`--device-state-slots 0 --host-state-slots 16`); KV pages and shared prefixes; the ragged
 prefill paths that exist (`tests/*ragged*`); DFlash2 speculative decoding and CUDA graphs.
 
-2.2 **Design** (`docs/multi-prefill.md` in the fork), for the user's approval before any code:
+2.2 **Design** (`docs/multi-prefill.md` in the fork), for the user's approval before any code. *Draft written 2026-09-26
+(fork `3f440fab`), waiting for approval: decisions are overhead-bound, so batch branches inside one request first
+(2–5×); 2a becomes prefill scheduling (shortest first per chunk, admission during prefill, a decode share).*
 - 2a *Multi-lane prefill*: the prefill chunks of two lanes in one ragged forward pass, each lane with its own
   recurrent state; a shared chunk budget; how decode and prefill interleave.
 - 2b *Multi-branch decisions*: prefill the shared state once, fork the recurrent state per branch (plus copy-on-write
@@ -116,7 +123,8 @@ prefill paths that exist (`tests/*ragged*`); DFlash2 speculative decoding and CU
 2.3 **Build and prove it.** Batched vs sequential logits equal within tolerance; ctest serve/runtime set (FORK.md);
 throughput vs the 0.1/0.2 baselines; two-agent regression. Deploy by the one-NInfer procedure.
 
-2.4 **Interim, if 2 is far off:** let decisions use both slots when the agents are idle (drop the endpoint mutex in
+2.4 *(Superseded by the design, §5: one worker and one prefill owner would still serialize parallel decisions.)*
+**Interim, if 2 is far off:** let decisions use both slots when the agents are idle (drop the endpoint mutex in
 favour of normal admission), measured against 0.1.
 
 ## Phase 3: decisions inside NetPI
