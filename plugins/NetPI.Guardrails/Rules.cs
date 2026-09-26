@@ -130,6 +130,13 @@ internal sealed class RuleSet
         return ask;
     }
 
+    /// <summary>The command a bash, pwsh or ssh_run call runs (null for other tools or without one).</summary>
+    internal static string? CommandOf(string tool, JsonElement args) =>
+        CommandTools.Contains(tool) ? Arg(args, "command", "script", "cmd") : null;
+
+    /// <summary>The host an ssh_run call runs on, when it names one.</summary>
+    internal static string? HostOf(JsonElement args) => Arg(args, "host", "target", "server");
+
     /// <summary>The parts of a command line, split where a shell starts another command (quotes are not understood).</summary>
     internal static IEnumerable<string> Parts(string command) =>
         Regex.Split(command, @"\r?\n|&&|\|\||[;|&]").Select(p => p.Trim()).Where(p => p.Length > 0);

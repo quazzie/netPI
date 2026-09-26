@@ -13,6 +13,8 @@ public static class GuardrailsTests
         t.Add("guardrails: ask rules wait for the user's OK with the instance given back (allow, no, a message instead)", AskRules);
         t.Add("guardrails: in a subagent an ask rule blocks; switched off, nothing is checked", SubagentAndOff);
         t.Add("guardrails: the default rules block the catastrophic, not everyday work; spellings of a path", DefaultRules);
+        t.Add("guardrails: second opinion: a confidently read-only command runs without asking, the rest ask with the model's view", SecondOpinionClears);
+        t.Add("guardrails: second opinion never relaxes a block or write/edit, is off by default, and asks when the model fails", SecondOpinionLimits);
     }
 
     private static async Task<TestHost> StartAsync()
@@ -165,6 +167,141 @@ public static class GuardrailsTests
         await h.SendAsync(s.Id, "push");
         await h.IdleAsync(s.Id);
         Check.Equal(1, ran.Count, "ran unchecked");
+    }
+
+    /// <summary>A fake decide.ask: answers by the command, and records every command it was asked about.</summary>
+    private static List<string> FakeDecide(TestHost h, Func<string, (double ReadOnly, double Risk)?> answer)
+    {
+        var asked = new List<string>();
+        h.Rpc.Register("decide.ask", (r, ct) =>
+        {
+            var command = r.Prop("state")?.GetProperty("command").GetString() ?? "";
+            lock (asked) asked.Add(command);
+            Check.Equal(4, r.Prop("questions")!.Value.EnumerateObject().Count(), "the four guard questions");
+            if (answer(command) is not { } a) throw new RpcException("model_not_loaded", "qwen3.8-27b: HTTP 404 model_not_loaded");
+            JsonObject Yes(double p) => new() { ["type"] = "noul", ["noul"] = p };
+            return Task.FromResult<object?>(new JsonObject
+            {
+                ["destructive"] = Yes(a.Risk), ["stops_process"] = Yes(a.Risk / 2), ["remote_change"] = Yes(a.Risk), ["read_only"] = Yes(a.ReadOnly),
+            });
+        });
+        return asked;
+    }
+
+    private static async Task SecondOpinionClears()
+    {
+        await using var h = await StartAsync();
+        h.Settings.Set("guardrails.commands", new JsonArray("ask: ^git"));
+        h.Settings.Set("guardrails.secondOpinion", JsonValue.Create(true));
+        var decided = FakeDecide(h, c => c.StartsWith("git status") ? (0.97, 0.02) : (0.05, 0.9));
+        var ran = new List<string>();
+        h.AddTool(Recorder("bash", ran));
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done") : Reply.Tool("bash", new { command = Reply.LastUser(r) });
+
+        // read-only: cleared, it runs, nobody is asked
+        await h.SendAsync(s.Id, "git status --short");
+        await h.IdleAsync(s.Id);
+        Check.Equal(1, ran.Count, "cleared: it ran");
+        Check.Equal(0, h.Bus.OfType("guard.asked").Count, "nobody was asked");
+        var cleared = FakeBus.Data(h.Bus.OfType("guard.cleared").Single());
+        Check.Equal("git status --short", (string?)cleared["subject"]);
+        Check.Equal(true, (bool?)cleared["opinion"]!["harmless"]);
+        Check.Equal("qwen3.8-27b", (string?)cleared["opinion"]!["model"]);
+        Check.Equal(0.97, (double?)cleared["opinion"]!["p"]!["read_only"]);
+
+        // not read-only: asks as before, with the model's view on the card
+        await h.SendAsync(s.Id, "git push origin main");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 1, "it asks");
+        var asked = FakeBus.Data(h.Bus.OfType("guard.asked").Single());
+        Check.Equal(false, (bool?)asked["opinion"]!["harmless"]);
+        Check.Equal(0.9, (double?)asked["opinion"]!["p"]!["remote_change"]);
+        Check.Equal(false, (bool?)(await h.Rpc.CallAsync("guard.pending", new { sessionId = s.Id }))!.AsArray().Single()!["opinion"]!["harmless"]);
+        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)asked["callId"]!, allow = true });
+        await h.IdleAsync(s.Id);
+        Check.Equal(2, ran.Count, "allowed by the user");
+        Check.Equal("git status --short|git push origin main", string.Join("|", decided));
+
+        // the threshold: 0.97 read-only is not enough at 0.01
+        h.Settings.Set("guardrails.secondOpinionThreshold", JsonValue.Create(0.01));
+        await h.SendAsync(s.Id, "git status");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 2, "a stricter threshold asks");
+        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)FakeBus.Data(h.Bus.OfType("guard.asked")[1])["callId"]!, allow = false });
+        await h.IdleAsync(s.Id);
+
+        Check.True(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.85, ["destructive"] = 0.1, ["stops_process"] = 0.1, ["remote_change"] = 0.19 }, 0.2));
+        Check.False(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.85, ["destructive"] = 0.1, ["stops_process"] = 0.1, ["remote_change"] = 0.2 }, 0.2), "a risk at the threshold");
+        Check.False(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.79, ["destructive"] = 0, ["stops_process"] = 0, ["remote_change"] = 0 }, 0.2), "not confidently read-only");
+        Check.False(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 1 }, 0.2), "a missing answer never clears");
+    }
+
+    private static async Task SecondOpinionLimits()
+    {
+        await using var h = await StartAsync();
+        var dir = Path.Combine(h.Workspace, "asked");
+        Directory.CreateDirectory(dir);
+        h.Settings.Set("guardrails.commands", new JsonArray("ask: ^git", @"^rm\s+-rf\s+/$"));
+        h.Settings.Set("guardrails.paths", new JsonArray("ask: " + dir));
+        var decided = FakeDecide(h, c => c.StartsWith("git fetch") ? null : (1.0, 0.0)); // harmless to everything but fetch, which fails
+        var ran = new List<string>();
+        h.AddTool(Recorder("bash", ran));
+        h.AddTool(Recorder("write", ran));
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done") : Reply.Tool("bash", new { command = Reply.LastUser(r) });
+
+        // off by default: the model is never asked
+        await h.SendAsync(s.Id, "git status");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 1, "asks without a second opinion");
+        Check.Equal(0, decided.Count, "off by default");
+        Check.True(FakeBus.Data(h.Bus.OfType("guard.asked")[0])["opinion"] is null);
+        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)FakeBus.Data(h.Bus.OfType("guard.asked")[0])["callId"]!, allow = false });
+        await h.IdleAsync(s.Id);
+
+        h.Settings.Set("guardrails.secondOpinion", JsonValue.Create(true));
+
+        // a blocking rule is never relaxed, and the model is not asked about it
+        await h.SendAsync(s.Id, "rm -rf /");
+        await h.IdleAsync(s.Id);
+        Check.Contains(Results(h, s.Id).Last().Content, "matches the guardrail");
+        Check.Equal(0, decided.Count, "blocks are decided by the rules alone");
+
+        // write into an ask path: always asks, the model is not consulted
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done") : Reply.Tool("write", new { path = Path.Combine(dir, "a.txt"), content = "x" });
+        await h.SendAsync(s.Id, "write it");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 2, "write asks");
+        Check.Equal(0, decided.Count, "write/edit never get a second opinion");
+        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)FakeBus.Data(h.Bus.OfType("guard.asked")[1])["callId"]!, allow = false });
+        await h.IdleAsync(s.Id);
+
+        // the model fails: the user is asked, and the card says why there is no opinion
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done") : Reply.Tool("bash", new { command = Reply.LastUser(r) });
+        await h.SendAsync(s.Id, "git fetch");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 3, "a failed opinion asks");
+        var failed = FakeBus.Data(h.Bus.OfType("guard.asked")[2]);
+        Check.Equal(false, (bool?)failed["opinion"]!["harmless"]);
+        Check.Contains((string?)failed["opinion"]!["error"] ?? "", "model_not_loaded");
+        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)failed["callId"]!, allow = false });
+        await h.IdleAsync(s.Id);
+        Check.Equal(0, ran.Count, "nothing ran without the user's OK");
+        Check.Equal(0, h.Bus.OfType("guard.cleared").Count);
+
+        // a subagent: an ask rule the model clears runs (nobody could have been asked); one it doesn't clear blocks
+        var parent = h.NewSession();
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (r.SessionId != parent.Id)
+                return Reply.HasToolResult(r) ? Reply.Text("REPORT: done") : Reply.Tools(Reply.Call("bash", new { command = "git log -1" }), Reply.Call("bash", new { command = "git fetch" }));
+            return Reply.HasToolResult(r) ? Reply.Text("parent done") : Reply.Tool("agent_spawn", new { task = "Look.", name = "looker" });
+        };
+        await h.SendAsync(parent.Id, "delegate");
+        var p = await h.IdleAsync(parent.Id, 15_000);
+        var child = h.Runtime.Get(p.Children.Single())!;
+        await h.IdleAsync(child.SessionId);
+        var childResults = Results(h, child.SessionId).Where(r => r.Name == "bash").ToList();
+        Check.False(childResults[0].IsError, "cleared in a subagent: it ran");
+        Check.Contains(childResults[1].Content, "a subagent can't ask");
+        Check.Equal(1, ran.Count);
+        Check.Contains(ran[0], "git log -1");
     }
 
     private static Task DefaultRules()

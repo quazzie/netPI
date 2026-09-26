@@ -207,7 +207,7 @@ notices when they first apply and whenever they change (an edited AGENTS.md is a
 that appear or disappear during a session (a plugin loaded or disabled, `tools.disabled`) are announced the same way,
 with their guidelines. The global file is `~/.netpi/AGENTS.md`.
 
-## Auto-compaction, nudge, retry, tool repair
+## Auto-compaction, nudge, loops, retry, tool repair
 
 Compaction works like pi's. When fewer than `compaction.reserveTokens` are left in the window, the older part of the
 chat is summarized and the last `compaction.keepRecentTokens` are kept as they are (never a tool call without its
@@ -232,6 +232,9 @@ used: the chat stays as it was. Beyond pi: a transcript too long for the summari
 | `compaction.maxSummaryTokens` | 80 % of the reserve (`13107`) | output budget of a summary, thinking included (at most a quarter of the window) |
 | `compaction.defaultContextWindow` | `131072` | for models without a known window |
 | `nudge.enabled` / `nudge.maxPerRun` | `true` / `3` | "continue" when a turn ends empty, cut off, or announces an action without doing it |
+| `loops.enabled` / `loops.maxHintsPerRun` | `true` / `3` | a `loop` notice (a hint, nothing is stopped) before the next model call when the agent is about to repeat itself: the same call after `loops.repeats` − 1 identical results, the same failing call retried, or two steps that undo each other (A, B, A, B); one hint per loop. Subagents too |
+| `loops.repeats` | `3` | the call about to run counts (2–10) |
+| `loops.model` | – | a decision model (`qwen3.8-27b`, `kev-9b`) that also reads the goal and the last 10 steps when 6 of the last 8 use one tool and 3 of them failed, and hints at p(stuck) ≥ 0.8 (`decide.ask`, needs the Decide plugin; at most 5 checks per run, 10 s each) |
 | `toolRepair.enabled` | `true` | execute tool calls a model wrote as text (`<tool_call>…`) |
 | `retry.enabled` / `retry.maxAttempts` | `true` / `6` | retries lost connections and stalled streams |
 | `retry.baseDelayMs` / `retry.maxDelayMs` | `1000` / `30000` | exponential backoff with jitter; when the server says how long to wait (`Retry-After`, e.g. with a 429 or 529), at least that long |
@@ -263,6 +266,9 @@ checks catch the plain cases (a command built at run time gets through): they ar
 | `guardrails.enabled` | `true` | check tool calls against the rules below |
 | `guardrails.commands` | catastrophic commands (below) | regular expressions, tried on each part of a `bash`, `pwsh` or `ssh_run` command (split at new lines, `;`, `&&`, `\|\|`, `\|`, `&`), ignoring case |
 | `guardrails.paths` | `["ask: ~/.netpi", "~/.ssh"]` | files and folders the agent may not change: `write` and `edit` refuse them, and so do `bash` and `pwsh` commands that name them, in any spelling a shell uses (`~/.netpi`, `$HOME/.netpi`, `%USERPROFILE%\.netpi`, `$env:USERPROFILE\.netpi`, `C:\Users\me\.netpi`, `/c/Users/me/.netpi`); the `read` tool still reads them. `~` is your home |
+| `guardrails.secondOpinion` | `false` | before an `ask:` rule asks you about a `bash`, `pwsh` or `ssh_run` command, a decision model reads it (`decide.ask`, the Decide plugin through AiGateway); a confidently read-only one runs without asking (event `guard.cleared`), the rest ask as before with the model's view on the card. Blocking rules and `write`/`edit` are never relaxed; no answer (no Decide plugin, the model not loaded, 15 s) means you are asked. In a subagent a cleared call runs; one that is not cleared is blocked as before |
+| `guardrails.secondOpinionModel` | `qwen3.8-27b` | the decision model; `qwen3.8-27b` (about 0.3 s) was measured on 852 real commands (docs/DECISION-MODELS.md, "NInfer baselines" 0.4); `kev-9b` calls too many local commands remote |
+| `guardrails.secondOpinionThreshold` | `0.2` | a command runs without asking only when p(read-only) ≥ 1 − this and p(destructive), p(stops a process), p(changes a remote) are each below it (0.01–0.5) |
 
 The default commands: `rm -r` of `/`, `/*`, `~` or `$HOME`; deleting a drive root (`rm`, `rd`, `del`, `Remove-Item` of
 `C:\`, `/c`); `mkfs`; `dd … of=/dev/…` (not `/dev/null`); `format C:`; `shutdown`, `reboot`, `poweroff`, `halt`,

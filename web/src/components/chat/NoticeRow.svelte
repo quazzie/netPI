@@ -24,6 +24,7 @@
     budget: { icon: 'dollar', tone: 'warn' },
     profile: { icon: 'user', tone: 'accent' },
     nudge: { icon: 'zap', tone: 'warn', label: 'Nudge' },
+    loop: { icon: 'refresh', tone: 'warn', label: 'Loop check' },
     'agent-message': { icon: 'message-circle', tone: 'accent', expand: true },
     'agent-result': { icon: 'bot', tone: 'ok', expand: true },
     compaction: { icon: 'layers', tone: 'info', label: 'Context compacted', expand: true },

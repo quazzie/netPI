@@ -13,6 +13,7 @@
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Retry/NetPI.Retry.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Nudge/NetPI.Nudge.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Loops/NetPI.Loops.csproj" />
     <ProjectReference Include="../../plugins/NetPI.ToolRepair/NetPI.ToolRepair.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Compaction/NetPI.Compaction.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Ideas/NetPI.Ideas.csproj" />

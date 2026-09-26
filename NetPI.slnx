@@ -9,6 +9,7 @@
     <Project Path="plugins/NetPI.Ideas/NetPI.Ideas.csproj" />
     <Project Path="plugins/NetPI.Agents/NetPI.Agents.csproj" />
     <Project Path="plugins/NetPI.Nudge/NetPI.Nudge.csproj" />
+    <Project Path="plugins/NetPI.Loops/NetPI.Loops.csproj" />
     <Project Path="plugins/NetPI.Profiles/NetPI.Profiles.csproj" />
     <Project Path="plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.csproj" />
     <Project Path="plugins/NetPI.Providers.Anthropic/NetPI.Providers.Anthropic.csproj" />

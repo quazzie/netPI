@@ -11,8 +11,10 @@ namespace NetPI.Guardrails;
 /// <c>ask:</c> asks the user first, on the tool's row in the chat: <c>guard.asked</c> (unscoped, so every window hears of
 /// it), answered with <c>guard.answer { callId, allow }</c>, <c>guard.closed</c> when it stops waiting. Meanwhile the run
 /// waits with its instance given back (<see cref="IAgentRuntime.WaitYieldedAsync"/>). In a subagent an ask rule blocks:
-/// nobody watches its chat. The checks catch the plain cases (a command named in a variable or built at run time gets
-/// through); they are not a sandbox.
+/// nobody watches its chat. With <c>guardrails.secondOpinion</c> on, a decision model reads a shell command before an ask
+/// rule asks, and a confidently read-only one runs without asking (<see cref="SecondOpinion"/>, <c>guard.cleared</c>).
+/// The checks catch the plain cases (a command named in a variable or built at run time gets through); they are not a
+/// sandbox.
 /// </summary>
 [NetPiPlugin("netpi.guardrails", Name = "Guardrails", Description = "Checks tool calls before they run: blocks dangerous commands and changes to protected paths, or asks you first", Order = 67)]
 public sealed class GuardrailsPlugin : INetPiPlugin
@@ -31,12 +33,18 @@ public sealed class GuardrailsPlugin : INetPiPlugin
                     "Regular expressions, tried on each part of a bash, pwsh or ssh_run command (split at new lines, ; && || | &), ignoring case. Start a line with ask: to ask you first instead of blocking."),
                 SettingInfo.List("guardrails.paths", "Protected paths", RuleSet.DefaultPaths,
                     "Files and folders the agent may not change: write and edit refuse them, and so do bash and pwsh commands that name them (the read tool still reads them). ~ is your home. Start a line with ask: to ask you first."),
+                SettingInfo.Bool("guardrails.secondOpinion", "Second opinion before asking", false,
+                    "Before an ask: rule asks you about a shell command, a decision model reads it (the Decide plugin, through AiGateway); a command it finds confidently read-only runs without asking. Blocking rules and write/edit are never relaxed; without an answer you are asked."),
+                SettingInfo.Str("guardrails.secondOpinionModel", "Second-opinion model", SecondOpinion.DefaultModel,
+                    "qwen3.8-27b (the NInfer chat model, about 0.3 s) was measured on 852 real commands; kev-9b calls too many local commands remote."),
+                SettingInfo.Number("guardrails.secondOpinionThreshold", "Second-opinion threshold", SecondOpinion.DefaultThreshold,
+                    "A command runs without asking only when p(read-only) ≥ 1 − this and p(destructive), p(stops a process), p(changes a remote) are each below it.", 0.01, 0.5),
             ],
         });
         var approvals = _approvals = new Approvals(context);
-        context.Services.Register<IAgentHook>(new GuardHook(context, approvals));
+        context.Services.Register<IAgentHook>(new GuardHook(context, approvals, new SecondOpinion(context)));
         context.Rpc.Register("guard.pending", (req, _) => Task.FromResult<object?>(approvals.List(req.Str("sessionId"))),
-            "Tool calls waiting for the user's OK (guardrails ask rules): { sessionId? } → { sessionId, callId, agentId, tool, kind, subject, rule, askedAt }[]");
+            "Tool calls waiting for the user's OK (guardrails ask rules): { sessionId? } → { sessionId, callId, agentId, tool, kind, subject, rule, askedAt, opinion? }[]");
         context.Rpc.Register("guard.answer", (req, _) => Task.FromResult<object?>(approvals.Answer(req.Required("callId"), req.Bool("allow") ?? false)),
             "Allow or refuse a tool call that waits for the user's OK: { callId, allow } → true");
         return Task.CompletedTask;
@@ -62,13 +70,14 @@ internal sealed class Approvals(IPluginContext ctx)
         public required string AgentId { get; init; }
         public required string Tool { get; init; }
         public required Verdict Verdict { get; init; }
+        public Opinion? Opinion { get; init; }
         public DateTimeOffset AskedAt { get; } = DateTimeOffset.UtcNow;
         public TaskCompletionSource<bool> Allowed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
-    public Entry Add(string sessionId, string agentId, ToolCallPart call, Verdict verdict)
+    public Entry Add(string sessionId, string agentId, ToolCallPart call, Verdict verdict, Opinion? opinion)
     {
-        var e = new Entry { SessionId = sessionId, CallId = call.Id, AgentId = agentId, Tool = call.Name, Verdict = verdict };
+        var e = new Entry { SessionId = sessionId, CallId = call.Id, AgentId = agentId, Tool = call.Name, Verdict = verdict, Opinion = opinion };
         _byCall[e.CallId] = e;
         ctx.Events.Publish("guard.asked", Json(e));
         return e;
@@ -107,6 +116,7 @@ internal sealed class Approvals(IPluginContext ctx)
         ["subject"] = e.Verdict.Subject,
         ["rule"] = e.Verdict.Rule,
         ["askedAt"] = e.AskedAt.ToString("O"),
+        ["opinion"] = e.Opinion?.ToJson(),
     };
 }
 
@@ -114,7 +124,7 @@ internal sealed class Approvals(IPluginContext ctx)
 /// Last of the before-tool hooks, so it checks the arguments that will run. Fails closed: a call it can't check is
 /// blocked, with why.
 /// </summary>
-internal sealed class GuardHook(IPluginContext ctx, Approvals approvals) : IAgentHook
+internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondOpinion secondOpinion) : IAgentHook
 {
     public int Order => 10_000;
 
@@ -153,9 +163,24 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals) : IAgen
             var verdict = rules.Check(call.Name, args, path => Resolve(run, call, path));
             if (verdict is null) return null;
             if (verdict.Action == GuardAction.Block) return Block(Why(verdict) + " Nothing ran. If it is really needed, tell the user what and why: they can do it themselves or change the rule.");
+            // An ask rule on a shell command: a decision model may clear a confidently read-only one (SecondOpinion).
+            Opinion? opinion = null;
+            if (RuleSet.CommandOf(call.Name, args) is { Length: > 0 } command)
+            {
+                opinion = await secondOpinion.AskAsync(call.Name, command, run.Cwd, RuleSet.HostOf(args), ct).ConfigureAwait(false);
+                if (opinion is { Harmless: true })
+                {
+                    ctx.Events.Publish("guard.cleared", new JsonObject
+                    {
+                        ["sessionId"] = run.Session.Id, ["callId"] = call.Id, ["agentId"] = run.Agent.Id, ["tool"] = call.Name,
+                        ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["opinion"] = opinion.ToJson(),
+                    });
+                    return null;
+                }
+            }
             if (run.Agent.IsSubagent)
                 return Block(Why(verdict) + " It asks the user first, and a subagent can't ask: nobody watches its chat. Nothing ran; say in your report what you needed.");
-            return await AskAsync(run, call, verdict, ct).ConfigureAwait(false);
+            return await AskAsync(run, call, verdict, opinion, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
@@ -165,9 +190,9 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals) : IAgen
         }
     }
 
-    private async ValueTask<ToolCallDecision?> AskAsync(AgentRunContext run, ToolCallPart call, Verdict verdict, CancellationToken ct)
+    private async ValueTask<ToolCallDecision?> AskAsync(AgentRunContext run, ToolCallPart call, Verdict verdict, Opinion? opinion, CancellationToken ct)
     {
-        var entry = approvals.Add(run.Session.Id, run.Agent.Id, call, verdict);
+        var entry = approvals.Add(run.Session.Id, run.Agent.Id, call, verdict, opinion);
         var status = "cancelled";
         try
         {
