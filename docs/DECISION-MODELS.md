@@ -235,15 +235,21 @@ README); scripts `decisions-lab/scripts/clm_browser.mjs`, `p0_guard.mjs run clm|
   1, 0.76 / 0.92 / 0.93 / 0.97 after 2, 0.78 / 0.93 / 0.93 / 0.97 after 3: flat after the first epoch, so more epochs
   do not help; a better teacher or more varied lines would). Checkpoint `out/laya/logs-laya-3ep-qwen` on the nuc,
   served by `laya-tasks` as `laya-logs` since 2026-09-26 (first as `logs`); it reproduces its gold scores exactly when served
-  (`serve_check.mjs`). The Kev-taught `out/laya/logs-laya-4ep` stays on disk but is not resident (each served model
-  holds ~1.7 GB of the 4070; add `laya-logs-kev=/t/out/laya/logs-laya-4ep` to compare). `laya-tasks` is a plain container
+  (`serve_check.mjs`). The Kev-taught `out/laya/logs-laya-4ep` stays on disk but is not resident (add
+  `laya-logs-kev=/t/out/laya/logs-laya-4ep` to compare). `laya-tasks` is a plain container
   that `/home/quazzie/train/serve.sh` starts (not a Dockhand stack); its last line lists the served
   `name=checkpoint` pairs. Next: the user's corrections and tighter subsystem categories.
+- **Laya weights in bf16 (2026-09-27).** Laya places its weights in fp32 and runs them under bf16 autocast, so a
+  421M model held ~1.7 GB (the whole container 2.7 GB). `serve_tasks.py` now keeps the parameters in the autocast
+  dtype (buffers such as the rotary tables stay fp32): the container holds **1.2 GB**. The gold lines score the
+  same (0.78 / 0.93 / 0.93 / 0.97), none of the 480 answers flips (probability change p50 0.0003, max 0.047;
+  `serve_dump.mjs --diff`), and p50 drops from 37 to 31 ms. Each further Laya model costs ~0.85 GB. `LAYA_WEIGHTS=fp32`
+  restores the old placement.
 - **Kev-9B and `laya-tasks` do not fit on the 4070 together.** Kev-9B (10.3 GB plus ~0.5 GB of compute buffers)
   failed to load on 2026-09-26 with `cudaMalloc failed: out of memory` while `laya-tasks` held 1.9 GB; with
-  `laya-tasks` stopped it loads in 6 s. The hub's fit check counts only the models it manages, so it reports "fits".
-  Until that is settled (move `laya-tasks` to the iGPU, stop it while Kev-9B is loaded, or let the hub treat it like
-  yue2 for exclusive models), the `decide` default `kev-9b` needs `laya-tasks` stopped.
+  `laya-tasks` stopped it loads in 6 s. At 1.2 GB it is still too tight (10.8 + 1.2 of 12 GB). The hub's fit check
+  counts only the models it manages, so it reports "fits". The `decide` default is Qwen3.8-27B since 2026-09-27, so
+  this only matters when Kev is asked for by name.
 - **Browser picker:** all Mind2Web training sites are used; next is a stronger base (fine-tune Kev-4B as the picker),
   better element descriptions (the ranker's recall ceiling), and NetPI's own browser traces.
 - **Computer use:** Kev-9B works zero-shot; record every real step (control list, choice, outcome) to train a
