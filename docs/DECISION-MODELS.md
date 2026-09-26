@@ -169,7 +169,12 @@ the agent's next turn.
   (thinking on, then an empty closed think block before the answer), and decisions that fork a protected head.
 - The fork is done (NInfer fork `31443f05` + `c8735fe2`, deployed 2026-09-26): a decision on the agent's input or
   head now forks it, and the agent's next turn stays cached (22276 of 22308 after an input decision, 22300 of 22332
-  after two head decisions, ~190 ms). The effort rendering is Phase 2 work (`reasoning_effort` in the API).
+  after two head decisions, ~190 ms).
+- The effort rendering is done too (NInfer `a61d418c`, deployed 2026-09-26): `/v1/decision` takes
+  `reasoning_effort`, renders the agent's preamble for it and closes the think block empty. With the agent at
+  effort `low`: a decision on its input reuses 22354 of 22396 tokens (160 ms), one on its head 22534 of 22578
+  (114 ms, a second 94 ms), and the agent's next turn stays cached (was: 0 cached, 2.7 s). Label mass 0.98–0.995.
+  So in-conversation checks (3.2) can now send the agent's exact messages with its effort.
 
 **0.4 Guard accuracy.** The 852 real commands × the guard questions phrased as questions (`guard_questions_q.json`),
 state = context, tool and command. Reference: Qwen3.8-27B's generative answers with reasoning low

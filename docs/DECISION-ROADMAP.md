@@ -60,7 +60,8 @@ Decisions are meant to read the cache, capture with Disposable retention and nev
 *Result:* reuse only when the agent's reasoning effort matches the decision's rendering (effort is part of the
 prompt; `/v1/decision` renders thinking off, so only agents at effort `none`); and a decision that reuses an agent's
 lineage consumes it (move, not fork), so the agent's next turn re-prefills. 3.2 needs both fixed in NInfer.
-*The fork is fixed and deployed (fork `31443f05` + `c8735fe2`, 2026-09-26); the effort is Phase 2 (`reasoning_effort`).*
+*Both fixed and deployed 2026-09-26: the fork (`31443f05` + `c8735fe2`) and `reasoning_effort` (`a61d418c`): at
+effort `low` a decision on the agent's context reuses ~22.5k of 22.6k tokens in ~100–160 ms.*
 
 0.4 **Guard accuracy.** The 852 commands × the guard questions (phrased as questions) through `/v1/decision`, compared
 with Qwen's generative labels (`guard_qwen.jsonl`), per question; the same for Kev-9B and laya:typed-decisions on the
@@ -179,7 +180,9 @@ Qwen (not yet measured on Windows). Record every real step for later training.
 Phases 0 and 1 (except 1.3) are done and deployed, 3.1 and the loop detector are built, and the Phase 2 design is
 approved. Next:
 
-1. Phase 2: `reasoning_effort` in `/v1/decision` (the design's 3.4, needs a Frontend decision render mode),
-   then `states` (3.3, many log lines per call). Stage 2 (batched branches) is deployed.
+1. 3.2 prefix-reusing checks in NetPI: `/v1/decision` now reuses an agent's cache at any effort (batched branches
+   and `reasoning_effort` deployed, NInfer `a61d418c`). Needs NetPI's conversation as chat messages that render
+   exactly like its Responses requests (tool calls and results included); measure the reuse on real sessions first.
 2. The user labels the 50 guard commands (`guard_to_label.json`); then decide on turning 3.1 on.
-3. 1.3, and the prefix-reusing checks of 3.2 once `reasoning_effort` lands.
+3. 1.3. Phase 2 `states` (3.3) is parked: per-state prefixes cannot be shared inside one forward, so packing lines
+   does not beat ~95 ms per line batched, and bulk belongs on the nuc (Laya, 37 ms per line).
