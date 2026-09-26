@@ -592,6 +592,7 @@ function onEvent(d, env) {
     case 'ask.closed':
     case 'guard.asked':
     case 'guard.closed':
+    case 'guard.cleared':
       askEvent(type, d);
       if (type === 'ask.asked') askNotification(d);
       else if (type === 'guard.asked') approvalNotification(d);

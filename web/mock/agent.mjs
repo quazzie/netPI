@@ -496,9 +496,9 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
 
   // a guardrails ask rule, like plugins/NetPI.Guardrails: the call waits (guard.asked, unscoped) with the agent yielded,
   // until guard.answer, a new message from the user (steered) or an abort
-  async function approve(sid, run, tool, rule) {
+  async function approve(sid, run, tool, rule, opinion = null) {
     const a = agentFor(sid);
-    const entry = { sessionId: sid, callId: tool.id, agentId: a.id, tool: tool.name, kind: 'command', subject: tool.args.command, rule, askedAt: new Date().toISOString() };
+    const entry = { sessionId: sid, callId: tool.id, agentId: a.id, tool: tool.name, kind: 'command', subject: tool.args.command, rule, askedAt: new Date().toISOString(), opinion };
     setStatus(sid, { status: 'yielded', activity: 'waiting for your OK' });
     let outcome;
     try {
@@ -519,10 +519,21 @@ export function createAgentRuntime({ publish, work, log = () => {} }) {
     return outcome;
   }
 
+  // guardrails.secondOpinion: a decision model reads the command first; a confidently read-only one runs (guard.cleared)
+  const opinion = (p, ms) => ({ model: 'qwen3.8-27b', harmless: p.read_only >= 0.8 && p.destructive < 0.2 && p.stops_process < 0.2 && p.remote_change < 0.2, p, ms, error: null });
+
   async function guardScript(sid, run) {
+    const status = { id: newId('call'), name: 'bash', label: 'Bash', args: { command: 'git status --short' } };
+    await streamAssistant(sid, run, { thinking: 'Check what is left to push.', text: 'Checking the tree:', tools: [status] });
+    publish('guard.cleared', { sessionId: sid, callId: status.id, agentId: agentFor(sid).id, tool: 'bash', kind: 'command', subject: status.args.command, rule: 'ask: ^git', opinion: opinion({ destructive: 0.01, stops_process: 0.0, remote_change: 0.02, read_only: 0.97 }, 290) });
+    await runTool(sid, run, status, {
+      content: ' M src/app.js',
+      details: { command: status.args.command, shell: 'bash', cwd: projectPath(sid), exitCode: 0, durationMs: 80, truncated: false, background: false },
+      duration: 80,
+    });
     const push = { id: newId('call'), name: 'bash', label: 'Bash', args: { command: 'git push origin main' } };
     await streamAssistant(sid, run, { thinking: 'The fix is committed; push it.', text: 'Committed. Pushing to origin:', tools: [push] });
-    const o = await approve(sid, run, push, 'ask: ^git push');
+    const o = await approve(sid, run, push, 'ask: ^git', opinion({ destructive: 0.04, stops_process: 0.01, remote_change: 0.93, read_only: 0.03 }, 310));
     if (o.steered) {
       append(sid, 'tool', [result(push.id, push.name, 'Blocked: the user wrote a new message instead of answering whether it may run; the message follows. Nothing ran.', null, { isError: true })]);
       return;

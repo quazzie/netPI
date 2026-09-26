@@ -10,7 +10,7 @@
   import TodoView from './tools/TodoView.svelte';
   import { parseArgs, toolMeta, toolSummary, toolBadge, pathArg } from '../../lib/tools.js';
   import { openFile } from '../../lib/openFile.js';
-  import { asks, answerApproval } from '../../lib/state/asks.svelte.js';
+  import { asks, answerApproval, opinionText } from '../../lib/state/asks.svelte.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import { duration } from '../../lib/format.js';
   import { app } from '../../lib/state/app.svelte.js';
@@ -48,6 +48,8 @@
   );
   // a guardrail asks the user before this call runs (plugins/NetPI.Guardrails)
   const approval = $derived(asks.approvals.get(call.id) ?? null);
+  // an ask rule matched, and the second opinion found it read-only, so it ran without asking
+  const cleared = $derived(asks.cleared.get(call.id) ?? null);
   let deciding = $state(false);
   async function decide(allow) {
     deciding = true;
@@ -145,6 +147,7 @@
     {/if}
     {#if status === 'preparing'}<span class="state">preparing…</span>{/if}
     {#if status === 'approval'}<span class="state asks">needs your OK</span>{/if}
+    {#if cleared && status !== 'approval'}<span class="state" title="A guardrail asks first ({cleared.rule}); {opinionText(cleared.opinion)}, so it ran without asking">checked</span>{/if}
     {#if status === 'pending'}<span class="state">queued</span>{/if}
     {#if status === 'cancelled'}<span class="state">no result</span>{/if}
     {#if status === 'skipped'}<span class="state">{skipped === 'steer' ? 'skipped · new message' : skipped === 'stopped' ? 'not run' : skipped === 'blocked' ? 'blocked' : 'aborted'}</span>{/if}
@@ -158,6 +161,7 @@
         {#if approval.kind === 'path'}It touches <span class="np-mono subj">{approval.subject}</span>: a guardrail asks you first{:else}A
           guardrail asks you first{/if}
         (<span class="np-mono rule">{approval.rule}</span>)
+        {#if approval.opinion}<span class="opinion">{opinionText(approval.opinion)}</span>{/if}
       </span>
       <span class="btns">
         <button class="np-btn np-btn-sm" disabled={deciding} onclick={() => decide(false)}>No</button>
@@ -302,6 +306,12 @@
     flex: 1 1 180px;
     min-width: 0;
     overflow-wrap: anywhere;
+  }
+  /* the second opinion (guardrails.secondOpinion): the decision model's view, on its own line */
+  .opinion {
+    display: block;
+    margin-top: 2px;
+    color: var(--fg-dim);
   }
   .rule,
   .subj {

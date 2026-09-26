@@ -129,7 +129,9 @@ favour of normal admission), measured against 0.1.
 
 ## Phase 3: decisions inside NetPI
 
-3.1 **Guardrails second opinion.** For commands the Guardrails plugin would *ask* about, ask `/v1/decision` (the guard
+3.1 **Guardrails second opinion.** *Built 2026-09-26: `guardrails.secondOpinion` (off), `…Model` (qwen3.8-27b),
+`…Threshold` (0.2); clears only a confidently read-only command (read-only ≥ 0.8, every risk < 0.2), event
+`guard.cleared`, the model's view on the ask card. Turn on after the user's labels confirm 0.4.* For commands the Guardrails plugin would *ask* about, ask `/v1/decision` (the guard
 questions, with the command, cwd and a little context) and skip the prompt only when it is confidently harmless; never
 relax a *block*; show the decision in the ask card. Off by default; enable after 0.4 shows the accuracy. Tests with a
 mock decision server.
