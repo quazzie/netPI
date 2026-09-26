@@ -19,8 +19,10 @@ that session, in the order to do them. Results so far: `DECISION-MODELS.md`; the
 
 - **Never two NInfer processes.** Before any start, `Get-Process ninfer-serve` must be empty. Stop AiHub's NInfer with
   the 5090 loadout **Off** (`POST http://127.0.0.1:8191/control/loadout {"gpu":"5090","loadout":"off"}`), start it
-  with loadout **Agent**. A hand-run test build uses **another port** (e.g. `--port 8089`): AiHub adopts whatever
-  answers on 8080 and restarts it when it disappears.
+  with loadout **Agent**. A hand-run test build uses **another port** (`--port 8097`; 8089 is VLC's web interface on
+  this machine): AiHub adopts whatever answers on 8080 and restarts it when it disappears. Before AiSwitcher D74
+  (deployed 2026-09-26) the hub also took a test build on another port for the engine and restarted production when it
+  stopped, even with the loadout Off.
 - **Ask the user** before stopping or restarting NInfer, AiHub or NetPI (it drops in-flight agent work), before
   touching `%USERPROFILE%\.netpi`, and before adding a NuGet or npm package (CLAUDE.md). Measurements that only send
   requests need an idle moment, not a restart: ask for one.
@@ -73,10 +75,10 @@ of the 4070, which Kev-9B already lacks.* Register the checkpoint in `laya-tasks
 `serve_check.mjs` on the gold lines, then make it `logs` (keep the Kev-taught one as `logs-kev` for a while). Redeploy
 through Dockhand (container restarts are the user's call if something else uses it). Update `DECISION-MODELS.md`.
 
-1.2 **All decision models behind AiGateway.** *Built 2026-09-26 (AiSwitcher D73, branch `claude/decision-engines`):
+1.2 **All decision models behind AiGateway.** *Deployed 2026-09-26 (AiSwitcher D73, merged to `main`):
 a `systemone` engine kind; `laya-nuc` / `laya-logs` in the sample and prod configs; the fit check now counts it, so
-kev-9b beside it plans as `does_not_fit` instead of an OOM. Ollaya stays out (no `/health`, weak zero-shot). Deploy:
-the user adds it to `publish/hub/lab.json`, publishes, restarts hub and gateway.* Register `laya-tasks` (and Ollaya if useful) in AiSwitcher's lab.json
+kev-9b beside it plans as `does_not_fit` instead of an OOM. Ollaya stays out (no `/health`, weak zero-shot).
+`laya-logs` answers through `http://127.0.0.1:8090/v1/systemone`.* Register `laya-tasks` (and Ollaya if useful) in AiSwitcher's lab.json
 with `api: "systemone"` so NetPI reaches every decision model through one URL and model id; the gateway forwards
 System One for non-NInfer engines as-is.
 
@@ -85,17 +87,17 @@ pass, ~37 ms per line, no 5090); single questions and in-loop checks on NInfer. 
 used above N items, or per-call guidance in the tool description. Decide after 0.1. *0.1 says bulk belongs on the
 nuc: Laya `laya-logs` is 8.5× faster per line and back-to-back NInfer decisions cut a generating agent's decode by 61 %.*
 
-1.4 **NInfer graceful stop** *Built 2026-09-26 (fork `7e348652`, `docs/admin.md`), not deployed yet.* (AiSwitcher `docs/COMPANION-CHANGES.md` A6): `POST /admin/shutdown?drain_ms=` (loopback
+1.4 **NInfer graceful stop** *Deployed 2026-09-26 (fork `7e348652`, `docs/admin.md`); the route answers, the hub uses it at its next stop.* (AiSwitcher `docs/COMPANION-CHANGES.md` A6): `POST /admin/shutdown?drain_ms=` (loopback
 only; stop admitting with 503 `shutting_down`, drain, exit 0) and a console Ctrl handler. AiHub already calls it and
 falls back to a kill; today it always kills. A fork-local feature: new files plus one-line hooks, like `/v1/decision`.
 
-1.5 **NInfer `/slots` busy counters for non-streaming requests** *Built 2026-09-26 (fork `46d51b23`), not deployed
-yet.* (COMPANION-CHANGES A3; AiSwitcher idea
+1.5 **NInfer `/slots` busy counters for non-streaming requests** *Deployed 2026-09-26 (fork `46d51b23`): verified live,
+`n_decoded` and the prompt counters fill for a non-streaming request.* (COMPANION-CHANGES A3; AiSwitcher idea
 `idea-k7q2vn`): `n_decoded`, `n_prompt_tokens_processed/_cache`, decode t/s are null while a non-streaming request
 runs, so the taskbar shows nothing. Deploy 1.4 and 1.5 together with one NInfer restart.
 
-1.6 **AiHub graceful quit.** *Built 2026-09-26 (AiSwitcher D72, branch `claude/decision-engines`; refuses during a
-switch or gateway update unless forced), not deployed yet.* The hub quits only from its tray menu; the switch-over had to kill it. A loopback
+1.6 **AiHub graceful quit.** *Deployed 2026-09-26 (AiSwitcher D72; refuses during a switch or gateway update unless
+forced).* The hub quits only from its tray menu; the switch-over had to kill it. A loopback
 `POST /control/hub/quit` (same path as the tray's Quit) makes publishing and restarts clean.
 
 ## Phase 2: multi-prefill in NInfer (design first, then build)
@@ -110,7 +112,8 @@ DeltaNet) state slots (`--device-state-slots 0 --host-state-slots 16`); KV pages
 prefill paths that exist (`tests/*ragged*`); DFlash2 speculative decoding and CUDA graphs.
 
 2.2 **Design** (`docs/multi-prefill.md` in the fork), for the user's approval before any code. *Draft written 2026-09-26
-(fork `3f440fab`), waiting for approval: decisions are overhead-bound, so batch branches inside one request first
+(fork `3f440fab`), approved 2026-09-26 as proposed (2b first, `states` and `reasoning_effort` in the API, the decision lane
+deferred): decisions are overhead-bound, so batch branches inside one request first
 (2–5×); 2a becomes prefill scheduling (shortest first per chunk, admission during prefill, a decode share).*
 - 2a *Multi-lane prefill*: the prefill chunks of two lanes in one ragged forward pass, each lane with its own
   recurrent state; a shared chunk budget; how decode and prefill interleave.
