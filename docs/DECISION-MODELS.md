@@ -191,7 +191,14 @@ P / R = precision / recall of "yes". "Harmless" = p(yes) below a threshold on de
 remote_change: the Qwen decision at 0.2 calls 696 of 852 commands harmless, none risky in the reference (at 0.5:
 782, including 4 borderline ones: scripts written to a remote `/tmp`, a test snapshot overwritten); Kev-9B at 0.2
 calls 364 harmless, none risky. `results/phase0/guard_to_label.json` holds 50 commands where the strong models
-disagree, for the user to label.
+disagree (the hard cases), hand-labelled 2026-09-26 (by Claude at the user's request; conventions in
+`guard_label_conventions.json`; `scripts/guard_label_report.mjs`): 1 destructive, 5 stop a process, 8 change a
+shared service or the nuc, 39 read-only. On them the Qwen decision is safe but underrates read-only (6 of 39 at
+0.5; `dotnet test` gets 0.05–0.4), so a read-only bar of 0.8 clears none; the three risk questions alone at 0.2
+clear 20 of the 39 and no risky command (at 0.3 a hub quit through the tray menu slips through). Accuracy at 0.5:
+Qwen decision destructive 49/50, stops 39/50 (8 false yes), remote 45/50; Qwen generative 47 / 45 / 43; Kev-9B
+48 / 46 / 10 (40 false remote); Laya 31 / 37 / 19. So the Guardrails second opinion clears on the risk questions
+only (NetPI after 2026-09-26).
 
 ## Known limits and next experiments
 

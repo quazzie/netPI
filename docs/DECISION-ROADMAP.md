@@ -141,8 +141,9 @@ favour of normal admission), measured against 0.1.
 ## Phase 3: decisions inside NetPI
 
 3.1 **Guardrails second opinion.** *Built 2026-09-26: `guardrails.secondOpinion` (off), `…Model` (qwen3.8-27b),
-`…Threshold` (0.2); clears only a confidently read-only command (read-only ≥ 0.8, every risk < 0.2), event
-`guard.cleared`, the model's view on the ask card. Turn on after the user's labels confirm 0.4.* For commands the Guardrails plugin would *ask* about, ask `/v1/decision` (the guard
+`…Threshold` (0.2), event `guard.cleared`, the model's view on the ask card. The 50 hard cases are labelled
+(2026-09-26, `DECISION-MODELS.md` 0.4): the rule now clears when every risk < 0.2 (read-only is shown, not required:
+the model underrates builds and tests); no risky command cleared. Ready to turn on.* For commands the Guardrails plugin would *ask* about, ask `/v1/decision` (the guard
 questions, with the command, cwd and a little context) and skip the prompt only when it is confidently harmless; never
 relax a *block*; show the decision in the ask card. Off by default; enable after 0.4 shows the accuracy. Tests with a
 mock decision server.
@@ -183,6 +184,6 @@ approved. Next:
 1. 3.2 prefix-reusing checks in NetPI: `/v1/decision` now reuses an agent's cache at any effort (batched branches
    and `reasoning_effort` deployed, NInfer `a61d418c`). Needs NetPI's conversation as chat messages that render
    exactly like its Responses requests (tool calls and results included); measure the reuse on real sessions first.
-2. The user labels the 50 guard commands (`guard_to_label.json`); then decide on turning 3.1 on.
+2. Turn 3.1 on (`guardrails.secondOpinion: true`): the labels are in and the rule clears on the risk questions.
 3. 1.3. Phase 2 `states` (3.3) is parked: per-state prefixes cannot be shared inside one forward, so packing lines
    does not beat ~95 ms per line batched, and bulk belongs on the nuc (Laya, 37 ms per line).
