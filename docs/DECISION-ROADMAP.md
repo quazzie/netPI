@@ -12,7 +12,7 @@ that session, in the order to do them. Results so far: `DECISION-MODELS.md`; the
 | AiGateway `/v1/systemone` bridge | `C:\ai\projects\aiswitcher` (D69; `SystemOne.cs`, `SystemOneBridge.cs`) | deployed. TypeSafe System One for NInfer models → one `/v1/decision`; Kev on the nuc router is forwarded as-is. |
 | One-NInfer guards | AiSwitcher D70 | deployed. The hub finds NInfer by image name and refuses a second start; no second crash restart while one is starting. |
 | NetPI `decide` tool + `decide.ask` RPC | `plugins/NetPI.Decide` | built and deployed. Default model `kev-9b` (nuc, manual switch that also unloads yue2); `qwen3.8-27b` works through the bridge. |
-| nuc decision models | router `quazzie/llama.cpp:kev-router` (kev-9b, kev-4b, exclusive); `laya-tasks` :8010 (`logs`, the Kev-taught Laya); Ollaya `decide` stack :11435 | running. `laya-tasks` serves **Laya-logs-qwen** as `logs` (0.78 / 0.93 / 0.93 / 0.97) and the Kev-taught one as `logs-kev` (0.53 / 0.89 / 0.84 / 0.91) since 2026-09-26 (1.1). |
+| nuc decision models | router `quazzie/llama.cpp:kev-router` (kev-9b, kev-4b, exclusive); `laya-tasks` :8010 (`logs`); Ollaya `decide` stack :11435 | running. `laya-tasks` serves **Laya-logs-qwen** as `logs` (0.78 / 0.93 / 0.93 / 0.97, was the Kev-taught 0.53 / 0.89 / 0.84 / 0.91) since 2026-09-26 (1.1). Kev-9B does not fit on the 4070 beside `laya-tasks` (OOM on load). |
 | test sets and scripts | `C:\AI\decisions-lab` (README there); nuc `/home/quazzie/train` | 120 hand-labelled log lines, 852 real commands with Qwen's guard labels, 44 Windows UIA tasks, Mind2Web on the nuc. |
 
 ## Ground rules
@@ -57,8 +57,9 @@ nuc. Then ask the user to label ~50 commands where the models disagree: the firs
 
 ## Phase 1: quick wins (no engine work)
 
-1.1 **Serve Laya-logs-qwen.** *Done 2026-09-26: `logs` = Qwen-taught, `logs-kev` = Kev-taught (`serve.sh` on the nuc;
-not a Dockhand stack, nothing else used the container).* Register the checkpoint in `laya-tasks` as `logs-qwen`, check it with
+1.1 **Serve Laya-logs-qwen.** *Done 2026-09-26: `logs` = Qwen-taught (`serve.sh` on the nuc; not a
+Dockhand stack, nothing else used the container). The Kev-taught one is not kept resident: a second model costs 1.7 GB
+of the 4070, which Kev-9B already lacks.* Register the checkpoint in `laya-tasks` as `logs-qwen`, check it with
 `serve_check.mjs` on the gold lines, then make it `logs` (keep the Kev-taught one as `logs-kev` for a while). Redeploy
 through Dockhand (container restarts are the user's call if something else uses it). Update `DECISION-MODELS.md`.
 
