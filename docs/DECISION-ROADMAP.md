@@ -31,29 +31,39 @@ that session, in the order to do them. Results so far: `DECISION-MODELS.md`; the
   Windows paths through PowerShell); `pkill -f` / `pgrep -f` match their own ssh command line; a killed NInfer takes
   up to a minute to release the GPU.
 
-## Phase 0: baselines (start here)
+## Phase 0: baselines (done 2026-09-26)
 
-Numbers every later decision depends on. Record them in `DECISION-MODELS.md` under a new section "NInfer baselines".
+Numbers every later decision depends on, recorded in `DECISION-MODELS.md`, "NInfer baselines".
 
 0.1 **Decision throughput.** 100 real log lines (`decisions-lab/data/lines.jsonl`) × the 4 log questions
 (`log_questions_q.json`) through `/v1/decision` directly and through AiGateway `/v1/systemone`: per question and per
 line ms, `cached_tokens`, and the same with one agent generating at the same time (does the decision wait for a slot?).
 Start from `decisions-lab/scripts/verify_decision.ps1`.
+*Result:* ~79 ms per question (317 ms per line) cached or not, about half of it host work; the gateway adds nothing;
+one generating agent: decisions +43 %, the agent's decode −61 %; two generating agents: decisions wait for a slot.
 
 0.2 **Two agents prefilling at once.** Two different long prompts (about 20k and 40k tokens, stateless chat
 requests) sent together vs one at a time: time to first token of each, prefill tokens/s (`/metrics`,
 `/debug/context-cache`, `/slots`), and decode tokens/s of one agent while the other prefills. This says how much
 multi-lane prefill (2a) could give the user's two agents.
+*Result:* strictly one prefill at a time, compute-bound (8.8k tok/s at 20k, 7.0k at 40k): a 20k prompt behind a 40k
+one waits 6.2 s; a decoder next to a 40k prefill drops to 10 % of its speed. Gains from 2a are latency, not throughput.
 
 0.3 **Decisions on an agent's cached context.** Send a long conversation as an agent turn, then a decision whose
 `messages` are exactly that conversation plus one question, then the agent's next turn. Check: the decision's
 `cached_tokens` (does it reuse the agent's prefix?) and the next turn's cached tokens with and without the decision in
 between (does the decision consume or evict the agent's private continuation?). Phase 3.2 depends on the answer.
 Decisions are meant to read the cache, capture with Disposable retention and never publish a continuation; verify it.
+*Result:* reuse only when the agent's reasoning effort matches the decision's rendering (effort is part of the
+prompt; `/v1/decision` renders thinking off, so only agents at effort `none`); and a decision that reuses an agent's
+lineage consumes it (move, not fork), so the agent's next turn re-prefills. 3.2 needs both fixed in NInfer.
 
 0.4 **Guard accuracy.** The 852 commands × the guard questions (phrased as questions) through `/v1/decision`, compared
 with Qwen's generative labels (`guard_qwen.jsonl`), per question; the same for Kev-9B and laya:typed-decisions on the
 nuc. Then ask the user to label ~50 commands where the models disagree: the first real ground truth for guards.
+*Result:* the Qwen decision matches Qwen's generative labels closely (at p(yes) < 0.2 it calls 696 of 852 harmless,
+none risky); Kev-9B fails remote_change (327 false yes); zero-shot Laya is unusable. 50 disputed commands for the
+user to label: `decisions-lab/results/phase0/guard_to_label.json`.
 
 ## Phase 1: quick wins (no engine work)
 
@@ -69,7 +79,8 @@ System One for non-NInfer engines as-is.
 
 1.3 **Bulk vs interactive in `decide`.** Bulk work (a file of lines) belongs on the nuc (Laya: all questions in one
 pass, ~37 ms per line, no 5090); single questions and in-loop checks on NInfer. Options: a `decide.bulkModel` setting
-used above N items, or per-call guidance in the tool description. Decide after 0.1.
+used above N items, or per-call guidance in the tool description. Decide after 0.1. *0.1 says bulk belongs on the
+nuc: Laya `logs` is 8.5× faster per line and back-to-back NInfer decisions cut a generating agent's decode by 61 %.*
 
 1.4 **NInfer graceful stop** (AiSwitcher `docs/COMPANION-CHANGES.md` A6): `POST /admin/shutdown?drain_ms=` (loopback
 only; stop admitting with 503 `shutting_down`, drain, exit 0) and a console Ctrl handler. AiHub already calls it and

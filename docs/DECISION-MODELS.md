@@ -30,7 +30,7 @@ nuc models:
 | **Log lines**: subsystem, severity, needs a human, routine | **Laya-logs-qwen** (421M, fine-tuned on Qwen3.8-27B's labels), served as `logs` by `laya-tasks` (nuc :8010, `/v1/systemone`) | **0.78 / 0.93 / 0.93 / 0.97** | 37 ms/line on the 4070 (all 4 questions, p50 over the LAN; 0.42 s iGPU) | Qwen3.8-27B itself 0.79 / 0.92 / 0.95 / 0.93 (0.7 s/line); Laya-logs on Kev-9B's labels 0.53 / 0.89 / 0.84 / 0.91 | 120 real lines, hand-labelled |
 | **Browser**: which element next | **MiniLM ranker (fine-tuned) → top-20 → Laya picker × Kev-9B** | top-1 **0.392** (target in top-20: 0.846) | ranker 65 ms + Laya + Kev ~0.2–0.4 s per step on the 4070 | Kev-9B alone 0.307–0.335; Laya picker alone 0.286 | Mind2Web, 475 steps on 14 websites never trained on |
 | **Computer use (Windows)**: which control next | **Kev-9B**, zero-shot, over the UI Automation list | top-1 **0.89**, top-3 0.98 | ~1 s per step on the 4070 (189 controls) | small rankers 0.55 | 44 hand-made tasks in 5 Windows apps |
-| **Dangerous command** (guardrail second opinion) | **Kev-9B** | 12/12 | ~0.1 s | decider:0.8b 12/12, Kev-4B 11/12, laya:en 11/12 (9 ms) | 12 hand-made commands — **too small, needs a real set** |
+| **Dangerous command** (guardrail second opinion) | **qwen3.8-27b** `/v1/decision` | agrees with Qwen's generative labels 0.998 / 0.993 / 0.988 / 0.912; at p(yes) < 0.2 on the three risk questions it calls 696 of 852 harmless, none of them risky | 0.31 s per command (4 questions), 5090 | Kev-9B (remote_change unusable: 327 false yes); on the 12 hand-made: Kev-9B 12/12 | 852 real commands, reference = Qwen generative (not human yet; see "NInfer baselines", 0.4) |
 | **Agent stuck / looping** | **Kev-9B** or **laya:typed-decisions** | 6/6 | 0.1 s / 9 ms | Kev-4B 6/6 | 6 hand-made traces — **too small** |
 | **Issue triage** | **laya:typed-decisions** (9 ms) | 8/8 | 9 ms (Ollaya) | Kev-9B / Kev-4B 8/8 | 8 hand-made issues — **too small** |
 
@@ -83,6 +83,87 @@ Scores are accuracy (top-1 for element choice). "–" = not measured. Logs colum
 Caveat: the hand labels were written by Claude, another large language model, so part of Qwen's lead may be agreeing
 with the labeller's style; a few dozen of the user's own labels would settle it.
 
+## NInfer baselines
+
+Measured 2026-09-26 (roadmap Phase 0) on the deployed NInfer (fork `74d47184`, qwen3.8-27b QUASAR NVFP4 on the 5090,
+`--max-concurrency 2`, DFlash2, `--device-state-slots 0 --host-state-slots 16`) with the user's agents paused.
+Scripts: `decisions-lab/scripts/p0_*.mjs`; raw results: `decisions-lab/results/phase0/`.
+
+**0.1 Decision throughput.** 100 real log lines × the 4 log questions (`log_questions_q.json`), one line after
+another; a different set of 100 lines per row, except "warm", which repeats the first set.
+
+| path | per line p50 (p90) | per question p50 | shared state reused |
+|---|---|---|---|
+| `/v1/decision`, cold | 317 ms (346) | severity 68, subsystem 85 (329-token prompt), needs a human 77, routine 75 ms | 12 % of prompt tokens |
+| AiGateway `/v1/systemone`, cold | 316 ms (345) | – | 10 % |
+| `/v1/decision`, same lines again | 315 ms (345) | same as cold | 11 % |
+| `/v1/decision`, one agent generating | 454 ms (486) | 104–122 ms | 5 % |
+| `/v1/decision`, two agents generating | 2.35 s (9.4 s), max 10.2 s | waits for a free slot | – |
+
+- A question costs 65–110 ms whether its state is cached or not. The prompts are short (140–330 tokens) and about
+  half the time is host work: while decisions ran, the engine's host share was 45–48 % (≈37 ms per question) for
+  admission, cache planning and capture. Only 22 % of branches reused the shared state (88 of 400), each through a
+  host-to-device state restore, which saves little on a 60-token state. The earlier "~35 ms per question once
+  cached" was measured on a freshly started NInfer and did not reproduce with a full cache.
+- The gateway adds nothing measurable.
+- Bulk: ~3.2 lines/s idle, 2.2 lines/s next to one agent; Laya `logs` on the nuc does 27 lines/s (37 ms) without
+  touching the 5090, so a log file belongs on the nuc (1.3).
+- Next to one generating agent, back-to-back decisions cut its decode from 139 to 54 tok/s (−61 %) and take 43 %
+  longer themselves. With both slots generating, a decision waits for a slot (here up to one 10-s agent turn).
+
+**0.2 Two agents prefilling at once.** Stateless chat, cold prompts built from NetPI's docs.
+
+| case | time to first token | prefill |
+|---|---|---|
+| 20k tokens alone | 2.6 s | 8.8k tok/s |
+| 40k tokens alone | 6.2 s | 7.0k tok/s |
+| 20k, then 40k 20 ms later | 2.6 s / 8.9 s | one after the other |
+| 40k, then 20k 20 ms later | 6.2 s / 9.0 s | the 20k prompt waits 6.2 s |
+| an agent decoding while 40k prefills | – | decoder 138 → 14.5 tok/s (longest stall 230 ms); prefill −12 % |
+
+Prefill runs one request at a time and is compute-bound at these lengths, so batching two long prefills would not
+finish them sooner (both done at ~9 s either way). What costs the user is ordering (a short prompt waits behind a
+long one) and a starved decoder (10 % of its speed). Multi-lane prefill (2a) is therefore about latency and
+fairness (shorter first, interleaved chunks, decode rows inside prefill chunks), not throughput.
+
+**0.3 Decisions on an agent's cached context.** A 22k-token conversation sent the way NetPI sends it (Responses,
+`store: false`, reasoning replayed), then a decision whose messages are that conversation plus one question, then
+the agent's next turn.
+
+| agent reasoning | decision's state | decision | agent's next turn |
+|---|---|---|---|
+| `none` | the agent's last input | 22197 of 22239 cached, 112 ms | **0 cached**: 2.7 s re-prefill (control: 22293 cached, 0.2 s) |
+| `none` | the agent's head (input + answer) | 22292 of 22336 cached, 113 ms; the head was *moved* | 22292 cached, via the decision's own shared capture |
+| `low` | either | 0 cached: 2.7 s, evicts other entries | unaffected |
+| `low`, decision with thinking on | either | 0 cached | unaffected |
+
+- The reasoning effort is part of the rendered prompt: the same input with effort `low` and then `none` or `medium`
+  reuses 0 tokens; `low` and `low` reuse 3151 of 3156. `/v1/decision` renders thinking off with no effort, so it
+  reuses only the cache of an agent running with reasoning `none`. Historical reasoning itself renders the same on
+  both paths (+20 tokens each for the same text).
+- A decision that does reuse an agent's lineage consumes it (state *move*) instead of copying it (*fork*): the
+  agent's next turn loses its cache unless the decision's own shared capture happens to land on the same frontier
+  (then the agent's context survives only as a Disposable shared prefix).
+- So in-conversation checks (3.2) need two NInfer changes: decisions rendered with the agent's reasoning effort
+  (thinking on, then an empty closed think block before the answer), and decisions that fork a protected head.
+
+**0.4 Guard accuracy.** The 852 real commands × the guard questions phrased as questions (`guard_questions_q.json`),
+state = context, tool and command. Reference: Qwen3.8-27B's generative answers with reasoning low
+(`guard_qwen.jsonl`; yes-counts: destructive 12, stops_process 41, remote_change 18, read_only 571). Its agreement
+with the Qwen decision is partly the model agreeing with itself; the user's labels are the real test.
+
+| model | destructive P / R | stops_process P / R | remote_change P / R | read_only agreement | per command |
+|---|---|---|---|---|---|
+| qwen3.8-27b `/v1/decision` | 1.00 / 0.83 | 0.87 / 1.00 | 0.68 / 0.83 | 0.91 | 311 ms (5090) |
+| Kev-9B | 1.00 / 0.75 | 0.93 / 0.95 | 0.05 / 1.00 | 0.81 | 248 ms (4070) |
+| laya:typed-decisions | 0.03 / 0.17 | 0.33 / 0.83 | 0.03 / 0.78 | 0.34 | 20 ms (4070) |
+
+P / R = precision / recall of "yes". "Harmless" = p(yes) below a threshold on destructive, stops_process and
+remote_change: the Qwen decision at 0.2 calls 696 of 852 commands harmless, none risky in the reference (at 0.5:
+782, including 4 borderline ones: scripts written to a remote `/tmp`, a test snapshot overwritten); Kev-9B at 0.2
+calls 364 harmless, none risky. `results/phase0/guard_to_label.json` holds 50 commands where the strong models
+disagree, for the user to label.
+
 ## Known limits and next experiments
 
 - **The log teacher is the ceiling, and the student reaches it.** Retrained on Qwen3.8-27B's labels, Laya went from
@@ -95,12 +176,16 @@ with the labeller's style; a few dozen of the user's own labels would settle it.
   that `/home/quazzie/train/serve.sh` starts (not a Dockhand stack); its last line lists the served
   `name=checkpoint` pairs. Next: the user's corrections and tighter subsystem categories.
 - **Kev-9B and `laya-tasks` do not fit on the 4070 together.** Kev-9B (10.3 GB plus ~0.5 GB of compute buffers)
-  failed to load on 2026-09-26 with `cudaMalloc failed: out of memory` while `laya-tasks` held 1.9 GB; its gateway
-  status is `failed`. Until that is settled (move `laya-tasks` to the iGPU, stop it while Kev-9B is loaded, or let
-  the hub treat it like yue2 for exclusive models), the `decide` default `kev-9b` needs `laya-tasks` stopped.
+  failed to load on 2026-09-26 with `cudaMalloc failed: out of memory` while `laya-tasks` held 1.9 GB; with
+  `laya-tasks` stopped it loads in 6 s. The hub's fit check counts only the models it manages, so it reports "fits".
+  Until that is settled (move `laya-tasks` to the iGPU, stop it while Kev-9B is loaded, or let the hub treat it like
+  yue2 for exclusive models), the `decide` default `kev-9b` needs `laya-tasks` stopped.
 - **Browser picker:** all Mind2Web training sites are used; next is a stronger base (fine-tune Kev-4B as the picker),
   better element descriptions (the ranker's recall ceiling), and NetPI's own browser traces.
 - **Computer use:** Kev-9B works zero-shot; record every real step (control list, choice, outcome) to train a
   Windows-specific picker later (public data does not transfer).
-- **Guard, stuck, triage:** the suites are 6–12 hand-made cases — enough to rank models roughly, not to trust a
-  choice. They need real sets from NetPI's journal before a model is picked for them.
+- **Guard:** 852 real commands now (0.4), but the reference is Qwen's own generative answer; the user's labels on
+  the 50 disputed commands (`guard_to_label.json`) are the first ground truth. Zero-shot Laya is unusable here
+  (destructive precision 0.03), although it scored 8–11/12 on the hand-made suite.
+- **Stuck, triage:** the suites are 6–8 hand-made cases — enough to rank models roughly, not to trust a choice. They
+  need real sets from NetPI's journal before a model is picked for them.
