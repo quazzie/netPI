@@ -114,7 +114,7 @@ netpi-server (headless) ─────────┴─ NetPI.Host ─┤   Ne
                                                 │   NetPI.Tools.*      files, shell, agents, web, media, ssh · NetPI.Todo · NetPI.Goal
                                                 │   NetPI.Ask          ask_user: questions for you, inline in the chat
                                                 │   NetPI.Guardrails   blocks dangerous commands and protected paths, or asks you first
-NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Retry · NetPI.ToolRepair
+NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Loops · NetPI.Retry · NetPI.ToolRepair
 web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics
                                                 └─ ~/.netpi/plugins/ (your own)
 ```

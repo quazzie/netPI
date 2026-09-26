@@ -1,0 +1,5 @@
+{
+  "id": "netpi.loops",
+  "name": "Loops",
+  "description": "Hints when an agent repeats itself: the same call with the same result, the same failing call retried, or two steps that undo each other; optionally a decision model reads the last steps."
+}

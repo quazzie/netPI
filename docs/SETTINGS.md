@@ -207,7 +207,7 @@ notices when they first apply and whenever they change (an edited AGENTS.md is a
 that appear or disappear during a session (a plugin loaded or disabled, `tools.disabled`) are announced the same way,
 with their guidelines. The global file is `~/.netpi/AGENTS.md`.
 
-## Auto-compaction, nudge, retry, tool repair
+## Auto-compaction, nudge, loops, retry, tool repair
 
 Compaction works like pi's. When fewer than `compaction.reserveTokens` are left in the window, the older part of the
 chat is summarized and the last `compaction.keepRecentTokens` are kept as they are (never a tool call without its
@@ -232,6 +232,9 @@ used: the chat stays as it was. Beyond pi: a transcript too long for the summari
 | `compaction.maxSummaryTokens` | 80 % of the reserve (`13107`) | output budget of a summary, thinking included (at most a quarter of the window) |
 | `compaction.defaultContextWindow` | `131072` | for models without a known window |
 | `nudge.enabled` / `nudge.maxPerRun` | `true` / `3` | "continue" when a turn ends empty, cut off, or announces an action without doing it |
+| `loops.enabled` / `loops.maxHintsPerRun` | `true` / `3` | a `loop` notice (a hint, nothing is stopped) before the next model call when the agent is about to repeat itself: the same call after `loops.repeats` − 1 identical results, the same failing call retried, or two steps that undo each other (A, B, A, B); one hint per loop. Subagents too |
+| `loops.repeats` | `3` | the call about to run counts (2–10) |
+| `loops.model` | – | a decision model (`qwen3.8-27b`, `kev-9b`) that also reads the goal and the last 10 steps when 6 of the last 8 use one tool and 3 of them failed, and hints at p(stuck) ≥ 0.8 (`decide.ask`, needs the Decide plugin; at most 5 checks per run, 10 s each) |
 | `toolRepair.enabled` | `true` | execute tool calls a model wrote as text (`<tool_call>…`) |
 | `retry.enabled` / `retry.maxAttempts` | `true` / `6` | retries lost connections and stalled streams |
 | `retry.baseDelayMs` / `retry.maxDelayMs` | `1000` / `30000` | exponential backoff with jitter; when the server says how long to wait (`Retry-After`, e.g. with a 429 or 529), at least that long |

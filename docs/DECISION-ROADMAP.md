@@ -136,7 +136,9 @@ questions, with the command, cwd and a little context) and skip the prompt only 
 relax a *block*; show the decision in the ask card. Off by default; enable after 0.4 shows the accuracy. Tests with a
 mock decision server.
 
-3.2 **In-conversation checks** (needs 0.3): "stuck in a loop?", "task finished?", "should it ask the user?", sent with
+3.2 **In-conversation checks** (needs 0.3): *First part built 2026-09-26 at the user's request: `NetPI.Loops`, a
+loop detector (deterministic repeats, failures retried, back-and-forth; optional `loops.model` on a compact trace of the
+last 10 steps, since the agent's own prefix is not reusable yet, 0.3). The prefix-reusing checks wait for Phase 2.* "stuck in a loop?", "task finished?", "should it ask the user?", sent with
 the agent's exact message prefix so the cache makes them nearly free; results go to the agent as hints, not actions.
 Needs a plugin hook on agent turns/tool calls and a way to send the same messages the provider sends.
 
