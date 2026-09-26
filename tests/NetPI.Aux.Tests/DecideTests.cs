@@ -78,7 +78,7 @@ public static class DecideTests
             });
             Check.False(res.IsError, res.Content);
             Check.Equal(3, seen.Count);
-            Check.True(seen.All(b => b["model"]!.GetValue<string>() == "kev-9b"), "default model");
+            Check.True(seen.All(b => b["model"]!.GetValue<string>() == "qwen3.8-27b"), "default model");
             var q = (JsonObject)seen[0]["questions"]!;
             Check.Equal("choice", q["level"]!["type"]!.GetValue<string>());
             Check.Equal("info", q["level"]!["criteria"]!["info"]!.GetValue<string>());
@@ -86,7 +86,7 @@ public static class DecideTests
             Check.Equal("A human must act.", q["act"]!["instructions"]!.GetValue<string>());
             Check.Equal(3, q["risk"]!["criteria"]!.AsArray().Count);
 
-            Check.Contains(res.Content, "kev-9b: 3 items × 3 questions");
+            Check.Contains(res.Content, "qwen3.8-27b: 3 items × 3 questions");
             Check.Contains(res.Content, "level: info 2, error 1");
             Check.Contains(res.Content, "act: yes 2, no 1");
             Check.Contains(res.Content, "(mean score 1.50)");
@@ -123,7 +123,7 @@ public static class DecideTests
             var env = new Env();
             await env.StartAsync(kev.Url);
 
-            var res = await env.Run(new { text = "x", questions = new { a = "Is it bad?" } });
+            var res = await env.Run(new { text = "x", questions = new { a = "Is it bad?" }, model = "kev-9b" });
             Check.True(res.IsError);
             Check.Contains(res.Content, "kev-9b: HTTP 500 http_500: model name=kev-9b failed to load");
         });

@@ -12,7 +12,7 @@ namespace NetPI.Decide;
 /// The agent writes the questions once; the decision model answers them for one text or for every line of a file,
 /// with a probability per answer, in about a tenth of a second per item. Also the RPC <c>decide.ask</c> for other plugins.
 /// </summary>
-[NetPiPlugin("netpi.decide", Name = "Decide", Description = "decide: yes/no, pick-one and score questions answered by a local decision model (Kev or the NInfer chat model)", Order = 27)]
+[NetPiPlugin("netpi.decide", Name = "Decide", Description = "decide: yes/no, pick-one and score questions answered by a local decision model (the NInfer chat model, or Laya/Kev on the nuc)", Order = 27)]
 public sealed class DecidePlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
@@ -23,7 +23,7 @@ public sealed class DecidePlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Str("decide.baseUrl", "Server URL", "", "Empty: the AiProxy/AiGateway server (providers.aiproxy.baseUrl)."),
-                SettingInfo.Str("decide.model", "Decision model", "kev-9b", "kev-9b: load it on the nuc from AiHub first. qwen3.8-27b: the NInfer chat model, no extra memory, but it shares NInfer's slots with the agents."),
+                SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. laya-logs: the four log questions on the nuc. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070)."),
                 SettingInfo.Int("decide.maxItems", "Most items per call", 500, null, 1, 5000),
                 SettingInfo.Int("decide.parallel", "Requests at once", 4, null, 1, 16),
             ],
@@ -56,7 +56,7 @@ internal sealed record DecisionAnswer(JsonObject Answers, string Model, double M
 /// <summary>POST /v1/systemone through the configured server; errors keep the server's code and request id.</summary>
 internal sealed class DecisionClient(IPluginContext ctx, HttpClient http)
 {
-    public string Model(string? model) => string.IsNullOrWhiteSpace(model) ? ctx.Settings.Get("decide.model", "kev-9b") ?? "kev-9b" : model.Trim();
+    public string Model(string? model) => string.IsNullOrWhiteSpace(model) ? ctx.Settings.Get("decide.model", "qwen3.8-27b") ?? "qwen3.8-27b" : model.Trim();
 
     public string Root()
     {
