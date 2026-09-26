@@ -27,7 +27,7 @@ nuc models:
 
 | task | recommended | score | speed / where | runner-up | test set |
 |---|---|---|---|---|---|
-| **Log lines**: subsystem, severity, needs a human, routine | **Laya-logs-qwen** (421M, fine-tuned on Qwen3.8-27B's labels) | **0.78 / 0.93 / 0.93 / 0.97** | 37 ms/line on the 4070 (0.42 s iGPU) | Qwen3.8-27B itself 0.79 / 0.92 / 0.95 / 0.93 (0.7 s/line); Laya-logs on Kev-9B's labels 0.53 / 0.89 / 0.84 / 0.92 | 120 real lines, hand-labelled |
+| **Log lines**: subsystem, severity, needs a human, routine | **Laya-logs-qwen** (421M, fine-tuned on Qwen3.8-27B's labels), served as `logs` by `laya-tasks` (nuc :8010, `/v1/systemone`) | **0.78 / 0.93 / 0.93 / 0.97** | 37 ms/line on the 4070 (all 4 questions, p50 over the LAN; 0.42 s iGPU) | Qwen3.8-27B itself 0.79 / 0.92 / 0.95 / 0.93 (0.7 s/line); Laya-logs on Kev-9B's labels (`logs-kev`) 0.53 / 0.89 / 0.84 / 0.91 | 120 real lines, hand-labelled |
 | **Browser**: which element next | **MiniLM ranker (fine-tuned) → top-20 → Laya picker × Kev-9B** | top-1 **0.392** (target in top-20: 0.846) | ranker 65 ms + Laya + Kev ~0.2–0.4 s per step on the 4070 | Kev-9B alone 0.307–0.335; Laya picker alone 0.286 | Mind2Web, 475 steps on 14 websites never trained on |
 | **Computer use (Windows)**: which control next | **Kev-9B**, zero-shot, over the UI Automation list | top-1 **0.89**, top-3 0.98 | ~1 s per step on the 4070 (189 controls) | small rankers 0.55 | 44 hand-made tasks in 5 Windows apps |
 | **Dangerous command** (guardrail second opinion) | **Kev-9B** | 12/12 | ~0.1 s | decider:0.8b 12/12, Kev-4B 11/12, laya:en 11/12 (9 ms) | 12 hand-made commands — **too small, needs a real set** |
@@ -59,8 +59,8 @@ Scores are accuracy (top-1 for element choice). "–" = not measured. Logs colum
 |---|---|---|---|---|---|---|---|---|
 | Kev-9B | 9B | zero-shot (GGUF, fork) | 0.54 / 0.87 / 0.82 / 0.90 | 0.307–0.335 | **0.89** | **12** | **6** | **8** |
 | Kev-4B | 4B | zero-shot | 0.55 / 0.83 / 0.79 / 0.79 | – | – | 11 | **6** | **8** |
-| **Laya-logs-qwen** | 421M | fine-tuned (Qwen3.8-27B labels, 3 epochs) | **0.78 / 0.93 / 0.93 / 0.97** | – | – | – | – | – |
-| Laya-logs | 421M | fine-tuned (Kev-9B labels) | 0.53 / 0.89 / 0.84 / 0.92 | – | – | – | – | – |
+| **Laya-logs-qwen** (served as `logs`) | 421M | fine-tuned (Qwen3.8-27B labels, 3 epochs) | **0.78 / 0.93 / 0.93 / 0.97** | – | – | – | – | – |
+| Laya-logs (served as `logs-kev`) | 421M | fine-tuned (Kev-9B labels) | 0.53 / 0.89 / 0.84 / 0.91 | – | – | – | – | – |
 | **Laya picker** | 421M | fine-tuned (Mind2Web) | – | 0.286 | – | – | – | – |
 | **Laya picker × Kev-9B** | | ensemble (product) | – | **0.392** | – | – | – | – |
 | laya:typed-decisions | 421M | zero-shot (Ollaya) | 0.35 / 0.63 / 0.76 / 0.29 | – | – | 8 | **6** | **8** |
@@ -88,8 +88,11 @@ with the labeller's style; a few dozen of the user's own labels would settle it.
 - **The log teacher is the ceiling, and the student reaches it.** Retrained on Qwen3.8-27B's labels, Laya went from
   0.53 to 0.78 on the subsystem and matches its teacher on the rest (gold per epoch: 0.79 / 0.93 / 0.95 / 0.91 after
   1, 0.76 / 0.92 / 0.93 / 0.97 after 2, 0.78 / 0.93 / 0.93 / 0.97 after 3: flat after the first epoch, so more epochs
-  do not help; a better teacher or more varied lines would). Checkpoint `out/laya/logs-laya-3ep-qwen` on the nuc, not
-  yet served by `laya-tasks`. Next: the user's corrections and tighter subsystem categories.
+  do not help; a better teacher or more varied lines would). Checkpoint `out/laya/logs-laya-3ep-qwen` on the nuc,
+  served by `laya-tasks` as `logs` since 2026-09-26 (the Kev-taught `logs-laya-4ep` stays as `logs-kev` for a while);
+  the served models reproduce their gold scores exactly (`serve_check.mjs`). `laya-tasks` is a plain container that
+  `/home/quazzie/train/serve.sh` starts (not a Dockhand stack); its last line lists the served `name=checkpoint`
+  pairs. Next: the user's corrections and tighter subsystem categories.
 - **Browser picker:** all Mind2Web training sites are used; next is a stronger base (fine-tune Kev-4B as the picker),
   better element descriptions (the ranker's recall ceiling), and NetPI's own browser traces.
 - **Computer use:** Kev-9B works zero-shot; record every real step (control list, choice, outcome) to train a
