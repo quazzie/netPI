@@ -1,0 +1,147 @@
+{
+  "version": 1,
+  "ideas": [
+    {
+      "id": "idea-nt6ozx",
+      "title": "First-class web tools: http_fetch + web search",
+      "summary": "Agents can only reach the web via bash curl. A dedicated fetch tool (URL → clean text/markdown) and optional search would make research tasks first-class for main and subagents.",
+      "status": "done",
+      "priority": "medium",
+      "tags": [
+        "tools",
+        "research",
+        "subagents"
+      ],
+      "createdAt": "2026-09-24T11:10:59Z",
+      "updatedAt": "2026-09-26T04:21:54Z",
+      "createdBy": "agent:agt_muff99qllgce",
+      "sections": [
+        {
+          "id": "sec-cdw6",
+          "kind": "note",
+          "title": "Observed gap",
+          "content": "During a session on 2026-07-21: network is available (verified `curl https://svelte.dev` → 200, GitHub API reachable), so the gap is tooling, not connectivity. Curl-via-bash works but is clunky: manual HTML parsing, UA/headers, error handling, and a subagent spawned with a restricted toolset can't use it unless bash is in its tool list. Doc lookups (Svelte 5, provider APIs) are a recurring task in this repo.",
+          "updatedAt": "2026-09-24T11:10:59Z"
+        },
+        {
+          "id": "sec-v865",
+          "kind": "plan",
+          "title": "Sketch",
+          "content": "A `fetch(url, {format: text|markdown|html})` tool implemented as a host service (no NuGet — System.Net.Http is in-box). Optionally a `web_search` tool behind a provider setting. Keep results size-capped like tool outputs.",
+          "updatedAt": "2026-09-24T11:10:59Z"
+        }
+      ],
+      "sessionIds": [
+        "ses_muff8vds6hz2"
+      ]
+    },
+    {
+      "id": "idea-9uimir",
+      "title": "Screenshot tool for the running UI",
+      "summary": "No way to visually verify UI changes — the agent can read code and logs but never the rendered app. Capture the running app as an image the agent can read.",
+      "status": "done",
+      "priority": "medium",
+      "tags": [
+        "ui",
+        "tools",
+        "testing"
+      ],
+      "createdAt": "2026-09-24T11:10:59Z",
+      "updatedAt": "2026-09-26T04:21:43Z",
+      "createdBy": "agent:agt_muff99qllgce",
+      "sections": [
+        {
+          "id": "sec-fit4",
+          "kind": "note",
+          "title": "Observed gap",
+          "content": "UI work in `web/` can only be verified structurally (read the Svelte source) or by the user. CLAUDE.md notes user-shared screenshots are weak references, not specs — an agent-captured screenshot would be a strong one.",
+          "updatedAt": "2026-09-24T11:10:59Z"
+        },
+        {
+          "id": "sec-iga1",
+          "kind": "plan",
+          "title": "Existing machinery to reuse",
+          "content": "The E2E suite already does Playwright-based UI smoke tests against a real server + mock model: `tests/NetPI.E2E/ui/smoke.mjs` (see `--no-ui` in `tests/NetPI.E2E/Program.cs`). A `screenshot` tool could drive the same path headless against `netpi-server` on a free port, or capture the WebView2/desktop window on Windows. Output: image file path the agent reads with `read`.",
+          "updatedAt": "2026-09-24T11:10:59Z"
+        }
+      ],
+      "sessionIds": [
+        "ses_muff8vds6hz2"
+      ]
+    },
+    {
+      "id": "idea-78xc1t",
+      "title": "Project learnings journal (separate from ideas backlog)",
+      "summary": "Facts discovered while working get re-discovered every session because there is nowhere to keep findings that are not deferred work.",
+      "status": "rejected",
+      "priority": "low",
+      "tags": [
+        "memory",
+        "harness"
+      ],
+      "createdAt": "2026-09-24T11:10:59Z",
+      "updatedAt": "2026-09-26T04:21:48Z",
+      "createdBy": "agent:agt_muff99qllgce",
+      "sections": [
+        {
+          "id": "sec-zmz3",
+          "kind": "note",
+          "title": "Observed gap",
+          "content": "Examples found today: `NetPI.Providers.Tests` does not accept the `[filter]` arg that AGENTS.md and docs/TESTING.md claim all suites support; the WebView2 WPF reference must be dropped before ResolveAssemblyReferences (see comment in src/NetPI.Desktop/NetPI.Desktop.csproj). Neither is work — both are facts. The ideas backlog fits deferred work; a findings section is a workaround, not a home.",
+          "updatedAt": "2026-09-24T11:10:59Z"
+        },
+        {
+          "id": "sec-msd0",
+          "kind": "plan",
+          "title": "Sketch",
+          "content": "A per-project append-only learnings file (e.g. LEARNINGS.md or a section of AGENTS.md) that the agent updates when it verifies something non-obvious, and that gets loaded (or digested) into context at session start. Keep entries one-line + date so the digest stays small.",
+          "updatedAt": "2026-09-24T11:10:59Z"
+        }
+      ],
+      "sessionIds": [
+        "ses_muff8vds6hz2"
+      ]
+    },
+    {
+      "id": "idea-2pmvrl",
+      "title": "Nudge: reset the counter when an acceptable response comes in",
+      "summary": "The nudge counter (run.Items[\"netpi.nudge.count\"]) only ever grows within a run, so nudge.maxPerRun caps the whole run: after 3 nudges early in a long run, later stalls are never nudged and the agent stops silently. Reset the counter whenever a response doesn't need a nudge, so the cap bounds one stall episode (consecutive nudges) instead of the whole run.",
+      "status": "open",
+      "priority": "medium",
+      "tags": [
+        "nudge",
+        "agent",
+        "harness"
+      ],
+      "createdAt": "2026-09-26T04:20:04Z",
+      "updatedAt": "2026-09-26T04:20:04Z",
+      "createdBy": "agent:agt_muhvq4edfyh8",
+      "sections": [
+        {
+          "id": "sec-jd9y",
+          "kind": "requirements",
+          "title": "Problem",
+          "content": "In `plugins/NetPI.Nudge/NudgePlugin.cs`, `NudgeHook.OnAfterModelCallAsync` (Order 200) increments `run.Items[NudgeHook.CountKey]` for every nudged response and suppresses nudges once the count reaches `nudge.maxPerRun` (default 3). The counter is never reset. The cap was meant to stop an infinite nudge loop inside one stall, but it currently applies to the entire run: a long run that gets nudged 3 times in its first 20 turns (then recovers) will never be nudged again for the rest of the run, even if it stalls hard later. `docs/SETTINGS.md` (line ~234) documents `nudge.maxPerRun` as \"Nudges per run\".",
+          "updatedAt": "2026-09-26T04:20:04Z"
+        },
+        {
+          "id": "sec-2wa2",
+          "kind": "plan",
+          "title": "Plan",
+          "content": "1. **Behavior change** — `plugins/NetPI.Nudge/NudgePlugin.cs`, `NudgeHook.OnAfterModelCallAsync`: when `Classify(assistant, run.ToolCallCount)` returns null (an acceptable response: real tool call, clean final answer, or `aborted`/`error` stop reason), remove `run.Items[CountKey]` before returning null. The read path already treats a missing key as 0, so removal is sufficient. The counter then means \"consecutive nudges since the last acceptable response\", i.e. `nudge.maxPerRun` bounds one stall episode. Notes: turns process sequentially within a run (no locking needed); the counter lives on the run context, so a mid-run plugin hot-reload keeps it; when ToolRepair (Order 100) handles a textual tool call, NudgeHook never sees that message (first non-null decision wins in AgentRunner) — unchanged.\n2. **Setting semantics** — `nudge.maxPerRun` becomes \"max consecutive nudges per stall episode\". **Decision point:** keep the config key (no break for existing user settings) and only update the label/description (\"Nudges per run\" → \"Max nudges per stall episode\"); alternative is renaming to `nudge.maxConsecutive`, which is clearer but orphans saved settings. Recommendation: keep the key.\n3. **Docs** — update the nudge line in `docs/SETTINGS.md` (mention the reset), and the XML doc comments on `NudgeHook`/`NudgePlugin`. No `docs/PROTOCOL.md` changes (no new RPC/event/notice kind).\n4. **Unit tests** — `tests/NetPI.Aux.Tests/HookTests.cs` (`NudgeTests.Register`):\n   - keep the existing \"at most nudge.maxPerRun per run\" test (pure consecutive episode still hits the cap);\n   - new: two empties (2 nudges) → message with a tool call (no decision, counter reset) → 3 more empties (3 nudges) → 4th suppressed; assert `run.Items[CountKey]` at each step;\n   - new: a clean final answer (no tool call) also resets; `maxPerRun=1` variant: nudge → acceptable → nudge again.\n5. **E2E (optional but recommended)** — `tests/NetPI.E2E/HookTests.cs` plus `tests/MockLlm/Scenarios.cs`: a scenario where one run stalls, recovers with a tool call, stalls again, and finishes — e.g. extend `empty` with a `n=` param. Set `nudge.maxPerRun=1` for the run and assert **two** nudge notices and a final answer (old code produces only one). Caveat: `ScenarioEngine.Decide` short-circuits any response to a nudge notice with NUDGE-RESUMED before the scenario switch, so the new scenario needs a small per-scenario opt-out of that shortcut.",
+          "updatedAt": "2026-09-26T04:20:04Z"
+        },
+        {
+          "id": "sec-ritp",
+          "kind": "todo",
+          "title": "Verification",
+          "content": "- `dotnet build plugins/NetPI.Nudge`\n- `dotnet tests/NetPI.Aux.Tests/bin/Release/NetPI.Aux.Tests.dll nudge` (or `build.ps1 -Test`)\n- if the E2E is added: `dotnet tests/NetPI.E2E/bin/Release/NetPI.E2E.dll HookTests`\n- no `NetPI.Abstractions` changes, so no other plugins need rebuilding; a running NetPI hot-reloads the changed plugin.",
+          "updatedAt": "2026-09-26T04:20:04Z"
+        }
+      ],
+      "sessionIds": [
+        "ses_muhvp65ovt2k"
+      ]
+    }
+  ]
+}
