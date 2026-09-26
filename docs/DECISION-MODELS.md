@@ -116,6 +116,21 @@ another; a different set of 100 lines per row, except "warm", which repeats the 
   a question takes 54 ms instead of 75.5, a line 218 ms instead of 304. AiGateway now sends `share_state: false` for
   states under 1000 characters (AiSwitcher D75). The remaining cost is per-forward overhead, so the win is running
   all branches in one batched forward (Phase 2 Stage 2), not a tighter per-branch loop.
+- Batched branches (Phase 2 Stage 2, NInfer `060d7bf3`, deployed 2026-09-26; `decisions-lab/scripts/p2_batch.mjs`,
+  `p2_gold.mjs`):
+
+  | case | one request per branch | batched |
+  |---|---|---|
+  | log line, 4 questions, state unshared | 220 ms p50 | 95 ms |
+  | log line, state shared | 316 ms | 118 ms |
+  | 4.5k-token state, 4 questions | 250 ms | 121 ms |
+  | 12 long questions (27 of 36 fit one forward) | 842 ms | 345 ms |
+  | log line next to a generating agent | 454 ms (0.1 above) | 133 ms |
+
+  Gold accuracy on the 120 log lines, batched vs one request per branch: severity 0.892 / 0.883, category
+  0.675 / 0.675, actionable 0.875 / 0.892, routine 0.908 / 0.900. The choices differ in 27 of 480 answers, as
+  often as two per-branch runs that only chunk the prompt differently (26 of 480): NInfer's results depend on
+  chunk boundaries and kernel routes, so near-ties can go either way; nothing is lost on average.
 
 **0.2 Two agents prefilling at once.** Stateless chat, cold prompts built from NetPI's docs.
 

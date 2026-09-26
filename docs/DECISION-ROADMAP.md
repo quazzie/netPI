@@ -127,6 +127,11 @@ deferred): decisions are overhead-bound, so batch branches inside one request fi
 
 2.3 **Build and prove it.** Batched vs sequential logits equal within tolerance; ctest serve/runtime set (FORK.md);
 throughput vs the 0.1/0.2 baselines; two-agent regression. Deploy by the one-NInfer procedure.
+*2b Stage 2 built and deployed 2026-09-26 (fork `060d7bf3`, `docs/decision.md` "Batched branches"): the longest
+branch is the Engine request and the others run as rows of its last prefill forward (`batch: false` keeps the old
+path). A log line with 4 questions: 95 ms instead of 220; next to a generating agent 133 instead of 454; gold
+accuracy unchanged (details in `DECISION-MODELS.md`, 0.1). Stage 1 was skipped (profiling: the cost is kernel
+submission per forward, not the request lifecycle). Next in Phase 2: `reasoning_effort` (3.4) and `states` (3.3).*
 
 2.4 *(Superseded by the design, §5: one worker and one prefill owner would still serialize parallel decisions.)*
 **Interim, if 2 is far off:** let decisions use both slots when the agents are idle (drop the endpoint mutex in
@@ -174,7 +179,7 @@ Qwen (not yet measured on Windows). Record every real step for later training.
 Phases 0 and 1 (except 1.3) are done and deployed, 3.1 and the loop detector are built, and the Phase 2 design is
 approved. Next:
 
-1. Phase 2b, Stage 2: all branches of a decision in one batched forward (the profiling skips Stage 1, see
-   `DECISION-MODELS.md` 0.1 and the design's §7). Then `states` and `reasoning_effort` in the API.
+1. Phase 2: `reasoning_effort` in `/v1/decision` (the design's 3.4, needs a Frontend decision render mode),
+   then `states` (3.3, many log lines per call). Stage 2 (batched branches) is deployed.
 2. The user labels the 50 guard commands (`guard_to_label.json`); then decide on turning 3.1 on.
 3. 1.3, and the prefix-reusing checks of 3.2 once `reasoning_effort` lands.
