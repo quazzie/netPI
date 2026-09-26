@@ -181,6 +181,9 @@ Qwen (not yet measured on Windows). Record every real step for later training.
 Phases 0 and 1 (except 1.3) are done and deployed, 3.1 and the loop detector are built, and the Phase 2 design is
 approved. Next:
 
+0. NInfer decisions first (approved 2026-09-26, held until CLM was evaluated): a dedicated decision lane and
+   priority at every scheduler boundary (idea "ninfer: decisions first"). CLM-8B is not usable zero-shot
+   (`DECISION-MODELS.md`, "CLM-8B"), so the decisions stay on NInfer and this is unblocked.
 1. 3.2 prefix-reusing checks in NetPI: `/v1/decision` now reuses an agent's cache at any effort (batched branches
    and `reasoning_effort` deployed, NInfer `a61d418c`). Needs NetPI's conversation as chat messages that render
    exactly like its Responses requests (tool calls and results included); measure the reuse on real sessions first.
