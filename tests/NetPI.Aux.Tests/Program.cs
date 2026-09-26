@@ -10,6 +10,7 @@ IdeasTests.Register(runner);
 TodoTests.Register(runner);
 WebTests.Register(runner);
 MediaTests.Register(runner);
+DecideTests.Register(runner);
 SshTests.Register(runner);
 PanelTests.Register(runner);
 InspectTests.Register(runner);

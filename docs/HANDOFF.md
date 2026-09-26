@@ -40,6 +40,14 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
   for the user's message. Tested with a scripted model, not yet with a real one. See `docs/PLUGIN-SKILLS.md`.
 - **Profiles** (built 2026-09-24, not yet deployed): the opening of a chat's system prompt and its tools; a default per
   project; switching is free before the first message and one full re-read after it.
+- **Decisions** (`plugins/NetPI.Decide`, built and hot-loaded into the user's NetPI 2026-09-26): the `decide` tool and
+  `decide.ask` RPC ask a decision model (Kev, TypeSafe's `/v1/systemone`) typed yes/no, pick-one and score questions
+  about one text or every line of a file, through AiGateway. `kev-9b`/`kev-4b` are nuc router models (the router runs
+  a build of the Kev llama.cpp fork); switch to one in AiHub (it also unloads yue2). `qwen3.8-27b` works too, with no
+  switch: AiGateway answers System One for NInfer models through NInfer's `/v1/decision` (fork, `local/main`, ~35 ms
+  per question; it shares NInfer's two slots with the agents). The AiProxy provider leaves models
+  with an `api` out of the chat model list. Which model for which task (the results matrix):
+  `docs/DECISION-MODELS.md`; every experiment behind it: `docs/archive/2026-09-26-decisions.md`.
 - **Chat UI:** the streamed answer is laid out as the finished one will be, so nothing jumps between steps; a Steps
   preference (expanded / fold when done / folded), chat width, zoom and spellcheck are in Settings.
 - **History:** the Windows bring-up, the first smoke tests and the prompt work are recorded in

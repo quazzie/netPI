@@ -1,0 +1,5 @@
+{
+  "id": "netpi.decide",
+  "name": "Decide",
+  "description": "decide: yes/no, pick-one and score questions answered by a local decision model (Kev on the nuc, via AiGateway)."
+}

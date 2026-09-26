@@ -38,7 +38,8 @@ headless for any browser.
   agnostic, preserving each file's line endings and BOM — plus `bash` (Git Bash on Windows), `pwsh` and background
   processes; `web_fetch` (pages as Markdown), `web_search` (SearXNG or Brave), `screenshot` (headless Edge/Chrome, or
   the NetPI window), `todo_write` (a checklist shown above the composer), `ask_user` (the agent asks you in the chat,
-  with options to pick, and waits without holding its instance), `show_image` (the agent shows you an image) and
+  with options to pick, and waits without holding its instance), `show_image` (the agent shows you an image), `decide` (yes/no, pick-one and score questions over one text or every line of a
+  file, answered by a local decision model such as Kev on the nuc) and
   `ssh_*` (scripts and files on the hosts in `~/.ssh/config`, sent through stdin, so nothing needs quoting). Replace
   any tool by registering one with the same name. Each chat can switch tools off (the tools button next to the model).
   File links in the chat open with the operating system.

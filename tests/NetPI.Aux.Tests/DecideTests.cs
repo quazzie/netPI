@@ -1,0 +1,142 @@
+using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using NetPI.Decide;
+
+namespace NetPI.Aux.Tests;
+
+public static class DecideTests
+{
+    private sealed class Env
+    {
+        public FakePluginContext Ctx { get; } = new(T.TempDir("decide-home"));
+        public string Dir { get; } = T.TempDir("decide");
+
+        public async Task StartAsync(string url)
+        {
+            Ctx.SettingsFake.Set("providers.aiproxy.baseUrl", JsonValue.Create(url + "/v1"));
+            await new DecidePlugin().StartAsync(Ctx, CancellationToken.None);
+        }
+
+        public Task<ToolResult> Run(object args) =>
+            Ctx.ToolsFake.Get("decide")!.ExecuteAsync(new ToolContext
+            {
+                SessionId = "ses_1", AgentId = "agt_1", CallId = "call_1", Cwd = Dir, Services = Ctx.Services, Events = Ctx.Events,
+            }, T.Args(args), CancellationToken.None);
+    }
+
+    /// <summary>A fake Kev: "ERR" lines are errors (sure), "maybe" lines are unsure; records every request body.</summary>
+    private static Task<LocalWeb> FakeKev(List<JsonObject> seen, int status = 200, object? error = null) => LocalWeb.StartAsync(app =>
+    {
+        app.MapPost("/v1/systemone", async (HttpContext http) =>
+        {
+            var body = (JsonObject)(await JsonNode.ParseAsync(http.Request.Body))!;
+            lock (seen) seen.Add(body);
+            if (status != 200)
+            {
+                http.Response.StatusCode = status;
+                http.Response.Headers["X-Request-Id"] = "req_42";
+                await http.Response.WriteAsJsonAsync(error ?? new { error = new { message = "model is not loaded (unloaded).", code = "model_not_loaded" } });
+                return;
+            }
+            var state = body["state"]!.GetValue<string>();
+            var unsure = state.Contains("maybe");
+            var answers = new JsonObject();
+            foreach (var (id, q) in (JsonObject)body["questions"]!)
+            {
+                answers[id] = q!["type"]!.GetValue<string>() switch
+                {
+                    "noul" => new JsonObject { ["type"] = "noul", ["noul"] = unsure ? 0.55 : state.Contains("ERR") ? 0.97 : 0.04 },
+                    "choice" => new JsonObject { ["type"] = "choice", ["choice"] = state.Contains("ERR") ? "error" : "info", ["confidence"] = unsure ? 0.2 : 0.9 },
+                    _ => new JsonObject { ["type"] = "score", ["score"] = 1.5, ["confidence"] = 0.8 },
+                };
+            }
+            await http.Response.WriteAsJsonAsync(new JsonObject { ["model"] = body["model"]!.GetValue<string>(), ["answers"] = answers });
+        });
+    });
+
+    public static void Register(TestRunner r)
+    {
+        r.Add("decide: a file's lines each get every question; friendly questions become TypeSafe's; unsure lines are listed", async () =>
+        {
+            var seen = new List<JsonObject>();
+            await using var kev = await FakeKev(seen);
+            var env = new Env();
+            await env.StartAsync(kev.Url);
+            Check.True(env.Ctx.ToolsFake.Get("decide")!.Definition is { Category: "decide", ReadOnly: true });
+
+            File.WriteAllLines(Path.Combine(env.Dir, "app.log"), ["INF started", "", "ERR disk full", "WRN maybe slow"]);
+            var res = await env.Run(new
+            {
+                file = "app.log",
+                questions = new
+                {
+                    level = new { type = "choice", question = "Which level?", options = new[] { "info", "error" } },
+                    act = new { type = "yes_no", question = "A human must act." },
+                    risk = new { type = "score", question = "How risky?", levels = new[] { "none", "some", "high" } },
+                },
+            });
+            Check.False(res.IsError, res.Content);
+            Check.Equal(3, seen.Count);
+            Check.True(seen.All(b => b["model"]!.GetValue<string>() == "kev-9b"), "default model");
+            var q = (JsonObject)seen[0]["questions"]!;
+            Check.Equal("choice", q["level"]!["type"]!.GetValue<string>());
+            Check.Equal("info", q["level"]!["criteria"]!["info"]!.GetValue<string>());
+            Check.Equal("noul", q["act"]!["type"]!.GetValue<string>());
+            Check.Equal("A human must act.", q["act"]!["instructions"]!.GetValue<string>());
+            Check.Equal(3, q["risk"]!["criteria"]!.AsArray().Count);
+
+            Check.Contains(res.Content, "kev-9b: 3 items × 3 questions");
+            Check.Contains(res.Content, "level: info 2, error 1");
+            Check.Contains(res.Content, "act: yes 2, no 1");
+            Check.Contains(res.Content, "(mean score 1.50)");
+            Check.Contains(res.Content, "[2] level=error 0.90 · act=yes 0.94");
+            Check.Contains(res.Content, "[3] ? level=info 0.20");
+            var d = NetPiJson.ToElement(res.Details);
+            Check.Equal(1, d.GetProperty("unsure").GetInt32());
+            Check.Equal("ERR disk full", d.GetProperty("items")[1].GetProperty("text").GetString());
+        });
+
+        r.Add("decide: errors keep the gateway's code and request id, with a hint for an unloaded model; bad questions are refused", async () =>
+        {
+            var seen = new List<JsonObject>();
+            await using var kev = await FakeKev(seen, 404);
+            var env = new Env();
+            await env.StartAsync(kev.Url);
+
+            var res = await env.Run(new { text = "rm -rf /", questions = new { danger = "This deletes data." }, model = "kev-4b" });
+            Check.True(res.IsError);
+            Check.Contains(res.Content, "kev-4b: HTTP 404 model_not_loaded");
+            Check.Contains(res.Content, "(request req_42)");
+            Check.Contains(res.Content, "Load kev-4b from AiHub");
+
+            var bad = await env.Run(new { text = "x", questions = new { pick = new { type = "choice", options = new[] { "only" } } } });
+            Check.True(bad.IsError);
+            Check.Contains(bad.Content, "needs at least 2 options");
+            Check.True((await env.Run(new { questions = new { a = "b" } })).IsError, "no items");
+        });
+
+        r.Add("decide: a llama.cpp error with a numeric code is reported, not thrown", async () =>
+        {
+            var seen = new List<JsonObject>();
+            await using var kev = await FakeKev(seen, 500, new { error = new { code = 500, message = "model name=kev-9b failed to load", type = "server_error" } });
+            var env = new Env();
+            await env.StartAsync(kev.Url);
+
+            var res = await env.Run(new { text = "x", questions = new { a = "Is it bad?" } });
+            Check.True(res.IsError);
+            Check.Contains(res.Content, "kev-9b: HTTP 500 http_500: model name=kev-9b failed to load");
+        });
+
+        r.Add("decide: the RPC decide.ask returns the raw answers", async () =>
+        {
+            var seen = new List<JsonObject>();
+            await using var kev = await FakeKev(seen);
+            var env = new Env();
+            await env.StartAsync(kev.Url);
+            var answers = (JsonObject)(await env.Ctx.Rpc.InvokeAsync("decide.ask",
+                new { state = "ERR boom", questions = new { bad = new { type = "yes_no", question = "Is it bad?" } } }))!;
+            Check.Equal(0.97, answers["bad"]!["noul"]!.GetValue<double>());
+        });
+    }
+}

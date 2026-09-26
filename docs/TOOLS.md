@@ -12,6 +12,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Ask` | `netpi.ask` | `ask_user` | `ask.pending`, `ask.answer` |
 | `plugins/NetPI.Goal` | `netpi.goal` | `goal_update` `goal_set` | `goal.get`, `goal.set`, `goal.edit`, `goal.pause`, `goal.resume`, `goal.clear` |
 | `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
+| `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
 | `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh_hosts` `ssh_run` `ssh_read` `ssh_write` `ssh_edit` `ssh_copy` | – |
 
 The file and shell tools start at `Order = 20`. Tests live in `tests/NetPI.Tools.Tests`, a console app with no test framework:
@@ -499,6 +500,35 @@ outside the collapsible steps, and opens it full size on click.
 
 ```ts
 details: { source: 'file'|'url'|'data', path?, url?, name, mediaType, bytes, caption?, data /* base64 */ }
+```
+
+## Decisions (`category: "decide"`)
+
+### `decide` (read-only, summary arg `file`)
+
+`plugins/NetPI.Decide`. Typed questions answered by a decision model (Kev: a Qwen3.5 backbone with a pointer head that
+returns a probability per option and never writes text), through TypeSafe's `POST /v1/systemone` on the AiProxy /
+AiGateway server (`decide.baseUrl`, default `providers.aiproxy.baseUrl`). The model (`decide.model`, default `kev-9b`)
+must be loaded: on the nuc it is a router model you switch to in AiHub; an unloaded model fails with the gateway's code,
+request id and that hint. The NInfer chat model (`qwen3.8-27b`) works too: AiGateway answers System One for NInfer
+models through NInfer's `POST /v1/decision` (the answer letters' probabilities read after one prefill, no text
+generated; at most 26 options per choice question). It needs no extra memory and was the more accurate model in the
+2026-09-26 tests (`DECISION-MODELS.md`), but it shares NInfer's two slots with the agents.
+
+`{ questions, text?, items?: string[], file?, min_confidence? /* 0.5 */, model? }`. `questions` is `id → question`:
+`{ type: "yes_no", question }`, `{ type: "choice", question, options: { label: description } | label[] }` (2–255) or
+`{ type: "score", question, levels: string[] /* lowest first, 2–10 */ }`; a bare string is a yes/no question (the
+schema asks for real questions: "A human needs to act." scored 0.62 where "Does a human need to act?" scored 0.95). They are
+sent as TypeSafe's `noul` / `choice` / `score` with `instructions` and `criteria`. Every item (the `text`, each of
+`items`, each non-empty line of `file`; at most `decide.maxItems`, 500) is one request with every question, up to
+`decide.parallel` (4) at a time. Confidence: the model's for choice/score, `|p − 0.5| × 2` for yes/no; an item with an
+answer under `min_confidence` is unsure. The model gets the counts per question (and the mean score), then every item
+when there are at most 40, else only the unsure ones (up to 40). If some items fail the rest are still reported, with
+the first error.
+
+```ts
+details: { model, file?, questions /* as sent */, count, unsure, ms,
+  items: { index /* 1-based */, text /* ≤ 300 chars */, answers: { [id]: { answer, confidence } }, unsure, ms }[] }
 ```
 
 ---

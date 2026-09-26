@@ -21,6 +21,7 @@
     <ProjectReference Include="../../plugins/NetPI.Todo/NetPI.Todo.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Web/NetPI.Tools.Web.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Media/NetPI.Tools.Media.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Decide/NetPI.Decide.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Ssh/NetPI.Tools.Ssh.csproj" />
   </ItemGroup>
 </Project>

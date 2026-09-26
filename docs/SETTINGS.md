@@ -283,6 +283,10 @@ The default commands: `rm -r` of `/`, `/*`, `~` or `$HOME`; deleting a drive roo
 | `web.search.braveUrl` | `https://api.search.brave.com/res/v1/web/search` | |
 | `web.search.count` | `8` | results per search (max 20) |
 | `media.maxBytes` | `10000000` | largest image `show_image` shows |
+| `decide.baseUrl` | – | server for `decide` (`POST /v1/systemone`); empty = `providers.aiproxy.baseUrl` |
+| `decide.model` | `kev-9b` | decision model `decide` asks: `kev-9b`/`kev-4b` on the nuc, or `qwen3.8-27b` on NInfer (through AiGateway's System One bridge) |
+| `decide.maxItems` | `500` | most items per `decide` call (1–5000) |
+| `decide.parallel` | `4` | `decide` requests at once (1–16) |
 | `web.browserPath` | auto | Edge, Chrome or Chromium for `screenshot` (found in the usual install folders or on PATH) |
 
 ## Goals
