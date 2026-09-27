@@ -455,7 +455,7 @@ characters at most, ~6k tokens).
 | question | how | result |
 |---|---|---|
 | did it leave something unsaved? | `/v1/decision` yes/no, thinking off | weak: a card on 7/12 unsaved at p ≥ 0.5, but also on 7/34 with nothing left |
-| same | **one chat call, reasoning low, that decides and drafts** (`NOTHING` or `SAVE` + title + summary), prompt v2 | **8/9 unsaved caught, 3/33 false cards**, 1.6 s p50 (258 output tokens); drafts read well ("Top-up mode when 'Songs per batch' increases") |
+| same | **one chat call, reasoning low, that decides and drafts** (`NOTHING` or `SAVE` + title + summary), prompt v3 | **8/11 unsaved caught, 1/32 false card**, 1.6 s p50 (297 output tokens); drafts read well ("Top-up mode when 'Songs per batch' increases"). v2 (a plan document counted as saved): 8/9, 3/33 |
 | which open idea did it work on? | `/v1/decision` pick one, thinking off | 5/6 right at p ≥ 0.8; most other matches were labelling gaps (a session cut after the computer-use research matched the computer-use idea at 0.88) |
 
 - `/v1/decision`'s `reasoning_effort` does not reason: it renders the prompt as an agent at that effort would (for
@@ -464,10 +464,10 @@ characters at most, ~6k tokens).
 - Prompt v2 draws the line the user wants: a plan the agent wrote and nobody built, a feature idea or research
   question not done, suggestions kept for later are lost; loose ends are not (a pending deploy, commit or restart, a
   failed one-off task, troubleshooting). v1 ("unfinished work") gave 6/34 false cards, all loose ends.
-- Open policy question: a plan written to `docs/plans/` counts as saved under v2. Two of the "unsaved"
-  counterfactuals had one (scored as either above); counting them as unsaved, v2 catches 8/12.
-- The remaining false cards: a code review the agent never finished (usage limit), a spec left uncommitted, an
-  AGENTS.md consolidation with levels left.
+- **Only the ideas backlog counts as saved** (the user, 2026-09-27: "I only check the ideas tab, not docs\plans"): prompt
+  v3 says a plan written to a document is not saved. Misses left: a dashboard problem the review found, the pianoroll
+  question in a long session, a missing-features list.
+- The remaining false card (v3): a code review the agent never finished (it hit the usage limit).
 
 **Close on commit.** Two steps (`ideas_close.mjs`, `ideas_close_done.mjs`):
 
