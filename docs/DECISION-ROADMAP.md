@@ -166,7 +166,9 @@ Automation list + qwen3.8-27b writing the control's number (0.98 top-1, 139 ms; 
 qwen3.8-27b through AiGateway → UIA pattern action) finishes 18 of 19 multi-step tasks at reasoning low with a plan
 line (15/19 thinking off), 0.2–0.4 s of model time per step, 91 % of actions without the focus. Browser use in a
 separate Chrome: 16/16 tasks (a local test site and live questions on Wikipedia, GitHub and the Python docs) at
-reasoning low with a plan line that also carries findings (15/16 thinking off). Viable; the reply
+reasoning low with a plan line that also carries findings (15/16 thinking off). `/v1/decision` inside the loop (a
+fast pick, a done-check) added neither speed nor accuracy: the decisions cost about as much as the short
+reasoning-low step, and a thinking-off check fails where thinking off fails. Viable; the reply
 format (verb, name, number), per-step feedback and a carried plan mattered more than the model. Next: a NetPI
 plugin with confirmation for destructive controls, a keyboard or vision fallback for custom-drawn controls, a
 `/v1/decision` done-check.*

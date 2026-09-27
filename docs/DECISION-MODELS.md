@@ -329,6 +329,35 @@ What the rounds taught:
   all answered correctly.
 - The guards (other hosts, sign-in, cookie "accept all", delete, closing) never had to refuse anything.
 
+**Decisions inside the loop (2026-09-27).** Can NInfer's `/v1/decision` speed the loop up or check it? Every
+decision used the step's own prompt as its state, at the step's effort, so the chat step reused it (99% of its
+prompt cached). Two questions went in one request, each a branch: what kind of step comes next (click, type, key,
+done), and which control to click (the page's controls as lettered options, 52 per branch plus "none"). A done-check
+asked "does the screen show the task is complete / this answer?" before a done or an answer counted (at most two
+rejections).
+
+| browser suite, reasoning low + plan | tasks | steps (chat + fast) | decisions | wall per task p50 (mean) |
+|---|---|---|---|---|
+| **no decisions** | **16/16** | 60 | 0 | **5.4 s** (7.0 s) |
+| decisions logged every step, done-check | 15/16 | 73 | 89 | 10.0 s (12.2 s) |
+| cascade: click on the decision when both ≥ 0.8, else chat; done-check | 16/16 | 62 (39 + 23) | 75 | 8.1 s (9.2 s) |
+
+- **The pick is good when confident.** At ≥ 0.8 (text fields excluded: there the decision picked the right field but
+  "click" when the step was to type into it), it covered 30% of steps and matched the reasoned click 91% of the time.
+  The mismatches were valid alternatives, such as sorting the table by salary instead of paging through it.
+- **But it does not pay here.** A decision that carries the step's prompt costs p50 330 ms, p90 2.8 s on big pages
+  (10–15k tokens, up to 10 pick branches); the reasoning-low chat step is only ~0.45 s. The cascade saves a chat call
+  on a third of the steps and pays a decision on every step: slower overall, with no gain in accuracy.
+- **The done-check is a poor verifier.** In the browser suite it had nothing to catch, and it rejected a correct
+  answer taken from the model's own note (fixed: an answer already written in the plan's note skips the check).
+  Replayed on the 70 recorded "done" steps of the Windows runs (`cu_check_replay.mjs`): at 0.5 it accepts 48 of 65
+  true dones and catches 2 of 5 false ones. It catches a wrong number on the Calculator display, but accepts ₠ for €
+  (p 0.68–0.84) and rejects finished tasks whose success is not readable from the controls (a rotated canvas p 0.05,
+  a font change 0.09). A thinking-off decision fails where thinking off fails.
+- So for this loop the reasoning-low chat step with its plan line stays best. Decisions suit typed questions about
+  visible content, like the guard questions (0.4 above). A safety check before a click ("does this send, pay or
+  delete?") is the untested candidate in the loop.
+
 **Verdict:** viable for built-in and standard Windows apps with a good UIA tree, and for web pages in Chrome
 (reasoning low with the plan line: 18/19 Windows tasks, 16/16 browser tasks). 16–18 of 19 multi-step tasks
 succeed, at 0.2–0.4 s of model time per step, locally and mostly without touching the user's focus. Apps that draw
