@@ -53,10 +53,10 @@
   // an ask rule matched, and the second opinion found it read-only, so it ran without asking
   const cleared = $derived(asks.cleared.get(call.id) ?? null);
   let deciding = $state(false);
-  async function decide(allow) {
+  async function decide(allow, scope = 'once') {
     deciding = true;
     try {
-      await answerApproval(call.id, allow);
+      await answerApproval(call.id, allow, scope);
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -149,7 +149,10 @@
     {/if}
     {#if status === 'preparing'}<span class="state">preparing…</span>{/if}
     {#if status === 'approval'}<span class="state asks">needs your OK</span>{/if}
-    {#if cleared && status !== 'approval'}<span class="state" title="A guardrail asks first ({cleared.rule}); {opinionText(cleared.opinion)}, so it ran without asking">checked</span>{/if}
+    {#if cleared && status !== 'approval'}
+      {#if cleared.by === 'session'}<span class="state" title="A guardrail asks first ({cleared.rule}); you allowed it for this chat, so it ran without asking">allowed in this chat</span>
+      {:else}<span class="state" title="A guardrail asks first ({cleared.rule}); {opinionText(cleared.opinion)}, so it ran without asking">checked</span>{/if}
+    {/if}
     {#if status === 'pending'}<span class="state">queued</span>{/if}
     {#if status === 'cancelled'}<span class="state">no result</span>{/if}
     {#if status === 'skipped'}<span class="state">{skipped === 'steer' ? 'skipped · new message' : skipped === 'stopped' ? 'not run' : skipped === 'blocked' ? 'blocked' : 'aborted'}</span>{/if}
@@ -167,6 +170,12 @@
       </span>
       <span class="btns">
         <button class="np-btn np-btn-sm" disabled={deciding} onclick={() => decide(false)}>No</button>
+        <button
+          class="np-btn np-btn-sm"
+          disabled={deciding}
+          title="Allow it, and don't ask again in this chat for anything the guardrail {approval.rule} matches"
+          onclick={() => decide(true, 'session')}>Allow in this chat</button
+        >
         <button class="np-btn np-btn-sm np-btn-primary" disabled={deciding} onclick={() => decide(true)}>Allow</button>
       </span>
     </div>

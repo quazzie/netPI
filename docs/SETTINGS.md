@@ -260,8 +260,8 @@ used: the chat stays as it was. Beyond pi: a transcript too long for the summari
 
 `plugins/NetPI.Guardrails` checks every tool call before it runs: patterns and paths only (no model call, no change to
 the prompt), so it costs microseconds. A matching rule blocks the call (the model reads why; nothing ran); a rule that
-starts with `ask:` asks you first on the tool's row in the chat (Allow / No) while the run waits with its instance given
-back; in a subagent an ask rule blocks, since nobody watches its chat. `block:` may start a rule, `#` a comment line. The
+starts with `ask:` asks you first on the tool's row in the chat (No / Allow in this chat / Allow) while the run waits with its
+instance given back ("Allow in this chat" stops that rule asking for the rest of the chat; other chats still ask); in a subagent an ask rule blocks, since nobody watches its chat. `block:` may start a rule, `#` a comment line. The
 checks catch the plain cases (a command built at run time gets through): they are not a sandbox.
 
 | key | default | |

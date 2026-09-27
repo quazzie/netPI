@@ -236,7 +236,9 @@ into locals first, because after the parent clears the modal state or the row re
      "Waiting for your answer", and the chat's tab and session row get an `asking` dot (warn colour).
    - **Guardrails.** A tool call that waits for the user's OK (a guardrails `ask:` rule; `asks.approvals` from
      `guard.pending`, `guard.asked`, `guard.closed`) shows "needs your OK" on its row, with a bar under it: why (the
-     rule; for a path, the path) and **No** / **Allow** (`guard.answer`). Its steps group stays open while it waits. A
+     rule; for a path, the path) and **No** / **Allow in this chat** / **Allow** (`guard.answer`, scope `session` or
+     `once`); a call that runs because its rule was allowed in this chat reads "allowed in this chat" (`guard.cleared`
+     `by: 'session'`), one the second opinion cleared reads "checked". Its steps group stays open while it waits. A
      call that a hook blocked reads "blocked" (the ban icon), like a skipped one: it never ran. The tab dot is `asking`,
      the run status line says "Waiting for your OK", and a Windows toast says what it wants to run or change.
    - **Model turns.** Under the last step of each model turn (an assistant message that ended in tool calls; under its

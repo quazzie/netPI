@@ -59,9 +59,9 @@ export function opinionText(o) {
   return `${o.model}: read-only ${pct(p.read_only ?? 0)} · ${RISKS[risk]} ${pct(value)}`;
 }
 
-/** Lets a tool call run, or not. */
-export function answerApproval(callId, allow) {
-  return rpc('guard.answer', { callId, allow });
+/** Lets a tool call run, or not; scope 'session' allows the rule that asked for the rest of the chat. */
+export function answerApproval(callId, allow, scope = 'once') {
+  return rpc('guard.answer', { callId, allow, scope });
 }
 
 /** Picks an option (or toggles it, when several may be picked). */

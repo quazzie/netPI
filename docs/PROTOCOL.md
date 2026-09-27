@@ -153,7 +153,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `ask.pending` | netpi.ask | `{ sessionId? }` → `{ sessionId, callId, agentId, agentName, questions: { question, options: { label, description? }[], multiple }[], askedAt }[]`: the questions waiting for the user (`ask_user`) |
 | `ask.answer` | netpi.ask | `{ callId, answers?: string[][], text? }` → `true`: the options picked per question and/or the user's own words; `not_found` when nothing waits under that id, `bad_request` for an empty answer |
 | `guard.pending` | netpi.guardrails | `{ sessionId? }` → `{ sessionId, callId, agentId, tool, kind: 'command'\|'path', subject, rule, askedAt, opinion? }[]`: tool calls waiting for the user's OK (a guardrails `ask:` rule); `opinion` is the second opinion (`guardrails.secondOpinion`) when one was asked: `{ model, harmless, p: { destructive, stops_process, remote_change, read_only }, ms, error? }` |
-| `guard.answer` | netpi.guardrails | `{ callId, allow }` → `true`: the call runs, or is blocked ("the user said no"); `not_found` when nothing waits under that id |
+| `guard.answer` | netpi.guardrails | `{ callId, allow, scope?: 'once'\|'session' }` → `true`: the call runs, or is blocked ("the user said no"); `not_found` when nothing waits under that id. `scope: 'session'` with `allow` also allows the rule that asked for the rest of that chat (session meta `guardrailsAllowed`, a list of rules) and the other calls of that chat waiting on the same rule; a refusal is never remembered |
 | `files.search` | netpi.tools.files | `{ sessionId?, query, limit? }` → `{ path, rel, isDir }[]` (for `@` mentions) |
 | `files.open` | netpi.tools.files | `{ path, sessionId?, cwd? }` → `{ path, action: 'open'\|'edit'\|'reveal'\|'folder' }` (opens a path with the operating system; see `docs/TOOLS.md`) |
 | `files.list` | netpi.tools.files | `{ sessionId?, dir? }` → `{ root, dir, entries: {name, rel, isDir, size?, mtime?}[] }` |
@@ -209,8 +209,8 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `agent.status` | no | `{ agent: AgentInfo }` |
 | `ask.asked` | no | `{ sessionId, callId, agentId, agentName, questions, askedAt }` – a question waits for the user (`ask_user`); unscoped, so every window hears of it |
 | `guard.asked` | no | `{ sessionId, callId, agentId, tool, kind, subject, rule, askedAt, opinion? }` – a tool call waits for the user's OK (guardrails); unscoped |
-| `guard.cleared` | no | `{ sessionId, callId, agentId, tool, kind, subject, rule, opinion }` – an `ask:` rule matched, and the second opinion found the command confidently read-only, so it runs without asking; unscoped |
-| `guard.closed` | no | `{ sessionId, callId, status: 'allowed'\|'denied'\|'steered'\|'cancelled' }` – it stopped waiting |
+| `guard.cleared` | no | `{ sessionId, callId, agentId, tool, kind, subject, rule, by: 'opinion'\|'session', opinion? }` – an `ask:` rule matched and the call runs without asking: the second opinion found the command confidently read-only (`by: 'opinion'`, with `opinion`), or the user allowed that rule for this chat (`by: 'session'`); unscoped |
+| `guard.closed` | no | `{ sessionId, callId, status: 'allowed'\|'denied'\|'steered'\|'cancelled', scope?: 'session' }` – it stopped waiting (`scope` when it was allowed for the rest of the chat) |
 | `ask.closed` | no | `{ sessionId, callId, status: 'answered'\|'steered'\|'withdrawn'\|'cancelled', answers: string[][]\|null, text }` – it stopped waiting |
 | `agent.queue` | yes | `{ sessionId, items: QueuedInput[] }` |
 | `agent.notice` | yes | `{ sessionId, level: 'info'\|'warn'\|'error', text, kind?, phase?, mode? }` – transient (retry countdown etc.); a compaction's carry `kind: 'compaction'`, `phase: 'start'\|'done'\|'failed'` and `mode: 'auto'\|'overflow'\|'manual'` |

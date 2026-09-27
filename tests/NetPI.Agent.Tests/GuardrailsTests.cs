@@ -11,6 +11,7 @@ public static class GuardrailsTests
         t.Add("guardrails: a blocked command never runs, and the model reads why", BlockedCommand);
         t.Add("guardrails: protected paths: write and edit refuse them, shell commands that name them too", ProtectedPaths);
         t.Add("guardrails: ask rules wait for the user's OK with the instance given back (allow, no, a message instead)", AskRules);
+        t.Add("guardrails: allowed for this chat, the rule stops asking there (not in other chats, never for a no)", AllowForSession);
         t.Add("guardrails: in a subagent an ask rule blocks; switched off, nothing is checked", SubagentAndOff);
         t.Add("guardrails: the default rules block the catastrophic, not everyday work; spellings of a path", DefaultRules);
         t.Add("guardrails: second opinion: a confidently read-only command runs without asking, the rest ask with the model's view", SecondOpinionClears);
@@ -136,6 +137,59 @@ public static class GuardrailsTests
         Check.Contains(Results(h, s.Id).Last().Content, "the user wrote a new message instead");
         Check.Equal("stopped", h.Messages(s.Id)[^1].Text);
         Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("guard.answer", new { callId = "call_x", allow = true }))).Code);
+    }
+
+    private static async Task AllowForSession()
+    {
+        await using var h = await StartAsync();
+        h.Settings.Set("guardrails.commands", new JsonArray("ask: ^git push", "ask: ^git reset"));
+        var ran = new List<string>();
+        h.AddTool(Recorder("bash", ran));
+        h.Catalog.Handler = (r, ct) =>
+            Reply.HasToolResult(r) ? Reply.Text("done")
+            : Reply.Tool("bash", new { command = Reply.LastUser(r) == "reset" ? "git reset --hard" : "git push origin main" });
+        async Task<string> Asked(int n)
+        {
+            await Wait.Until(() => h.Bus.OfType("guard.asked").Count >= n, "a tool call waits for the OK");
+            return (string)FakeBus.Data(h.Bus.OfType("guard.asked")[n - 1])["callId"]!;
+        }
+
+        // "no" with scope session stores nothing: the next push asks again
+        var s = h.NewSession(model: "fake/solo");
+        await h.SendAsync(s.Id, "push");
+        await h.Rpc.InvokeAsync("guard.answer", new { callId = await Asked(1), allow = false, scope = "session" });
+        await h.IdleAsync(s.Id);
+        Check.Equal(0, ran.Count);
+        Check.True(h.Sessions.GetSession(s.Id)!.Meta?["guardrailsAllowed"] is null, "a refusal is not remembered");
+
+        // allowed for this chat: it runs, and the next push in this chat runs without asking
+        await h.SendAsync(s.Id, "push");
+        await h.Rpc.InvokeAsync("guard.answer", new { callId = await Asked(2), allow = true, scope = "session" });
+        await h.IdleAsync(s.Id);
+        Check.Equal(1, ran.Count);
+        Check.Equal("session", (string?)FakeBus.Data(h.Bus.OfType("guard.closed").Last())["scope"]);
+        Check.Equal("ask: ^git push", (string?)h.Sessions.GetSession(s.Id)!.Meta!["guardrailsAllowed"]![0]);
+        await h.SendAsync(s.Id, "push");
+        await h.IdleAsync(s.Id);
+        Check.Equal(2, ran.Count, "ran without asking");
+        Check.Equal(2, h.Bus.OfType("guard.asked").Count, "not asked again");
+        var cleared = FakeBus.Data(h.Bus.OfType("guard.cleared").Last());
+        Check.Equal("session", (string?)cleared["by"]);
+        Check.Equal("ask: ^git push", (string?)cleared["rule"]);
+
+        // only that rule: another ask rule still asks in this chat
+        await h.SendAsync(s.Id, "reset");
+        await Asked(3);
+        await h.Rpc.InvokeAsync("guard.answer", new { callId = await Asked(3), allow = false });
+        await h.IdleAsync(s.Id);
+
+        // only this chat: another one asks
+        var other = h.NewSession(model: "fake/solo");
+        await h.SendAsync(other.Id, "push");
+        await h.Rpc.InvokeAsync("guard.answer", new { callId = await Asked(4), allow = true });
+        await h.IdleAsync(other.Id);
+        Check.Equal(3, ran.Count);
+        Check.True(h.Sessions.GetSession(other.Id)!.Meta?["guardrailsAllowed"] is null, "allow once is not remembered");
     }
 
     private static async Task SubagentAndOff()

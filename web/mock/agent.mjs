@@ -13,6 +13,7 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
   const runs = new Map(); // sessionId -> { ac, turn }
   const asks = new Map(); // callId -> { entry, resolve }: ask_user questions waiting for ask.answer
   const approvals = new Map(); // callId -> { entry, resolve }: tool calls waiting for the user's OK (guardrails)
+  const allowedInChat = new Map(); // sessionId -> Set of ask rules the user allowed for the rest of that chat
 
   const sleep = (ms, run) =>
     new Promise((resolve, reject) => {
@@ -500,6 +501,11 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
   // until guard.answer, a new message from the user (steered) or an abort
   async function approve(sid, run, tool, rule, opinion = null) {
     const a = agentFor(sid);
+    // allowed for this chat (guard.answer scope "session"): runs without asking
+    if (allowedInChat.get(sid)?.has(rule)) {
+      publish('guard.cleared', { sessionId: sid, callId: tool.id, agentId: a.id, tool: tool.name, kind: 'command', subject: tool.args.command, rule, by: 'session' });
+      return { allow: true };
+    }
     const entry = { sessionId: sid, callId: tool.id, agentId: a.id, tool: tool.name, kind: 'command', subject: tool.args.command, rule, askedAt: new Date().toISOString(), opinion };
     setStatus(sid, { status: 'yielded', activity: 'waiting for your OK' });
     let outcome;
@@ -716,13 +722,23 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
     },
     /** guard.pending: the tool calls waiting for the user's OK. */
     pendingApprovals: (sid) => [...approvals.values()].map((w) => w.entry).filter((e) => !sid || e.sessionId === sid),
-    /** guard.answer: 'not_found' | true */
-    answerApproval(callId, allow) {
+    /** guard.answer: 'not_found' | true; scope 'session' (with allow) allows the rule for the rest of the chat */
+    answerApproval(callId, allow, scope) {
       const w = approvals.get(callId);
       if (!w) return 'not_found';
-      approvals.delete(callId);
-      publish('guard.closed', { sessionId: w.entry.sessionId, callId, status: allow ? 'allowed' : 'denied' });
-      w.resolve({ allow: !!allow });
+      const forChat = !!allow && scope === 'session';
+      const sid = w.entry.sessionId;
+      if (forChat) {
+        if (!allowedInChat.has(sid)) allowedInChat.set(sid, new Set());
+        allowedInChat.get(sid).add(w.entry.rule);
+      }
+      const close = (x, status) => {
+        approvals.delete(x.entry.callId);
+        publish('guard.closed', { sessionId: sid, callId: x.entry.callId, status, ...(forChat ? { scope: 'session' } : {}) });
+        x.resolve({ allow: status === 'allowed' });
+      };
+      close(w, allow ? 'allowed' : 'denied');
+      if (forChat) for (const o of [...approvals.values()]) if (o.entry.sessionId === sid && o.entry.rule === w.entry.rule) close(o, 'allowed');
       return true;
     },
     /** ask.pending: the questions waiting (in one chat, or all). */

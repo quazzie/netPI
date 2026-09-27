@@ -457,11 +457,6 @@
         <EffortPicker {session} {model} bind:open={effortOpen} />
         <ToolsPicker {session} />
         <span class="spacer"></span>
-        {#if running}
-          <span class="keys np-dim"
-            ><span class="np-kbd">{sendKeys}</span> steer <span class="np-kbd">Alt+Enter</span> queue <span class="np-kbd">Esc</span> stop</span
-          >
-        {/if}
         <ChatCost sessionId={session.id} />
         {#if used || win}<ContextRing {used} window={win} />{/if}
         {#if running && !canSend}
@@ -626,17 +621,6 @@
   }
   .spacer {
     flex: 1;
-  }
-  .keys {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    margin-right: 10px;
-    font-size: var(--fs-xs);
-    white-space: nowrap;
-  }
-  .keys .np-kbd {
-    margin-left: 4px;
   }
   .send {
     display: grid;

@@ -9,7 +9,9 @@ namespace NetPI.Guardrails;
 /// Guardrails: fast checks of every tool call before it runs, with no model call and no change to the prompt (see
 /// <see cref="RuleSet"/>). A rule that matches blocks the call: the model reads why, and nothing ran. A rule written
 /// <c>ask:</c> asks the user first, on the tool's row in the chat: <c>guard.asked</c> (unscoped, so every window hears of
-/// it), answered with <c>guard.answer { callId, allow }</c>, <c>guard.closed</c> when it stops waiting. Meanwhile the run
+/// it), answered with <c>guard.answer { callId, allow, scope? }</c>, <c>guard.closed</c> when it stops waiting. With
+/// <c>scope: "session"</c> the rule is allowed for the rest of that chat (session meta <c>guardrailsAllowed</c>): it runs
+/// without asking there, announced by <c>guard.cleared { by: "session" }</c>. Meanwhile the run
 /// waits with its instance given back (<see cref="IAgentRuntime.WaitYieldedAsync"/>). In a subagent an ask rule blocks:
 /// nobody watches its chat. With <c>guardrails.secondOpinion</c> on, a decision model reads a shell command before an ask
 /// rule asks, and a confidently read-only one runs without asking (<see cref="SecondOpinion"/>, <c>guard.cleared</c>).
@@ -45,8 +47,10 @@ public sealed class GuardrailsPlugin : INetPiPlugin
         context.Services.Register<IAgentHook>(new GuardHook(context, approvals, new SecondOpinion(context)));
         context.Rpc.Register("guard.pending", (req, _) => Task.FromResult<object?>(approvals.List(req.Str("sessionId"))),
             "Tool calls waiting for the user's OK (guardrails ask rules): { sessionId? } → { sessionId, callId, agentId, tool, kind, subject, rule, askedAt, opinion? }[]");
-        context.Rpc.Register("guard.answer", (req, _) => Task.FromResult<object?>(approvals.Answer(req.Required("callId"), req.Bool("allow") ?? false)),
-            "Allow or refuse a tool call that waits for the user's OK: { callId, allow } → true");
+        context.Rpc.Register("guard.answer", (req, _) => Task.FromResult<object?>(approvals.Answer(req.Required("callId"), req.Bool("allow") ?? false,
+                forSession: string.Equals(req.Str("scope"), "session", StringComparison.OrdinalIgnoreCase))),
+            "Allow or refuse a tool call that waits for the user's OK: { callId, allow, scope?: \"once\" | \"session\" } → true; scope session (with allow) " +
+            "allows the rule that asked for the rest of that chat, and the other calls of that chat waiting on the same rule");
         return Task.CompletedTask;
     }
 
@@ -84,20 +88,49 @@ internal sealed class Approvals(IPluginContext ctx)
     }
 
     /// <summary>Stops waiting: <paramref name="status"/> is allowed | denied | steered | cancelled.</summary>
-    public void Close(Entry e, string status)
+    public bool Close(Entry e, string status, bool forSession = false)
     {
-        if (!_byCall.TryRemove(new KeyValuePair<string, Entry>(e.CallId, e))) return;
-        ctx.Events.Publish("guard.closed", new JsonObject { ["sessionId"] = e.SessionId, ["callId"] = e.CallId, ["status"] = status });
+        if (!_byCall.TryRemove(new KeyValuePair<string, Entry>(e.CallId, e))) return false;
+        var data = new JsonObject { ["sessionId"] = e.SessionId, ["callId"] = e.CallId, ["status"] = status };
+        if (forSession) data["scope"] = "session";
+        ctx.Events.Publish("guard.closed", data);
+        return true;
+    }
+
+    /// <summary>The session meta key holding the ask rules the user allowed for the rest of that chat.</summary>
+    public const string SessionKey = "guardrailsAllowed";
+
+    /// <summary>The user allowed this ask rule for the rest of the chat (only ask rules; a block is never stored here).</summary>
+    public bool AllowedInSession(string sessionId, string rule) =>
+        ctx.Sessions.GetSession(sessionId)?.Meta?[SessionKey] is JsonArray a && a.Any(x => x is JsonValue v && v.TryGetValue<string>(out var r) && r == rule);
+
+    private void AllowInSession(string sessionId, string rule)
+    {
+        if (AllowedInSession(sessionId, rule)) return;
+        ctx.Sessions.UpdateSession(sessionId, s =>
+        {
+            s.Meta ??= new JsonObject();
+            if (s.Meta[SessionKey] is not JsonArray a) s.Meta[SessionKey] = a = new JsonArray();
+            a.Add(rule);
+        });
     }
 
     public JsonArray List(string? sessionId) =>
         new([.. _byCall.Values.Where(e => sessionId is null || e.SessionId == sessionId).OrderBy(e => e.AskedAt).Select(e => (JsonNode)Json(e))]);
 
-    public bool Answer(string callId, bool allow)
+    public bool Answer(string callId, bool allow, bool forSession = false)
     {
-        if (!_byCall.TryGetValue(callId, out var e) || !e.Allowed.TrySetResult(allow))
+        // Closed first, then released: the waiting run's own Close is then a no-op, and a second answer finds nothing.
+        forSession &= allow;
+        if (!_byCall.TryGetValue(callId, out var e) || e.Allowed.Task.IsCompleted)
             throw new RpcException("not_found", "No tool call waits for your OK with that id (it was answered, or its run ended).");
-        Close(e, allow ? "allowed" : "denied");
+        if (forSession) AllowInSession(e.SessionId, e.Verdict.Rule);
+        if (!Close(e, allow ? "allowed" : "denied", forSession))
+            throw new RpcException("not_found", "No tool call waits for your OK with that id (it was answered, or its run ended).");
+        e.Allowed.TrySetResult(allow);
+        if (forSession)
+            foreach (var other in _byCall.Values.Where(o => o.SessionId == e.SessionId && o.Verdict.Rule == e.Verdict.Rule).ToList())
+                if (Close(other, "allowed", forSession: true)) other.Allowed.TrySetResult(true);
         return true;
     }
 
@@ -163,6 +196,16 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             var verdict = rules.Check(call.Name, args, path => Resolve(run, call, path));
             if (verdict is null) return null;
             if (verdict.Action == GuardAction.Block) return Block(Why(verdict) + " Nothing ran. If it is really needed, tell the user what and why: they can do it themselves or change the rule.");
+            // The user allowed this ask rule for the rest of the chat (guard.answer scope "session").
+            if (approvals.AllowedInSession(run.Session.Id, verdict.Rule))
+            {
+                ctx.Events.Publish("guard.cleared", new JsonObject
+                {
+                    ["sessionId"] = run.Session.Id, ["callId"] = call.Id, ["agentId"] = run.Agent.Id, ["tool"] = call.Name,
+                    ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["by"] = "session",
+                });
+                return null;
+            }
             // An ask rule on a shell command: a decision model may clear a confidently read-only one (SecondOpinion).
             Opinion? opinion = null;
             if (RuleSet.CommandOf(call.Name, args) is { Length: > 0 } command)
@@ -173,7 +216,7 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
                     ctx.Events.Publish("guard.cleared", new JsonObject
                     {
                         ["sessionId"] = run.Session.Id, ["callId"] = call.Id, ["agentId"] = run.Agent.Id, ["tool"] = call.Name,
-                        ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["opinion"] = opinion.ToJson(),
+                        ["kind"] = verdict.Kind, ["subject"] = verdict.Subject, ["rule"] = verdict.Rule, ["by"] = "opinion", ["opinion"] = opinion.ToJson(),
                     });
                     return null;
                 }

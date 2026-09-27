@@ -649,9 +649,24 @@ log('guardrails: a tool call waits for your OK');
   check('guardrails: the tool row asks for your OK', (await bar.count()) === 1 && (await bar.innerText()).includes('ask: ^git'));
   check('guardrails: the chat tab shows that something waits', (await page.locator('.tab.active .np-dot[data-status="asking"]').count()) === 1);
   await shot(page, '48-guardrail-approval');
-  await bar.locator('button', { hasText: 'Allow' }).click();
+  await bar.locator('button', { hasText: /^Allow$/ }).click();
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
   check('guardrails: allowed, it ran', (await page.locator('.content:visible .item').last().innerText()).includes('Pushed'));
+  // allowed for this chat: the next push runs without asking, its row says why
+  const idle = () => page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
+  await ta.fill('[guard] push it');
+  await ta.press('Enter');
+  const bar2 = page.locator('.tool .approve').last();
+  await bar2.waitFor({ timeout: 15_000 }).catch(() => {});
+  await bar2.locator('button', { hasText: 'Allow in this chat' }).click();
+  await idle();
+  const asksBefore = await page.locator('.tool .approve').count();
+  await ta.fill('[guard] push it');
+  await ta.press('Enter');
+  await page.waitForTimeout(800);
+  await idle();
+  check('guardrails: allowed in this chat, the next push does not ask', asksBefore === 0 && (await page.locator('.tool .approve').count()) === 0);
+  check("guardrails: its row says it was allowed in this chat", (await page.locator('.tool .state', { hasText: 'allowed in this chat' }).count()) > 0);
 }
 
 log('fork: a new chat from a message');
