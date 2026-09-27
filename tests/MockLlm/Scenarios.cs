@@ -401,7 +401,7 @@ public sealed partial class ScenarioEngine
                                                              && !r.Text.Contains("Spawned", StringComparison.OrdinalIgnoreCase)).ToList();
                 if (failed.Count > 0) return Final("Spawning failed: " + FirstLine(failed[0].Text) + " SPAWN-FAILED");
                 return new Plan { Thinking = "Workers are running; I'll wait for their reports.", Text = "Waiting for the workers." }
-                    .Call("agent_wait", new JsonObject());
+                    .Call("agent", new JsonObject { ["action"] = "wait" });
             }
             default:
             {
@@ -430,7 +430,7 @@ public sealed partial class ScenarioEngine
                 return new Plan { Text = "Delegating to a lead." }
                     .Call("agent_spawn", Obj(("task", $"Lead the work: get a helper to square 5, then report. [s:subspawn delay={tag.PInt("delay", 800)}]"), ("name", "lead"), ("background", true)));
             case 1:
-                return new Plan { Text = "Waiting for the lead." }.Call("agent_wait", new JsonObject());
+                return new Plan { Text = "Waiting for the lead." }.Call("agent", new JsonObject { ["action"] = "wait" });
             default:
             {
                 var wait = ToolResults(after).LastOrDefault()?.Text ?? "";
@@ -444,7 +444,7 @@ public sealed partial class ScenarioEngine
     {
         if (step == 0)
             return new Plan { Text = "Telling my parent, then delegating to a helper and waiting for it." }
-                .Call("agent_send", Obj(("to", "parent"), ("message", "lead started")))
+                .Call("agent", Obj(("action", "send"), ("to", "parent"), ("message", "lead started")))
                 .Call("agent_spawn", Obj(("task", $"Square 5. [s:sub i=5 delay={tag.PInt("delay", 800)}]"), ("name", "helper")));
         var result = ToolResults(after).LastOrDefault()?.Text ?? "";
         var report = result.Split('\n').FirstOrDefault(l => l.Contains("Report from", StringComparison.Ordinal))?.Trim() ?? "(no helper report)";

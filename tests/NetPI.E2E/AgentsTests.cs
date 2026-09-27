@@ -101,7 +101,7 @@ public static class AgentsTests
             Check.Contains(run.FinalText, "SPAWN-DONE");
             for (var i = 1; i <= 3; i++) Check.Contains(run.FinalText, $"Report from worker-{i}: {i} squared is {i * i}");
             var calls = run.Parts("tool_call").Select(c => c.S("name")).ToList();
-            Check.Equal("agent_spawn,agent_spawn,agent_spawn,agent_wait", string.Join(",", calls));
+            Check.Equal("agent_spawn,agent_spawn,agent_spawn,agent", string.Join(",", calls));
             Check.True(run.Parts("tool_result").All(x => !x.B("isError")), "tool results ok: " + string.Join(" | ", run.Parts("tool_result").Select(x => x.S("content"))));
 
             // backend saw at most 2 concurrent requests, and actually 2 (parallel work happened)

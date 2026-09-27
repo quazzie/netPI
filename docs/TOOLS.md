@@ -37,7 +37,7 @@ Every request carries the active tools (the highest-priority registration per na
   does not have (a limited orchestrator can dispatch an agent with the `ssh` tool; unknown names get the list of
   tools); without one the owner's tools (its allowlist, and its session's switched-off tools, copied to the subagent's
   session). So a chat that may spawn subagents can reach every tool through them; switch `agent_spawn` off to prevent
-  that. At the deepest level (`agents.maxDepth`) the orchestration tools are left out except `agent_send`.
+  that. At the deepest level (`agents.maxDepth`) the orchestration tools are left out except `agent` (to send to the parent).
 
 A tool that appears or disappears during a session (a plugin loaded, reloaded or disabled) is announced the same way.
 `context.preview` shows what a session is sent.
@@ -442,7 +442,7 @@ details: { items: { text, status }[], done, total }
 
 `plugins/NetPI.Ask`. `{ questions: { question, options?: { label, description? }[], multiple? }[] }` (1 to 4 questions,
 at most 8 options each) asks the user and waits for the answers. The questions appear in the chat below the agent's
-message, and the run waits with its instance given back, like `agent_wait` (`IAgentRuntime.WaitYieldedAsync`): the
+message, and the run waits with its instance given back, like `agent` `wait` (`IAgentRuntime.WaitYieldedAsync`): the
 agent shows as yielded, "waiting for your answer", and takes an instance again, ahead of the queue, once answered.
 Lenient: one question at the top level (`question` with `options`), options as plain strings, `text`, `choices`,
 `value`, `detail`, `multiSelect`, a JSON string. The user picks options (`ask.answer { callId, answers }`, the picks per
@@ -465,7 +465,7 @@ details: { questions: { question, options: { label, description? }[], multiple }
 
 ## Agents (`category: "agents"`)
 
-`plugins/NetPI.Tools.Agents` (`agent_spawn`, `agent_wait`, `agent_send`, `agent_list`, `agent_result`, `agent_cancel`) and
+`plugins/NetPI.Tools.Agents` (`agent_spawn`, and `agent` with the actions `wait`, `send`, `list`, `result`, `cancel`) and
 `plugins/NetPI.Agents` (`agent_choices`, and the "# Agents" section of the system prompt for agents that can spawn).
 
 ### `agent_choices` (read-only)
@@ -494,7 +494,13 @@ turn's tool calls run one after the other, so separate `agent_spawn` calls each 
 several at the same time, start them in one call. `timeoutSeconds` bounds the wait (the ones still running then report
 later on their own). `background: true` is the explicit choice to keep working meanwhile: the call returns at once and
 each report arrives later as an `agent-result` notice (it wakes an idle caller, or steers a running one), unless the
-caller collects it with `agent_wait` first. An older `wait: false` means background too.
+caller collects it with `agent` `wait` first. An older `wait: false` means background too.
+
+`agent` is one tool with an action per job below (`{ action, … }`; a call with a `message` and no action is `send`);
+`list` and `result` only read (`IReadOnlyCalls`). Until 2026-09-27 each job was a tool of its own (`agent_wait`,
+`agent_send`, …): the chat view shows `agent` + `wait` as `agent_wait`, and each section below keeps its old name.
+`agent_spawn` and `agent_choices` stay separate: switching `agent_spawn` off is what keeps a chat from reaching every
+tool through subagents, and `agent_choices` belongs to another plugin.
 
 ### `agent_wait`
 

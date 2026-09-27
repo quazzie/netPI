@@ -28,7 +28,7 @@ internal sealed class AgentState(AgentInfo info)
     /// <summary>The run was cancelled because its parent was aborted: don't notify (or wake) the parent.</summary>
     public bool CancelledByParent { get; set; }
 
-    /// <summary>Cancelled when user steering arrives, to interrupt a long <c>agent_wait</c>. Replaced after each drain.</summary>
+    /// <summary>Cancelled when user steering arrives, to interrupt a long <c>agent</c> wait. Replaced after each drain.</summary>
     public CancellationTokenSource SteerSignal { get; set; } = new();
 
     // status throttling

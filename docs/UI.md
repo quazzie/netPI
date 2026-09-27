@@ -34,7 +34,7 @@ node web/mock/fake-openai.mjs [port]  # scripted OpenAI-compatible model server 
 - **Real host without a model:** start `node web/mock/fake-openai.mjs 7468`, then point the host at it with
   `settings.set { path: "providers.aiproxy", value: { baseUrl: "http://127.0.0.1:7468", transport: "chat" } }`.
   Sending `[demo] …` to a session produces real subagents (a model with 2 slots, so one queues), a background and a
-  foreground `bash`, usage and an `agent_wait`, which is enough to exercise every section of the Work tab.
+  foreground `bash`, usage and an `agent` `wait`, which is enough to exercise every section of the Work tab.
 - In a normal browser, `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab` and `Ctrl+1…9` are taken by the browser. In WebView2 they
   reach the app. The command palette (`Ctrl+K`) and the `+` button do the same things.
 
@@ -705,7 +705,7 @@ names or an inline `<svg …>` string.
 - Assistant messages that stop with `stopReason: 'error'` may carry `meta.error`, which is shown in the error
   row.
 - `agent_*` tool results carry `details.sessionId` (and `name`, `status`) for the subagent link, or
-  `details.agents[]` for multi-agent tools such as `agent_wait`.
+  `details.agents[]` for multi-agent tools such as `agent` `wait`.
 - `/plugins/*` is served without auth, as the host does today, or with the `netpi_token` cookie. A module
   import cannot send headers, so in dev the UI supplies the cookie through the proxy.
 - Slash commands with `rpc` receive `{ sessionId, args }` and may return a string, which is shown as a toast.

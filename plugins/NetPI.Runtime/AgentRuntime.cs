@@ -177,7 +177,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         {
             var d = t.Definition;
             if (agent?.ToolAllowlist is { } allow && !allow.Contains(d.Name, StringComparer.OrdinalIgnoreCase)) return false;
-            if (agent is not null && agent.Depth >= maxDepth && d.Category == "agents" && d.Name != "agent_send") return false;
+            if (agent is not null && agent.Depth >= maxDepth && d.Category == "agents" && d.Name != "agent") return false;
             return !off.Contains(d.Name);
         }).OrderBy(t => t.Definition.Name, StringComparer.Ordinal).ToList();
     }
@@ -652,7 +652,7 @@ internal sealed class AgentRuntime : IAgentRuntime
           .Append("\" status=\"").Append(StatusName(final.Status)).Append("\">\n");
         if (final.Status == AgentStatus.Failed && !string.IsNullOrEmpty(final.Error)) sb.Append("Error: ").Append(final.Error).Append("\n\n");
         var report = string.IsNullOrWhiteSpace(final.Result) ? "(no final report)" : final.Result.Trim();
-        sb.Append(Truncate(report, ResultNoticeChars, $"Use agent_result with id {final.Id} for the full report."));
+        sb.Append(Truncate(report, ResultNoticeChars, $"Use agent with action result and id {final.Id} for the full report."));
         sb.Append("\n</agent-result>");
 
         var input = new UserInput
@@ -795,7 +795,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         List<string>? allow = request.Tools is { Count: > 0 } t ? [.. t.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim())] : null;
         var off = allow is null ? SessionTools.Off(parentSession) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (allow is null && parentInfo?.ToolAllowlist is { } parentAllow) allow = [.. parentAllow];
-        var canMessage = (allow is null || allow.Contains("agent_send", StringComparer.OrdinalIgnoreCase)) && !off.Contains("agent_send");
+        var canMessage = (allow is null || allow.Contains("agent", StringComparer.OrdinalIgnoreCase)) && !off.Contains("agent");
         var instructions = SubagentInstructions(id, name, parentInfo, request.Instructions, canMessage);
         var meta = new JsonObject
         {
@@ -862,7 +862,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         sb.Append("- Stay within the scope of the task.\n");
         sb.Append($"- Finish with a concise final report: what you did, the results or answer, files you changed, and anything left open. Your last message is returned verbatim to {boss} as your result, so make it self-contained.\n");
         if (parent is not null && canMessage)
-            sb.Append($"- To tell {boss} something before you finish (for example that you are blocked), use `agent_send` with to=\"parent\".\n");
+            sb.Append($"- To tell {boss} something before you finish (for example that you are blocked), use `agent` with action send and to=\"parent\".\n");
         if (!string.IsNullOrWhiteSpace(extra)) sb.Append('\n').Append(extra.Trim()).Append('\n');
         return sb.ToString().TrimEnd();
     }

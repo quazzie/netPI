@@ -35,7 +35,7 @@ public static class AdvancedTests
             Check.Equal("completed,running", string.Join(",", kids.OrderBy(k => k.S("name")).Select(k => k.S("status"))), "worker-2 still runs when the parent answered");
             var first = await env.Result(sid, mark, idle);
             var wait = first.Parts("tool_result").Last();
-            Check.Equal("agent_wait", wait.S("name"));
+            Check.Equal("agent", wait.S("name"));
             Check.Contains(wait.S("content"), "1 of 2 agents finished");
             Check.Contains(wait.S("content"), "Report from worker-1");
             Check.Contains(first.FinalText, "How is it going?");
@@ -74,7 +74,7 @@ public static class AdvancedTests
             var kids = await Children(env, parentId);
             Check.True(kids.All(k => (k.S("error") ?? "").Contains("parent")), "cancel reason: " + string.Join(" | ", kids.Select(k => k.S("error"))));
             var wait = msgs.SelectMany(m => m.Arr("parts")).Last(p => p.S("type") == "tool_result");
-            Check.Equal("agent_wait", wait.S("name"));
+            Check.Equal("agent", wait.S("name"));
             Check.True(wait.B("isError"), "the interrupted agent_wait is recorded as aborted");
         }, 60);
 

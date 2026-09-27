@@ -170,7 +170,7 @@ public sealed class ContextPlugin : INetPiPlugin
         {
             var d = t.Definition;
             if (agent?.ToolAllowlist is { } allow && !allow.Contains(d.Name, StringComparer.OrdinalIgnoreCase)) return false;
-            if (agent is not null && agent.Depth >= maxDepth && d.Category == "agents" && d.Name != "agent_send") return false;
+            if (agent is not null && agent.Depth >= maxDepth && d.Category == "agents" && d.Name != "agent") return false;
             return !off.Contains(d.Name);
         }).OrderBy(t => t.Definition.Name, StringComparer.Ordinal).ToList();
     }

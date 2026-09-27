@@ -45,7 +45,7 @@ public static class SubagentTests
                 return Reply.Tool("agent_spawn", new { subagents = new object[] { new { task = "quick part", name = "quick" }, new { task = "slow part", name = "slow" } }, background = true });
             if (results.Count == 1)
                 // the parent thinks until the quick one is done, then waits
-                return Reply.Stream(Reply.Message([Reply.Call("agent_wait", new { })]), async c =>
+                return Reply.Stream(Reply.Message([Reply.Call("agent", new { action = "wait" })]), async c =>
                 {
                     while (!h.Runtime.List(true).Any(a => a.Name == "quick" && a.Status == AgentStatus.Completed)) await Task.Delay(10, c);
                     await Task.Delay(100, c);
@@ -61,7 +61,7 @@ public static class SubagentTests
         Check.Contains(afterWait, "SLOW REPORT");
         Check.Contains(afterWait, "QUICK REPORT", "the quick one's report reached the model with the wait's result");
         // agent_wait without ids returned the quick one too (its report was still queued, unseen), and it arrived once
-        var wait = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Single(x => x.Name == "agent_wait");
+        var wait = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Single(x => x.Name == "agent");
         Check.Contains(wait.Content, "2 agents finished.");
         Check.Contains(wait.Content, "QUICK REPORT");
         Check.Contains(wait.Content, "SLOW REPORT");
@@ -296,13 +296,13 @@ public static class SubagentTests
                     Reply.Call("agent_spawn", new { task = "job B", name = "b", background = true }),
                     Reply.Call("agent_spawn", new { task = "job C", name = "c", background = true }));
             var last = r.Messages[^1].ToolResults.Last();
-            return last.Name == "agent_wait" ? Reply.Text("summary") : Reply.Tool("agent_wait", new { });
+            return last.Name == "agent" ? Reply.Text("summary") : Reply.Tool("agent", new { action = "wait" });
         };
         await h.SendAsync(parent.Id, "fan out");
         var p = await h.IdleAsync(parent.Id, 15_000);
         Check.Equal(3, p.Children.Count);
         Check.Equal(1, maxConcurrent, "one slot: children ran one at a time");
-        var wait = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).Select(m => m.ToolResults.Single()).Single(x => x.Name == "agent_wait");
+        var wait = h.Messages(parent.Id).Where(m => m.Role == MessageRole.Tool).Select(m => m.ToolResults.Single()).Single(x => x.Name == "agent");
         Check.Contains(wait.Content, "3 agents finished");
         Check.Contains(wait.Content, "done job A");
         Check.Contains(wait.Content, "done job B");
@@ -365,7 +365,7 @@ public static class SubagentTests
         h.Catalog.Handler = (r, ct) =>
         {
             if (IsChild(r))
-                return Reply.HasToolResult(r) ? Reply.Text("child final") : Reply.Tool("agent_send", new { to = "parent", message = "progress: 50%" });
+                return Reply.HasToolResult(r) ? Reply.Text("child final") : Reply.Tool("agent", new { action = "send", to = "parent", message = "progress: 50%" });
             if (Reply.LastUser(r).Contains("<agent-message")) return Reply.Text("noted progress");
             if (Reply.LastUser(r).Contains("<agent-result")) return Reply.Text("noted result");
             return Reply.HasToolResult(r) ? Reply.Text("spawned") : Reply.Tool("agent_spawn", new { task = "report progress", name = "reporter", background = true });
@@ -432,7 +432,7 @@ public static class SubagentTests
         // another model; tool allowlist
         var child = await h.Runtime.SpawnAsync(new SpawnRequest
         {
-            Task = "cloud work", Model = "cloud/big", Tools = ["echo", "agent_spawn", "agent_send"], ParentAgentId = p.Id, Instructions = "Be extra careful.",
+            Task = "cloud work", Model = "cloud/big", Tools = ["echo", "agent_spawn", "agent"], ParentAgentId = p.Id, Instructions = "Be extra careful.",
         });
         Check.Equal("cloud/big", child.Model);
         Check.Equal("agent-1", child.Name);
@@ -440,7 +440,7 @@ public static class SubagentTests
         var req = h.Catalog.Requests.First(r => r.SessionId == child.SessionId);
         Check.Equal("cloud/big", req.Model.Ref);
         var names = req.Tools.Select(x => x.Name).OrderBy(x => x).ToList();
-        Check.Equal("agent_send,echo", string.Join(",", names), "allowlist + no orchestration tools at max depth");
+        Check.Equal("agent,echo", string.Join(",", names), "allowlist + no agent_spawn at max depth (agent stays, to send to the parent)");
         Check.Contains(req.SystemPrompt, "Be extra careful.");
         Check.Contains(req.SystemPrompt, "# Your role");
 
@@ -520,24 +520,26 @@ public static class SubagentTests
         var gate = new TaskCompletionSource();
         string? listOutput = null, choicesOutput = null, resultOutput = null, cancelOutput = null;
         var step = 0;
+        string? asked = null;  // the agent action of the last call
         h.Catalog.Handler = (r, ct) =>
         {
             if (IsChild(r)) return Reply.Text("child result", c => gate.Task.WaitAsync(c));
             var last = Reply.HasToolResult(r) ? r.Messages[^1].ToolResults.Last() : null;
-            switch (last?.Name)
+            switch (last?.Name == "agent" ? asked : last?.Name)
             {
-                case "agent_list": listOutput = last.Content; break;
-                case "agent_choices": choicesOutput = last.Content; break;
-                case "agent_result": resultOutput = last.Content; break;
-                case "agent_cancel": cancelOutput = last.Content; break;
+                case "list": listOutput = last!.Content; break;
+                case "agent_choices": choicesOutput = last!.Content; break;
+                case "result": resultOutput = last!.Content; break;
+                case "cancel": cancelOutput = last!.Content; break;
             }
+            IAsyncEnumerable<ModelStreamEvent> Agent(string action, string? id = null) { asked = action; return id is null ? Reply.Tool("agent", new { action }) : Reply.Tool("agent", new { action, id }); }
             return Interlocked.Increment(ref step) switch
             {
                 1 => Reply.Tool("agent_spawn", new { task = "slow job", name = "slowpoke", background = true }),
-                2 => Reply.Tool("agent_list", new { }),
+                2 => Agent("list"),
                 3 => Reply.Tool("agent_choices", new { }),
-                4 => Reply.Tool("agent_result", new { id = "slowpoke" }),
-                5 => Reply.Tool("agent_cancel", new { id = "slowpoke" }),
+                4 => Agent("result", "slowpoke"),
+                5 => Agent("cancel", "slowpoke"),
                 _ => Reply.Text("done"),
             };
         };

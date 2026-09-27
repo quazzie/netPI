@@ -21,7 +21,7 @@ headless for any browser.
 - **A budget for paid models.** Every model call is recorded with its cost (OpenRouter reports it; otherwise tokens ×
   price). Set a monthly budget: agents see it, each chat shows what it cost, and when it is spent paid calls stop, or
   ask you first.
-- **Agents manage agents.** `agent_spawn`, `agent_wait`, `agent_send`, `agent_list`, `agent_result`, `agent_cancel`
+- **Agents manage agents.** `agent_spawn`, and `agent` to wait for, message, list, read or cancel them
   (plus `agent_choices` from the agents plugin); subagents get their own (viewable, steerable) sessions and report back
   automatically. The agent that starts one chooses its tools, so a limited orchestrator can dispatch agents that can do
   more.

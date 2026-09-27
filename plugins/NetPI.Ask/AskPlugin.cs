@@ -7,7 +7,7 @@ namespace NetPI.Ask;
 
 /// <summary>
 /// <c>ask_user</c>: the agent asks the user questions, with options to pick from, and waits for the answers with its
-/// instance given back meanwhile (<see cref="IAgentRuntime.WaitYieldedAsync"/>, like agent_wait). The UI shows the
+/// instance given back meanwhile (<see cref="IAgentRuntime.WaitYieldedAsync"/>, like agent wait). The UI shows the
 /// questions inline in the chat and answers through <c>ask.answer</c>; <c>ask.pending</c> lists the questions that wait.
 /// Events (unscoped, the session in their data, so a window without the chat open hears of it too): <c>ask.asked</c>
 /// when a question starts waiting, <c>ask.closed</c> when it stops (answered, steered: the user wrote a new message

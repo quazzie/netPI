@@ -41,7 +41,7 @@ public static class CoreTests
             var commands = (await env.Rpc("ui.commands")).Arr().Select(c => c.S("name")).ToList();
             foreach (var c in new[] { "compact", "reload", "idea" }) Check.True(commands.Contains(c), $"slash command /{c}");
             var tools = (await env.Rpc("tools.list")).Arr().Where(t => t.B("active")).Select(t => t.S("name")).ToList();
-            foreach (var t in new[] { "read", "write", "edit", "grep", "find", "ls", "bash", "agent_spawn", "agent_wait", "agent_choices", "ideas", "skill" })
+            foreach (var t in new[] { "read", "write", "edit", "grep", "find", "ls", "bash", "agent_spawn", "agent", "agent_choices", "process", "browser", "ideas", "skill" })
                 Check.True(tools.Contains(t), $"tool {t} active");
             // plugin UI bundles are served
             foreach (var id in new[] { "netpi.work", "netpi.ideas", "netpi.diagnostics", "netpi.tools.files" })

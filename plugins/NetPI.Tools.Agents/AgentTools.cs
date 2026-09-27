@@ -40,14 +40,20 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
         return o;
     }
 
-    protected static JsonObject Prop(string type, string description) => new() { ["type"] = type, ["description"] = description };
-
-    protected static JsonObject StringArray(string description) => new()
+    /// <summary>A typed property; an empty description is left out (every request carries the schema).</summary>
+    protected static JsonObject Prop(string type, string description)
     {
-        ["type"] = "array",
-        ["items"] = new JsonObject { ["type"] = "string" },
-        ["description"] = description,
-    };
+        var o = new JsonObject { ["type"] = type };
+        if (description.Length > 0) o["description"] = description;
+        return o;
+    }
+
+    protected static JsonObject StringArray(string description)
+    {
+        var o = Prop("array", description);
+        o["items"] = new JsonObject { ["type"] = "string" };
+        return o;
+    }
 
     protected static string Status(AgentStatus s) => JsonNamingPolicy.CamelCase.ConvertName(s.ToString());
 
@@ -102,7 +108,7 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
         {
             sb.Append("still ").Append(Status(a.Status));
             if (!string.IsNullOrEmpty(a.Activity)) sb.Append(" (").Append(a.Activity).Append(')');
-            sb.Append("\nCall agent_wait again to keep waiting, or agent_cancel to stop it.");
+            sb.Append("\nCall agent with action wait again to keep waiting, or action cancel to stop it.");
             return sb.ToString();
         }
         sb.Append(Status(a.Status)).Append(" [").Append(Stats(a)).Append("]\n");
@@ -137,21 +143,32 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
 {
     private static JsonObject ItemProperties() => new()
     {
-        ["task"] = Prop("string", "Complete, self-contained task description (the subagent does not see your conversation): goal, relevant paths and context, constraints, and what to put in the final report."),
-        ["name"] = Prop("string", "Short name for the subagent, e.g. \"tests\" or \"api-research\"."),
-        ["agent"] = Prop("string", "The agent to run on: an id from agent_choices (required when the user has set up agents). On a busy agent the subagent waits for a free instance."),
-        ["model"] = Prop("string", "Only when no agents are set up: a model ref \"provider/model\". Default: your model."),
-        ["tools"] = StringArray("The subagent's tools, by name; they may include tools you do not have yourself (e.g. give a remote-work agent the ssh_* tools). Default: the tools you have."),
-        ["instructions"] = Prop("string", "Extra instructions appended to the subagent's system prompt."),
+        ["task"] = Prop("string", "Self-contained: the subagent does not see your conversation"),
+        ["name"] = Prop("string", ""),
+        ["agent"] = Prop("string", "An id from agent_choices"),
+        ["model"] = Prop("string", ""),
+        ["tools"] = StringArray(""),
+        ["instructions"] = Prop("string", ""),
     };
 
     public override ToolDefinition Definition { get; } = new()
     {
         Name = "agent_spawn",
         Label = "Spawn agent",
-        Description = "Start subagents on tasks, each on one of the agents the user set up (a model with instances; see agent_choices). Each gets its own session and ends with a final report. " +
-                      "One subagent: pass task (and agent, name, …). Several at once: pass them in subagents; they all start together. " +
-                      "Waits until all of them finish and returns every report; your own instance is free for them meanwhile. background: true returns at once instead (the reports arrive later).",
+        Description = "Start subagents on tasks (one: task; several at once: subagents) on the agents from agent_choices; waits for their final reports unless background: true.",
+        Help =
+            "Each subagent runs on one of the agents the user set up (a model with instances) and gets its own session, and ends " +
+            "with a final report. One subagent: pass task (and agent, name, …). Several at once: pass them in subagents, each " +
+            "{ task, name?, agent?, model?, tools?, instructions? }; they all start together, and all are checked before any " +
+            "starts. Waits until all of them finish and returns every report; your own instance is free for them meanwhile. " +
+            "background: true returns at once instead: each report arrives later on its own (or collect them with agent, action " +
+            "wait). timeoutSeconds: when waiting, the longest wait (the ones still running then report later on their own).\n" +
+            "task: complete and self-contained (the subagent does not see your conversation): goal, relevant paths and context, " +
+            "constraints, and what to put in the final report. name: short, e.g. \"tests\" or \"api-research\". agent: an id " +
+            "from agent_choices (required when the user has set up agents); on a busy agent the subagent waits for a free " +
+            "instance. model: only when no agents are set up, a model ref \"provider/model\" (default: your model). tools: the " +
+            "subagent's tools by name, which may include tools you do not have yourself (e.g. give a remote-work agent the ssh " +
+            "tool); default: the tools you have. instructions: extra text for the subagent's system prompt.",
         Category = "agents",
         SummaryArg = "name",
         PromptGuidelines = SpawnGuidelines,
@@ -160,11 +177,10 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             ["subagents"] = new JsonObject
             {
                 ["type"] = "array",
-                ["description"] = "Several subagents to start together, each { task, name?, agent?, model?, tools?, instructions? } (instead of the single task above).",
                 ["items"] = Schema(ItemProperties(), "task"),
             },
-            ["background"] = Prop("boolean", "true: return at once; each report arrives later on its own (or collect them with agent_wait). Default false: wait for all of them."),
-            ["timeoutSeconds"] = Prop("integer", "When waiting: maximum seconds to wait (the ones still running then report later on their own)."),
+            ["background"] = Prop("boolean", ""),
+            ["timeoutSeconds"] = Prop("integer", ""),
         }),
     };
 
@@ -226,7 +242,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         sb.Append(started.Count == 1
             ? "\nIt works in the background; its final report arrives on its own when it finishes. "
             : "\nThey work in the background; each final report arrives on its own when it finishes. ")
-          .Append("To wait for them instead, call agent_wait (your instance is free for them meanwhile).");
+          .Append("To wait for them instead, call agent with action wait (your instance is free for them meanwhile).");
         return started.Count == 1
             ? ToolResult.Ok(sb.ToString(), Details(runtime.Get(started[0].Id) ?? started[0]))
             : ToolResult.Ok(sb.ToString(), new JsonObject { ["agents"] = new JsonArray([.. started.Select(a => (JsonNode)Details(runtime.Get(a.Id) ?? a))]) });
@@ -296,6 +312,75 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         (string.IsNullOrWhiteSpace(p.Use) ? "" : $" · \"{p.Use.Trim()}\"")));
 }
 
+// ------------------------------------------------------------------ agent (wait, send, list, result, cancel)
+
+/// <summary>
+/// <c>agent</c>: one tool for the subagents you started, an action per job, each carried out by the class below that did
+/// it as a tool of its own (agent_wait, agent_send, …). list and result only read (<see cref="IReadOnlyCalls"/>). It stays
+/// at the deepest level of agents (for send to the parent); agent_spawn does not.
+/// </summary>
+internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
+{
+    private readonly Dictionary<string, IAgentTool> _actions;
+
+    public AgentTool(IPluginContext plugin)
+    {
+        _actions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["wait"] = new AgentWaitTool(plugin),
+            ["send"] = new AgentSendTool(plugin),
+            ["list"] = new AgentListTool(plugin),
+            ["result"] = new AgentResultTool(plugin),
+            ["cancel"] = new AgentCancelTool(plugin),
+        };
+        Definition = new ToolDefinition
+        {
+            Name = "agent",
+            Label = "Agents",
+            Category = "agents",
+            SummaryArg = "action",
+            Description = "Your subagents: wait {ids?} for their reports, send {to, message} (to=\"parent\" for your parent), list, result {id} or cancel {id}.",
+            Help = string.Join("\n", _actions.Select(a => $"- {a.Key}: {a.Value.Definition.Description}")),
+            Parameters = new JsonObject
+            {
+                ["type"] = "object",
+                ["properties"] = new JsonObject
+                {
+                    ["action"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("wait", "send", "list", "result", "cancel") },
+                    ["id"] = new JsonObject { ["type"] = "string" },
+                    ["ids"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" } },
+                    ["to"] = new JsonObject { ["type"] = "string" },
+                    ["message"] = new JsonObject { ["type"] = "string" },
+                    ["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("steer", "queue") },
+                    ["all"] = new JsonObject { ["type"] = "boolean" },
+                    ["timeoutSeconds"] = new JsonObject { ["type"] = "integer" },
+                },
+                ["required"] = new JsonArray("action"),
+            },
+        };
+    }
+
+    public ToolDefinition Definition { get; }
+
+    internal static string? ActionOf(JsonElement args)
+    {
+        args = ToolArgs.Unwrap(args);
+        var a = ToolArgs.Str(args, "action", "verb", "command")?.Trim().ToLowerInvariant();
+        if (a is null && ToolArgs.Str(args, "message") is not null) a = "send";
+        return a switch { "message" or "tell" => "send", "status" or "report" => "result", "stop" or "abort" => "cancel", _ => a };
+    }
+
+    public bool IsReadOnly(JsonElement args) => ActionOf(args) is "list" or "result";
+
+    public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
+    {
+        var action = ActionOf(args);
+        return action is not null && _actions.TryGetValue(action, out var tool)
+            ? tool.ExecuteAsync(context, args, ct)
+            : Task.FromResult(ToolResult.Error($"{(action is null ? "Give an action" : $"Unknown action \"{action}\"")}: wait, send, list, result or cancel."));
+    }
+}
+
 // ------------------------------------------------------------------ agent_wait
 
 internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugin)
@@ -342,11 +427,11 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
             {
                 var finished = runtime.List(true).Count(a => a.ParentAgentId == context.AgentId);
                 return ToolResult.Ok(finished > 0
-                    ? "None of your subagents is running, and you have seen all their reports; use agent_result to read one again."
+                    ? "None of your subagents is running, and you have seen all their reports; use agent with action result to read one again."
                     : "You have no subagents. Use agent_spawn to start one.");
             }
         }
-        if (ids.Count == 0) return ToolResult.Error($"Unknown agent(s): {string.Join(", ", unknown)}. Use agent_list to see your subagents.");
+        if (ids.Count == 0) return ToolResult.Error($"Unknown agent(s): {string.Join(", ", unknown)}. Use agent with action list to see your subagents.");
 
         var seconds = ToolArgs.Num(args, "timeoutSeconds", "timeout") is { } t && t > 0 ? t : 3600;
         var results = await runtime.WaitAsync(context.AgentId, ids, yieldSlot: true, TimeSpan.FromSeconds(seconds), ct).ConfigureAwait(false);
@@ -401,7 +486,7 @@ internal sealed class AgentSendTool(IPluginContext plugin) : AgentToolBase(plugi
         else
         {
             target = Resolve(runtime, context.AgentId, to);
-            if (target is null) return ToolResult.Error($"Unknown agent '{to}'. Use agent_list to see agents.");
+            if (target is null) return ToolResult.Error($"Unknown agent '{to}'. Use agent with action list to see agents.");
         }
         if (target.Id == context.AgentId) return ToolResult.Error("You cannot message yourself.");
 
@@ -476,7 +561,7 @@ internal sealed class AgentResultTool(IPluginContext plugin) : AgentToolBase(plu
         var id = ToolArgs.Str(args, "id", "agentId", "agent", "name");
         if (string.IsNullOrWhiteSpace(id)) return Task.FromResult(ToolResult.Error("Missing 'id'."));
         var a = Resolve(runtime, context.AgentId, id);
-        if (a is null) return Task.FromResult(ToolResult.Error($"Unknown agent '{id}'. Use agent_list to see agents."));
+        if (a is null) return Task.FromResult(ToolResult.Error($"Unknown agent '{id}'. Use agent with action list to see agents."));
         var text = Report(a);
         if (IsBusy(a.Status) && !string.IsNullOrWhiteSpace(a.Result))
             text += "\n\nLast report of a previous run:\n" + Truncate(a.Result.Trim(), ReportChars, $"See session {a.SessionId}.");
@@ -503,7 +588,7 @@ internal sealed class AgentCancelTool(IPluginContext plugin) : AgentToolBase(plu
         var id = ToolArgs.Str(args, "id", "agentId", "agent", "name");
         if (string.IsNullOrWhiteSpace(id)) return ToolResult.Error("Missing 'id'.");
         var a = Resolve(runtime, context.AgentId, id);
-        if (a is null) return ToolResult.Error($"Unknown agent '{id}'. Use agent_list to see agents.");
+        if (a is null) return ToolResult.Error($"Unknown agent '{id}'. Use agent with action list to see agents.");
         for (var cur = runtime.Get(context.AgentId); cur is not null; cur = cur.ParentAgentId is { } p ? runtime.Get(p) : null)
             if (cur.Id == a.Id) return ToolResult.Error("You cannot cancel yourself or one of your parent agents.");
         if (!IsBusy(a.Status)) return ToolResult.Ok($"{a.Name} ({a.Id}) is not running (status {Status(a.Status)}).", Details(a));
