@@ -12,7 +12,7 @@ cannot know more than its teacher, so the teacher's quality is the ceiling.
 
 | device (nuc) | memory | good for |
 |---|---|---|
-| RTX 4070 | 12 GB | Kev-9B (10.3 GB) or Kev-4B (6.5 GB), the fine-tuned Laya task models (~2 GB for the server), rankers |
+| RTX 4070 | 12 GB | the fine-tuned Laya task models (1.2 GB for the server, ~0.85 GB per further model), rankers, training; Kev-9B (10.3 GB) or Kev-4B (6.5 GB) when asked for by name; yue2 renders (up to ~6 GB) |
 | Arc iGPU | ~48 GB shared | small and mid encoders (Laya 421M: 0.4 s/line); Kev is too slow here (Kev-4B 4.9 s) |
 | NPU | shared | tiny always-on encoders (MiniLM: 5 ms/line); larger models are slow or inexact |
 | shared with | | Frigate runs object detection on the NPU and the iGPU, and video decoding on the iGPU |
@@ -20,16 +20,16 @@ cannot know more than its teacher, so the teacher's quality is the ceiling.
 ## Recommended model per task (current best)
 
 NInfer now has `/v1/decision` (fork, 2026-09-26) and AiGateway answers `/v1/systemone` for NInfer models through
-it, so the already-loaded **qwen3.8-27b is the first choice for browser and anything low-volume** (`decide.model:
-qwen3.8-27b`; 0.76 / 0.90 / 0.86 / 0.91 on logs, 0.425 on the browser, better than every zero-shot model below). It
-costs no memory but shares NInfer's two slots with the agents, so high-volume work (a whole log file) belongs on the
-nuc models:
+it, so the already-loaded **qwen3.8-27b is the first choice for browser, Windows and anything low-volume**
+(`decide.model: qwen3.8-27b`, the default since 2026-09-27; 0.461 on the browser, 0.98 on Windows, better than every
+other model measured). It costs no memory but shares NInfer's two slots with the agents, so high-volume work (a whole
+log file) belongs on the nuc models. Kev-9B is no longer recommended for any task:
 
 | task | recommended | score | speed / where | runner-up | test set |
 |---|---|---|---|---|---|
 | **Log lines**: subsystem, severity, needs a human, routine | **Laya-logs-qwen** (421M, fine-tuned on Qwen3.8-27B's labels), served as `laya-logs` by `laya-tasks` (nuc :8010, `/v1/systemone`; through AiGateway once D73 is deployed) | **0.78 / 0.93 / 0.93 / 0.97** | 37 ms/line on the 4070 (all 4 questions, p50 over the LAN; 0.42 s iGPU) | Qwen3.8-27B itself 0.79 / 0.92 / 0.95 / 0.93 (0.7 s/line); Laya-logs on Kev-9B's labels 0.53 / 0.89 / 0.84 / 0.91 | 120 real lines, hand-labelled |
-| **Browser**: which element next | **MiniLM ranker (fine-tuned) → top-20 → Laya picker × Kev-9B** | top-1 **0.392** (target in top-20: 0.846) | ranker 65 ms + Laya + Kev ~0.2–0.4 s per step on the 4070 | Kev-9B alone 0.307–0.335; Laya picker alone 0.286 | Mind2Web, 475 steps on 14 websites never trained on |
-| **Computer use (Windows)**: which control next | **Kev-9B**, zero-shot, over the UI Automation list | top-1 **0.89**, top-3 0.98 | ~1 s per step on the 4070 (189 controls) | small rankers 0.55 | 44 hand-made tasks in 5 Windows apps |
+| **Browser**: which element next | **MiniLM ranker (fine-tuned) → top-20 → qwen3.8-27b** `/v1/decision` (20 lettered options) | top-1 **0.461** (target in top-20: 0.846); × the Qwen-taught Laya picker 0.478 | ranker 65 ms (nuc) + 124 ms per step on the 5090 | Laya picker taught by Qwen 0.320 (nuc); the old Laya picker × Kev-9B 0.392 | Mind2Web, 475 steps on 14 websites never trained on |
+| **Computer use (Windows)**: which control next | **qwen3.8-27b**, zero-shot, over the whole UI Automation list (writes the control's number, thinking off) | top-1 **0.98** (43/44) | 139 ms per step on the 5090 (p50; 189 controls at most) | Kev-9B 0.89, top-3 0.98 (~1 s, 4070); small rankers 0.55 | 44 hand-made tasks in 5 Windows apps |
 | **Dangerous command** (guardrail second opinion) | **qwen3.8-27b** `/v1/decision` | agrees with Qwen's generative labels 0.998 / 0.993 / 0.988 / 0.912; at p(yes) < 0.2 on the three risk questions it calls 696 of 852 harmless, none of them risky | 0.31 s per command (4 questions), 5090 | Kev-9B (remote_change unusable: 327 false yes); on the 12 hand-made: Kev-9B 12/12 | 852 real commands, reference = Qwen generative (not human yet; see "NInfer baselines", 0.4) |
 | **Agent stuck / looping** | **Kev-9B** or **laya:typed-decisions** | 6/6 | 0.1 s / 9 ms | Kev-4B 6/6 | 6 hand-made traces — **too small** |
 | **Issue triage** | **laya:typed-decisions** (9 ms) | 8/8 | 9 ms (Ollaya) | Kev-9B / Kev-4B 8/8 | 8 hand-made issues — **too small** |
@@ -57,11 +57,15 @@ Scores are accuracy (top-1 for element choice). "–" = not measured. Logs colum
 
 | model | size | how | logs (120 real) | browser (475) | Windows (44) | guard /12 | stuck /6 | triage /8 |
 |---|---|---|---|---|---|---|---|---|
-| Kev-9B | 9B | zero-shot (GGUF, fork) | 0.54 / 0.87 / 0.82 / 0.90 | 0.307–0.335 | **0.89** | **12** | **6** | **8** |
+| **Qwen3.8-27B** (NInfer, NVFP4) | 27B | zero-shot, `/v1/decision` (Windows: writes the number) | 0.675 / **0.892** / 0.875 / 0.908 | **0.461** | **0.98** | – | – | – |
+| Kev-9B | 9B | zero-shot (GGUF, fork) | 0.54 / 0.87 / 0.82 / 0.90 | 0.307–0.335 | 0.89 | **12** | **6** | **8** |
 | Kev-4B | 4B | zero-shot | 0.55 / 0.83 / 0.79 / 0.79 | – | – | 11 | **6** | **8** |
 | **Laya-logs-qwen** (served as `laya-logs`) | 421M | fine-tuned (Qwen3.8-27B labels, 3 epochs) | **0.78 / 0.93 / 0.93 / 0.97** | – | – | – | – | – |
 | Laya-logs (not served) | 421M | fine-tuned (Kev-9B labels) | 0.53 / 0.89 / 0.84 / 0.91 | – | – | – | – | – |
-| **Laya picker** | 421M | fine-tuned (Mind2Web) | – | 0.286 | – | – | – | – |
+| **Laya picker, Qwen-taught** | 421M | fine-tuned (all 5,900 Mind2Web training steps, target 0.5 × gold + 0.5 × Qwen) | – | **0.320** | – | – | – | – |
+| Laya picker, gold only | 421M | fine-tuned (same 5,900 steps, gold labels) | – | 0.280 | – | – | – | – |
+| Laya picker (first) | 421M | fine-tuned (2,415 steps of 5 shards, gold) | – | 0.286 | – | – | – | – |
+| **Qwen × Laya picker (Qwen-taught)** | | ensemble (Qwen × Laya^0.5) | – | **0.478** | – | – | – | – |
 | **Laya picker × Kev-9B** | | ensemble (product) | – | **0.392** | – | – | – | – |
 | laya:typed-decisions | 421M | zero-shot (Ollaya) | 0.35 / 0.63 / 0.76 / 0.29 | – | – | 8 | **6** | **8** |
 | laya:en | 421M | zero-shot | – | – | – | 11 | 5 | 6 |
@@ -110,6 +114,11 @@ another; a different set of 100 lines per row, except "warm", which repeats the 
   touching the 5090, so a log file belongs on the nuc (1.3).
 - Next to one generating agent, back-to-back decisions cut its decode from 139 to 54 tok/s (−61 %) and take 43 %
   longer themselves. With both slots generating, a decision waits for a slot (here up to one 10-s agent turn).
+  **Fixed 2026-09-27 (decisions first, NInfer `ba443920`):** with a decision lane, 30 decisions next to two
+  generating agents take p50 130 ms, p90 160 ms, max 162 ms (the deployed build before: p90 8.4 s, max 8.5 s); a
+  decision during a 42k-token agent prefill takes p50 214 ms instead of 5.4 s, and the agent's answer is unchanged.
+  Back-to-back decisions slow two generating agents from ~176 to ~45 tok/s each while they run
+  (decisions-lab `p2_first.mjs`; the fork's `docs/decision.md`, "Decisions first").
 - Where the time goes (NInfer's per-branch `timing`, 2026-09-26): ≈30 ms of host time per question is
   `program_submit` (kernel launches; prefill has no CUDA graphs) and ≈22 ms is device work. Capturing a short state
   to share it costs more than it saves (a whole ~187 MB recurrent StateImage is copied): with `share_state: false`
@@ -235,19 +244,37 @@ README); scripts `decisions-lab/scripts/clm_browser.mjs`, `p0_guard.mjs run clm|
   1, 0.76 / 0.92 / 0.93 / 0.97 after 2, 0.78 / 0.93 / 0.93 / 0.97 after 3: flat after the first epoch, so more epochs
   do not help; a better teacher or more varied lines would). Checkpoint `out/laya/logs-laya-3ep-qwen` on the nuc,
   served by `laya-tasks` as `laya-logs` since 2026-09-26 (first as `logs`); it reproduces its gold scores exactly when served
-  (`serve_check.mjs`). The Kev-taught `out/laya/logs-laya-4ep` stays on disk but is not resident (each served model
-  holds ~1.7 GB of the 4070; add `laya-logs-kev=/t/out/laya/logs-laya-4ep` to compare). `laya-tasks` is a plain container
+  (`serve_check.mjs`). The Kev-taught `out/laya/logs-laya-4ep` stays on disk but is not resident (add
+  `laya-logs-kev=/t/out/laya/logs-laya-4ep` to compare). `laya-tasks` is a plain container
   that `/home/quazzie/train/serve.sh` starts (not a Dockhand stack); its last line lists the served
   `name=checkpoint` pairs. Next: the user's corrections and tighter subsystem categories.
+- **Laya weights in bf16 (2026-09-27).** Laya places its weights in fp32 and runs them under bf16 autocast, so a
+  421M model held ~1.7 GB (the whole container 2.7 GB). `serve_tasks.py` now keeps the parameters in the autocast
+  dtype (buffers such as the rotary tables stay fp32): the container holds **1.2 GB**. The gold lines score the
+  same (0.78 / 0.93 / 0.93 / 0.97), none of the 480 answers flips (probability change p50 0.0003, max 0.047;
+  `serve_dump.mjs --diff`), and p50 drops from 37 to 31 ms. Each further Laya model costs ~0.85 GB. `LAYA_WEIGHTS=fp32`
+  restores the old placement.
 - **Kev-9B and `laya-tasks` do not fit on the 4070 together.** Kev-9B (10.3 GB plus ~0.5 GB of compute buffers)
   failed to load on 2026-09-26 with `cudaMalloc failed: out of memory` while `laya-tasks` held 1.9 GB; with
-  `laya-tasks` stopped it loads in 6 s. The hub's fit check counts only the models it manages, so it reports "fits".
-  Until that is settled (move `laya-tasks` to the iGPU, stop it while Kev-9B is loaded, or let the hub treat it like
-  yue2 for exclusive models), the `decide` default `kev-9b` needs `laya-tasks` stopped.
-- **Browser picker:** all Mind2Web training sites are used; next is a stronger base (fine-tune Kev-4B as the picker),
-  better element descriptions (the ranker's recall ceiling), and NetPI's own browser traces.
-- **Computer use:** Kev-9B works zero-shot; record every real step (control list, choice, outcome) to train a
-  Windows-specific picker later (public data does not transfer).
+  `laya-tasks` stopped it loads in 6 s. At 1.2 GB it is still too tight (10.8 + 1.2 of 12 GB). The hub's fit check
+  counts only the models it manages, so it reports "fits". The `decide` default is Qwen3.8-27B since 2026-09-27, so
+  this only matters when Kev is asked for by name.
+- **Browser (2026-09-27).** Qwen3.8-27B on NInfer scores 0.461 (the IQ3_XXS GGUF on the 4070 scored 0.425; the
+  candidates' order hardly matters: 0.451 in ranker order), 124 ms per step. As a teacher it labelled all 5,900
+  training steps in 6.3 min (0.435 top-1 on them, target always present; `qwen_m2w.mjs label`). The Laya picker
+  trained on 0.5 × gold + 0.5 × Qwen reaches 0.278 / 0.314 / 0.320 after epochs 1–3, against 0.234 / 0.253 / 0.280 for the same
+  steps with gold labels only: the teacher helps, but a 421M student stays well below Qwen. Qwen × Laya^0.5 gives
+  0.478 (the weight was chosen on the test steps, so slightly optimistic). The ranker keeps the target in its
+  top-20 on 0.846 of test steps (0.775 of training steps), which caps everything. Files: `decisions-lab` scripts
+  `m2w_tops.py`, `qwen_m2w.mjs`, `laya_picker.py` (`TEACHER=`, `ALPHA=`); checkpoint
+  `out/laya/picker-laya-3ep-steps-all-qwen0.5` on the nuc. Next: better element descriptions (the ranker's ceiling)
+  and NetPI's own browser traces.
+- **Computer use (2026-09-27).** Qwen3.8-27B picks the right control in 43 of the 44 Windows cases (0.98; Kev-9B
+  0.89) with thinking off, 139 ms per case, reading the whole numbered list (up to 189 controls) and writing the
+  number (`qwen_uia.mjs`). Numbers cannot be `/v1/decision` labels (Qwen splits them into
+  digits, and a label's first token must be unique), so this is top-1 only. The miss: "Turn on word wrap" in
+  Notepad → Settings instead of the View menu. A Windows Laya is not needed for quality; it would only move the
+  work off the 5090. Record real steps (control list, choice, outcome) before training one.
 - **Guard:** 852 real commands now (0.4), but the reference is Qwen's own generative answer; the user's labels on
   the 50 disputed commands (`guard_to_label.json`) are the first ground truth. Zero-shot Laya is unusable here
   (destructive precision 0.03), although it scored 8–11/12 on the hand-made suite.
