@@ -383,8 +383,9 @@ rejections).
   (just after the turn, and after some idle seconds), and when it misses, its admission reclaims the head: a first
   turn is a "one-request root", unprotected by design (continuation-first admission, fork `bffac01f`,
   `docs/serving.md`), so a loop with a decision after every turn never gets an established, protected lineage.
-  Guardrails' second opinion is this pattern (a decision right after the agent's turn). **Fixed in the NInfer
-  fork (`b1327df7`, not deployed yet):** every running request still takes a publication cell (the Program keeps
+  Guardrails' second opinion is this pattern (a decision right after the agent's turn). **Fixed and deployed in the NInfer
+  fork (`b1327df7`, deployed 2026-09-27 11:57; backup `C:AI
+infer-localbackup-ba443920`):** every running request still takes a publication cell (the Program keeps
   the active sequence there), and with none vacant the decision's cheapest plan was a cold root evicting the
   unprotected first-turn head it extends. Now the heads a non-publishing request extends count as preserved for
   its planning. Test build: all 16 `dec_head_race.mjs` rounds reuse the head and turn 2 keeps it; the browser suite
