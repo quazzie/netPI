@@ -138,5 +138,54 @@ public static class DecideTests
                 new { state = "ERR boom", questions = new { bad = new { type = "yes_no", question = "Is it bad?" } } }))!;
             Check.Equal(0.97, answers["bad"]!["noul"]!.GetValue<double>());
         });
+
+        r.Add("decide: the RPC decide.decision posts NInfer's /v1/decision as given and keeps errors with their request id", async () =>
+        {
+            var seen = new List<JsonObject>();
+            var fail = false;
+            await using var ninfer = await LocalWeb.StartAsync(app => app.MapPost("/v1/decision", async (HttpContext http) =>
+            {
+                var body = (JsonObject)(await JsonNode.ParseAsync(http.Request.Body))!;
+                lock (seen) seen.Add(body);
+                if (fail)
+                {
+                    http.Response.StatusCode = 500;
+                    http.Response.Headers["X-Request-Id"] = "gw-7";
+                    await http.Response.WriteAsJsonAsync(new { error = new { message = "selected pressure target could not be sealed", type = "internal_error" } });
+                    return;
+                }
+                await http.Response.WriteAsJsonAsync(new JsonObject
+                {
+                    ["object"] = "decision",
+                    ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["probabilities"] = new JsonObject { ["A"] = 0.9, ["B"] = 0.1 }, ["mass"] = 0.99 }),
+                    ["usage"] = new JsonObject { ["prompt_tokens"] = 120, ["cached_tokens"] = 100 },
+                });
+            }));
+            var env = new Env();
+            await env.StartAsync(ninfer.Url);
+
+            var answer = (JsonObject)(await env.Ctx.Rpc.InvokeAsync("decide.decision", new
+            {
+                messages = new[] { new { role = "system", content = "Pick one." } },
+                branches = new[] { new { id = "pick", content = "A or B?", labels = new[] { "A", "B" } } },
+                share_state = false,
+            }))!;
+            Check.Equal(0.9, answer["branches"]![0]!["probabilities"]!["A"]!.GetValue<double>());
+            Check.True(answer["ms"] is not null, "ms added");
+            var sent = seen.Single();
+            Check.Equal("qwen3.8-27b", sent["model"]!.GetValue<string>());
+            Check.False(sent["enable_thinking"]!.GetValue<bool>());
+            Check.False(sent["share_state"]!.GetValue<bool>());
+            Check.Equal("A or B?", sent["branches"]![0]!["content"]!.GetValue<string>());
+
+            fail = true;
+            var ex = await Check.ThrowsAsync<RpcException>(() => env.Ctx.Rpc.InvokeAsync("decide.decision", new
+            {
+                messages = new[] { new { role = "user", content = "x" } },
+                branches = new[] { new { content = "?", labels = new[] { "A", "B" } } },
+            }));
+            Check.Contains(ex.Message, "selected pressure target could not be sealed");
+            Check.Contains(ex.Message, "(request gw-7)");
+        });
     }
 }

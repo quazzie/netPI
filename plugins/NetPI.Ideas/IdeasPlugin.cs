@@ -22,6 +22,12 @@ public sealed class IdeasPlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Str("ideas.fileName", "Ideas file", "ideas.json", "The global ideas file in ~/.netpi (the single backlog of all projects)."),
+                SettingInfo.Bool("ideas.recall", "Suggest a matching idea", true,
+                    "While the first message of a chat is typed, a decision looks for the open idea it continues and offers to add it to the chat (needs the Decide plugin)."),
+                SettingInfo.Number("ideas.recallThreshold", "Suggestion threshold", IdeaRecall.DefaultThreshold,
+                    "The decision's probability an idea needs before it is suggested. 0.8 gave no false suggestion on 56 unrelated messages (docs/DECISION-MODELS.md).", 0.3, 0.99),
+                SettingInfo.Str("ideas.model", "Model for the idea checks", IdeaRecall.DefaultModel,
+                    "The decision model (through the Decide plugin's server). qwen3.8-27b, the NInfer chat model, was measured."),
             ],
         });
         var store = context.Track(new IdeasStore(context.Events, context.Logger));
@@ -33,6 +39,7 @@ public sealed class IdeasPlugin : INetPiPlugin
 
         var rpc = new IdeasRpc(store, locator);
         rpc.Register(context.Rpc);
+        new IdeaRecall(context, store, locator).Register(context.Rpc);
 
         context.Ui.AddTab(new UiTabInfo { Id = "ideas", Title = "Ideas", Panel = UiPanel.Right, Icon = "idea", Order = 20, Module = "ui.js" });
         context.Ui.AddCommand(new SlashCommandInfo

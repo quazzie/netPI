@@ -541,5 +541,105 @@ public static class IdeasTests
             Check.Equal(('\t', 1), IdeasStore.DetectIndent("{\n\t\"a\": 1\n}"));
             Check.Equal((' ', 4), IdeasStore.DetectIndent("{\n    \"a\": 1\n}"));
         });
+
+        // Recall on the first message: a fake decide.decision answers with the probabilities set per test and records
+        // what it was asked.
+        static List<JsonObject> FakeDecision(Env env, Func<JsonObject, Dictionary<string, double>> answer)
+        {
+            var seen = new List<JsonObject>();
+            env.Ctx.RpcFake.Register("decide.decision", (req, _) =>
+            {
+                var body = JsonObject.Create(req.Params.Clone())!;
+                seen.Add(body);
+                var probs = new JsonObject();
+                foreach (var (k, v) in answer(body)) probs[k] = v;
+                return Task.FromResult<object?>(new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["probabilities"] = probs }) });
+            });
+            return seen;
+        }
+
+        async Task<(Env Env, string Mine, string Global, string Other)> RecallEnv()
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var mine = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Nudge reset", ["summary"] = "Reset the nudge counter" } }))["id"].Str()!;
+            var global = (await env.Rpc("ideas.add", new JsonObject { ["projectId"] = "global", ["idea"] = new JsonObject { ["title"] = "Calm ideas tab" } }))["id"].Str()!;
+            var other = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session2.Id, ["idea"] = new JsonObject { ["title"] = "Other project idea" } }))["id"].Str()!;
+            var done = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Finished one", ["status"] = "done" } }))["id"].Str()!;
+            return (env, mine, global, other);
+        }
+
+        r.Add("ideas: recall asks one decision over the open ideas of the chat's project and the global ones; a clear match is returned", async () =>
+        {
+            var (env, mine, global, _) = await RecallEnv();
+            var seen = FakeDecision(env, _ => new() { ["A"] = 0.91, ["B"] = 0.04, ["C"] = 0.05 });
+            var res = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = "the nudge plugin keeps nudging after a good answer" });
+            Check.Equal("model", res["reason"].Str());
+            Check.Equal(mine, res["match"]!["id"].Str());
+            Check.Equal("Nudge reset", res["match"]!["title"].Str());
+
+            var asked = seen.Single();
+            Check.Equal("qwen3.8-27b", asked["model"].Str());
+            var system = asked["messages"]![0]!["content"].Str()!;
+            Check.Contains(system, "A) [Demo] Nudge reset — Reset the nudge counter");
+            Check.Contains(system, "B) [global] Calm ideas tab");
+            Check.Contains(system, "C) none of these");
+            Check.False(system.Contains("Other project idea"), "another project's idea is not offered");
+            Check.False(system.Contains("Finished one"), "a done idea is not offered");
+            Check.Equal("A|B|C", string.Join("|", asked["branches"]![0]!["labels"]!.AsArray().Select(x => x.Str())));
+            Check.Contains(asked["branches"]![0]!["content"].Str()!, "the nudge plugin keeps nudging");
+        });
+
+        r.Add("ideas: recall stays quiet below the threshold, when none wins, for short text, when off and without the Decide plugin", async () =>
+        {
+            var (env, _, _, _) = await RecallEnv();
+            async Task<string?> Reason(string text) =>
+                (await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = text }))["reason"].Str();
+
+            Check.Equal("unavailable", await Reason("something long enough to ask about"));
+            var probs = new Dictionary<string, double> { ["A"] = 0.7, ["B"] = 0.1, ["C"] = 0.2 };
+            FakeDecision(env, _ => probs);
+            Check.Equal("none", await Reason("something long enough to ask about"));
+            probs = new() { ["A"] = 0.45, ["B"] = 0.0, ["C"] = 0.55 };
+            env.Ctx.SettingsFake.Set("ideas.recallThreshold", JsonValue.Create(0.4));
+            Check.Equal("none", await Reason("something long enough to ask about"));
+            Check.Equal("short", await Reason("hi"));
+            env.Ctx.SettingsFake.Set("ideas.recall", JsonValue.Create(false));
+            Check.Equal("off", await Reason("something long enough to ask about"));
+        });
+
+        r.Add("ideas: recall matches an idea id in the text without a model; a failing decision is an error, not an exception", async () =>
+        {
+            var (env, mine, _, other) = await RecallEnv();
+            var seen = FakeDecision(env, _ => throw new RpcException("http_500", "qwen3.8-27b: HTTP 500 (request gw-1)"));
+            var byId = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = $"check {mine} please" });
+            Check.Equal("id", byId["reason"].Str());
+            Check.Equal(mine, byId["match"]!["id"].Str());
+            Check.Equal(0, seen.Count);
+
+            // Another project's id is not a match here; the decision is asked, and its failure is reported.
+            var failed = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = $"look at {other} in the other project" });
+            Check.Equal("error", failed["reason"].Str());
+            Check.Contains(failed["error"].Str()!, "request gw-1");
+            Check.True(failed["match"] is null);
+        });
+
+        r.Add("ideas: attach adds the idea to the chat as a notice and records the session on the idea", async () =>
+        {
+            var (env, mine, _, _) = await RecallEnv();
+            var res = await env.Rpc("ideas.attach", new JsonObject { ["sessionId"] = env.GlobalSession.Id, ["id"] = mine });
+            Check.Equal(mine, res["ideaId"].Str());
+            var notice = env.Ctx.SessionsFake.Messages.Last(m => m.SessionId == env.GlobalSession.Id);
+            Check.Equal(MessageRole.Notice, notice.Role);
+            Check.Equal("idea", notice.MetaString("kind"));
+            Check.Equal(mine, notice.MetaString("ideaId"));
+            Check.Contains(notice.Text, "The user added an idea from the ideas backlog");
+            Check.Contains(notice.Text, "# Nudge reset");
+            Check.Contains(notice.Text, "Reset the nudge counter");
+            var idea = await env.Rpc("ideas.get", new JsonObject { ["id"] = mine });
+            Check.True(idea["sessionIds"]!.AsArray().Any(x => x.Str() == env.GlobalSession.Id), "session recorded");
+
+            await Check.ThrowsAsync<RpcException>(() => env.Rpc("ideas.attach", new JsonObject { ["sessionId"] = env.Session.Id, ["id"] = "idea-nope00" }));
+        });
     }
 }

@@ -21,6 +21,7 @@
     tools: { icon: 'wrench', tone: 'info', label: 'Tools changed', expand: true },
     todo: { icon: 'list', tone: 'info', label: 'Todo list', expand: true },
     goal: { icon: 'target', tone: 'accent', label: 'Goal' },
+    idea: { icon: 'idea', tone: 'accent', label: 'Idea from the backlog', expand: true },
     budget: { icon: 'dollar', tone: 'warn' },
     profile: { icon: 'user', tone: 'accent' },
     nudge: { icon: 'zap', tone: 'warn', label: 'Nudge' },

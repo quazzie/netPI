@@ -162,7 +162,8 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `processes.list` | netpi.tools.shell | → `ProcessInfo[]` |
 | `processes.output` | netpi.tools.shell | `{ id, tail? }` → `string` |
 | `processes.kill` | netpi.tools.shell | `{ id }` → `bool` |
-| `ideas.list` `ideas.get` `ideas.add` `ideas.update` `ideas.delete` `ideas.reorder` `ideas.toPrompt` `ideas.quickAdd` | netpi.ideas | see `docs/PLUGIN-IDEAS.md` |
+| `decide.decision` | netpi.decide | `{ messages, branches: [{ id?, content, labels }], model?, share_state? }` → NInfer's `/v1/decision` answer through the same server (`{ branches: [{ id, probabilities, mass, … }], usage, … }` plus `ms`); thinking off unless the caller sets it. The `messages` are the shared state NInfer caches across requests. Errors keep the server's code and request id |
+| `ideas.list` `ideas.get` `ideas.add` `ideas.update` `ideas.delete` `ideas.reorder` `ideas.toPrompt` `ideas.quickAdd` `ideas.recall` `ideas.attach` | netpi.ideas | see `docs/PLUGIN-IDEAS.md` |
 | `work.snapshot` | netpi.work | → `{ agents, runs, processes, usage, time, errors? }` (each part `null` when unavailable; see `docs/PLUGIN-WORK.md`) |
 | `diag.overview` | netpi.diagnostics | → `{ time, app, process, plugins, models, agents, runs, calls: { running, last15m }, tools, processes, problems, more }`: start here (see `docs/DEBUGGING.md`) |
 | `diag.problems` | netpi.diagnostics | → `{ severity: 'error'|'warn'|'info', area, message, hint? }[]`, worst first |

@@ -42,6 +42,15 @@ public sealed class DecidePlugin : INetPiPlugin
             }
             catch (DecisionException ex) { throw new RpcException(ex.Code, ex.Message); }
         }, "Ask a decision model typed questions about one state: { state, questions, model? } → answers (TypeSafe shape)");
+        context.Rpc.Register("decide.decision", async (r, rct) =>
+        {
+            var messages = r.Prop("messages") ?? throw new RpcException("bad_request", "Missing parameter 'messages'");
+            var branches = r.Prop("branches") ?? throw new RpcException("bad_request", "Missing parameter 'branches'");
+            var body = new JsonObject { ["messages"] = JsonNode.Parse(messages.GetRawText()), ["branches"] = JsonNode.Parse(branches.GetRawText()) };
+            if (r.Bool("share_state") is { } share) body["share_state"] = share;
+            try { return await client.DecisionAsync(r.Str("model"), body, rct).ConfigureAwait(false); }
+            catch (DecisionException ex) { throw new RpcException(ex.Code, ex.Message); }
+        }, "NInfer's /v1/decision through the same server: { messages, branches: [{ id, content, labels }], model?, share_state? } → { branches: [{ id, probabilities, mass }], usage, ms }; the messages are the shared state (NInfer caches them across requests)");
         return Task.CompletedTask;
     }
 }
@@ -70,12 +79,37 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http)
     {
         var id = Model(model);
         var body = new JsonObject { ["model"] = id, ["state"] = JsonNode.Parse(state.GetRawText()), ["questions"] = questions.DeepClone() };
-        using var req = new HttpRequestMessage(HttpMethod.Post, Root() + "/v1/systemone")
+        var sw = Stopwatch.StartNew();
+        var (json, text) = await PostAsync("/v1/systemone", id, body, ct).ConfigureAwait(false);
+        var answers = (json?["answers"] ?? json) as JsonObject ?? throw new DecisionException("bad_response", $"{id} returned no answers: {Trim(text, 200)}");
+        return new DecisionAnswer((JsonObject)answers.DeepClone(), id, sw.Elapsed.TotalMilliseconds);
+    }
+
+    /// <summary>
+    /// NInfer's <c>/v1/decision</c> as it is (thinking off): the <c>messages</c> are the shared state, each branch one
+    /// question with its labels. Returns the server's answer plus <c>ms</c>.
+    /// </summary>
+    public async Task<JsonObject> DecisionAsync(string? model, JsonObject body, CancellationToken ct)
+    {
+        var id = Model(model);
+        body["model"] = id;
+        body["enable_thinking"] ??= false;
+        var sw = Stopwatch.StartNew();
+        var (json, text) = await PostAsync("/v1/decision", id, body, ct).ConfigureAwait(false);
+        if (json is not JsonObject answer || answer["branches"] is not JsonArray)
+            throw new DecisionException("bad_response", $"{id} returned no branches: {Trim(text, 200)}");
+        answer = (JsonObject)answer.DeepClone();
+        answer["ms"] = Math.Round(sw.Elapsed.TotalMilliseconds);
+        return answer;
+    }
+
+    private async Task<(JsonNode? Json, string Text)> PostAsync(string path, string id, JsonObject body, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, Root() + path)
         {
             Content = new StringContent(body.ToJsonString(), Encoding.UTF8, new MediaTypeHeaderValue("application/json")),
         };
         req.Headers.TryAddWithoutValidation("User-Agent", "NetPI-decide");
-        var sw = Stopwatch.StartNew();
         HttpResponseMessage res;
         try { res = await http.SendAsync(req, ct).ConfigureAwait(false); }
         catch (HttpRequestException ex) { throw new DecisionException("unreachable", $"Cannot reach {Root()}: {ex.Message}"); }
@@ -95,8 +129,7 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http)
                 var hint = code == "model_not_loaded" ? $" Load {id} from AiHub (tray or dashboard)." : "";
                 throw new DecisionException(code, $"{id}: HTTP {(int)res.StatusCode} {code}: {msg}{(rid is null ? "" : $" (request {rid})")}.{hint}");
             }
-            var answers = (json?["answers"] ?? json) as JsonObject ?? throw new DecisionException("bad_response", $"{id} returned no answers: {Trim(text, 200)}");
-            return new DecisionAnswer((JsonObject)answers.DeepClone(), id, sw.Elapsed.TotalMilliseconds);
+            return (json, text);
         }
     }
 

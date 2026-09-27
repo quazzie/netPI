@@ -76,7 +76,7 @@ web/
                ToolRow, NoticeRow, PromptRow, SentBlock, StatusRow, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
       composer/ Composer, ProfilePicker, ProjectPicker, AgentPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing,
-                QueueChips, GoalStrip, TodoStrip, RunStatus
+                QueueChips, GoalStrip, TodoStrip, IdeaChip, RunStatus
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
                Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
                SettingInfo), SettingsRow, AgentsEditor + AgentDialog, BudgetView, ProfilesEditor + ProfileDialog,
@@ -197,6 +197,12 @@ into locals first, because after the parent clears the modal state or the row re
      opens them in the default browser).
    - **Plan strip.** `TodoStrip` (in the composer dock) shows the session's `meta.todo` while any item is open:
      `done/total` and the current item, expanding to the checklist.
+   - **Idea chip.** `IdeaChip` (in the composer dock, after the plan strip) looks for the open idea the first message
+     continues: `ideas.recall` about 1 s after typing pauses (12 characters or more, again when the text changed by
+     20), and once more on the sent text of a chat this window saw empty (opening an old chat never asks). A match
+     shows one line: the idea's title, **Add** (`ideas.attach`: the idea joins the chat as an `idea` notice) and ✕.
+     Added or dismissed, that chat is not asked again; the state is per chat in `composer/ideaRecall.svelte.js`.
+     The send never waits for it.
    - **Shown images.** A successful `show_image` result becomes its own `shown` item (`ShownImage`: the image, the
      caption, name · size), never folded into a steps group; a click opens the lightbox.
    - **Goal strip.** `GoalStrip` shows `meta.goal` (`plugins/NetPI.Goal`) unless it was cleared: the state (Goal,

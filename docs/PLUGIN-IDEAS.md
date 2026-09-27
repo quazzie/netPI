@@ -198,6 +198,24 @@ The status does not change on its own. The agent is asked to update it.
 `{ sessionId, args }` → `string` toast, for example `"Idea added (project NetPI): Cache model list (idea-k3x9q2)"` or
 `"Idea added (global backlog): …"`. An empty `args` gives `bad_request` with `"Usage: /idea <title>"`.
 
+### `ideas.recall` (the chip above the composer)
+
+`{ sessionId, text }` → `{ match: { id, title, p } | null, reason, error?, ms }`: which open idea the first message of a
+chat continues (docs/plans/2026-09-27-ideas-follow-the-session.md). An idea id in the text is the match (`reason:
+"id"`, `p: 1`). Otherwise one decision through `decide.decision` (setting `ideas.model`, default `qwen3.8-27b`) over the
+open ideas (not done or rejected) of the session's project and the global ones: title and summary as lettered options
+plus "none", the list as the system prompt so repeated checks reuse NInfer's cache. A match needs p ≥
+`ideas.recallThreshold` (0.8) and to beat "none" (`reason: "model"`). Otherwise `reason` is `none`, `short` (under 12
+characters), `off` (`ideas.recall` is false), `unavailable` (no Decide plugin) or `error` (the decision failed or took
+over 10 s; `error` holds the message, and the server log has it too).
+
+### `ideas.attach`
+
+`{ sessionId, id }` → `{ noticeId, ideaId }`: adds the idea to the chat as a notice (`meta.kind: "idea"`,
+`meta.ideaId`) that starts *"The user added an idea from the ideas backlog to this chat"* and holds the idea's full
+markdown (as `get` renders it). The session is added to the idea's `sessionIds`. Added before the first message, the
+notice stays first; added during a run, the agent reads it at its next model call.
+
 ## The agent tool: `ideas` (category `ideas`)
 
 One tool with an `action`, so a single schema goes with every request. It works on the single global file. New ideas

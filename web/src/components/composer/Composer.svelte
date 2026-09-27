@@ -12,6 +12,7 @@
   import TodoStrip from './TodoStrip.svelte';
   import RunStatus from './RunStatus.svelte';
   import GoalStrip from './GoalStrip.svelte';
+  import IdeaChip from './IdeaChip.svelte';
   import { app, isBusy, modelFor, sendMessage, abortAgent } from '../../lib/state/app.svelte.js';
   import { pendingIn, answerAsk } from '../../lib/state/asks.svelte.js';
   import { composer, modals, prefs, toast } from '../../lib/state/ui.svelte.js';
@@ -350,6 +351,7 @@
     {#if chat.ownQueue.length}<QueueChips {chat} />{/if}
     <GoalStrip {session} />
     <TodoStrip {session} />
+    <IdeaChip {chat} {session} />
 
     <div
       class="composer"

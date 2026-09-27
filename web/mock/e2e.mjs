@@ -480,6 +480,37 @@ log('plugin tab: Ideas');
   check('ideas: refetch on ideas.changed', (await page.locator('.ideas .card', { hasText: 'Added over RPC' }).count()) > 0);
 }
 
+log('ideas: recall on the first message (the chip above the composer)');
+{
+  await rpcCall('ideas.add', { projectId: 'global', idea: { title: 'Nudge counter reset after a good answer', summary: 'Reset the nudge counter.' } });
+  await page.keyboard.press('Control+t');
+  await page.waitForTimeout(500);
+  const chip = page.locator('[aria-label="Matching idea"]');
+  await ta.fill('hi');
+  await page.waitForTimeout(1400);
+  check('recall: no chip for a short or unrelated first message', (await chip.count()) === 0);
+  await ta.fill('the nudge counter should reset after a good answer from the agent');
+  await chip.waitFor({ timeout: 4000 }).catch(() => {});
+  check('recall: a matching idea shows a chip while the first message is typed', /Nudge counter reset/.test(await chip.innerText().catch(() => '')));
+  await shot(page, '27b-idea-chip');
+  await chip.locator('button', { hasText: 'Add' }).click();
+  // the notice is collapsed (its label shows); the chat's messages hold it with the idea's text
+  await page.waitForSelector('.notice:has-text("Idea from the backlog")', { timeout: 3000 }).catch(() => {});
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const msgs = (await rpcCall('sessions.messages', { id: sid }))?.messages ?? [];
+  const note = msgs.find((m) => m.role === 'notice' && m.meta?.kind === 'idea');
+  check(
+    'recall: Add puts the idea into the chat as a notice',
+    (await page.locator('.notice', { hasText: 'Idea from the backlog' }).count()) > 0 && /Nudge counter reset/.test(note?.parts?.[0]?.text ?? ''),
+  );
+  check('recall: the chip goes away after Add', (await chip.count()) === 0);
+  await ta.fill('');
+  await page.locator('.topbar .tab.active .tab-close').click();
+  await page.waitForTimeout(200);
+  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
+  await page.waitForTimeout(300);
+}
+
 log('plugin tab: Diagnostics');
 {
   await openStripTab('right', 'Diagnostics');
@@ -608,7 +639,7 @@ log('guardrails: a tool call waits for your OK');
   await ta.press('Enter');
   const bar = page.locator('.tool .approve').last();
   await bar.waitFor({ timeout: 15_000 }).catch(() => {});
-  check('guardrails: the tool row asks for your OK', (await bar.count()) === 1 && (await bar.innerText()).includes('ask: ^git push'));
+  check('guardrails: the tool row asks for your OK', (await bar.count()) === 1 && (await bar.innerText()).includes('ask: ^git'));
   check('guardrails: the chat tab shows that something waits', (await page.locator('.tab.active .np-dot[data-status="asking"]').count()) === 1);
   await shot(page, '48-guardrail-approval');
   await bar.locator('button', { hasText: 'Allow' }).click();
@@ -692,15 +723,18 @@ log('project picker + new session project');
     await page.locator('.popover .item', { hasText: name }).first().click();
     await page.waitForTimeout(500);
   };
-  await pick(page.locator('.topbar .chip'), 'website');
+  // the project picker lives in the composer bar, after the profile (e8a3636)
+  const projBtn = page.locator('.composer button[aria-label="Project"]');
+  await pick(projBtn, 'website');
   let s = await rpcCall('sessions.get', { id: 'ses_scratch' });
-  check('project picker (top bar) attaches the project', s.projectId === idOf('website'), String(s.projectId));
-  check('project picker (top bar) posts the project notice', (await page.locator('.notice', { hasText: 'website' }).count()) > 0);
-  await pick(page.locator('.header .chip'), 'aiproxy');
+  check('project picker (composer) attaches the project', s.projectId === idOf('website'), String(s.projectId));
+  check('project picker (composer) posts the project notice', (await page.locator('.notice', { hasText: 'website' }).count()) > 0);
+  await pick(projBtn, 'aiproxy');
   s = await rpcCall('sessions.get', { id: 'ses_scratch' });
-  check('project picker (chat header) attaches the project', s.projectId === idOf('aiproxy'), String(s.projectId));
-  check('project picker (chat header) posts the project notice', (await page.locator('.notice', { hasText: 'aiproxy' }).count()) > 0);
-  check('chips show the attached project', /aiproxy/.test(await page.locator('.topbar .chip').innerText()) && /aiproxy/.test(await page.locator('.header .chip').innerText()));
+  check('project picker (composer) changes the project again', s.projectId === idOf('aiproxy'), String(s.projectId));
+  check('project picker (composer) posts the second notice', (await page.locator('.notice', { hasText: 'aiproxy' }).count()) > 0);
+  check('the composer button shows the attached project', /aiproxy/.test(await projBtn.innerText()));
+  check('no project chip left in the top bar or the chat header', (await page.locator('.topbar .chip, .header .chip').count()) === 0);
   // a new session starts in the active session's project
   await page.locator('.panel.left .head button[title^="New session"]').click();
   await page.waitForTimeout(500);
@@ -750,7 +784,7 @@ log('start screen: the project new sessions start in');
 log('projects dialog');
 {
   // from the top bar picker of the session just created in "website"
-  await page.locator('.topbar .chip').click();
+  await page.locator('.composer button[aria-label="Project"]').click();
   await page.waitForSelector('.popover .manage');
   check('the picker offers to edit the attached project', (await page.locator('.popover .manage', { hasText: 'Edit “website”' }).count()) === 1);
   await page.locator('.popover .manage', { hasText: 'Manage projects' }).click();
@@ -768,7 +802,7 @@ log('projects dialog');
   await page.locator('.projects-dialog .np-btn-primary', { hasText: 'Save' }).click();
   await page.waitForTimeout(300);
   check('Save renames the project', (await rpcCall('projects.list')).some((p) => p.name === 'website-renamed'));
-  check('the top bar chip follows the rename', /website-renamed/.test(await page.locator('.topbar .chip').innerText()));
+  check('the composer project button follows the rename', /website-renamed/.test(await page.locator('.composer button[aria-label="Project"]').innerText()));
   await name.fill('website');
   await page.locator('.projects-dialog .np-btn-primary', { hasText: 'Save' }).click();
   await page.waitForTimeout(200);
@@ -785,7 +819,7 @@ log('projects dialog');
   check('Esc then closes the projects dialog', (await page.locator('.projects-dialog').count()) === 0);
   check('the project was not removed', (await rpcCall('projects.list')).some((p) => p.name === 'website'));
   // "New project…" in the attach picker: the new project is attached to the session
-  await page.locator('.topbar .chip').click();
+  await page.locator('.composer button[aria-label="Project"]').click();
   await page.waitForSelector('.popover .manage');
   await page.locator('.popover .manage', { hasText: 'New project' }).click();
   await page.waitForSelector('.projects-dialog');
@@ -796,7 +830,7 @@ log('projects dialog');
   const cur = await rpcCall('sessions.get', { id: sid });
   const created = (await rpcCall('projects.list')).find((p) => p.name === 'mock');
   check('a project made from the picker is attached to the session', !!created && cur.projectId === created.id, String(cur.projectId));
-  check('the chip shows the new project', /mock/.test(await page.locator('.topbar .chip').innerText()));
+  check('the chip shows the new project', /mock/.test(await page.locator('.composer button[aria-label="Project"]').innerText()));
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
   await page.waitForTimeout(300);
 }
@@ -1029,7 +1063,7 @@ log('profiles: settings, a project default, per chat');
   await page.waitForTimeout(200);
 
   // the project's default, from the Projects dialog
-  await page.locator('.topbar .chip').click();
+  await page.locator('.composer button[aria-label="Project"]').click();
   await page.locator('.popover .manage', { hasText: 'Edit “netpi”' }).click();
   await page.waitForSelector('.projects-dialog');
   await page.locator('.projects-dialog .skname').first().waitFor({ timeout: 3000 }).catch(() => {});
@@ -1108,8 +1142,8 @@ await page.waitForTimeout(300);
 await shot(page, '19-palette');
 await page.keyboard.press('Escape');
 
-// project picker (top bar chip), help, a server slash command
-await page.locator('.topbar .chip').click();
+// project picker (composer bar), help, a server slash command
+await page.locator('.composer button[aria-label="Project"]').click();
 await page.waitForSelector('.popover');
 await page.waitForTimeout(300);
 await shot(page, '19b-project-picker');

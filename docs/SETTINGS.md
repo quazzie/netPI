@@ -252,6 +252,9 @@ used: the chat stays as it was. Beyond pi: a transcript too long for the summari
 | `shell.pwshAlways` | `false` | offer `pwsh` even when no PowerShell was found |
 | `shell.timeoutSeconds` | `120` | default per command (max 1800) |
 | `ideas.fileName` | `ideas.json` | the global ideas file in `~/.netpi` (the single backlog of all projects; ideas carry a `project`) |
+| `ideas.recall` | `true` | while the first message of a chat is typed, a decision looks for the open idea it continues and the composer offers to add it (needs the Decide plugin) |
+| `ideas.recallThreshold` | `0.8` | the probability an idea needs before it is offered (0.3–0.99); 0.8 gave no false offer on 56 unrelated messages (docs/DECISION-MODELS.md, "Ideas recall") |
+| `ideas.model` | `qwen3.8-27b` | the decision model of the idea checks, asked through the Decide plugin's server |
 
 ## Guardrails
 

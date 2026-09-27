@@ -2,7 +2,7 @@
 // a project property.
 import os from 'node:os';
 import path from 'node:path';
-import { store } from './store.mjs';
+import { store, pushMessage, text } from './store.mjs';
 
 const STATUSES = ['open', 'parked', 'planned', 'in-progress', 'done', 'rejected'];
 const SYN = { 'in progress': 'in-progress', wip: 'in-progress', deferred: 'parked', todo: 'open' };
@@ -177,6 +177,43 @@ export function createIdeas({ publish }) {
       if (idea.summary) lines.push('', idea.summary);
       for (const s of idea.sections) lines.push('', `## ${s.kind[0].toUpperCase()}${s.kind.slice(1)}${s.title ? `: ${s.title}` : ''}`, s.content);
       return lines.join('\n');
+    },
+    // Recall on the first message (the server asks a decision model; here: an id in the text, else the open idea of
+    // the chat's project or the global ones that shares the most title words, at least two).
+    'ideas.recall': (p) => {
+      const s = store.sessions.get(p.sessionId);
+      if (!s) throw err('not_found', `Unknown session ${p.sessionId}`);
+      const t = String(p.text ?? '').toLowerCase();
+      const open = doc.ideas.filter((i) => !['done', 'rejected'].includes(i.status) && (!i.project || i.project.id === s.projectId));
+      const byId = open.find((i) => t.includes(i.id.toLowerCase()));
+      if (byId) return { match: { id: byId.id, title: byId.title, p: 1 }, reason: 'id', ms: 0 };
+      if (t.trim().length < 12) return { match: null, reason: 'short', ms: 0 };
+      const words = (x) => new Set(x.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []);
+      const have = words(t);
+      let best = null;
+      let score = 1;
+      for (const i of open) {
+        const n = [...words(i.title)].filter((w) => have.has(w)).length;
+        if (n > score) (best = i), (score = n);
+      }
+      return best ? { match: { id: best.id, title: best.title, p: 0.9 }, reason: 'model', ms: 90 } : { match: null, reason: 'none', ms: 90 };
+    },
+    'ideas.attach': (p) => {
+      const idea = find(p.id);
+      if (!store.sessions.has(p.sessionId)) throw err('not_found', `Unknown session ${p.sessionId}`);
+      if (!idea.sessionIds.includes(p.sessionId)) idea.sessionIds.push(p.sessionId);
+      const body = [
+        `The user added an idea from the ideas backlog to this chat (\`${idea.id}\` in ~/.netpi/ideas.json). Use its notes; keep it up to date with the ideas tool when the work changes it.`,
+        '',
+        `# ${idea.title}`,
+      ];
+      if (idea.summary) body.push('', idea.summary);
+      for (const sec of idea.sections) body.push('', `## ${sec.kind}${sec.title ? `: ${sec.title}` : ''}`, sec.content);
+      const m = pushMessage(p.sessionId, 'notice', [text(body.join('\n'))], { meta: { kind: 'idea', ideaId: idea.id } });
+      publish('message.added', { sessionId: p.sessionId, message: m }, p.sessionId);
+      publish('session.updated', { session: store.sessions.get(p.sessionId) });
+      changed();
+      return { noticeId: m.id, ideaId: idea.id };
     },
     'ideas.quickAdd': (p) => {
       if (!p.args?.trim()) throw err('bad_request', 'Usage: /idea <title>');
