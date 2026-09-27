@@ -285,7 +285,17 @@ What made the difference, in the order it was found (runs 1–4: 11, 9, 11, 16 o
 - NInfer reused 0 cached tokens between steps, although the system prompt and task repeat (~1.2k-token prompts, so the
   prefill costs little here).
 
-**Verdict:** viable for built-in and standard Windows apps with a good UIA tree. 16–18 of 19 multi-step tasks
+**Real work (the user's Yue2 Radio tab in Chrome, 2026-09-27):** "Switch to the Yue2 Radio tab, go to Settings and
+set the number of buffered songs to 4", on the live page through `cu_do.mjs` (an existing window; the address must
+stay on `127.0.0.1:5080`, other tabs, links off the site, restart, password and player controls refused). Chrome
+exposes the page through UIA (~130 controls with the tab strip, 100 ms). The first run failed: the snapshot left out
+controls scrolled off screen, so the model flipped between section links for 10 steps, then moved "Songs per batch"
+to 4 without saving before its 12 steps ran out (the change was put back by hand). The setting is named "Songs per
+batch" in the UI; the radio's code calls it `bufferSize`, so the model chose the right control. With off-screen controls in
+the snapshot (`--offscreen`) it took 4 steps: Settings, More (3 → 4), Save, done ("Buffer size set to 4."), ~1 s of
+model time per step at reasoning low. Long web pages need the off-screen controls (or scrolling).
+
+**Verdict:** viable for built-in and standard Windows apps with a good UIA tree, and for web pages in Chrome. 16–18 of 19 multi-step tasks
 succeed, at 0.2–0.4 s of model time per step, locally and mostly without touching the user's focus. Apps that draw
 their own controls need a vision or keyboard fallback. Next: a NetPI plugin (`windows.snapshot` / `windows.act`, the
 loop as a tool, confirmation for destructive controls); a done-check through `/v1/decision` (every variant had one
