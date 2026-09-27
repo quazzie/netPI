@@ -354,6 +354,15 @@ rejections).
   true dones and catches 2 of 5 false ones. It catches a wrong number on the Calculator display, but accepts ₠ for €
   (p 0.68–0.84) and rejects finished tasks whose success is not readable from the controls (a rotated canvas p 0.05,
   a font change 0.09). A thinking-off decision fails where thinking off fails.
+- **The tests did not use what `/v1/decision` was built for:** a decision on an agent's cached context, after the
+  agent's turn (0.3 above: 22.5k tokens reused, 100–160 ms). The fast pick must come before the chat step, so it
+  paid the step's prefill itself (the chat step then reused it: 99% cached). And the loop rebuilds a fresh prompt
+  every step, with the growing history before the controls, so nothing carries over from step to step. Measured
+  directly (`cu_head_probe.mjs`, `cu_cache_matrix.mjs`, a ~1.3k-token step): a decision after a chat completion or a
+  Responses turn finds the turn's prefix in the cache (~1,262 of ~1,318 tokens) either way, but takes 0.1 to 2.3 s
+  while NInfer's own timing for it is ~150 ms (queue, host, device, prefill). Up to ~2 s goes somewhere outside
+  the engine's accounting, probably restoring or forking the cached recurrent state (~187 MB). Worth an NInfer look
+  before decisions go into agent loops.
 - So for this loop the reasoning-low chat step with its plan line stays best. Decisions suit typed questions about
   visible content, like the guard questions (0.4 above). A safety check before a click ("does this send, pay or
   delete?") is the untested candidate in the loop.
