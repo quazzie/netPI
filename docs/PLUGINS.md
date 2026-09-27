@@ -118,6 +118,11 @@ Anthropic's prompt cache alike). So nothing that was sent is ever changed; new i
   new or removed files), the skills plugin the skill catalog (`skills` notices, the same way). Pattern: an `IAgentHook` whose `OnBeforeModelCallAsync` (Order above compaction's -100) compares
   the current state with the last notice still in `turn.Messages` and, if they differ, appends a notice and calls
   `turn.ReloadMessagesAsync()`; react to events (e.g. `session.project`) to announce right away.
+- **Setup notices go before the first message.** A notice that describes the chat's setting (working directory,
+  instruction files, the skill catalog) sets `meta.setup: true`. Made at the first model call, it is stored after the
+  first user message, but the model reads it before that message (`ContextOrder` in the runtime; nothing is cached yet at
+  that call, so every later request has the same order) and the chat shows it there too (`chatItems.js`). Notices that
+  answer the message (a skill loaded with `/skill:name`) stay after it, and so does every later notice.
 - **Tools are sent sorted by name**, so a plugin reload does not reorder them. Every request carries the tools that are
   registered right now, so a tool from a plugin loaded mid-session is callable at the next model call. Its guidelines
   are not in the frozen prompt, so the context plugin appends a `tools` notice ("Your tools changed. New: …", with the

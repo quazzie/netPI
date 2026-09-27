@@ -234,6 +234,10 @@ public static class ContextTests
         var r1 = h.Catalog.Requests.Last();
         Check.True(r1.Messages.Any(m => m.Text.StartsWith("<system-notice kind=\"project\">") && m.Text.Contains(alpha.Path)), "sent to the model as a notice");
         Check.NotContains(r1.SystemPrompt, alpha.Path, "not in the system prompt");
+        // made at the first model call (stored after "hi"), the model reads it before the first message: nothing is cached yet
+        var noticeAt = r1.Messages.ToList().FindIndex(m => m.Text.StartsWith("<system-notice kind=\"project\">"));
+        var hiAt = r1.Messages.ToList().FindIndex(m => m.Role == MessageRole.User && m.Text == "hi");
+        Check.True(noticeAt >= 0 && noticeAt < hiAt, $"the first turn's notice before the first message ({noticeAt} < {hiAt})");
 
         await Turn(h, s.Id, "again");
         Check.Equal(1, Notices(h, s.Id, "project").Count, "not repeated");
@@ -244,6 +248,9 @@ public static class ContextTests
         await Turn(h, s.Id, "in beta");
         Check.Equal(2, Notices(h, s.Id, "project").Count, "the hook does not repeat the switch notice");
         PrefixKept(r1, h.Catalog.Requests.Last());
+        // a later notice stays where it happened, after the replies before it
+        var last = h.Catalog.Requests.Last().Messages.ToList();
+        Check.True(last.FindIndex(m => m.Text.Contains("moved to project \"Beta\"")) > last.FindIndex(m => m.Role == MessageRole.User && m.Text == "again"), "the switch notice after \"again\"");
 
         var moved = Dir("beta-moved");
         h.Sessions.UpdateProject(beta.Id, null, moved);

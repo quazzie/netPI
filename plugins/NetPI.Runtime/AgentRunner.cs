@@ -443,7 +443,8 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         {
             Model = model,
             SystemPrompt = turn.SystemPrompt,
-            Messages = turn.Messages,
+            // the first turn's notices before the first user message (ContextOrder); hooks see the stored order
+            Messages = [.. ContextOrder.FirstTurnNoticesFirst(turn.Messages)],
             Tools = turn.Tools,
             ReasoningEffort = session.Reasoning,
             MaxOutputTokens = model.MaxOutputTokens ?? rt.IntSetting("agent.defaultMaxOutputTokens", 16384),

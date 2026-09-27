@@ -46,6 +46,7 @@ internal sealed class ProjectNotices(IPluginContext ctx) : IAgentHook
             var notice = ChatMessage.NoticeText(Text(last, cwd, project), Kind);
             notice.Meta!["projectId"] = project?.Id;
             notice.Meta["cwd"] = cwd;
+            notice.Meta["setup"] = true;  // the chat's setting: at the first turn the model reads it before the first message
             ctx.Sessions.AppendMessage(sessionId, notice);
             return true;
         }

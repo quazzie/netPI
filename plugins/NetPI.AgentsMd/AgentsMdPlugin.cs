@@ -247,6 +247,7 @@ internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader load
             notice.Meta!["files"] = new JsonArray([.. delta.Changed.Select(c =>
                 (JsonNode)new JsonObject { ["path"] = c.File.Path, ["hash"] = c.Hash, ["scope"] = c.File.Scope })]);
             if (delta.Removed.Count > 0) notice.Meta["removed"] = new JsonArray([.. delta.Removed.Select(p => (JsonNode)JsonValue.Create(p))]);
+            notice.Meta["setup"] = true;  // the chat's setting: at the first turn the model reads it before the first message
             ctx.Sessions.AppendMessage(sessionId, notice);
             return true;
         }

@@ -78,6 +78,7 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
         var notice = ChatMessage.NoticeText(sb.ToString(), CatalogKind);
         notice.Meta!["skills"] = new JsonArray([.. changed.Select(s => (JsonNode)new JsonObject { ["name"] = s.Name, ["hash"] = s.Hash, ["path"] = s.Path })]);
         if (removed.Count > 0) notice.Meta["removed"] = new JsonArray([.. removed.Select(r => (JsonNode)JsonValue.Create(r))]);
+        notice.Meta["setup"] = true;  // the chat's setting: at the first turn the model reads it before the first message
         return notice;
     }
 
