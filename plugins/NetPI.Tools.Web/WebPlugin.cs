@@ -2,15 +2,18 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+using Microsoft.Extensions.Logging;
 
 namespace NetPI.Tools.Web;
 
 /// <summary>
 /// Web tools (category "web"): <c>web_fetch</c> (a page as Markdown/text, paged with offset), <c>web_search</c> (SearXNG
-/// or the Brave Search API) and <c>screenshot</c> (a URL through a headless Edge/Chrome, or the NetPI window through the
-/// desktop shell's <c>desktop.capture</c>). Light limits only (http/https, timeouts, size caps): agents also have curl.
+/// or the Brave Search API), <c>screenshot</c> (a URL through a headless Edge/Chrome, or the NetPI window through the
+/// desktop shell's <c>desktop.capture</c>) and <c>browser</c> (the agents' own browser: a tab per chat, driven over the
+/// DevTools protocol). Light limits only (http/https, timeouts, size caps): agents also have curl.
 /// </summary>
-[NetPiPlugin("netpi.tools.web", Name = "Web tools", Description = "web_fetch, web_search (SearXNG / Brave) and screenshot", Order = 25)]
+[NetPiPlugin("netpi.tools.web", Name = "Web tools", Description = "web_fetch, web_search (SearXNG / Brave), screenshot and browser", Order = 25)]
 public sealed class WebPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
@@ -30,6 +33,10 @@ public sealed class WebPlugin : INetPiPlugin
                 SettingInfo.FilePath("web.browserPath", "Browser for screenshots", "Empty: the Edge or Chrome found.", HeadlessBrowser.Find(null) ?? "none found (install Edge or Chrome)"),
                 SettingInfo.Str("web.userAgent", "User agent", null, null, WebHttp.UserAgent),
                 SettingInfo.Str("web.search.braveUrl", "Brave API URL", "https://api.search.brave.com/res/v1/web/search"),
+                SettingInfo.Bool("browser.headless", "Browser without a window", true, "Off: the agents' browser opens a window (to log in to a site by hand, or to watch). Applies when the browser next starts."),
+                SettingInfo.Str("browser.profile", "Browser profile", "default", "A name: logins and cookies are kept in <home>/browser/<name>. temp: a fresh profile each time the browser starts.", "default"),
+                SettingInfo.Int("browser.idleMinutes", "Close the browser after", 10, "Minutes without a browser call.", 1, 1440, "min"),
+                SettingInfo.Int("browser.maxControls", "Controls listed per page", 200, "The ones nearest the visible part; find reaches the rest.", 50, 1000),
             ],
         });
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
@@ -38,6 +45,18 @@ public sealed class WebPlugin : INetPiPlugin
         context.Tools.Register(new WebFetchTool(context, http, cache));
         context.Tools.Register(new WebSearchTool(context, http));
         context.Tools.Register(new ScreenshotTool(context));
+        var browser = new BrowserHost(context);
+        context.Tools.Register(new BrowserTool(context, browser));
+        context.Events.Subscribe(EventTypes.SessionDeleted, e =>
+        {
+            if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id) _ = browser.CloseTabAsync(id);
+        });
+        // closes the browser when the plugin unloads (Stopping is cancelled first)
+        context.Stopping.Register(() =>
+        {
+            try { browser.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(10)); }
+            catch (Exception ex) { context.Logger.LogDebug(ex, "closing the browser failed"); }
+        });
         return Task.CompletedTask;
     }
 }
@@ -66,7 +85,8 @@ internal static class WebHttp
 /// <summary><c>web.*</c> settings, read on every call (only NetPI's own settings and the <c>BRAVE_API_KEY</c> variable).</summary>
 internal sealed record WebOptions(
     int FetchMaxChars, int FetchTimeoutSeconds, long FetchMaxBytes, string? UserAgent,
-    string Provider, string? SearxngUrl, string? BraveApiKey, string BraveUrl, int SearchCount, string? BrowserPath)
+    string Provider, string? SearxngUrl, string? BraveApiKey, string BraveUrl, int SearchCount, string? BrowserPath,
+    bool BrowserHeadless, string BrowserProfile, int BrowserIdleMinutes, int BrowserMaxControls)
 {
     public static WebOptions Read(ISettings s)
     {
@@ -82,10 +102,17 @@ internal sealed record WebOptions(
             BraveApiKey: brave,
             BraveUrl: (Blank(s.Get<string>("web.search.braveUrl")) ?? "https://api.search.brave.com/res/v1/web/search"),
             SearchCount: Math.Clamp(s.Get("web.search.count", 8), 1, 20),
-            BrowserPath: Blank(s.Get<string>("web.browserPath")));
+            BrowserPath: Blank(s.Get<string>("web.browserPath")),
+            BrowserHeadless: s.Get("browser.headless", true),
+            BrowserProfile: ProfileName(s.Get<string>("browser.profile")),
+            BrowserIdleMinutes: Math.Clamp(s.Get("browser.idleMinutes", 10), 1, 1440),
+            BrowserMaxControls: Math.Clamp(s.Get("browser.maxControls", 200), 50, 1000));
     }
 
     private static string? Blank(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+
+    /// <summary>A profile folder name (letters, digits, '-', '_'), or "temp"; anything else is "default".</summary>
+    private static string ProfileName(string? v) => Blank(v) is { } n && Regex.IsMatch(n, "^[A-Za-z0-9_-]{1,40}$") ? n.ToLowerInvariant() : "default";
 
     /// <summary>A value or <c>env:NAME</c> / <c>$NAME</c> (an environment variable).</summary>
     private static string? Secret(string? v)

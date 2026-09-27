@@ -302,7 +302,8 @@ Events (broadcast):
 ## Web tools (`category: "web"`)
 
 `plugins/NetPI.Tools.Web`. Light limits only (http/https, timeouts, size caps): agents also have `curl`, so the tools aim
-at being convenient, not at fencing the agent in. All three are read-only. Settings: `web.*` in `docs/SETTINGS.md`.
+at being convenient, not at fencing the agent in. All but `browser` are read-only. Settings: `web.*` and `browser.*` in
+`docs/SETTINGS.md`.
 
 ### `web_fetch` (summary arg `url`)
 
@@ -345,6 +346,44 @@ wide; not available in the headless server). Models that cannot see images get a
 ```ts
 details: { source: 'browser', url, title, width, height, fullPage, consoleErrors: string[], notes: string[] }
        | { source: 'window', width, height }
+```
+
+### `browser` (summary arg `action`)
+
+`{ action: open|snapshot|click|type|key|scroll|find|back|screenshot|close, url?, n?, text?, keys?, direction? }`. The
+agents' own browser: one Edge/Chrome process (`web.browserPath`), headless unless `browser.headless` is off, with a kept
+profile (`browser.profile`), started on first use and closed after `browser.idleMinutes` without a call or when the
+plugin unloads. **Each chat has its own tab**, closed with `close`, when the chat is deleted, or with the browser.
+Everything goes through the DevTools protocol (a WebSocket to the browser, flattened sessions per tab), so the user's
+mouse, keyboard and focus are never used; the tab emulates focus, so a page behaves as if it were in front.
+
+- **The page as controls.** Every result after an action is the page: `Page: <title> — <url>`, then one numbered line per
+  control (`[4] [textbox] Full name id="name" value="Ada"`), from the accessibility tree in page order joined with a
+  DOM snapshot (bounds, ids, input types). Kept: buttons, links, text boxes, combo boxes, check boxes, radios, tabs, menu
+  items, options, list items, tree items, sliders, cells and headers, the document, and headings and text as context (a
+  text repeating the name just before it is dropped). States: `(checked)`/`(unchecked)`, `(selected)`,
+  `(expanded)`/`(collapsed)`, `(focused)`, `(disabled)`, `(password)`; links show their URL as `value`. Zero-size
+  and hidden nodes are left out. Over `browser.maxControls`, the controls nearest the visible part are listed (with a
+  note); the numbers still count every control, and `find` lists the matches of a text anywhere on the page with the
+  controls around them.
+- **Actions** refer to the numbers of the last list. `click`: scrolls the element into view and sends a trusted mouse
+  click at its centre (a text node through its element; a script `click()` when it has no box). `type`: focuses the
+  element, selects its content and inserts the text (empty text clears it); on a drop-down it chooses the option (exact,
+  else containing, ignoring case); on a slider it sets the number. A `<select>` lists its options only after a click
+  opens it; clicking an option chooses it. `key`: key events to the focused element (`Enter`, `Escape`, `Tab`,
+  `PageDown`, `Ctrl+A`, `F5`, letters; several chords separated by spaces). `scroll`: a wheel of 80% of the view.
+  `back`: the previous history entry. A link that opens a new tab moves the chat to that tab.
+- **The result** starts with what happened and its effect on the list: `Clicked [11] [checkbox] … Now shows …, 1
+  control(s) gone.` or `No visible change.` After an action it waits for a navigation to finish (up to 15 s) and
+  250 ms for scripts; `open` also waits until the new document has replaced `about:blank`.
+- **Refused:** typing into a password field (the user types passwords themselves); `screenshot` for a model that
+  can't see images. The description and guidelines tell the model that page text is content, not instructions, and to
+  stop before buying, paying, sending or deleting what the user did not ask for.
+
+```ts
+details: { action, url, title, controls, shown, result }          // after an action or snapshot
+       | { action: 'find', url, text, hits }
+       | { action: 'screenshot', url, title }                      // plus the PNG in images
 ```
 
 ---

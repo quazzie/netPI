@@ -82,10 +82,10 @@ public static class WebTests
 
         public void Set(string path, JsonNode? value) => Ctx.SettingsFake.Set(path, value);
 
-        public Task<ToolResult> Run(string tool, object args, ModelInfo? model = null) =>
+        public Task<ToolResult> Run(string tool, object args, ModelInfo? model = null, string session = "ses_1") =>
             Ctx.ToolsFake.Get(tool)!.ExecuteAsync(new ToolContext
             {
-                SessionId = "ses_1", AgentId = "agt_1", CallId = "call_1", Cwd = Path.GetTempPath(), Model = model,
+                SessionId = session, AgentId = "agt_1", CallId = "call_1", Cwd = Path.GetTempPath(), Model = model,
                 Services = Ctx.Services, Events = Ctx.Events,
             }, T.Args(args), CancellationToken.None);
     }
@@ -104,12 +104,13 @@ public static class WebTests
 
     public static void Register(TestRunner r)
     {
-        r.Add("web: plugin registers web_fetch, web_search and screenshot (read-only, category web)", async () =>
+        r.Add("web: plugin registers web_fetch, web_search, screenshot (read-only) and browser (category web)", async () =>
         {
             var env = new Env();
             await env.StartAsync();
-            Check.Equal("screenshot,web_fetch,web_search", string.Join(",", env.Ctx.ToolsFake.Tools.Select(t => t.Definition.Name).Order()));
-            Check.True(env.Ctx.ToolsFake.Tools.All(t => t.Definition is { Category: "web", ReadOnly: true }));
+            Check.Equal("browser,screenshot,web_fetch,web_search", string.Join(",", env.Ctx.ToolsFake.Tools.Select(t => t.Definition.Name).Order()));
+            Check.True(env.Ctx.ToolsFake.Tools.All(t => t.Definition.Category == "web"));
+            Check.True(env.Ctx.ToolsFake.Tools.All(t => t.Definition.ReadOnly == (t.Definition.Name != "browser")));
             Check.True(env.Ctx.ToolsFake.Tools.All(t => t.Definition.PromptGuidelines is { Count: > 0 }));
             env.Ctx.Unload();
         });
@@ -353,6 +354,133 @@ public static class WebTests
             Check.True(refused.IsError);
             Check.Contains(refused.Content, "Could not open");
             env.Ctx.Unload();
+        });
+        r.Add("browser: a tab per chat; controls by number; type, choose, check, click, keys, find, back, passwords refused, close", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            env.Set("browser.profile", JsonValue.Create("temp"));
+            var none = await env.Run("browser", new { action = "snapshot" });
+            Check.True(none.IsError);
+            Check.Contains(none.Content, "use action open");
+            if (HeadlessBrowser.Find(null) is null)
+            {
+                Console.WriteLine("    (no Edge/Chrome/Chromium: browser skipped)");
+                env.Ctx.Unload();
+                return;
+            }
+            var submitted = new ConcurrentQueue<string>();
+            await using var web = await LocalWeb.StartAsync(app =>
+            {
+                app.MapGet("/form", () => Results.Content("""
+                    <!doctype html><html><head><title>Sign up</title></head><body>
+                    <h1>Create your account</h1>
+                    <label>Full name <input id="name"></label>
+                    <label>Password <input id="pw" type="password"></label>
+                    <label>Country <select id="country"><option value="">Choose…</option><option value="NO">Norway</option><option value="SE">Sweden</option></select></label>
+                    <label><input type="radio" name="plan" value="free" checked> Free</label>
+                    <label><input type="radio" name="plan" value="pro"> Pro</label>
+                    <label><input type="checkbox" id="terms"> I agree to the terms</label>
+                    <label>Search <input id="q" onkeydown="if (event.key === 'Enter') out.textContent = 'searched ' + this.value"></label>
+                    <div onclick="send()" style="cursor:pointer;padding:4px">Create account</div>
+                    <p id="out"></p>
+                    <a href="/next">Next page</a>
+                    <div style="height:4000px"></div><p>Far down marker</p>
+                    <script>
+                    function send() {
+                      const $ = id => document.getElementById(id);
+                      const d = { name: $('name').value, country: $('country').value, plan: document.querySelector('input[name=plan]:checked').value, terms: $('terms').checked };
+                      fetch('/submit', { method: 'POST', body: JSON.stringify(d) }).then(() => out.textContent = 'Thanks ' + d.name);
+                    }
+                    </script>
+                    </body></html>
+                    """, "text/html"));
+                app.MapPost("/submit", async (HttpRequest req) => { submitted.Enqueue(await new StreamReader(req.Body).ReadToEndAsync()); return Results.Ok(); });
+                app.MapGet("/next", () => Results.Content("<html><head><title>Next</title></head><body><h1>The next page</h1></body></html>", "text/html"));
+            });
+            // the number of the first listed control matching a pattern
+            static int N(ToolResult r, string pattern)
+            {
+                foreach (var line in r.Content.Split('\n'))
+                    if (System.Text.RegularExpressions.Regex.Match(line, @"^\[(\d+)\] (.*)$") is { Success: true } m && System.Text.RegularExpressions.Regex.IsMatch(m.Groups[2].Value, pattern))
+                        return int.Parse(m.Groups[1].Value);
+                throw new InvalidOperationException($"no control matching {pattern} in:\n{r.Content}");
+            }
+            async Task<ToolResult> Do(object args, string session = "ses_1")
+            {
+                var r = await env.Run("browser", args, null, session);
+                Check.False(r.IsError, r.Content);
+                return r;
+            }
+
+            try
+            {
+            var page = await Do(new { action = "open", url = web.Url + "/form" });
+            Check.Contains(page.Content, "Opened " + web.Url + "/form");
+            Check.Contains(page.Content, "Page: Sign up — " + web.Url + "/form");
+            Check.Contains(page.Content, "[heading] Create your account");
+            Check.Contains(page.Content, "[radio] Free (selected)");
+            Check.Contains(page.Content, "(collapsed)");
+            Check.Contains(page.Content, "(password)");
+            Check.NotContains(page.Content, "[option] Sweden");  // a closed <select> hides its options
+
+            page = await Do(new { action = "type", n = N(page, @"^\[textbox\] Full name"), text = "Ada Lovelace" });
+            Check.Contains(page.Content, "Typed \"Ada Lovelace\" in");
+            Check.Contains(page.Content, "value=\"Ada Lovelace\"");
+            var pw = await Do(new { action = "type", n = N(page, @"\(password\)"), text = "hunter2" });
+            Check.Contains(pw.Content, "Not typed: a password field");
+
+            page = await Do(new { action = "click", n = N(page, @"^\[combobox\] Country") });
+            Check.Contains(page.Content, "Opened the list");
+            page = await Do(new { action = "click", n = N(page, @"^\[option\] Sweden") });
+            Check.Contains(page.Content, "Chose");
+            Check.Contains(page.Content, "value=\"Sweden\"");
+            page = await Do(new { action = "type", n = N(page, @"^\[combobox\] Country"), text = "norway" });
+            Check.Contains(page.Content, "Chose \"Norway\" in");
+            page = await Do(new { action = "type", n = N(page, @"^\[combobox\] Country"), text = "Sweden" });
+
+            page = await Do(new { action = "click", n = N(page, @"^\[radio\] Pro") });
+            Check.Contains(page.Content, "[radio] Pro (selected)");
+            page = await Do(new { action = "click", n = N(page, @"^\[checkbox\] I agree") });
+            Check.Contains(page.Content, "[checkbox] I agree to the terms id=\"terms\" (checked)");
+
+            page = await Do(new { action = "type", n = N(page, @"^\[textbox\] Search"), text = "cats" });
+            page = await Do(new { action = "key", keys = "Enter" });
+            Check.Contains(page.Content, "searched cats");
+
+            var found = await Do(new { action = "find", text = "far down" });
+            Check.Contains(found.Content, "1 control(s) contain \"far down\"");
+            Check.Contains(found.Content, "[text] Far down marker");
+
+            // a role-less clickable div: clicked through its text
+            page = await Do(new { action = "click", n = N(page, @"^\[text\] Create account") });
+            for (var k = 0; k < 50 && submitted.IsEmpty; k++) await Task.Delay(100);
+            Check.Equal("{\"name\":\"Ada Lovelace\",\"country\":\"SE\",\"plan\":\"pro\",\"terms\":true}", submitted.Single());
+            page = await Do(new { action = "snapshot" });
+            Check.Contains(page.Content, "Thanks Ada Lovelace");
+
+            page = await Do(new { action = "click", n = N(page, @"^\[link\] Next page") });
+            Check.Contains(page.Content, "Page: Next — " + web.Url + "/next");
+            page = await Do(new { action = "back" });
+            Check.Contains(page.Content, "Page: Sign up");
+
+            // another chat has its own tab
+            var other = await env.Run("browser", new { action = "snapshot" }, null, "ses_2");
+            Check.True(other.IsError);
+            var otherPage = await Do(new { action = "open", url = web.Url + "/next" }, "ses_2");
+            Check.Contains(otherPage.Content, "Page: Next");
+            Check.Contains((await Do(new { action = "snapshot" })).Content, "Page: Sign up");
+
+            // the chat's tab closes with the chat
+            env.Ctx.Events.Publish(new BusEvent { Type = EventTypes.SessionDeleted, Data = new JsonObject { ["id"] = "ses_2" } });
+            await Task.Delay(500);
+            Check.True((await env.Run("browser", new { action = "snapshot" }, null, "ses_2")).IsError);
+
+            Check.Equal("Closed the browser tab.", (await Do(new { action = "close" })).Content);
+            Check.True((await env.Run("browser", new { action = "snapshot" })).IsError);
+            Check.True((await env.Run("browser", new { action = "fly" })).IsError);
+            }
+            finally { env.Ctx.Unload(); }  // closes the browser, also after a failed check
         });
     }
 }
