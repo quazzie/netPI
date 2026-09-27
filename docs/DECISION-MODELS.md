@@ -114,6 +114,11 @@ another; a different set of 100 lines per row, except "warm", which repeats the 
   touching the 5090, so a log file belongs on the nuc (1.3).
 - Next to one generating agent, back-to-back decisions cut its decode from 139 to 54 tok/s (−61 %) and take 43 %
   longer themselves. With both slots generating, a decision waits for a slot (here up to one 10-s agent turn).
+  **Fixed 2026-09-27 (decisions first, NInfer `ba443920`):** with a decision lane, 30 decisions next to two
+  generating agents take p50 130 ms, p90 160 ms, max 162 ms (the deployed build before: p90 8.4 s, max 8.5 s); a
+  decision during a 42k-token agent prefill takes p50 214 ms instead of 5.4 s, and the agent's answer is unchanged.
+  Back-to-back decisions slow two generating agents from ~176 to ~45 tok/s each while they run
+  (decisions-lab `p2_first.mjs`; the fork's `docs/decision.md`, "Decisions first").
 - Where the time goes (NInfer's per-branch `timing`, 2026-09-26): ≈30 ms of host time per question is
   `program_submit` (kernel launches; prefill has no CUDA graphs) and ≈22 ms is device work. Capturing a short state
   to share it costs more than it saves (a whole ~187 MB recurrent StateImage is copied): with `share_state: false`

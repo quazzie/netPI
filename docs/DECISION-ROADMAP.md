@@ -182,9 +182,12 @@ Automation list + qwen3.8-27b writing the control's number (0.98 top-1, 139 ms; 
 Phases 0 and 1 (except 1.3) are done and deployed, 3.1 and the loop detector are built, and the Phase 2 design is
 approved. Next:
 
-0. NInfer decisions first (approved 2026-09-26, held until CLM was evaluated): a dedicated decision lane and
-   priority at every scheduler boundary (idea "ninfer: decisions first"). CLM-8B is not usable zero-shot
-   (`DECISION-MODELS.md`, "CLM-8B"), so the decisions stay on NInfer and this is unblocked.
+0. ~~NInfer decisions first~~ **done 2026-09-27** (NInfer `ba443920`, deployed; AiSwitcher D78): decisions are
+   queued ahead of agent requests, a waiting decision pauses an agent's prefill between chunks, and
+   `--decision-lanes 1` reserves a third lane for them. A decision next to two generating agents: p90 8.4 s → 160 ms;
+   during a 42k-token agent prefill: 5.4 s → p50 214 ms; the paused agent's answer and cached state are
+   bit-identical to the prompt alone. The lane needs an AiHub restart to take effect (the hub reads lab.json at
+   startup); priority and the pause are live. Details: the fork's `docs/decision.md`, "Decisions first".
 1. 3.2 prefix-reusing checks in NetPI: `/v1/decision` now reuses an agent's cache at any effort (batched branches
    and `reasoning_effort` deployed, NInfer `a61d418c`). Needs NetPI's conversation as chat messages that render
    exactly like its Responses requests (tool calls and results included); measure the reuse on real sessions first.
