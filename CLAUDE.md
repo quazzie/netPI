@@ -11,3 +11,6 @@ Read `docs/HANDOFF.md` first: where things are, what has been verified, and the 
 - Screenshots the user shares are weak references, not specs.
 - Ask before stopping the user's running NetPI, AiSwitcher or nInfer, and before touching `%USERPROFILE%\.netpi`.
 - Keep dependencies minimal. Ask before adding a NuGet or npm package.
+- When a discussion ends in a plan or feature that isn't built yet, offer to save it as an idea
+  (`node scripts/netpi.mjs ideas.add '<json>' --write`, or add to a matching open idea with `ideas.update`).
+  Offer, don't add: the user keeps the backlog small and drops weak ideas. Short, specific titles.

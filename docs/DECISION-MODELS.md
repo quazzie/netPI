@@ -33,6 +33,7 @@ log file) belongs on the nuc models. Kev-9B is no longer recommended for any tas
 | **Dangerous command** (guardrail second opinion) | **qwen3.8-27b** `/v1/decision` | agrees with Qwen's generative labels 0.998 / 0.993 / 0.988 / 0.912; at p(yes) < 0.2 on the three risk questions it calls 696 of 852 harmless, none of them risky | 0.31 s per command (4 questions), 5090 | Kev-9B (remote_change unusable: 327 false yes); on the 12 hand-made: Kev-9B 12/12 | 852 real commands, reference = Qwen generative (not human yet; see "NInfer baselines", 0.4) |
 | **Agent stuck / looping** | **Kev-9B** or **laya:typed-decisions** | 6/6 | 0.1 s / 9 ms | Kev-4B 6/6 | 6 hand-made traces — **too small** |
 | **Issue triage** | **laya:typed-decisions** (9 ms) | 8/8 | 9 ms (Ollaya) | Kev-9B / Kev-4B 8/8 | 8 hand-made issues — **too small** |
+| **Ideas recall**: which open idea a new chat's first message continues | **qwen3.8-27b** `/v1/decision`, one pick-one question: the open ideas as lettered options (title + summary) plus "none", the list in the system prompt ("Ideas recall" below) | at p ≥ 0.8: real first messages 3/6 right, 0/34 false; written ones 42/46 right, 0/22 false, no wrong idea | 95 ms p50 (the list cached: 1,866 of 1,960 tokens) | titles only: 37/46, 1/22 false; one yes/no per idea: 2.2 s and worse | 42 real first messages (6 with an idea) + 68 written by Claude — **small** |
 
 ### Any LLM as a decision model (logit readout)
 
@@ -408,6 +409,38 @@ false "done"); harder apps (Office, Electron, Settings read-only); record real s
 already hold the control list, reply, action and effect per step). Scripts: decisions-lab `uia-agent/`,
 `scripts/cu_live.mjs` (`--effort`, `--plan`), `cu_lib.mjs`, `cu_explore.mjs`, `cu_restore.mjs`; results in
 `results/cu_live/final-*.json[l]`.
+
+## Ideas recall (first message), 2026-09-27
+
+For NetPI idea-c7xyem ("ideas follow the session"): while the first message of a new chat is typed, which open idea
+does it continue, if any? A chip offers to add that idea to the conversation; a wrong chip is noise, so "none" must
+win for everything else. Test set (decisions-lab `data/ideas/recall_cases.json`, built by `ideas_extract.mjs`, read
+only): the first message of every saved session (21 NetPI, 25 Claude Code; 42 after duplicates, 6 of them continue an
+open idea, labelled by Claude) and 68 written by Claude in the user's style (two per open idea: plain and oblique, 16
+near misses such as "the ideas tab crashes when I drag an idea", 6 unrelated). Candidates: the 23 ideas not done or
+rejected. The written cases know the ideas, so they are optimistic; the real ones are few. `ideas_recall.mjs`,
+results in `results/ideas/`.
+
+| shape (qwen3.8-27b, thinking off) | time p50 | at p ≥ 0.8: real (6 / 34 none) | written (46 / 22 none) |
+|---|---|---|---|
+| **pick one, title + summary per option** | **95 ms** | 3 right, 0 false chips | **42 right, 0 wrong idea, 0 false** |
+| pick one, titles only | 79 ms | 3 right, 0 false | 37 right, 0 wrong, 1 false |
+| one yes/no branch per idea (23 batched) | 2.2 s | 3 right, 1 wrong, 1 false | 37 right, 0 wrong, 0 false |
+
+- The summaries matter for oblique wording ("the agent classified a 5000 line log…" finds the nuc-routing idea only
+  with its summary). The ideas list is the shared state, so NInfer caches it and each check prefills only the
+  message (~90 tokens).
+- **0.8 is the threshold**: below it the near misses show up (at 0.7: "ideas tab crashes" → the calm-overview idea
+  0.74, a Guardrails exception for the scratchpad → the second-opinion idea 0.75, a question about the yue2 URL →
+  the yue2 taskbar idea 0.72); at 0.8 none of the 56 none cases got a chip.
+- Misses at 0.8: an explicit id ("check idea-c7xyem": the titles hold no ids; the deterministic id match covers it)
+  and a long pasted research brief (0.41). A chip at 0.8 is rare but right.
+- **NInfer defect found on the way (fixed, fork b481051f):** a decision with a shared state admitted while a chat
+  prefilled (decisions first pauses that prefill) could not be sealed; the planner threw, and a throw in NInfer's
+  worker fails the whole Engine, so NInfer stayed unavailable until restarted (18:02, a radio chat next to this
+  run). Now the decision waits for the next boundary. decisions-lab `seal_repro.mjs`: the old build failed on the
+  first chat; the fix ran 60 chats and 2,425 decisions (p50 93 ms, max 279 ms) without a failure. AiGateway's
+  System One sends long states shared, so NetPI's decisions could hit it too.
 
 ## Known limits and next experiments
 
