@@ -9,7 +9,7 @@ namespace NetPI.Context;
 /// A session's prompt is frozen at its first model call; its working directory and project arrive as "project" notices,
 /// changes to its tools as "tools" notices.
 /// <para>Settings: <c>context.customPrompt</c> (replaces the identity section), <c>context.appendPrompt</c>.</para>
-/// <para>RPC: <c>context.preview { sessionId }</c> → <c>{ systemPrompt, frozen, tools: [{name, description}], estimatedTokens }</c>;
+/// <para>RPC: <c>context.preview { sessionId }</c> → <c>{ systemPrompt, frozen, tools: [{name, description, chars, schemaChars}], estimatedTokens }</c>;
 /// <c>context.reset { sessionId }</c> (a profile switch: the prompt is rendered again at the next call);
 /// <c>context.prompts { sessionId }</c> → every prompt the session was sent, with its tools (the chat shows them). Event
 /// <c>context.prompt { sessionId, version, afterSeq }</c> when a session is sent a new prompt.</para>
@@ -109,8 +109,11 @@ public sealed class ContextPlugin : INetPiPlugin
         var toolArr = new JsonArray();
         foreach (var d in defs)
         {
-            chars += d.Name.Length + d.Description.Length + d.Parameters.ToJsonString().Length + 16;
-            toolArr.Add(new JsonObject { ["name"] = d.Name, ["description"] = d.Description });
+            var schema = d.Parameters.ToJsonString().Length;
+            var size = d.Name.Length + d.Description.Length + schema + 16;
+            chars += size;
+            // what each tool costs in every request: its description and its parameter schema, in characters
+            toolArr.Add(new JsonObject { ["name"] = d.Name, ["description"] = d.Description, ["chars"] = size, ["schemaChars"] = schema });
         }
         return new JsonObject
         {
