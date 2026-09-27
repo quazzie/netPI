@@ -132,9 +132,21 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
                 ["tags"] = Strings(),
                 ["tag"] = Str(),
                 ["query"] = Str(),
-                ["sections"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "object" } },
-                ["addSections"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "object" } },
-                ["updateSections"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "object" } },
+                // The section shapes are in the schema itself: a model that never asks for the manual still sees them
+                // (without them a local agent went to read ideas.json by hand).
+                ["sections"] = Sections("add: the idea's details"),
+                ["addSections"] = Sections("update: new sections"),
+                ["updateSections"] = new JsonObject
+                {
+                    ["type"] = "array",
+                    ["description"] = "update: change sections by id (get shows them as [sec-…]); content replaces the old text",
+                    ["items"] = new JsonObject
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new JsonObject { ["id"] = Str(), ["title"] = Str(), ["content"] = Str(), ["kind"] = Enum(IdeaOps.Kinds) },
+                        ["required"] = new JsonArray("id"),
+                    },
+                },
                 ["removeSectionIds"] = Strings(),
             },
             ["required"] = new JsonArray("action"),
@@ -273,7 +285,11 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
         var id = RequireId(args);
         var idea = await _store.ReadAsync(file, f => IdeaOps.Find(f.Ideas, id)?.DeepClone() as JsonObject, ct).ConfigureAwait(false)
                    ?? throw NotFound(id);
-        return ToolResult.Ok(IdeaOps.RenderMarkdown(idea), Details(file, idea));
+        var text = IdeaOps.RenderMarkdown(idea);
+        if ((idea["sections"] as JsonArray)?.Count > 0)
+            text += "\n(To change a section: action update with updateSections [{\"id\": \"sec-…\", \"content\": \"…\"}]; " +
+                    "to add one: addSections [{\"kind\": \"note\", \"title\": \"…\", \"content\": \"…\"}].)\n";
+        return ToolResult.Ok(text, Details(file, idea));
     }
 
     private async Task<ToolResult> UpdateAsync(ToolContext context, string file, JsonObject args, CancellationToken ct)
@@ -323,6 +339,17 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
     };
 
     private static JsonObject Str() => new() { ["type"] = "string" };
+
+    private static JsonObject Sections(string description) => new()
+    {
+        ["type"] = "array",
+        ["description"] = description,
+        ["items"] = new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject { ["kind"] = Enum(IdeaOps.Kinds), ["title"] = Str(), ["content"] = new JsonObject { ["type"] = "string", ["description"] = "Markdown" } },
+        },
+    };
 
     private static JsonObject Strings() => new() { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" } };
 }

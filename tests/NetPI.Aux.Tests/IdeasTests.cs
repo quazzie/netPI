@@ -121,6 +121,13 @@ public static class IdeasTests
             var secId = idea["sections"]![0]!["id"].Str();
             Check.Contains(get.Content, $"## Research: Findings [{secId}]\nmodels.list takes 800ms");
             Check.Contains(get.Content, "## Plan [");
+            // how to change a section, for a model that never read the manual (a local agent went to ideas.json by hand)
+            Check.Contains(get.Content, "To change a section: action update with updateSections [{\"id\": \"sec-…\", \"content\": \"…\"}]");
+            var schema = env.Tool("ideas").Definition.Parameters!["properties"]!;
+            Check.Equal("id|title|content|kind", string.Join("|", schema["updateSections"]!["items"]!["properties"]!.AsObject().Select(p => p.Key)));
+            Check.Equal("id", schema["updateSections"]!["items"]!["required"]![0].Str());
+            Check.Equal("kind|title|content", string.Join("|", schema["addSections"]!["items"]!["properties"]!.AsObject().Select(p => p.Key)));
+            Check.True(schema["sections"]!["items"]!["properties"]!["kind"]!["enum"]!.AsArray().Any(k => k.Str() == "decision"), "section kinds listed");
 
             Check.Contains((await env.Run("ideas", new { id })).Content, "# Cache model list", "an id alone: get");
             var upd = await env.Run("ideas", new JsonObject
