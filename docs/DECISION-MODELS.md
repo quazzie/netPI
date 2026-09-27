@@ -442,6 +442,48 @@ results in `results/ideas/`.
   first chat; the fix ran 60 chats and 2,425 decisions (p50 93 ms, max 279 ms) without a failure. AiGateway's
   System One sends long states shared, so NetPI's decisions could hit it too.
 
+### Ideas: save on tab close and close on commit, 2026-09-27
+
+The other two checks of idea-c7xyem, on the same sessions and on 238 commits (NetPI, the NInfer fork, AiSwitcher,
+decisions-lab, Yue2-Radio since 2026-09-24). Labels by Claude; small sets, and the prompts were tuned once on them.
+
+**Save on tab close.** 54 cases (`data/ideas/save_cases.json`): the 45 saved sessions as closed, plus counterfactuals
+from real sessions: a prefix closed right after the agent presented a plan, before the user said go, and sessions
+with their idea saves stripped. The state is a digest (user messages, the agent's replies, idea writes; ~12k
+characters at most, ~6k tokens).
+
+| question | how | result |
+|---|---|---|
+| did it leave something unsaved? | `/v1/decision` yes/no, thinking off | weak: a card on 7/12 unsaved at p ≥ 0.5, but also on 7/34 with nothing left |
+| same | **one chat call, reasoning low, that decides and drafts** (`NOTHING` or `SAVE` + title + summary), prompt v2 | **8/9 unsaved caught, 3/33 false cards**, 1.6 s p50 (258 output tokens); drafts read well ("Top-up mode when 'Songs per batch' increases") |
+| which open idea did it work on? | `/v1/decision` pick one, thinking off | 5/6 right at p ≥ 0.8; most other matches were labelling gaps (a session cut after the computer-use research matched the computer-use idea at 0.88) |
+
+- `/v1/decision`'s `reasoning_effort` does not reason: it renders the prompt as an agent at that effort would (for
+  its cache) and still reads the answer off the logits. A judgement like "is something lost?" needs a real answer,
+  and the save card needs a draft anyway, so the save check is one generative call.
+- Prompt v2 draws the line the user wants: a plan the agent wrote and nobody built, a feature idea or research
+  question not done, suggestions kept for later are lost; loose ends are not (a pending deploy, commit or restart, a
+  failed one-off task, troubleshooting). v1 ("unfinished work") gave 6/34 false cards, all loose ends.
+- Open policy question: a plan written to `docs/plans/` counts as saved under v2. Two of the "unsaved"
+  counterfactuals had one (scored as either above); counting them as unsaved, v2 catches 8/12.
+- The remaining false cards: a code review the agent never finished (usage limit), a spec left uncommitted, an
+  AGENTS.md consolidation with levels left.
+
+**Close on commit.** Two steps (`ideas_close.mjs`, `ideas_close_done.mjs`):
+
+1. **Link** each commit to the idea it works on: one `/v1/decision` over the ideas open at that time (title +
+   summary, plus "none"), 201 ms p50. At p ≥ 0.7: never a wrong idea, 2 of 187 unrelated commits linked (one of them
+   was a labelling miss: the screenshot commit and the screenshot-tool idea), 23/29 advancing commits linked.
+2. **Done?** after each linked commit: the idea's full text (summary and sections: the plan and what is left) and
+   every commit linked to it so far. At p ≥ 0.8: 4 of the 5 finished ideas were offered (k7q2vn, icqyn3, i07yfc,
+   x54mtm: the last on its docs commit, one after the code), no offer on a commit that only advanced its idea (one at
+   0.89 came after the idea's own offer). Missed: sbdays (its fix commit linked at 0.64, below 0.7). Asking "does
+   this commit finish it?" from the one commit and the idea's summary only offered 5/12 finishing commits.
+
+The data also holds the kind of forgotten close this is for: icqyn3 (transient sessions) was built in b366dd88 and is
+still open. The yue2 taskbar idea (v9dg6g), which the commits seem to finish, still lists a user step, so the check's
+"not done" is fair.
+
 ## Known limits and next experiments
 
 - **The log teacher is the ceiling, and the student reaches it.** Retrained on Qwen3.8-27B's labels, Laya went from
