@@ -69,7 +69,7 @@ public sealed class AnsiStripper
 }
 
 /// <summary>
-/// Captured process output: a tail buffer (~1MB, for process_output and the model tail) plus an optional spill file that
+/// Captured process output: a tail buffer (~1MB, for process output and the model tail) plus an optional spill file that
 /// receives the complete output once it outgrows the in-memory buffer. Thread-safe.
 /// </summary>
 public sealed class OutputCapture : IDisposable

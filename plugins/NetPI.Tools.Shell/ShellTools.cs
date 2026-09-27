@@ -10,7 +10,7 @@ public abstract class ShellToolBase : IAgentTool
     internal const string FreshShell =
         "Every shell call is fresh and non-interactive: cd and variables don't persist (use cwd or `cd dir && …`), pass -y style flags, and never start editors, pagers, REPLs or prompts.";
     internal const string BackgroundProcesses =
-        "Check background processes with process_output instead of sleeping, and kill the ones you no longer need; don't append `&` to a command.";
+        "Check background processes with process (action output) instead of sleeping, and kill the ones you no longer need; don't append `&` to a command.";
 
     public abstract ToolDefinition Definition { get; }
 
@@ -84,7 +84,7 @@ public sealed class ShellTool : ShellToolBase
         $"stdout and stderr are merged; the output's tail is returned, with a note of the exit code when it is not 0. timeout: " +
         $"default {ShellService.DefaultTimeoutSeconds} s, max {ShellService.MaxTimeoutSeconds}; the whole process tree is killed " +
         "on timeout. background: starts the command and returns a process id at once (servers, watchers, long builds); see " +
-        "process_list, process_output and process_kill. cwd: default the session working directory.";
+        "process (list, output, kill). cwd: default the session working directory.";
 
     private static ToolDefinition BashDefinition()
     {
@@ -125,53 +125,63 @@ public sealed class ShellTool : ShellToolBase
     };
 }
 
-public sealed class ProcessListTool(ProcessRegistry registry) : ShellToolBase
-{
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "process_list",
-        Label = "Processes",
-        Category = "shell",
-        ReadOnly = true,
-        Description = "List background processes and recent shell commands with their status (running / exited N / killed / timeout).",
-        Parameters = Schema.Object(),
-        PromptGuidelines = [],
-    };
-
-    internal override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
-    {
-        var list = registry.List();
-        if (list.Count == 0) return Task.FromResult(ToolResult.Ok("No processes.", new { processes = Array.Empty<ProcessInfo>() }));
-        var sb = new StringBuilder();
-        foreach (var p in list) sb.Append(Describe(p)).Append('\n');
-        return Task.FromResult(ToolResult.Ok(sb.ToString().TrimEnd(), new { processes = list.Select(p => p.ToInfo()).ToList() }));
-    }
-}
-
-public sealed class ProcessOutputTool(ProcessRegistry registry) : ShellToolBase
+/// <summary><c>process</c>: the background processes and recent shell commands: list, output (a tail) and kill.</summary>
+public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IReadOnlyCalls
 {
     public const int DefaultTail = 200;
 
     public override ToolDefinition Definition { get; } = new()
     {
-        Name = "process_output",
-        Label = "Process output",
+        Name = "process",
+        Label = "Processes",
         Category = "shell",
-        ReadOnly = true,
-        SummaryArg = "id",
-        Description = "Show the latest output of a background process (or a recent command) and whether it is still running.",
+        SummaryArg = "action",
+        Description = "Background processes and recent shell commands: list, output {id, tail?} (the latest output) or kill {id}.",
+        Help =
+            "list: every background process and recent command with its status (running / exited N / killed / timeout). " +
+            $"output: the last lines of a process's output (tail, default {DefaultTail}, max {OutputFormat.ModelMaxLines}) and " +
+            "whether it still runs. kill: ends the process and all of its child processes. ids (proc_…) come from bash/pwsh " +
+            "with background=true, or from list.",
         Parameters = Schema.Object(
-            ("id", Schema.Str("Process id (proc_…) as returned by bash/pwsh with background=true."), true),
-            ("tail", Schema.Int($"Number of trailing lines to return (default {DefaultTail}, max {OutputFormat.ModelMaxLines})."), false)),
+            ("action", Schema.Str("", "list", "output", "kill"), true),
+            ("id", Schema.Str(""), false),
+            ("tail", Schema.Int(""), false)),
         PromptGuidelines = [BackgroundProcesses],
     };
 
-    internal override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
+    public bool IsReadOnly(JsonElement args) => Action(new ToolArgs(args)) is "list" or "output";
+
+    private static string Action(ToolArgs args) => (args.Str("action", "verb", "command") ?? "list").Trim().ToLowerInvariant() switch
+    {
+        "ls" or "all" => "list",
+        "log" or "logs" or "tail" or "read" => "output",
+        "stop" or "terminate" => "kill",
+        var a => a,
+    };
+
+    internal override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct) => Action(args) switch
+    {
+        "list" => Task.FromResult(List()),
+        "output" => Task.FromResult(Output(args)),
+        "kill" => KillAsync(args, ct),
+        var a => Task.FromResult(ToolResult.Error($"Unknown action \"{a}\": use list, output or kill.")),
+    };
+
+    private ToolResult List()
+    {
+        var list = registry.List();
+        if (list.Count == 0) return ToolResult.Ok("No processes.", new { processes = Array.Empty<ProcessInfo>() });
+        var sb = new StringBuilder();
+        foreach (var p in list) sb.Append(Describe(p)).Append('\n');
+        return ToolResult.Ok(sb.ToString().TrimEnd(), new { processes = list.Select(p => p.ToInfo()).ToList() });
+    }
+
+    private ToolResult Output(ToolArgs args)
     {
         var id = args.Str("id", "process_id", "processId", "pid", "proc");
-        if (string.IsNullOrWhiteSpace(id)) return Task.FromResult(ToolResult.Error("Missing required argument 'id' (e.g. \"proc_…\"). Use process_list to see ids."));
+        if (string.IsNullOrWhiteSpace(id)) return ToolResult.Error("Missing required argument 'id' (e.g. \"proc_…\"). Use action list to see ids.");
         var p = registry.Get(id);
-        if (p is null) return Task.FromResult(ToolResult.Error($"No process with id {id}. Use process_list to see known processes."));
+        if (p is null) return ToolResult.Error($"No process with id {id}. Use action list to see known processes.");
         var tail = Math.Clamp(args.Int("tail", "lines", "n", "limit") ?? DefaultTail, 1, OutputFormat.ModelMaxLines);
         var text = OutputFormat.ResolveCarriageReturns(p.Output.Snapshot());
         var (shown, truncated, total, shownLines) = OutputFormat.TailLines(text, tail, OutputFormat.ModelMaxBytes);
@@ -179,30 +189,15 @@ public sealed class ProcessOutputTool(ProcessRegistry registry) : ShellToolBase
         sb.Append('[').Append(Describe(p)).Append(']').Append('\n');
         if (truncated) sb.Append($"[showing the last {shownLines} of {total} buffered lines]\n");
         sb.Append(shown.Length > 0 ? shown : "(no output yet)");
-        return Task.FromResult(ToolResult.Ok(sb.ToString(), new { process = p.ToInfo(), tail, truncated }));
+        return ToolResult.Ok(sb.ToString(), new { process = p.ToInfo(), tail, truncated });
     }
-}
 
-public sealed class ProcessKillTool(ProcessRegistry registry) : ShellToolBase
-{
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "process_kill",
-        Label = "Kill process",
-        Category = "shell",
-        ReadOnly = false,
-        SummaryArg = "id",
-        Description = "Kill a background process and all of its child processes.",
-        Parameters = Schema.Object(("id", Schema.Str("Process id (proc_…)."), true)),
-        PromptGuidelines = [BackgroundProcesses],
-    };
-
-    internal override async Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
+    private async Task<ToolResult> KillAsync(ToolArgs args, CancellationToken ct)
     {
         var id = args.Str("id", "process_id", "processId", "pid", "proc");
-        if (string.IsNullOrWhiteSpace(id)) return ToolResult.Error("Missing required argument 'id'. Use process_list to see ids.");
+        if (string.IsNullOrWhiteSpace(id)) return ToolResult.Error("Missing required argument 'id'. Use action list to see ids.");
         var p = registry.Get(id);
-        if (p is null) return ToolResult.Error($"No process with id {id}. Use process_list to see known processes.");
+        if (p is null) return ToolResult.Error($"No process with id {id}. Use action list to see known processes.");
         if (!p.Kill())
             return ToolResult.Ok($"{p.Id} is not running ({p.Status}{(p.ExitCode is { } c ? $", exit code {c}" : "")}).", new { process = p.ToInfo(), killed = false });
         try { await p.Completion.WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); } catch (TimeoutException) { }

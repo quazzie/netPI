@@ -30,6 +30,16 @@ public sealed class ToolDefinition
     public string? SummaryArg { get; init; }
 }
 
+/// <summary>
+/// A tool whose calls differ (one tool with several actions): some only read, others change things. The runtime asks it per
+/// call whether a call only reads, so read-only calls of a turn can run in parallel; its <see cref="ToolDefinition.ReadOnly"/>
+/// stays false.
+/// </summary>
+public interface IReadOnlyCalls
+{
+    bool IsReadOnly(JsonElement args);
+}
+
 /// <summary>A tool the agent can call. Tools are plugins and can be replaced by registering the same name with a higher priority.</summary>
 public interface IAgentTool
 {

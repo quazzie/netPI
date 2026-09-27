@@ -149,14 +149,14 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
             var sb = new StringBuilder();
             sb.Append($"Background process {mp.Id} exited immediately with code {mp.ExitCode?.ToString() ?? "?"}.");
             sb.Append(tail.Length > 0 ? "\n" + tail : "\n(no output)");
-            if (truncated) sb.Append($"\n[output truncated; use process_output with id \"{mp.Id}\" for more]");
+            if (truncated) sb.Append($"\n[output truncated; use process with action output and id \"{mp.Id}\" for more]");
             return new ToolResult { Content = sb.ToString(), IsError = mp.ExitCode is not 0, Details = details };
         }
         var early = mp.Output.Tail(20, 4000).TrimEnd();
         var msg = new StringBuilder();
         msg.Append($"Started background process {mp.Id} (pid {mp.Pid}).");
         if (timeout is not null) msg.Append($" It will be killed after {timeout}s.");
-        msg.Append($"\nUse process_output with id \"{mp.Id}\" to read its output and process_kill to stop it.");
+        msg.Append($"\nUse process with id \"{mp.Id}\" and action output to read its output, or action kill to stop it.");
         if (early.Length > 0) msg.Append("\nOutput so far:\n").Append(OutputFormat.ResolveCarriageReturns(early));
         return ToolResult.Ok(msg.ToString(), details);
     }

@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Tools.Shell;
 
 /// <summary>
-/// Shell tools: bash (Git Bash on Windows), pwsh, process_list / process_output / process_kill, and the
+/// Shell tools: bash (Git Bash on Windows), pwsh, process (list / output / kill), and the
 /// processes.* RPC methods. Settings: <c>shell.bashPath</c>, <c>shell.pwshPath</c>, <c>shell.timeoutSeconds</c>.
 /// </summary>
 [NetPiPlugin("netpi.tools.shell", Name = "Shell tools", Description = "bash (Git Bash on Windows), pwsh and background processes", Order = 20)]
@@ -15,9 +15,7 @@ public sealed class ShellPlugin : INetPiPlugin
     [
         new ShellTool("bash", service),
         new ShellTool("pwsh", service),
-        new ProcessListTool(service.Registry),
-        new ProcessOutputTool(service.Registry),
-        new ProcessKillTool(service.Registry),
+        new ProcessTool(service.Registry),
     ];
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)

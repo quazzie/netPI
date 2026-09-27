@@ -261,29 +261,29 @@ public static class ShellTests
             Check.True(d.Bool("background"));
             Check.Equal("running", d.Str("status"));
 
-            var list = await T.Run(new ProcessListTool(registry), dir, new { });
+            var list = await T.Run(new ProcessTool(registry), dir, new { action = "list" });
             Check.Contains(list.Content, $"{id}  running");
             Check.Contains(list.Content, "bg  bash:");
 
             await Task.Delay(900);
-            var outRes = await T.Run(new ProcessOutputTool(registry), dir, new { id });
+            var outRes = await T.Run(new ProcessTool(registry), dir, new { action = "output", id });
             Check.Contains(outRes.Content, "tick 1\ntick 2\ntick 3");
             Check.Contains(outRes.Content, "running");
             Check.True(bus.OfType(EventTypes.ProcessOutput).Count > 0, "process.output events for background processes");
 
-            var kill = await T.Run(new ProcessKillTool(registry), dir, new { id });
+            var kill = await T.Run(new ProcessTool(registry), dir, new { action = "kill", id });
             Check.Ok(kill);
             Check.Contains(kill.Content, "Killed");
             var p = registry.Get(id)!;
             Check.Equal("killed", p.Status);
-            Check.Contains((await T.Run(new ProcessListTool(registry), dir, new { })).Content, $"{id}  killed");
-            Check.Contains((await T.Run(new ProcessKillTool(registry), dir, new { id })).Content, "not running");
+            Check.Contains((await T.Run(new ProcessTool(registry), dir, new { action = "list" })).Content, $"{id}  killed");
+            Check.Contains((await T.Run(new ProcessTool(registry), dir, new { action = "kill", id })).Content, "not running");
 
             var started = bus.OfType(EventTypes.ProcessStarted).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
             Check.True(started.Process.Background);
             var exited = bus.OfType(EventTypes.ProcessExited).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
             Check.Equal("killed", exited.Process.Status);
-            Check.Error(await T.Run(new ProcessOutputTool(registry), dir, new { id = "proc_nope" }), "No process");
+            Check.Error(await T.Run(new ProcessTool(registry), dir, new { action = "output", id = "proc_nope" }), "No process");
         });
 
         r.Add("background: immediate exit is reported; timeout kills; StopAsync kills all", async () =>
@@ -304,8 +304,8 @@ public static class ShellTests
             var plugin = new ShellPlugin();
             await plugin.StartAsync(ctx, default);
             var expectedTools = ShellLocator.FindPwsh(null, out _) is null
-                ? "bash,process_list,process_output,process_kill"      // pwsh is only offered when PowerShell exists
-                : "bash,pwsh,process_list,process_output,process_kill";
+                ? "bash,process"      // pwsh is only offered when PowerShell exists
+                : "bash,pwsh,process";
             Check.Equal(expectedTools, string.Join(",", ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
             var bash = ctx.ToolsFake.Get("bash")!;
             res = await bash.ExecuteAsync(T.Ctx(dir), T.Args(new { command = "sleep 30", background = true }), default);
@@ -359,8 +359,13 @@ public static class ShellTests
                 Check.Equal("shell", d.Category);
                 Check.True(d.Label is { Length: > 0 });
                 Check.True(d.PromptGuidelines is not null); // deduplicated: some tools have none
-                Check.Equal(d.Name is "process_list" or "process_output", d.ReadOnly, d.Name);
+                Check.False(d.ReadOnly, d.Name);
             }
+            // process: list and output only read (they may run in parallel), kill does not
+            var process = (IReadOnlyCalls)ShellPlugin.CreateTools(svc).Single(t => t.Definition.Name == "process");
+            Check.True(process.IsReadOnly(T.Args(new { action = "list" })));
+            Check.True(process.IsReadOnly(T.Args(new { action = "output", id = "proc_1" })));
+            Check.False(process.IsReadOnly(T.Args(new { action = "kill", id = "proc_1" })));
         });
     }
 

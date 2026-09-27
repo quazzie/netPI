@@ -6,7 +6,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | plugin | id | tools | RPC |
 |---|---|---|---|
 | `plugins/NetPI.Tools.Files` | `netpi.tools.files` | `read` `write` `edit` `grep` `find` `ls` | `files.search`, `files.list`, `files.open`, `files.git` |
-| `plugins/NetPI.Tools.Shell` | `netpi.tools.shell` | `bash` `pwsh` `process_list` `process_output` `process_kill` | `processes.list`, `processes.output`, `processes.kill` |
+| `plugins/NetPI.Tools.Shell` | `netpi.tools.shell` | `bash` `pwsh` `process` | `processes.list`, `processes.output`, `processes.kill` |
 | `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `screenshot` | – |
 | `plugins/NetPI.Todo` | `netpi.todo` | `todo_write` | – |
 | `plugins/NetPI.Ask` | `netpi.ask` | `ask_user` | `ask.pending`, `ask.answer` |
@@ -283,9 +283,12 @@ processes are killed when the plugin stops.
 
 | tool | args | details |
 |---|---|---|
-| `process_list` (read-only) | `{}` | `{ processes: ProcessInfo[] }` |
-| `process_output` (read-only) | `{ id, tail? (200, max 2000) }` (the id may also be a pid) | `{ process: ProcessInfo, tail, truncated }` |
-| `process_kill` | `{ id }` | `{ process: ProcessInfo, killed: boolean }` |
+| `process` `list` (reads only) | `{ action: "list" }` | `{ processes: ProcessInfo[] }` |
+| `process` `output` (reads only) | `{ action: "output", id, tail? (200, max 2000) }` (the id may also be a pid) | `{ process: ProcessInfo, tail, truncated }` |
+| `process` `kill` | `{ action: "kill", id }` | `{ process: ProcessInfo, killed: boolean }` |
+
+`process` is one tool with three actions (`IReadOnlyCalls`: `list` and `output` count as read-only, so several of them run
+in parallel).
 
 ```ts
 interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?; agentId?; background: boolean;

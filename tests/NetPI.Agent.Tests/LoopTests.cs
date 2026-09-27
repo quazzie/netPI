@@ -14,6 +14,7 @@ public static class LoopTests
         t.Add("loop: stream deltas are coalesced", Coalescing);
         t.Add("loop: tool loop with a fake tool", ToolLoop);
         t.Add("loop: parallel read-only batch", ParallelReadOnly);
+        t.Add("loop: a tool with actions runs its read-only calls in parallel (IReadOnlyCalls), the others one by one", ParallelReadOnlyCalls);
         t.Add("loop: mixed batch runs sequentially", SequentialBatch);
         t.Add("loop: steering mid-batch skips remaining tools", SteeringMidBatch);
         t.Add("loop: queued follow-ups one at a time", FollowUps);
@@ -219,6 +220,37 @@ public static class LoopTests
         // the model got all three results (normalized into one tool message)
         var last = h.Catalog.Requests.Last();
         Check.Equal(3, last.Messages[^1].ToolResults.Count());
+    }
+
+    /// <summary>One tool, two actions: peek only reads, poke changes things.</summary>
+    private sealed class PeekPoke(Func<Task> body) : IAgentTool, IReadOnlyCalls
+    {
+        public ToolDefinition Definition { get; } = new() { Name = "pp", Description = "Peek or poke." };
+        public bool IsReadOnly(JsonElement args) => args.TryGetProperty("action", out var a) && a.GetString() == "peek";
+        public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct) { await body(); return ToolResult.Ok("ok"); }
+    }
+
+    private static async Task ParallelReadOnlyCalls()
+    {
+        foreach (var (second, parallel) in new[] { ("peek", true), ("poke", false) })
+        {
+            await using var h = await TestHost.StartAsync();
+            int current = 0, max = 0;
+            h.AddTool(new PeekPoke(async () =>
+            {
+                var c = Interlocked.Increment(ref current);
+                lock (h) max = Math.Max(max, c);
+                await Task.Delay(150);
+                Interlocked.Decrement(ref current);
+            }));
+            var s = h.NewSession();
+            h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r)
+                ? Reply.Text("done")
+                : Reply.Tools(Reply.Call("pp", new { action = "peek" }), Reply.Call("pp", new { action = second }));
+            await h.SendAsync(s.Id, "go");
+            await h.IdleAsync(s.Id);
+            Check.Equal(parallel ? 2 : 1, max, $"peek + {second}");
+        }
     }
 
     private static async Task SequentialBatch()

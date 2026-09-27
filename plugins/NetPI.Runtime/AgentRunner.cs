@@ -648,6 +648,19 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         tools.FirstOrDefault(t => t.Definition.Name == name)
         ?? tools.FirstOrDefault(t => string.Equals(t.Definition.Name, name, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>The call only reads: a read-only tool, or a tool with actions that says so for these arguments.</summary>
+    private static bool ReadsOnly(IAgentTool? tool, string? arguments)
+    {
+        if (tool is null) return false;
+        if (tool is not IReadOnlyCalls calls) return tool.Definition.ReadOnly;
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(arguments) ? "{}" : arguments);
+            return calls.IsReadOnly(doc.RootElement);
+        }
+        catch (JsonException) { return false; }
+    }
+
     private async Task ExecuteToolsAsync(ChatMessage assistant, AgentTurnContext turn, List<ToolCallPart> calls, List<IAgentTool> tools, CancellationToken ct)
     {
         var done = new HashSet<string>(StringComparer.Ordinal);
@@ -655,7 +668,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         var argsChanged = false;
         var parallel = calls.Count > 1
                        && rt.BoolSetting("agent.parallelReadOnlyTools", true)
-                       && calls.All(c => FindTool(tools, c.Name)?.Definition.ReadOnly == true);
+                       && calls.All(c => ReadsOnly(FindTool(tools, c.Name), c.Arguments));
         try
         {
             if (parallel)
