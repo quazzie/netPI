@@ -1,16 +1,37 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace NetPI.Loops;
 
-/// <summary>One finished tool call as the detector sees it: what ran, whether it failed, and how its result began.</summary>
-internal sealed partial record Step(string Tool, string Args, bool Error, string Result)
+/// <summary>
+/// One finished tool call as the detector sees it: what ran, whether it failed, how its result began (for the hint), and
+/// a digest of the whole result (its text with durations and times blanked, and its images) that decides "the same".
+/// </summary>
+internal sealed partial record Step(string Tool, string Args, bool Error, string Result, string Digest)
 {
     public string Key => Tool + "\n" + Args;
 
     public static Step From(ToolCallPart call, ToolResultPart result) =>
-        new(call.Name, NormalizeArgs(call.Arguments), result.IsError, NormalizeResult(result.Content));
+        new(call.Name, NormalizeArgs(call.Arguments), result.IsError, NormalizeResult(result.Content), DigestOf(result));
+
+    /// <summary>
+    /// The whole result, not its start: two page snapshots or screenshots share their first line (the title and URL) and
+    /// differ below it or only in the image.
+    /// </summary>
+    public static string DigestOf(ToolResultPart result)
+    {
+        using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        sha.AppendData(Encoding.UTF8.GetBytes(Space().Replace(Volatile().Replace((result.Content ?? "").Trim(), "#"), " ")));
+        foreach (var image in result.Images ?? [])
+        {
+            sha.AppendData([0]);
+            sha.AppendData(Encoding.UTF8.GetBytes(image.Data ?? ""));
+        }
+        return Convert.ToHexString(sha.GetHashAndReset());
+    }
 
     /// <summary>Compact JSON, so the same arguments with other whitespace compare equal.</summary>
     public static string NormalizeArgs(string? args)
@@ -68,7 +89,7 @@ internal static class LoopDetector
             var same = recent.Where(s => s.Key == key).ToList();
             if (same.Count < repeats - 1) continue;
             var last = same.Skip(same.Count - (repeats - 1)).ToList();
-            if (last.Any(s => s.Error != last[0].Error || s.Result != last[0].Result)) continue; // results changed: not stuck
+            if (last.Any(s => s.Error != last[0].Error || s.Digest != last[0].Digest)) continue; // results changed: not stuck
             var what = Describe(tool, args);
             return last[0].Error
                 ? new Finding("retry", "retry\n" + key,
@@ -86,7 +107,7 @@ internal static class LoopDetector
         {
             var (a, b, c) = (recent[^3], recent[^2], recent[^1]);
             var next = pending[0].Tool + "\n" + pending[0].Args;
-            if (a.Key == c.Key && b.Key == next && a.Key != b.Key && a.Result == c.Result)
+            if (a.Key == c.Key && b.Key == next && a.Key != b.Key && a.Digest == c.Digest)
                 return new Finding("oscillation", "oscillation\n" + a.Key + "\n" + b.Key,
                     $"Loop check: you are going back and forth: {Describe(a.Tool, a.Args)} and {Describe(b.Tool, b.Args)} " +
                     "undo each other, and this is the second round. Stop and decide which state is right, or ask the user.");

@@ -232,7 +232,7 @@ used: the chat stays as it was. Beyond pi: a transcript too long for the summari
 | `compaction.maxSummaryTokens` | 80 % of the reserve (`13107`) | output budget of a summary, thinking included (at most a quarter of the window) |
 | `compaction.defaultContextWindow` | `131072` | for models without a known window |
 | `nudge.enabled` / `nudge.maxPerRun` | `true` / `3` | "continue" when a turn ends empty, cut off, or announces an action without doing it |
-| `loops.enabled` / `loops.maxHintsPerRun` | `true` / `3` | a `loop` notice (a hint, nothing is stopped) before the next model call when the agent is about to repeat itself: the same call after `loops.repeats` − 1 identical results, the same failing call retried, or two steps that undo each other (A, B, A, B); one hint per loop. Subagents too |
+| `loops.enabled` / `loops.maxHintsPerRun` | `true` / `3` | a `loop` notice (a hint, nothing is stopped) before the next model call when the agent is about to repeat itself: the same call after `loops.repeats` − 1 identical results (the whole result text, durations and times aside, and its images: two screenshots or page snapshots that differ anywhere are progress), the same failing call retried, or two steps that undo each other (A, B, A, B); one hint per loop. Subagents too |
 | `loops.repeats` | `3` | the call about to run counts (2–10) |
 | `loops.model` | – | a decision model (`qwen3.8-27b`, `kev-9b`) that also reads the goal and the last 10 steps when 6 of the last 8 use one tool and 3 of them failed, and hints at p(stuck) ≥ 0.8 (`decide.ask`, needs the Decide plugin; at most 5 checks per run, 10 s each) |
 | `toolRepair.enabled` | `true` | execute tool calls a model wrote as text (`<tool_call>…`) |

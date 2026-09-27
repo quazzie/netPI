@@ -12,10 +12,14 @@ public static class LoopTests
         public required AgentTurnContext Turn { get; init; }
         private int _id;
 
-        public async Task Ran(string tool, object args, string result, bool error = false)
+        public async Task Ran(string tool, object args, string result, bool error = false, string? image = null)
         {
             var call = new ToolCallPart { Id = $"call_{++_id}", Name = tool, Arguments = NetPiJson.ToNode(args)!.ToJsonString() };
-            await Hook.OnAfterToolCallAsync(Turn, call, new ToolResultPart { CallId = call.Id, Name = tool, Content = result, IsError = error });
+            await Hook.OnAfterToolCallAsync(Turn, call, new ToolResultPart
+            {
+                CallId = call.Id, Name = tool, Content = result, IsError = error,
+                Images = image is null ? null : [new ImagePart { MediaType = "image/png", Data = image }],
+            });
         }
 
         /// <summary>The model asks for these calls next: the hook's decision.</summary>
@@ -73,6 +77,26 @@ public static class LoopTests
             await p.Ran("read", new { path = "a.cs" }, "one");
             await p.Ran("read", new { path = "b.cs" }, "two");
             Null(await p.Next(("read", new { path = "c.cs" })), "different arguments are different calls");
+        });
+
+        r.Add("loops: results that differ past their start or only in the image are progress; the same image is not", async () =>
+        {
+            // two screenshots of the same page: the same text, other pixels
+            var e = Setup();
+            await e.Ran("browser", new { action = "screenshot" }, "Screenshot of Flights — https://x/", image: "AAAA");
+            await e.Ran("browser", new { action = "screenshot" }, "Screenshot of Flights — https://x/", image: "BBBB");
+            Null(await e.Next(("browser", new { action = "screenshot" })), "the page changed between the screenshots");
+            // two snapshots whose first 400 characters are the same
+            var head = "Page: Flights — https://x/\n" + string.Concat(Enumerable.Range(1, 30).Select(i => $"[{i}] [button] Filter {i}\n"));
+            var s = Setup();
+            await s.Ran("browser", new { action = "snapshot" }, head + "[31] [text] Loading…");
+            await s.Ran("browser", new { action = "snapshot" }, head + "[31] [text] SAS 07:05, 1 190 SEK");
+            Null(await s.Next(("browser", new { action = "snapshot" })), "results came in below the first 400 characters");
+            // really the same, image included
+            var same = Setup();
+            await same.Ran("browser", new { action = "screenshot" }, "Screenshot of Flights — https://x/", image: "AAAA");
+            await same.Ran("browser", new { action = "screenshot" }, "Screenshot of Flights — https://x/", image: "AAAA");
+            NotNull(await same.Next(("browser", new { action = "screenshot" })));
         });
 
         r.Add("loops: an edit and its undo, twice, is back and forth", async () =>
