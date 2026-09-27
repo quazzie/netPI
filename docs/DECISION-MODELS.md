@@ -29,7 +29,7 @@ log file) belongs on the nuc models. Kev-9B is no longer recommended for any tas
 |---|---|---|---|---|---|
 | **Log lines**: subsystem, severity, needs a human, routine | **Laya-logs-qwen** (421M, fine-tuned on Qwen3.8-27B's labels), served as `laya-logs` by `laya-tasks` (nuc :8010, `/v1/systemone`; through AiGateway once D73 is deployed) | **0.78 / 0.93 / 0.93 / 0.97** | 37 ms/line on the 4070 (all 4 questions, p50 over the LAN; 0.42 s iGPU) | Qwen3.8-27B itself 0.79 / 0.92 / 0.95 / 0.93 (0.7 s/line); Laya-logs on Kev-9B's labels 0.53 / 0.89 / 0.84 / 0.91 | 120 real lines, hand-labelled |
 | **Browser**: which element next | **MiniLM ranker (fine-tuned) → top-20 → qwen3.8-27b** `/v1/decision` (20 lettered options) | top-1 **0.461** (target in top-20: 0.846); × the Qwen-taught Laya picker 0.478 | ranker 65 ms (nuc) + 124 ms per step on the 5090 | Laya picker taught by Qwen 0.320 (nuc); the old Laya picker × Kev-9B 0.392 | Mind2Web, 475 steps on 14 websites never trained on |
-| **Computer use (Windows)**: which control next | **qwen3.8-27b**, zero-shot, over the whole UI Automation list (writes the control's number, thinking off) | top-1 **0.98** (43/44) | 139 ms per step on the 5090 (p50; 189 controls at most) | Kev-9B 0.89, top-3 0.98 (~1 s, 4070); small rankers 0.55 | 44 hand-made tasks in 5 Windows apps |
+| **Computer use (Windows)**: which control next | **qwen3.8-27b**, zero-shot, over the whole UI Automation list (writes the control's number, thinking off) | top-1 **0.98** (43/44); live, whole tasks: **18/19** at reasoning low with a plan line, 15/19 thinking off ("Live computer use" below) | 139 ms per step on the 5090 (p50; 189 controls at most); live 0.2–0.4 s per step through AiGateway | Kev-9B 0.89, top-3 0.98 (~1 s, 4070); small rankers 0.55 | 44 hand-made tasks in 5 Windows apps; 19 live multi-step tasks in 4 apps |
 | **Dangerous command** (guardrail second opinion) | **qwen3.8-27b** `/v1/decision` | agrees with Qwen's generative labels 0.998 / 0.993 / 0.988 / 0.912; at p(yes) < 0.2 on the three risk questions it calls 696 of 852 harmless, none of them risky | 0.31 s per command (4 questions), 5090 | Kev-9B (remote_change unusable: 327 false yes); on the 12 hand-made: Kev-9B 12/12 | 852 real commands, reference = Qwen generative (not human yet; see "NInfer baselines", 0.4) |
 | **Agent stuck / looping** | **Kev-9B** or **laya:typed-decisions** | 6/6 | 0.1 s / 9 ms | Kev-4B 6/6 | 6 hand-made traces — **too small** |
 | **Issue triage** | **laya:typed-decisions** (9 ms) | 8/8 | 9 ms (Ollaya) | Kev-9B / Kev-4B 8/8 | 8 hand-made issues — **too small** |
@@ -236,6 +236,63 @@ stay on NInfer (Qwen logit readout), Laya and Kev. What could still work is the 
 trained on frozen embeddings takes about an hour (their `train/finetune.py`), and our Qwen-labelled logs, the 852
 commands and the Mind2Web training split exist. Files on the nuc: `/home/quazzie/clm` (`start.sh`, `stop.sh`,
 README); scripts `decisions-lab/scripts/clm_browser.mjs`, `p0_guard.mjs run clm|clm_s`, `serve_check.mjs`.
+
+## Live computer use (Windows), 2026-09-27
+
+The 0.98 above is one step on a frozen control list. This is the whole loop on real apps. `uia-agent` (decisions-lab,
+.NET, no NuGet) reads a window's UI Automation tree, including its menus, popups and owned dialogs, as a numbered list
+(35 ms for Calculator's 42 controls, 161 ms for an Explorer window's 79). qwen3.8-27b gets the task, its earlier
+actions with what each one changed, and the list, and replies with one action. The agent carries it out through UIA
+patterns (Invoke, Toggle, SelectionItem, ExpandCollapse, Value, RangeValue); real clicks and keys are the fallback, sent
+only after the target window is confirmed in front. Model calls go through AiGateway `/v1/chat/completions` (client
+`decisions-lab/cu_live`, session `<run>/<task>`). 19 tasks in Calculator, Paint, Character Map and Explorer (a scratch
+folder per task), at most 15 steps, each checked on the end state (the display, the canvas size, files on disk, the
+settings the app saves).
+
+| variant | tasks done | steps | model per step p50 (p90) | per task p50 |
+|---|---|---|---|---|
+| thinking off | 15/19 | 120 | 175 ms (199) | 4.4 s |
+| thinking off, plan line | 16/19 | 93 | 223 ms (295) | 3.9 s |
+| reasoning low | 17/19 | 98 | 372 ms (1045) | 4.7 s |
+| **reasoning low, plan line** | **18/19** | 88 | 390 ms (602) | 5.2 s |
+
+(18/19 includes a rerun of paint-size after the parser learned `set`: the model had worked out the right value and
+written `set Size #53 = 9`.) A step also costs the snapshot, the action (p50 6 ms) and a fixed 500 ms settle. 91 % of
+the 322 actions in the four runs used UIA patterns, which do not need the focus: the app can stay in the background.
+The other 9 % needed real input (typing into a RichEdit box, key presses, items in Win32 dropdown lists).
+
+What made the difference, in the order it was found (runs 1–4: 11, 9, 11, 16 of 19 with thinking off):
+- **Reply format.** With the number first (`29`), the model picked neighbouring numbers (One, Two, Three for "15% of
+  80"). With the number and then the name (`33 Five`), the name followed the number, and the model copied attributes
+  (`OK id="PrimaryButton"`) that the parser took for text to type. **Verb, name, then number** (`click Five #34`,
+  `type Horizontal #8 = 50`) fixed the digits; a number that disagrees with the name is resolved by the name.
+- **Feedback.** Each history line says what the action changed ("now shows [text] Display is 8", "no visible change",
+  "the order of the controls changed").
+- **Intent across steps.** Every step is a new request. At reasoning low the model planned "8 0 × 1 5 % =", clicked 8,
+  and on the next turn cleared the 8 as a leftover, seven times in a row. An optional `plan:` line, shown on the next
+  turn, fixed it.
+- **Thinking** fixes the reasoning slips: which sort order is showing (Explorer), slider position 9 = 10 px (Paint).
+- **The harness.** A UIA Select on an item of a Win32 dropdown does not reach the combo box (a real click does); a
+  slider's RangeValue is not the value on screen (Paint's Size: position 9 = 10 px, 50 = 78 px); a dropdown's
+  "(selected)" follows the mouse pointer.
+- **Out of reach for UIA.** Character Map's character grid is custom-drawn and absent from the tree: the € task fails in
+  every variant, and the model settles for ₠ "Euro-Currency Sign" and says "done". Such controls need keys or vision.
+- **Side effects.** Apps remember state: Paint reopens with the last canvas size (the resize task halved the default
+  five runs in a row before it was noticed), Calculator its mode, Character Map its font and view. `cu_restore.mjs`
+  puts them back after every run. A lost model copied the prompt's example (`click Five #34`, in Paint) and then
+  clicked Close. The test refuses Share, Copilot, sign-in and Delete controls; a real agent needs confirmation for
+  those and for Close.
+- NInfer reused 0 cached tokens between steps, although the system prompt and task repeat (~1.2k-token prompts, so the
+  prefill costs little here).
+
+**Verdict:** viable for built-in and standard Windows apps with a good UIA tree. 16–18 of 19 multi-step tasks
+succeed, at 0.2–0.4 s of model time per step, locally and mostly without touching the user's focus. Apps that draw
+their own controls need a vision or keyboard fallback. Next: a NetPI plugin (`windows.snapshot` / `windows.act`, the
+loop as a tool, confirmation for destructive controls); a done-check through `/v1/decision` (every variant had one
+false "done"); harder apps (Office, Electron, Settings read-only); record real steps for training (the traces here
+already hold the control list, reply, action and effect per step). Scripts: decisions-lab `uia-agent/`,
+`scripts/cu_live.mjs` (`--effort`, `--plan`), `cu_lib.mjs`, `cu_explore.mjs`, `cu_restore.mjs`; results in
+`results/cu_live/final-*.json[l]`.
 
 ## Known limits and next experiments
 

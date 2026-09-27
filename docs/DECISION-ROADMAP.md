@@ -162,6 +162,12 @@ Needs a plugin hook on agent turns/tool calls and a way to send the same message
 qwen3.8-27b `/v1/decision` (0.461 top-1 on NInfer, 124 ms; × the Qwen-taught Laya picker 0.478); Windows = UI
 Automation list + qwen3.8-27b writing the control's number (0.98 top-1, 139 ms; Kev-9B 0.89). Measured 2026-09-27
 (`DECISION-MODELS.md`, "Known limits"). Record every real step for later training.
+*Windows tested live 2026-09-27 (`DECISION-MODELS.md`, "Live computer use"): the whole loop on real apps (UIA snapshot →
+qwen3.8-27b through AiGateway → UIA pattern action) finishes 18 of 19 multi-step tasks at reasoning low with a plan
+line (15/19 thinking off), 0.2–0.4 s of model time per step, 91 % of actions without the focus. Viable; the reply
+format (verb, name, number), per-step feedback and a carried plan mattered more than the model. Next: a NetPI
+plugin with confirmation for destructive controls, a keyboard or vision fallback for custom-drawn controls, a
+`/v1/decision` done-check.*
 
 ## Phase 4: model quality (nuc)
 
