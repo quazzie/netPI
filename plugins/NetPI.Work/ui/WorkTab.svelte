@@ -305,9 +305,10 @@
 
 <style>
   .work {
+    /* fill the tab (.plugin-root is a flex column; a percentage min-height would not resolve) */
+    flex: 1 0 auto;
     display: flex;
     flex-direction: column;
-    min-height: 100%;
   }
   .summary {
     display: flex;

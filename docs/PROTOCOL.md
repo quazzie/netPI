@@ -260,3 +260,5 @@ export function mount(el, ctx) {
 Plugin UIs render inside the host DOM and should style themselves with the host CSS variables
 (`--bg`, `--bg-1`, `--bg-2`, `--bg-3`, `--border`, `--fg`, `--fg-muted`, `--fg-dim`, `--accent`, `--ok`, `--warn`, `--err`,
 `--font-ui`, `--font-mono`, `--radius`) and the `np-*` utility classes documented in `web/src/styles/kit.css`.
+The mount element (`.plugin-root`) is a flex column at least as tall as the panel, and the panel scrolls it. To fill the
+height (for a footer at the bottom), give the tab's root `flex: 1 0 auto`; `min-height: 100%` does not resolve there.

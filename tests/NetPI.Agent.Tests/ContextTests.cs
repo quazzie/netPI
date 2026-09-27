@@ -22,6 +22,33 @@ public static class ContextTests
         t.Add("context: custom and appended prompt settings", CustomPrompt);
         t.Add("context: context.preview", Preview);
         t.Add("context: plugin sections and fallback prompt", PluginSectionAndFallback);
+        t.Add("context: the first turn's setup notices go before the first message, also after notices added before it", FirstTurnOrder);
+    }
+
+    private static void FirstTurnOrder()
+    {
+        ChatMessage Notice(string text, string kind, bool setup = false)
+        {
+            var m = ChatMessage.NoticeText(text, kind);
+            if (setup) m.Meta!["setup"] = true;
+            return m;
+        }
+        string Order(IEnumerable<ChatMessage> ms) => string.Join(" | ", ms.Select(m => m.Text));
+        var hi = ChatMessage.UserText("hi");
+        var cwd = Notice("cwd", "project", setup: true);
+        var md = Notice("AGENTS.md", "instructions", setup: true);
+        var skill = Notice("skill loaded", "skill");
+
+        // the plain case: stored after "hi", read before it; a notice that answers the message stays after it
+        Check.Equal("cwd | AGENTS.md | hi | skill loaded", Order(NetPI.Runtime.ContextOrder.FirstTurnNoticesFirst([hi, cwd, md, skill])));
+        // an idea (or a project) the user added before sending keeps its place first, and the setup notices still move
+        var idea = Notice("idea from the backlog", "idea");
+        Check.Equal("idea from the backlog | cwd | AGENTS.md | hi | skill loaded",
+            Order(NetPI.Runtime.ContextOrder.FirstTurnNoticesFirst([idea, hi, cwd, md, skill])));
+        // after compaction (a summary first) and in chats without setup notices nothing moves
+        var summary = new ChatMessage { Role = MessageRole.Summary, Parts = [new TextPart { Text = "summary" }] };
+        Check.Equal("summary | hi | cwd", Order(NetPI.Runtime.ContextOrder.FirstTurnNoticesFirst([summary, hi, cwd])));
+        Check.Equal("hi | skill loaded", Order(NetPI.Runtime.ContextOrder.FirstTurnNoticesFirst([hi, skill])));
     }
 
     private static PromptContext Ctx(TestHost h, SessionInfo s, IReadOnlyList<ToolDefinition> tools, string? instructions = null) => new()

@@ -26,13 +26,14 @@ function same(a, b) {
 /**
  * The first turn's setup notices (meta.setup: working directory, instructions, the skill catalog; made at the chat's first
  * model call, stored after the first user message) are shown before that message, as the model reads them (ContextOrder
- * in the runtime). Other notices (a skill loaded with /skill:name) stay after it.
+ * in the runtime). Other notices (a skill loaded with /skill:name) stay after it; notices stored before the first
+ * message (an idea or a project the user added before sending) keep their place first.
  */
 export function firstTurnNoticesFirst(messages) {
   const setup = (m) => m?.role === 'notice' && m.meta?.setup === true;
   const after = (m) => m?.role === 'notice' && !['steer', 'queued'].includes(m.meta?.kind);
   let first = 0;
-  while (first < messages.length && setup(messages[first])) first++;
+  while (first < messages.length && messages[first]?.role === 'notice') first++;
   if (messages[first]?.role !== 'user') return messages;
   let end = first + 1;
   while (end < messages.length && after(messages[end])) end++;

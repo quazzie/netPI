@@ -12,12 +12,13 @@ internal static class ContextOrder
 {
     /// <summary>
     /// The setup notices among the notices right after the first user message go before it, when the context starts with
-    /// that message (or only setup notices precede it; not after compaction, whose summary comes first).
+    /// that message or with notices only (an idea or a project the user added before sending: they keep their place
+    /// first; not after compaction, whose summary comes first).
     /// </summary>
     public static IReadOnlyList<ChatMessage> FirstTurnNoticesFirst(IReadOnlyList<ChatMessage> messages)
     {
         var first = 0;
-        while (first < messages.Count && IsSetup(messages[first])) first++;
+        while (first < messages.Count && messages[first].Role == MessageRole.Notice) first++;
         if (first >= messages.Count || messages[first].Role != MessageRole.User) return messages;
         var end = first + 1;
         while (end < messages.Count && messages[end].Role == MessageRole.Notice && messages[end].MetaString("kind") is not ("steer" or "queued")) end++;

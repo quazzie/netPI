@@ -424,6 +424,13 @@ log('plugin tab: Ideas');
   const cards = () => page.locator('.ideas .card');
   const n0 = await cards().count();
   check('ideas: project backlog listed', n0 >= 4, `${n0} active ideas`);
+  // a short list still fills the panel: the footer sits at its bottom, not under the last card
+  const footGap = await page.evaluate(() => {
+    const foot = document.querySelector('.plugin-root .ideas .foot');
+    const mount = foot?.closest('.mount');
+    return foot && mount ? Math.round(mount.getBoundingClientRect().bottom - foot.getBoundingClientRect().bottom) : null;
+  });
+  check('ideas: the tab fills the panel (footer at the bottom)', footGap !== null && Math.abs(footGap) <= 4, `gap ${footGap}px`);
   await cards().first().locator('.main').click();
   await page.waitForTimeout(250);
   check('ideas: expanded idea renders sections', (await cards().first().locator('.sec').count()) > 0);

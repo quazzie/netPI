@@ -31,6 +31,8 @@
  *                         set --row-bg to the row's background so the fade under the actions matches
  *   Plugin tab roots (.plugin-root) are size containers: use @container (min-width: 360px) { … } for wide
  *   variants instead of viewport media queries.
+ *   .plugin-root is a flex column at least as tall as the tab: a tab's own root fills it with flex: 1 0 auto
+ *   (min-height: 100% does not resolve there, and a footer would sit right under the content).
  *
  * Lists
  *   .np-list              unstyled list container
