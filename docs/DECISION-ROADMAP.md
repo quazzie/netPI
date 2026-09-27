@@ -7,13 +7,13 @@ that session, in the order to do them. Results so far: `DECISION-MODELS.md`; the
 
 | piece | where | state |
 |---|---|---|
-| NInfer `POST /v1/decision` | `C:\AI\src\ninfer-windows`, branch `local/main` (`docs/decision.md` there) | deployed. The loaded qwen3.8-27b answers multiple-choice questions from the prefill logits: ~35 ms per question once the shared state is cached, ~190 ms cold. Questions run **one after another** in one slot (an endpoint mutex); nothing is batched on the GPU yet. |
-| NInfer deploy | `C:\AI\ninfer-local\current` (AiHub runs it), `tools\windows\deploy.ps1` | one checkout, one build folder (`build-windows`). Rollback build: `C:\AI\ninfer-local\backup-2026-09-26`. |
+| NInfer `POST /v1/decision` | `C:\AI\Projects\ninfer-windows`, branch `local/main` (`docs/decision.md` there) | deployed. The loaded qwen3.8-27b answers multiple-choice questions from the prefill logits: ~35 ms per question once the shared state is cached, ~190 ms cold. Questions run **one after another** in one slot (an endpoint mutex); nothing is batched on the GPU yet. |
+| NInfer deploy | `C:\AI\Apps\ninfer-local\current` (AiHub runs it), `tools\windows\deploy.ps1` | one checkout, one build folder (`build-windows`). Rollback build: `C:\AI\Apps\ninfer-local\backup-2026-09-26`. |
 | AiGateway `/v1/systemone` bridge | `C:\ai\projects\aiswitcher` (D69; `SystemOne.cs`, `SystemOneBridge.cs`) | deployed. TypeSafe System One for NInfer models → one `/v1/decision`; Kev on the nuc router is forwarded as-is. |
 | One-NInfer guards | AiSwitcher D70 | deployed. The hub finds NInfer by image name and refuses a second start; no second crash restart while one is starting. |
 | NetPI `decide` tool + `decide.ask` RPC | `plugins/NetPI.Decide` | built and deployed. Default model `kev-9b` (nuc, manual switch that also unloads yue2); `qwen3.8-27b` works through the bridge. |
 | nuc decision models | router `quazzie/llama.cpp:kev-router` (kev-9b, kev-4b, exclusive); `laya-tasks` :8010 (`laya-logs`); Ollaya `decide` stack :11435 | running. `laya-tasks` serves **Laya-logs-qwen** as `logs` (0.78 / 0.93 / 0.93 / 0.97, was the Kev-taught 0.53 / 0.89 / 0.84 / 0.91) since 2026-09-26 (1.1), weights in bf16 since 2026-09-27 (1.2 GB instead of 2.7, same answers). Kev-9B does not fit on the 4070 beside `laya-tasks` (OOM on load) and is no longer recommended for any task (`DECISION-MODELS.md`). |
-| test sets and scripts | `C:\AI\decisions-lab` (README there); nuc `/home/quazzie/train` | 120 hand-labelled log lines, 852 real commands with Qwen's guard labels, 44 Windows UIA tasks, Mind2Web on the nuc. |
+| test sets and scripts | `C:\AI\Projects\decisions-lab` (README there); nuc `/home/quazzie/train` | 120 hand-labelled log lines, 852 real commands with Qwen's guard labels, 44 Windows UIA tasks, Mind2Web on the nuc. |
 
 ## Ground rules
 

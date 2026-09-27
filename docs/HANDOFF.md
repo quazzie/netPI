@@ -6,11 +6,11 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 
 | | |
 |---|---|
-| Repo | `C:\AI\NetPI` (this folder) |
+| Repo | `C:\AI\Projects\NetPI` (this folder) |
 | Build output | `artifacts\app\`: `NetPI.exe` (WinForms + WebView2 desktop shell, starts the server in-process), `netpi-server.exe` (headless), `plugins\<Name>\`, `wwwroot\` |
 | User data | `%USERPROFILE%\.netpi\`: `settings.json`, `netpi.db` (SQLite), `logs\netpi-YYYYMMDD.log`, `logs\failed-requests\`, `window.json`, `webview\`, `workspace\` |
 | Old NetPI v1 | source `C:\AI\Projects\NetPI`; its data was moved to `%USERPROFILE%\.netpi\legacy-netpi-v1\`. Reference only; don't run it against the new data folder |
-| Model stack | AiProxy `http://127.0.0.1:8090` (AiSwitcher, `C:\AI\AiSwitcher`) → nInfer `:8080` (source `C:\AI\src\ninfer-windows`, AiSwitcher profile `quasar-v3`), serving `qwen3.8-27b` with concurrency 2 and 2 × 262k KV. See `docs/AIPROXY-AGENT-GUIDE.md` |
+| Model stack | AiProxy `http://127.0.0.1:8090` (AiSwitcher, `C:\AI\archived\apps\AiSwitcher-legacy`) → nInfer `:8080` (source `C:\AI\Projects\ninfer-windows`, AiSwitcher profile `quasar-v3`), serving `qwen3.8-27b` with concurrency 2 and 2 × 262k KV. See `docs/AIPROXY-AGENT-GUIDE.md` |
 | Claude | Anthropic Messages API with an API key (`providers.anthropic.apiKey` or `ANTHROPIC_API_KEY`). Only tested against a mock so far (no API key available) |
 | OpenRouter | `providers.openrouter.apiKey` or `OPENROUTER_API_KEY`; tested live with the free `stealth/space-bunny-alpha` |
 | Plans | `docs/plans/`: active plans (open questions at the end); `docs/archive/`: one dated record per completed plan (what was done, results, commits) |
@@ -86,7 +86,7 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 
 ## nInfer findings that matter for NetPI
 
-Source: `C:\AI\src\ninfer-windows\.local\stateless-agents-20260924\report.md`.
+Source: `C:\AI\Projects\ninfer-windows\.local\stateless-agents-20260924\report.md`.
 
 - **Crash fixed.** `capture owner has no planning ID` is fixed. `response.failed` now carries `error.code: "server_error"`.
 - **Stateless requests keep their KV-cache context.** nInfer now tracks each stateless `store:false` conversation by its prompt prefix and protects its latest cached state. In a real test, two concurrent agents ran 17 tool turns each up to ~253k tokens with side requests: no cold re-prefills and no fallbacks.

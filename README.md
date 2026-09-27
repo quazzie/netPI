@@ -69,7 +69,7 @@ Requirements: **.NET 10 SDK**, the **WebView2 runtime** (built into Windows 11),
 tool). Optional: PowerShell 7 (`pwsh` tool), Node.js 22 (only to change the UI — built bundles are committed).
 
 ```powershell
-cd C:\AI\NetPI
+cd C:\AI\Projects\NetPI
 .\build.ps1 -Run          # builds into artifacts\app and starts artifacts\app\NetPI.exe
 ```
 
