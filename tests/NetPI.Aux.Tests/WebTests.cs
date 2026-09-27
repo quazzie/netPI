@@ -376,7 +376,7 @@ public static class WebTests
                 app.MapGet("/form", () => Results.Content("""
                     <!doctype html><html><head><title>Sign up</title></head><body>
                     <h1>Create your account</h1>
-                    <label>Full name <input id="name"></label>
+                    <label>Full name <input id="name"></label><i id="" type=""></i>
                     <label>Password <input id="pw" type="password"></label>
                     <label>Country <select id="country"><option value="">Choose…</option><option value="NO">Norway</option><option value="SE">Sweden</option></select></label>
                     <label><input type="radio" name="plan" value="free" checked> Free</label>

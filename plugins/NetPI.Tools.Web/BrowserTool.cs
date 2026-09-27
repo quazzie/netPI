@@ -97,6 +97,7 @@ internal sealed class BrowserTool(IPluginContext ctx, BrowserHost host) : IAgent
         catch (BrowserUnavailableException ex) { return ToolResult.Error(ex.Message); }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
+            ctx.Logger.LogWarning(ex, "browser {Action} failed", action);
             return ToolResult.Error($"browser {action} failed: {ex.Message}", new { action, error = ex.Message });
         }
     }
@@ -619,6 +620,8 @@ internal sealed class BrowserTab
     /// </summary>
     private async Task<Snapshot> SnapshotAsync(CancellationToken ct)
     {
+        // until this snapshot succeeds, the numbers of the last one would point at a page that is gone
+        _controls = [];
         var axTask = Send("Accessibility.getFullAXTree", null, ct);
         var domTask = Send("DOMSnapshot.captureSnapshot", new { computedStyles = Array.Empty<string>() }, ct);
         var metricsTask = Send("Page.getLayoutMetrics", null, ct);
@@ -628,6 +631,8 @@ internal sealed class BrowserTab
 
         var ds = domTask.Result;
         var strings = ds.GetProperty("strings").EnumerateArray().Select(s => s.GetString() ?? "").ToArray();
+        // a string index is -1 for a missing string (an attribute without a value)
+        string Str(int i) => i >= 0 && i < strings.Length ? strings[i] : "";
         var doc = ds.GetProperty("documents")[0];
         var nodes = doc.GetProperty("nodes");
         var backendIds = nodes.GetProperty("backendNodeId").EnumerateArray().Select(x => x.GetInt32()).ToArray();
@@ -645,9 +650,9 @@ internal sealed class BrowserTab
             var a = attrs[ni].EnumerateArray().Select(x => x.GetInt32()).ToArray();
             for (var k = 0; k + 1 < a.Length; k += 2)
             {
-                var name = strings[a[k]];
-                if (name == "id") ids[backendIds[ni]] = strings[a[k + 1]];
-                else if (name == "type" && strings[a[k + 1]].Equals("password", StringComparison.OrdinalIgnoreCase)) passwords.Add(backendIds[ni]);
+                var name = Str(a[k]);
+                if (name == "id") ids[backendIds[ni]] = Str(a[k + 1]);
+                else if (name == "type" && Str(a[k + 1]).Equals("password", StringComparison.OrdinalIgnoreCase)) passwords.Add(backendIds[ni]);
             }
         }
         var vp = metricsTask.Result.GetProperty("cssVisualViewport");
