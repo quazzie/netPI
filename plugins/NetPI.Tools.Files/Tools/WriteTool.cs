@@ -13,12 +13,11 @@ public sealed class WriteTool(ISettings? settings = null) : FileToolBase(setting
         Category = "files",
         ReadOnly = false,
         SummaryArg = "path",
-        Description =
-            "Create a file or overwrite it completely with the given content. Parent directories are created. " +
-            "An existing file keeps its line-ending style (CRLF/LF) and BOM; new files use the configured default.",
+        Description = "Create a file or overwrite it completely.",
+        Help = "Parent directories are created. An existing file keeps its line-ending style (CRLF/LF) and BOM; new files use the configured default.",
         Parameters = Schema.Object(
-            ("path", Schema.Str("File path, absolute or relative to the working directory."), true),
-            ("content", Schema.Str("The complete new file content."), true)),
+            ("path", Schema.Str(""), true),
+            ("content", Schema.Str(""), true)),
         PromptGuidelines = [UseFileTools, ChangeFiles],
     };
 

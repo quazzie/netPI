@@ -156,11 +156,13 @@ internal sealed class AskUserTool(PendingAsks pending) : IAgentTool
         Label = "Question",
         Category = "general",
         Description =
-            "Ask the user and wait for the answer. For a decision or information only the user has: a choice between " +
-            "approaches, a preference, a missing detail. Not for confirming routine steps or reporting progress. Give the " +
-            "context in your message first: the questions appear right below it. Offer options when the answer is one of a " +
-            "few choices (the user can always answer in their own words instead). Up to 4 questions at once. Call it on its " +
-            "own and act on the answers once they arrive.",
+            "Ask the user 1–4 questions and wait for the answers: for a decision or information only the user has, not to " +
+            "confirm routine steps. Give the context in your message first.",
+        Help =
+            "For a choice between approaches, a preference, a missing detail. Not for confirming routine steps or reporting " +
+            "progress. The questions appear right below your message. Offer options (label, and optionally what it means) when " +
+            "the answer is one of a few choices; the user can always answer in their own words instead. multiple: the user may " +
+            "pick several. Call it on its own and act on the answers once they arrive.",
         Parameters = new JsonObject
         {
             ["type"] = "object",
@@ -169,29 +171,27 @@ internal sealed class AskUserTool(PendingAsks pending) : IAgentTool
                 ["questions"] = new JsonObject
                 {
                     ["type"] = "array",
-                    ["description"] = "1 to 4 questions.",
                     ["items"] = new JsonObject
                     {
                         ["type"] = "object",
                         ["properties"] = new JsonObject
                         {
-                            ["question"] = new JsonObject { ["type"] = "string", ["description"] = "The question, complete and specific." },
+                            ["question"] = new JsonObject { ["type"] = "string" },
                             ["options"] = new JsonObject
                             {
                                 ["type"] = "array",
-                                ["description"] = "Choices to pick from, when there are a few (optional).",
                                 ["items"] = new JsonObject
                                 {
                                     ["type"] = "object",
                                     ["properties"] = new JsonObject
                                     {
-                                        ["label"] = new JsonObject { ["type"] = "string", ["description"] = "The choice, in a few words." },
-                                        ["description"] = new JsonObject { ["type"] = "string", ["description"] = "What it means or implies (optional)." },
+                                        ["label"] = new JsonObject { ["type"] = "string" },
+                                        ["description"] = new JsonObject { ["type"] = "string" },
                                     },
                                     ["required"] = new JsonArray("label"),
                                 },
                             },
-                            ["multiple"] = new JsonObject { ["type"] = "boolean", ["description"] = "The user may pick several options." },
+                            ["multiple"] = new JsonObject { ["type"] = "boolean" },
                         },
                         ["required"] = new JsonArray("question"),
                     },

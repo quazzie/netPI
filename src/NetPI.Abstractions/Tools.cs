@@ -8,7 +8,14 @@ public sealed class ToolDefinition
 {
     /// <summary>Function name sent to the model (snake_case, [a-z0-9_]).</summary>
     public required string Name { get; init; }
+    /// <summary>What the model reads in every request: keep it to a sentence or two (details go in <see cref="Help"/>).</summary>
     public required string Description { get; init; }
+    /// <summary>
+    /// The tool's full manual (details, options, examples), sent only when the model calls the tool with
+    /// <c>{"help": true}</c>: the runtime answers that call with the description, this text and the argument schema, and
+    /// does not run the tool. Keeps the definitions every request carries short.
+    /// </summary>
+    public string? Help { get; init; }
     /// <summary>JSON schema of the arguments object.</summary>
     public JsonObject Parameters { get; init; } = new() { ["type"] = "object", ["properties"] = new JsonObject() };
     /// <summary>Short label for the UI ("Read", "Bash").</summary>

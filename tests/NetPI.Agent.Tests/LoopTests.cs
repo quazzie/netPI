@@ -21,6 +21,7 @@ public static class LoopTests
         t.Add("loop: abort during a tool call", AbortDuringTool);
         t.Add("loop: abort during a tool that swallows cancellation stops the batch", AbortDuringSwallowingTool);
         t.Add("loop: unknown tool and invalid JSON arguments", ToolErrors);
+        t.Add("loop: {\"help\": true} on any tool returns its manual and does not run it", ToolHelpCall);
         t.Add("loop: tool exceptions and result truncation", ToolExceptionAndTruncation);
         t.Add("loop: model error writes an error notice", ModelError);
         t.Add("loop: missing model writes an error notice", MissingModel);
@@ -431,6 +432,29 @@ public static class LoopTests
         Check.Contains(results[1].Content, "Invalid JSON arguments for echo");
         Check.False(results[2].IsError, "case-insensitive tool name");
         Check.Equal("echo:x", results[2].Content);
+    }
+
+    private static async Task ToolHelpCall()
+    {
+        await using var h = await TestHost.StartAsync();
+        var manual = new FakeTool("manual", (ctx, args, ct) => Task.FromResult(ToolResult.Ok("ran")), help: "Actions: a, b. Example: {\"action\":\"a\"}.");
+        var plain = new FakeTool("plain", (ctx, args, ct) => Task.FromResult(ToolResult.Ok("ran")));
+        h.AddTool(manual);
+        h.AddTool(plain);
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r)
+            ? Reply.Text("ok")
+            : Reply.Tools(Reply.Call("manual", new { help = true }), Reply.Call("plain", new { help = "true" }), Reply.Call("plain", new { help = false }));
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        var results = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).Select(m => m.ToolResults.Single()).ToList();
+        Check.Equal(3, results.Count);
+        Check.False(results[0].IsError);
+        Check.Contains(results[0].Content, "manual: Fake tool manual. Does test things.\n\nActions: a, b. Example: {\"action\":\"a\"}.\n\nArguments (JSON schema): {");
+        Check.Contains(results[1].Content, "plain: Fake tool plain. Does test things.\n\nArguments (JSON schema): ");
+        Check.Equal(0, manual.Calls, "help does not run the tool");
+        Check.Equal("ran", results[2].Content);
+        Check.Equal(1, plain.Calls, "help: false runs it");
     }
 
     private static async Task ToolExceptionAndTruncation()

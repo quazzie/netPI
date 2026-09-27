@@ -603,13 +603,14 @@ public static class Reply
 // ------------------------------------------------------------------ fake tool
 
 public sealed class FakeTool(string name, Func<ToolContext, JsonElement, CancellationToken, Task<ToolResult>> exec, bool readOnly = false, string category = "general",
-    IReadOnlyList<string>? guidelines = null) : IAgentTool
+    IReadOnlyList<string>? guidelines = null, string? help = null) : IAgentTool
 {
     public int Calls;
     public ToolDefinition Definition { get; } = new()
     {
         Name = name,
         Description = $"Fake tool {name}. Does test things.",
+        Help = help,
         ReadOnly = readOnly,
         Category = category,
         Label = name.ToUpperInvariant(),

@@ -16,14 +16,16 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
         Category = "files",
         ReadOnly = true,
         SummaryArg = "path",
-        Description =
-            "Read a text file. Returns the file content (line endings normalized to \\n, no line-number prefixes), " +
-            $"at most {MaxLines} lines (and about {MaxBytes / 1024}KB) per call; a longer file ends with the offset to continue, so page through it with offset/limit. " +
-            "Images (png, jpg, gif, webp) are returned as images when the model supports them.",
+        Description = $"Read a text file (up to {MaxLines} lines per call; page with offset/limit) or an image.",
+        Help =
+            "Returns the file content (line endings normalized to \\n, no line-number prefixes), " +
+            $"at most {MaxLines} lines (and about {MaxBytes / 1024}KB) per call; a longer file ends with the offset to continue. " +
+            "offset is 1-based; negative values count from the end. Images (png, jpg, gif, webp) are returned as images when " +
+            "the model supports them.",
         Parameters = Schema.Object(
-            ("path", Schema.Str("File path, absolute or relative to the working directory."), true),
-            ("offset", Schema.Int("1-based line number to start from (default 1). Negative values count from the end."), false),
-            ("limit", Schema.Int($"Maximum number of lines to return (default and max {MaxLines})."), false)),
+            ("path", Schema.Str(""), true),
+            ("offset", Schema.Int("1-based; negative from the end"), false),
+            ("limit", Schema.Int(""), false)),
         PromptGuidelines = [UseFileTools],
     };
 

@@ -22,19 +22,20 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
         Category = "files",
         ReadOnly = false,
         SummaryArg = "path",
-        Description =
-            "Edit a text file by exact text replacement. Each edit replaces oldText with newText; oldText must match exactly one location " +
-            "unless replaceAll is true. Several edits are applied in order and atomically: if any edit fails, nothing is written. " +
-            "Line endings (CRLF/LF) do not matter: matching ignores them and the file keeps its original style and BOM.",
+        Description = "Edit a file by exact text replacement: each oldText must match exactly one place (or use replaceAll).",
+        Help =
+            "Several edits are applied in order and atomically: if any edit fails, nothing is written. Include enough surrounding " +
+            "lines in oldText to be unique; an empty newText deletes. oldText/newText/replaceAll at the top level are a shorthand " +
+            "for one edit. Line endings (CRLF/LF) do not matter: matching ignores them and the file keeps its original style and BOM.",
         Parameters = Schema.Object(
-            ("path", Schema.Str("File path, absolute or relative to the working directory."), true),
-            ("edits", Schema.Array("Replacements applied in order.", Schema.Object(
-                ("oldText", Schema.Str("Exact text to find (include enough surrounding lines to be unique)."), true),
-                ("newText", Schema.Str("Replacement text (empty string deletes)."), true),
-                ("replaceAll", Schema.Bool("Replace every occurrence instead of requiring a unique match."), false))), false),
-            ("oldText", Schema.Str("Shorthand for a single edit: text to find."), false),
-            ("newText", Schema.Str("Shorthand for a single edit: replacement text."), false),
-            ("replaceAll", Schema.Bool("Shorthand for a single edit: replace every occurrence."), false)),
+            ("path", Schema.Str(""), true),
+            ("edits", Schema.Array("Applied in order", Schema.Object(
+                ("oldText", Schema.Str(""), true),
+                ("newText", Schema.Str(""), true),
+                ("replaceAll", Schema.Bool(""), false))), false),
+            ("oldText", Schema.Str("One edit"), false),
+            ("newText", Schema.Str(""), false),
+            ("replaceAll", Schema.Bool(""), false)),
         PromptGuidelines = [UseFileTools, ChangeFiles],
     };
 

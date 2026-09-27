@@ -104,6 +104,8 @@ internal sealed class ToolsSection(ISettings settings) : IPromptSection
                 sb.Append("- ").Append(t.Name).Append(": ").Append(SectionUtil.Summary(t.Description)).Append('\n');
         foreach (var g in Guidelines(tools))
             sb.Append("- ").Append(g).Append('\n');
+        // tool descriptions are short; the details come on request (the runtime answers {"help": true} for every tool)
+        if (tools.Count > 0) sb.Append("- Any tool called with {\"help\": true} returns its full manual instead of running.\n");
         return ValueTask.FromResult<string?>(sb.Length == 0 ? null : "# Tools\n" + sb.ToString().TrimEnd());
     }
 

@@ -98,18 +98,19 @@ internal sealed class GoalUpdateTool(Goals goals) : IAgentTool
         Label = "Goal",
         Category = "goal",
         SummaryArg = "status",
-        Description =
-            "Report on the session's goal (the user set it; you are started again after every answer until you call this). " +
-            "status \"complete\": everything the goal asks for is done and checked; the summary says what was done and how it " +
-            "was verified. status \"blocked\": you cannot go on without the user (access, a decision that is theirs); the " +
-            "summary says what you need. status \"paused\": only when the user asks you to pause the goal.",
+        Description = "Report on the session's goal: complete (done and checked), blocked (you need the user) or paused (only when the user asks).",
+        Help =
+            "The user set the goal; you are started again after every answer until you call this. complete: everything the goal " +
+            "asks for is done and checked; the summary says what was done and how it was verified. blocked: you cannot go on " +
+            "without the user (access, a decision that is theirs); the summary says what you need. paused: only when the user " +
+            "asks you to pause the goal.",
         Parameters = new JsonObject
         {
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
                 ["status"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("complete", "blocked", "paused") },
-                ["summary"] = new JsonObject { ["type"] = "string", ["description"] = "What was done and how it was checked, or what you need." },
+                ["summary"] = new JsonObject { ["type"] = "string" },
             },
             ["required"] = new JsonArray("status", "summary"),
         },
@@ -159,16 +160,17 @@ internal sealed class GoalSetTool(Goals goals) : IAgentTool
         Label = "Set goal",
         Category = "goal",
         SummaryArg = "objective",
-        Description =
-            "Set a goal for this session, only when the user explicitly asks for one (\"make this your goal\", \"keep going " +
-            "until …\"). You are then started again after every answer until you call goal_update with status complete. Not " +
-            "for ordinary requests. Fails while another goal is open.",
+        Description = "Set a goal for this session, only when the user explicitly asks for one (\"keep going until …\"); not for ordinary requests.",
+        Help =
+            "For example \"make this your goal\", \"keep going until …\". You are then started again after every answer until " +
+            "you call goal_update with status complete. Fails while another goal is open. objective: what must be true when the " +
+            "goal is done, as the user put it.",
         Parameters = new JsonObject
         {
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
-                ["objective"] = new JsonObject { ["type"] = "string", ["description"] = "What must be true when the goal is done, as the user put it." },
+                ["objective"] = new JsonObject { ["type"] = "string" },
             },
             ["required"] = new JsonArray("objective"),
         },

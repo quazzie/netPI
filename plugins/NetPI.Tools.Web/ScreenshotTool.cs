@@ -20,21 +20,22 @@ internal sealed class ScreenshotTool(IPluginContext ctx) : IAgentTool
         Category = "web",
         ReadOnly = true,
         SummaryArg = "url",
-        Description =
-            "Take a screenshot to see a web page or UI: pass a url (e.g. a local dev server) to render it in a headless " +
-            "browser, or no url to capture the NetPI window as the user sees it. Returns the image plus the page title and " +
-            "any console errors. wait_for waits for a CSS selector; full_page captures the whole scroll height.",
+        Description = "Screenshot a web page (a url, rendered headless) or, without a url, the NetPI window as the user sees it.",
+        Help =
+            "Returns the image plus the page title and any console errors. width/height: the viewport (default 1280×800). " +
+            "wait_for: a CSS selector to wait for (up to 10 s); delay_ms: an extra wait after loading (default 500); full_page " +
+            "captures the whole scroll height.",
         Parameters = new JsonObject
         {
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
-                ["url"] = new JsonObject { ["type"] = "string", ["description"] = "Page to render; omit for the NetPI window" },
-                ["width"] = new JsonObject { ["type"] = "integer", ["description"] = "Viewport width (default 1280)" },
-                ["height"] = new JsonObject { ["type"] = "integer", ["description"] = "Viewport height (default 800)" },
+                ["url"] = new JsonObject { ["type"] = "string" },
+                ["width"] = new JsonObject { ["type"] = "integer" },
+                ["height"] = new JsonObject { ["type"] = "integer" },
                 ["full_page"] = new JsonObject { ["type"] = "boolean" },
-                ["wait_for"] = new JsonObject { ["type"] = "string", ["description"] = "CSS selector to wait for (up to 10 s)" },
-                ["delay_ms"] = new JsonObject { ["type"] = "integer", ["description"] = "Extra wait after loading (default 500)" },
+                ["wait_for"] = new JsonObject { ["type"] = "string" },
+                ["delay_ms"] = new JsonObject { ["type"] = "integer" },
             },
         },
         PromptGuidelines = ["Use screenshot to check UI work visually."],

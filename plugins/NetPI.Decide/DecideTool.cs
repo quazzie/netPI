@@ -15,12 +15,16 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         Category = "decide",
         ReadOnly = true,
         SummaryArg = "file",
-        Description =
-            "Ask a fast local decision model typed questions about text: yes/no, pick one option, or a score on levels. " +
-            "It never writes text; each answer comes with a probability. Give one `text`, a list of `items`, or a `file` " +
-            "(every non-empty line is an item, e.g. a log). Every item gets every question; items the model is unsure " +
-            "about are listed so you can check them yourself. Good for sorting logs, triaging issues, labelling many " +
-            "lines or files, and quick checks. Weak at counting, dates, maths and multi-step reasoning.",
+        Description = "Ask a fast local decision model yes/no, choice or score questions about a text, many items or every line of a file; each answer has a probability.",
+        Help =
+            "It never writes text. Give one `text`, a list of `items`, or a `file` (every non-empty line is an item, e.g. a " +
+            "log). Every item gets every question; items the model is unsure about (below min_confidence, 0–1, default 0.5) " +
+            "are listed so you can check them yourself. Good for sorting logs, triaging issues, labelling many lines or files, " +
+            "and quick checks. Weak at counting, dates, maths and multi-step reasoning.\n" +
+            "questions: id → { \"type\": \"yes_no\", \"question\": \"…\" } | { \"type\": \"choice\", \"question\": \"…\", " +
+            "\"options\": { \"label\": \"what it means\", … } } | { \"type\": \"score\", \"question\": \"…\", \"levels\": " +
+            "[\"lowest\", …, \"highest\"] }. Ask one narrow thing per question; phrase yes/no as a real question (\"Does a " +
+            "human need to act?\"): a statement is answered less reliably. model: a decision model id (default: setting decide.model).",
         Parameters = new JsonObject
         {
             ["type"] = "object",
@@ -29,17 +33,13 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
                 ["questions"] = new JsonObject
                 {
                     ["type"] = "object",
-                    ["description"] =
-                        "id → question. { \"type\": \"yes_no\", \"question\": \"…\" } | { \"type\": \"choice\", \"question\": \"…\", " +
-                        "\"options\": { \"label\": \"what it means\", … } } | { \"type\": \"score\", \"question\": \"…\", \"levels\": " +
-                        "[\"lowest\", …, \"highest\"] }. Ask one narrow thing per question; phrase yes/no as a real question " +
-                        "(\"Does a human need to act?\"), a statement is answered less reliably.",
+                    ["description"] = "id → { type: yes_no|choice|score, question, options {label: meaning} (choice), levels [low…high] (score) }",
                 },
-                ["text"] = new JsonObject { ["type"] = "string", ["description"] = "One text to decide about" },
-                ["items"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" }, ["description"] = "Several texts; each is decided on its own" },
-                ["file"] = new JsonObject { ["type"] = "string", ["description"] = "A text file; every non-empty line is an item" },
-                ["min_confidence"] = new JsonObject { ["type"] = "number", ["description"] = "Answers below this (0–1, default 0.5) are listed as unsure" },
-                ["model"] = new JsonObject { ["type"] = "string", ["description"] = "Decision model id (default: setting decide.model)" },
+                ["text"] = new JsonObject { ["type"] = "string" },
+                ["items"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" } },
+                ["file"] = new JsonObject { ["type"] = "string" },
+                ["min_confidence"] = new JsonObject { ["type"] = "number" },
+                ["model"] = new JsonObject { ["type"] = "string" },
             },
             ["required"] = new JsonArray("questions"),
         },

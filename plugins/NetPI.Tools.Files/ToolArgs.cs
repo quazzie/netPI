@@ -150,14 +150,22 @@ public static class Schema
 
     public static JsonObject Str(string description, params string[] enumValues)
     {
-        var o = new JsonObject { ["type"] = "string", ["description"] = description };
+        var o = Typed("string", description);
         if (enumValues.Length > 0) o["enum"] = new JsonArray(enumValues.Select(e => (JsonNode)e).ToArray());
         return o;
     }
 
-    public static JsonObject Int(string description) => new() { ["type"] = "integer", ["description"] = description };
-    public static JsonObject Bool(string description) => new() { ["type"] = "boolean", ["description"] = description };
-    public static JsonObject Array(string description, JsonObject items) => new() { ["type"] = "array", ["description"] = description, ["items"] = items };
+    public static JsonObject Int(string description) => Typed("integer", description);
+    public static JsonObject Bool(string description) => Typed("boolean", description);
+    public static JsonObject Array(string description, JsonObject items) { var o = Typed("array", description); o["items"] = items; return o; }
+
+    /// <summary>A typed property; an empty description is left out (every request carries the schema).</summary>
+    private static JsonObject Typed(string type, string description)
+    {
+        var o = new JsonObject { ["type"] = type };
+        if (!string.IsNullOrEmpty(description)) o["description"] = description;
+        return o;
+    }
 }
 
 internal static class SettingsExtensions

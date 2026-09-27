@@ -441,7 +441,7 @@ public static class ContextTests
             new FakeTool("zz_run", Ok, category: "shell", guidelines: ["Shared shell line.", "Only zz_run."]).Definition,
         };
         var prompt = await h.Services.Get<ISystemPromptBuilder>()!.BuildAsync(Ctx(h, h.NewSession(), tools), CancellationToken.None);
-        Check.Contains(prompt, "# Tools\n- Files line.\n- Shared shell line.\n- Only zz_run.\n\n");
+        Check.Contains(prompt, "# Tools\n- Files line.\n- Shared shell line.\n- Only zz_run.\n- Any tool called with {\"help\": true} returns its full manual instead of running.\n\n");
         Check.Equal(1, prompt.Split("Shared shell line.").Length - 1, "a shared line once");
     }
 

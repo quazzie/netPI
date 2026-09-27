@@ -36,17 +36,17 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
         Category = "web",
         ReadOnly = true,
         SummaryArg = "url",
-        Description =
-            "Fetch a web page and return its main content as Markdown (links absolute, navigation and scripts removed). JSON " +
-            "and plain text come back as-is, images as images when the model can see them. Long pages come in parts: call " +
-            "again with the offset it gives you. format: markdown (default), text or html (the raw source).",
+        Description = "Fetch a web page as Markdown (main content only); long pages come in parts: call again with the offset it gives.",
+        Help =
+            "Links are absolute; navigation and scripts are removed. JSON and plain text come back as-is, images as images when " +
+            "the model can see them. format: markdown (default), text or html (the raw source).",
         Parameters = new JsonObject
         {
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
-                ["url"] = new JsonObject { ["type"] = "string", ["description"] = "http(s) URL" },
-                ["offset"] = new JsonObject { ["type"] = "integer", ["description"] = "Character offset to continue a long page (default 0)" },
+                ["url"] = new JsonObject { ["type"] = "string" },
+                ["offset"] = new JsonObject { ["type"] = "integer" },
                 ["format"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("markdown", "text", "html") },
             },
             ["required"] = new JsonArray("url"),

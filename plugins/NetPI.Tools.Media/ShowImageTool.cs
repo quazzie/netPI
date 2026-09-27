@@ -50,17 +50,15 @@ internal sealed class ShowImageTool(IPluginContext ctx, HttpClient http) : IAgen
         Category = "media",
         ReadOnly = true,
         SummaryArg = "source",
-        Description =
-            "Show the user an image in the chat: a file (png, jpg, gif, webp, bmp, svg, ico, avif), an http(s) URL or a data: " +
-            "URL, with an optional caption. The image is shown to the user only; to look at an image yourself, use read " +
-            "(files) or screenshot.",
+        Description = "Show the user an image in the chat (a file, an http(s) URL or a data: URL); you don't see it yourself.",
+        Help = "Formats: png, jpg, gif, webp, bmp, svg, ico, avif. caption: a short line under the image. To look at an image yourself, use read (files) or screenshot.",
         Parameters = new JsonObject
         {
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
-                ["source"] = new JsonObject { ["type"] = "string", ["description"] = "File path, http(s) URL or data: URL" },
-                ["caption"] = new JsonObject { ["type"] = "string", ["description"] = "A short caption shown under the image" },
+                ["source"] = new JsonObject { ["type"] = "string" },
+                ["caption"] = new JsonObject { ["type"] = "string" },
             },
             ["required"] = new JsonArray("source"),
         },

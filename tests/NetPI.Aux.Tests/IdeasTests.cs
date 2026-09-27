@@ -63,7 +63,7 @@ public static class IdeasTests
             await env.StartAsync();
             Check.Equal("ideas", string.Join(",", env.Ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
             Check.Equal("ideas", env.Tool("ideas").Definition.Category);
-            Check.Contains(env.Tool("ideas").Definition.Description, "single global file");
+            Check.Contains(env.Tool("ideas").Definition.Help!, "single global file");
             var guideline = string.Join(" ", env.Tool("ideas").Definition.PromptGuidelines!);
             Check.Contains(guideline, "(ideas, action add)");
             Check.Contains(guideline, "When you finish the work an idea describes, set it to done");

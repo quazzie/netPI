@@ -44,6 +44,12 @@ A tool that appears or disappears during a session (a plugin loaded, reloaded or
 
 ## Conventions
 
+- **Short definitions, a manual on request.** Every request carries every active tool's description and parameter
+  schema, so both stay short: a description of a sentence or two, parameters with types and at most a few words. The
+  details go in `ToolDefinition.Help`. Any tool called with `{"help": true}` (and no `help` argument of its own) is
+  answered by the runtime with its description, its `Help` and its schema, without running it; the Tools section of the
+  system prompt says so in one line. The tool list never changes for it, so the cache stays. `context.preview` shows
+  what each tool costs (`chars`, `schemaChars`).
 - **Long results go to a file.** A result longer than `agent.maxToolResultChars` (20000 characters) is saved to
   `<temp>/netpi/tool-results/<session>/<tool>-<call>.txt`; the model gets its start and end and the path, and reads the
   rest with `read` (offset/limit) or searches it with `grep` instead of running the call again. Tools that page or tail

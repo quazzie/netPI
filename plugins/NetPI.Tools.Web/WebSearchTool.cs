@@ -23,16 +23,15 @@ internal sealed partial class WebSearchTool(IPluginContext ctx, HttpClient http)
         Category = "web",
         ReadOnly = true,
         SummaryArg = "query",
-        Description =
-            "Search the web. Returns titles, URLs and snippets; read the promising results with web_fetch. Search operators " +
-            "such as site:example.com or \"exact phrase\" work. recency limits results to the last day, week, month or year.",
+        Description = "Search the web: titles, URLs and snippets (read the promising ones with web_fetch).",
+        Help = "Search operators such as site:example.com or \"exact phrase\" work. count: default 8, max 20. recency limits results to the last day, week, month or year.",
         Parameters = new JsonObject
         {
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
                 ["query"] = new JsonObject { ["type"] = "string" },
-                ["count"] = new JsonObject { ["type"] = "integer", ["description"] = "Number of results (default 8, max 20)" },
+                ["count"] = new JsonObject { ["type"] = "integer" },
                 ["recency"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("day", "week", "month", "year") },
             },
             ["required"] = new JsonArray("query"),

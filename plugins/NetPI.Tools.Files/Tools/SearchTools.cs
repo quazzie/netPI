@@ -12,20 +12,24 @@ public sealed class GrepTool(ISettings? settings = null) : FileToolBase(settings
         Category = "files",
         ReadOnly = true,
         SummaryArg = "pattern",
-        Description =
-            "Search file contents with a regular expression (.NET syntax). Respects .gitignore and skips binary files and " +
-            "node_modules/bin/obj/.git/dist/build. Output: `path:line: text` (context lines use `path-line- text`). " +
+        Description = "Search file contents with a regular expression (.NET syntax); respects .gitignore.",
+        Help =
+            "Skips binary files and node_modules/bin/obj/.git/dist/build. Escape ( ) [ ] . * + ? to match them, or pass " +
+            "literal=true for plain text. glob filters files (\"*.cs\", \"**/*.{ts,tsx}\", \"!**/*.test.ts\"; several separated by " +
+            "spaces). outputMode: content (default: matching lines, with context lines around each), files (only paths), count " +
+            "(matches per file); maxResults caps lines or files (default 200). multiline lets the pattern span lines (\\n in the " +
+            "pattern; (?s) makes . match newlines). Output: `path:line: text` (context lines use `path-line- text`). " +
             "Line endings never matter: `$` matches at the end of each line in CRLF and LF files.",
         Parameters = Schema.Object(
-            ("pattern", Schema.Str("Regular expression: escape ( ) [ ] . * + ? to match them, or pass literal=true for plain text."), true),
-            ("path", Schema.Str("File or directory to search (default: working directory)."), false),
-            ("glob", Schema.Str("Filter files by glob, e.g. \"*.cs\", \"**/*.{ts,tsx}\", \"!**/*.test.ts\". Several globs may be separated by spaces."), false),
-            ("ignoreCase", Schema.Bool("Case-insensitive search."), false),
-            ("literal", Schema.Bool("Treat pattern as literal text instead of a regex."), false),
-            ("context", Schema.Int("Lines of context before and after each match (content mode)."), false),
-            ("maxResults", Schema.Int("Maximum matching lines (content) or files (files/count). Default 200."), false),
-            ("outputMode", Schema.Str("content (default): matching lines; files: only file paths; count: matches per file.", "content", "files", "count"), false),
-            ("multiline", Schema.Bool("Let the pattern span lines (use \\n in the pattern; (?s) makes . match newlines)."), false)),
+            ("pattern", Schema.Str("Regex (or text with literal=true)"), true),
+            ("path", Schema.Str("Default: working directory"), false),
+            ("glob", Schema.Str("e.g. \"*.cs\", \"!**/*.test.ts\""), false),
+            ("ignoreCase", Schema.Bool(""), false),
+            ("literal", Schema.Bool(""), false),
+            ("context", Schema.Int("Lines around each match"), false),
+            ("maxResults", Schema.Int("Default 200"), false),
+            ("outputMode", Schema.Str("", "content", "files", "count"), false),
+            ("multiline", Schema.Bool(""), false)),
         PromptGuidelines = [UseFileTools],
     };
 
@@ -120,13 +124,14 @@ public sealed class FindTool(ISettings? settings = null) : FileToolBase(settings
         Category = "files",
         ReadOnly = true,
         SummaryArg = "pattern",
-        Description =
-            "Find files and directories by glob pattern (`*`, `**`, `?`, `{a,b}`, `[abc]`), e.g. \"**/*.cs\", \"src/**/test_*.py\", \"*.{json,yaml}\". " +
-            "A pattern without '/' matches file names at any depth. Respects .gitignore; directories are shown with a trailing '/'.",
+        Description = "Find files and directories by glob pattern, e.g. \"**/*.cs\"; respects .gitignore.",
+        Help =
+            "Globs: `*`, `**`, `?`, `{a,b}`, `[abc]`, e.g. \"src/**/test_*.py\", \"*.{json,yaml}\". A pattern without '/' matches " +
+            "file names at any depth; the pattern is relative to path. Directories are shown with a trailing '/'.",
         Parameters = Schema.Object(
-            ("pattern", Schema.Str("Glob pattern, relative to path."), true),
-            ("path", Schema.Str("Directory to search in (default: working directory)."), false),
-            ("maxResults", Schema.Int($"Maximum results (default {DefaultMax})."), false)),
+            ("pattern", Schema.Str(""), true),
+            ("path", Schema.Str("Default: working directory"), false),
+            ("maxResults", Schema.Int($"Default {DefaultMax}"), false)),
         PromptGuidelines = [UseFileTools],
     };
 
@@ -192,12 +197,11 @@ public sealed class LsTool(ISettings? settings = null) : FileToolBase(settings)
         Category = "files",
         ReadOnly = true,
         SummaryArg = "path",
-        Description =
-            "List a directory: subdirectories first (with a trailing '/'), then files with their sizes. " +
-            "Entries ignored by .gitignore and build/dependency folders are hidden unless all=true.",
+        Description = "List a directory: subdirectories, then files with sizes.",
+        Help = "Subdirectories first (with a trailing '/'), then files with their sizes. Entries ignored by .gitignore and build/dependency folders (.git, node_modules, bin…) are hidden unless all=true.",
         Parameters = Schema.Object(
-            ("path", Schema.Str("Directory to list (default: working directory)."), false),
-            ("all", Schema.Bool("Also show ignored entries (.git, node_modules, bin, gitignored files…)."), false)),
+            ("path", Schema.Str("Default: working directory"), false),
+            ("all", Schema.Bool("Also ignored entries"), false)),
         PromptGuidelines = [UseFileTools],
     };
 

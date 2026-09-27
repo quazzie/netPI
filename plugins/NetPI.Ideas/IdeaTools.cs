@@ -97,11 +97,21 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
         Label = "Ideas",
         Category = "ideas",
         SummaryArg = "action",
-        Description =
-            "The ideas backlog (a single global file, ~/.netpi/ideas.json; ideas carry a project; the user sees it in the Ideas tab). " +
-            "Actions: list (the open ideas of the session's project, plus the unbound \"global\" ones: id, status, priority, title, " +
-            "summary, tags), get (one in full, with its section ids), add (title, summary, priority, tags, sections), update (the id " +
-            "and what changes: status, fields, addSections, updateSections, removeSectionIds). Deleting is up to the user.",
+        Description = "The ideas backlog (the user sees it in the Ideas tab): list, get, add or update ideas.",
+        Help =
+            "A single global file, ~/.netpi/ideas.json; ideas carry a project. Deleting is up to the user.\n" +
+            "- list: the open ideas of the session's project plus the unbound \"global\" ones (id, status, priority, title, summary, " +
+            "tags). Filters: status (open, parked, planned, in-progress, done, rejected; also active = not done or rejected, the " +
+            "default, or all), tag, query (words that must all appear in the title, summary, tags or sections), project.\n" +
+            "- get {id}: one idea in full, with its section ids (sec-…).\n" +
+            "- add {title (short, specific), summary (one or two sentences: what and why), priority (default medium), tags, sections}: " +
+            "sections are the details, each {kind, title, content (Markdown)}; kinds: research, plan, requirements, design, decision, " +
+            "blocker, links, todo, note.\n" +
+            "- update {id, and what changes}: status, title, summary, priority, tags, project, addSections, updateSections " +
+            "({id, title?, content? (replaces), kind?}), removeSectionIds.\n" +
+            "project: list: the session's project by default, \"all\" for every project, \"global\" for the unbound ones, or a " +
+            "project id/name. add: the session's project by default, \"global\" (or empty) for unbound. update: reassigns the " +
+            "idea; \"global\"/null unbinds it.",
         PromptGuidelines =
         [
             "Record research and plans that are deferred, out of scope or not feasible now in the ideas backlog (ideas, action add), " +
@@ -112,34 +122,20 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
-                ["action"] = Enum(["list", "get", "add", "update"], "list: the open ideas; get: one in full; add: a new one; update: change one"),
-                ["id"] = new JsonObject { ["type"] = "string", ["description"] = "The idea (idea-…), for get and update" },
-                ["project"] = new JsonObject
-                {
-                    ["type"] = "string",
-                    ["description"] = "Which project the ideas belong to. list: the session's project by default; \"all\" for every " +
-                        "project, \"global\" for the unbound ones, or a project id/name. add: the session's project by default; " +
-                        "\"global\" (or empty) for unbound. update: reassign the idea's project; \"global\"/null unbinds it.",
-                },
-                ["title"] = new JsonObject { ["type"] = "string", ["description"] = "Short, specific title" },
-                ["summary"] = new JsonObject { ["type"] = "string", ["description"] = "One or two sentences: what and why" },
-                ["status"] = new JsonObject
-                {
-                    ["type"] = "string",
-                    ["description"] = "update: open, parked, planned, in-progress, done or rejected. list: a filter, also active (the default: not done or rejected) or all",
-                },
-                ["priority"] = Enum(IdeaOps.Priorities, "Default medium"),
-                ["tags"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" } },
-                ["tag"] = new JsonObject { ["type"] = "string", ["description"] = "list: only ideas with this tag" },
-                ["query"] = new JsonObject { ["type"] = "string", ["description"] = "list: words that must all appear in the title, summary, tags or sections" },
-                ["sections"] = new JsonObject
-                {
-                    ["type"] = "array", ["items"] = SectionSchema(withId: false),
-                    ["description"] = "add: the details (research, plan, requirements, design, decision, blocker, links, todo or note)",
-                },
-                ["addSections"] = new JsonObject { ["type"] = "array", ["items"] = SectionSchema(withId: false) },
-                ["updateSections"] = new JsonObject { ["type"] = "array", ["items"] = SectionSchema(withId: true) },
-                ["removeSectionIds"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" } },
+                ["action"] = Enum(["list", "get", "add", "update"]),
+                ["id"] = Str(),
+                ["project"] = Str(),
+                ["title"] = Str(),
+                ["summary"] = Str(),
+                ["status"] = Str(),
+                ["priority"] = Enum(IdeaOps.Priorities),
+                ["tags"] = Strings(),
+                ["tag"] = Str(),
+                ["query"] = Str(),
+                ["sections"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "object" } },
+                ["addSections"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "object" } },
+                ["updateSections"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "object" } },
+                ["removeSectionIds"] = Strings(),
             },
             ["required"] = new JsonArray("action"),
         },
@@ -321,34 +317,12 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
 
     private static IdeaInputException NotFound(string id) => new($"No idea with id '{id}'. The list action shows the ids.");
 
-    private static JsonObject SectionSchema(bool withId) => new()
+    private static JsonObject Enum(string[] values) => new()
     {
-        ["type"] = "object",
-        ["properties"] = withId
-            ? new JsonObject
-            {
-                ["id"] = new JsonObject { ["type"] = "string", ["description"] = "Section id (sec-…) from the get action" },
-                ["title"] = new JsonObject { ["type"] = "string" },
-                ["content"] = new JsonObject { ["type"] = "string", ["description"] = "Markdown; replaces the old content" },
-                ["kind"] = KindSchema(),
-            }
-            : new JsonObject
-            {
-                ["kind"] = KindSchema(),
-                ["title"] = new JsonObject { ["type"] = "string" },
-                ["content"] = new JsonObject { ["type"] = "string", ["description"] = "Markdown" },
-            },
-        ["required"] = withId ? new JsonArray("id") : new JsonArray("content"),
+        ["type"] = "string", ["enum"] = new JsonArray(values.Select(v => (JsonNode?)v).ToArray()),
     };
 
-    private static JsonObject KindSchema() => new()
-    {
-        ["type"] = "string",
-        ["enum"] = new JsonArray(IdeaOps.Kinds.Select(k => (JsonNode?)k).ToArray()),
-    };
+    private static JsonObject Str() => new() { ["type"] = "string" };
 
-    private static JsonObject Enum(string[] values, string description) => new()
-    {
-        ["type"] = "string", ["enum"] = new JsonArray(values.Select(v => (JsonNode?)v).ToArray()), ["description"] = description,
-    };
+    private static JsonObject Strings() => new() { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" } };
 }

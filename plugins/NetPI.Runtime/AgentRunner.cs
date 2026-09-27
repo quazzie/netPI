@@ -775,6 +775,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         {
             using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(call.Arguments) ? "{}" : call.Arguments);
             prepared.Args = doc.RootElement.Clone();
+            if (ToolHelp.Asked(tool.Definition, prepared.Args)) prepared.Early = new ToolResult { Content = ToolHelp.Text(tool.Definition) };
         }
         catch (JsonException ex)
         {

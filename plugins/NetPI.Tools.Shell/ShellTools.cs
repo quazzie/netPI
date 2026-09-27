@@ -76,9 +76,15 @@ public sealed class ShellTool : ShellToolBase
 
     private static System.Text.Json.Nodes.JsonObject Parameters(string commandHelp) => Schema.Object(
         ("command", Schema.Str(commandHelp), true),
-        ("timeout", Schema.Int($"Timeout in seconds (default {ShellService.DefaultTimeoutSeconds}, max {ShellService.MaxTimeoutSeconds}). The whole process tree is killed on timeout."), false),
-        ("background", Schema.Bool("Start the command in the background and return immediately with a process id (for servers, watchers, long builds)."), false),
-        ("cwd", Schema.Str("Working directory (default: the session working directory)."), false));
+        ("timeout", Schema.Int($"Seconds (default {ShellService.DefaultTimeoutSeconds}, max {ShellService.MaxTimeoutSeconds})"), false),
+        ("background", Schema.Bool("Returns a process id at once"), false),
+        ("cwd", Schema.Str(""), false));
+
+    private static readonly string ShellHelp =
+        $"stdout and stderr are merged; the output's tail is returned, with a note of the exit code when it is not 0. timeout: " +
+        $"default {ShellService.DefaultTimeoutSeconds} s, max {ShellService.MaxTimeoutSeconds}; the whole process tree is killed " +
+        "on timeout. background: starts the command and returns a process id at once (servers, watchers, long builds); see " +
+        "process_list, process_output and process_kill. cwd: default the session working directory.";
 
     private static ToolDefinition BashDefinition()
     {
@@ -93,10 +99,9 @@ public sealed class ShellTool : ShellToolBase
             Category = "shell",
             ReadOnly = false,
             SummaryArg = "command",
-            Description = (win ? "Run a command in Git Bash (bash -c)." : "Run a bash command (bash -c).") +
-                " stdout and stderr are merged. Returns the output (tail) and a note with the exit code when it is not 0. " +
-                "Use background=true for long-running processes.",
-            Parameters = Parameters("The bash command/script to run."),
+            Description = (win ? "Run a command in Git Bash (bash -c)." : "Run a bash command (bash -c).") + " Use background=true for long-running processes.",
+            Help = ShellHelp,
+            Parameters = Parameters(""),
             PromptGuidelines = guidelines,
         };
     }
@@ -108,10 +113,9 @@ public sealed class ShellTool : ShellToolBase
         Category = "shell",
         ReadOnly = false,
         SummaryArg = "command",
-        Description =
-            "Run a PowerShell 7 (pwsh) script, non-interactive, without profile. Output streams are merged; " +
-            "the exit code is reported when it is not 0. Use background=true for long-running processes.",
-        Parameters = Parameters("The PowerShell script to run."),
+        Description = "Run a PowerShell 7 (pwsh) script, non-interactive, without profile. Use background=true for long-running processes.",
+        Help = ShellHelp,
+        Parameters = Parameters(""),
         PromptGuidelines =
         [
             "Use pwsh for Windows-specific work (registry, services, cmdlets, .NET APIs); prefer bash otherwise.",

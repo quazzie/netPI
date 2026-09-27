@@ -82,10 +82,10 @@ internal sealed class TodoWriteTool(IPluginContext ctx) : IAgentTool
         Name = "todo_write",
         Label = "Todo",
         Category = "todo",
-        Description =
-            "Keep a checklist for the current task. Send the whole list every time: it replaces the previous one. " +
-            "Status is pending, in_progress or done. Keep one item in_progress while you work on it and mark it done as soon " +
-            "as it is finished; add, drop or reword items when the plan changes. The user sees the list. An empty list clears it.",
+        Description = "Keep a checklist for the current task, shown to the user; send the whole list every time (it replaces the last).",
+        Help =
+            "Keep one item in_progress while you work on it and mark it done as soon as it is finished; add, drop or reword " +
+            "items when the plan changes. Each item's text is a short imperative. An empty list clears it.",
         Parameters = new JsonObject
         {
             ["type"] = "object",
@@ -94,13 +94,12 @@ internal sealed class TodoWriteTool(IPluginContext ctx) : IAgentTool
                 ["items"] = new JsonObject
                 {
                     ["type"] = "array",
-                    ["description"] = "The complete checklist, in order.",
                     ["items"] = new JsonObject
                     {
                         ["type"] = "object",
                         ["properties"] = new JsonObject
                         {
-                            ["text"] = new JsonObject { ["type"] = "string", ["description"] = "What to do, as a short imperative." },
+                            ["text"] = new JsonObject { ["type"] = "string" },
                             ["status"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("pending", "in_progress", "done") },
                         },
                         ["required"] = new JsonArray("text", "status"),
