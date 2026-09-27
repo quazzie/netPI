@@ -28,7 +28,7 @@ log file) belongs on the nuc models. Kev-9B is no longer recommended for any tas
 | task | recommended | score | speed / where | runner-up | test set |
 |---|---|---|---|---|---|
 | **Log lines**: subsystem, severity, needs a human, routine | **Laya-logs-qwen** (421M, fine-tuned on Qwen3.8-27B's labels), served as `laya-logs` by `laya-tasks` (nuc :8010, `/v1/systemone`; through AiGateway once D73 is deployed) | **0.78 / 0.93 / 0.93 / 0.97** | 37 ms/line on the 4070 (all 4 questions, p50 over the LAN; 0.42 s iGPU) | Qwen3.8-27B itself 0.79 / 0.92 / 0.95 / 0.93 (0.7 s/line); Laya-logs on Kev-9B's labels 0.53 / 0.89 / 0.84 / 0.91 | 120 real lines, hand-labelled |
-| **Browser**: which element next | **MiniLM ranker (fine-tuned) → top-20 → qwen3.8-27b** `/v1/decision` (20 lettered options) | top-1 **0.461** (target in top-20: 0.846); × the Qwen-taught Laya picker 0.478 | ranker 65 ms (nuc) + 124 ms per step on the 5090 | Laya picker taught by Qwen 0.320 (nuc); the old Laya picker × Kev-9B 0.392 | Mind2Web, 475 steps on 14 websites never trained on |
+| **Browser**: which element next | **MiniLM ranker (fine-tuned) → top-20 → qwen3.8-27b** `/v1/decision` (20 lettered options); live in Chrome: the page's UIA controls → qwen3.8-27b chat, reasoning low | top-1 **0.461** (target in top-20: 0.846); × the Qwen-taught Laya picker 0.478; live, whole tasks: **16/16** ("Browser use" below) | ranker 65 ms (nuc) + 124 ms per step on the 5090 | Laya picker taught by Qwen 0.320 (nuc); the old Laya picker × Kev-9B 0.392 | Mind2Web, 475 steps on 14 websites never trained on |
 | **Computer use (Windows)**: which control next | **qwen3.8-27b**, zero-shot, over the whole UI Automation list (writes the control's number, thinking off) | top-1 **0.98** (43/44); live, whole tasks: **18/19** at reasoning low with a plan line, 15/19 thinking off ("Live computer use" below) | 139 ms per step on the 5090 (p50; 189 controls at most); live 0.2–0.4 s per step through AiGateway | Kev-9B 0.89, top-3 0.98 (~1 s, 4070); small rankers 0.55 | 44 hand-made tasks in 5 Windows apps; 19 live multi-step tasks in 4 apps |
 | **Dangerous command** (guardrail second opinion) | **qwen3.8-27b** `/v1/decision` | agrees with Qwen's generative labels 0.998 / 0.993 / 0.988 / 0.912; at p(yes) < 0.2 on the three risk questions it calls 696 of 852 harmless, none of them risky | 0.31 s per command (4 questions), 5090 | Kev-9B (remote_change unusable: 327 false yes); on the 12 hand-made: Kev-9B 12/12 | 852 real commands, reference = Qwen generative (not human yet; see "NInfer baselines", 0.4) |
 | **Agent stuck / looping** | **Kev-9B** or **laya:typed-decisions** | 6/6 | 0.1 s / 9 ms | Kev-4B 6/6 | 6 hand-made traces — **too small** |
@@ -295,7 +295,42 @@ batch" in the UI; the radio's code calls it `bufferSize`, so the model chose the
 the snapshot (`--offscreen`) it took 4 steps: Settings, More (3 → 4), Save, done ("Buffer size set to 4."), ~1 s of
 model time per step at reasoning low. Long web pages need the off-screen controls (or scrolling).
 
-**Verdict:** viable for built-in and standard Windows apps with a good UIA tree, and for web pages in Chrome. 16–18 of 19 multi-step tasks
+**Browser use (2026-09-27).** 16 tasks in a separate Chrome with its own fresh profile (decisions-lab `cu_web.mjs`;
+never the user's windows; each task limited to its hosts). Nine run on a local test site with checked state: a
+sign-up form with a native select, a shop with ambiguous "Add to cart" buttons and a cart, a long settings page, a
+paginated employee table (two questions), a custom ARIA combobox with a stepper, action menus with a rename dialog,
+collapsed help sections, and a wizard made of clickable divs without roles. Seven are questions on Wikipedia, GitHub
+and docs.python.org, three of them checked against live data that no model can know (today's featured article, the
+latest microsoft/terminal release, the docs' exact version). The loop (`runLoop` in `cu_lib.mjs`) adds an `answer`
+action, and the page's controls include those scrolled out of view: up to 500, the nearest to the visible area
+first.
+
+| round | reasoning low, plan line | thinking off, plan line |
+|---|---|---|
+| 2 | 14/16 | 14/16 |
+| **3** (the fixes below) | **16/16**, 63 steps, model p50 492 ms (p90 1.3 s) | 15/16, 72 steps, 309 ms (1.1 s) |
+
+(Round 2 re-scored with the final answer check.) A snapshot takes ~57 ms for ~70 controls. Prompts are ~1.4k tokens,
+up to 15k on real sites. Chrome exposes all of it through UI Automation (`--force-renderer-accessibility`): inputs
+(Value), native selects (expand, then the option), radios and check boxes, ARIA combobox and listbox, menus,
+`<dialog>`, `<details>`. Of 321 actions, 26 were real mouse clicks, for the role-less divs (the wizard still passes).
+What the rounds taught:
+- **Carry findings, not only steps.** Each step is a new request, so data from an earlier page is gone. With
+  "plan: the steps still to do, and what you have found so far", the model noted "page 1: Gustav 8,900", "page 2:
+  Ingrid 9,150", checked page 3 and answered right. Without it, it "remembered" page 1 wrongly.
+- **A plan lasts one turn.** Repeating an old plan every turn made it add the same cable to the cart again and again.
+  Even so, with thinking off it cannot count (14 cables, the one miss in round 3); reasoning low gets it right.
+- **Long pages.** The first 500 controls in page order never reached `print()` in Python's built-in functions page;
+  keeping the controls nearest the scroll position fixed it (an anchor click now shows the target).
+- **Answers come from the pages.** "Answer only from what the pages show" is in the prompt. The checks accept an
+  answer when its text was on some screen during the task: the model read the author from Wikipedia's search
+  suggestions ("Novel by Mikhail Bulgakov") and the table maximum from its own note. Two earlier, stricter checks
+  (the answer page only, then the final screen only) wrongly failed correct answers. The live-data questions were
+  all answered correctly.
+- The guards (other hosts, sign-in, cookie "accept all", delete, closing) never had to refuse anything.
+
+**Verdict:** viable for built-in and standard Windows apps with a good UIA tree, and for web pages in Chrome
+(reasoning low with the plan line: 18/19 Windows tasks, 16/16 browser tasks). 16–18 of 19 multi-step tasks
 succeed, at 0.2–0.4 s of model time per step, locally and mostly without touching the user's focus. Apps that draw
 their own controls need a vision or keyboard fallback. Next: a NetPI plugin (`windows.snapshot` / `windows.act`, the
 loop as a tool, confirmation for destructive controls); a done-check through `/v1/decision` (every variant had one
