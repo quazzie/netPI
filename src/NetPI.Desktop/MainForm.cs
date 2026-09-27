@@ -236,8 +236,26 @@ internal sealed class MainForm : Form
             var t = core.DocumentTitle;
             Text = string.IsNullOrWhiteSpace(t) || t.StartsWith("127.0.0.1", StringComparison.Ordinal) ? "netPI" : t;
         };
-        core.NavigationCompleted += (_, _) =>
+        // Zoom: remembered in window.json, whether it changes through Ctrl + wheel / Ctrl + ± or desktop.zoom.
+        // The first navigation resets the WebView to 100%, so the saved factor is applied once the page has
+        // loaded, and zoom changes before that (the reset itself) are not persisted.
+        var zoomRestored = false;
+        _web.ZoomFactorChanged += (_, _) =>
         {
+            if (!zoomRestored) return;
+            _zoom = _web.ZoomFactor;
+            SavePlacement();
+        };
+        _zoomRpc ??= server.Rpc.Register("desktop.zoom",
+            (req, _) => ZoomAsync(req.Prop("factor") is { ValueKind: System.Text.Json.JsonValueKind.Number } f ? f.GetDouble() : null),
+            "The desktop window's zoom (desktop app only): { factor? (0.5–3) } → { factor }");
+        core.NavigationCompleted += (_, e) =>
+        {
+            if (!zoomRestored && e.IsSuccess)
+            {
+                zoomRestored = true;
+                _web.ZoomFactor = _zoom;
+            }
             if (_web.Visible) return;
             _web.Visible = true;
             _status.Visible = false;
@@ -251,17 +269,6 @@ internal sealed class MainForm : Form
         core.WebMessageReceived += OnWebMessage;
         _captureRpc ??= server.Rpc.Register("desktop.capture", (req, ct) => CaptureAsync(req.Int("maxWidth") ?? 1600, ct),
             "Screenshot of the NetPI window as the user sees it (desktop app only): { maxWidth? } → { mediaType, data, width, height }");
-
-        // zoom: remembered in window.json, whether it changes through Ctrl + wheel / Ctrl + ± or desktop.zoom
-        if (Math.Abs(_zoom - 1) > 0.001) _web.ZoomFactor = _zoom;
-        _web.ZoomFactorChanged += (_, _) =>
-        {
-            _zoom = _web.ZoomFactor;
-            SavePlacement();
-        };
-        _zoomRpc ??= server.Rpc.Register("desktop.zoom",
-            (req, _) => ZoomAsync(req.Prop("factor") is { ValueKind: System.Text.Json.JsonValueKind.Number } f ? f.GetDouble() : null),
-            "The desktop window's zoom (desktop app only): { factor? (0.5–3) } → { factor }");
 
         core.Navigate(server.LaunchUrl);
     }
@@ -278,7 +285,12 @@ internal sealed class MainForm : Form
             {
                 try
                 {
-                    if (factor is { } f && double.IsFinite(f)) _web.ZoomFactor = Math.Clamp(f, 0.5, 3);
+                    if (factor is { } f && double.IsFinite(f))
+                    {
+                        _web.ZoomFactor = Math.Clamp(f, 0.5, 3);
+                        _zoom = _web.ZoomFactor;   // a programmatic set does not raise ZoomFactorChanged; persist it here
+                        SavePlacement();
+                    }
                     tcs.TrySetResult(new { factor = Math.Round(_web.ZoomFactor, 2) });
                 }
                 catch (Exception ex) { tcs.TrySetException(ex); }
