@@ -4,6 +4,7 @@
   import AgentPicker from './AgentPicker.svelte';
   import EffortPicker from './EffortPicker.svelte';
   import ProfilePicker from './ProfilePicker.svelte';
+  import ProjectPicker from './ProjectPicker.svelte';
   import ToolsPicker from './ToolsPicker.svelte';
   import ChatCost from './ChatCost.svelte';
   import ContextRing from './ContextRing.svelte';
@@ -449,6 +450,7 @@
         <button class="tb" title="Mention a file (@)" onclick={() => triggerPopup('@')}><Icon name="at" size={15} /></button>
         <span class="sep"></span>
         <ProfilePicker {session} />
+        <ProjectPicker {session} />
         <AgentPicker {session} bind:open={agentOpen} />
         <EffortPicker {session} {model} bind:open={effortOpen} />
         <ToolsPicker {session} />

@@ -75,8 +75,8 @@ web/
       chat/    ChatView, ChatHeader, MessageList, UserMessage, AssistantText, StepsGroup, ThinkingRow,
                ToolRow, NoticeRow, PromptRow, SentBlock, StatusRow, TodoList, ShownImage,
                tools/{Shell,Diff,Read,Search,Agent,Web,Todo,Generic}View
-      composer/ Composer, ProfilePicker, AgentPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing, QueueChips, GoalStrip,
-               TodoStrip, RunStatus
+      composer/ Composer, ProfilePicker, ProjectPicker, AgentPicker, EffortPicker, ToolsPicker, ChatCost, ContextRing,
+                QueueChips, GoalStrip, TodoStrip, RunStatus
       modals/  Modals, Modal, Settings, FolderPicker, Confirm, Prompt, Help, CommandPalette, ProjectPicker,
                Projects (the projects dialog), Lightbox; the settings pages: SettingField (one control per
                SettingInfo), SettingsRow, AgentsEditor + AgentDialog, BudgetView, ProfilesEditor + ProfileDialog,
@@ -155,9 +155,9 @@ project). Without one, it uses the active session's project; with no session ope
 worked in (`app.lastProjectId`: the last active session's project, or the one last chosen in a picker). The start
 screen shows that project as "New session in [project ▾]" with its folder underneath; its chip opens `ProjectPicker`
 in select mode (`{ select: true }`), which only changes `lastProjectId` and creates nothing, so the button, Ctrl+T and
-the + tab all start in the project shown. The top-bar chip, the chat-header chip and `/project` open `ProjectPicker`
-for a session, which calls `sessions.setProject`; the context plugin then appends a `project` notice, and the
-AGENTS.md plugin an `instructions` notice if other instruction files apply.
+the + tab all start in the project shown. The project button in the composer bar (after the profile picker) and
+`/project` open `ProjectPicker` for a session, which calls `sessions.setProject`; the context plugin then appends
+a `project` notice, and the AGENTS.md plugin an `instructions` notice if other instruction files apply.
 
 **Projects dialog** (`ProjectsModal`, opened with `openProjects({ view, id?, sessionId?, select? })`). One dialog with
 three views: `list` (filter, new session, edit, remove), `new` (folder with Browse…, name, create-folder) and `edit`
@@ -303,6 +303,10 @@ Timings from `npm run e2e` against the mock (headless Chromium):
   `model.reasoning.efforts` and calls `sessions.update { reasoning }`; `''` means the model default.
 - The profile picker (shown once there are profiles) sets the chat's profile (`profiles.apply`): free before the first
   message; in a started chat it says the system prompt and tools change and the chat is read again (with its size).
+- The project button (folder icon + name, dimmed “No project” while none is attached) sets the session's project
+  (`sessions.setProject`); a toast confirms the change. Its picker popover opens above the button (anchors inside
+  the composer place `top-start`), with the search box and the Edit / New project / Manage footer. The chat header
+  shows only the title (and a crumb) and how a run ended badly.
 - The tools button (a wrench; "N off" when tools are switched off) lists the chat's tools by category with a switch each
   (`agent.tools`, `agent.setTools`): free before the first message; in a started chat it says that the next model call
   re-reads the chat (with its size). **All on** undoes every switch.
@@ -405,7 +409,7 @@ tab (Sessions, Projects, Files, Work, Ideas, Diagnostics) is designed for 220px 
   mono time next to a 12px name sits about 1px high. Texts share a baseline (`.np-baseline` on the `.np-line` or
   `.np-fit`); in a row with a dot, icon or button, only the texts go into a baseline group
   (`<span class="np-line np-baseline np-grow">`), and the row centers the rest. Examples: the Work tab's agent,
-  instance and process rows, the folded steps line in the chat, the chat header's model.
+  instance and process rows, the folded steps line in the chat.
 - **Row actions** are icon buttons in `.np-hover-actions`. They appear on hover or keyboard focus, sit over the
   right end of the first line with a fade (`--row-bg`), and stay visible on the selected or failed row.
 - **Stats lines** use `.np-fit`, which drops whole items that do not fit (least important last) instead of

@@ -1,17 +1,12 @@
 <script>
   import Icon from '../../lib/kit/Icon.svelte';
-  import { app, updateSession, projectOf, modelFor, sessionModelRef, openSession } from '../../lib/state/app.svelte.js';
-  import { modals } from '../../lib/state/ui.svelte.js';
+  import { app, updateSession, openSession } from '../../lib/state/app.svelte.js';
 
   let { session } = $props();
 
   let editing = $state(false);
   let value = $state('');
-  let chipEl = $state();
 
-  const project = $derived(projectOf(session));
-  const model = $derived(modelFor(session));
-  const modelRef = $derived(sessionModelRef(session));
   const agent = $derived(app.agents.get(session.id));
   const parent = $derived(session.parentSessionId ? app.sessionsById.get(session.parentSessionId) : null);
   // a fork (sessions.fork): the chat it came from, while it exists
@@ -63,24 +58,6 @@
       <button class="title" title="Rename" onclick={start}>{session.title || 'New session'}</button>
     {/if}
 
-    <button
-      class="chip"
-      bind:this={chipEl}
-      title={project?.path ?? 'Attach a project'}
-      onclick={() => (modals.projectPicker = modals.projectPicker ? null : { sessionId: session.id, anchor: chipEl })}
-    >
-      <Icon name="folder" size={12} />
-      <span class="np-ellipsis">{project?.name ?? 'no project'}</span>
-    </button>
-
-    {#if modelRef}
-      <span class="model np-mono" title={modelRef}>
-        <Icon name="cpu" size={12} />
-        {model?.displayName || modelRef.split('/').pop()}
-        {#if session.reasoning}<span class="effort">· {session.reasoning}</span>{/if}
-      </span>
-    {/if}
-
     <span class="spacer"></span>
 
     <!-- while the agent works, the status line above the composer says so (RunStatus); here only how a run ended badly -->
@@ -103,8 +80,8 @@
     justify-content: center;
     padding: 0 16px;
   }
-  /* as tall as its content, centered by the header: the title and the model's smaller mono text share a baseline
-     (centered, the model sat ~2px high); the boxes (breadcrumb, project chip, status) center */
+  /* as tall as its content, centered by the header: the title sits on the baseline, the boxes (breadcrumb,
+     status) center */
   .inner {
     width: 100%;
     max-width: calc(var(--chat-max) + 32px);
@@ -114,7 +91,6 @@
     min-width: 0;
   }
   .crumb,
-  .chip,
   .status {
     align-self: center;
   }
@@ -167,41 +143,6 @@
     font-size: 13.5px;
     font-weight: 600;
     outline: none;
-  }
-  .chip {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    max-width: 180px;
-    height: 22px;
-    padding: 0 8px;
-    border: 1px solid var(--border);
-    border-radius: 11px;
-    background: transparent;
-    color: var(--fg-muted);
-    font-size: var(--fs-xs);
-  }
-  .chip:hover {
-    color: var(--fg);
-    border-color: var(--border-strong);
-  }
-  /* its text, not the icon, gives it the baseline it shares with the title */
-  .model {
-    display: flex;
-    align-items: baseline;
-    gap: 5px;
-    color: var(--fg-dim);
-    font-size: 11.5px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
-  }
-  .model > :global(.np-icon) {
-    align-self: center;
-  }
-  .effort {
-    color: var(--fg-dim);
   }
   .spacer {
     flex: 1;

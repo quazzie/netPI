@@ -87,6 +87,22 @@ try {
   await page.waitForTimeout(300);
   await shot(page, 'ui-01-session');
 
+  // the project picker lives in the composer bar (after the profile button)
+  const projBtn = page.locator('.composer .bar button', { hasText: 'ui-demo' });
+  check('composer shows the session project', (await projBtn.count()) > 0);
+  if (await projBtn.count()) {
+    await projBtn.first().click();
+    const pop = page.locator('.popover', { has: page.locator('input[placeholder="Attach project…"]') });
+    const popOk = await pop.first().waitFor({ timeout: 5_000 }).then(() => true).catch(() => false);
+    check('project picker opens above the composer', popOk);
+    if (popOk) {
+      check('picker lists the current project', (await pop.first().innerText()).includes('ui-demo'));
+    }
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    check('project picker closed (Esc)', (await page.locator('.popover').count()) === 0);
+  }
+
   await ta.fill(TEXT);
   await ta.press('Enter');
   // the streamed answer is drawn as the chat's own rows while it streams (web/src/lib/chatItems.js withStream)

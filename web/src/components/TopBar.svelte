@@ -11,8 +11,6 @@
   let dragId = $state(null);
   let retryIn = $state(0);
 
-  const project = $derived(projectOf(app.activeSession));
-
   // keep the active tab visible
   $effect(() => {
     const id = app.activeId;
@@ -72,11 +70,6 @@
       .join('\n');
   }
 
-  let chipEl = $state();
-  function openProjectPicker() {
-    if (!app.activeId) return;
-    modals.projectPicker = modals.projectPicker ? null : { sessionId: app.activeId, anchor: chipEl };
-  }
 </script>
 
 <header class="topbar">
@@ -128,13 +121,6 @@
   </div>
 
   <div class="right">
-    {#if app.activeSession}
-      <button class="chip" bind:this={chipEl} onclick={openProjectPicker} title={project?.path ?? 'No project attached'}>
-        <Icon name="folder" size={13} />
-        <span class="np-ellipsis">{project?.name ?? 'No project'}</span>
-        <Icon name="chevron-down" size={12} />
-      </button>
-    {/if}
     <BudgetPill />
     <button
       class="conn"
@@ -279,23 +265,6 @@
     align-items: center;
     gap: 4px;
     flex: none;
-  }
-  .chip {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    height: 26px;
-    max-width: 220px;
-    padding: 0 8px;
-    border: 1px solid var(--border);
-    border-radius: 13px;
-    background: var(--bg-2);
-    color: var(--fg-muted);
-    font-size: var(--fs-sm);
-  }
-  .chip:hover {
-    color: var(--fg);
-    border-color: var(--border-strong);
   }
   .conn {
     display: flex;
