@@ -30,7 +30,9 @@ public sealed class DiagnosticsPlugin : INetPiPlugin
         context.Rpc.Register("diag.call", (req, _) => Task.FromResult<object?>(inspect.Call(req)),
             "One model call in detail: { id } → the diag.calls fields plus the request's size, the response, retries, notices and the error's type/status");
         context.Rpc.Register("diag.tools", (req, _) => Task.FromResult<object?>(inspect.Tools(req)),
-            "Tool calls, newest first: { limit? (50), sessionId?, name?, errors?, running? } → { callId, name, sessionId, runId, startedAt, state, durationMs, arguments }[]");
+            "Tool calls, newest first: { limit? (50), sessionId?, name?, errors?, running? } → { callId, name, sessionId, runId, startedAt, state, durationMs, arguments, result (preview) }[]");
+        context.Rpc.Register("diag.tool", (req, _) => Task.FromResult<object?>(inspect.Tool(req)),
+            "One tool call in full: { callId, sessionId? } → { callId, name, sessionId, state, durationMs, arguments (parsed), isError, result (the text the model got), images, details }");
         context.Rpc.Register("diag.journal", (req, _) => Task.FromResult<object?>(inspect.Journal(req)),
             "The events that matter as a timeline, oldest first (no per-token events): { limit? (100), type? (prefix), sessionId?, sinceSeq? } → { seq, time, type, sessionId, source, data }[]");
         context.Rpc.Register("diag.run", async (req, rpcCt) => await inspect.RunAsync(req, rpcCt).ConfigureAwait(false),

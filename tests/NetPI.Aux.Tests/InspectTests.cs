@@ -144,6 +144,21 @@ public static class InspectTests
         Check.Equal(12L, (long)tools[1]!["durationMs"]!);
         Check.Contains(tools[1]!["arguments"].Str(), "ls -la");
         Check.Equal(1, ((JsonArray)(await ctx.RpcFake.Call("diag.tools", new JsonObject { ["errors"] = true }))!).Count);
+
+        // the results as the model got them: a preview in diag.tools, everything in diag.tool
+        var failure = "browser open failed: Index was outside the bounds of the array. " + new string('y', 500);
+        ctx.SessionsFake.AppendMessage("ses_1", new ChatMessage { Role = MessageRole.Assistant, Parts = [new ToolCallPart { Id = "c1", Name = "bash", Arguments = "{\"command\":\"ls -la\"}" }] });
+        ctx.SessionsFake.AppendMessage("ses_1", new ChatMessage { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "c1", Name = "bash", Content = failure, IsError = true, Details = new JsonObject { ["exitCode"] = 2 } }] });
+        tools = (JsonArray)(await ctx.RpcFake.Call("diag.tools"))!;
+        Check.True(tools[1]!["result"].Str()!.StartsWith("browser open failed: Index was outside"), "a result preview");
+        Check.True(tools[1]!["result"].Str()!.Length < failure.Length, "cut short");
+        Check.True(tools[0]!["result"] is null, "no result yet for the running call");
+        var one = (JsonObject)(await ctx.RpcFake.Call("diag.tool", new JsonObject { ["callId"] = "c1" }))!;
+        Check.Equal(failure, one["result"].Str());
+        Check.Equal(true, (bool)one["isError"]!);
+        Check.Equal("ls -la", one["arguments"]!["command"].Str());
+        Check.Equal(2, (int)one["details"]!["exitCode"]!);
+        await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("diag.tool", new JsonObject { ["callId"] = "nope" }));
     }
 
     private sealed class FakeScheduler(List<AgentSlots> slots) : IAgentScheduler

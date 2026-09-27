@@ -310,11 +310,63 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder)
         var name = r.Str("name");
         var errors = r.Bool("errors") == true;
         var running = r.Bool("running") == true;
-        return new JsonArray([.. recorder.Tools()
+        var rows = recorder.Tools()
             .Where(t => (sid is null || t.SessionId == sid) && (name is null || string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase))
                         && (!errors || (t.EndedAt is not null && t.IsError)) && (!running || t.EndedAt is null))
-            .Take(limit)
-            .Select(t => (JsonNode?)t.ToJson())]);
+            .Take(limit).ToList();
+        var results = ToolParts(rows.Select(t => t.SessionId));
+        return new JsonArray([.. rows.Select(t =>
+        {
+            var j = t.ToJson();
+            if (results.TryGetValue(t.CallId, out var found) && found.Result is { } res) j["result"] = Recorder.Preview(res.Content, 300);
+            return (JsonNode?)j;
+        })]);
+    }
+
+    /// <summary>
+    /// One tool call in full: its arguments and its result as the model got it (text, error flag, images, details), from
+    /// the chat's messages. <c>{ callId, sessionId? }</c>: the session is found in the tool log, or must be given.
+    /// </summary>
+    public JsonObject Tool(RpcRequest r)
+    {
+        var callId = r.Required("callId");
+        var record = recorder.Tools().FirstOrDefault(t => t.CallId == callId);
+        var sessionId = r.Str("sessionId") ?? record?.SessionId
+                        ?? throw new RpcException("not_found", $"Tool call {callId} is no longer in the tool log (it keeps the last {Recorder.ToolCapacity}): pass its sessionId.");
+        var parts = ToolParts([sessionId], 2000);
+        if (!parts.TryGetValue(callId, out var found) && record is null)
+            throw new RpcException("not_found", $"No tool call {callId} in the last 2000 messages of {sessionId}.");
+        var o = record?.ToJson() ?? new JsonObject { ["callId"] = callId, ["sessionId"] = sessionId };
+        if (found.Call is { } call)
+        {
+            o["name"] = call.Name;
+            try { o["arguments"] = JsonNode.Parse(call.Arguments); } catch (JsonException) { o["arguments"] = call.Arguments; }
+        }
+        if (found.Result is { } res)
+        {
+            o["isError"] = res.IsError;
+            o["result"] = res.Content.Length > 50_000 ? res.Content[..50_000] + $"\n… ({res.Content.Length} characters)" : res.Content;
+            o["images"] = res.Images?.Count ?? 0;
+            o["details"] = res.Details?.DeepClone();
+            o["resultDurationMs"] = res.DurationMs;
+        }
+        else o["result"] = null;
+        return o;
+    }
+
+    /// <summary>The tool calls and results in the recent messages of these sessions, by call id.</summary>
+    private Dictionary<string, (ToolCallPart? Call, ToolResultPart? Result)> ToolParts(IEnumerable<string?> sessionIds, int messages = 300)
+    {
+        var map = new Dictionary<string, (ToolCallPart? Call, ToolResultPart? Result)>();
+        foreach (var sid in sessionIds.Where(x => x is not null).Distinct())
+        {
+            foreach (var m in ctx.Sessions.GetMessages(sid!, null, messages))
+            {
+                foreach (var c in m.ToolCalls) map[c.Id] = (c, map.GetValueOrDefault(c.Id).Result);
+                foreach (var t in m.ToolResults) map[t.CallId] = (map.GetValueOrDefault(t.CallId).Call, t);
+            }
+        }
+        return map;
     }
 
     public JsonArray Journal(RpcRequest r)
@@ -368,8 +420,8 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder)
                 ["seq"] = m.Seq, ["time"] = m.CreatedAt.ToString("O"), ["role"] = JsonNamingPolicy.CamelCase.ConvertName(m.Role.ToString()),
                 ["kind"] = (string?)m.Meta?["kind"], ["stopReason"] = m.StopReason, ["compacted"] = m.Compacted,
                 ["text"] = Recorder.Preview(string.Join(" ", m.Parts.OfType<TextPart>().Select(p => p.Text)), 200),
-                ["toolCalls"] = m.ToolCalls.Any() ? string.Join(", ", m.ToolCalls.Select(c => c.Name)) : null,
-                ["toolResults"] = m.ToolResults.Any() ? string.Join(", ", m.ToolResults.Select(x => x.Name + (x.IsError ? " (error)" : ""))) : null,
+                ["toolCalls"] = m.ToolCalls.Any() ? string.Join("; ", m.ToolCalls.Select(c => $"{c.Name} {Recorder.Preview(c.Arguments, 150)} ({c.Id})")) : null,
+                ["toolResults"] = m.ToolResults.Any() ? string.Join("; ", m.ToolResults.Select(x => $"{x.Name}{(x.IsError ? " (error)" : "")}: {Recorder.Preview(x.Content, 300)}")) : null,
             })]),
         };
         return await Task.FromResult(o).ConfigureAwait(false);
