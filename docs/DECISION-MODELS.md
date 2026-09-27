@@ -398,8 +398,11 @@ rejections).
 
 **Verdict:** viable for built-in and standard Windows apps with a good UIA tree, and for web pages in Chrome
 (reasoning low with the plan line: 18/19 Windows tasks, 16/16 browser tasks). 16–18 of 19 multi-step tasks
-succeed, at 0.2–0.4 s of model time per step, locally and mostly without touching the user's focus. Apps that draw
-their own controls need a vision or keyboard fallback. Next: a NetPI plugin (`windows.snapshot` / `windows.act`, the
+succeed, at 0.2–0.4 s of model time per step, locally. Apps that draw their own controls need a vision or keyboard
+fallback. **Not in the background for Chrome:** our pattern actions need no focus, but Chrome brings its window to the
+front when an accessibility action focuses a page element (42 of 52 steps with Chrome kept behind; decisions-lab
+`cu_web.mjs --background`). So a browser in the harness goes through the DevTools protocol instead
+(`docs/plans/2026-09-27-browser.md`), and UIA stays for native apps. Next: a NetPI plugin (`windows.snapshot` / `windows.act`, the
 loop as a tool, confirmation for destructive controls); a done-check through `/v1/decision` (every variant had one
 false "done"); harder apps (Office, Electron, Settings read-only); record real steps for training (the traces here
 already hold the control list, reply, action and effect per step). Scripts: decisions-lab `uia-agent/`,
