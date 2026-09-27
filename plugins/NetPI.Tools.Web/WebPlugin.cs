@@ -33,6 +33,8 @@ public sealed class WebPlugin : INetPiPlugin
                 SettingInfo.FilePath("web.browserPath", "Browser for screenshots", "Empty: the Edge or Chrome found.", HeadlessBrowser.Find(null) ?? "none found (install Edge or Chrome)"),
                 SettingInfo.Str("web.userAgent", "User agent", null, null, WebHttp.UserAgent),
                 SettingInfo.Str("web.search.braveUrl", "Brave API URL", "https://api.search.brave.com/res/v1/web/search"),
+                SettingInfo.Choice("browser.target", "Browser tabs open in", "chrome", ["chrome", "own"], "chrome: the user's running Chrome (allow remote debugging at chrome://inspect/#remote-debugging). own: the agents' hidden browser. A call can ask for the other."),
+                SettingInfo.Str("browser.chromeUserData", "Chrome user data folder", null, "Where the user's Chrome keeps DevToolsActivePort. Empty: Chrome's default folder.", "default"),
                 SettingInfo.Bool("browser.headless", "Browser without a window", true, "Off: the agents' browser opens a window (to log in to a site by hand, or to watch). Applies when the browser next starts."),
                 SettingInfo.Str("browser.profile", "Browser profile", "default", "A name: logins and cookies are kept in <home>/browser/<name>. temp: a fresh profile each time the browser starts.", "default"),
                 SettingInfo.Int("browser.idleMinutes", "Close the browser after", 10, "Minutes without a browser call.", 1, 1440, "min"),
@@ -86,7 +88,7 @@ internal static class WebHttp
 internal sealed record WebOptions(
     int FetchMaxChars, int FetchTimeoutSeconds, long FetchMaxBytes, string? UserAgent,
     string Provider, string? SearxngUrl, string? BraveApiKey, string BraveUrl, int SearchCount, string? BrowserPath,
-    bool BrowserHeadless, string BrowserProfile, int BrowserIdleMinutes, int BrowserMaxControls)
+    bool BrowserHeadless, string BrowserProfile, int BrowserIdleMinutes, int BrowserMaxControls, string BrowserTarget, string? BrowserChromeUserData)
 {
     public static WebOptions Read(ISettings s)
     {
@@ -106,7 +108,9 @@ internal sealed record WebOptions(
             BrowserHeadless: s.Get("browser.headless", true),
             BrowserProfile: ProfileName(s.Get<string>("browser.profile")),
             BrowserIdleMinutes: Math.Clamp(s.Get("browser.idleMinutes", 10), 1, 1440),
-            BrowserMaxControls: Math.Clamp(s.Get("browser.maxControls", 200), 50, 1000));
+            BrowserMaxControls: Math.Clamp(s.Get("browser.maxControls", 200), 50, 1000),
+            BrowserTarget: Blank(s.Get<string>("browser.target"))?.ToLowerInvariant() == "own" ? "own" : "chrome",
+            BrowserChromeUserData: Blank(s.Get<string>("browser.chromeUserData")));
     }
 
     private static string? Blank(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();

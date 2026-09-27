@@ -360,6 +360,7 @@ public static class WebTests
             var env = new Env();
             await env.StartAsync();
             env.Set("browser.profile", JsonValue.Create("temp"));
+            env.Set("browser.target", JsonValue.Create("own"));
             var none = await env.Run("browser", new { action = "snapshot" });
             Check.True(none.IsError);
             Check.Contains(none.Content, "use action open");
@@ -481,6 +482,83 @@ public static class WebTests
             Check.True((await env.Run("browser", new { action = "fly" })).IsError);
             }
             finally { env.Ctx.Unload(); }  // closes the browser, also after a failed check
+        });
+        r.Add("browser: the user's Chrome over its DevTools port: own background tabs, checkout refused, leave hands the tab back, never closed", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var userData = T.TempDir("user-chrome");
+            env.Set("browser.chromeUserData", JsonValue.Create(userData));
+            var off = await env.Run("browser", new { action = "open", url = "http://127.0.0.1:1/" });
+            Check.True(off.IsError);
+            Check.Contains(off.Content, "chrome://inspect/#remote-debugging");
+            var exe = HeadlessBrowser.Find(null);
+            if (exe is null)
+            {
+                Console.WriteLine("    (no Edge/Chrome/Chromium: attach skipped)");
+                env.Ctx.Unload();
+                return;
+            }
+            await using var web = await LocalWeb.StartAsync(app =>
+            {
+                app.MapGet("/shop", () => Results.Content("""
+                    <!doctype html><html><head><title>Flights</title></head><body>
+                    <h1>Cheapest flight</h1><p>SAS 07:05, 1 190 SEK</p>
+                    <button onclick="document.title = 'bought'">Buy now</button>
+                    <button onclick="document.title = 'details'">Show details</button>
+                    </body></html>
+                    """, "text/html"));
+            });
+            // a browser standing in for the user's Chrome: its DevTools port in the user data folder
+            var psi = new System.Diagnostics.ProcessStartInfo(exe) { UseShellExecute = false, CreateNoWindow = true };
+            foreach (var a in new[] { "--headless=new", "--no-first-run", "--remote-debugging-port=0", $"--user-data-dir={userData}", "about:blank" }) psi.ArgumentList.Add(a);
+            using var user = System.Diagnostics.Process.Start(psi)!;
+            try
+            {
+                for (var k = 0; k < 100 && !File.Exists(Path.Combine(userData, "DevToolsActivePort")); k++) await Task.Delay(100);
+                static int N(ToolResult r, string pattern)
+                {
+                    foreach (var line in r.Content.Split('\n'))
+                        if (System.Text.RegularExpressions.Regex.Match(line, @"^\[(\d+)\] (.*)$") is { Success: true } m && System.Text.RegularExpressions.Regex.IsMatch(m.Groups[2].Value, pattern))
+                            return int.Parse(m.Groups[1].Value);
+                    throw new InvalidOperationException($"no control matching {pattern} in:\n{r.Content}");
+                }
+                var page = await env.Run("browser", new { action = "open", url = web.Url + "/shop" });
+                Check.False(page.IsError, page.Content);
+                Check.Contains(page.Content, "Page: Flights");
+                var buy = await env.Run("browser", new { action = "click", n = N(page, @"^\[button\] Buy now") });
+                Check.True(buy.IsError, buy.Content);
+                Check.Contains(buy.Content, "Refused in the user's Chrome");
+                var details = await env.Run("browser", new { action = "click", n = N(page, @"^\[button\] Show details") });
+                Check.False(details.IsError, details.Content);
+                Check.Contains(details.Content, "Page: details");
+
+                // the hidden browser has no such stop, and a chat can ask for it
+                var own = await env.Run("browser", new { action = "open", url = web.Url + "/shop", browser = "own" }, null, "ses_own");
+                env.Set("browser.profile", JsonValue.Create("temp"));
+                Check.False(own.IsError, own.Content);
+                var ownBuy = await env.Run("browser", new { action = "click", n = N(own, @"^\[button\] Buy now") }, null, "ses_own");
+                Check.False(ownBuy.IsError, ownBuy.Content);
+                var ownLeave = await env.Run("browser", new { action = "leave" }, null, "ses_own");
+                Check.Contains(ownLeave.Content, "hidden browser");
+
+                var left = await env.Run("browser", new { action = "leave" });
+                Check.Contains(left.Content, "Left the tab open for the user in their Chrome: details — " + web.Url + "/shop");
+                Check.True((await env.Run("browser", new { action = "snapshot" })).IsError);
+                env.Ctx.Unload();
+                // the user's browser still runs, with the tab left for the user
+                await Task.Delay(500);
+                Check.False(user.HasExited, "the user's browser was closed");
+                var port = File.ReadAllLines(Path.Combine(userData, "DevToolsActivePort"))[0];
+                using var http = new HttpClient();
+                var list = await http.GetStringAsync($"http://127.0.0.1:{port}/json/list");
+                Check.Contains(list, web.Url + "/shop");
+            }
+            finally
+            {
+                env.Ctx.Unload();
+                try { user.Kill(entireProcessTree: true); } catch (Exception) { }
+            }
         });
     }
 }

@@ -350,12 +350,31 @@ details: { source: 'browser', url, title, width, height, fullPage, consoleErrors
 
 ### `browser` (summary arg `action`)
 
-`{ action: open|snapshot|click|type|key|scroll|find|back|screenshot|close, url?, n?, text?, keys?, direction? }`. The
-agents' own browser: one Edge/Chrome process (`web.browserPath`), headless unless `browser.headless` is off, with a kept
-profile (`browser.profile`), started on first use and closed after `browser.idleMinutes` without a call or when the
-plugin unloads. **Each chat has its own tab**, closed with `close`, when the chat is deleted, or with the browser.
-Everything goes through the DevTools protocol (a WebSocket to the browser, flattened sessions per tab), so the user's
-mouse, keyboard and focus are never used; the tab emulates focus, so a page behaves as if it were in front.
+`{ action: open|snapshot|click|type|key|scroll|find|back|screenshot|leave|close, url?, n?, text?, keys?, direction?,
+browser?: 'chrome'|'own' }`. **Each chat has its own tab**, in one of two browsers (`browser.target`, or `browser` on
+`open`):
+
+- **`chrome` (default): the user's running Chrome.** The user allows remote debugging once at
+  `chrome://inspect/#remote-debugging`; Chrome then writes its port to `DevToolsActivePort` in its user data folder
+  (`browser.chromeUserData`). NetPI keeps one connection (Chrome asks the user to allow each connection and shows its
+  automation banner while connected; the first call waits up to 120 s for that answer) and drops it after
+  `browser.idleMinutes`. The chat's tab is a new **background tab** in the user's window: it shows in the tab strip
+  without taking the user's tab or the focus. NetPI only touches the tabs it opened: it never lists the user's other
+  tabs, never closes the browser, and a link that opens a new tab is followed only from its own tab. **Stop before
+  buying:** a click on a button, link or menu item named like buy, book, pay, purchase, check out, place or confirm an
+  order, subscribe or donate, or "accept all"/"allow all", is refused with a pointer to `leave`. **`leave`** hands the tab
+  back: it is brought forward in its window, detached and left as it is (the chat's next `open` starts a new tab). If the
+  user closes the tab, the chat's next call says there is no page. Unreachable Chrome (not running, not allowed, no port
+  file) is an error that says how to allow it, or to use `browser: "own"`.
+- **`own`: the agents' hidden browser**, for work the user needn't see (testing a local web app, pages web_fetch can't
+  read): one Edge/Chrome process (`web.browserPath`), headless unless `browser.headless` is off, with a kept profile
+  (`browser.profile`), started on first use and closed after `browser.idleMinutes` without a call or when the plugin
+  unloads. No checkout stop (nobody's accounts are in it); `leave` says the user can't see it.
+
+`close` closes the chat's tab (a tab it opened); a chat's tab also closes when the chat is deleted, or with the hidden
+browser. Everything goes through the DevTools protocol (a WebSocket to the browser, flattened sessions per tab), so the
+user's mouse, keyboard and focus are never used; the tab emulates focus, so a page in a background tab behaves as if it
+were in front (clicks there take up to a second: the tab isn't drawn).
 
 - **The page as controls.** Every result after an action is the page: `Page: <title> — <url>`, then one numbered line per
   control (`[4] [textbox] Full name id="name" value="Ada"`), from the accessibility tree in page order joined with a
@@ -382,6 +401,8 @@ mouse, keyboard and focus are never used; the tab emulates focus, so a page beha
 
 ```ts
 details: { action, url, title, controls, shown, result }          // after an action or snapshot
+       | { action, refused }                                       // a checkout control in the user's Chrome
+       | { action: 'leave' | 'close' }
        | { action: 'find', url, text, hits }
        | { action: 'screenshot', url, title }                      // plus the PNG in images
 ```

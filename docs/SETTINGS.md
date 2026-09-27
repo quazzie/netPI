@@ -294,6 +294,8 @@ The default commands: `rm -r` of `/`, `/*`, `~` or `$HOME`; deleting a drive roo
 | `decide.maxItems` | `500` | most items per `decide` call (1–5000) |
 | `decide.parallel` | `4` | `decide` requests at once (1–16) |
 | `web.browserPath` | auto | Edge, Chrome or Chromium for `screenshot` and `browser` (found in the usual install folders or on PATH) |
+| `browser.target` | `chrome` | Where a chat's `browser` tab opens: `chrome`, the user's running Chrome (remote debugging allowed at `chrome://inspect/#remote-debugging`), or `own`, the agents' hidden browser. A call can ask for the other with `browser` |
+| `browser.chromeUserData` | Chrome's default | The folder holding the user's Chrome `DevToolsActivePort` (`%LOCALAPPDATA%\Google\Chrome\User Data`, `~/Library/Application Support/Google/Chrome`, `~/.config/google-chrome`) |
 | `browser.headless` | `true` | `false`: the agents' browser opens a window (to log in to a site by hand, or to watch). Applies when the browser next starts |
 | `browser.profile` | `default` | A name: logins and cookies are kept in `<home>/browser/<name>`. `temp`: a fresh profile each time the browser starts, deleted when it closes |
 | `browser.idleMinutes` | `10` | The browser closes after this many minutes without a `browser` call (1–1440); the chats' tabs close with it |
