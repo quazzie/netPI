@@ -251,15 +251,20 @@ internal sealed class MainForm : Form
             "The desktop window's zoom (desktop app only): { factor? (0.5–3) } → { factor }");
         core.NavigationCompleted += (_, e) =>
         {
-            if (!zoomRestored && e.IsSuccess)
+            if (!_web.Visible)
             {
-                zoomRestored = true;
-                _web.ZoomFactor = _zoom;
+                _web.Visible = true;
+                _status.Visible = false;
+                _web.Focus();
             }
-            if (_web.Visible) return;
-            _web.Visible = true;
-            _status.Visible = false;
-            _web.Focus();
+            if (zoomRestored || !e.IsSuccess) return;
+            // after the control is shown (a factor set on a hidden controller does not stick), and posted so the
+            // navigation's own reset has run first
+            BeginInvoke(new Action(() =>
+            {
+                _web.ZoomFactor = _zoom;
+                zoomRestored = true;
+            }));
         };
         core.ProcessFailed += (_, e) =>
         {
