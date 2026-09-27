@@ -358,11 +358,13 @@ rejections).
   agent's turn (0.3 above: 22.5k tokens reused, 100–160 ms). The fast pick must come before the chat step, so it
   paid the step's prefill itself (the chat step then reused it: 99% cached). And the loop rebuilds a fresh prompt
   every step, with the growing history before the controls, so nothing carries over from step to step. Measured
-  directly (`cu_head_probe.mjs`, `cu_cache_matrix.mjs`, a ~1.3k-token step): a decision after a chat completion or a
-  Responses turn finds the turn's prefix in the cache (~1,262 of ~1,318 tokens) either way, but takes 0.1 to 2.3 s
-  while NInfer's own timing for it is ~150 ms (queue, host, device, prefill). Up to ~2 s goes somewhere outside
-  the engine's accounting, probably restoring or forking the cached recurrent state (~187 MB). Worth an NInfer look
-  before decisions go into agent loops.
+  directly on a ~1.3k-token step: a decision after a chat completion or a Responses turn finds the turn's prefix in
+  the cache (~1,262 of ~1,295 tokens, one state restore) and takes **80–110 ms**, the client's time and NInfer's
+  alike, next to a decoding request too, and 84–192 ms next to a long prefill (it waits for a gap between
+  chunks). An apparent extra ~2 s at first came from the test client: Node's `fetch` adds ~2 s to a POST made
+  about 1–2 s after the previous request on it; `node:http` does not (decisions-lab `dec_client_probe.mjs`:
+  fetch 2.09–2.11 s, node:http 82–113 ms, NInfer 80–111 ms for the same decisions). The loop's decisions over
+  2 s are real work: big pages, up to 10 pick branches over a 10–15k-token uncached state.
 - So for this loop the reasoning-low chat step with its plan line stays best. Decisions suit typed questions about
   visible content, like the guard questions (0.4 above). A safety check before a click ("does this send, pay or
   delete?") is the untested candidate in the loop.
