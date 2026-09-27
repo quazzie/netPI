@@ -363,8 +363,10 @@ public static class RequestParser
             if (role == "user")
             {
                 var results = new HashSet<string>(StringComparer.Ordinal);
-                var user = new NMsg { Role = "user" };
+                // Each text block is its own message: a merged turn (the API folds consecutive user messages into one)
+                // can hold a harness notice and the user's own text, and both must stay separately visible.
                 var sawText = false;
+                NMsg? lastText = null;
                 foreach (var b in blocks)
                 {
                     switch (Str(b["type"]))
@@ -386,11 +388,17 @@ public static class RequestParser
                         }
                         case "text":
                             sawText = true;
-                            user.Text += (user.Text.Length > 0 ? "\n" : "") + (Str(b["text"]) ?? "");
+                            lastText = new NMsg { Role = "user", Text = Str(b["text"]) ?? "" };
+                            r.Messages.Add(lastText);
                             break;
                         case "image":
                             sawText = true;
-                            user.Images++;
+                            if (lastText is null)
+                            {
+                                lastText = new NMsg { Role = "user" };
+                                r.Messages.Add(lastText);
+                            }
+                            lastText.Images++;
                             break;
                         default:
                             throw new MockApiException(400, "invalid_request_error", $"messages.{index}.content: unsupported block type '{Str(b["type"])}' in a user message");
@@ -399,7 +407,6 @@ public static class RequestParser
                 var missing = prevToolUses.Where(id => !results.Contains(id)).ToList();
                 if (missing.Count > 0)
                     throw new MockApiException(400, "invalid_request_error", $"messages.{index}: `tool_use` ids were found without `tool_result` blocks immediately after: {string.Join(", ", missing)}. Each `tool_use` block must have a corresponding `tool_result` block in the next message.");
-                if (sawText) r.Messages.Add(user);
                 prevToolUses = [];
             }
             else if (role == "assistant")
