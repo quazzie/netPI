@@ -383,7 +383,14 @@ rejections).
   (just after the turn, and after some idle seconds), and when it misses, its admission reclaims the head: a first
   turn is a "one-request root", unprotected by design (continuation-first admission, fork `bffac01f`,
   `docs/serving.md`), so a loop with a decision after every turn never gets an established, protected lineage.
-  Guardrails' second opinion is this pattern (a decision right after the agent's turn). Fix in NInfer first.
+  Guardrails' second opinion is this pattern (a decision right after the agent's turn). **Fixed in the NInfer
+  fork (`b1327df7`, not deployed yet):** every running request still takes a publication cell (the Program keeps
+  the active sequence there), and with none vacant the decision's cheapest plan was a cold root evicting the
+  unprotected first-turn head it extends. Now the heads a non-publishing request extends count as preserved for
+  its planning. Test build: all 16 `dec_head_race.mjs` rounds reuse the head and turn 2 keeps it; the browser suite
+  with a safety decision after every step: 16/16, chat steps that lost their cache 39/47 → 0/46, the check 339 → 94
+  ms p50 (97% cached), 6.2 s per task, the same as without checks. Decisions are also in NInfer's logs now
+  (`cba4cb16`: `req#N … decision … cache N (path)` and request-log records with the admission diagnostics).
 - So for this loop the reasoning-low chat step with its plan line stays best. Decisions suit typed questions about
   visible content, like the guard questions (0.4 above). A safety check before a click ("does this send, pay or
   delete?") is the untested candidate in the loop.
