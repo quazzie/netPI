@@ -19,7 +19,9 @@ internal static class SessionToolSwitches
         try { foreach (var r in ctx.Tools.Registrations) plugins.TryAdd(r.Tool, r.PluginId); } catch { }
 
         var tools = new JsonArray();
-        foreach (var t in runtime.ToolsFor(runtime.GetBySession(sessionId), session, includeOff: true))
+        var available = runtime.ToolsFor(runtime.GetBySession(sessionId), session, includeOff: true);
+        var registered = available.Select(t => t.Definition.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var t in available)
         {
             var d = t.Definition;
             tools.Add(new JsonObject
@@ -30,7 +32,7 @@ internal static class SessionToolSwitches
                 ["description"] = d.Description,
                 ["readOnly"] = d.ReadOnly,
                 ["pluginId"] = plugins.GetValueOrDefault(t),
-                ["on"] = !off.Contains(d.Name),
+                ["on"] = !ToolLists.Names(off, d.Name, registered),
             });
         }
         return new JsonObject
@@ -47,11 +49,14 @@ internal static class SessionToolSwitches
     public static JsonObject Set(IPluginContext ctx, AgentRuntime runtime, string sessionId, IReadOnlyList<string> off, IReadOnlyList<string> on)
     {
         if (ctx.Sessions.GetSession(sessionId) is null) throw new RpcException("not_found", $"No session {sessionId}");
+        var registered = runtime.ToolsFor(runtime.GetBySession(sessionId), ctx.Sessions.GetSession(sessionId), includeOff: true)
+            .Select(t => t.Definition.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         ctx.Sessions.UpdateSession(sessionId, s =>
         {
             var names = SessionTools.Off(s);
             foreach (var n in off) names.Add(n);
-            foreach (var n in on) names.Remove(n);
+            // switching a tool on removes every entry that names it (an older ssh_run switches ssh off too)
+            foreach (var n in on) names.RemoveWhere(e => ToolLists.Names(e, n, registered));
             if (names.Count == 0)
             {
                 s.Meta?.Remove(SessionTools.MetaKey);

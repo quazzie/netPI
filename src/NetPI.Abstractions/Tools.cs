@@ -40,6 +40,27 @@ public interface IReadOnlyCalls
     bool IsReadOnly(JsonElement args);
 }
 
+/// <summary>
+/// Names in tool lists: a session's switched-off tools, a subagent's allowlist, a profile's list. An entry is a tool's
+/// name; an entry that names no registered tool but reads <c>&lt;tool&gt;_&lt;action&gt;</c> names that tool, so lists written
+/// before the tools with actions were merged (ssh_run, agent_wait, process_kill) keep working. One rule, no list of old
+/// names: agent_spawn, a tool of its own, still names only itself.
+/// </summary>
+public static class ToolLists
+{
+    /// <summary>Whether an entry of <paramref name="list"/> names <paramref name="tool"/> (<paramref name="registered"/>: the tool names there are).</summary>
+    public static bool Names(IEnumerable<string> list, string tool, IReadOnlySet<string> registered)
+    {
+        foreach (var entry in list)
+            if (Names(entry, tool, registered)) return true;
+        return false;
+    }
+
+    public static bool Names(string entry, string tool, IReadOnlySet<string> registered) =>
+        string.Equals(entry, tool, StringComparison.OrdinalIgnoreCase)
+        || (entry.Length > tool.Length + 1 && entry.StartsWith(tool + "_", StringComparison.OrdinalIgnoreCase) && !registered.Contains(entry));
+}
+
 /// <summary>A tool the agent can call. Tools are plugins and can be replaced by registering the same name with a higher priority.</summary>
 public interface IAgentTool
 {

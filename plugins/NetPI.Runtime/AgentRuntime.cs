@@ -173,12 +173,14 @@ internal sealed class AgentRuntime : IAgentRuntime
         var off = includeOff ? [] : SessionTools.Off(session);
         List<IAgentTool> all;
         try { all = [.. Ctx.Tools.All]; } catch { all = []; }
+        var names = all.Select(t => t.Definition.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         return all.Where(t =>
         {
             var d = t.Definition;
-            if (agent?.ToolAllowlist is { } allow && !allow.Contains(d.Name, StringComparer.OrdinalIgnoreCase)) return false;
+            // lists may name a tool with actions by the tool of one of its actions (ssh_run for ssh): ToolLists
+            if (agent?.ToolAllowlist is { } allow && !ToolLists.Names(allow, d.Name, names)) return false;
             if (agent is not null && agent.Depth >= maxDepth && d.Category == "agents" && d.Name != "agent") return false;
-            return !off.Contains(d.Name);
+            return !ToolLists.Names(off, d.Name, names);
         }).OrderBy(t => t.Definition.Name, StringComparer.Ordinal).ToList();
     }
 
@@ -795,7 +797,8 @@ internal sealed class AgentRuntime : IAgentRuntime
         List<string>? allow = request.Tools is { Count: > 0 } t ? [.. t.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim())] : null;
         var off = allow is null ? SessionTools.Off(parentSession) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (allow is null && parentInfo?.ToolAllowlist is { } parentAllow) allow = [.. parentAllow];
-        var canMessage = (allow is null || allow.Contains("agent", StringComparer.OrdinalIgnoreCase)) && !off.Contains("agent");
+        var registered = Ctx.Tools.All.Select(t => t.Definition.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var canMessage = (allow is null || ToolLists.Names(allow, "agent", registered)) && !ToolLists.Names(off, "agent", registered);
         var instructions = SubagentInstructions(id, name, parentInfo, request.Instructions, canMessage);
         var meta = new JsonObject
         {

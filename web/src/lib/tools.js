@@ -32,6 +32,22 @@ const META = {
 };
 
 /**
+ * The tools a list (a profile's or a chat's switched-off tools) names, as the server reads it (ToolLists): an entry is a
+ * tool's name, or `<tool>_<action>` of a tool with actions when no tool has that name (older lists: ssh_run is ssh).
+ * `registered`: the tool names there are. Returns the set of registered names the list switches.
+ */
+export function listedTools(list, registered) {
+  const out = new Set();
+  const lower = new Map([...registered].map((n) => [n.toLowerCase(), n]));
+  for (const raw of list ?? []) {
+    const e = String(raw).trim().toLowerCase();
+    if (lower.has(e)) { out.add(lower.get(e)); continue; }
+    for (const [l, n] of lower) if (e.startsWith(l + '_')) out.add(n);
+  }
+  return out;
+}
+
+/**
  * The name a call is shown as. One rule, no list of tools: a call with an action is shown as `<tool>_<action>` when that
  * name has a view here (a tool with actions is the old tools merged: ssh + run as ssh_run, process + output as
  * process_output, agent + wait as agent_wait; older chats hold those names), else as the tool itself.

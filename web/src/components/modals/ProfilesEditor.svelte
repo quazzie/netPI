@@ -5,6 +5,7 @@
    * profile". A new chat gets its project's default profile (Projects dialog) or the one chosen here.
    * opening: the current opening of the system prompt (context.customPrompt or the built-in text).
    */
+  import { listedTools } from '../../lib/tools.js';
   import Icon from '../../lib/kit/Icon.svelte';
   import SettingsRow from './SettingsRow.svelte';
   import ProfileDialog from './ProfileDialog.svelte';
@@ -42,7 +43,8 @@
     return [...byCat].sort(([a], [b]) => a.localeCompare(b));
   });
   const toolCount = $derived(categories.reduce((n, [, list]) => n + list.length, 0));
-  const onCount = (p) => toolCount - categories.reduce((n, [, list]) => n + list.filter((t) => (p.toolsOff ?? []).includes(t.name)).length, 0);
+  const registered = $derived(new Set(categories.flatMap(([, list]) => list.map((t) => t.name))));
+  const onCount = (p) => toolCount - listedTools(p.toolsOff, registered).size;
 
   let openId = $state(null);
   let newName = $state('');

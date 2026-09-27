@@ -11,6 +11,7 @@ public static class SessionToolsTests
         t.Add("session tools: switched off mid-session they go from the next call with a notice naming the user; on again they are new", MidSession);
         t.Add("session tools: a subagent gets its owner's tools, or exactly the tools it is given (even ones its owner has off)", Subagents);
         t.Add("session tools: agent.setTools adds and removes names; the last one on removes the key; unknown session", SetSemantics);
+        t.Add("session tools: an older list naming a merged tool by one of its actions (ssh_run, agent_wait) switches that tool", MergedNames);
     }
 
     private static FakeTool Tool(string name) => new(name, (c, a, t) => Task.FromResult(ToolResult.Ok("ok")));
@@ -29,6 +30,30 @@ public static class SessionToolsTests
 
     private static async Task<JsonNode> SetTools(TestHost h, string sessionId, string[]? off = null, string[]? on = null) =>
         (await h.Rpc.CallAsync("agent.setTools", new { sessionId, off = off ?? [], on = on ?? [] }))!;
+
+    private static async Task MergedNames()
+    {
+        await using var h = await TestHost.StartAsync();
+        foreach (var n in new[] { "ssh", "agent", "agent_spawn", "bash" }) h.AddTool(Tool(n));
+        var s = h.NewSession();
+        // a profile written before the merge: ssh_run and agent_wait name ssh and agent; agent_spawn is a tool of its own
+        var info = await SetTools(h, s.Id, off: ["ssh_run", "agent_wait", "lanes_list"]);
+        string On(string name) => ((JsonArray)info["tools"]!).Single(t => (string)t!["name"]! == name)!["on"]!.ToJsonString();
+        Check.Equal("false,false,true,true", string.Join(",", new[] { "ssh", "agent", "agent_spawn", "bash" }.Select(On)));
+        await Turn(h, s.Id, "hi");
+        Check.Equal("agent_choices,agent_spawn,bash", string.Join(",", Sent(h, s.Id)));
+        // switching the tool on removes every entry that names it
+        info = await SetTools(h, s.Id, on: ["ssh"]);
+        Check.Equal("true", On("ssh"));
+        Check.Equal("agent_wait,lanes_list", string.Join(",", ((JsonArray)info["off"]!).Select(n => (string)n!)));
+        // a subagent's allowlist too
+        var main = h.NewSession();
+        await Turn(h, main.Id, "hi");
+        var owner = h.Runtime.GetBySession(main.Id)!;
+        var sub = await h.Runtime.SpawnAsync(new SpawnRequest { ParentAgentId = owner.Id, Task = "remote", Tools = ["ssh_read", "bash"] });
+        await h.StatusAsync(sub.Id, AgentStatus.Completed);
+        Check.Equal("bash,ssh", string.Join(",", Sent(h, sub.SessionId)));
+    }
 
     private static async Task BeforeStart()
     {

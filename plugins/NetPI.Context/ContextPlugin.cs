@@ -166,12 +166,14 @@ public sealed class ContextPlugin : INetPiPlugin
         var maxDepth = 3;
         try { maxDepth = ctx.Settings.Get("agents.maxDepth", 3); } catch { }
         var off = SessionTools.Off(session);
-        return ctx.Tools.All.Where(t =>
+        var all = ctx.Tools.All;
+        var names = all.Select(t => t.Definition.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return all.Where(t =>
         {
             var d = t.Definition;
-            if (agent?.ToolAllowlist is { } allow && !allow.Contains(d.Name, StringComparer.OrdinalIgnoreCase)) return false;
+            if (agent?.ToolAllowlist is { } allow && !ToolLists.Names(allow, d.Name, names)) return false;
             if (agent is not null && agent.Depth >= maxDepth && d.Category == "agents" && d.Name != "agent") return false;
-            return !off.Contains(d.Name);
+            return !ToolLists.Names(off, d.Name, names);
         }).OrderBy(t => t.Definition.Name, StringComparer.Ordinal).ToList();
     }
 }

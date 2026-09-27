@@ -40,6 +40,13 @@ Every request carries the active tools (the highest-priority registration per na
   that. At the deepest level (`agents.maxDepth`) the orchestration tools are left out except `agent` (to send to the parent).
 
 A tool that appears or disappears during a session (a plugin loaded, reloaded or disabled) is announced the same way.
+
+**Names in tool lists** (a session's switched-off tools, a profile's `toolsOff`, a subagent's `tools`) follow one rule
+(`ToolLists` in the contracts, `listedTools` in the UI): an entry is a tool's name, or `<tool>_<action>` of a tool with
+actions when no tool has that name. Lists written before the tools with actions were merged keep working: `ssh_run`
+switches `ssh`, `agent_wait` switches `agent`, while `agent_spawn` (a tool of its own) still names only itself.
+Switching a tool on removes every entry that names it; the profile dialog writes a list back with the current names
+when you change it.
 `context.preview` shows what a session is sent.
 
 ## Conventions

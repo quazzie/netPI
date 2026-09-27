@@ -8,10 +8,14 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import { setSetting } from '../../lib/settings.js';
   import { confirmDialog } from '../../lib/state/ui.svelte.js';
+  import { listedTools } from '../../lib/tools.js';
 
   let { id, profile, categories = [], opening = '', isDefault = false, onclose } = $props();
 
-  const off = $derived(new Set(profile?.toolsOff ?? []));
+  // the tools the profile switches off; an older list may name a merged tool by one of its actions (ssh_run for ssh),
+  // and a change writes the list back with the current names
+  const registered = $derived(new Set(categories.flatMap(([, list]) => list.map((t) => t.name))));
+  const off = $derived(listedTools(profile?.toolsOff, registered));
   const own = $derived(typeof profile?.prompt === 'string' && profile.prompt.trim().length > 0);
 
   async function setPrompt(text) {
