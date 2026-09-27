@@ -190,7 +190,7 @@ into locals first, because after the parent clears the modal state or the row re
    (`agent_*`, link to the subagent session), `WebView` (`web_fetch` title and text, `web_search` results as links,
    `screenshot` image and console errors), `TodoView` (the `todo_write` checklist) and `GenericView` (anything
    else). `read`/`write`/`edit` rows get an "Open file" button (`lib/openFile.js` → `files.open`). The SSH tools reuse
-   these views: `ssh_run` the shell view (prompt `host$`), `ssh_read` the read view, `ssh_write`/`ssh_edit` the diff view.
+   these views: `ssh` `run` the shell view (prompt `host$`), `read` the read view, `write`/`edit` the diff view. A tool with actions (`ssh`, `process`, `agents`) is shown as the tool of its action (`viewName` in `web/src/lib/tools.js`: `ssh` + `run` as `ssh_run`), so older chats with the old names look the same.
    - **File links.** `renderMarkdown` marks links whose target is a local path (relative, `C:\…`, `file://`) as
      `a.file-link[data-path]` with `href="#"`; one delegated click handler opens them with the operating system
      through `files.open`, so a link never navigates the app. Web links keep `target="_blank"` (the desktop shell

@@ -6,7 +6,7 @@
   import { prefs } from '../../lib/state/ui.svelte.js';
   import { asks } from '../../lib/state/asks.svelte.js';
   import { stepCounts } from '../../lib/chatItems.js';
-  import { toolMeta, toolSummary, parseArgs } from '../../lib/tools.js';
+  import { toolMeta, toolSummary, parseArgs, viewName } from '../../lib/tools.js';
   import { duration } from '../../lib/format.js';
 
   /**
@@ -36,8 +36,10 @@
     if (!active || !collapsible || open) return null;
     const s = item.steps[n - 1];
     if (s.kind === 'thinking') return { icon: 'brain', label: s.stream && !s.stream.thinkingEndedAt ? 'Thinking…' : 'Thinking', summary: '' };
-    const meta = toolMeta(s.call.name);
-    return { icon: meta.icon, label: meta.label, summary: s.preparing ? 'preparing…' : (toolSummary(s.call.name, parseArgs(s.call), base) ?? '') };
+    const a = parseArgs(s.call);
+    const name = viewName(s.call.name, a);
+    const meta = toolMeta(name);
+    return { icon: meta.icon, label: meta.label, summary: s.preparing ? 'preparing…' : (toolSummary(name, a, base) ?? '') };
   });
 </script>
 

@@ -48,12 +48,17 @@ public static class SshTests
             Tools = SshToolSet.Create(Ctx, launcher ?? Fake).ToDictionary(t => t.Definition.Name);
         }
 
-        public Task<ToolResult> Run(string tool, object args, CancellationToken ct = default) =>
-            Tools[tool].ExecuteAsync(new ToolContext
+        /// <summary>"ssh_run" etc.: the ssh tool with that action (the tests name the jobs as the tools they once were).</summary>
+        public Task<ToolResult> Run(string tool, object args, CancellationToken ct = default)
+        {
+            var a = (JsonObject)NetPiJson.ToNode(args)!;
+            if (tool.StartsWith("ssh_", StringComparison.Ordinal)) { a["action"] = tool[4..]; tool = "ssh"; }
+            return Tools[tool].ExecuteAsync(new ToolContext
             {
                 SessionId = "ses_1", AgentId = "agt_1", CallId = "call_1", Cwd = Dir, Services = Ctx.Services, Events = Ctx.Events,
                 Output = s => { lock (Live) Live.Append(s); },
-            }, T.Args(args), ct);
+            }, T.Args(a.ToJsonString()), ct);
+        }
     }
 
     private static JsonElement D(ToolResult r) => NetPiJson.ToElement(r.Details);
@@ -94,9 +99,18 @@ public static class SshTests
         r.Add("ssh: tools, hosts from the config, unknown hosts refused", async () =>
         {
             var env = new Env();
-            Check.Equal("ssh_copy,ssh_edit,ssh_hosts,ssh_read,ssh_run,ssh_write", string.Join(",", env.Tools.Keys.Order()));
-            Check.True(env.Tools.Values.All(t => t.Definition.Category == "ssh"));
-            Check.True(env.Tools["ssh_hosts"].Definition.ReadOnly && env.Tools["ssh_read"].Definition.ReadOnly);
+            Check.Equal("ssh", string.Join(",", env.Tools.Keys.Order()));
+            var ssh = env.Tools["ssh"];
+            Check.Equal("ssh", ssh.Definition.Category);
+            Check.False(ssh.Definition.ReadOnly);
+            // hosts and read only read; run, write, edit and copy change things
+            var calls = (IReadOnlyCalls)ssh;
+            foreach (var (action, readOnly) in new[] { ("hosts", true), ("read", true), ("run", false), ("write", false), ("edit", false), ("copy", false) })
+                Check.Equal(readOnly, calls.IsReadOnly(T.Args(new { action, host = "nuc" })), action);
+            Check.False(calls.IsReadOnly(T.Args(new { host = "nuc", script = "ls" })), "a script without an action runs");
+            foreach (var job in new[] { "hosts:", "run:", "read:", "write:", "edit:", "copy:" }) Check.Contains(ssh.Definition.Help!, "- " + job);
+            Check.Contains((await ssh.ExecuteAsync(new ToolContext { SessionId = "s", AgentId = "a", CallId = "c", Cwd = env.Dir, Services = env.Ctx.Services, Events = env.Ctx.Events },
+                T.Args(new { action = "fly" }), CancellationToken.None)).Content, "Unknown action \"fly\"");
             var hosts = await env.Run("ssh_hosts", new { });
             Check.Contains(hosts.Content, "nuc: quazzie@192.168.1.3\nserver: 192.168.1.2");
             var unknown = await env.Run("ssh_run", new { host = "elsewhere", script = "ls" });

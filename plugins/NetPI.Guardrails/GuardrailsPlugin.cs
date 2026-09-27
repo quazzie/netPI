@@ -30,7 +30,7 @@ public sealed class GuardrailsPlugin : INetPiPlugin
             [
                 SettingInfo.Bool("guardrails.enabled", "Check tool calls", true, "Before a tool runs, against the rules below. Fast: patterns and paths only."),
                 SettingInfo.List("guardrails.commands", "Blocked commands", RuleSet.DefaultCommands,
-                    "Regular expressions, tried on each part of a bash, pwsh or ssh_run command (split at new lines, ; && || | &), ignoring case. Start a line with ask: to ask you first instead of blocking."),
+                    "Regular expressions, tried on each part of a bash, pwsh or ssh run command (split at new lines, ; && || | &), ignoring case. Start a line with ask: to ask you first instead of blocking."),
                 SettingInfo.List("guardrails.paths", "Protected paths", RuleSet.DefaultPaths,
                     "Files and folders the agent may not change: write and edit refuse them, and so do bash and pwsh commands that name them (the read tool still reads them). ~ is your home. Start a line with ask: to ask you first."),
                 SettingInfo.Bool("guardrails.secondOpinion", "Second opinion before asking", false,

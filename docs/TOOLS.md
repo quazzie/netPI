@@ -13,7 +13,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Goal` | `netpi.goal` | `goal_update` `goal_set` | `goal.get`, `goal.set`, `goal.edit`, `goal.pause`, `goal.resume`, `goal.clear` |
 | `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
 | `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
-| `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh_hosts` `ssh_run` `ssh_read` `ssh_write` `ssh_edit` `ssh_copy` | – |
+| `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh` (actions `hosts` `run` `read` `write` `edit` `copy`) | – |
 
 The file and shell tools start at `Order = 20`. Tests live in `tests/NetPI.Tools.Tests`, a console app with no test framework:
 
@@ -34,7 +34,7 @@ Every request carries the active tools (the highest-priority registration per na
   request, so the model re-reads the conversation once (slower on a local model, a full-price read on a paid one), and a
   `tools` notice tells it ("The user switched off for this session: bash.");
 - for a subagent: the tools its owner chose. With an `agent_spawn` `tools` list exactly those, even tools the owner
-  does not have (a limited orchestrator can dispatch an agent with the `ssh_*` tools; unknown names get the list of
+  does not have (a limited orchestrator can dispatch an agent with the `ssh` tool; unknown names get the list of
   tools); without one the owner's tools (its allowlist, and its session's switched-off tools, copied to the subagent's
   session). So a chat that may spawn subagents can reach every tool through them; switch `agent_spawn` off to prevent
   that. At the deepest level (`agents.maxDepth`) the orchestration tools are left out except `agent_send`.
@@ -54,7 +54,7 @@ A tool that appears or disappears during a session (a plugin loaded, reloaded or
   `<temp>/netpi/tool-results/<session>/<tool>-<call>.txt`; the model gets its start and end and the path, and reads the
   rest with `read` (offset/limit) or searches it with `grep` instead of running the call again. Tools that page or tail
   their own output stay under the limit (`ToolResultLimit.Fit`): `read` pages end with the offset to continue, bash and
-  `ssh_run` keep the tail and save the full output themselves. Saved results are removed with their session or after
+  `ssh` `run` keep the tail and save the full output themselves. Saved results are removed with their session or after
   a week.
 - **Lenient arguments.** Names are matched ignoring case, `_` and `-` (`file_path` = `filePath` = `FilePath`), and common
   aliases are accepted (`file_path`/`file`/`filename` for `path`, `old_string`/`new_string` for `oldText`/`newText`, and so on).
@@ -618,6 +618,11 @@ plugin never reads key files and never uses passwords. Settings: `ssh.*` in `doc
 - **Paths** are remote: relative ones start at `cwd` (if given) or the home folder; a leading `~/` is expanded. A
   `cwd` that does not exist is reported as such. Each call is one ssh connection (0.2–0.5 s on a LAN).
 - ssh's own failures (exit 255) are errors with ssh's message and a hint for an unknown host key or a refused key.
+- **One tool, `ssh`, with an `action`** per job below (`{ action, host, … }`); a call with a `script` and no action is
+  `run`, and `action: "upload"`/`"download"` is `copy` in that direction. `hosts` and `read` only read
+  (`IReadOnlyCalls`), so several of them run in parallel. Until 2026-09-27 each job was a tool of its own (`ssh_run`,
+  `ssh_read`, …): the chat view and compaction still understand those names in older chats, and each section below
+  keeps its old name.
 
 ### `ssh_hosts` (read-only)
 
@@ -669,7 +674,7 @@ details: { host, path /* "host:path" */, created, append, bytes, lines }
 Like `edit`: each `oldText` must match exactly once unless `replace_all`, overlapping edits are refused, matching
 ignores CRLF vs LF and the file keeps its line endings. The file is read, edited locally and written back only if its
 size and mtime are unchanged; otherwise nothing is written and the agent is told to read it again. Files over 8 MB,
-binary files and files that are not valid UTF-8 are refused (use `ssh_run` with sed or python for those).
+binary files and files that are not valid UTF-8 are refused (use `run` with sed or python for those).
 
 ```ts
 details: { host, path /* "host:path" */, diff /* unified, 3 lines of context */, added, removed, edits /* replacements */,

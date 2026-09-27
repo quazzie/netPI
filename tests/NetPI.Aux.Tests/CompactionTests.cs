@@ -360,13 +360,16 @@ public static class CompactionTests
                 T.Assistant("", T.Call("c1", "read", "{\"path\":\"a.cs\"}"), T.Call("c2", "grep", "{\"pattern\":\"x\"}")),
                 T.Assistant("", T.Call("c3", "edit", "{\"file_path\":\"x.cs\",\"oldText\":\"a\",\"newText\":\"b\"}")),
                 T.Assistant("", T.Call("c4", "ssh_read", "{\"host\":\"nuc\",\"path\":\"/etc/hosts\"}"), T.Call("c5", "write", "not json")),
+                // ssh is one tool with actions now (ssh_read above is the older name, still in older chats)
+                T.Assistant("", T.Call("c6", "ssh", "{\"action\":\"read\",\"host\":\"nuc\",\"path\":\"/etc/fstab\"}"),
+                    T.Call("c7", "ssh", "{\"action\":\"edit\",\"host\":\"srv\",\"path\":\"/app/.env\"}")),
             };
             var (read, modified) = FileLists.Collect(msgs, prev);
-            Check.Equal("a.cs,nuc:/etc/hosts,old.cs", string.Join(",", read), "read, minus what was modified");
-            Check.Equal("done.cs,x.cs", string.Join(",", modified));
+            Check.Equal("a.cs,nuc:/etc/fstab,nuc:/etc/hosts,old.cs", string.Join(",", read), "read, minus what was modified");
+            Check.Equal("done.cs,srv:/app/.env,x.cs", string.Join(",", modified));
             var text = "## Task\nG" + FileLists.Format(read, modified);
-            Check.Contains(text, "<read-files>\na.cs\nnuc:/etc/hosts\nold.cs\n</read-files>");
-            Check.Contains(text, "<modified-files>\ndone.cs\nx.cs\n</modified-files>");
+            Check.Contains(text, "<read-files>\na.cs\nnuc:/etc/fstab\nnuc:/etc/hosts\nold.cs\n</read-files>");
+            Check.Contains(text, "<modified-files>\ndone.cs\nsrv:/app/.env\nx.cs\n</modified-files>");
             Check.Equal("## Task\nG", FileLists.Strip(text));
         });
 

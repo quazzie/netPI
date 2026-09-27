@@ -129,9 +129,11 @@ public static class FileLists
             if (m.Role != MessageRole.Assistant) continue;
             foreach (var call in m.ToolCalls)
             {
-                var (path, host) = PathOf(call.Arguments);
+                var (path, host, action) = PathOf(call.Arguments);
                 if (path is null) continue;
-                switch (call.Name)
+                // ssh is one tool with actions; ssh_read/ssh_write/ssh_edit are the older names, still in older chats
+                var name = call.Name == "ssh" && action is not null ? "ssh_" + action : call.Name;
+                switch (name)
                 {
                     case "read": read.Add(path); break;
                     case "write" or "edit": modified.Add(path); break;
@@ -155,17 +157,17 @@ public static class FileLists
     /// <summary>The summary without its file lists (they are added again from the meta, never by the model).</summary>
     public static string Strip(string summary) => Blocks.Replace(summary, "").Trim();
 
-    private static (string? Path, string? Host) PathOf(string arguments)
+    private static (string? Path, string? Host, string? Action) PathOf(string arguments)
     {
         try
         {
-            if (JsonNode.Parse(arguments) is not JsonObject o) return (null, null);
+            if (JsonNode.Parse(arguments) is not JsonObject o) return (null, null, null);
             string? path = null;
             foreach (var name in PathArgs)
                 if (Str(o[name]) is { Length: > 0 } p) { path = p.Trim(); break; }
-            return (path, Str(o["host"])?.Trim());
+            return (path, Str(o["host"])?.Trim(), Str(o["action"])?.Trim().ToLowerInvariant());
         }
-        catch (JsonException) { return (null, null); }
+        catch (JsonException) { return (null, null, null); }
     }
 
     private static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? s : null;

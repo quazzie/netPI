@@ -10,7 +10,7 @@ namespace NetPI.Tools.Ssh;
 /// arguments, so nothing the agent sends needs quoting. Hosts are the aliases in the user's ssh config (read on every
 /// call); unknown host keys are rejected and nothing prompts (BatchMode).
 /// </summary>
-[NetPiPlugin("netpi.tools.ssh", Name = "SSH tools", Description = "ssh_run, ssh_read, ssh_write, ssh_edit, ssh_copy on the hosts in ~/.ssh/config", Order = 22)]
+[NetPiPlugin("netpi.tools.ssh", Name = "SSH tools", Description = "ssh: run, read, write, edit and copy on the hosts in ~/.ssh/config", Order = 22)]
 public sealed class SshPlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
@@ -34,15 +34,95 @@ public sealed class SshPlugin : INetPiPlugin
 
 internal static class SshToolSet
 {
-    public static IAgentTool[] Create(IPluginContext ctx, ISshLauncher launcher) =>
-    [
-        new SshHostsTool(ctx),
-        new SshRunTool(ctx, launcher),
-        new SshReadTool(ctx, launcher),
-        new SshWriteTool(ctx, launcher),
-        new SshEditTool(ctx, launcher),
-        new SshCopyTool(ctx, launcher),
-    ];
+    public static IAgentTool[] Create(IPluginContext ctx, ISshLauncher launcher) => [new SshTool(ctx, launcher)];
+}
+
+/// <summary>
+/// <c>ssh</c>: one tool, an action per job (hosts, run, read, write, edit, copy), each carried out by the class below that
+/// did it as a tool of its own. hosts and read only read (<see cref="IReadOnlyCalls"/>).
+/// </summary>
+internal sealed class SshTool : IAgentTool, IReadOnlyCalls
+{
+    private readonly Dictionary<string, IAgentTool> _actions;
+
+    public SshTool(IPluginContext ctx, ISshLauncher launcher)
+    {
+        _actions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["hosts"] = new SshHostsTool(ctx),
+            ["run"] = new SshRunTool(ctx, launcher),
+            ["read"] = new SshReadTool(ctx, launcher),
+            ["write"] = new SshWriteTool(ctx, launcher),
+            ["edit"] = new SshEditTool(ctx, launcher),
+            ["copy"] = new SshCopyTool(ctx, launcher),
+        };
+        Definition = new ToolDefinition
+        {
+            Name = "ssh",
+            Label = "SSH",
+            Category = "ssh",
+            SummaryArg = "action",
+            Description = "Work on remote hosts (the aliases in ~/.ssh/config): hosts, run {host, script}, read, write, edit or copy (scp).",
+            Help = string.Join("\n", _actions.Select(a => $"- {a.Key}: {a.Value.Definition.Description}")),
+            Parameters = new JsonObject
+            {
+                ["type"] = "object",
+                ["properties"] = new JsonObject
+                {
+                    ["action"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("hosts", "run", "read", "write", "edit", "copy") },
+                    ["host"] = S(), ["script"] = S(), ["cwd"] = S(), ["timeout"] = I(),
+                    ["path"] = S(), ["offset"] = I(), ["limit"] = I(), ["content"] = S(), ["append"] = B(),
+                    ["edits"] = new JsonObject
+                    {
+                        ["type"] = "array",
+                        ["items"] = new JsonObject
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new JsonObject { ["oldText"] = S(), ["newText"] = S(), ["replace_all"] = B() },
+                            ["required"] = new JsonArray("oldText", "newText"),
+                        },
+                    },
+                    ["direction"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("upload", "download") },
+                    ["from"] = S(), ["to"] = S(), ["recursive"] = B(),
+                },
+                ["required"] = new JsonArray("action"),
+            },
+            PromptGuidelines = ["For work on other machines use the ssh tool, not ssh in bash."],
+        };
+    }
+
+    public ToolDefinition Definition { get; }
+
+    /// <summary>The action of a call ("run" when a script is given without one).</summary>
+    internal static string? ActionOf(JsonElement args)
+    {
+        args = A.Unwrap(args);
+        var a = A.Str(args, "action", "verb", "command")?.Trim().ToLowerInvariant();
+        if (a is null && A.Str(args, "script") is not null) a = "run";
+        return a switch { "exec" or "execute" => "run", "list" => "hosts", "cat" => "read", "scp" or "upload" or "download" => "copy", _ => a };
+    }
+
+    public bool IsReadOnly(JsonElement args) => ActionOf(args) is "hosts" or "read";
+
+    public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
+    {
+        var action = ActionOf(args);
+        if (action is null || !_actions.TryGetValue(action, out var tool))
+            return Task.FromResult(ToolResult.Error($"{(action is null ? "Give an action" : $"Unknown action \"{action}\"")}: hosts, run, read, write, edit or copy."));
+        // "action": "upload" (or "download") is copy in that direction
+        var raw = A.Unwrap(args);
+        if (A.Str(raw, "action")?.Trim().ToLowerInvariant() is "upload" or "download" && A.Str(raw, "direction") is null)
+        {
+            var o = JsonNode.Parse(raw.GetRawText())!.AsObject();
+            o["direction"] = A.Str(raw, "action")!.Trim().ToLowerInvariant();
+            args = JsonSerializer.SerializeToElement(o);
+        }
+        return tool.ExecuteAsync(context, args, ct);
+    }
+
+    private static JsonObject S() => new() { ["type"] = "string" };
+    private static JsonObject I() => new() { ["type"] = "integer" };
+    private static JsonObject B() => new() { ["type"] = "boolean" };
 }
 
 internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) : IAgentTool
@@ -62,7 +142,7 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) :
             var name = A.Str(args, "host", "server", "alias")?.Trim();
             var hosts = SshConfig.Read(o.Config);
             if (string.IsNullOrEmpty(name))
-                return ToolResult.Error($"{Definition.Name} needs a host: one of {Names(hosts)}.");
+                return ToolResult.Error($"ssh needs a host: one of {Names(hosts)}.");
             host = hosts.FirstOrDefault(h => h.Alias.Equals(name, StringComparison.OrdinalIgnoreCase));
             if (host is null)
                 return ToolResult.Error(hosts.Count == 0
@@ -114,8 +194,7 @@ internal sealed class SshHostsTool(IPluginContext ctx) : SshToolBase(ctx, new Pr
         Label = "SSH hosts",
         Category = "ssh",
         ReadOnly = true,
-        Description = "List the remote hosts the ssh_* tools can use: the aliases in the user's ~/.ssh/config, with user and address.",
-        PromptGuidelines = ["For work on other machines use the ssh_* tools, not ssh in bash."],
+        Description = "The remote hosts: the aliases in the user's ~/.ssh/config, with user and address.",
     };
 
     protected override Task<ToolResult> RunAsync(ToolContext context, JsonElement args, SshOptions o, SshHost host, CancellationToken ct)
@@ -143,7 +222,7 @@ internal sealed class SshRunTool(IPluginContext ctx, ISshLauncher launcher) : Ss
         Category = "ssh",
         SummaryArg = "script",
         Description =
-            "Run a bash script on a remote host (an alias from ssh_hosts). The script is sent as it is: quotes, $, " +
+            "Run a bash script on a remote host. The script is sent as it is: quotes, $, " +
             "backslashes and heredocs need no escaping, and it can be long. cwd sets the remote working directory (default " +
             "the home folder). stdout and stderr are merged; the exit code is reported when it is not 0. timeout (default " +
             "120 s, max 1800) ends the whole remote process tree, and so does stopping the run.",
@@ -319,7 +398,7 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
         ReadOnly = true,
         SummaryArg = "path",
         Description =
-            $"Read a text file on a remote host (an alias from ssh_hosts), like read: at most {MaxLines} lines / {MaxChars / 1024}KB per " +
+            $"Read a text file on a remote host, like read: at most {MaxLines} lines / {MaxChars / 1024}KB per " +
             "call; page with offset (1-based; negative counts from the end) and limit. Relative paths start at cwd or the home folder.",
         Parameters = new JsonObject
         {
@@ -403,7 +482,7 @@ internal sealed class SshWriteTool(IPluginContext ctx, ISshLauncher launcher) : 
         Category = "ssh",
         SummaryArg = "path",
         Description =
-            "Write a file on a remote host (an alias from ssh_hosts). The content is sent as it is, any size, with no escaping. " +
+            "Write a file on a remote host. The content is sent as it is, any size, with no escaping. " +
             "Parent folders are created; the file keeps its permissions; append adds to the end instead of replacing.",
         Parameters = new JsonObject
         {
@@ -453,7 +532,7 @@ internal sealed class SshEditTool(IPluginContext ctx, ISshLauncher launcher) : S
         Category = "ssh",
         SummaryArg = "path",
         Description =
-            "Edit a file on a remote host (an alias from ssh_hosts) with exact replacements, like edit: each oldText must match " +
+            "Edit a file on a remote host with exact replacements, like edit: each oldText must match " +
             "exactly once (replace_all replaces every match). Line endings (CRLF/LF) are kept. Fails without writing if the file " +
             "changed on the host while it was being edited.",
         Parameters = new JsonObject
@@ -553,7 +632,7 @@ internal sealed class SshCopyTool(IPluginContext ctx, ISshLauncher launcher) : S
         Category = "ssh",
         SummaryArg = "from",
         Description =
-            "Copy files or folders between this machine and a remote host (an alias from ssh_hosts) with scp: direction " +
+            "Copy files or folders between this machine and a remote host with scp: direction " +
             "upload (from = local path, to = remote path) or download (from = remote, to = local). recursive for folders. " +
             "Use it for large or binary files.",
         Parameters = new JsonObject

@@ -11,7 +11,7 @@ internal sealed record Verdict(GuardAction Action, string Rule, string Kind, str
 /// <summary>
 /// The rules of <c>guardrails.commands</c> and <c>guardrails.paths</c>, one per line: a line starting with <c>ask:</c>
 /// asks the user first, otherwise the rule blocks (<c>block:</c> may be written); <c>#</c> starts a comment line.
-/// <para>Commands (bash, pwsh, ssh_run) are split into parts at new lines, <c>;</c>, <c>&amp;&amp;</c>, <c>||</c>,
+/// <para>Commands (bash, pwsh, ssh run) are split into parts at new lines, <c>;</c>, <c>&amp;&amp;</c>, <c>||</c>,
 /// <c>|</c> and <c>&amp;</c>, and each regular expression is tried on each part, ignoring case.</para>
 /// <para>A path rule protects a file or folder: <c>write</c> and <c>edit</c> may not change it or anything in it, and a
 /// shell command (bash, pwsh) may not name it, in any of the spellings a shell takes (<c>~/.netpi</c>,
@@ -38,7 +38,7 @@ internal sealed class RuleSet
     /// <summary>NetPI's own home asks first; SSH keys and config stay untouched.</summary>
     public static readonly IReadOnlyList<string> DefaultPaths = ["ask: ~/.netpi", "~/.ssh"];
 
-    public static readonly HashSet<string> CommandTools = new(StringComparer.Ordinal) { "bash", "pwsh", "ssh_run" };
+    public static readonly HashSet<string> CommandTools = new(StringComparer.Ordinal) { "bash", "pwsh", "ssh" };
     public static readonly HashSet<string> LocalShellTools = new(StringComparer.Ordinal) { "bash", "pwsh" };
     public static readonly HashSet<string> WriteTools = new(StringComparer.Ordinal) { "write", "edit" };
 
@@ -130,11 +130,11 @@ internal sealed class RuleSet
         return ask;
     }
 
-    /// <summary>The command a bash, pwsh or ssh_run call runs (null for other tools or without one).</summary>
+    /// <summary>The command a bash, pwsh or ssh (run) call runs (null for other tools or without one).</summary>
     internal static string? CommandOf(string tool, JsonElement args) =>
         CommandTools.Contains(tool) ? Arg(args, "command", "script", "cmd") : null;
 
-    /// <summary>The host an ssh_run call runs on, when it names one.</summary>
+    /// <summary>The host an ssh call runs on, when it names one.</summary>
     internal static string? HostOf(JsonElement args) => Arg(args, "host", "target", "server");
 
     /// <summary>The parts of a command line, split where a shell starts another command (quotes are not understood).</summary>

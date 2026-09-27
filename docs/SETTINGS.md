@@ -101,7 +101,7 @@ turned off; models without effort levels only get on/off. Free models are limite
 |---|---|---|
 | `agent.maxTurns` | `200` | model calls per run |
 | `agent.defaultMaxOutputTokens` | `16384` | when a model has no limit |
-| `agent.maxToolResultChars` | `20000` | a longer tool result is saved to a file: the agent gets its start and end and the path, to read the rest in parts or grep it (`read` pages, the bash and `ssh_run` tails stay under it) |
+| `agent.maxToolResultChars` | `20000` | a longer tool result is saved to a file: the agent gets its start and end and the path, to read the rest in parts or grep it (`read` pages, the bash and `ssh` `run` tails stay under it) |
 | `agent.parallelReadOnlyTools` | `true` | run several read-only calls of one turn concurrently |
 | `agents.maxDepth` | `3` | subagent nesting depth (deeper agents get no orchestration tools) |
 
@@ -264,9 +264,9 @@ checks catch the plain cases (a command built at run time gets through): they ar
 | key | default | |
 |---|---|---|
 | `guardrails.enabled` | `true` | check tool calls against the rules below |
-| `guardrails.commands` | catastrophic commands (below) | regular expressions, tried on each part of a `bash`, `pwsh` or `ssh_run` command (split at new lines, `;`, `&&`, `\|\|`, `\|`, `&`), ignoring case |
+| `guardrails.commands` | catastrophic commands (below) | regular expressions, tried on each part of a `bash`, `pwsh` or `ssh` `run` command (split at new lines, `;`, `&&`, `\|\|`, `\|`, `&`), ignoring case |
 | `guardrails.paths` | `["ask: ~/.netpi", "~/.ssh"]` | files and folders the agent may not change: `write` and `edit` refuse them, and so do `bash` and `pwsh` commands that name them, in any spelling a shell uses (`~/.netpi`, `$HOME/.netpi`, `%USERPROFILE%\.netpi`, `$env:USERPROFILE\.netpi`, `C:\Users\me\.netpi`, `/c/Users/me/.netpi`); the `read` tool still reads them. `~` is your home |
-| `guardrails.secondOpinion` | `false` | before an `ask:` rule asks you about a `bash`, `pwsh` or `ssh_run` command, a decision model reads it (`decide.ask`, the Decide plugin through AiGateway); one it finds harmless runs without asking (event `guard.cleared`), the rest ask as before with the model's view on the card. Blocking rules and `write`/`edit` are never relaxed; no answer (no Decide plugin, the model not loaded, 15 s) means you are asked. In a subagent a cleared call runs; one that is not cleared is blocked as before |
+| `guardrails.secondOpinion` | `false` | before an `ask:` rule asks you about a `bash`, `pwsh` or `ssh` `run` command, a decision model reads it (`decide.ask`, the Decide plugin through AiGateway); one it finds harmless runs without asking (event `guard.cleared`), the rest ask as before with the model's view on the card. Blocking rules and `write`/`edit` are never relaxed; no answer (no Decide plugin, the model not loaded, 15 s) means you are asked. In a subagent a cleared call runs; one that is not cleared is blocked as before |
 | `guardrails.secondOpinionModel` | `qwen3.8-27b` | the decision model; `qwen3.8-27b` (about 0.3 s) was measured on 852 real commands (docs/DECISION-MODELS.md, "NInfer baselines" 0.4); `kev-9b` calls too many local commands remote |
 | `guardrails.secondOpinionThreshold` | `0.2` | a command runs without asking only when p(destructive), p(stops a process) and p(changes a remote) are each below it (0.01–0.5); p(read-only) is shown on the card but not required (the model underrates builds and test runs). At 0.3 a hub quit was cleared in the hand-labelled set, at 0.2 no risky command |
 
@@ -317,4 +317,4 @@ The default commands: `rm -r` of `/`, `/*`, `~` or `$HOME`; deleting a drive roo
 | `ssh.scpPath` | next to `ssh.path` | the scp client |
 | `ssh.config` | `~/.ssh/config` | where the host aliases come from; any other file is also passed to ssh and scp (`-F`) |
 | `ssh.connectTimeoutSeconds` | `10` | (2–120) |
-| `ssh.timeoutSeconds` | `120` | default `ssh_run` timeout (max 1800) |
+| `ssh.timeoutSeconds` | `120` | default `ssh` `run` timeout (max 1800) |

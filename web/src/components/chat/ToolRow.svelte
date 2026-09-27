@@ -8,7 +8,7 @@
   import GenericView from './tools/GenericView.svelte';
   import WebView from './tools/WebView.svelte';
   import TodoView from './tools/TodoView.svelte';
-  import { parseArgs, toolMeta, toolSummary, toolBadge, pathArg } from '../../lib/tools.js';
+  import { parseArgs, toolMeta, toolSummary, toolBadge, pathArg, viewName } from '../../lib/tools.js';
   import { openFile } from '../../lib/openFile.js';
   import { asks, answerApproval, opinionText } from '../../lib/state/asks.svelte.js';
   import { toast } from '../../lib/state/ui.svelte.js';
@@ -24,7 +24,9 @@
   const call = $derived(step.call);
   const result = $derived(step.result);
   const args = $derived(parseArgs(call));
-  const meta = $derived(toolMeta(call.name));
+  // a tool with actions (ssh, process, agents) is shown as the tool of its action
+  const name = $derived(viewName(call.name, args));
+  const meta = $derived(toolMeta(name));
   const lt = $derived(chat.live.get(call.id));
   // opened mid-run: tool.start was missed, but the agent's activity names the tool that is executing
   const runningNow = $derived.by(() => {
@@ -84,11 +86,11 @@
               ? 'pending'
               : 'cancelled',
   );
-  const summary = $derived(toolSummary(call.name, args, base));
+  const summary = $derived(toolSummary(name, args, base));
   // read / write / edit: open the file with the operating system
-  const filePath = $derived(['read', 'write', 'edit'].includes(call.name) ? pathArg(args) : null);
+  const filePath = $derived(['read', 'write', 'edit'].includes(name) ? pathArg(args) : null);
   const badge = $derived.by(() => {
-    const b = result ? toolBadge(call.name, result) : null;
+    const b = result ? toolBadge(name, result) : null;
     // agent_spawn records the status at spawn time; prefer the subagent's live status when known
     const d = result?.details;
     if (b && call.name === 'agent_spawn' && d?.sessionId && typeof d.status === 'string') {
@@ -185,17 +187,17 @@
         </button>
       {/if}
       {#if meta.view === 'shell'}
-        <ShellView name={call.name} {args} {result} live={lt} />
+        <ShellView name={name} {args} {result} live={lt} />
       {:else if meta.view === 'edit' || meta.view === 'write'}
-        <DiffView name={call.name} {args} {result} />
+        <DiffView name={name} {args} {result} />
       {:else if meta.view === 'read'}
         {#if !result?.isError}<ReadView {args} {result} />{/if}
       {:else if meta.view === 'search'}
-        {#if !result?.isError}<SearchView name={call.name} {result} />{/if}
+        {#if !result?.isError}<SearchView name={name} {result} />{/if}
       {:else if meta.view === 'agent'}
-        <AgentView name={call.name} {args} {result} />
+        <AgentView name={name} {args} {result} />
       {:else if meta.view === 'web'}
-        {#if !result?.isError}<WebView name={call.name} {result} />{/if}
+        {#if !result?.isError}<WebView name={name} {result} />{/if}
       {:else if meta.view === 'todo'}
         <TodoView {args} {result} />
       {:else}
