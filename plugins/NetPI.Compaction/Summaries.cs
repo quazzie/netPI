@@ -131,8 +131,8 @@ public static class FileLists
             {
                 var (path, host, action) = PathOf(call.Arguments);
                 if (path is null) continue;
-                // ssh is one tool with actions; ssh_read/ssh_write/ssh_edit are the older names, still in older chats
-                var name = call.Name == "ssh" && action is not null ? "ssh_" + action : call.Name;
+                // a tool with actions counts as <tool>_<action>: ssh + read is ssh_read, the older name still in older chats
+                var name = action is not null ? call.Name + "_" + action : call.Name;
                 switch (name)
                 {
                     case "read": read.Add(path); break;

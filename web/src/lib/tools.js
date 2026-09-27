@@ -31,19 +31,16 @@ const META = {
   process: { label: 'Processes', icon: 'process', arg: 'action', view: 'process' },
 };
 
-// Tools with actions (one tool, several jobs) are shown as the tool that did that job before they were merged: ssh + run
-// as ssh_run, process + output as process_output, agents + wait as agent_wait. Older chats still hold the old names.
-const ACTION_TOOLS = { ssh: 'ssh_', process: 'process_', agents: 'agent_' };
-
-/** The name a call is shown as: for a tool with actions, the old tool of its action. */
+/**
+ * The name a call is shown as. One rule, no list of tools: a call with an action is shown as `<tool>_<action>` when that
+ * name has a view here (a tool with actions is the old tools merged: ssh + run as ssh_run, process + output as
+ * process_output, agent + wait as agent_wait; older chats hold those names), else as the tool itself.
+ */
 export function viewName(name, args) {
-  const prefix = ACTION_TOOLS[name];
-  if (!prefix) return name;
-  let a = String(arg(args, 'action') ?? '').trim().toLowerCase();
-  if (!a && name === 'ssh' && arg(args, 'script') != null) a = 'run';
-  if (!a && name === 'process') a = 'list';
-  if (name === 'ssh' && (a === 'upload' || a === 'download')) a = 'copy';
-  return a ? prefix + a : name;
+  const a = String(arg(args, 'action') ?? '').trim().toLowerCase();
+  if (!a || !/^[a-z_]+$/.test(a)) return name;
+  const n = `${name}_${a}`;
+  return META[n] || n.startsWith('agent_') ? n : name;
 }
 
 const CATEGORY_ICON = { files: 'file', shell: 'terminal', agents: 'bot', ideas: 'idea', web: 'globe', todo: 'list', media: 'image', ssh: 'terminal', goal: 'target', skills: 'sparkle', general: 'wrench' };
