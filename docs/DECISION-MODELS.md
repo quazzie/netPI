@@ -365,6 +365,25 @@ rejections).
   about 1–2 s after the previous request on it; `node:http` does not (decisions-lab `dec_client_probe.mjs`:
   fetch 2.09–2.11 s, node:http 82–113 ms, NInfer 80–111 ms for the same decisions). The loop's decisions over
   2 s are real work: big pages, up to 10 pick branches over a 10–15k-token uncached state.
+- **As designed: one growing conversation, decisions after the turn** (`cu_web.mjs --conversation`, `--safety τ`).
+  Each step appends the reply (with its reasoning) and the next observation, so earlier steps stay cached: a chat step
+  reuses everything before it (form step 8: 5,195 of 5,839 tokens). Suite: 15/16 (a preview release read as the
+  latest), 6.2 s per task p50, about the fresh-prompt baseline's 5.4 s, since the control list is new every step
+  anyway. A **safety check** after each chat step, on the step's cached head ("would it delete, pay, send, publish or
+  change something the task did not ask for?"), costs 63–151 ms at ~97% cached when it hits the cache. Replayed on
+  recorded steps (`cu_safety_replay.mjs`, a dangerous control from the same screen swapped in): at 0.3 it blocks
+  59/60 harmful actions and 3/60 real ones (one a "Check out" the task asked for); at 0.5 46/60 and 0/60, the misses
+  mostly disabled Share buttons. A typed question about visible content, as decisions suit.
+- **NInfer defect: a decision can destroy the agent's cached context.** In the suite with the check, on the local
+  pages and GitHub, every check and every following chat step got 0 cached (Wikipedia and the Python docs cached
+  fully). Reproduced (`dec_head_race.mjs`): chat turn 1, a decision on its head, chat turn 2. With no decision,
+  turn 2 reuses turn 1 even 5 s later (~845 cached, "private endpoint"). With the decision 0 or 0.5 s after turn 1,
+  or 5 s after, the decision finds nothing and turn 2 loses everything (0 cached, `share_state` true or false); at
+  2 s the decision reuses the head and turn 2 keeps it. So the decision path misses heads that a chat request finds
+  (just after the turn, and after some idle seconds), and when it misses, its admission reclaims the head: a first
+  turn is a "one-request root", unprotected by design (continuation-first admission, fork `bffac01f`,
+  `docs/serving.md`), so a loop with a decision after every turn never gets an established, protected lineage.
+  Guardrails' second opinion is this pattern (a decision right after the agent's turn). Fix in NInfer first.
 - So for this loop the reasoning-low chat step with its plan line stays best. Decisions suit typed questions about
   visible content, like the guard questions (0.4 above). A safety check before a click ("does this send, pay or
   delete?") is the untested candidate in the loop.
