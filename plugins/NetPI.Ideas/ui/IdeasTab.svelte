@@ -20,8 +20,11 @@
   let dropTarget = $state(null); // { id, after }
   let visible = true;
   let dirty = false;
-  // The project filter: 'all' | 'global' | a project id. It follows the active project until the user picks one.
+  // The project filter: 'all' | 'global' | a project id. It follows the active project until the user picks one, so it
+  // cannot be $derived - picking 'All projects' has to stick when the project changes. onChange below keeps both in step.
+  // svelte-ignore state_referenced_locally
   let activeProjectId = $state(ctx.app.activeProject?.id ?? null);
+  // svelte-ignore state_referenced_locally
   let projectFilter = $state(activeProjectId ?? 'global');
   let followsActive = true;
   // Plans a closed chat left unsaved (the cards above the composer answer the same cards).
