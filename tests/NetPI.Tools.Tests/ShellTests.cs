@@ -286,6 +286,95 @@ public static class ShellTests
             Check.Error(await T.Run(new ProcessTool(registry), dir, new { action = "output", id = "proc_nope" }), "No process");
         });
 
+        r.Add("process wait: returns the moment the job exits, with its code, duration and output", async () =>
+        {
+            var (svc, registry, _) = NewService();
+            var dir = T.TempDir("wait");
+            var res = await T.Run(Bash(svc), dir, new { command = "for i in 1 2 3; do echo tick $i; sleep 0.2; done", background = true });
+            var id = T.D(res).Str("processId");
+            var tool = new ProcessTool(registry);
+
+            var sw = Stopwatch.StartNew();
+            var w = await T.Run(tool, dir, new { action = "wait", id, timeout = 60 });
+            sw.Stop();
+            Check.Ok(w);
+            // The acceptance rule: it comes back when the job does, not at the end of the timeout window.
+            Check.True(sw.Elapsed < TimeSpan.FromSeconds(20), $"returned in {sw.ElapsedMilliseconds} ms, not after the 60 s timeout");
+            var d = T.D(w);
+            Check.Equal("exited", d.Str("status"));
+            Check.Equal(0, d.Int("exitCode"));
+            Check.True(d.Int("durationMs") >= 500, $"durationMs {d.Int("durationMs")} (the job slept for 0.6 s)");
+            Check.Contains(w.Content, "tick 1\ntick 2\ntick 3");
+            Check.Contains(d.Str("output"), "tick 3");
+            Check.Contains(w.Content, "exited 0");
+
+            // Already finished: a second wait is free and says the same, so it is safe to fire blind.
+            sw.Restart();
+            var again = await T.Run(tool, dir, new { action = "wait", id });
+            sw.Stop();
+            Check.Equal("exited", T.D(again).Str("status"));
+            Check.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"a finished job returns at once ({sw.ElapsedMilliseconds} ms)");
+
+            Check.Error(await T.Run(tool, dir, new { action = "wait", id = "proc_nope" }), "No process with id proc_nope");
+            Check.Error(await T.Run(tool, dir, new { action = "wait" }), "Missing required argument 'id'");
+            // A silly timeout clamps instead of failing: 0 means a second, not "no wait at all".
+            var clamped = await T.Run(tool, dir, new { action = "wait", id, timeout = 0 });
+            Check.Ok(clamped);
+            Check.Equal("exited", T.D(clamped).Str("status"));
+        });
+
+        r.Add("process wait: a timeout is not a lost job — it says still running, for how long, with the last lines", async () =>
+        {
+            var (svc, registry, _) = NewService();
+            var dir = T.TempDir("wait2");
+            var res = await T.Run(Bash(svc), dir, new { command = "echo first; sleep 30", background = true });
+            var id = T.D(res).Str("processId");
+            var tool = new ProcessTool(registry);
+
+            var sw = Stopwatch.StartNew();
+            var w = await T.Run(tool, dir, new { action = "wait", id, timeout = 1 });
+            sw.Stop();
+            Check.Ok(w);
+            Check.True(sw.Elapsed < TimeSpan.FromSeconds(8), $"waited the timeout and no longer ({sw.ElapsedMilliseconds} ms)");
+            var d = T.D(w);
+            Check.Equal("running", d.Str("status"));
+            Check.True(d.Int("elapsedMs") >= 900, $"elapsedMs {d.Int("elapsedMs")} — how long the job has been going");
+            Check.Equal(1000, d.Int("waitedMs"));
+            Check.Contains(w.Content, "Still running after 1s");
+            Check.Contains(w.Content, "first");
+            Check.Contains(w.Content, "wait again with a longer timeout, or kill it");
+            Check.Equal(1, d.GetProperty("lastLines").GetArrayLength());
+            Check.Equal("first", d.GetProperty("lastLines")[0].GetString());
+            Check.Equal("running", registry.Get(id)!.Status);
+
+            // And the job is still waitable: a longer wait gets the result.
+            var w2 = await T.Run(new ProcessTool(registry), dir, new { action = "wait", id, timeout = 1 });
+            Check.Equal("running", T.D(w2).Str("status"));
+            await T.Run(tool, dir, new { action = "kill", id });
+            Check.Equal("killed", registry.Get(id)!.Status);
+            var w3 = await T.Run(tool, dir, new { action = "wait", id });
+            Check.Equal("killed", T.D(w3).Str("status"));
+        });
+
+        r.Add("process: wait is read-only, the actions are recognised, and kill and list are unchanged", async () =>
+        {
+            var (_, registry, _) = NewService();
+            var tool = new ProcessTool(registry);
+            var dir = T.TempDir("wait3");
+            Check.True(tool.IsReadOnly(T.Args(new { action = "wait", id = "proc_x" })), "wait changes nothing");
+            Check.True(tool.IsReadOnly(T.Args(new { action = "list" })));
+            Check.False(tool.IsReadOnly(T.Args(new { action = "kill", id = "proc_x" })));
+            Check.Error(await T.Run(tool, dir, new { action = "snooze" }), "use list, output, wait or kill");
+            Check.Error(await T.Run(tool, dir, new { action = "await", id = "proc_nope" }), "No process with id");
+            Check.Contains(tool.Definition.Parameters!.ToJsonString(), "wait");
+            Check.Contains(tool.Definition.Parameters!.ToJsonString(), "timeout");
+            // The description carries the policy, not just the mechanics: background-then-wait must not become the default.
+            var guidelines = string.Join(" ", tool.Definition.PromptGuidelines);
+            Check.Contains(guidelines, "block on one you already backgrounded");
+            Check.Contains(guidelines, "known duration");
+            Check.Contains(tool.Definition.Help, "tells slow from hung");
+        });
+
         r.Add("background: immediate exit is reported; timeout kills; StopAsync kills all", async () =>
         {
             var (svc, registry, _) = NewService();

@@ -296,10 +296,19 @@ processes are killed when the plugin stops.
 |---|---|---|
 | `process` `list` (reads only) | `{ action: "list" }` | `{ processes: ProcessInfo[] }` |
 | `process` `output` (reads only) | `{ action: "output", id, tail? (200, max 2000) }` (the id may also be a pid) | `{ process: ProcessInfo, tail, truncated }` |
+| `process` `wait` (reads only) | `{ action: "wait", id, timeout? (120 s, max 1800), tail? }` | finished: `{ process, status, exitCode, durationMs, output, tail, truncated }` · still running: `{ process, status: "running", elapsedMs, waitedMs, lastLines: string[], tail, truncated }` |
 | `process` `kill` | `{ action: "kill", id }` | `{ process: ProcessInfo, killed: boolean }` |
 
-`process` is one tool with three actions (`IReadOnlyCalls`: `list` and `output` count as read-only, so several of them run
-in parallel).
+`process` is one tool with four actions (`IReadOnlyCalls`: `list`, `output` and `wait` count as read-only, so several of
+them run in parallel).
+
+**`wait` blocks on the exit; it never polls.** It awaits the process's completion (which fires once it has exited *and*
+its output was drained), so it returns the moment the job is done — a job that is already finished returns at once, and a
+second `wait` costs nothing, so it is safe to fire blind. Only the timeout ends the wait early, and then the job is
+untouched: the result says it is still running, how long it has been going, and its last lines, which is what tells
+*slow* from *hung*. Cancelling the turn (Esc) cancels the wait, not the job. Its reason to exist is a job you backgrounded
+and now need the result of; for a command of a known duration a single blocking `bash`/`pwsh` call with a matching
+timeout is the faster path, and the tool description and the shared prompt guideline say so.
 
 ```ts
 interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?; agentId?; background: boolean;
