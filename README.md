@@ -72,7 +72,7 @@ tool). Optional: PowerShell 7 (`pwsh` tool), Node.js 22 (only to change the UI �
 
 ```powershell
 cd C:\AI\Projects\NetPI
-.\build.ps1 -Run          # builds into artifacts\app and starts artifacts\app\NetPI.exe
+.\build.ps1 -Run          # builds, installs into artifacts\app and starts artifacts\app\NetPI.exe
 ```
 
 From cmd: `build -Run` (`build.cmd` runs `build.ps1` with the same options; `build /?` lists them).
@@ -127,10 +127,12 @@ Data: `~/.netpi/` — `settings.json`, `netpi.db` (sessions, messages, projects,
 ## Develop
 
 ```powershell
-dotnet build plugins\NetPI.Nudge     # while NetPI runs: the plugin hot-reloads
-.\build.ps1                          # while NetPI runs too: plugins hot-reload, a new host starts with the next NetPI
-.\build.ps1 -NextStart               # while NetPI runs: nothing changes in it, its next start runs the new build
-npm run build:plugins                # plugin tab UIs → tabs reload
+dotnet build plugins\NetPI.Nudge     # into artifacts\dev\app: the running app sees nothing
+.\build.ps1                          # build into artifacts\dev\app: the running app is not touched
+.\build.ps1 -Publish                 # install into artifacts\app: plugins hot-reload, a new host starts with the next NetPI
+.\build.ps1 -Publish -NextStart      # the running app gets nothing; its next start runs the new build
+.\build.ps1 -Pending                 # what a restart would bring
+npm run build:plugins                # plugin tab UIs → tabs reload (artifacts\dev\app: not the running app)
 npm run dev                          # UI dev server against a running NetPI (see docs/UI.md)
 .\build.ps1 -Test                    # unit suites (NuGet-free console runners)
 ```

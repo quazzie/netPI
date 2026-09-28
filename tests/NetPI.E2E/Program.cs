@@ -5,7 +5,7 @@ using NetPI.E2E;
 //   dotnet tests/NetPI.E2E/bin/Debug/NetPI.E2E.dll [options] [name filter...]
 //     --port N        netpi-server port (default 7470)
 //     --mock-port N   MockLlm port (default 7471)
-//     --app DIR       run this app folder instead of a fresh copy of artifacts/app
+//     --app DIR       run this app folder instead of a fresh copy of the build output (artifacts/dev/app)
 //     --speed X       mock stream speed factor (default 1)
 //     --no-ui         skip the Playwright UI smoke test
 //     --keep          keep the temp folder (server.log, home, projects)

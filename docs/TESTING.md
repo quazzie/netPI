@@ -28,11 +28,16 @@ Get-ChildItem plugins/*/*.csproj, tests/*/*.csproj | % { dotnet @b $_.FullName }
 # on Windows `dotnet build NetPI.slnx` also works (it includes src/NetPI.Desktop)
 ```
 
-Plugins build into `artifacts/app/plugins/<Name>/`, the server into `artifacts/app/`. The web UI and the plugin UI bundles
-come from `npm run build` (`artifacts/app/wwwroot`, `plugins/*/wwwroot/ui.js`).
+Plugins build into `artifacts/dev/app/plugins/<Name>/`, the server into `artifacts/dev/app/`. The web UI and the
+plugin UI bundles come from `npm run build` (`web/dist`, `plugins/*/wwwroot/ui.js`) and the .NET build copies them
+into the build output.
 
-Note: a running NetPI instance started from `artifacts/app` hot-reloads the plugins you rebuild. The E2E suite runs
-from a private copy of `artifacts/app`, so it is not affected by (and does not affect) other instances.
+`artifacts/app` is the **installed** build — the one a running NetPI loads its plugins from — and only
+`build.ps1 -Publish` writes there. That is the point: a build (of a plugin, or of a test project that references one)
+lands in `artifacts/dev/app` and the running app sees nothing, so no chat loses a tool because someone ran the tests.
+Publishing while NetPI runs hot-reloads the changed plugins, which every chat holding one of their tools hears about
+(`-Publish -NextStart` defers all of it to the next start). The E2E suite runs from a private copy of the build output
+(`artifacts/dev/app`), so it is not affected by (and does not affect) other instances.
 
 ## Unit suites
 

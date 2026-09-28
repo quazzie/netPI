@@ -71,12 +71,18 @@ public sealed class Env : IAsyncDisposable
         });
 
         // The server runs from a copy, so the hot-reload test can touch plugin files without disturbing other instances.
+        // The source is the build output (artifacts/dev/app): a build never writes into the app folder a running
+        // NetPI loads plugins from, so that is where a fresh build is. --app picks any other one.
         if (Options.AppDir is { } app) AppDir = Path.GetFullPath(app);
         else
         {
-            var src = Path.Combine(RepoRoot, "artifacts", "app");
-            if (!File.Exists(Path.Combine(src, "netpi-server.dll"))) throw new InvalidOperationException($"netpi-server is not built ({src})");
             AppDir = Path.Combine(Root, "app");
+            string? src = null;
+            foreach (var candidate in new[] { Path.Combine(RepoRoot, "artifacts", "dev", "app"), Path.Combine(RepoRoot, "artifacts", "app") })
+                if (File.Exists(Path.Combine(candidate, "netpi-server.dll"))) { src = candidate; break; }
+            if (src is null)
+                throw new InvalidOperationException(
+                    $"netpi-server is not built ({Path.Combine(RepoRoot, "artifacts", "dev", "app")} and artifacts/app): run build.ps1, or pass --app <dir>");
             CopyDir(src, AppDir);
         }
 

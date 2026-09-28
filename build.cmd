@@ -1,9 +1,12 @@
 @echo off
 rem Build NetPI from cmd.exe: runs build.ps1 with the same options.
-rem   build                        build everything (Release); while NetPI runs, plugins hot-reload and a
-rem                                new host is ready for its next start
-rem   build -NextStart             while NetPI runs: nothing changes in it, its next start runs the new build
-rem   build -Run                   build and start the desktop app
+rem   build                        build into artifacts\dev\app; the running app is not touched
+rem   build -Publish               install into artifacts\app: plugins hot-reload, a new host is
+rem                                ready for its next start (the running app's chats are told which)
+rem   build -Publish -NextStart    the running app gets nothing; its next start runs the new build
+rem   build -Pending               what a restart would bring
+rem   build -Discard               drop the staged build
+rem   build -Run                   publish and start the desktop app
 rem   build -Test                  build and run the unit test suites
 rem   build -SkipWeb               don't run npm even if it is installed
 rem   build -Configuration Debug   Debug instead of Release

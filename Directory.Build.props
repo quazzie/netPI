@@ -6,8 +6,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <RepoRoot>$(MSBuildThisFileDirectory)</RepoRoot>
-    <!-- Everything runnable lands in artifacts/app: executables, wwwroot and plugins/<Name>/ -->
-    <AppOutDir>$(RepoRoot)artifacts/app/</AppOutDir>
+    <!-- Where a build lands: executables, wwwroot and plugins/<Name>/. The DEFAULT is the dev tree, never artifacts/app:
+         a running NetPI loads its plugins from artifacts/app and reloads one as soon as its file changes, so a plain
+         `dotnet build` (of a plugin, or of a test project that references one) must not write there — that takes tools
+         away from every open chat. build.ps1 -Publish is the one thing that installs into artifacts/app. -->
+    <AppOutDir>$(RepoRoot)artifacts/dev/app/</AppOutDir>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>

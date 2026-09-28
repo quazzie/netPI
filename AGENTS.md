@@ -12,25 +12,31 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
 - `plugins/<Name>` — one plugin per folder; minimal csproj, conventions in `plugins/Directory.Build.props`. Plugins
   never reference each other: they talk through services (`ctx.Services`), RPC (`ctx.Rpc`) and events (`ctx.Events`).
 - `plugins/<Name>/ui` — optional Svelte tab (built to `wwwroot/ui.js` by `npm run build:plugins`, committed).
-- `web/` — the app UI (built to `web/dist`, committed; copied to `artifacts/app/wwwroot` by the server build).
+- `web/` — the app UI (built to `web/dist`, committed; copied into the build output's `wwwroot` by the server build).
 - `tests/` — console test runners (no test framework; NuGet packages other than WebView2 are not used),
   `tests/MockLlm` (scripted model server), `tests/NetPI.E2E` (end-to-end suite).
 
 ## Build & test
-- **Work in a worktree, not here** (see `C:\AI\Projects\AGENTS.md`). It is the cheapest way not to disturb the
-  running app: `AppOutDir` is under the repo root, so a build inside `../NetPI-<slug>` writes its plugin DLLs into
-  *that* worktree's `artifacts/`, which the running app never watches. A build in this checkout can land in
-  `artifacts\app\plugins\`, and the file watcher hot-reloads it into every running chat — a running chat then gets
-  "Your tools changed. No longer available: …" from a command that was only meant to run tests. Check where the
-  build lands before you build; `build.ps1` has the verbs, and the dev/test output is meant to be isolated.
-- Windows: `.\build.ps1` (add `-Test` for the unit suites, `-Run` to start); from cmd `build` (`build.cmd`, same
-  options). Linux/macOS: `./build.sh [--test]`.
-- To install into the running app (deliberate, never a side effect of testing): `dotnet build plugins/<Name>` (one
-  plugin, hot-reloads) or `.\build.ps1`, which builds into
-  `artifacts\build\stage` and then puts it in place: plugins hot-reload; host files it replaces go into
-  `artifacts\app\.old` (a running exe or DLL can be renamed, not overwritten), so a restart of NetPI runs the new host;
-  after a contract change the plugins wait in `artifacts\app\.pending` for that restart. `-NextStart`: the running
-  NetPI gets nothing, everything waits for the restart. It prints what needs it.
+- **Work in a worktree, not here** (see `C:\AI\Projects\AGENTS.md`): one worktree and branch per task. It is how you
+  avoid another agent's *edits* reaching you and yours reaching them.
+- **A build never touches the running app.** `AppOutDir` (`Directory.Build.props`) is `artifacts/dev/app`, so a plain
+  `dotnet build` of a plugin — or of a test project that references one — lands there, and a running NetPI (which loads
+  its plugins from `artifacts/app`) sees nothing: no chat loses a tool because someone ran the tests. Installing into
+  `artifacts\app` is a separate, deliberate step (`-Publish` below). A worktree has its own `artifacts/` besides.
+- Windows: `.\build.ps1` (add `-Test` for the unit suites); from cmd `build` (`build.cmd`, same options).
+  Linux/macOS: `./build.sh [--test]`.
+- Installing into `artifacts\app` (the app a NetPI runs from) is deliberate, never a side effect of testing:
+  - `.\build.ps1 -Publish` — build, then install. A running NetPI hot-reloads the changed plugins, so every chat
+    holding one of their tools gets a "tools" notice; the script names the plugins and the mid-turn chats before it
+    does (`-WaitUntilIdle` waits for them instead).
+  - `.\build.ps1 -Publish -NextStart` — the running NetPI gets nothing: everything waits in `artifacts\app\.pending`
+    for its next start, which installs it. Host files it replaces go into `artifacts\app\.old` (a running exe or DLL
+    can be renamed, not overwritten), so the next start runs the new host; after a contract change the plugins wait
+    too, because the running NetPI would load them onto its old contracts. It prints what needs it.
+  - `.\build.ps1 -Pending` — what a restart would bring. `.\build.ps1 -Discard` — drop the staged build.
+  - `.\build.ps1 -Run` — publish and start the desktop app. `./build.sh` takes `--publish`, `--next-start`,
+    `--pending`, `--discard`.
+  - One plugin only, on purpose: `dotnet build plugins/<Name> -p:AppOutDir=artifacts/app/plugins/<Name>/`.
 - Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
   Agent, Aux, Host. End-to-end: `dotnet tests/NetPI.E2E/bin/<Config>/NetPI.E2E.dll` (see `docs/TESTING.md`).
 - UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`.

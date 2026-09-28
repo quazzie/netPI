@@ -7,7 +7,7 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 | | |
 |---|---|
 | Repo | `C:\AI\Projects\NetPI` (this folder) |
-| Build output | `artifacts\app\`: `NetPI.exe` (WinForms + WebView2 desktop shell, starts the server in-process), `netpi-server.exe` (headless), `plugins\<Name>\`, `wwwroot\` |
+| Build output | `artifacts\dev\app\` (what a build makes: `NetPI.exe` — WinForms + WebView2 desktop shell, starts the server in-process — `netpi-server.exe`, `plugins\<Name>\`, `wwwroot\`), installed into `artifacts\app\` by `build.ps1 -Publish` |
 | User data | `%USERPROFILE%\.netpi\`: `settings.json`, `netpi.db` (SQLite), `logs\netpi-YYYYMMDD.log`, `logs\failed-requests\`, `window.json`, `webview\`, `workspace\` |
 | Old NetPI v1 | source `C:\AI\Projects\NetPI`; its data was moved to `%USERPROFILE%\.netpi\legacy-netpi-v1\`. Reference only; don't run it against the new data folder |
 | Model stack | AiProxy `http://127.0.0.1:8090` (AiSwitcher, `C:\AI\archived\apps\AiSwitcher-legacy`) → nInfer `:8080` (source `C:\AI\Projects\ninfer-windows`, AiSwitcher profile `quasar-v3`), serving `qwen3.8-27b` with concurrency 2 and 2 × 262k KV. See `docs/AIPROXY-AGENT-GUIDE.md` |
@@ -23,7 +23,7 @@ spending reads, persistent per-attempt budget reservations, and the backup plugi
 [BACKUPS.md](BACKUPS.md) explains snapshot scope, retention and recovery.
 
 Build output used for validation is isolated under `artifacts/review`; this task has not installed changes into
-`artifacts/app` or restarted the user's app. Deploy with the normal build flow, then restart and refresh open
+`artifacts/app` or restarted the user's app. Deploy with `build.ps1 -Publish`, then restart and refresh open
 browser tabs: `guard.answer` now takes `approvalId`, not the model's `callId`.
 
 Earlier real-model results and deployment notes are historical, preserved in
@@ -87,7 +87,7 @@ Source: `C:\AI\Projects\ninfer-windows\.local\stateless-agents-20260924\report.m
 
 ## Working rules
 
-- **Build.** The user runs builds from cmd: `build` (`build.cmd` runs `build.ps1` with the same options), and starts NetPI from `artifacts\app\NetPI.exe` (pinned to the taskbar). Build with `.\build.ps1` even while NetPI runs: it builds into `artifacts\build\stage` (a failed build changes nothing), plugins hot-reload, and the host files it replaces are moved into `artifacts\app\.old` (a running exe or DLL can be renamed, not overwritten), so the next start of NetPI runs the new host; after a contract change the plugins wait in `artifacts\app\.pending`, and that start installs them. The user works in their NetPI: build with `.\build.ps1 -NextStart` unless they want a change live now, so nothing changes under a running chat (plugins and the web UI wait in `.pending` too). When it prints "Ready for the next start", tell the user to restart NetPI. `dotnet build plugins\<Name>` hot-reloads one plugin, `npm run build:plugins` the plugin tabs.
+- **Build.** The user runs builds from cmd: `build` (`build.cmd` runs `build.ps1` with the same options), and starts NetPI from `artifacts\app\NetPI.exe` (pinned to the taskbar). A build lands in `artifacts\dev\app` and never touches the running app — `artifacts\app` is the installed build, and only `.\build.ps1 -Publish` writes there. Publishing while NetPI runs hot-reloads the changed plugins, so every chat holding one of their tools gets a notice; the host files it replaces are moved into `artifacts\app\.old` (a running exe or DLL can be renamed, not overwritten), so the next start of NetPI runs the new host; after a contract change the plugins wait in `artifacts\app\.pending`, and that start installs them. The user works in their NetPI: publish with `.\build.ps1 -Publish -NextStart` unless they want a change live now, so nothing changes under a running chat (plugins and the web UI wait in `.pending` too); `-Pending` lists what waits. When it prints "Ready for the next start", tell the user to restart NetPI. One plugin live on purpose: `dotnet build plugins\<Name> -p:AppOutDir=artifacts/app/plugins/NetPI.<Name>/`.
 - **Leave the user's live setup alone.** Don't modify `%USERPROFILE%\.netpi` data, and don't stop NetPI, AiSwitcher or nInfer without asking. The E2E suite and `netpi-server --home <temp>` use their own homes.
 - **Tests and docs with every change.** Every behaviour change gets a test in the owning suite (the console runners in `tests/`). Also update `docs/PROTOCOL.md`, `docs/SETTINGS.md`, `docs/TOOLS.md` or `docs/UI.md` as relevant.
 - **Commits.** Make small commits with descriptive messages.

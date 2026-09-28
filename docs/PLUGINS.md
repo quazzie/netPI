@@ -15,7 +15,8 @@ plugins/MyPlugin/
   ui/main.js             (optional tab UI, built to wwwroot/ui.js)
 ```
 
-`plugins/Directory.Build.props` does the rest: output to `artifacts/app/plugins/MyPlugin/`, a reference to
+`plugins/Directory.Build.props` does the rest: output to `$(AppOutDir)plugins/MyPlugin/` (the dev tree,
+`artifacts/dev/app/plugins/MyPlugin/`), a reference to
 `NetPI.Abstractions` that is *not* copied (contract types must come from the host), dynamic-loading settings and
 copying `wwwroot/**`. Add the project to `NetPI.slnx` (`dotnet sln NetPI.slnx add plugins/MyPlugin/MyPlugin.csproj`).
 
@@ -172,15 +173,19 @@ Plain JavaScript works too: just drop a `wwwroot/ui.js`. Style with the host CSS
 ## Dev loop
 
 ```powershell
-.\build.ps1 -Run                          # once
-dotnet build plugins\MyPlugin              # while NetPI runs → the plugin hot-reloads
-npm run build:plugins                      # tab UI → the tab reloads
+.\build.ps1 -Run                          # once: build, install, start
+dotnet build plugins\MyPlugin              # → artifacts\dev\app: the running app sees nothing
+.\build.ps1 -Publish                       # install: the running NetPI hot-reloads the changed plugins
+npm run build:plugins                      # tab UI → the built output (artifacts\dev\app by default)
 ```
 
-`.\build.ps1` works while NetPI runs too. A new host goes in place for the next start (the running files are moved
-into `artifacts\app\.old`). After a contract change every plugin's output changes, and hot-reloaded they would run on
-the old contracts, so they wait in `artifacts\app\.pending` and the next start installs them (`PendingBuild`, before
-anything loads). `.\build.ps1 -NextStart` does that with every change, the web UI included: the running NetPI gets
-nothing.
+A build lands in `artifacts\dev\app` and never in `artifacts\app`, the folder a running NetPI loads its plugins
+from: rebuilding a plugin (or a test project that references one) would otherwise take its tools away from every
+open chat. Installing is `.\build.ps1 -Publish`. A new host goes in place for the next start (the running files are
+moved into `artifacts\app\.old`). After a contract change every plugin's output changes, and hot-reloaded they would
+run on the old contracts, so they wait in `artifacts\app\.pending` and the next start installs them (`PendingBuild`,
+before anything loads). `.\build.ps1 -Publish -NextStart` does that with every change, the web UI included: the
+running NetPI gets nothing, and `-Pending` lists what waits. One plugin, live on purpose:
+`dotnet build plugins\MyPlugin -p:AppOutDir=artifacts/app/plugins/NetPI.MyPlugin/`.
 
 `/reload [pluginId]` in the chat, or the Diagnostics tab, reloads plugins on demand.
