@@ -17,9 +17,16 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   `tests/MockLlm` (scripted model server), `tests/NetPI.E2E` (end-to-end suite).
 
 ## Build & test
+- **Work in a worktree, not here** (see `C:\AI\Projects\AGENTS.md`). It is the cheapest way not to disturb the
+  running app: `AppOutDir` is under the repo root, so a build inside `../NetPI-<slug>` writes its plugin DLLs into
+  *that* worktree's `artifacts/`, which the running app never watches. A build in this checkout can land in
+  `artifacts\app\plugins\`, and the file watcher hot-reloads it into every running chat — a running chat then gets
+  "Your tools changed. No longer available: …" from a command that was only meant to run tests. Check where the
+  build lands before you build; `build.ps1` has the verbs, and the dev/test output is meant to be isolated.
 - Windows: `.\build.ps1` (add `-Test` for the unit suites, `-Run` to start); from cmd `build` (`build.cmd`, same
   options). Linux/macOS: `./build.sh [--test]`.
-- While NetPI runs: `dotnet build plugins/<Name>` (one plugin, hot-reloads) or `.\build.ps1`, which builds into
+- To install into the running app (deliberate, never a side effect of testing): `dotnet build plugins/<Name>` (one
+  plugin, hot-reloads) or `.\build.ps1`, which builds into
   `artifacts\build\stage` and then puts it in place: plugins hot-reload; host files it replaces go into
   `artifacts\app\.old` (a running exe or DLL can be renamed, not overwritten), so a restart of NetPI runs the new host;
   after a contract change the plugins wait in `artifacts\app\.pending` for that restart. `-NextStart`: the running
@@ -35,6 +42,8 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
 ## Conventions
 - Keep the core small; new behaviour goes into a plugin. Register everything through `IPluginContext` so hot
   reload can remove it; resolve other plugins' services per use.
+- Several agents work in this repo at once: one worktree and branch per task, stage explicit paths, and never
+  `git add -A` or rewrite a checkout you share. See `C:\AI\Projects\AGENTS.md`.
 - Don't cache plugin-defined types in host-wide JSON options or `object` containers (blocks unloading) — see
   `docs/PLUGINS.md`.
 - Tool results: model-facing text in `Content`, UI data in `Details` (document new shapes in `docs/TOOLS.md`).
