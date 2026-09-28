@@ -83,6 +83,10 @@ public sealed class ModelException(string message, bool transient, int? statusCo
     public bool ContextOverflow { get; init; }
     /// <summary>How long the server asked to wait before trying again (HTTP <c>Retry-After</c>), when it said.</summary>
     public TimeSpan? RetryAfter { get; init; }
+    /// <summary>The provider's own decoration of <see cref="Exception.Message"/> (request, response and generation ids,
+    /// the path of the saved failed request). It stays in the message — the log, <c>diag</c> and a bug report want it —
+    /// and is also named here, so a UI that shows the failure to a person can leave it out (idea-qz1a5z).</summary>
+    public string? Detail { get; init; }
 }
 
 public delegate IAsyncEnumerable<ModelStreamEvent> ModelCallDelegate(ModelRequest request, CancellationToken ct);

@@ -137,6 +137,48 @@ public static class RetryTests
             Check.Equal(1, script.Calls);
         });
 
+        r.Add("retry: the notice drops the provider's ids and dump path; the reset reason and the rethrown error keep them", async () =>
+        {
+            // What the OpenRouter and AiProxy providers do: the ids go into the message and are named as Detail.
+            const string Detail = "generation gen-1790629699-WxYBdRSnM2s3j77xSLV3, saved C:\\Users\\quazz\\.netpi\\logs\\failed-requests\\20260928-232737-795-stealth.json";
+            const string Reason = "OpenRouter: Provider returned an empty response (upstream provider Stealth)";
+            static ModelException Failure() => new($"{Reason} [{Detail}]", true, null, "provider_error") { Detail = Detail };
+
+            var script = new Script((n, _) => n == 1
+                ? Fail(Failure(), new TextDelta("hel"))      // partial output: a reset carries the reason to diag
+                : Events(new TextDelta("hello"), Done()));
+            var events = await Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, script.Next, CancellationToken.None));
+            var notice = ((StreamNotice)events[2]).Text;
+            Check.Contains(notice, $"Connection lost ({Reason}). Retrying in ");
+            Check.NotContains(notice, "gen-1790629699");
+            Check.NotContains(notice, "failed-requests");
+            Check.Contains(((StreamReset)events[1]).Reason, "gen-1790629699");
+
+            // the error a person is finally shown, when the retries run out, is the provider's own message
+            var always = new Script((_, _) => Fail(Failure()));
+            var thrown = await Check.ThrowsAsync<ModelException>(() =>
+                Collect(new RetryMiddleware(() => Fast(attempts: 2)).InvokeAsync(Request, always.Next, CancellationToken.None)));
+            Check.Contains(thrown.Message, "gen-1790629699");
+            Check.Equal(Detail, thrown.Detail);
+        });
+
+        r.Add("retry: a long reason with no ids is capped on one line, and Detail is not cut out of the wrong bracket", async () =>
+        {
+            // No Detail: the cap alone bounds the notice (nothing is guessed and removed).
+            var script = new Script((n, _) => n == 1
+                ? Fail(new ModelException("HTTP 429 [quota] " + new string('x', 300), true, 429))
+                : Events(new TextDelta("hello"), Done()));
+            var events = await Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, script.Next, CancellationToken.None));
+            var notice = events.OfType<StreamNotice>().Single().Text;
+            Check.Contains(notice, "HTTP 429 [quota] xxx");
+            Check.True(notice.EndsWith("... (attempt 2/4)…") || notice.Contains("..."), notice);
+            Check.True(notice.Length < 160, $"{notice.Length} chars: {notice}");
+
+            // A Detail that is not the bracketed tail (nothing appended it) leaves the message alone.
+            var ex = new ModelException("OpenRouter: stream error [code 1]", true) { Detail = "generation gen-x" };
+            Check.Equal("OpenRouter: stream error [code 1]", RetryMiddleware.NoticeReason(ex));
+        });
+
         r.Add("retry: gives up after maxAttempts and rethrows the last error", async () =>
         {
             var script = new Script((n, _) => Fail(new ModelException($"overloaded #{n}", true, 529)));
