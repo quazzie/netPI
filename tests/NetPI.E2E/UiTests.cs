@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace NetPI.E2E;
 
@@ -14,6 +15,7 @@ public static class UiTests
             var s = await env.NewSession(projectId: p.S("id"), title: "UI smoke");
             // a session with no messages is transient (not listed): give the prepared session one
             await env.Run(s.S("id")!, "hello [s:echo]");
+            SeedIdeas(env, p.S("id")!);
             var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "smoke.mjs");
             var outDir = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "screenshots");
             var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
@@ -37,5 +39,26 @@ public static class UiTests
             Check.Equal("ALPHA-UI line\nbeta line\ngamma line\n", File.ReadAllText(Path.Combine(p.S("path")!, "notes.txt")), "the UI run edited the file");
             Env.Log($"screenshots: {outDir}");
         }, 180);
+    }
+
+    /// <summary>Two ideas in the session's project, so the smoke can check the calm overview: status groups, one line per
+    /// idea, the summary and meta row only once a card is open (idea-43oruq).</summary>
+    private static void SeedIdeas(Env env, string projectId)
+    {
+        static JsonObject Idea(string id, string title, string summary, string status, string projectId) => new()
+        {
+            ["id"] = id, ["title"] = title, ["summary"] = summary, ["status"] = status, ["priority"] = "medium",
+            ["tags"] = new JsonArray(), ["createdAt"] = "2026-01-01T00:00:00Z", ["updatedAt"] = "2026-01-01T00:00:00Z",
+            ["createdBy"] = "user", ["sections"] = new JsonArray(), ["sessionIds"] = new JsonArray(),
+            ["project"] = new JsonObject { ["id"] = projectId, ["name"] = "ui-demo" },
+        };
+        var root = new JsonObject
+        {
+            ["version"] = 1,
+            ["ideas"] = new JsonArray(
+                Idea("smoke-idea-a", "Smoke idea A", "SMOKE-SUMMARY-A", "in-progress", projectId),
+                Idea("smoke-idea-b", "Smoke idea B", "SMOKE-SUMMARY-B", "open", projectId)),
+        };
+        File.WriteAllText(Path.Combine(env.Home, "ideas.json"), root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
     }
 }

@@ -155,6 +155,20 @@ try {
     check(`plugin tab ${name} rendered content`, text.trim().length > 20, `${text.trim().length} chars`);
     await shot(page, file);
   }
+  // ---- Ideas tab: the calm overview (idea-43oruq) — status groups, one line per idea, the rest on click
+  if (await openStripTab('right', 'Ideas')) {
+    await page.waitForTimeout(900);
+    const pane = page.locator('.panel.right > .body .pane:not([hidden])');
+    const text = (await pane.innerText().catch(() => '')).replace(/\s+/g, ' ');
+    check('ideas grouped by status', /IN-PROGRESS/i.test(text) && /OPEN/i.test(text), text.slice(0, 140));
+    check('a closed idea is its title only', text.includes('Smoke idea B') && !text.includes('SMOKE-SUMMARY-B'), text.slice(0, 140));
+    await pane.locator('.card .main', { hasText: 'Smoke idea A' }).first().click();
+    await page.waitForTimeout(400);
+    const open = await pane.innerText().catch(() => '');
+    check('opening an idea reveals summary, meta and sections', open.includes('SMOKE-SUMMARY-A') && /in-progress/.test(open), open.slice(0, 140).replace(/\s+/g, ' '));
+    await shot(page, 'ui-07b-ideas-open');
+  }
+
   const filesOpened = await openStripTab('left', 'Files');
   if (filesOpened) {
     await page.waitForTimeout(700);

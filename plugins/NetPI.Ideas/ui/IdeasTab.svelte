@@ -3,7 +3,7 @@
   import { Icon, IconButton, SearchInput, Menu, Empty, Button, basename } from '@netpi/kit';
   import IdeaCard from './IdeaCard.svelte';
   import NewIdea from './NewIdea.svelte';
-  import { STATUSES, ACTIVE, STATUS_TONE, matches } from './model.js';
+  import { STATUSES, ACTIVE, STATUS_TONE, matches, GROUP_ORDER, CLOSED_ORDER } from './model.js';
 
   let { ctx } = $props();
 
@@ -16,6 +16,7 @@
   let tagFilter = $state.raw(new Set());
   let adding = $state(false);
   let expanded = $state.raw(new Set());
+  let openGroups = $state.raw(new Set()); // collapsed statuses the user opened (parked, done, rejected)
   let dragId = $state(null);
   let dropTarget = $state(null); // { id, after }
   let visible = true;
@@ -136,6 +137,28 @@
     s.has(id) ? s.delete(id) : s.add(id);
     expanded = s;
   }
+  function toggleGroup(status) {
+    const s = new Set(openGroups);
+    s.has(status) ? s.delete(status) : s.add(status);
+    openGroups = s;
+  }
+
+  // ------------------------------------------------------------------ grouping (idea-43oruq)
+  // Active statuses first, in the order the work wants them read, then the closed ones behind a count line.
+  const groups = $derived.by(() => {
+    const by = new Map(GROUP_ORDER.map((s) => [s, []]));
+    for (const i of shown) by.get(i.status)?.push(i);
+    return GROUP_ORDER.filter((s) => by.get(s).length).map((status) => ({ status, items: by.get(status) }));
+  });
+  const closed = $derived.by(() => {
+    const n = new Map();
+    for (const i of shown) if (CLOSED_ORDER.includes(i.status)) n.set(i.status, (n.get(i.status) ?? 0) + 1);
+    return CLOSED_ORDER.filter((s) => n.has(s)).map((status) => ({ status, n: n.get(status) }));
+  });
+  // The order the cards are actually rendered in: what move up/down and drag-to-reorder move within.
+  const order = $derived([...groups.flatMap((g) => g.items), ...[...openGroups].flatMap((s) => shown.filter((i) => i.status === s))]);
+  const pos = $derived(new Map(order.map((i, n) => [i.id, n])));
+  const placed = (id) => pos.get(id) ?? -1;
 
   // ------------------------------------------------------------------ mutations
   function replaceIdea(idea) {
@@ -181,7 +204,7 @@
       const ids = ideas.map((i) => i.id);
       const from = ids.indexOf(id);
       // move past the neighbour that is visible under the current filter
-      const visibleIds = shown.map((i) => i.id);
+      const visibleIds = order.map((i) => i.id);
       const vi = visibleIds.indexOf(id);
       const neighbour = visibleIds[vi + delta];
       if (from < 0 || !neighbour) return;
@@ -360,14 +383,15 @@
     {:else if !shown.length}
       <Empty icon="search">No ideas match the filters</Empty>
     {:else}
-      {#each shown as idea, i (idea.id)}
+      <!-- a calm overview: status groups of one-line titles, closed ones behind a count line (idea-43oruq) -->
+      {#snippet card(idea)}
         <IdeaCard
           {idea}
           {api}
           open={expanded.has(idea.id)}
           ontoggle={() => toggleExpanded(idea.id)}
-          canUp={i > 0}
-          canDown={i < shown.length - 1}
+          canUp={placed(idea.id) > 0}
+          canDown={placed(idea.id) < order.length - 1}
           dragging={dragId === idea.id}
           drop={dropTarget?.id === idea.id ? (dropTarget.after ? 'after' : 'before') : null}
           ondragstart={(e) => onDragStart(e, idea.id)}
@@ -375,6 +399,27 @@
           ondrop={onDrop}
           ondragend={end}
         />
+      {/snippet}
+      {#each groups as g (g.status)}
+        <div class="ghead" data-tone={STATUS_TONE[g.status]}>
+          <span class="gname">{g.status}</span>
+          <span class="gn">{g.items.length}</span>
+        </div>
+        {#each g.items as idea (idea.id)}
+          {@render card(idea)}
+        {/each}
+      {/each}
+      {#each closed as c (c.status)}
+        <button class="gfold" data-tone={STATUS_TONE[c.status]} aria-expanded={openGroups.has(c.status)} onclick={() => toggleGroup(c.status)}>
+          <Icon name={openGroups.has(c.status) ? 'chevron-down' : 'chevron-right'} size={11} />
+          <span class="gname">{c.status}</span>
+          <span class="gn">{c.n}</span>
+        </button>
+        {#if openGroups.has(c.status)}
+          {#each shown.filter((i) => i.status === c.status) as idea (idea.id)}
+            {@render card(idea)}
+          {/each}
+        {/if}
       {/each}
     {/if}
   </div>
@@ -509,8 +554,59 @@
     flex: 1;
     display: flex;
     flex-direction: column;
+    gap: 4px;
+    padding: 4px 10px 10px 12px;
+  }
+  /* the group the status filter chip shows too, so the sections read as a list without repeating it on every card */
+  .ghead {
+    display: flex;
+    align-items: center;
     gap: 6px;
-    padding: 6px 10px 10px 12px;
+    padding: 8px 2px 2px;
+    color: var(--fg-dim);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .ghead[data-tone='accent'] {
+    color: var(--accent);
+  }
+  .ghead[data-tone='warn'] {
+    color: var(--warn);
+  }
+  .ghead .gn {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.7;
+  }
+  /* a closed status is one line: its name and how many are in it */
+  .gfold {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    padding: 3px 4px;
+    border: 0;
+    border-top: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg-dim);
+    font: inherit;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    text-align: left;
+  }
+  .gfold:hover {
+    color: var(--fg-muted);
+  }
+  .gfold .gname {
+    flex: 1 1 auto;
+  }
+  .gfold .gn {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.7;
   }
   .foot {
     padding: 6px 12px;

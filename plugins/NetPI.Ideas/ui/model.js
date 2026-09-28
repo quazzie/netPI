@@ -12,6 +12,12 @@ export const STATUS_TONE = {
   rejected: 'err',
 };
 
+// The list reads top to bottom as: what is moving, what is next, what is still open — then the closed ones
+// behind a count line. Grouping beats sorting for this: the status is where an idea belongs, and a sorted
+// backlog still shows it on every card.
+export const GROUP_ORDER = ['in-progress', 'planned', 'open'];
+export const CLOSED_ORDER = ['parked', 'done', 'rejected'];
+
 export const KIND_ICON = {
   note: 'file-text',
   research: 'search',

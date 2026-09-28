@@ -83,6 +83,7 @@
 <div
   class="card"
   class:open
+  class:low={idea.priority === 'low' && !open}
   class:dragging
   class:drop-before={drop === 'before'}
   class:drop-after={drop === 'after'}
@@ -94,32 +95,38 @@
   <span class="grip" draggable="true" {ondragstart} {ondragend} title="Drag to reorder" role="button" tabindex="-1">
     <Icon name="grip" size={12} />
   </span>
-  <button class="main" onclick={ontoggle} aria-expanded={open} title={idea.title}>
+  <!-- one line when closed: a priority mark, the title, the section count. The status is the group it sits in, so
+       repeating it here would be noise, and the meta row lives in the open body (idea-43oruq). -->
+  <button class="main" class:open onclick={ontoggle} aria-expanded={open} title={idea.title}>
+    {#if idea.priority !== 'medium'}
+      <span class="pmark" data-p={idea.priority} title="Priority: {idea.priority}">
+        <Icon name={idea.priority === 'high' ? 'arrow-up' : 'arrow-down'} size={11} />
+      </span>
+    {/if}
     <span class="title">{idea.title}</span>
-    {#if idea.summary && !open}<span class="summary">{idea.summary}</span>{/if}
+    {#if idea.sections?.length}<span class="dim secs" title="{idea.sections.length} section(s)"><Icon name="layers" size={11} />{idea.sections.length}</span>{/if}
   </button>
-  <div class="meta np-line">
-    <Menu items={statusItems} minWidth={150} placement="bottom-start">
-      {#snippet trigger({ toggle })}
-        <button class="status" data-tone={STATUS_TONE[idea.status]} onclick={toggle} title="Status: {idea.status} (click to change)">
-          {idea.status}<Icon name="chevron-down" size={10} />
-        </button>
-      {/snippet}
-    </Menu>
-    <span class="proj" title={proj ? `Project ${proj}` : 'Not bound to a project (global)'}>
-      <Icon name={proj ? 'folder' : 'globe'} size={11} /><span class="pname">{proj ?? 'Global'}</span>
-    </span>
-    <span class="prio" data-p={idea.priority} title="Priority: {idea.priority}">
-      <Icon name={idea.priority === 'high' ? 'arrow-up' : idea.priority === 'low' ? 'arrow-down' : 'more'} size={11} /><span class="plabel">{idea.priority}</span>
-    </span>
-    <span class="tags np-grow" title={(idea.tags ?? []).map((t) => `#${t}`).join(' ')}>{#each idea.tags ?? [] as t (t)}<span class="tag">#{t}</span>{/each}</span>
-    {#if idea.sections?.length}<span class="dim" title="{idea.sections.length} section(s)"><Icon name="layers" size={11} />{idea.sections.length}</span>{/if}
-    {#if agentMade}<span class="dim agent" title="Added by {idea.createdBy}"><Icon name="bot" size={11} /></span>{/if}
-    <TimeAgo time={idea.updatedAt ?? idea.createdAt} class="dim when" />
-  </div>
 
   {#if open}
     <div class="body">
+      <div class="meta np-line">
+        <Menu items={statusItems} minWidth={150} placement="bottom-start">
+          {#snippet trigger({ toggle })}
+            <button class="status" data-tone={STATUS_TONE[idea.status]} onclick={toggle} title="Status: {idea.status} (click to change)">
+              {idea.status}<Icon name="chevron-down" size={10} />
+            </button>
+          {/snippet}
+        </Menu>
+        <span class="proj" title={proj ? `Project ${proj}` : 'Not bound to a project (global)'}>
+          <Icon name={proj ? 'folder' : 'globe'} size={11} /><span class="pname">{proj ?? 'Global'}</span>
+        </span>
+        <span class="prio" data-p={idea.priority} title="Priority: {idea.priority}">
+          <Icon name={idea.priority === 'high' ? 'arrow-up' : idea.priority === 'low' ? 'arrow-down' : 'more'} size={11} /><span class="plabel">{idea.priority}</span>
+        </span>
+        <span class="tags np-grow" title={(idea.tags ?? []).map((t) => `#${t}`).join(' ')}>{#each idea.tags ?? [] as t (t)}<span class="tag">#{t}</span>{/each}</span>
+        {#if agentMade}<span class="dim agent" title="Added by {idea.createdBy}"><Icon name="bot" size={11} /></span>{/if}
+        <TimeAgo time={idea.updatedAt ?? idea.createdAt} class="dim when" />
+      </div>
       {#if editing}
         <form class="edit" onsubmit={saveEdit}>
           <input class="np-input" bind:value={form.title} placeholder="Title" />
@@ -196,6 +203,14 @@
   .card[data-status='rejected'] {
     opacity: 0.72;
   }
+  /* a low-priority idea stays in its group, just quieter — folding it under the high and medium ones hides it */
+  .card.low .title {
+    opacity: 0.62;
+  }
+  .card.low:hover .title,
+  .card.low.open .title {
+    opacity: 1;
+  }
   .card.dragging {
     opacity: 0.4;
   }
@@ -257,15 +272,43 @@
   .card.open .title {
     display: block;
   }
-  .summary {
-    color: var(--fg-muted);
-    font-size: var(--fs-sm);
-    line-height: 1.4;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
+  /* closed: one line, title only, ellipsised — the list has to read as a list of titles */
+  .main {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px 6px 20px;
+  }
+  .main.open {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    padding: 7px 10px 0 12px;
+  }
+  .title {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
     overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .main.open .title {
+    white-space: normal;
+    overflow: visible;
+  }
+  .pmark {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+  }
+  .pmark[data-p='high'] {
+    color: var(--err);
+  }
+  .pmark[data-p='low'] {
+    color: var(--fg-dim);
+  }
+  .dim.secs {
+    flex: none;
   }
   .status {
     display: inline-flex;
@@ -305,7 +348,7 @@
   }
   .meta {
     gap: 6px;
-    padding: 4px 8px 7px 12px;
+    padding: 0 2px;
     font-size: var(--fs-xs);
     color: var(--fg-dim);
   }

@@ -285,11 +285,17 @@ example `Unknown project 'nope'. Known projects: NetPI, aiproxy.`).
 - Filters: search over title, summary, tags and sections; the project filter above; a status menu (**Active** = open,
   planned, in-progress; **All**; or one status) with counts; and a **#** tag menu (multi-select). Selected tags show as
   removable chips below the filters.
-- Cards: a project badge (folder + project name, a globe for the unbound "Global"), a status pill (with a
-  click-to-cycle menu), priority, tags and the summary. Expanding a card shows the sections as rendered markdown, each
-  with an edit button (`ideas.update` with `patch.sections` or `updateSections`).
+- Cards: a calm overview — **one line per idea, the title only**, plus a small priority mark (high ▲ / low ▼, medium
+  none) and the section count. A low-priority title is dimmed. Nothing else is on the line, so the list reads as a list
+  of titles; the summary, the status pill, the project badge, priority, tags and the time all appear when the card is
+  opened, together with the sections as rendered markdown, each with an edit button (`ideas.update` with
+  `patch.sections` or `updateSections`).
+- The list is grouped by status: **in-progress, planned, open** (the order the work wants them read) each under a
+  header with a count, then **parked, done, rejected** collapsed to one line per status (`name  count`, click to
+  expand). Grouping is presentation only — the file order is still the user's, and a status change moves the card
+  (a drag or *Move up/down* orders within the rendered list).
 - New idea: title, summary, priority, a project picker (default: the active project; *Global* for unbound; any other
-  project) and tags.
+  project) and tags. The title has to carry the idea on its own — the `ideas` tool help and prompt guideline say so.
 - Actions: "Send to chat" (stages a pointer to the idea in the composer), "Insert the full text"
   (`ideas.toPrompt` → `ctx.app.insertText`), Delete (with a confirm) and drag to reorder
   (`ideas.reorder`).
