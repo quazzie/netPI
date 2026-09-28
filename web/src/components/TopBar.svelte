@@ -4,7 +4,7 @@
   import IconButton from '../lib/kit/IconButton.svelte';
   import BudgetPill from './BudgetPill.svelte';
   import { app, activate, closeTab, moveTab, newSession, sessionStatus, projectOf } from '../lib/state/app.svelte.js';
-  import { modals } from '../lib/state/ui.svelte.js';
+  import { modals, prefs } from '../lib/state/ui.svelte.js';
   import { conn, reconnectNow } from '../lib/rpc.svelte.js';
 
   let tabsEl = $state();
@@ -57,6 +57,9 @@
     else if (!after && from < to) to--;
     moveTab(dragId, to);
   }
+
+  // favorite projects (Projects tab ★) that still exist, as quick new-session buttons
+  const favorites = $derived(prefs.favorites.map((id) => app.projectsById.get(id)).filter(Boolean));
 
   function title(id) {
     return app.sessionsById.get(id)?.title || 'New session';
@@ -115,10 +118,24 @@
         >
       </div>
     {/each}
+  </div>
+  <div class="quick">
     <button class="new-tab" title="New session (Ctrl+T)" aria-label="New session" onclick={() => newSession()}>
       <Icon name="plus" size={15} />
     </button>
+    {#each favorites as p (p.id)}
+      <button
+        class="fav"
+        title={`New session in ${p.name}\n${p.path}`}
+        aria-label="New session in {p.name}"
+        onclick={() => newSession({ projectId: p.id })}
+      >
+        <Icon name="folder" size={12} />
+        <span class="np-ellipsis">{p.name}</span>
+      </button>
+    {/each}
   </div>
+  <span class="gap"></span>
 
   <div class="right">
     <BudgetPill />
@@ -170,7 +187,7 @@
     font-weight: 700;
   }
   .tabs {
-    flex: 1;
+    flex: 0 1 auto;
     min-width: 0;
     display: flex;
     align-items: center;
@@ -259,6 +276,37 @@
   .new-tab:hover {
     background: var(--bg-2);
     color: var(--fg);
+  }
+  .quick {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 1 auto;
+    min-width: 28px;
+    overflow: hidden;
+  }
+  .fav {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 1 auto;
+    min-width: 28px;
+    max-width: 120px;
+    height: 24px;
+    padding: 0 8px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--fg-muted);
+    font-size: var(--fs-sm);
+  }
+  .fav:hover {
+    background: var(--bg-2);
+    color: var(--fg);
+    border-style: solid;
+  }
+  .gap {
+    flex: 1;
   }
   .right {
     display: flex;

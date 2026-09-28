@@ -27,7 +27,7 @@ public sealed class AgentsPlugin : INetPiPlugin
             Id = "budget", Title = "Budget", Group = "Models", Order = 20,
             Settings =
             [
-                SettingInfo.Number("budget.monthlyUsd", "Monthly budget", null, "Spend on paid models per month; empty = no limit. Free and local models don't count.", 0, null, "$"),
+                SettingInfo.Number("budget.monthlyUsd", "Monthly budget", null, "Spend plus reservations for paid model calls per month; empty = no limit. Capped cloud models need known prices. Free and local models don't count.", 0, null, "$"),
                 SettingInfo.Number("budget.dailyUsd", "Daily budget", null, "Empty = no daily limit.", 0, null, "$"),
                 SettingInfo.Int("budget.resetDay", "The month starts on day", 1, null, 1, 28),
                 SettingInfo.Int("budget.warnPercent", "Warn at", 80, "From here agents use paid agents only when you asked.", 1, 100, "%"),

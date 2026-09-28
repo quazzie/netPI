@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "mock", "runtimeExecutable": "node", "runtimeArgs": ["web/mock/server.mjs", "--port", "7499", "--token", "dev", "--no-auth"], "port": 7499 }
+  ]
+}

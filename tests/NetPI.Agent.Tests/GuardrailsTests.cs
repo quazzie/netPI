@@ -8,6 +8,7 @@ public static class GuardrailsTests
 {
     public static void Register(TestRunner t)
     {
+        t.Add("guardrails: duplicate provider call ids have independent approvals", DuplicateIds);
         t.Add("guardrails: a blocked command never runs, and the model reads why", BlockedCommand);
         t.Add("guardrails: protected paths: write and edit refuse them, shell commands that name them too", ProtectedPaths);
         t.Add("guardrails: ask rules wait for the user's OK with the instance given back (allow, no, a message instead)", AskRules);
@@ -16,6 +17,25 @@ public static class GuardrailsTests
         t.Add("guardrails: the default rules block the catastrophic, not everyday work; spellings of a path", DefaultRules);
         t.Add("guardrails: second opinion: a confidently read-only command runs without asking, the rest ask with the model's view", SecondOpinionClears);
         t.Add("guardrails: second opinion never relaxes a block or write/edit, is off by default, and asks when the model fails", SecondOpinionLimits);
+    }
+
+    private static async Task DuplicateIds()
+    {
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
+        var approvals = new Approvals(new TestPluginContext(h, "guard-test"));
+        var verdict = new Verdict(GuardAction.Ask, "ask: ^git push", "command", "git push");
+        var call = new ToolCallPart { Id = "call_0", Name = "bash", Arguments = "{}" };
+        var a = approvals.Add("sessionA", "agentA", call, verdict, null);
+        var b = approvals.Add("sessionB", "agentB", call, verdict, null);
+        Check.Equal(2, approvals.List(null).Count);
+        Check.True(a.ApprovalId != b.ApprovalId);
+        approvals.Answer(a.ApprovalId, true);
+        Check.True(await a.Allowed.Task);
+        Check.False(b.Allowed.Task.IsCompleted);
+        await Check.ThrowsAsync<RpcException>(() => Task.Run(() => approvals.Answer(a.ApprovalId, true)));
+        approvals.Answer(b.ApprovalId, false);
+        Check.False(await b.Allowed.Task);
+        Check.Equal(0, approvals.List(null).Count);
     }
 
     private static async Task<TestHost> StartAsync()
@@ -114,8 +134,8 @@ public static class GuardrailsTests
         await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the call waits with the slot given back");
         Check.Equal("waiting for your OK", h.Runtime.GetBySession(s.Id)!.Activity);
         Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy), "the instance is free meanwhile");
-        Check.Equal((string?)asked["callId"], (string?)(await h.Rpc.CallAsync("guard.pending", new { sessionId = s.Id }))!.AsArray().Single()!["callId"]);
-        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)asked["callId"]!, allow = true });
+        Check.Equal((string?)asked["approvalId"], (string?)(await h.Rpc.CallAsync("guard.pending", new { sessionId = s.Id }))!.AsArray().Single()!["approvalId"]);
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)asked["approvalId"]!, allow = true });
         await h.IdleAsync(s.Id);
         Check.Equal(1, ran.Count, "allowed: it ran");
         Check.Equal("allowed", (string?)FakeBus.Data(h.Bus.OfType("guard.closed").Last())["status"]);
@@ -123,7 +143,7 @@ public static class GuardrailsTests
         // no: it doesn't
         await h.SendAsync(s.Id, "push again");
         asked = await Asked(2);
-        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)asked["callId"]!, allow = false });
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)asked["approvalId"]!, allow = false });
         await h.IdleAsync(s.Id);
         Check.Equal(1, ran.Count, "refused: it did not run");
         Check.Contains(Results(h, s.Id).Last().Content, "Blocked: the user said no to `git push origin main`");
@@ -136,7 +156,7 @@ public static class GuardrailsTests
         Check.Equal(1, ran.Count);
         Check.Contains(Results(h, s.Id).Last().Content, "the user wrote a new message instead");
         Check.Equal("stopped", h.Messages(s.Id)[^1].Text);
-        Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("guard.answer", new { callId = "call_x", allow = true }))).Code);
+        Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("guard.answer", new { approvalId = "call_x", allow = true }))).Code);
     }
 
     private static async Task AllowForSession()
@@ -151,20 +171,20 @@ public static class GuardrailsTests
         async Task<string> Asked(int n)
         {
             await Wait.Until(() => h.Bus.OfType("guard.asked").Count >= n, "a tool call waits for the OK");
-            return (string)FakeBus.Data(h.Bus.OfType("guard.asked")[n - 1])["callId"]!;
+            return (string)FakeBus.Data(h.Bus.OfType("guard.asked")[n - 1])["approvalId"]!;
         }
 
         // "no" with scope session stores nothing: the next push asks again
         var s = h.NewSession(model: "fake/solo");
         await h.SendAsync(s.Id, "push");
-        await h.Rpc.InvokeAsync("guard.answer", new { callId = await Asked(1), allow = false, scope = "session" });
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = await Asked(1), allow = false, scope = "session" });
         await h.IdleAsync(s.Id);
         Check.Equal(0, ran.Count);
         Check.True(h.Sessions.GetSession(s.Id)!.Meta?["guardrailsAllowed"] is null, "a refusal is not remembered");
 
         // allowed for this chat: it runs, and the next push in this chat runs without asking
         await h.SendAsync(s.Id, "push");
-        await h.Rpc.InvokeAsync("guard.answer", new { callId = await Asked(2), allow = true, scope = "session" });
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = await Asked(2), allow = true, scope = "session" });
         await h.IdleAsync(s.Id);
         Check.Equal(1, ran.Count);
         Check.Equal("session", (string?)FakeBus.Data(h.Bus.OfType("guard.closed").Last())["scope"]);
@@ -180,13 +200,13 @@ public static class GuardrailsTests
         // only that rule: another ask rule still asks in this chat
         await h.SendAsync(s.Id, "reset");
         await Asked(3);
-        await h.Rpc.InvokeAsync("guard.answer", new { callId = await Asked(3), allow = false });
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = await Asked(3), allow = false });
         await h.IdleAsync(s.Id);
 
         // only this chat: another one asks
         var other = h.NewSession(model: "fake/solo");
         await h.SendAsync(other.Id, "push");
-        await h.Rpc.InvokeAsync("guard.answer", new { callId = await Asked(4), allow = true });
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = await Asked(4), allow = true });
         await h.IdleAsync(other.Id);
         Check.Equal(3, ran.Count);
         Check.True(h.Sessions.GetSession(other.Id)!.Meta?["guardrailsAllowed"] is null, "allow once is not remembered");
@@ -271,7 +291,7 @@ public static class GuardrailsTests
         Check.Equal(false, (bool?)asked["opinion"]!["harmless"]);
         Check.Equal(0.9, (double?)asked["opinion"]!["p"]!["remote_change"]);
         Check.Equal(false, (bool?)(await h.Rpc.CallAsync("guard.pending", new { sessionId = s.Id }))!.AsArray().Single()!["opinion"]!["harmless"]);
-        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)asked["callId"]!, allow = true });
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)asked["approvalId"]!, allow = true });
         await h.IdleAsync(s.Id);
         Check.Equal(2, ran.Count, "allowed by the user");
         Check.Equal("git status --short|git push origin main", string.Join("|", decided));
@@ -280,7 +300,7 @@ public static class GuardrailsTests
         h.Settings.Set("guardrails.secondOpinionThreshold", JsonValue.Create(0.01));
         await h.SendAsync(s.Id, "git status");
         await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 2, "a stricter threshold asks");
-        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)FakeBus.Data(h.Bus.OfType("guard.asked")[1])["callId"]!, allow = false });
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)FakeBus.Data(h.Bus.OfType("guard.asked")[1])["approvalId"]!, allow = false });
         await h.IdleAsync(s.Id);
 
         Check.True(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.85, ["destructive"] = 0.1, ["stops_process"] = 0.1, ["remote_change"] = 0.19 }, 0.2));
@@ -309,7 +329,7 @@ public static class GuardrailsTests
         await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 1, "asks without a second opinion");
         Check.Equal(0, decided.Count, "off by default");
         Check.True(FakeBus.Data(h.Bus.OfType("guard.asked")[0])["opinion"] is null);
-        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)FakeBus.Data(h.Bus.OfType("guard.asked")[0])["callId"]!, allow = false });
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)FakeBus.Data(h.Bus.OfType("guard.asked")[0])["approvalId"]!, allow = false });
         await h.IdleAsync(s.Id);
 
         h.Settings.Set("guardrails.secondOpinion", JsonValue.Create(true));
@@ -325,7 +345,7 @@ public static class GuardrailsTests
         await h.SendAsync(s.Id, "write it");
         await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 2, "write asks");
         Check.Equal(0, decided.Count, "write/edit never get a second opinion");
-        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)FakeBus.Data(h.Bus.OfType("guard.asked")[1])["callId"]!, allow = false });
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)FakeBus.Data(h.Bus.OfType("guard.asked")[1])["approvalId"]!, allow = false });
         await h.IdleAsync(s.Id);
 
         // the model fails: the user is asked, and the card says why there is no opinion
@@ -335,7 +355,7 @@ public static class GuardrailsTests
         var failed = FakeBus.Data(h.Bus.OfType("guard.asked")[2]);
         Check.Equal(false, (bool?)failed["opinion"]!["harmless"]);
         Check.Contains((string?)failed["opinion"]!["error"] ?? "", "model_not_loaded");
-        await h.Rpc.InvokeAsync("guard.answer", new { callId = (string)failed["callId"]!, allow = false });
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)failed["approvalId"]!, allow = false });
         await h.IdleAsync(s.Id);
         Check.Equal(0, ran.Count, "nothing ran without the user's OK");
         Check.Equal(0, h.Bus.OfType("guard.cleared").Count);

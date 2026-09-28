@@ -2,7 +2,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import IconButton from '../../lib/kit/IconButton.svelte';
   import { app, newSession, setSessionProject, deleteProject } from '../../lib/state/app.svelte.js';
-  import { confirmDialog, toast, openProjects } from '../../lib/state/ui.svelte.js';
+  import { confirmDialog, toast, openProjects, prefs, toggleFavorite } from '../../lib/state/ui.svelte.js';
 
   let { visible = true } = $props();
 
@@ -66,6 +66,7 @@
           <span class="ptext">
             <span class="pname">
               <span class="np-ellipsis">{p.name}</span>
+              {#if prefs.favorites.includes(p.id)}<span class="pfav" title="Favorite"><Icon name="star" size={11} /></span>{/if}
               {#if counts.get(p.id)}<span class="pcount">{counts.get(p.id)}</span>{/if}
             </span>
             <span class="ppath np-mono"><bdi>{p.path}</bdi></span>
@@ -73,6 +74,13 @@
         </button>
         <div class="actions">
           <IconButton icon="plus" size="sm" title="New session here" onclick={() => newSession({ projectId: p.id })} />
+          <IconButton
+            icon="star"
+            size="sm"
+            title={prefs.favorites.includes(p.id) ? 'Remove from favorites' : 'Add to favorites (a new-session button in the top bar)'}
+            pressed={prefs.favorites.includes(p.id)}
+            onclick={() => toggleFavorite(p.id)}
+          />
           <IconButton
             icon="link"
             size="sm"
@@ -217,6 +225,14 @@
   .prow:focus-within .actions {
     opacity: 1;
     pointer-events: auto;
+  }
+  .pfav {
+    display: inline-flex;
+    flex: none;
+    color: var(--warn);
+  }
+  .pfav :global(svg) {
+    fill: currentColor;
   }
   .prow:focus-within {
     background: var(--bg-2);

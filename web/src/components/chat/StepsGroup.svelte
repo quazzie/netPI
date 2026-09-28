@@ -4,7 +4,7 @@
   import ToolRow from './ToolRow.svelte';
   import TurnLine from './TurnLine.svelte';
   import { prefs } from '../../lib/state/ui.svelte.js';
-  import { asks } from '../../lib/state/asks.svelte.js';
+  import { approvalFor } from '../../lib/state/asks.svelte.js';
   import { stepCounts } from '../../lib/chatItems.js';
   import { toolMeta, toolSummary, parseArgs, viewName } from '../../lib/tools.js';
   import { duration } from '../../lib/format.js';
@@ -20,7 +20,7 @@
 
   const n = $derived(item.steps.length);
   // a tool call that waits for the user's OK (a guardrail) keeps its group open, so its Allow / No can be seen
-  const approving = $derived(item.steps.some((s) => s.kind === 'tool' && asks.approvals.has(s.call.id)));
+  const approving = $derived(item.steps.some((s) => s.kind === 'tool' && !s.result && approvalFor(chat.id, s.call.id)));
   const collapsible = $derived(approving ? false : prefs.steps === 'folded' ? n > 0 : prefs.steps === 'done' ? !live && n > 3 : false);
   const open = $derived(collapsible ? (chat.expanded.get(item.key) ?? false) : true);
   const span = $derived(Number.isFinite(item.startMs) && item.endMs > item.startMs ? item.endMs - item.startMs : null);

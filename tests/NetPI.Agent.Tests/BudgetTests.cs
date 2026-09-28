@@ -90,8 +90,8 @@ public static class BudgetTests
     {
         using var db = TestSqlite.TryCreate();
         if (db is null) { Console.WriteLine("    (no SQLite library: skipped)"); return; }
-        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("budget.monthlyUsd", JsonValue.Create(0.01)), db: db);
-        h.Catalog.Handler = (r, ct) => Costing("spent", 0.02);
+        await using var h = await TestHost.StartAsync(x => { Priced(x); x.Settings.SetQuiet("budget.monthlyUsd", JsonValue.Create(1.00)); }, db: db);
+        h.Catalog.Handler = (r, ct) => Costing("spent", 2.00);
         var s = h.NewSession(model: "cloud/big");
         await h.SendAsync(s.Id, "spend it");
         await h.IdleAsync(s.Id);
@@ -104,7 +104,7 @@ public static class BudgetTests
         Check.Equal(calls, h.Catalog.Calls, "no model call");
         var notice = h.Messages(s.Id)[^1];
         Check.Equal("budget", notice.MetaString("kind"));
-        Check.Contains(notice.Text, "The monthly budget is spent: $0.02 of $0.01");
+        Check.Contains(notice.Text, "The monthly budget is spent: $2 of $1");
         Check.Contains(notice.Text, "Raise the budget in Settings");
         Check.False(notice.Meta!["canOverride"]!.GetValue<bool>());
         Check.Contains(a.Error, "budget");
@@ -151,7 +151,7 @@ public static class BudgetTests
         {
             Priced(x);
             x.Settings.SetQuiet("budget.monthlyUsd", JsonValue.Create(50));
-            x.Settings.SetQuiet("agents.big", JsonNode.Parse("""{ "model": "cloud/big", "use": "Costly: hard problems only.", "budget": { "limitUsd": 0.01 } }"""));
+            x.Settings.SetQuiet("agents.big", JsonNode.Parse("""{ "model": "cloud/big", "use": "Costly: hard problems only.", "budget": { "limitUsd": 1.00 } }"""));
             x.Settings.SetQuiet("agents.small", JsonNode.Parse("""{ "model": "fake/local", "use": "Free: searches and small edits." }"""));
             x.Settings.SetQuiet("agents.solo", JsonNode.Parse("""{ "model": "fake/solo", "disabled": true }"""));
         }, db: db);
@@ -162,7 +162,7 @@ public static class BudgetTests
         Check.Equal(3.0, agents[0].PriceInput);
         Check.False(agents[0].Free);
         Check.True(agents[1].Free);
-        Check.Equal(0.01, agents[0].DailyLimitUsd);
+        Check.Equal(1.00, agents[0].DailyLimitUsd);
 
         // the orchestrator asks for the agents, then delegates without an agent and on a switched-off one (refused, the
         // error lists them), then on one
@@ -170,7 +170,7 @@ public static class BudgetTests
         var step = 0;
         h.Catalog.Handler = (r, ct) =>
         {
-            if (r.Model.Ref == "cloud/big") return Costing("big report", 0.02);
+            if (r.Model.Ref == "cloud/big") return Costing("big report", 2.00);
             var last = r.Messages[^1];
             if (last.Role == MessageRole.Tool)
             {
@@ -196,7 +196,7 @@ public static class BudgetTests
         Check.Contains(listing, "Budget: $0.00 of $50 this month (0 %), $0.00 today. Free models don't count.");
         Check.Contains(listing, "Agents (pass the id to agent_spawn):");
         Check.Contains(listing, "- small · fake/local · 1/2 busy (one is you: free for your subagents while you wait) · local · free · 100k ctx · \"Free: searches and small edits.\"");
-        Check.Contains(listing, "- big · cloud/big · 0/1 busy · $3 / $15 per Mtok in/out · $0.00 today (cap $0.01) · 200k ctx · \"Costly: hard problems only.\"");
+        Check.Contains(listing, "- big · cloud/big · 0/1 busy · $3 / $15 per Mtok in/out · $0.00 today (cap $1) · 200k ctx · \"Costly: hard problems only.\"");
         Check.Contains(listing, "- solo · fake/solo · 0/1 busy · NOT ACTIVE: switched off by the user · local · free · 50k ctx");
         Check.True(listing!.IndexOf("- small", StringComparison.Ordinal) < listing.IndexOf("- big", StringComparison.Ordinal), "cheapest first");
         Check.True(listing.IndexOf("- big", StringComparison.Ordinal) < listing.IndexOf("- solo", StringComparison.Ordinal), "active first");
@@ -208,13 +208,13 @@ public static class BudgetTests
         var child = h.Runtime.List().Single(a => a.IsSubagent);
         Check.Equal("cloud/big", child.Model);
         Check.Equal("big", child.Agent);
-        Check.Equal(0.02, Math.Round(h.Scheduler!.Snapshot().Single(p => p.Key == "big").SpentTodayUsd, 8));
+        Check.Equal(2.00, Math.Round(h.Scheduler!.Snapshot().Single(p => p.Key == "big").SpentTodayUsd, 8));
 
-        // the agent's daily cap ($0.01) is spent: the next call on it is refused, other agents go on
+        // the agent's daily cap ($1) is spent: the next call on it is refused, other agents go on
         var direct = h.NewSession(model: "cloud/big");
         await h.SendAsync(direct.Id, "more");
         await h.IdleAsync(direct.Id);
-        Check.Contains(h.Messages(direct.Id)[^1].Text, "The agent big has spent its $0.01 for today ($0.02).");
+        Check.Contains(h.Messages(direct.Id)[^1].Text, "The agent big has spent its $1 for today ($2).");
     }
 
     private static void Period()

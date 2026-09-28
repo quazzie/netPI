@@ -7,6 +7,7 @@
   import ProfilesEditor from './ProfilesEditor.svelte';
   import SettingsRow from './SettingsRow.svelte';
   import BudgetView from './BudgetView.svelte';
+  import BackupView from './BackupView.svelte';
   import PluginSwitches from './PluginSwitches.svelte';
   import { prefs, savePrefs, toast } from '../../lib/state/ui.svelte.js';
   import { app } from '../../lib/state/app.svelte.js';
@@ -158,6 +159,7 @@
   <section class="sec" data-section={s.id}>
     <div class="sec-title">{s.title}</div>
     {#if s.help}<div class="sec-help np-dim">{s.help}</div>{/if}
+    {#if s.id === 'backup'}<BackupView />{/if}
     {#each s.settings as st (st.key)}<SettingField setting={st} {doc} />{/each}
   </section>
 {/snippet}

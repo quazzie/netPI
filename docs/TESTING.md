@@ -158,7 +158,7 @@ dotnet tests/NetPI.E2E/bin/Debug/NetPI.E2E.dll [options] [name filter…]
   --list          list the tests
 ```
 
-61 tests, about 95 s. Build first (it runs whatever is in `artifacts/app`, including the web UI from `npm run build`).
+61 tests; allow about three minutes on Windows with the UI smoke. Build first (it runs whatever is in `artifacts/app`, including the web UI from `npm run build`).
 
 What it does: starts MockLlm in-process, copies `artifacts/app` to `<temp>/netpi-e2e/<run>/app`, writes a settings file
 into a fresh home (`providers.*` → the mock, fast retry backoff), starts `dotnet app/netpi-server.dll --home … --token
@@ -169,7 +169,7 @@ SQLite database and the project folders stay for inspection).
 
 Coverage (run `--list` for the names):
 
-- **startup / catalog**: all 17 plugins `running`, UI tabs, slash commands, tools, plugin UI bundles served; mock models with
+- **startup / catalog**: the expected bundled plugins `running`, UI tabs, slash commands, tools, plugin UI bundles served; mock models with
   context/concurrency/efforts/status; default model = first loaded local model; no agents set up (the suite's settings have none: a slot per model).
 - **chat loop**: `stream.start` → thinking/text `stream.delta` → `stream.end` → `message.added`, `agent.status`
   running → idle, `session.context`, `usage.recorded`; streamed text = persisted text; usage and thinking duration persisted.
@@ -233,3 +233,23 @@ Add a scenario to `tests/MockLlm/Scenarios.cs` (a `Plan` per step: thinking, tex
 behaviour) and a test to one of the `tests/NetPI.E2E/*Tests.cs` files. `Env.Run(sessionId, text)` sends a message and waits
 until the session's agent is idle, returning the run's events and the transcript; `Env.MockLog(since)` shows what the
 backend received.
+
+## Review-fix validation (2026-09-28)
+
+The solution and web/plugin bundles were built using `AppOutDir=artifacts/review/app/` and `NETPI_NO_COPY=1`
+for npm, keeping validation separate from the running app. Existing Ideas-tab Svelte warnings about initial state
+capture remain; the .NET solution build has no warnings or errors.
+
+Regression coverage added:
+
+- Agent: two sessions with the same provider tool-call ID have separate approvals; stale approval IDs cannot
+  answer another request. Host: a fork discards `guardrailsAllowed` alongside the existing run state.
+- Agent: concurrent reservations cannot each spend the same remaining cap; reservations survive a new ledger
+  instance; concurrent first-use recording retains every charge; changing accounting days/periods refreshes totals;
+  unknown prices under caps, reported partial usage, rejected attempts, and cancellation are accounted for.
+- Host: snapshot of committed WAL data, automatic-only retention, damaged manifest handling, checksum failure,
+  path validation, actual offline restore followed by normal host startup, and refusal to overwrite an existing
+  home. This recovery test requires Node.js 22+ on PATH.
+- Real-server UI smoke: Settings → Data & backups creates and verifies a snapshot.
+
+Fresh suite results are recorded in STATUS.md. Live paid billing and Linux/macOS were not exercised.

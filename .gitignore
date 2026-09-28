@@ -9,3 +9,4 @@ web/mock/screenshots/
 tests/NetPI.E2E/screenshots/
 web/mock/screenshots-verify/
 scratch/
+.claude/settings.local.json

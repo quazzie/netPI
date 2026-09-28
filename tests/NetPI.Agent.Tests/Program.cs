@@ -12,6 +12,7 @@ PersistenceTests.Register(runner);
 UnloadTests.Register(runner);
 GoalTests.Register(runner);
 BudgetTests.Register(runner);
+ReservationTests.Register(runner);
 SessionToolsTests.Register(runner);
 ProfilesTests.Register(runner);
 SkillsTests.Register(runner);

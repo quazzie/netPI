@@ -19,8 +19,8 @@ headless for any browser.
   follow. Runs queue when all instances are busy; an orchestrator that waits for its workers **yields** its instance to
   them and resumes with only their final reports. Switch an agent off in its dialog or in the Work tab.
 - **A budget for paid models.** Every model call is recorded with its cost (OpenRouter reports it; otherwise tokens ×
-  price). Set a monthly budget: agents see it, each chat shows what it cost, and when it is spent paid calls stop, or
-  ask you first.
+  price). Set a monthly budget: agents see it, each chat shows what it cost, and paid calls reserve their estimated cost before starting; calls that cannot fit stop, or
+  ask you first. Interrupted calls remain accounted for.
 - **Agents manage agents.** `agent_spawn`, and `agent` to wait for, message, list, read or cancel them
   (plus `agent_choices` from the agents plugin); subagents get their own (viewable, steerable) sessions and report back
   automatically. The agent that starts one chooses its tools, so a limited orchestrator can dispatch agents that can do
@@ -61,6 +61,8 @@ headless for any browser.
 - **UI:** left and right panels with vertical, pluggable tabs (Sessions, Projects, Files | Work, Ideas,
   Diagnostics), collapsible thinking/tool blocks, diffs, live shell output, pruned chat history with "load earlier",
   slash commands and `@` file mentions. Window size and position are remembered.
+- **Backups:** automatic database/settings snapshots, manual backup and verification in Settings → Data & backups,
+  plus [restore into a new home](docs/BACKUPS.md).
 - **SQLite** storage (the OS's own SQLite: no native packages to ship).
 
 ## Quick start (Windows)

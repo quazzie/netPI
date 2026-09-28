@@ -18,6 +18,7 @@ const defaultPrefs = {
   expandThinking: false,
   turnDetails: true, // under each model turn's steps: time to first token, cache reuse, output speed, tokens
   spellcheck: true, // spell checking in the composer
+  favorites: [], // project ids shown as quick new-session buttons after the tab bar's +
   notifications: true, // desktop app: a Windows notification when a chat needs you while NetPI is in the background
 };
 
@@ -28,6 +29,7 @@ function withDefaults(v) {
   const p = { ...defaultPrefs, ...saved };
   if (saved.steps == null && saved.collapseSteps === false) p.steps = 'open'; // saved before the steps choice existed
   if (!['open', 'done', 'folded'].includes(p.steps)) p.steps = defaultPrefs.steps;
+  if (!Array.isArray(p.favorites)) p.favorites = [];
   if (!(p.chatWidth in CHAT_WIDTH)) p.chatWidth = defaultPrefs.chatWidth;
   delete p.collapseSteps;
   return p;
@@ -50,6 +52,14 @@ export function saveLayout() {
 export function savePrefs() {
   persist(PREFS_KEY, $state.snapshot(prefs));
   applyTheme();
+}
+
+/** Add or remove a project from the favorites (quick new-session buttons in the top bar). */
+export function toggleFavorite(projectId) {
+  prefs.favorites = prefs.favorites.includes(projectId)
+    ? prefs.favorites.filter((x) => x !== projectId)
+    : [...prefs.favorites, projectId];
+  savePrefs();
 }
 
 /** Pull the host copies (used when local storage was empty, e.g. a fresh WebView profile). */

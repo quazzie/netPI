@@ -215,6 +215,19 @@ try {
   check('discarded partial stream not shown (stream.reset)', !afterDrop.includes('connection drops in the middle'));
   await shot(page, 'ui-14-retried');
 
+  // Backup controls against the real plugin (not the UI mock).
+  await page.keyboard.press('Control+,');
+  await page.locator('.nav button', { hasText: 'Data & backups' }).click();
+  const beforeBackups = await page.locator('.dialog .backup').count();
+  await page.getByRole('button', { name: 'Back up now', exact: true }).click();
+  await page.waitForFunction((before) => document.querySelectorAll('.dialog .backup').length > before, beforeBackups, { timeout: 30000 });
+  check('backup settings create a snapshot', await page.locator('.dialog .backup').count() > beforeBackups);
+  await page.locator('.dialog .backup').first().getByRole('button', { name: 'Verify', exact: true }).click();
+  await page.getByText('Backup checksums verified', { exact: true }).waitFor({ timeout: 10000 });
+  check('backup settings verify the snapshot', true);
+  await shot(page, 'ui-15-backups');
+  await page.keyboard.press('Escape');
+
   check('no console/page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
   await context.close();
 } catch (e) {

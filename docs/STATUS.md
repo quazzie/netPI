@@ -1,79 +1,51 @@
-# Status (2026-09-25)
+# Status (2026-09-28)
 
-## Verified on Windows
-- The desktop shell builds and runs; Git Bash, pwsh, winsqlite3 and window placement work.
-- Unit suites (Debug, built into a scratch app folder while NetPI ran): Providers 41 (330 checks), Tools 54, Agent 94,
-  Aux 104, Host 39, all passing.
-- E2E suite: 59 tests / 765 checks passing, including the Playwright UI smoke (run on Edge); the UI mock e2e
-  (`npm run e2e`) 200/200.
-- Plugins hot-reload while NetPI runs (they load from shadow copies); only the host DLLs are locked. `build.ps1` then
-  builds everything except the host, and a rebuild after a commit no longer reloads unchanged plugins.
-- Real model (AiProxy → nInfer `qwen3.8-27b`, 2 slots, before agents replaced lanes): two concurrent agents, one spawning a subagent, the other
-  steered mid-run. Slots, queueing and yielding are correct, the steer arrives at the next turn boundary, and continuation
-  turns reuse the previous prompt + output exactly. No failed requests.
-- OpenRouter, live (`stealth/space-bunny-alpha`, free): the same run works, with `reasoning_details` replayed on later
-  turns and 86–99.6 % of each prompt cached after the first turn.
-- The cached prefix survives state changes (nInfer): after a project switch and an edited AGENTS.md, every turn reused
-  exactly the previous prompt + output; the changes arrived as appended notices.
-- Web tools, todo and tool notices, live (nInfer `qwen3.8-27b` through a throwaway server): the model planned with
-  `todo_write`, searched through SearXNG, read the docs page with `web_fetch` and answered correctly; it read the
-  headline off a `screenshot` of svelte.dev; disabling and re-enabling the web plugin mid-session produced "tools"
-  notices it answered from. Every turn reused the previous prompt + output except the one after the tool set changed.
-- SSH tools, live on `nuc` and `server`: a script full of quoting traps came back byte for byte; write, read and edit
-  (a path with a space, relative to `cwd`, and a 5 MB file); a 70 KB binary copied up and back unchanged; a timeout
-  and an abort both ended the remote process group, background children included.
-- The chat no longer jumps while the agent works: in a mock run of 8 quick steps, with every frame recorded, the
-  chat moved down 11 times (520 px) before the fix and not once after, with steps expanded or folded.
-- Goals, with the real runner and a scripted model (Agent suite): the loop until `goal_update` complete, and the
-  pauses on stop, failure (also before the first model call), no progress, `goal.maxContinuations` and the token
-  budget; notices after edits, resumes and compaction. The UI mock covers `/goal`, the strip, pause and resume.
-- The budget and the settings dialog, with the real runner and a scripted model (Agent, Host and E2E suites)
-  and the UI mock: every model call recorded with its cost, the monthly, daily and per-agent stops, "ask" and going
-  over; `agent_spawn { agent }` from a local agent onto a cloud agent; settings saved and reset from the dialog; tools
-  switched per chat (before the first message, mid-chat with a notice, inherited by subagents).
-- Agents, with the real runner and a scripted model (Agent, Host and E2E suites) and the UI mock: agents listed with
-  their states (instances from the catalog, switched off, a model not loaded, not listed), agents on one local model
-  sharing its slots, a chat taking a free agent on its model and keeping it, `agents.use` / `agents.setEnabled`, an
-  inactive agent stopping a chat at once without a request to the backend, the upgrade of lanes into agents,
-  `agent_choices` / `agent_spawn { agent }`; in the UI the picker with "New agent…", the Work tab switch, the settings
-  rows and the agent dialog.
-- Compaction like pi's, with the real runner and a scripted model (Aux and E2E suites): the checkpoint format, merging
-  an earlier summary, the file lists, split turns, a summary cut off at its limit refused.
-- Profiles, with the real runner and a scripted model and in the UI mock: a new chat gets its project's default; the
-  profile's text opens the prompt and its tools are off; a switch after the first message renders the prompt again
-  with a notice and no stray tools notice; subagents get their owner's tools or exactly the ones it names.
-- Numbers and details: `docs/archive/2026-09-24-windows-bringup.md`, `docs/archive/2026-09-24-agent-tools.md`,
-  `docs/archive/2026-09-24-ssh-tools.md`, `docs/archive/2026-09-24-goals.md`,
-  `docs/archive/2026-09-24-lanes-budget-settings.md`, `docs/archive/2026-09-24-profiles.md`, `docs/archive/2026-09-25-agents.md`.
+## Current review fixes
 
-## Not yet verified
-- Agents, the budget, the settings dialog, per-chat tools, profiles and the new compaction in the real app: the host
-  and the contracts changed, so they need `.\build.ps1` (it can run while NetPI runs) and a restart. Then: the user's lanes becoming
-  agents, the agents following a model switch in AiSwitcher, costs from a paid OpenRouter model (`usage.cost`), and
-  whether `qwen3.8-27b` picks agents by their notes and avoids the paid one.
-- Goals with a real model (only the scripted model so far): whether `qwen3.8-27b` follows the continuation
-  notices and calls `goal_update` at the right time.
-- The desktop zoom setting (`desktop.zoom`, zoom kept in `window.json`): built, but needs `.\build.ps1` and a
-  restart.
-- The Anthropic provider was tested against a mock of the Messages API only (the adaptive-thinking request shape
-  and the fallback model ids are best guesses; both are configurable).
-- Linux/macOS: the suites last ran in the Linux sandbox, before the Windows work, and have not been re-run since.
+- Guard approvals have unique host-generated approval IDs; provider tool-call IDs can repeat across sessions.
+  The UI matches approvals to both session and tool call. Forks discard session-only guard approvals.
+- Spending is read atomically from the persistent ledger. Every paid attempt reserves estimated input plus its
+  output allowance before dispatch, sharing caps across concurrent calls and plugin reloads. Retry attempts are
+  separate rows. Interrupted calls and crash-left reservations remain visible and count against caps. Unpriced
+  cloud calls require configured prices under a dollar cap, or an explicit per-chat budget override.
+- `netpi.backup`: automatic and manual database/settings snapshots with checksums, automatic-only retention,
+  Settings → Data & backups, and an offline restore command that refuses existing homes. See [BACKUPS.md](BACKUPS.md).
 
-## Known limitations / ideas
-- OpenRouter: the catalog offers every tool-capable model (~390; narrow it with `providers.openrouter.include`).
-- Steering an orchestrator that is waiting on its workers makes it stop waiting, but it still needs an instance of its
-  agent back; if its own workers hold every one, the reply waits for one of them to finish.
-- Reloading the agents plugin (`netpi.agents`) mid-run can briefly let an agent run more than its instances.
-- A chat on an inactive agent (its model not loaded) stops with a notice; it doesn't wait for the model.
-- Small context windows are tight: with every plugin on, the system prompt and the 34 tool schemas take about 6.9k tokens.
-  Switch tools off per chat to make room; compaction keeps fewer recent messages when that overhead is large.
-- Changing the tool set mid-session (a tool plugin enabled, disabled or reloaded with new tools; `tools.disabled`; the
-  chat's own tool switches)
-  changes the tool definitions, so the backend re-prefills once. A "tools" notice tells the model what changed and
-  carries the new tools' guidelines.
-- `screenshot` without a url needs the desktop app's `desktop.capture` (a desktop shell built after 2026-09-24); in the
-  headless server it asks for a url.
-- Not built from the lanes/budget plan: a dollar budget for goals (`goal.budgetUsd`) and a "test" button per provider.
-- `sessions.messages` has no `afterSeq`: after paging far back, "jump to latest" reloads the newest page.
-- Projects live in the host (the store, the `projects.*` RPC and the Projects panel); only what the model is told about
-  them comes from plugins. Moving projects entirely into a plugin was discussed on 2026-09-24 but not decided.
+## Validation
+
+Windows validation on 2026-09-28:
+
+| Check | Result |
+|---|---|
+| Full .NET solution build | Passed, 0 warnings/errors |
+| App and plugin UI builds | Passed (existing Ideas-tab Svelte warnings) |
+| Providers | 41 passed; 335 assertions |
+| Tools | 55 passed |
+| Agent | 122 passed |
+| Aux | 129 passed |
+| Host | 47 passed; updated backup regression also rerun independently |
+| UI mock walkthrough | 233/233 checks passed |
+| Full real-server E2E | 61 passed; 800 checks, including creating/verifying a backup in the browser |
+
+Coverage details are in [TESTING.md](TESTING.md). Builds and tests use a separate `artifacts/review/app`
+output; these changes have not been installed into the user's running app by this task.
+
+## Remaining limits
+
+- Reservations estimate provider billing; they are not a guaranteed dollar ceiling. Missing final bills retain a
+  conservative estimate. The UI identifies those amounts; there is no automatic provider-invoice reconciliation.
+- Backups capture the database and settings sequentially. Project files, global ideas/instructions, skills,
+  plugins and external credentials need separate backup. Copies on the same disk do not protect against disk loss.
+- Guardrails are pattern/path checks, not an OS sandbox. Arbitrary code and trusted plugins retain user privileges.
+- Reloading the agents plugin can temporarily exceed configured execution slots for already-running agents;
+  persistent budget reservations are still shared across the old and new plugin instances.
+- Linux/macOS and paid/live-provider billing behavior were not validated in this change. The Anthropic provider
+  still needs verification against the real API. No checked-in CI workflow enforces the test suites yet.
+- Historical model experiments and earlier verification claims are preserved in
+  [the archived status](archive/2026-09-25-status.md); they are not fresh release verification.
+
+## Useful next capabilities
+
+Language-server diagnostics, PDF/Office reading and scheduled runs remain backlog items. MCP, partial rollback
+and worktree automation were deliberately deferred or dropped in the earlier harness plan; they are not accidental
+omissions. See [the archived harness decisions](archive/2026-09-26-harness-gaps.md).

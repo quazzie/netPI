@@ -10,7 +10,7 @@
   import TodoView from './tools/TodoView.svelte';
   import { parseArgs, toolMeta, toolSummary, toolBadge, pathArg, viewName } from '../../lib/tools.js';
   import { openFile } from '../../lib/openFile.js';
-  import { asks, answerApproval, opinionText } from '../../lib/state/asks.svelte.js';
+  import { asks, approvalFor, answerApproval, opinionText } from '../../lib/state/asks.svelte.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import { duration } from '../../lib/format.js';
   import { app } from '../../lib/state/app.svelte.js';
@@ -49,14 +49,14 @@
                 : null)),
   );
   // a guardrail asks the user before this call runs (plugins/NetPI.Guardrails)
-  const approval = $derived(asks.approvals.get(call.id) ?? null);
+  const approval = $derived(result ? null : approvalFor(chat.id, call.id));
   // an ask rule matched, and the second opinion found it read-only, so it ran without asking
-  const cleared = $derived(asks.cleared.get(call.id) ?? null);
+  const cleared = $derived(asks.cleared.get(JSON.stringify([chat.id, call.id])) ?? null);
   let deciding = $state(false);
   async function decide(allow, scope = 'once') {
     deciding = true;
     try {
-      await answerApproval(call.id, allow, scope);
+      await answerApproval(approval.approvalId, allow, scope);
     } catch (e) {
       toast(e.message, 'error');
     } finally {

@@ -47,6 +47,9 @@
     {:else if status.warning}
       <div class="note warn">Over {status.warnPercent} % of the budget: agents use paid lanes only when you ask.</div>
     {/if}
+    {#if status.reservedOrUnsettledUsd > 0}<div class="note">Includes {usd(status.reservedOrUnsettledUsd)} reserved for active or unsettled calls.</div>{/if}
+    {#if status.interruptedEstimateUsd > 0}<div class="note">Includes {usd(status.interruptedEstimateUsd)} estimated for interrupted calls; provider billing may differ.</div>{/if}
+    {#if status.unknownCostCalls > 0}<div class="note warn">{status.unknownCostCalls} calls have unknown costs.</div>{/if}
     {#if models.length}
       <table class="models">
         <thead><tr><th>This period</th><th>calls</th><th>tokens</th><th>cost</th></tr></thead>

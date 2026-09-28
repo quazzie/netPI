@@ -14,5 +14,6 @@
   <ItemGroup>
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
     <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Backup/NetPI.Backup.csproj" />
   </ItemGroup>
 </Project>

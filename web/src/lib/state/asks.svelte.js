@@ -8,8 +8,8 @@ export const asks = {
   pending: new SvelteMap(), // callId -> { sessionId, callId, agentId, agentName, questions, askedAt }
   drafts: new SvelteMap(), // callId -> string[][]: the options picked, per question
   closed: new SvelteMap(), // callId -> { status: answered|steered|withdrawn|cancelled, answers, text }
-  approvals: new SvelteMap(), // callId -> { sessionId, callId, agentId, tool, kind: command|path, subject, rule, askedAt, opinion? }
-  cleared: new SvelteMap(), // callId -> guard.cleared: an ask rule matched, and the second opinion let it run without asking
+  approvals: new SvelteMap(), // approvalId -> { sessionId, callId, agentId, tool, kind: command|path, subject, rule, askedAt, opinion? }
+  cleared: new SvelteMap(), // [sessionId, callId] -> guard.cleared: an ask rule matched, and the second opinion let it run without asking
 };
 
 /** The question waiting in a chat (the oldest, when there are several). */
@@ -31,7 +31,7 @@ export async function loadAsks() {
   asks.pending.clear();
   for (const a of questions ?? []) asks.pending.set(a.callId, a);
   asks.approvals.clear();
-  for (const a of approvals ?? []) asks.approvals.set(a.callId, a);
+  for (const a of approvals ?? []) asks.approvals.set(a.approvalId, a);
 }
 
 /** ask.asked / ask.closed and guard.asked / guard.closed / guard.cleared (unscoped: every window hears of every chat's). */
@@ -42,9 +42,9 @@ export function askEvent(type, d) {
     asks.pending.delete(d.callId);
     asks.drafts.delete(d.callId);
     asks.closed.set(d.callId, d);
-  } else if (type === 'guard.asked') asks.approvals.set(d.callId, d);
-  else if (type === 'guard.closed') asks.approvals.delete(d.callId);
-  else if (type === 'guard.cleared') asks.cleared.set(d.callId, d);
+  } else if (type === 'guard.asked') asks.approvals.set(d.approvalId, d);
+  else if (type === 'guard.closed') asks.approvals.delete(d.approvalId);
+  else if (type === 'guard.cleared') asks.cleared.set(JSON.stringify([d.sessionId, d.callId]), d);
 }
 
 const RISKS = { destructive: 'destructive', stops_process: 'stops a process', remote_change: 'changes a remote' };
@@ -60,8 +60,8 @@ export function opinionText(o) {
 }
 
 /** Lets a tool call run, or not; scope 'session' allows the rule that asked for the rest of the chat. */
-export function answerApproval(callId, allow, scope = 'once') {
-  return rpc('guard.answer', { callId, allow, scope });
+export function answerApproval(approvalId, allow, scope = 'once') {
+  return rpc('guard.answer', { approvalId, allow, scope });
 }
 
 /** Picks an option (or toggles it, when several may be picked). */
@@ -78,4 +78,8 @@ export function pick(callId, qIndex, label, multiple) {
 export function answerAsk(callId, text = '') {
   const answers = asks.drafts.get(callId) ?? [];
   return rpc('ask.answer', { callId, answers, ...(text.trim() ? { text: text.trim() } : {}) });
+}
+
+export function approvalFor(sessionId, callId) {
+  return [...asks.approvals.values()].find(a => a.sessionId === sessionId && a.callId === callId) ?? null;
 }

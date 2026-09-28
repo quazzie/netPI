@@ -11,7 +11,7 @@ namespace NetPI.Agents;
 /// <item><c>usage_calls</c>: one row per call (agents, compaction, anything that asks a model), recorded by
 /// <see cref="LedgerMiddleware"/>. The cost is what the provider reported (<see cref="Usage.CostUsd"/>: OpenRouter),
 /// else tokens × the price (the agent's <c>cost</c>, else the catalog's pricing); local models are free; other cloud
-/// models without a price are "unknown" ($0, but paid when a budget is spent).</item>
+/// models without a price are "unknown" and cannot start under a dollar cap without an explicit override.</item>
 /// <item><c>lanes_usage</c>: tokens per day, provider and model (the Work tab, the legacy
 /// <c>budget.providers.&lt;provider&gt;.dailyTokens</c>).</item>
 /// <item>Budgets: <c>budget.monthlyUsd</c> (the month starts on <c>budget.resetDay</c>), <c>budget.dailyUsd</c> and a
@@ -20,7 +20,7 @@ namespace NetPI.Agents;
 /// (<c>session.meta.budgetAllowedFrom</c> = the start of the period).</item>
 /// </list>
 /// </summary>
-internal sealed class Ledger
+internal sealed partial class Ledger
 {
     public const double CacheReadShare = 0.1;   // of the input price, when no cache price is known (Anthropic's rate)
     public const double CacheWriteShare = 1.25;
@@ -30,7 +30,7 @@ internal sealed class Ledger
     private readonly Dictionary<(string Day, string Provider, string Model), Totals> _totals = [];
     private bool _dbReady;
 
-    // cost caches, reloaded when the day or the budget period changes
+    // Monetary snapshots read atomically from the ledger, including persistent reservations
     private string _costDay = "";
     private DateTime _periodStart;
     private double _periodSpent, _todaySpent;
@@ -50,7 +50,7 @@ internal sealed class Ledger
     /// <summary>USD per million tokens.</summary>
     internal sealed record Price(double Input, double Output, double CacheRead, double CacheWrite, string Source)
     {
-        public bool Free => Input == 0 && Output == 0;
+        public bool Free => Input == 0 && Output == 0 && CacheRead == 0 && CacheWrite == 0;
     }
 
     internal sealed record BudgetOptions(double? MonthlyUsd, double? DailyUsd, int WarnPercent, int ResetDay, string OnLimit);
@@ -106,7 +106,8 @@ internal sealed class Ledger
                 );
                 CREATE INDEX IF NOT EXISTS usage_calls_ts ON usage_calls(ts);
                 CREATE INDEX IF NOT EXISTS usage_calls_root ON usage_calls(root_session_id);
-                """);
+                """,
+                "CREATE INDEX IF NOT EXISTS usage_calls_day_lane ON usage_calls(day, lane)");
             var day = Today;
             var rows = db.Query("SELECT provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, calls FROM lanes_usage WHERE day = @day",
                 new Dictionary<string, object?> { ["day"] = day },
@@ -156,19 +157,19 @@ internal sealed class Ledger
     /// <summary>The price of a model: the agent's <c>cost</c> ($/Mtok), else the catalog's pricing ($/token), else free for local models.</summary>
     public static Price? PriceOf(ModelInfo model, JsonObject? agentCfg)
     {
-        if (agentCfg?["cost"] is JsonObject c && (Number(c["input"]) is not null || Number(c["output"]) is not null))
+        if (agentCfg?["cost"] is JsonObject c && Number(c["input"]) is >= 0 && Number(c["output"]) is >= 0)
         {
             var input = Number(c["input"]) ?? 0;
-            return new Price(input, Number(c["output"]) ?? 0, Number(c["cacheRead"]) ?? input * CacheReadShare,
-                Number(c["cacheWrite"]) ?? input * CacheWriteShare, "settings");
+            return new Price(input, Number(c["output"]) ?? 0, Math.Max(0, Number(c["cacheRead"]) ?? input * CacheReadShare),
+                Math.Max(0, Number(c["cacheWrite"]) ?? input * CacheWriteShare), "settings");
         }
-        if (model.Extra?["pricing"] is JsonObject p && Number(p["prompt"]) is { } prompt && Number(p["completion"]) is { } completion)
+        if (model.Extra?["pricing"] is JsonObject p && Number(p["prompt"]) is >= 0 and var prompt && Number(p["completion"]) is >= 0 and var completion)
         {
             static double PerM(double perToken) => Math.Round(perToken * 1_000_000, 6);
             var input = PerM(prompt);
             return new Price(input, PerM(completion),
-                Number(p["input_cache_read"]) is { } cr ? PerM(cr) : input * CacheReadShare,
-                Number(p["input_cache_write"]) is { } cw ? PerM(cw) : input * CacheWriteShare, "catalog");
+                Number(p["input_cache_read"]) is >= 0 and var cr ? PerM(cr) : input * CacheReadShare,
+                Number(p["input_cache_write"]) is >= 0 and var cw ? PerM(cw) : input * CacheWriteShare, "catalog");
         }
         if (model.IsLocal) return new Price(0, 0, 0, 0, "local");
         return null;
@@ -194,44 +195,17 @@ internal sealed class Ledger
         if (u is null) return;
         var model = request.Model;
         var (cost, source) = CostOf(model, u, agentCfg);
-        var now = DateTime.Now;
-        var day = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        Roll(now);
         lock (_gate)
         {
-            _periodSpent += cost;
-            _todaySpent += cost;
-            if (agent is not null) _agentToday[agent] = _agentToday.GetValueOrDefault(agent) + cost;
-        }
-        Record(message.Provider ?? model.Provider, model.Id, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens);
-        if (_dbReady)
-        {
-            try
-            {
-                _ctx.Db.Execute(
-                    """
-                    INSERT INTO usage_calls (ts, day, session_id, root_session_id, agent_id, lane, provider, model, purpose,
-                      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_source)
-                    VALUES (@ts, @day, @session, @root, @agent, @lane, @provider, @model, @purpose,
-                      @input, @output, @cacheRead, @cacheWrite, @cost, @source)
-                    """,
-                    new Dictionary<string, object?>
-                    {
-                        ["ts"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ["day"] = day,
-                        ["session"] = request.SessionId, ["root"] = RootSession(request.SessionId), ["agent"] = request.AgentId,
-                        ["lane"] = agent, ["provider"] = model.Provider, ["model"] = model.Id, ["purpose"] = request.Purpose,
-                        ["input"] = u.InputTokens, ["output"] = u.OutputTokens, ["cacheRead"] = u.CacheReadTokens, ["cacheWrite"] = u.CacheWriteTokens,
-                        ["cost"] = cost, ["source"] = source,
-                    });
-            }
-            catch (Exception ex) { _ctx.Logger.LogWarning(ex, "Failed to record a model call"); }
+            AddCharge(request, agent, u, cost, source);
+            Record(message.Provider ?? model.Provider, model.Id, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens);
         }
         ScheduleChanged();
     }
 
     internal static (double Cost, string Source) CostOf(ModelInfo model, Usage u, JsonObject? agentCfg)
     {
-        if (u.CostUsd is { } reported) return (Math.Max(0, reported), "reported");
+        if (u.CostUsd is { } reported && double.IsFinite(reported)) return (Math.Max(0, reported), "reported");
         var price = PriceOf(model, agentCfg);
         if (price is null) return (0, "unknown");
         if (price.Free) return (0, model.IsLocal ? "free" : "estimated");
@@ -252,49 +226,49 @@ internal sealed class Ledger
         return id;
     }
 
-    /// <summary>Reload the cost caches when the day or the period changed (or on first use).</summary>
+    /// <summary>Refresh the monetary snapshot under the same lock as recording and reservation.</summary>
     private void Roll(DateTime now)
     {
-        var day = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var (start, _) = Period(now, Options().ResetDay);
-        lock (_gate)
-            if (day == _costDay && start == _periodStart) return;
-        double period = 0, today = 0;
-        var agents = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        if (_dbReady)
-        {
-            try
-            {
-                var from = new DateTimeOffset(start).ToUnixTimeMilliseconds();
-                period = _ctx.Db.Scalar<double?>("SELECT SUM(cost_usd) FROM usage_calls WHERE ts >= @from", new Dictionary<string, object?> { ["from"] = from }) ?? 0;
-                today = _ctx.Db.Scalar<double?>("SELECT SUM(cost_usd) FROM usage_calls WHERE day = @day", new Dictionary<string, object?> { ["day"] = day }) ?? 0;
-                foreach (var (agent, cost) in _ctx.Db.Query("SELECT lane, SUM(cost_usd) AS c FROM usage_calls WHERE day = @day AND lane IS NOT NULL GROUP BY lane",
-                             new Dictionary<string, object?> { ["day"] = day }, r => (r.GetString("lane"), r.GetDouble("c"))))
-                    agents[agent] = cost;
-            }
-            catch (Exception ex) { _ctx.Logger.LogWarning(ex, "Reading the spend so far failed"); }
-        }
         lock (_gate)
         {
-            _costDay = day;
-            _periodStart = start;
-            _periodSpent = period;
-            _todaySpent = today;
+            _costDay = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            (_periodStart, _) = Period(now, Options().ResetDay);
+            // Read through the database: another ledger may still be settling a call after hot reload.
+            // Never publish a stale snapshot over increments made by a different thread.
+            var from = new DateTimeOffset(_periodStart).ToUnixTimeMilliseconds();
             _agentToday.Clear();
-            foreach (var (k, v) in agents) _agentToday[k] = v;
+            if (_dbReady)
+            {
+                var totals = _ctx.Db.Query("""
+                    SELECT lane,
+                        SUM(CASE WHEN ts >= @from THEN cost_usd ELSE 0 END) AS period,
+                        SUM(CASE WHEN day = @day THEN cost_usd ELSE 0 END) AS today
+                    FROM usage_calls WHERE ts >= @from OR day = @day GROUP BY lane
+                    """, new { from, day = _costDay },
+                    r => (Agent: r.GetStringOrNull("lane"), Period: r.GetDouble("period"), Today: r.GetDouble("today")));
+                _periodSpent = totals.Sum(t => t.Period);
+                _todaySpent = totals.Sum(t => t.Today);
+                foreach (var t in totals.Where(t => t.Agent is not null)) _agentToday[t.Agent!] = t.Today;
+            }
+            else
+            {
+                _periodSpent = _memoryCharges.Values.Where(c => c.Ts >= from).Sum(c => c.Cost);
+                var today = _memoryCharges.Values.Where(c => c.Day == _costDay).ToList();
+                _todaySpent = today.Sum(c => c.Cost);
+                foreach (var c in today.Where(c => c.Agent is not null))
+                    _agentToday[c.Agent!] = _agentToday.GetValueOrDefault(c.Agent!) + c.Cost;
+            }
         }
     }
 
     public (double Period, double Today) Spent()
     {
-        Roll(DateTime.Now);
-        lock (_gate) return (_periodSpent, _todaySpent);
+        lock (_gate) { Roll(DateTime.Now); return (_periodSpent, _todaySpent); }
     }
 
     public double SpentToday(string agent)
     {
-        Roll(DateTime.Now);
-        lock (_gate) return _agentToday.GetValueOrDefault(agent);
+        lock (_gate) { Roll(DateTime.Now); return _agentToday.GetValueOrDefault(agent); }
     }
 
     private void ScheduleChanged()
@@ -352,7 +326,7 @@ internal sealed class Ledger
     private bool AllowedNow(SessionInfo session) =>
         session.Meta?["budgetAllowedFrom"] is JsonValue v && v.TryGetValue<string>(out var s) && s == PeriodStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
-    /// <summary>budget.allow: this chat (and its subagents) may go over the budget until the period ends.</summary>
+    /// <summary>budget.allow: this chat may go over the budget until the period ends; subagents still stop.</summary>
     public void Allow(string sessionId) =>
         _ctx.Sessions.UpdateSession(sessionId, s =>
         {
@@ -372,8 +346,12 @@ internal sealed class Ledger
         var start = PeriodStart;
         var warn = o.MonthlyUsd is { } m && period >= m * o.WarnPercent / 100 || o.DailyUsd is { } d && today >= d * o.WarnPercent / 100;
         var exhausted = o.MonthlyUsd is { } m2 && period >= m2 || o.DailyUsd is { } d2 && today >= d2;
+        var estimates = EstimateStatus();
         return new JsonObject
         {
+            ["reservedOrUnsettledUsd"] = estimates.Reserved,
+            ["interruptedEstimateUsd"] = estimates.Interrupted,
+            ["unknownCostCalls"] = estimates.Unknown,
             ["monthlyUsd"] = o.MonthlyUsd,
             ["dailyUsd"] = o.DailyUsd,
             ["warnPercent"] = o.WarnPercent,
@@ -586,25 +564,5 @@ internal sealed class Ledger
             arr.Add(o);
         }
         return new JsonObject { ["day"] = day, ["providers"] = arr, ["budget"] = BudgetStatus(), ["models"] = ModelsThisPeriod() };
-    }
-}
-
-/// <summary>
-/// Outermost model middleware (before retries): checks the budget before a call to a paid model and records every
-/// finished call in the ledger.
-/// </summary>
-internal sealed class LedgerMiddleware(Ledger ledger, AgentScheduler scheduler) : IModelMiddleware
-{
-    public int Order => -100;
-
-    public async IAsyncEnumerable<ModelStreamEvent> InvokeAsync(ModelRequest request, ModelCallDelegate next, [EnumeratorCancellation] CancellationToken ct)
-    {
-        var (agent, cfg) = scheduler.AgentOf(request.Model, request.SessionId);
-        ledger.Check(request, agent, cfg);
-        await foreach (var e in next(request, ct).WithCancellation(ct).ConfigureAwait(false))
-        {
-            if (e is StreamCompleted done) ledger.RecordCall(request, done.Message, agent, cfg);
-            yield return e;
-        }
     }
 }

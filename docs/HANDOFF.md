@@ -15,48 +15,20 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 | OpenRouter | `providers.openrouter.apiKey` or `OPENROUTER_API_KEY`; tested live with the free `stealth/space-bunny-alpha` |
 | Plans | `docs/plans/`: active plans (open questions at the end); `docs/archive/`: one dated record per completed plan (what was done, results, commits) |
 
-## Current state
+## Current state (2026-09-28)
 
-- **Windows:** all five unit suites and the E2E suite (UI smoke included) pass; counts are in `docs/STATUS.md`.
-- **Real models:** runs on nInfer (`qwen3.8-27b`) and on OpenRouter behave: queueing, subagents, steering,
-  and cache reuse across turns, project switches and AGENTS.md edits (every turn reuses the previous prompt + output).
-- **Not yet verified:** the Anthropic provider against the real API, and Linux/macOS since the Windows work.
-- **Agent tools:** `web_fetch`, `web_search` (SearXNG / Brave), `screenshot` and `todo_write` work live with `qwen3.8-27b`;
-  tools that appear or disappear mid-session are announced with a notice. The `ssh_*` tools work against the hosts in
-  `~/.ssh/config` (tested live on `nuc` and `server`).
-- **Goals** (`plugins/NetPI.Goal`, `/goal`): the agent is started again after every run until it marks the goal
-  complete; tested with a scripted model, not yet with a real one.
-- **Agents, budget, settings** (built 2026-09-24/25, not yet deployed to the user's NetPI): an agent is a model with
-  instances and a note on when to use it; chats run on agents (the composer's agent picker) and subagents pick one
-  (`agent_choices`, `agent_spawn { agent }`). An agent is active only while its model is loaded (NetPI never loads a
-  model) and can be switched off in Settings or the Work tab. The user's lanes become agents on the first start. Every
-  model call is recorded with its cost against one monthly budget (paid calls stop or ask when it is spent). The
-  settings dialog renders the host's and every plugin's settings as controls; each chat switches its own tools.
-- **Compaction works like pi's** (built 2026-09-25, not yet deployed): a structured checkpoint at the chat's reasoning
-  effort, the files read and modified, split turns; long tool results go to a file the agent reads from.
-- **Skills** (`plugins/NetPI.Skills`, built 2026-09-25, not yet deployed): the Agent Skills standard. SKILL.md folders
-  in the project (`.agents/skills`, `.netpi/skills`, up to the git root) and globally (`~/.agents/skills`,
-  `~/.netpi/skills`); the catalog reaches agents as a `skills` notice, the `skill` tool loads one, `/skill:name` loads one
-  for the user's message. Tested with a scripted model, not yet with a real one. See `docs/PLUGIN-SKILLS.md`.
-- **Profiles** (built 2026-09-24, not yet deployed): the opening of a chat's system prompt and its tools; a default per
-  project; switching is free before the first message and one full re-read after it.
-- **Decisions** (`plugins/NetPI.Decide`, built and hot-loaded into the user's NetPI 2026-09-26): the `decide` tool and
-  `decide.ask` RPC ask a decision model (Kev, TypeSafe's `/v1/systemone`) typed yes/no, pick-one and score questions
-  about one text or every line of a file, through AiGateway. `kev-9b`/`kev-4b` are nuc router models (the router runs
-  a build of the Kev llama.cpp fork); switch to one in AiHub (it also unloads yue2). `qwen3.8-27b` works too, with no
-  switch: AiGateway answers System One for NInfer models through NInfer's `/v1/decision` (fork, `local/main`, ~35 ms
-  per question; it shares NInfer's two slots with the agents). The AiProxy provider leaves models
-  with an `api` out of the chat model list. Which model for which task (the results matrix):
-  `docs/DECISION-MODELS.md`; every experiment behind it: `docs/archive/2026-09-26-decisions.md`; what comes next
-  (baselines, multi-prefill in NInfer, decisions inside NetPI): `docs/DECISION-ROADMAP.md`.
-- **Chat UI:** the streamed answer is laid out as the finished one will be, so nothing jumps between steps; a Steps
-  preference (expanded / fold when done / folded), chat width, zoom and spellcheck are in Settings.
-- **History:** the Windows bring-up, the first smoke tests and the prompt work are recorded in
-  `docs/archive/2026-09-24-windows-bringup.md`; the agent tools and projects UI in `docs/archive/2026-09-24-agent-tools.md`;
-  the SSH tools in `docs/archive/2026-09-24-ssh-tools.md`; goals and the steady chat in
-  `docs/archive/2026-09-24-goals.md`; lanes, the budget and the settings dialog in
-  `docs/archive/2026-09-24-lanes-budget-settings.md`; profiles in `docs/archive/2026-09-24-profiles.md`; agents instead of
-  lanes in `docs/archive/2026-09-25-agents.md`.
+The review fixes are implemented in the working tree: unique approval IDs, cleared fork permissions, atomic
+spending reads, persistent per-attempt budget reservations, and the backup plugin plus offline restore.
+[STATUS.md](STATUS.md) is the current state and limitations; [TESTING.md](TESTING.md) records fresh validation.
+[BACKUPS.md](BACKUPS.md) explains snapshot scope, retention and recovery.
+
+Build output used for validation is isolated under `artifacts/review`; this task has not installed changes into
+`artifacts/app` or restarted the user's app. Deploy with the normal build flow, then restart and refresh open
+browser tabs: `guard.answer` now takes `approvalId`, not the model's `callId`.
+
+Earlier real-model results and deployment notes are historical, preserved in
+[archive/2026-09-25-status.md](archive/2026-09-25-status.md). Do not treat old “not yet deployed” notes as current
+machine state. Live Anthropic, paid billing reconciliation, and Linux/macOS still need fresh verification.
 
 ## Decisions and preferences to keep
 

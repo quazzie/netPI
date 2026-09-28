@@ -211,7 +211,7 @@ public static class SessionStoreTests
                 Meta = new JsonObject
                 {
                     ["profile"] = "coder", ["identity"] = "You are…", ["toolsOff"] = new JsonArray("bash"), ["agent"] = "qwen",
-                    ["goal"] = new JsonObject { ["status"] = "active" }, ["todo"] = new JsonArray(), ["budgetAllowedFrom"] = "2026-09-01",
+                    ["goal"] = new JsonObject { ["status"] = "active" }, ["todo"] = new JsonArray(), ["budgetAllowedFrom"] = "2026-09-01", ["guardrailsAllowed"] = new JsonArray("ask: ^git push"),
                     ["forkedFrom"] = new JsonObject { ["sessionId"] = "ses_z" },
                 },
             };

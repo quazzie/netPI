@@ -506,23 +506,23 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
       publish('guard.cleared', { sessionId: sid, callId: tool.id, agentId: a.id, tool: tool.name, kind: 'command', subject: tool.args.command, rule, by: 'session' });
       return { allow: true };
     }
-    const entry = { sessionId: sid, callId: tool.id, agentId: a.id, tool: tool.name, kind: 'command', subject: tool.args.command, rule, askedAt: new Date().toISOString(), opinion };
+    const entry = { approvalId: `approval_${tool.id}`, sessionId: sid, callId: tool.id, agentId: a.id, tool: tool.name, kind: 'command', subject: tool.args.command, rule, askedAt: new Date().toISOString(), opinion };
     setStatus(sid, { status: 'yielded', activity: 'waiting for your OK' });
     let outcome;
     try {
       outcome = await new Promise((resolve, reject) => {
-        approvals.set(tool.id, { entry, resolve });
+        approvals.set(entry.approvalId, { entry, resolve });
         publish('guard.asked', entry);
         run.ac.signal.addEventListener('abort', () => reject(ABORT), { once: true });
       });
     } catch (e) {
-      approvals.delete(tool.id);
-      publish('guard.closed', { sessionId: sid, callId: tool.id, status: 'cancelled' });
+      approvals.delete(entry.approvalId);
+      publish('guard.closed', { approvalId: entry.approvalId, sessionId: sid, callId: tool.id, status: 'cancelled' });
       append(sid, 'tool', [result(tool.id, tool.name, 'Aborted: the run was cancelled before this tool call completed.', null, { isError: true })]);
       throw e;
     }
-    approvals.delete(tool.id);
-    if (outcome.steered) publish('guard.closed', { sessionId: sid, callId: tool.id, status: 'steered' });
+    approvals.delete(entry.approvalId);
+    if (outcome.steered) publish('guard.closed', { approvalId: entry.approvalId, sessionId: sid, callId: tool.id, status: 'steered' });
     setStatus(sid, { status: 'running', activity: null });
     return outcome;
   }
@@ -733,8 +733,8 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
         allowedInChat.get(sid).add(w.entry.rule);
       }
       const close = (x, status) => {
-        approvals.delete(x.entry.callId);
-        publish('guard.closed', { sessionId: sid, callId: x.entry.callId, status, ...(forChat ? { scope: 'session' } : {}) });
+        approvals.delete(x.entry.approvalId);
+        publish('guard.closed', { approvalId: x.entry.approvalId, sessionId: sid, callId: x.entry.callId, status, ...(forChat ? { scope: 'session' } : {}) });
         x.resolve({ allow: status === 'allowed' });
       };
       close(w, allow ? 'allowed' : 'denied');

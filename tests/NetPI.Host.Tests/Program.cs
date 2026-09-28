@@ -10,6 +10,7 @@ SessionStoreTests.Register(runner);
 ModelCatalogTests.Register(runner);
 ServerTests.Register(runner);
 PluginTests.Register(runner);
+BackupTests.Register(runner);
 var code = await runner.RunAsync(args);
 T.Cleanup();
 return code;

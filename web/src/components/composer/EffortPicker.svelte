@@ -22,6 +22,7 @@
     class="pick"
     class:auto={!current}
     bind:this={btn}
+    aria-label="Reasoning effort"
     onclick={() => (open = !open)}
     title={current ? `Reasoning effort: ${current}` : `Reasoning effort: model default${def ? ` (${def})` : ''}`}
   >
