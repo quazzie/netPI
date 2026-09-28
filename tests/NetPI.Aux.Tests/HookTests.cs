@@ -102,7 +102,7 @@ public static class NudgeTests
             Check.True(await After(hook, turn, T.Assistant("All done.")) is null);
         });
 
-        r.Add("nudge: at most nudge.maxPerRun per run", async () =>
+        r.Add("nudge: at most nudge.maxPerRun consecutive nudges", async () =>
         {
             var (hook, turn, ctx) = Setup();
             var empty = new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop" };
@@ -115,6 +115,57 @@ public static class NudgeTests
             ctx2.SettingsFake.Set("nudge.maxPerRun", 1);
             Check.True(await After(hook2, turn2, empty) is not null);
             Check.True(await After(hook2, turn2, empty) is null);
+        });
+
+        r.Add("nudge: the cap bounds one stall episode, not the run — a response that needs no nudge resets it", async () =>
+        {
+            var (hook, turn, _) = Setup();
+            var empty = new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop" };
+
+            // Stall: three nudges in a row, then the fourth is suppressed.
+            for (var i = 0; i < 3; i++) Check.True(await After(hook, turn, empty) is not null, $"nudge {i + 1}");
+            Check.True(await After(hook, turn, empty) is null, "4th consecutive nudge is suppressed");
+
+            // The agent recovers: a real tool call. The counter is gone, not left at 3.
+            Check.True(await After(hook, turn, T.Assistant("Reading it.", T.Call("c1", "read"))) is null);
+            Check.True(!turn.Run.Items.ContainsKey(NudgeHook.CountKey), "a tool call resets the counter");
+
+            // A later stall gets its own budget: three more nudges, then suppressed again.
+            for (var i = 0; i < 3; i++) Check.True(await After(hook, turn, empty) is not null, $"second episode nudge {i + 1}");
+            Check.Equal(3, (int)turn.Run.Items[NudgeHook.CountKey]!);
+            Check.True(await After(hook, turn, empty) is null, "the second episode is capped too");
+        });
+
+        r.Add("nudge: a clean final answer resets the counter too, and so do aborted and errored turns", async () =>
+        {
+            var empty = new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop" };
+            foreach (var ok in new[]
+            {
+                T.Assistant("All done — the tests pass."),
+                new ChatMessage { Role = MessageRole.Assistant, StopReason = "aborted" },
+                new ChatMessage { Role = MessageRole.Assistant, StopReason = "error" },
+            })
+            {
+                var (hook, turn, _) = Setup();
+                Check.True(await After(hook, turn, empty) is not null, "first nudge");
+                Check.True(await After(hook, turn, empty) is not null, "second nudge");
+                Check.Equal(2, (int)turn.Run.Items[NudgeHook.CountKey]!);
+
+                Check.True(await After(hook, turn, ok) is null);
+                Check.True(!turn.Run.Items.ContainsKey(NudgeHook.CountKey), $"counter reset by stop reason {ok.StopReason}");
+                Check.True(await After(hook, turn, empty) is not null, "and the next stall is nudged again");
+            }
+        });
+
+        r.Add("nudge: maxPerRun=1 still lets a recovered run stall once more", async () =>
+        {
+            var (hook, turn, ctx) = Setup();
+            ctx.SettingsFake.Set("nudge.maxPerRun", 1);
+            var empty = new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop" };
+            Check.True(await After(hook, turn, empty) is not null, "nudge");
+            Check.True(await After(hook, turn, empty) is null, "suppressed");
+            Check.True(await After(hook, turn, T.Assistant("Working on it.", T.Call("c1", "read"))) is null, "tool call");
+            Check.True(await After(hook, turn, empty) is not null, "nudged again after the recovery");
         });
 
         r.Add("nudge: nudge.enabled=false disables it", async () =>

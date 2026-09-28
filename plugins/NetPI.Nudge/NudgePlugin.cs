@@ -3,7 +3,8 @@ using System.Text.RegularExpressions;
 namespace NetPI.Nudge;
 
 /// <summary>
-/// Registers <see cref="NudgeHook"/>. Settings: <c>nudge.enabled</c> (true), <c>nudge.maxPerRun</c> (3).
+/// Registers <see cref="NudgeHook"/>. Settings: <c>nudge.enabled</c> (true), <c>nudge.maxPerRun</c> (3, consecutive
+/// nudges per stall episode).
 /// </summary>
 [NetPiPlugin("netpi.nudge", Name = "Nudge", Description = "Auto-nudges a stalled agent", Order = 70)]
 public sealed class NudgePlugin : INetPiPlugin
@@ -16,7 +17,7 @@ public sealed class NudgePlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Bool("nudge.enabled", "Nudge stalled turns", true, "Says \"continue\" when a turn ends empty, is cut off, or announces an action without doing it."),
-                SettingInfo.Int("nudge.maxPerRun", "Nudges per run", 3, null, 0, 20),
+                SettingInfo.Int("nudge.maxPerRun", "Nudges per stall episode", 3, "How many nudges in a row one stall may get. An acceptable response (a tool call, a final answer, an aborted or errored turn) resets it, so a long run that recovers can still be nudged when it stalls again.", 0, 20),
             ],
         });
         var settings = context.Settings;
@@ -30,7 +31,9 @@ public enum NudgeReason { CutOff, Empty, EmptyAfterThinking, TextToolCall, Annou
 
 /// <summary>
 /// After a model call that produced no tool calls, detect a stalled agent and inject a notice (kind <c>nudge</c>)
-/// that makes it continue. At most <c>nudge.maxPerRun</c> nudges per run.
+/// that makes it continue. At most <c>nudge.maxPerRun</c> <i>consecutive</i> nudges: the counter is cleared by any
+/// acceptable response, so the cap bounds one stall episode rather than the whole run (otherwise a run nudged three
+/// times early would never be nudged again, however hard it stalled later).
 /// </summary>
 public sealed partial class NudgeHook(Func<ISettings?> settings) : IAgentHook
 {
@@ -46,7 +49,13 @@ public sealed partial class NudgeHook(Func<ISettings?> settings) : IAgentHook
             return ValueTask.FromResult<TurnDecision?>(null);
 
         var reason = Classify(assistant, run.ToolCallCount);
-        if (reason is null) return ValueTask.FromResult<TurnDecision?>(null);
+        if (reason is null)
+        {
+            // The stall is over: a real tool call, a clean final answer, or an aborted/errored turn ends the episode,
+            // so the next one gets its own budget. The read path already treats a missing key as 0.
+            run.Items.Remove(CountKey);
+            return ValueTask.FromResult<TurnDecision?>(null);
+        }
 
         var max = Get(s, "nudge.maxPerRun", 3);
         var count = run.Items.TryGetValue(CountKey, out var v) && v is int n ? n : 0;
