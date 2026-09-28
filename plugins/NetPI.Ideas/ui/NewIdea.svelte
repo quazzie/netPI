@@ -23,7 +23,7 @@
 </script>
 
 <form class="new np-card" onsubmit={submit}>
-  <input class="np-input" placeholder="Idea title" bind:value={title} use:focus onkeydown={(e) => e.key === 'Escape' && oncancel()} />
+  <input class="np-input" placeholder="Idea title (one line, on its own)" bind:value={title} use:focus onkeydown={(e) => e.key === 'Escape' && oncancel()} />
   <textarea class="np-input" rows="2" placeholder="Summary (optional)" bind:value={summary}></textarea>
   <div class="row">
     <div class="np-seg">

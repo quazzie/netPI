@@ -107,6 +107,8 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
             "- add {title (short, specific), summary (one or two sentences: what and why), priority (default medium), tags, sections}: " +
             "sections are the details, each {kind, title, content (Markdown)}; kinds: research, plan, requirements, design, decision, " +
             "blocker, links, todo, note.\n" +
+            "The user reads the Ideas tab as a list of titles (one line each, grouped by status), so the title has to carry the idea " +
+            "on its own: short, specific, no filler. Everything else belongs in the summary or a section.\n" +
             "- update {id, and what changes}: status, title, summary, priority, tags, project, addSections, updateSections " +
             "({id, title?, content? (replaces), kind?}), removeSectionIds.\n" +
             "project: list: the session's project by default, \"all\" for every project, \"global\" for the unbound ones, or a " +
@@ -115,7 +117,8 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
         PromptGuidelines =
         [
             "Record research and plans that are deferred, out of scope or not feasible now in the ideas backlog (ideas, action add), " +
-            "and look at the open ideas (action list) before larger work. When you finish the work an idea describes, set it to done (action update).",
+            "and look at the open ideas (action list) before larger work. When you finish the work an idea describes, set it to done (action update). " +
+            "Title the idea so it makes sense on its own on one line: the user scans titles, not summaries.",
         ],
         Parameters = new JsonObject
         {
