@@ -129,13 +129,17 @@ Data: `~/.netpi/` — `settings.json`, `netpi.db` (sessions, messages, projects,
 ```powershell
 dotnet build plugins\NetPI.Nudge     # into artifacts\dev\app: the running app sees nothing
 .\build.ps1                          # build into artifacts\dev\app: the running app is not touched
-.\build.ps1 -Publish                 # install into artifacts\app: plugins hot-reload, a new host starts with the next NetPI
+.\build.ps1 -Publish                 # install into the running app (a reload is a swap: no chat loses a tool)
 .\build.ps1 -Publish -NextStart      # the running app gets nothing; its next start runs the new build
+.\build.ps1 -AppDir ..\other\app     # install into another app folder (without it: the running app's own)
 .\build.ps1 -Pending                 # what a restart would bring
 npm run build:plugins                # plugin tab UIs → tabs reload (artifacts\dev\app: not the running app)
 npm run dev                          # UI dev server against a running NetPI (see docs/UI.md)
 .\build.ps1 -Test                    # unit suites (NuGet-free console runners)
 ```
+
+Working with a running NetPI? `plugins.quiet` in settings holds plugin reloads back until you switch it off, so nothing
+swaps under a running chat while you work.
 
 | doc | |
 |---|---|

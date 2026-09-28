@@ -15,13 +15,15 @@ diag { "action": "overview" }                              # start here
 diag { "action": "problems" }                             # what looks wrong now
 diag { "action": "journal", "limit": 50 }                 # the timeline of this chat
 diag { "action": "toolsets" }                             # this chat's tools and every change, with its cause
+diag { "action": "messages", "sessionId": "ses_other" }   # read another chat in full; beforeSeq pages back
 diag { "action": "logs", "level": "error", "sinceMinutes": 10 }
 ```
 
-The session-scoped actions (`calls`, `tools`, `journal`, `run`, `toolsets`) use the calling chat unless another
-`sessionId` is given; `sessionId: "all"` means no filter. The result is the same JSON as the RPC below, in the tool
-result and in the chat. Writes are not reachable from it: the action picks the method out of a fixed list of the
-inspecting ones, so `reload` and everything else that changes the app are the user's (`/reload`, the Diagnostics tab).
+The session-scoped actions (`calls`, `tools`, `journal`, `run`, `toolsets`, `messages`) use the calling chat unless
+another `sessionId` is given; `sessionId: "all"` means no filter. The result is the same JSON as the method behind it,
+in the tool result and in the chat. Writes are not reachable from it: the action picks the method out of a fixed list
+of the inspecting ones, so `reload` and everything else that changes the app are the user's (`/reload`, the Diagnostics
+tab). The CLI below is the same surface from outside, for you and for scripts.
 
 The rest of this page is the outside view, over HTTP.
 
@@ -29,8 +31,12 @@ A running NetPI writes **`<home>/server.json`** (home: `%USERPROFILE%\.netpi`, `
 ready and removes it when it stops:
 
 ```json
-{ "url": "http://127.0.0.1:7431", "token": "…", "pid": 26084, "version": "0.1.0", "startedAt": "…", "home": "…", "logs": "…", "desktop": true }
+{ "url": "http://127.0.0.1:7431", "token": "…", "pid": 26084, "version": "0.1.0", "startedAt": "…", "home": "…", "appDir": "…", "logs": "…", "desktop": true }
 ```
+
+`appDir` is where that app is installed, which is not necessarily the repository it was built from — a build in a git
+worktree has its own `artifacts/`. `build.ps1 -Publish` reads it, so a publish from anywhere installs into the app that
+is actually running (or pass `-AppDir` to name another folder).
 
 One NetPI per home, so one server.json per instance: the app holds `<home>/netpi.lock` while it runs, and a second one on
 the same home refuses to start ("NetPI is already running with the home …"). Another setup (tests, a second server)
@@ -79,11 +85,14 @@ Also useful: `runs.list` (every run), `agents.list` (the agents and their slots)
 
 ## "Why did my tools change?"
 
-A `/reload` (or a build that replaced a plugin's files) takes every running chat's tools away for a moment, and the
-chat gets a "tools" notice naming what went. Since the cause is known, the notice says so —
-`Your tools changed. No longer available: web_fetch (plugin reload netpi.tools.web).` — and the diagnostics plugin
-records the same reloads: `diag.overview` has `reloads` (which plugins, when, and which chats were mid-turn),
-`diag.problems` has a line for each one, and the Diagnostics tab shows both. The full history of one chat is
+A `/reload` (or a build that replaced a plugin's files) reloads plugins for *every* session, because they all share the
+one running app — a git worktree isolates the files, not the process. Two things keep that cheap: a reload is a **swap**
+(the new version starts while the old one still serves, so a tool is never absent and a chat gets no "tools changed"
+notice), and `plugins.quiet` holds reloads back entirely until you switch it off, so nothing at all moves under a
+running chat while you work. What a chat is told when something *does* change: `Your tools changed. No longer available:
+web_fetch (plugin reload netpi.tools.web).` — and the diagnostics plugin records the same reloads: `diag.overview` has
+`reloads` (which plugins, when, which chats were mid-turn, and what it cost) and `deferred` (what quiet is holding),
+`diag.problems` has a line for each, and the Diagnostics tab shows both. The full history of one chat is
 `diag.toolsets { sessionId }`: its tools now, the baseline of its first model call, and every change with its cause.
 
 ## How it is kept

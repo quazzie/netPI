@@ -306,7 +306,7 @@ public static class InspectTests
         var tool = ctx.ToolsFake.Tools.OfType<DiagTool>().Single();
         Check.True(tool.Definition.ReadOnly, "read-only, so calls of one turn run in parallel");
         var actions = ((JsonArray)tool.Definition.Parameters["properties"]!["action"]!["enum"]!).Select(a => a.Str()).ToList();
-        Check.True(actions.Contains("overview") && actions.Contains("toolsets"), "the actions are in the schema");
+        Check.True(actions.Contains("overview") && actions.Contains("toolsets") && actions.Contains("messages"), "the actions are in the schema");
 
         // a read: the RPC's own JSON, in Content (for the model) and in Details (for the chat)
         var overview = await Call(tool, """{ "action": "overview" }""");
@@ -330,6 +330,18 @@ public static class InspectTests
         seen = null;
         await Call(tool, """{ "action": "overview", "limit": 5 }""");
         Check.True(seen is null, "the global actions are not given a session");
+
+        // messages: another chat in full, with the session under the name that method takes
+        RpcRequest? page = null;
+        ctx.RpcFake.Register("sessions.messages", (r, _) => { page = r; return Task.FromResult<object?>(new JsonObject { ["messages"] = new JsonArray() }); });
+        var read = await Call(tool, """{ "action": "messages", "sessionId": "ses_other", "beforeSeq": 40, "limit": 20 }""");
+        Check.False(read.IsError, read.Content);
+        Check.Equal("ses_other", page!.Str("id"), "sessions.messages takes the session as id");
+        Check.Equal(null, page.Str("sessionId"), "and not under the name the tool uses");
+        Check.Equal(40, page.Int("beforeSeq"));
+        Check.Equal(20, page.Int("limit"));
+        await Call(tool, """{ "action": "messages" }""");
+        Check.Equal("ses_caller", page!.Str("id"), "the calling chat by default");
 
         // writes: the action picks the method out of the read-only list, so there is nothing to reach
         var pm = new FakePluginManager();

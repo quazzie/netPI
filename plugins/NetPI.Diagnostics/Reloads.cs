@@ -28,11 +28,16 @@ public sealed class Reloads(IPluginContext ctx)
             "disabled" => $"Plugins switched off: {string.Join(", ", Ids)}",
             "enabled" => $"Plugins switched on: {string.Join(", ", Ids)}",
             "reload-failed" => $"Plugin reload failed, still on the running version: {string.Join(", ", Ids)}",
+            "deferred" => $"Plugin reload deferred (plugins.quiet), the running version keeps serving: {string.Join(", ", Ids)}",
             _ => $"Plugins reloaded: {string.Join(", ", Ids)}",
         };
 
         /// <summary>What this reload means for the chats that were running: the tools at stake, or that there are none.</summary>
-        public string Impact => Tools.Count == 0
+        public string Impact => Kind == "deferred"
+            ? BusySessions.Count == 0
+                ? "nothing was swapped; no chat could notice"
+                : $"{BusySessions.Count} chat(s) mid-turn: nothing was swapped, so nothing changed under them"
+            : Tools.Count == 0
             ? BusySessions.Count == 0
                 ? "no chat was running, and it registers no tools"
                 : $"{BusySessions.Count} chat(s) mid-turn; it registers no tools, so nothing is announced"

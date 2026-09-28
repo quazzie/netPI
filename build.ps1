@@ -41,7 +41,8 @@ param(
     [switch] $Pending,
     [switch] $Discard,
     [switch] $Run,
-    [switch] $Test
+    [switch] $Test,
+    [string] $AppDir
 )
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -58,8 +59,28 @@ if (-not (dotnet --list-sdks | Where-Object { $_ -match '^1\d\.' -and [int]($_.S
 
 $dev = Join-Path $PSScriptRoot 'artifacts\dev\app'
 $app = Join-Path $PSScriptRoot 'artifacts\app'
+# Where to install. The app that is *running* says where it is (server.json's appDir), which is not this repository's
+# artifacts\app when the build happens in a worktree - installing into a folder nothing watches is the silent no-op that
+# makes "I published" a lie. -AppDir overrides both.
+if ($AppDir) { $app = (Resolve-Path -LiteralPath $AppDir -ErrorAction SilentlyContinue)?.Path ?? [IO.Path]::GetFullPath($AppDir) }
+else {
+    $netpiHome = if ($env:NETPI_HOME) { $env:NETPI_HOME } else { Join-Path $HOME '.netpi' }   # $HOME is read-only
+    $serverFile = Join-Path $netpiHome 'server.json'
+    if (Test-Path $serverFile) {
+        try {
+            $running = Get-Content -LiteralPath $serverFile -Raw | ConvertFrom-Json
+            if ($running.appDir -and (Test-Path $running.appDir)) {
+                $app = (Resolve-Path -LiteralPath $running.appDir).Path
+                if ((Split-Path -Parent (Split-Path -Parent $app)) -ne $PSScriptRoot) {
+                    Write-Host "A NetPI is running from $app (not this repository) - installing there." -ForegroundColor Yellow
+                }
+            }
+        } catch { Write-Host "Could not read ${serverFile}: installing into $app" -ForegroundColor DarkYellow }
+    }
+}
 $oldDir = Join-Path $app '.old'
 $pendingDir = Join-Path $app '.pending'
+$lockFile = Join-Path $app '.install.lock'
 # -NextStart, -Run and -Publish are one act: installing. The others only read or drop a staged build.
 if ($NextStart -or $Run) { $Publish = $true }
 $defer = $NextStart -and $Publish
@@ -134,6 +155,32 @@ function Copy-Rel([string] $from, [string] $to, [string] $rel) {
     Copy-Item -LiteralPath (Join-Path $from $rel) -Destination $dest -Force
 }
 
+# One install at a time. Two agents publishing into the same app folder would otherwise interleave file by file and
+# leave a mix of two builds. The lock is a file held open for the duration; if a publisher dies the handle is released by
+# the OS and the file goes stale, which the next publisher takes over after a minute.
+function Enter-InstallLock([string] $path) {
+    $dir = Split-Path $path
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    for ($waited = 0; $waited -lt 120; $waited++) {
+        try {
+            $fs = [IO.File]::Open($path, 'CreateNew', 'Write', 'None')
+            $bytes = [Text.Encoding]::UTF8.GetBytes("pid $PID, since $(Get-Date -Format o)")
+            $fs.Write($bytes, 0, $bytes.Length)
+            $fs.Flush($true)
+            return $fs
+        }
+        catch [IO.IOException] {
+            if (Test-Path $path) {
+                $age = (Get-Date) - (Get-Item -LiteralPath $path).LastWriteTime
+                if ($age -gt [TimeSpan]::FromMinutes(1)) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; continue }
+            }
+            if ($waited % 15 -eq 0) { Write-Host "Another publish is installing into $dir; waiting…" -ForegroundColor Yellow }
+            Start-Sleep -Seconds 1
+        }
+    }
+    throw "Another publish has held $path for two minutes. If no build is running, delete it."
+}
+
 # ---- what the running app is doing right now: a publish that hot-reloads plugins disturbs the chats that hold their
 # tools, so say so before doing it. Read-only, best effort: any failure just means no report. Only a plugin that
 # registers tools can take any away (a hook-only one swaps under a run and announces nothing), so the report names the
@@ -195,7 +242,7 @@ Write-Host '  netpi-server.exe   headless server (open the printed URL in a brow
 
 # ---- install into artifacts\app (only -Publish): the app a NetPI runs from
 if ($Publish) {
-    Step 'Publish (install into artifacts\app)'
+    Step "Publish (install into $app)"
     if ($WaitUntilIdle) {
         while ($true) {
             $live = Get-LiveChats
@@ -204,6 +251,9 @@ if ($Publish) {
             Start-Sleep -Seconds 5
         }
     }
+    # one install at a time; waiting above is before the lock, so a patient publisher does not block another one.
+    # A failed install throws and leaves the lock to go stale (a minute) rather than wrapping the whole block.
+    $installLock = Enter-InstallLock $lockFile
 
     # plugins that were renamed (2026-09-25: NetPI.Lanes is NetPI.Agents, NetPI.Agent is NetPI.Runtime): their old
     # output would load next to the new one. A running app keeps them until it is closed and published again.
@@ -318,10 +368,12 @@ if ($Publish) {
         $what = if ($restart.Count) { " The new host: $($restart -join ', ')." } else { '' }
         Write-Host "Ready for the next start: close NetPI and start it again (artifacts\app\NetPI.exe).$what" -ForegroundColor Yellow
     }
-    Write-Host 'artifacts\app is the app; artifacts\dev\app is what you just built (build.ps1 -Pending lists what a restart waits for).' -ForegroundColor DarkGray
+    Write-Host "Installed into $app (the running app). artifacts\dev\app is what you just built; -Pending lists what a restart waits for." -ForegroundColor DarkGray
+    $installLock.Dispose()
+    Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
 }
 else {
-    Write-Host "`nThe running app was not touched: artifacts\app is the installed build, artifacts\dev\app is this one." -ForegroundColor Green
+    Write-Host "`nThe running app was not touched: $app is the installed build, artifacts\dev\app is this one." -ForegroundColor Green
     Write-Host 'Install it with .\build.ps1 -Publish (now) or -Publish -NextStart (at the next start).' -ForegroundColor DarkGray
 }
 

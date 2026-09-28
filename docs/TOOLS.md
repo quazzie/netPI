@@ -741,9 +741,10 @@ read-only ones and who may write instead.
 | `snapshot`, `event` | `diag.snapshot` | plugins, tools, RPC methods, recent events, logs, runtime (`event`: one event's payload) |
 
 The arguments are the RPC's own: `limit`, `sessionId`, `runId`/`agentId`, `id`, `callId`, `name`, `type`, `sinceSeq`,
-`errors`, `running`, `detail`, `level`, `category`, `contains`, `sinceMinutes`, `maxChars`, `events`, `seq`. The
-session-scoped actions (`calls`, `tools`, `journal`, `run`, `toolsets`) default to the **calling** chat;
-`sessionId: "all"` means no filter.
+`beforeSeq`, `errors`, `running`, `detail`, `level`, `category`, `contains`, `sinceMinutes`, `maxChars`, `events`,
+`seq`. The session-scoped actions (`calls`, `tools`, `journal`, `run`, `toolsets`, `messages`) default to the
+**calling** chat; `sessionId: "all"` means no filter. An action forwards to its method as-is, renaming a parameter
+only where the method names it differently (`messages` → `sessions.messages`, which takes the session as `id`).
 
 ```ts
 content: the RPC's JSON, as the model reads it

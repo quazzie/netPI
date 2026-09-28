@@ -28,6 +28,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         ("journal", "diag.journal", "the events that matter as a timeline, oldest first (no per-token events)", true),
         ("run", "diag.run", "one run in depth: sessionId or agentId", true),
         ("toolsets", "diag.toolsets", "a session's tools now and every change with the cause (a plugin reload, a profile, the user, a setting)", true),
+        ("messages", "sessions.messages", "a page of a session's messages in full (role, text, tool calls and their results), oldest first: beforeSeq pages back", true),
         ("logs", "diag.logs", "log entries, oldest first", false),
         ("settings", "diag.settings", "the settings document without secrets", false),
         ("failures", "diag.failures", "failed requests the providers saved, newest first", false),
@@ -39,6 +40,13 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
     /// <summary>Actions that filter by session: the calling session is the default, "all" means no filter.</summary>
     private static bool PerSession(string action) => Actions.FirstOrDefault(a => a.Action == action).PerSession;
 
+    /// <summary>
+    /// Parameters an action has to rename on the way: the tool speaks <c>sessionId</c> everywhere, but the method it
+    /// forwards to may want another name (<c>sessions.messages</c> takes <c>id</c>).
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> Renames =
+        new Dictionary<string, string>(StringComparer.Ordinal) { ["messages"] = "sessionId:id" };
+
     public ToolDefinition Definition { get; } = new()
     {
         Name = "diag",
@@ -46,19 +54,22 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         Category = "general",
         SummaryArg = "action",
         ReadOnly = true,
-        Description = "Inspect the running app: overview, problems, model and tool calls, events, runs, tool-set changes, logs, settings, failed requests.",
+        Description = "Inspect the running app: overview, problems, model and tool calls, events, runs, tool-set changes, a chat's messages, logs, settings, failed requests.",
         Help = """
-            Read-only look inside NetPI itself (the same JSON as the diag.* RPCs, docs/DEBUGGING.md). Nothing here changes
-            the app: there is no reload, no setting write, no control of any kind.
+            Read-only look inside NetPI itself (the same JSON as the methods behind it, docs/DEBUGGING.md). Nothing here
+            changes the app: there is no reload, no setting write, no control of any kind.
             Start with action overview, then problems (what looks wrong), journal (the timeline), logs (filtered), and
             toolsets (why a chat's tools changed). "What changed in my environment, when and why" is toolsets: it returns
             the session's tools now, the baseline they started from and every change with its cause
             (plugin-reload with the plugin ids, profile, user, settings).
-            The arguments are the RPC's own: limit (how many, newest first), sessionId, runId/agentId, id (a model call),
-            callId (a tool call), name (a tool or a saved failed request), type (an event type prefix), sinceSeq, level
-            (debug|info|warn|error), category, contains (a substring of the message), sinceMinutes, maxChars, events, seq.
-            The actions that work on one session (calls, tools, journal, run, toolsets) use the calling session unless
-            you give another sessionId; sessionId "all" means no filter.
+            messages is the full text of a chat: a page of its messages (role, text, tool calls, tool results), oldest
+            first, with beforeSeq to page back. It is how you read another chat - what it was asked, and what it answered.
+            The arguments are the method's own: limit (how many, newest first), sessionId, runId/agentId, id (a model
+            call), callId (a tool call), name (a tool or a saved failed request), type (an event type prefix), sinceSeq,
+            beforeSeq, level (debug|info|warn|error), category, contains (a substring of the message), sinceMinutes,
+            maxChars, events, seq.
+            The actions that work on one session (calls, tools, journal, run, toolsets, messages) use the calling session
+            unless you give another sessionId; sessionId "all" means no filter.
             """,
         PromptGuidelines =
         [
@@ -71,7 +82,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
             {
                 ["action"] = Enum([.. Actions.Select(a => a.Action)]),
                 ["limit"] = Int("how many entries, newest first (the method's own default when omitted)"),
-                ["sessionId"] = Str("a session; the calling one for calls, tools, journal, run and toolsets, \"all\" for none"),
+                ["sessionId"] = Str("a session; the calling one for calls, tools, journal, run, toolsets and messages, \"all\" for none"),
                 ["runId"] = Str("calls: only one run (its agent id)"),
                 ["agentId"] = Str("run: one agent (instead of sessionId)"),
                 ["id"] = Int("call: the model call (from calls)"),
@@ -79,6 +90,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
                 ["name"] = Str("tools: only that tool; failure: the saved request's file name"),
                 ["type"] = Str("journal: an event type or prefix (\"agent\", \"tool.\")"),
                 ["sinceSeq"] = Int("journal: only events after this seq"),
+                ["beforeSeq"] = Int("messages: page back to the messages before this seq"),
                 ["errors"] = Bool("calls, tools: only the failed ones"),
                 ["running"] = Bool("calls, tools: only the ones running now"),
                 ["detail"] = Bool("calls: the request and response with them"),
@@ -134,6 +146,12 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         // the session-scoped actions look at the calling chat unless another one is named ("all": no filter)
         if (p["sessionId"] is not JsonValue v) p["sessionId"] = sessionId;
         else if (v.TryGetValue<string>(out var named) && named.Trim() is "all" or "*") p.Remove("sessionId");
+        // a method that names the session differently gets it under that name
+        if (Renames.TryGetValue(action, out var rename))
+        {
+            var parts = rename.Split(':');
+            if (p.Remove(parts[0], out var value)) p[parts[1]] = value;
+        }
         return p;
     }
 

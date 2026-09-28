@@ -37,6 +37,8 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     private readonly SemaphoreSlim _op = new(1, 1);
     private readonly Lock _gate = new();
     private readonly List<PluginEntry> _entries = [];
+    /// <summary>Plugins whose reload waits for <c>plugins.quiet</c> to end (see <see cref="Quiet"/>).</summary>
+    private readonly List<string> _deferred = [];
     private readonly Dictionary<string, FileSystemWatcher> _watchers = new(PathUtil.Comparer);
     private readonly Debouncer _rescan;
     private readonly Debouncer _applyEnabled;
@@ -155,7 +157,43 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         if (e.Data is JsonObject o && o["path"] is JsonValue v && v.TryGetValue<string>(out var path) &&
             !path.StartsWith("plugins", StringComparison.Ordinal))
             return;
+        // plugins.quiet switched off: the reloads it held back are the point of switching it off
+        if (!Quiet() && Deferred().Count > 0) _ = Guard(ApplyDeferredAsync(_shutdown.Token), "apply deferred reloads");
         _applyEnabled.Trigger();
+    }
+
+    /// <summary>
+    /// <c>plugins.quiet</c>: while on, a plugin reload is recorded and not applied, so nothing moves under a running
+    /// chat - no swap, no lost in-memory state, and (with the swap) no tool notices either. Switching it off applies
+    /// everything that piled up. The point of the setting is the one thing a worktree cannot do: the running app is
+    /// shared, so a reload in it is visible to every session, whoever asked for it.
+    /// </summary>
+    private bool Quiet()
+    {
+        try { return _k.Settings.Get("plugins.quiet", false); }
+        catch { return false; }
+    }
+
+    /// <summary>The plugin ids whose reload is waiting for quiet to end, oldest first.</summary>
+    public IReadOnlyList<string> Deferred()
+    {
+        lock (_deferred) return [.. _deferred];
+    }
+
+    private async Task ApplyDeferredAsync(CancellationToken ct)
+    {
+        List<string> ids;
+        lock (_deferred) { ids = [.. _deferred]; _deferred.Clear(); }
+        if (ids.Count == 0) return;
+        _log.LogInformation("Applying {Count} deferred plugin reload(s): {Ids}", ids.Count, string.Join(", ", ids));
+        foreach (var id in ids)
+        {
+            var e = FindById(id);
+            if (e is null) continue;
+            try { await ReloadEntryAsync(e, ct).ConfigureAwait(false); }
+            catch (Exception ex) { _log.LogWarning(ex, "Reloading {Plugin} failed", id); }
+        }
+        PublishChanged();
     }
 
     /// <summary>Diagnostics/tests: weak reference to the current load context and whether the last unloaded one was collected.</summary>
@@ -477,6 +515,16 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
 
     private async Task ReloadEntryAsync(PluginEntry e, CancellationToken ct)
     {
+        // plugins.quiet: record it and leave the running version alone. Nothing moves under a chat; switching quiet off
+        // applies everything that piled up (OnSettingsChanged).
+        if (Quiet())
+        {
+            lock (_deferred) if (!_deferred.Contains(e.Id)) _deferred.Add(e.Id);
+            _log.LogInformation("Plugin {Id}: reload deferred (plugins.quiet) - the running version keeps serving", e.Id);
+            PublishReloaded([e.Id], "deferred");
+            PublishChanged();
+            return;
+        }
         await _op.WaitAsync(ct).ConfigureAwait(false);
         var swapped = false;
         try

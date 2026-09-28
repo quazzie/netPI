@@ -3,14 +3,15 @@
 //
 // For every plugins/<P>/ui/main.js (or main.ts) — plus any plugin directories passed as arguments — build ONE
 // ES module with Svelte (component CSS injected into the JS, everything incl. svelte and @netpi/kit bundled)
-// to plugins/<P>/wwwroot/ui.js. When artifacts/app/plugins/<P>/ exists, the bundle is also copied to
-// artifacts/app/plugins/<P>/wwwroot/ui.js so UI edits hot-reload without a .NET build.
+// to plugins/<P>/wwwroot/ui.js. With --copy (or NETPI_COPY=1) the bundle also goes to <app>/plugins/<P>/wwwroot/ui.js,
+// so UI edits hot-reload without a .NET build. <app> is NETPI_APP_DIR, else --app-dir, else artifacts/app: point it at
+// the running app's own folder (server.json's appDir) when building in a worktree.
 //
 //   node web/scripts/build-plugins.mjs                     all plugins/*/ui
 //   node web/scripts/build-plugins.mjs web/mock/sample-plugin   … plus extra plugin dirs
 //   node web/scripts/build-plugins.mjs --only <dir>…       only the given dirs
 //   node web/scripts/build-plugins.mjs --watch             rebuild on change
-//   node web/scripts/build-plugins.mjs --copy              also install the bundle into artifacts/app/plugins/<P>/, so
+//   node web/scripts/build-plugins.mjs --copy              also install the bundle into <app>/plugins/<P>/, so
 //                                                          a running NetPI hot-reloads the UI without a .NET build
 //                                                          (NETPI_COPY=1 does the same; build.ps1 -Publish sets it)
 import fs from 'node:fs';
@@ -24,10 +25,21 @@ const kit = path.join(repo, 'web/src/lib/kit/index.js');
 const argv = process.argv.slice(2);
 const watch = argv.includes('--watch');
 const only = argv.includes('--only');
-// Installing into the app folder is opt-in: a plain bundle build must not write where a running NetPI watches.
+// Installing into the app folder is opt-in: a plain bundle build must not write where a running NetPI watches. The app
+// folder is NETPI_APP_DIR (what build.ps1 -Publish sets, to the running app) or --app-dir, else this repo's artifacts/app.
+const appDir = path.resolve(process.env.NETPI_APP_DIR || argValue('--app-dir') || path.join(repo, 'artifacts/app'));
 const copy = argv.includes('--copy') || !!process.env.NETPI_COPY;
 const noCopy = !copy || !!process.env.NETPI_NO_COPY;
-const extra = argv.filter((a) => !a.startsWith('--')).map((d) => path.resolve(d));
+
+/** The value of a `--flag value` or `--flag=value` argument. */
+function argValue(flag) {
+  const i = argv.indexOf(flag);
+  if (i < 0) return undefined;
+  const next = argv[i + 1];
+  return next && !next.startsWith('--') ? next : undefined;
+}
+// the extra plugin dirs are the arguments that are neither a flag nor a flag's value
+const extra = argv.filter((a, i) => !a.startsWith('--') && argv[i - 1] !== '--app-dir').map((d) => path.resolve(d));
 
 function findEntry(dir) {
   for (const f of ['main.js', 'main.ts', 'main.mjs']) {
@@ -53,13 +65,13 @@ if (!dirs.length) {
   process.exit(0);
 }
 
-/** Copy the fresh bundle next to the built plugin (artifacts/app/plugins/<P>/wwwroot/ui.js). */
+/** Copy the fresh bundle next to the built plugin (<app>/plugins/<P>/wwwroot/ui.js). */
 function copyToArtifacts(dir) {
   return {
     name: 'netpi-copy-to-artifacts',
     writeBundle() {
       const name = path.basename(dir);
-      const target = path.join(repo, 'artifacts/app/plugins', name);
+      const target = path.join(appDir, 'plugins', name);
       const src = path.join(dir, 'wwwroot/ui.js');
       const size = fs.existsSync(src) ? fs.statSync(src).size : 0;
       let note = '';

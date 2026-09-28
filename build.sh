@@ -13,10 +13,12 @@
 #                                       it up (the host installs .pending before it loads anything)
 #   ./build.sh --pending                what the next start would install
 #   ./build.sh --discard                drop the staged install
+#   ./build.sh --app-dir DIR            install into DIR instead of artifacts/app (point it at the running server's
+#                                       own folder - server.json's appDir - when building in a worktree)
 set -euo pipefail
 cd "$(dirname "$0")"
 
-WEB=1; TEST=0; PUBLISH=0; NEXTSTART=0; PENDING=0; DISCARD=0
+WEB=1; TEST=0; PUBLISH=0; NEXTSTART=0; PENDING=0; DISCARD=0; APP_DIR=""
 for a in "$@"; do
   case "$a" in
     --no-web) WEB=0 ;;
@@ -25,12 +27,14 @@ for a in "$@"; do
     --next-start) NEXTSTART=1; PUBLISH=1 ;;
     --pending) PENDING=1 ;;
     --discard) DISCARD=1 ;;
+    --app-dir) APP_DIR="${2:-}"; shift ;;
+    --app-dir=*) APP_DIR="${a#--app-dir=}" ;;
     *) echo "unknown option $a"; exit 2 ;;
   esac
 done
 
 DEV=artifacts/dev/app
-APP=artifacts/app
+APP=${APP_DIR:-artifacts/app}
 PENDING_DIR="$APP/.pending"
 
 # ---- pending / discard: what a restart would install, and dropping it

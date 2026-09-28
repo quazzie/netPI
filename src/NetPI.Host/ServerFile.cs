@@ -9,6 +9,8 @@ namespace NetPI.Host;
 /// the server is ready and removed when it stops. The port can change (a busy one falls back to a random port) and the
 /// token is new every run, so tools that inspect the app (<c>scripts/netpi.mjs</c>, a debugging agent with curl) read
 /// them here. It lives next to settings.json, which holds API keys: the same user can read both.
+/// <para><c>appDir</c> says where this app is installed, which is what a build needs to install into the running one
+/// (it is not necessarily the repository it was built from: a worktree builds into its own artifacts).</para>
 /// </summary>
 internal static class ServerFile
 {
@@ -26,6 +28,7 @@ internal static class ServerFile
             ["version"] = HostInfo.Version,
             ["startedAt"] = DateTimeOffset.UtcNow.ToString("O"),
             ["home"] = paths.Home,
+            ["appDir"] = paths.AppDir,
             ["logs"] = paths.LogsDir,
             ["desktop"] = desktop,
             ["rpc"] = $"POST {url}/api/rpc/<method> with the header {WebServer.TokenHeader}: <token> and the params as a JSON body",

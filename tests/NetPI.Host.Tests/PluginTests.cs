@@ -134,6 +134,31 @@ public static class PluginTests
                 "the running load context is the one that was there before, not a fresh one");
         });
 
+        r.Add("plugins: plugins.quiet holds reloads back, and switching it off applies them", async () =>
+        {
+            await SampleBuild.EnsureAsync();
+            var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
+            await using var server = await StartAsync(pluginsRoot);
+            server.Settings.Set("plugins.quiet", true);
+            var oldContext = CurrentContext(server).Target;
+
+            // a build while quiet: the file changes, the running version does not
+            foreach (var file in Directory.GetFiles(SampleBuild.Dir("v2")))
+                File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
+            await Wait.UntilAsync(() => server.Plugins.Deferred().Contains("test.sample"), "the reload was deferred", 20_000);
+            Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"), "the running version keeps serving");
+            Check.Equal(1, server.Plugins.List().Single(p => p.Id == "test.sample").LoadCount, "nothing was loaded");
+            Check.True(ReferenceEquals(oldContext, CurrentContext(server).Target), "the same load context, untouched");
+            Check.Equal(0, server.Plugins.Deferred().Count(p => p != "test.sample"), "only this one is waiting");
+
+            // switching quiet off applies what piled up
+            server.Settings.Set("plugins.quiet", false);
+            await Wait.UntilAsync(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running", LoadCount: 2 },
+                "the deferred reload was applied", 20_000);
+            Check.Equal("v2", (string?)await server.Rpc.InvokeAsync("sample.value"));
+            Check.Equal(0, server.Plugins.Deferred().Count, "the queue is empty");
+        });
+
         r.Add("plugins: wwwroot changes only bump the UI version (no reload)", async () =>
         {
             await SampleBuild.EnsureAsync();

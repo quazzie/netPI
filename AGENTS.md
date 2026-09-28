@@ -25,25 +25,33 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   `artifacts\app` is a separate, deliberate step (`-Publish` below). A worktree has its own `artifacts/` besides.
 - Windows: `.\build.ps1` (add `-Test` for the unit suites); from cmd `build` (`build.cmd`, same options).
   Linux/macOS: `./build.sh [--test]`.
-- Installing into `artifacts\app` (the app a NetPI runs from) is deliberate, never a side effect of testing:
-  - `.\build.ps1 -Publish` — build, then install. A running NetPI hot-reloads the changed plugins, so every chat
-    holding one of their tools gets a "tools" notice; the script names the plugins and the mid-turn chats before it
-    does (`-WaitUntilIdle` waits for them instead).
-  - `.\build.ps1 -Publish -NextStart` — the running NetPI gets nothing: everything waits in `artifacts\app\.pending`
-    for its next start, which installs it. Host files it replaces go into `artifacts\app\.old` (a running exe or DLL
+- Installing into the app folder (the app a NetPI runs from) is deliberate, never a side effect of testing. The
+  folder is the running app's own (`<home>\server.json` says where it is, which is not this repository's `artifacts\app`
+  when you build in a worktree), or `-AppDir <dir>` to name one. One install at a time: `.install.lock` in the app
+  folder, so two publishers cannot interleave.
+  - `.\build.ps1 -Publish` — build, then install. A reload is a **swap** (the new version starts while the old one
+    still serves), so no chat loses a tool; the script still says which plugins and how many chats are mid-turn, and
+    `-WaitUntilIdle` waits for them instead.
+  - `.\build.ps1 -Publish -NextStart` — the running NetPI gets nothing: everything waits in the app folder's
+    `.pending` for its next start, which installs it. Host files it replaces go into `.old` (a running exe or DLL
     can be renamed, not overwritten), so the next start runs the new host; after a contract change the plugins wait
     too, because the running NetPI would load them onto its old contracts. It prints what needs it.
   - `.\build.ps1 -Pending` — what a restart would bring. `.\build.ps1 -Discard` — drop the staged build.
   - `.\build.ps1 -Run` — publish and start the desktop app. `./build.sh` takes `--publish`, `--next-start`,
-    `--pending`, `--discard`.
-  - One plugin only, on purpose: `dotnet build plugins/<Name> -p:AppOutDir=artifacts/app/plugins/<Name>/`.
+    `--pending`, `--discard`, `--app-dir`.
+  - One plugin only, on purpose: `dotnet build plugins/<Name> -p:AppOutDir=<app>/plugins/<Name>/`.
+- **Want nothing to move under a running chat?** Set `plugins.quiet` (Settings or settings.json). Reloads are then
+  recorded and not applied — the running versions keep serving, nothing swaps, no state is lost — and switching it off
+  applies everything that piled up. This is the one thing a worktree cannot do: the running app is a single process
+  that every session shares.
 - Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
   Agent, Aux, Host. End-to-end: `dotnet tests/NetPI.E2E/bin/<Config>/NetPI.E2E.dll` (see `docs/TESTING.md`).
 - UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`.
 
 ## Inspecting the running app
-- `node scripts/netpi.mjs` (the overview), then `diag.problems`, `diag.calls`, `diag.run`, `diag.journal`, `diag.logs`: see
-  `docs/DEBUGGING.md`. It finds the app through `<home>/server.json` and only reads unless given `--write`.
+- The **`diag` tool** (read-only, one action per method: overview, problems, calls, tools, journal, run, toolsets,
+  messages, logs, settings, failures) — start with `diag { "action": "overview" }`. It is how an agent reads the
+  harness; `node scripts/netpi.mjs` is the same surface from outside. See `docs/DEBUGGING.md`.
 
 ## Conventions
 - Keep the core small; new behaviour goes into a plugin. Register everything through `IPluginContext` so hot

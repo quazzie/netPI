@@ -97,4 +97,9 @@ public interface IPluginManager
     Task ReloadAsync(string pluginId, CancellationToken ct = default);
     Task SetEnabledAsync(string pluginId, bool enabled, CancellationToken ct = default);
     Task RescanAsync(CancellationToken ct = default);
+    /// <summary>
+    /// Plugins whose reload is waiting for <c>plugins.quiet</c> to be switched off, oldest first (empty otherwise).
+    /// While quiet is on a reload is recorded and not applied, so the running version keeps serving.
+    /// </summary>
+    IReadOnlyList<string> Deferred() => [];
 }

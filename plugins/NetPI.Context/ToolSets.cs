@@ -56,7 +56,6 @@ internal static class ToolSets
     {
         var list = new List<JsonObject>();
         long? before = null;
-        var truncated = false;
         for (var page = 0; page < MaxPages; page++)
         {
             var batch = ctx.Sessions.GetMessages(sessionId, before, MessagePage);
@@ -77,7 +76,7 @@ internal static class ToolSets
             if (batch.Count < MessagePage || batch[0].Seq <= 1) return (list, false);  // that was the first page
             before = batch[0].Seq;   // carry on just before the oldest message of this one
         }
-        return (list, truncated: true);
+        return (list, Truncated: true);   // the walk ran out of pages, not of messages
     }
 
     private static JsonArray Strings(ChatMessage m, string key) =>

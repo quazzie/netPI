@@ -24,6 +24,7 @@ so the default applies again). The agents and the budget have their own page; th
 | `plugins.disabled` | `[]` | plugin ids not to load |
 | `plugins.enabled` | `[]` | turn on plugins whose `plugin.json` says `enabled: false` |
 | `plugins.dirs` | `[]` | extra plugin folders (besides `<app>/plugins` and `~/.netpi/plugins`) |
+| `plugins.quiet` | `false` | while on, a plugin reload (a `/reload`, a build that replaced a plugin's files) is recorded and **not applied**: the running version keeps serving, so nothing swaps under a running chat and no in-memory plugin state is lost. Switching it off applies everything that piled up, in plugin start order. `diag.overview` lists what is waiting in `deferred`, and `plugins.reloaded` says `kind: "deferred"`. The one thing a git worktree cannot do: the running app is one process that every session shares |
 | `tools.disabled` | `[]` | tool names hidden from every chat (e.g. `["pwsh"]`); only in this file: the dialog switches whole plugins, and each chat switches its own tools (the composer's tools button, `meta.toolsOff`) |
 | `logging.level` | `Information` | host log level (`~/.netpi/logs/netpi-YYYYMMDD.log`) |
 | `database.sqlitePath` | – | explicit SQLite library (default: `winsqlite3.dll` on Windows, `libsqlite3` elsewhere; env `NETPI_SQLITE`) |

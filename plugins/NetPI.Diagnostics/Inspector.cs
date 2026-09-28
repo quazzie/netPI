@@ -28,6 +28,7 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         var calls = recorder.Calls();
         var recent = calls.Where(c => now - c.StartedAt <= RecentWindow).ToList();
         var done = recent.Where(c => c.State != "running").ToList();
+        var deferred = ctx.Services.Get<IPluginManager>();
         var o = new JsonObject
         {
             ["time"] = now.ToString("O"),
@@ -51,6 +52,7 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
             ["tools"] = new JsonObject { ["running"] = new JsonArray([.. recorder.Tools().Where(t => t.EndedAt is null).Select(t => (JsonNode?)t.ToJson())]) },
             ["processes"] = await ProcessesAsync(ct).ConfigureAwait(false),
             ["reloads"] = reloads.ToJson(),
+            ["deferred"] = deferred is null || Quietly(deferred) is not { Count: > 0 } ids ? null : new JsonArray(ids.Select(i => (JsonNode?)i).ToArray()),
             ["problems"] = await ProblemsAsync(ct).ConfigureAwait(false),
             ["more"] = new JsonArray([.. ctx.Rpc.List().Where(m => m.Method.StartsWith("diag.", StringComparison.Ordinal))
                 .OrderBy(m => m.Method, StringComparer.Ordinal)
@@ -63,6 +65,13 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
     {
         var list = values.Where(v => v is not null).Select(v => v!.Value).Order().ToList();
         return list.Count == 0 ? null : list[list.Count / 2];
+    }
+
+    /// <summary>The plugins whose reload <c>plugins.quiet</c> is holding back, or null when the host cannot say.</summary>
+    private static IReadOnlyList<string>? Quietly(IPluginManager pm)
+    {
+        try { return pm.Deferred(); }
+        catch (Exception) { return null; }
     }
 
     private JsonObject ProcessFacts()
@@ -207,6 +216,11 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         foreach (var r in reloads.Recent(RecentWindow))
             Add("info", "plugins", $"{r.Summary} {Ago(now - r.Time)} ago — {r.Impact}.",
                 r.Tools.Count == 0 ? "diag.reloads" : "diag.toolsets { sessionId } of a chat that holds one of those tools; diag.logs { contains: \"Reloading plugin\" }");
+
+        // what plugins.quiet is holding back, if it is on
+        if (ctx.Services.Get<IPluginManager>() is { } manager && Quietly(manager) is { Count: > 0 } held)
+            Add("info", "plugins", $"plugins.quiet is on: {held.Count} plugin reload(s) are waiting ({string.Join(", ", held)}); the running versions keep serving.",
+                "settings: plugins.quiet = false applies them; diag.overview .deferred");
 
         // providers whose models are all offline
         foreach (var g in ctx.Models.Cached.GroupBy(m => m.Provider))

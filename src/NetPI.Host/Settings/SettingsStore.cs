@@ -301,7 +301,7 @@ internal static class DefaultSettings
         ["nudge"] = new JsonObject { ["enabled"] = true },
         ["retry"] = new JsonObject { ["maxAttempts"] = 6 },
         ["tools"] = new JsonObject { ["disabled"] = new JsonArray() },
-        ["plugins"] = new JsonObject { ["disabled"] = new JsonArray(), ["dirs"] = new JsonArray() },
+        ["plugins"] = new JsonObject { ["disabled"] = new JsonArray(), ["dirs"] = new JsonArray(), ["quiet"] = false },
         ["server"] = new JsonObject { ["port"] = 7431, ["devOrigins"] = new JsonArray() },
         ["ui"] = new JsonObject(),
     };
