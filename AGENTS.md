@@ -56,8 +56,7 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
 ## Conventions
 - Keep the core small; new behaviour goes into a plugin. Register everything through `IPluginContext` so hot
   reload can remove it; resolve other plugins' services per use.
-- Several agents work in this repo at once: one worktree and branch per task, stage explicit paths, and never
-  `git add -A` or rewrite a checkout you share. See `C:\AI\Projects\AGENTS.md`.
+- Several agents work in this repo at once; the git rules are in `C:\AI\Projects\AGENTS.md`.
 - Don't cache plugin-defined types in host-wide JSON options or `object` containers (blocks unloading) — see
   `docs/PLUGINS.md`.
 - Tool results: model-facing text in `Content`, UI data in `Details` (document new shapes in `docs/TOOLS.md`).
