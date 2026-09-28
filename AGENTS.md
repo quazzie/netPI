@@ -61,7 +61,7 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   `docs/PLUGINS.md`.
 - Tool results: model-facing text in `Content`, UI data in `Details` (document new shapes in `docs/TOOLS.md`).
 - A tool that appears or disappears mid-chat is announced by the context plugin, and the notice names the cause
-  (`plugins/NetPI.Context/ToolChanges.cs`, evidence in `plugins.reloaded`): anything that can make a tool go away
+  (`plugins/NetPI.Context/ToolChanges.cs`, evidence in `plugins.reloaded` and `session.changed`): anything that can make a tool go away
   (enable/disable, settings) should say so on the bus, or the cause falls back to `unknown`.
 - WebView2 quirk (desktop zoom): a navigation resets the zoom to 100% and a programmatic `ZoomFactor` set does not raise `ZoomFactorChanged` — the remembered factor is therefore applied after the first navigation, and `desktop.zoom` persists itself (see `MainForm.cs`).
 - New RPC methods / events: document them in `docs/PROTOCOL.md`; new settings in `docs/SETTINGS.md`.

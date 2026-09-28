@@ -257,23 +257,28 @@ internal sealed class SessionStore : ISessionStore
     public SessionInfo UpdateSession(string id, Action<SessionInfo> mutate)
     {
         ArgumentNullException.ThrowIfNull(mutate);
+        IReadOnlyDictionary<string, string>? wasMeta = null;
         lock (_transientLock)
         {
             if (_transient.TryGetValue(id, out var t))
             {
                 // A no-message session is not announced: mutate the in-memory copy, no row, no session.updated.
                 var s = CopySession(t);
+                var wasTransientMeta = SessionMeta.Snapshot(s.Meta);
                 mutate(s);
                 s.Id = id;
                 if (string.IsNullOrWhiteSpace(s.Kind)) s.Kind = "chat";
                 s.UpdatedAt = Now();
                 _transient[id] = s;
+                PublishMetaChanged(id, wasTransientMeta, s.Meta);
                 return s;
             }
         }
         var session = _db.Transaction(_ =>
         {
             var s = GetSession(id) ?? throw new KeyNotFoundException($"Session {id} not found");
+            // a snapshot, not the object: mutate() edits the very same JsonObject in place
+            wasMeta = SessionMeta.Snapshot(s.Meta);
             mutate(s);
             s.Id = id;
             s.UpdatedAt = Now();
@@ -287,7 +292,19 @@ internal sealed class SessionStore : ISessionStore
             return s;
         });
         Publish(EventTypes.SessionUpdated, new { session });
+        PublishMetaChanged(id, wasMeta, session.Meta);
         return session;
+    }
+
+    /// <summary>
+    /// Publish <c>session.changed</c> when the update actually changed the session's meta, naming the keys. A plugin that
+    /// needs to know that the user switched this chat's profile (or the tools off for it) reads this instead of looking for
+    /// a notice kind (idea-m7vmue). Rewriting a key with the same value, or changing a field outside meta, says nothing.
+    /// </summary>
+    private void PublishMetaChanged(string id, IReadOnlyDictionary<string, string> before, JsonObject? after)
+    {
+        var keys = SessionMeta.Changed(before, after);
+        if (keys.Count > 0) Publish(EventTypes.SessionChanged, new { sessionId = id, keys });
     }
 
     public void DeleteSession(string id)

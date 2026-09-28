@@ -6,9 +6,13 @@ namespace NetPI.Context;
 /// <summary>
 /// Why a session's tools changed, so a "tools" notice can say so instead of leaving the model to guess: a plugin was
 /// reloaded, the user switched the tools off, a profile was switched, a setting changed, or nothing is known.
-/// <para>The evidence: the session's own switches (<c>meta.toolsOff</c>), a "profile" notice just before the call, the
-/// recent <c>plugins.reloaded</c> events, and the last known owner of every tool (a reloaded plugin's tools are already
-/// gone when the notice is written, so the owner is remembered from the call before).</para>
+/// <para>The evidence, strongest first: the session's own switches (<c>meta.toolsOff</c>), a <c>session.changed</c> event
+/// naming the meta keys that changed (the profile switch, a real signal — the host publishes it wherever the meta is
+/// written, so renaming a plugin's notice kind cannot silently lose the cause), then a "profile" notice just before the
+/// call, which is the convention the profiles plugin follows and the fallback for an event that was missed (a chat that
+/// started before this plugin did), then the recent <c>plugins.reloaded</c> events, and the last known owner of every tool
+/// (a reloaded plugin's tools are already gone when the notice is written, so the owner is remembered from the call
+/// before).</para>
 /// </summary>
 internal sealed class ToolChanges(IPluginContext ctx)
 {
@@ -19,7 +23,8 @@ internal sealed class ToolChanges(IPluginContext ctx)
     public const string Settings = "settings";
     public const string Unknown = "unknown";
 
-    /// <summary>A profile switch announces itself in the chat before the call that sees its tools (the profiles plugin).</summary>
+    /// <summary>A profile switch announces itself in the chat before the call that sees its tools (the profiles plugin).
+    /// <c>session.changed</c> is the signal; this is the fallback for a chat whose event was missed.</summary>
     public const string ProfileNotice = "profile";
 
     /// <summary>How long back a plugin reload still explains a change noticed now.</summary>
@@ -33,11 +38,18 @@ internal sealed class ToolChanges(IPluginContext ctx)
     private const int Capacity = 50;
 
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _owners = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, MetaChange> _pending = new(StringComparer.Ordinal);
     private readonly LinkedList<Reload> _reloads = new();
     private readonly object _gate = new();
 
     /// <summary>One <c>plugins.reloaded</c> event: which plugins, when, and what the host was doing to them.</summary>
     public sealed record Reload(IReadOnlyList<string> Ids, DateTimeOffset Time, string Kind);
+
+    /// <summary>One <c>session.changed</c> event: the meta keys that changed, and when.</summary>
+    public sealed record MetaChange(IReadOnlyList<string> Keys, DateTimeOffset Time)
+    {
+        public bool Has(string key) => Keys.Contains(key, StringComparer.Ordinal);
+    }
 
     /// <summary>What to tell the model, and what the tool-set history keeps: a kind, the plugins behind it, one clause.</summary>
     public sealed record Change(string Cause, IReadOnlyList<string> Plugins, string Clause)
@@ -73,6 +85,27 @@ internal sealed class ToolChanges(IPluginContext ctx)
         lock (_gate) return [.. _reloads.Where(r => r.Time >= since)];
     }
 
+    /// <summary>
+    /// <c>session.changed</c>: remember the meta keys that changed for the next model call of that session. Two changes
+    /// before one call merge, so the keys of both are there.
+    /// </summary>
+    public void OnSessionChanged(BusEvent e)
+    {
+        var d = e.As<JsonObject>();
+        if (d?["sessionId"]?.GetValue<string>() is not { Length: > 0 } sessionId) return;
+        var keys = d["keys"] is JsonArray a ? a.Select(n => n?.GetValue<string>()).OfType<string>().ToList() ?? [] : [];
+        if (keys.Count == 0) return;
+        _pending.AddOrUpdate(sessionId,
+            _ => new MetaChange(keys, e.Time),
+            (_, old) => new MetaChange([.. old.Keys.Concat(keys).Distinct(StringComparer.Ordinal)], e.Time));
+    }
+
+    /// <summary>
+    /// The change this model call owns, and no other's: it is taken (and gone), so a meta change that explained nothing —
+    /// a new chat getting its default profile, a switch that changed no tools — cannot be blamed for a later change.
+    /// </summary>
+    public MetaChange? TakePending(string sessionId) => _pending.TryRemove(sessionId, out var c) ? c : null;
+
     /// <summary>Remember which plugin each of the session's tools belongs to, so a tool that vanishes can be named.</summary>
     public void Remember(string sessionId, IReadOnlyList<ToolDefinition> tools)
     {
@@ -97,18 +130,26 @@ internal sealed class ToolChanges(IPluginContext ctx)
         return ctx.Tools.Registrations.FirstOrDefault(r => r.Tool.Definition.Name == tool)?.PluginId ?? "";
     }
 
-    /// <summary>A deleted session's tool owners are of no use to anyone.</summary>
-    public void Forget(string sessionId) => _owners.TryRemove(sessionId, out _);
+    /// <summary>A deleted session's tool owners and pending change are of no use to anyone.</summary>
+    public void Forget(string sessionId)
+    {
+        _owners.TryRemove(sessionId, out _);
+        _pending.TryRemove(sessionId, out _);
+    }
 
     /// <summary>
     /// The cause of a change: the user's own switches first, then a profile switch, then the plugin that was reloaded
-    /// behind the tools that went away, then a setting. <paramref name="context"/> is the session's messages as the model has them.
+    /// behind the tools that went away, then a setting. <paramref name="context"/> is the session's messages as the model has
+    /// them; <paramref name="pending"/> is the <c>session.changed</c> this call owns, when there was one.
     /// </summary>
     public Change Cause(string sessionId, IReadOnlyList<string> added, IReadOnlyList<string> removed,
-        IReadOnlySet<string> switchedOff, IReadOnlyList<ChatMessage> context)
+        IReadOnlySet<string> switchedOff, IReadOnlyList<ChatMessage> context, MetaChange? pending = null)
     {
         if (removed.Count > 0 && removed.All(n => switchedOff.Contains(n))) return Change.User;
-        // the profiles plugin appends its notice right before the call that sees the profile's tools
+        // the host says which meta keys changed, so a profile switch is named by what it wrote, not by message order
+        if (pending is { } change && change.Has(SessionProfile.MetaKey)) return Change.Profile;
+        // fallback: the profiles plugin appends its notice right before the call that sees the profile's tools, and a
+        // chat that started before this plugin did has no event to read
         if (context.LastOrDefault(m => m.Role == MessageRole.Notice) is { } notice && notice.MetaString("kind") == ProfileNotice)
             return Change.Profile;
 

@@ -59,6 +59,13 @@ public static class EventTypes
     /// <summary>A session was attached to another project or detached: <c>{ sessionId, projectId, cwd }</c>. What the model is
     /// told about it is up to plugins (the context plugin appends a "project" notice).</summary>
     public const string SessionProject = "session.project";
+    /// <summary>A session's <c>meta</c> changed: <c>{ sessionId, keys }</c>, the meta keys whose value changed (added, changed
+    /// or removed). It is the real signal for "the user switched this chat's profile" or "the tools off for this session", so
+    /// a plugin can react to the change instead of inferring it from a notice kind or from message order (idea-m7vmue). The
+    /// key names are the contract (<c>SessionProfile.MetaKey</c>, <c>SessionTools.MetaKey</c>, <c>SessionIdentity.MetaKey</c>),
+    /// not the plugin that happens to write them. A change outside <c>meta</c> (title, model, project…) does not fire it:
+    /// that is <see cref="SessionUpdated"/>.</summary>
+    public const string SessionChanged = "session.changed";
     public const string ProjectCreated = "project.created";
     public const string ProjectUpdated = "project.updated";
     public const string ProjectDeleted = "project.deleted";

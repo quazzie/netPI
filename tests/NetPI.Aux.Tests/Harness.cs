@@ -342,6 +342,9 @@ public sealed class FakeSessionStore : ISessionStore
     public SessionInfo UpdateSession(string id, Action<SessionInfo> mutate)
     {
         var s = GetSession(id) ?? throw new InvalidOperationException("no session");
+        // This double publishes no session events at all (not session.updated either), so a plugin that reacts to
+        // session.changed is not exercised here: that test belongs in NetPI.Agent.Tests, whose store mirrors the real
+        // store's events, or it publishes the event by hand.
         mutate(s);
         return s;
     }
