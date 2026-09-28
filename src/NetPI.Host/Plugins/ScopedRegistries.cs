@@ -92,8 +92,8 @@ internal sealed class ScopedServiceRegistry(ServiceRegistry inner, PluginScope s
 
 internal sealed class ScopedRpcRegistry(RpcRegistry inner, PluginScope scope) : IRpcRegistry
 {
-    public IDisposable Register(string method, RpcHandler handler, string? description = null) =>
-        scope.Track(inner.Register(method, handler, description, scope.PluginId));
+    public IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false) =>
+        scope.Track(inner.Register(method, handler, description, scope.PluginId, readOnly));
 
     public Task<object?> InvokeAsync(string method, object? parameters = null, CancellationToken ct = default) =>
         inner.InvokeAsync(method, parameters, ct);

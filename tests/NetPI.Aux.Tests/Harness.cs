@@ -227,11 +227,14 @@ public sealed class FakeServices(Ownership? owner = null) : IServiceRegistry
 public sealed class FakeRpc(Ownership? owner = null) : IRpcRegistry
 {
     public ConcurrentDictionary<string, RpcHandler> Handlers { get; } = new();
+    /// <summary>What each method was registered as, so List() can report readOnly like the real registry (idea-de1s7t).</summary>
+    public ConcurrentDictionary<string, bool> ReadOnly { get; } = new();
 
-    public IDisposable Register(string method, RpcHandler handler, string? description = null)
+    public IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false)
     {
         Handlers[method] = handler;
-        var d = new Disposer(() => Handlers.TryRemove(method, out _));
+        ReadOnly[method] = readOnly;
+        var d = new Disposer(() => { Handlers.TryRemove(method, out _); ReadOnly.TryRemove(method, out _); });
         owner?.Own(d);
         return d;
     }
@@ -245,7 +248,7 @@ public sealed class FakeRpc(Ownership? owner = null) : IRpcRegistry
 
     public Task<object?> Call(string method, object? parameters = null) => InvokeAsync(method, parameters);
 
-    public IReadOnlyList<RpcMethodInfo> List() => Handlers.Keys.Select(k => new RpcMethodInfo(k, null, "test")).ToList();
+    public IReadOnlyList<RpcMethodInfo> List() => Handlers.Keys.Select(k => new RpcMethodInfo(k, null, "test", ReadOnly.GetValueOrDefault(k))).ToList();
     public bool Exists(string method) => Handlers.ContainsKey(method);
 }
 

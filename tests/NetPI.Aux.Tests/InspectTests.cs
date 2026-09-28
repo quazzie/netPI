@@ -15,7 +15,67 @@ public static class InspectTests
         r.Add("inspect: problems (failed plugin, waiters on an inactive agent, a long wait, errors in the log)", Problems);
         r.Add("inspect: settings without secrets, saved failed requests, the overview lists the diag methods", SettingsFailuresOverview);
         r.Add("inspect: the diag tool answers with the RPC's JSON, defaults to the calling session and refuses every write", DiagTool);
+        r.Add("inspect: diag rpc reaches any read-only method and nothing else; a journal type query is global", DiagRpcAndJournalScope);
         r.Add("inspect: a reload says what it cost: the tools at stake, or that a hook-only plugin announces nothing", ReloadImpact);
+    }
+
+    // Without the rpc action, reaching anything diag does not wrap meant reading the live token out of server.json and
+    // hand-rolling a POST. With it, the gate is the registration's own readOnly flag — a fact, not a name pattern — and
+    // the second half is the trap that cost an hour once: a journal query with a type but no session was scoped to the
+    // calling chat, so a type filter that could not have seen the event looked like the event never happened.
+    private static async Task DiagRpcAndJournalScope()
+    {
+        var ctx = await StartAsync();
+        var tool = ctx.ToolsFake.Tools.OfType<DiagTool>().Single();
+        RpcRequest? seen = null;
+        ctx.RpcFake.Register("events.recent", (r, _) => { seen = r; return Task.FromResult<object?>(new JsonArray()); }, "recent bus events", readOnly: true);
+        ctx.RpcFake.Register("sessions.delete", (_, _) => Task.FromResult<object?>(true), "Delete a session");
+        // the host's own list, marked like the real one, so "what can I call" is answerable from inside
+        ctx.RpcFake.Register("rpc.list", (_, _) => Task.FromResult<object?>(ctx.RpcFake.List()), "RPC methods", readOnly: true);
+
+        var ok = await Call(tool, """{ "action": "rpc", "method": "events.recent", "params": { "max": 100 } }""");
+        Check.False(ok.IsError, ok.Content);
+        Check.Equal(100, seen!.Int("max"), "the method's own parameters are passed on");
+        // it has to be in the schema's enum, or the model is never told it exists
+        var actions = ((JsonArray)tool.Definition.Parameters["properties"]!["action"]!["enum"]!).Select(a => a.Str()).ToList();
+        Check.True(actions.Contains("rpc"), "rpc is in the action enum");
+        Check.True(tool.Definition.Parameters["properties"]!.AsObject().ContainsKey("method"), "and method is a parameter");
+
+        var write = await Call(tool, """{ "action": "rpc", "method": "sessions.delete" }""");
+        Check.True(write.IsError, "an unmarked method may write, so it is not reachable");
+        Check.Contains(write.Content, "may change the app");
+        Check.Contains(write.Content, "/reload", "and it says who may");
+
+        foreach (var arg in new[]
+                 {
+                     """{ "action": "rpc" }""",
+                     """{ "action": "rpc", "method": "diag.rpc" }""",
+                     """{ "action": "rpc", "method": "diag.reload" }""",
+                     """{ "action": "rpc", "method": "nope.nope" }""",
+                 })
+        {
+            var refused = await Call(tool, arg);
+            Check.True(refused.IsError, arg);
+        }
+        Check.Contains((await Call(tool, """{ "action": "rpc" }""")).Content, "rpc.list", "and it says where the list is");
+
+        // the list itself is reachable, and it says which are read-only
+        var list = await Call(tool, """{ "action": "rpc", "method": "rpc.list" }""");
+        Check.False(list.IsError, list.Content);
+        var methods = (JsonArray)NetPiJson.ToNode(await ctx.RpcFake.Call("rpc.list"))!;
+        Check.True(methods.First(m => m!["method"]!.Str() == "events.recent")!["readOnly"]!.GetValue<bool>(), "rpc.list reports the flag the gate reads");
+        Check.False(methods.First(m => m!["method"]!.Str() == "sessions.delete")!["readOnly"]!.GetValue<bool>(), "an unmarked one is not");
+
+        // the journal: a type query is global unless a session is named
+        RpcRequest? journal = null;
+        ctx.RpcFake.Register("diag.journal", (r, _) => { journal = r; return Task.FromResult<object?>(new JsonArray()); }, "", readOnly: true);
+        await Call(tool, """{ "action": "journal", "type": "session.changed" }""");
+        Check.Equal(null, journal!.Str("sessionId"), "a type filter is a question about every session");
+        Check.Equal("session.changed", journal.Str("type"));
+        await Call(tool, """{ "action": "journal" }""");
+        Check.Equal("ses_caller", journal!.Str("sessionId"), "without a type it is this chat's timeline");
+        await Call(tool, """{ "action": "journal", "type": "session.changed", "sessionId": "ses_other" }""");
+        Check.Equal("ses_other", journal!.Str("sessionId"), "and a named session still wins");
     }
 
     // Only a plugin that registers tools can take a tool away. A hook-only reload (context, nudge) swaps under a

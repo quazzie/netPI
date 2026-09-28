@@ -57,11 +57,16 @@ public sealed class RpcException(string code, string message) : Exception(messag
     public string Code { get; } = code;
 }
 
-public sealed record RpcMethodInfo(string Method, string? Description, string PluginId);
+public sealed record RpcMethodInfo(string Method, string? Description, string PluginId, bool ReadOnly = false);
 
 public interface IRpcRegistry
 {
-    IDisposable Register(string method, RpcHandler handler, string? description = null);
+    /// <summary>
+    /// Register a method. <paramref name="readOnly"/> says it only reads: <c>rpc.list</c> reports it, and the read-only
+    /// paths (<c>scripts/netpi.mjs</c>, the <c>diag</c> tool's rpc action) call only what is marked, so a method that
+    /// changes something has to say so to be reachable from a tool (idea-de1s7t). Unmarked means "may write".
+    /// </summary>
+    IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false);
     /// <summary>Invoke a method in-process (plugins can call each other through RPC).</summary>
     Task<object?> InvokeAsync(string method, object? parameters = null, CancellationToken ct = default);
     IReadOnlyList<RpcMethodInfo> List();

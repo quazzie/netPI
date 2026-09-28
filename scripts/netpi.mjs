@@ -42,11 +42,12 @@ let params = {};
 if (method === 'methods' || method === 'help') {
   const prefix = args.shift() ?? '';
   const list = await call('rpc.list', {});
+  const declared = new Map((Array.isArray(list) ? list : []).map((m) => [m.method, m.readOnly]));
   const rows = (Array.isArray(list) ? list : [])
     .filter((m) => m.method.startsWith(prefix))
     .sort((a, b) => a.method.localeCompare(b.method));
-  for (const m of rows) console.log(`${m.method.padEnd(24)} ${readOnly(m.method) ? '   ' : 'W  '}${m.description ?? ''}`);
-  console.log('\nW = changes something: needs --write.');
+  for (const m of rows) console.log(`${m.method.padEnd(24)} ${isReadOnly(m.method, declared) ? '   ' : 'W  '}${m.description ?? ''}`);
+  console.log('\nW = changes something: needs --write. Blank = the host marks it read-only (older server: by name).');
   process.exit(0);
 }
 
@@ -65,13 +66,36 @@ else
     }
   }
 
-if (!write && !readOnly(method))
-  fail(1, `${method} changes something; pass --write to call it. (Looking around: diag.*, *.list, *.get, *.recent, *.status, …)`);
+if (!write && !isReadOnly(method, await declaredReadOnly()))
+  fail(1, `${method} changes something; pass --write to call it. (Looking around: the methods rpc.list marks read-only.)`);
 
 const result = await call(method, params);
 console.log(compact ? JSON.stringify(result) : JSON.stringify(result, null, 2));
 
-/** Methods that only read (by name): the diag.* views and the list/get/status style methods of the host and plugins. */
+/**
+ * The host's own answer, not a guess: `rpc.list` carries `readOnly` per method (idea-de1s7t), so a method cannot become
+ * writable — or blocked — because of its name. A server older than that has no flag, and the name rule below stands in.
+ */
+let declared = null;
+async function declaredReadOnly() {
+  if (declared === null) {
+    try {
+      const list = await call('rpc.list', {});
+      declared = new Map((Array.isArray(list) ? list : []).map((m) => [m.method, m.readOnly]));
+    } catch {
+      declared = new Map();
+    }
+  }
+  return declared;
+}
+
+function isReadOnly(m, declared) {
+  const said = declared?.get(m);
+  if (typeof said === 'boolean') return said;
+  return readOnly(m);
+}
+
+/** Fallback for a server that does not declare it (by name): the diag.* views and the list/get style methods. */
 function readOnly(m) {
   if (m === 'diag.reload') return false;
   if (m.startsWith('diag.') || m === 'rpc.list' || m === 'app.info' || m === 'services.list') return true;

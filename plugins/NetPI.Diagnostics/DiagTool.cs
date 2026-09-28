@@ -9,7 +9,11 @@ namespace NetPI.Diagnostics;
 /// change" or "what is failing" is a tool call instead of a <c>node scripts/netpi.mjs</c> round trip that needs the
 /// project path and Node (docs/DEBUGGING.md).
 /// <para>Read-only by construction: the action picks the method out of a fixed list of the inspecting ones, so
-/// <c>reload</c> and everything else that changes the app is not reachable from here — the tool has no way to name it.</para>
+/// <c>reload</c> and everything else that changes the app is not reachable from here — the tool has no way to name it.
+/// The one exception is the <c>rpc</c> action, which reaches <em>any</em> method the host marks read-only
+/// (<see cref="IRpcRegistry.Register"/>'s <c>readOnly</c>), because wrapping thirteen methods is not the same as reaching
+/// the app: without it, an agent that needs <c>events.recent</c> or <c>sessions.get</c> has to read the live RPC token out
+/// of <c>server.json</c> and hand-roll a POST. Unmarked means "may write", so the default is closed (idea-de1s7t).</para>
 /// </summary>
 public sealed class DiagTool(IPluginContext ctx) : IAgentTool
 {
@@ -35,7 +39,17 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         ("failure", "diag.failure", "one saved failed request with its body: name", false),
         ("snapshot", "diag.snapshot", "plugins, tools, RPC methods, recent events, logs and runtime in one go", false),
         ("event", "diag.event", "the full payload of one recent bus event: seq", false),
+        ("rpc", "", "any RPC method the host marks read-only (action rpc: method, params?) — the way to reach what diag does not wrap", false),
     ];
+
+    /// <summary>Methods the <c>rpc</c> action must never call: itself, or the tool has a way to call itself.</summary>
+    internal static readonly string[] RpcDenied = ["diag.rpc", "diag.reload"];
+
+    /// <summary>How long the <c>rpc</c> action waits before it gives up on a read-only method that hangs.</summary>
+    public static readonly TimeSpan RpcTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>How much of a method's answer goes into the result before it is cut (the tool output limits).</summary>
+    public const int RpcMaxChars = 200_000;
 
     /// <summary>Actions that filter by session: the calling session is the default, "all" means no filter.</summary>
     private static bool PerSession(string action) => Actions.FirstOrDefault(a => a.Action == action).PerSession;
@@ -54,7 +68,7 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         Category = "general",
         SummaryArg = "action",
         ReadOnly = true,
-        Description = "Inspect the running app: overview, problems, model and tool calls, events, runs, tool-set changes, a chat's messages, logs, settings, failed requests.",
+        Description = "Inspect the running app: overview, problems, model and tool calls, events, runs, tool-set changes, a chat's messages, logs, settings, failed requests — and rpc for any other read-only method.",
         Help = """
             Read-only look inside NetPI itself (the same JSON as the methods behind it, docs/DEBUGGING.md). Nothing here
             changes the app: there is no reload, no setting write, no control of any kind.
@@ -69,7 +83,12 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
             beforeSeq, level (debug|info|warn|error), category, contains (a substring of the message), sinceMinutes,
             maxChars, events, seq.
             The actions that work on one session (calls, tools, journal, run, toolsets, messages) use the calling session
-            unless you give another sessionId; sessionId "all" means no filter.
+            unless you give another sessionId; sessionId "all" means no filter. journal is the exception that reads
+            global: with a type and no sessionId it looks at every session, because a type filter that silently stayed
+            inside this chat is how you conclude an event never happened.
+            rpc reaches anything else that only reads: rpc { action: "rpc", method: "events.recent", params: { max: 100 } }.
+            Only methods the host marks read-only are reachable, so nothing that changes the app goes through it. What is
+            reachable: rpc { action: "rpc", method: "rpc.list" } — the same list the outside script prints.
             """,
         PromptGuidelines =
         [
@@ -101,6 +120,8 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
                 ["maxChars"] = Int("failure: cut the body at N characters (default 200000)"),
                 ["events"] = Int("snapshot: how many recent events (default 200)"),
                 ["seq"] = Int("event: the event's seq (from journal or snapshot)"),
+                ["method"] = Str("rpc: the RPC method to call, if it only reads (rpc.list is one)"),
+                ["params"] = new JsonObject { ["type"] = "object", ["description"] = "rpc: the method's own parameters" },
             },
             ["required"] = new JsonArray("action"),
         },
@@ -112,10 +133,11 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         var action = (a["action"]?.GetValue<string>() ?? "").Trim().ToLowerInvariant();
         if (action.Length == 0) return ToolResult.Error("Missing 'action'. The actions are: " + string.Join(", ", Actions.Select(x => x.Action)) + ".");
         var known = Actions.FirstOrDefault(x => x.Action == action);
-        if (known.Method is null)
+        if (known.Method is null && action != "rpc")
             return ToolResult.Error(
                 $"Unknown action \"{action}\". This tool only reads: use one of {string.Join(", ", Actions.Select(x => x.Action))}. " +
                 "Changing the app (reloading plugins, writing settings) is up to the user: /reload, or the Diagnostics tab.");
+        if (action == "rpc") return await RpcAsync(a, ct).ConfigureAwait(false);
 
         var parameters = Parameters(a, action, context.SessionId);
         try
@@ -133,6 +155,43 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         }
     }
 
+    /// <summary>
+    /// The passthrough: call any method the host marks read-only, and only those. The check is the registration's own
+    /// <c>readOnly</c> flag (a fact, in <c>rpc.list</c>), not a name pattern here, so a method cannot become reachable
+    /// because it was renamed — and an unmarked one stays out until its author says it only reads.
+    /// </summary>
+    private async Task<ToolResult> RpcAsync(JsonObject args, CancellationToken ct)
+    {
+        var method = (args["method"]?.GetValue<string>() ?? "").Trim();
+        if (method.Length == 0)
+            return ToolResult.Error("Missing 'method': the RPC to call, e.g. \"events.recent\". What is reachable: action rpc with method \"rpc.list\".");
+        if (RpcDenied.Contains(method, StringComparer.Ordinal))
+            return ToolResult.Error($"\"{method}\" is not reachable from here.");
+        var info = ctx.Rpc.List().FirstOrDefault(m => string.Equals(m.Method, method, StringComparison.Ordinal));
+        if (info is null)
+            return ToolResult.Error($"Unknown RPC method \"{method}\". The list is \"rpc.list\" (action rpc, method \"rpc.list\").");
+        if (!info.ReadOnly)
+            return ToolResult.Error(
+                $"\"{method}\" may change the app, so this tool will not call it. {info.Description} Changing the app is up to the user: /reload, or the Diagnostics tab.");
+        object? result;
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(RpcTimeout);
+            result = await ctx.Rpc.InvokeAsync(method, args["params"] ?? new JsonObject(), timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return ToolResult.Error($"\"{method}\" did not answer within {RpcTimeout.TotalSeconds:0}s — a method that only reads should not take that long.");
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (RpcException ex) { return ToolResult.Error($"{method} failed: {ex.Message}"); }
+        var node = NetPiJson.ToNode(result);
+        var text = node?.ToJsonString() ?? "null";
+        if (text.Length <= RpcMaxChars) return ToolResult.Ok(text, node);
+        return ToolResult.Ok(text[..RpcMaxChars] + $"… [cut at {RpcMaxChars} characters: ask for less, or filter it]", null);
+    }
+
     /// <summary>The call's own arguments, minus the action, plus the session the action defaults to.</summary>
     internal static JsonObject Parameters(JsonObject args, string action, string sessionId)
     {
@@ -144,6 +203,9 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         }
         if (!PerSession(action)) return p;
         // the session-scoped actions look at the calling chat unless another one is named ("all": no filter)
+        // A journal query with a type and no session asks about every session: leaving it inside the calling chat is how
+        // "that event never fired" gets concluded from a filter that could not have seen it (idea-de1s7t).
+        if (action == "journal" && p["type"] is not null && !p.ContainsKey("sessionId")) return p;
         if (p["sessionId"] is not JsonValue v) p["sessionId"] = sessionId;
         else if (v.TryGetValue<string>(out var named) && named.Trim() is "all" or "*") p.Remove("sessionId");
         // a method that names the session differently gets it under that name
