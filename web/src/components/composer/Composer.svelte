@@ -460,7 +460,7 @@
         <ToolsPicker {session} />
         <span class="spacer"></span>
         <ChatCost sessionId={session.id} />
-        {#if used || win}<ContextRing {used} window={win} />{/if}
+        {#if used || win}<ContextRing {used} window={win} sessionId={session.id} />{/if}
         {#if running && !canSend}
           <button class="send stop" title="Stop (Esc)" aria-label="Stop" onclick={() => abortAgent(session.id)}>
             <Icon name="stop" size={14} />

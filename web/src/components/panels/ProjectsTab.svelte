@@ -77,7 +77,7 @@
           <IconButton
             icon="star"
             size="sm"
-            title={prefs.favorites.includes(p.id) ? 'Remove from favorites' : 'Add to favorites (a new-session button in the top bar)'}
+            title={prefs.favorites.includes(p.id) ? 'Remove from favorites' : 'Add to favorites (the top bar’s + menu)'}
             pressed={prefs.favorites.includes(p.id)}
             onclick={() => toggleFavorite(p.id)}
           />

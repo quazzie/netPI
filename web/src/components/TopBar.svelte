@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import Icon from '../lib/kit/Icon.svelte';
   import IconButton from '../lib/kit/IconButton.svelte';
+  import Menu from '../lib/kit/Menu.svelte';
   import BudgetPill from './BudgetPill.svelte';
   import { app, activate, closeTab, moveTab, newSession, sessionStatus, projectOf } from '../lib/state/app.svelte.js';
   import { modals, prefs } from '../lib/state/ui.svelte.js';
@@ -58,8 +59,23 @@
     moveTab(dragId, to);
   }
 
-  // favorite projects (Projects tab ★) that still exist, as quick new-session buttons
+  // favorite projects (Projects tab ★) that still exist, as quick new-session entries in the + menu
   const favorites = $derived(prefs.favorites.map((id) => app.projectsById.get(id)).filter(Boolean));
+  const newSessionItems = $derived([
+    { label: 'New session', icon: 'plus', onclick: () => newSession() },
+    ...(favorites.length
+      ? [
+          { divider: true },
+          { header: 'Favorites' },
+          ...favorites.map((p) => ({
+            label: p.name,
+            icon: 'folder',
+            hint: p.path,
+            onclick: () => newSession({ projectId: p.id }),
+          })),
+        ]
+      : []),
+  ]);
 
   function title(id) {
     return app.sessionsById.get(id)?.title || 'New session';
@@ -123,17 +139,15 @@
     <button class="new-tab" title="New session (Ctrl+T)" aria-label="New session" onclick={() => newSession()}>
       <Icon name="plus" size={15} />
     </button>
-    {#each favorites as p (p.id)}
-      <button
-        class="fav"
-        title={`New session in ${p.name}\n${p.path}`}
-        aria-label="New session in {p.name}"
-        onclick={() => newSession({ projectId: p.id })}
-      >
-        <Icon name="folder" size={12} />
-        <span class="np-ellipsis">{p.name}</span>
-      </button>
-    {/each}
+    {#if favorites.length}
+      <Menu items={newSessionItems} minWidth={220}>
+        {#snippet trigger({ toggle, open })}
+          <button class="quick-more" aria-expanded={open} aria-haspopup="menu" title="Favorites — new session in a starred project" onclick={toggle}>
+            <Icon name="chevron-down" size={13} />
+          </button>
+        {/snippet}
+      </Menu>
+    {/if}
   </div>
   <span class="gap"></span>
 
@@ -285,25 +299,21 @@
     min-width: 28px;
     overflow: hidden;
   }
-  .fav {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    flex: 0 1 auto;
-    min-width: 28px;
-    max-width: 120px;
-    height: 24px;
-    padding: 0 8px;
-    border: 1px dashed var(--border-strong);
+  .quick-more {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 28px;
+    flex: none;
+    border: 0;
     border-radius: 6px;
     background: transparent;
-    color: var(--fg-muted);
-    font-size: var(--fs-sm);
+    color: var(--fg-dim);
   }
-  .fav:hover {
+  .quick-more:hover,
+  .quick-more[aria-expanded='true'] {
     background: var(--bg-2);
     color: var(--fg);
-    border-style: solid;
   }
   .gap {
     flex: 1;

@@ -197,6 +197,11 @@ models.list takes 800ms on AiProxy.
 
 The status does not change on its own. The agent is asked to update it.
 
+**The card's "Send to chat" does not use it** (idea-b7himr): it stages a pointer in the composer —
+`Work on idea <id> (<title>) — read it, then tell me what you plan to do.` — and the agent reads the idea itself
+with `ideas.get`, so the text is not spent twice (once in the prompt, once in the tool result) and cannot go stale.
+`ideas.toPrompt` is one menu item away on the card ("Insert the full text") for pasting the whole thing.
+
 ### `ideas.quickAdd` (the `/idea` command)
 
 `{ sessionId, args }` → `string` toast, for example `"Idea added (project NetPI): Cache model list (idea-k3x9q2)"` or
@@ -285,7 +290,8 @@ example `Unknown project 'nope'. Known projects: NetPI, aiproxy.`).
   with an edit button (`ideas.update` with `patch.sections` or `updateSections`).
 - New idea: title, summary, priority, a project picker (default: the active project; *Global* for unbound; any other
   project) and tags.
-- Actions: "Send to agent" (`ideas.toPrompt` → `ctx.app.insertText`), Delete (with a confirm) and drag to reorder
+- Actions: "Send to chat" (stages a pointer to the idea in the composer), "Insert the full text"
+  (`ideas.toPrompt` → `ctx.app.insertText`), Delete (with a confirm) and drag to reorder
   (`ideas.reorder`).
 - Refresh on the `ideas.changed` event (the single file, so always) and follow the active project on
   `ctx.app.onChange`.

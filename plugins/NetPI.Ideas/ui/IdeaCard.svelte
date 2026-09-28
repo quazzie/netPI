@@ -59,6 +59,8 @@
     if (ok) api.remove(id);
   }
   const moreItems = $derived([
+    { label: 'Insert the full text', icon: 'file-text', onclick: () => api.toPrompt(idea.id) },
+    { divider: true },
     { label: 'Move up', icon: 'chevron-up', disabled: !canUp, onclick: () => api.move(idea.id, -1) },
     { label: 'Move down', icon: 'chevron-down', disabled: !canDown, onclick: () => api.move(idea.id, 1) },
     { divider: true },
@@ -162,7 +164,7 @@
       {/if}
 
       <div class="actions np-line">
-        <Button variant="primary" size="sm" icon="steer" onclick={() => api.toPrompt(idea.id)} title="Insert a prompt for this idea into the composer">Send<span class="to-chat">to chat</span></Button>
+        <Button variant="primary" size="sm" icon="steer" onclick={() => api.send(idea)} title="Stage a pointer to this idea in the composer — the agent reads the idea itself">Send<span class="to-chat">to chat</span></Button>
         {#if secEdit !== 'new'}<Button size="sm" icon="plus" onclick={() => (secEdit = 'new')} title="Add section"><span class="wide">Section</span></Button>{/if}
         <span class="np-grow"></span>
         {#if !editing}<IconButton icon="pencil" title="Edit title, summary, priority, tags" size="sm" onclick={startEdit} />{/if}

@@ -150,6 +150,12 @@ Plugin tabs attach to the same bus through `ctx.on`.
 reads the host copies with `ui.state.get` only when localStorage is empty, for example in a new WebView
 profile. Drafts (`netpi.draft.<sessionId>`) and the last project used (`netpi.lastProject`) are local only.
 
+**Tab bar.** Tabs scroll sideways with the wheel, drag to reorder, middle-click or the × to close. The `+` starts a
+new session in the project new sessions start in; next to it a chevron (`TopBar.svelte`) opens the **favorites**
+menu — one entry per starred project, a new session in it (idea-xzsy6z; they used to be buttons beside the `+`, and
+took the space of the tab bar). The chevron only appears when there is at least one favorite; starring happens in the
+Projects tab (`prefs.favorites`).
+
 **New sessions and projects.** `newSession({ projectId? })` uses the explicit `projectId` (`null` means no
 project). Without one, it uses the active session's project; with no session open, it uses the project last
 worked in (`app.lastProjectId`: the last active session's project, or the one last chosen in a picker). The start
@@ -320,7 +326,12 @@ Timings from `npm run e2e` against the mock (headless Chromium):
   re-reads the chat (with its size). **All on** undoes every switch.
 - What the chat cost on paid models (`usage.session`, with its subagents) shows next to the context ring once it is more
   than nothing, refreshed on `usage.changed`; the tooltip splits the chat from its subagents.
-- The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`.
+- The context ring shows `used / window`, taken from `session.context` or `SessionInfo.contextTokens`. Hover reads
+  it in one line; **pressing it opens a popout** (idea-kp4fq5) with used / window / free and what the prompt is made
+  of — `context.preview { sessionId }` gives the system prompt (≈ tokens, chars / 3.6) and the tools, with a line
+  when the prompt is frozen. It fails soft: no Context plugin, and the rows say so. The popout's last line opens
+  Diagnostics on the context view (`localStorage netpi.diag.view`, then `openPanelTab`), where the full prompt,
+  tools, AGENTS.md and skills are.
 - The person's own queued inputs (`agent.queue`, `source: "user"`) appear as chips; the × on a chip calls `agent.dequeue`.
   Internal ones (a subagent's report, a harness notice) are never shown: they are for the agent. `agent.notice` shows
   as a transient banner, which clears when the model streams again or the run ends. A compaction's banner is kept

@@ -18,7 +18,7 @@ const defaultPrefs = {
   expandThinking: false,
   turnDetails: true, // under each model turn's steps: time to first token, cache reuse, output speed, tokens
   spellcheck: true, // spell checking in the composer
-  favorites: [], // project ids shown as quick new-session buttons after the tab bar's +
+  favorites: [], // project ids listed in the tab bar's + menu, for a quick new session
   notifications: true, // desktop app: a Windows notification when a chat needs you while NetPI is in the background
 };
 

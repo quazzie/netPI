@@ -147,6 +147,20 @@ if (hasNewer) {
 const domCount = await page.locator('.content .item').count();
 check('back to latest', !(await page.locator('.earlier button', { hasText: 'jump to latest' }).count()), `${domCount} items`);
 
+// the context ring: hover tooltip, and a press for the breakdown
+const ring = page.locator('.composer .ring');
+const ringLabel = await ring.getAttribute('aria-label');
+check('context ring reads the session context', /tokens? \(/.test(ringLabel), ringLabel);
+await ring.click();
+await page.waitForSelector('.popover .cx');
+await page.waitForTimeout(250);
+const cx = await page.locator('.popover .cx').innerText();
+check('context breakdown popout', /Used/.test(cx) && /Window/.test(cx) && /Free/.test(cx) && /System prompt/.test(cx), cx.replace(/\n/g, ' | '));
+await shot(page, '03b-context-ring');
+await page.keyboard.press('Escape');
+await page.waitForTimeout(150);
+check('Esc closes the context popout', (await page.locator('.popover .cx').count()) === 0);
+
 // ------------------------------------------------------------------ new session + streaming
 log('new session + agent run');
 await page.keyboard.press('Control+t');
@@ -353,6 +367,25 @@ await shot(page, '14-panels');
 await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
 await page.waitForTimeout(200);
 await shot(page, '15-projects');
+// favorites live in the + menu, not as buttons in the top bar
+const firstProject = page.locator('.panel.left .prow').first();
+const projectName = (await firstProject.locator('.pname .np-ellipsis').innerText()).trim();
+const toggleFav = async (row, title) => {
+  await row.hover(); // the row's action buttons appear on hover
+  await row.locator(`button[title^="${title}"]`).click();
+};
+check('no fav buttons in the top bar', (await page.locator('.topbar .fav').count()) === 0);
+await toggleFav(firstProject, 'Add to favorites');
+await page.waitForTimeout(200);
+await page.locator('.topbar .quick-more').click();
+await page.waitForSelector('.np-menu .np-menu-item');
+const favItems = await page.locator('.np-menu .np-menu-item').filter({ hasText: projectName }).count();
+check('favorites are in the + menu', favItems > 0, `${await page.locator('.np-menu .np-menu-header').innerText()}: ${projectName} (${favItems})`);
+await page.keyboard.press('Escape');
+await page.waitForTimeout(150);
+await toggleFav(page.locator('.panel.left .prow').first(), 'Remove from favorites');
+await page.waitForTimeout(200);
+check('no favorites → no chevron', (await page.locator('.topbar .quick-more').count()) === 0);
 
 // ------------------------------------------------------------------ built-in plugin tabs (Work, Ideas, Diagnostics, Files)
 /** Select a strip tab without toggling the panel closed when it is already the active one. */
@@ -455,16 +488,22 @@ log('plugin tab: Ideas');
   await first.locator('.sed button', { hasText: 'Add section' }).click();
   await page.waitForTimeout(500);
   check('ideas: section added', (await first.locator('.sec').count()) === 1);
-  // send to chat → composer
-  await first.locator('.actions button[title^="Insert a prompt"]').click();
-  await page.waitForTimeout(300);
-  check('ideas: send to chat fills the composer', (await ta.inputValue()).includes('# Keyboard shortcuts cheat sheet'));
-  await ta.fill('');
   // reorder, then delete through the host confirm dialog (both in the ⋯ menu)
   const moreMenu = async (card, item) => {
     await card.locator('.actions button[title="More actions"]').click();
     await page.locator('.np-menu .np-menu-item', { hasText: item }).click();
   };
+  // send to chat → a pointer in the composer, not the idea's text (the agent reads the idea itself)
+  await first.locator('.actions button[title^="Stage a pointer"]').click();
+  await page.waitForTimeout(300);
+  const ideaId = (await first.locator('.info').innerText()).trim().split(' ')[0];
+  const staged = await ta.inputValue();
+  check('ideas: send to chat stages a pointer, not the idea', staged.includes(ideaId) && !staged.includes('# Keyboard shortcuts cheat sheet'), staged);
+  // …and the full text is one menu item away
+  await moreMenu(first, 'Insert the full text');
+  await page.waitForTimeout(300);
+  check('ideas: insert the full text (ideas.toPrompt)', (await ta.inputValue()).includes('# Keyboard shortcuts cheat sheet'));
+  await ta.fill('');
   await moreMenu(first, 'Move down');
   await page.waitForTimeout(500);
   check('ideas: move down (ideas.reorder)', (await cards().nth(1).locator('.title').innerText()) === 'Keyboard shortcuts cheat sheet');
