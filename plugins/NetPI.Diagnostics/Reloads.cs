@@ -6,8 +6,9 @@ namespace NetPI.Diagnostics;
 /// <summary>
 /// The plugin reloads of the last half hour (<c>plugins.reloaded</c>), for the "someone reloaded me" line: a
 /// <c>/reload</c> takes every running chat's tools away for a moment, and without this it looks like tools vanished for
-/// no reason. Each record keeps which sessions were mid-turn at the time — the ones that got a "tools" notice because
-/// of it.
+/// no reason. A record keeps which plugins, when, which chats were mid-turn, and — because only a plugin that
+/// <em>registers tools</em> can take any away — which tools were at stake. A hook-only plugin (context, nudge) swaps
+/// under a running turn and announces nothing, and saying otherwise would make this line cry wolf.
 /// </summary>
 public sealed class Reloads(IPluginContext ctx)
 {
@@ -18,8 +19,9 @@ public sealed class Reloads(IPluginContext ctx)
     private readonly LinkedList<Record> _list = new();
     private readonly object _gate = new();
 
-    /// <summary>One <c>plugins.reloaded</c> event and the chats that were running when it happened.</summary>
-    public sealed record Record(IReadOnlyList<string> Ids, DateTimeOffset Time, string Kind, IReadOnlyList<string> BusySessions)
+    /// <summary>One <c>plugins.reloaded</c> event: which plugins, when, what the host was doing, and what it cost.</summary>
+    public sealed record Record(IReadOnlyList<string> Ids, DateTimeOffset Time, string Kind, IReadOnlyList<string> BusySessions,
+        IReadOnlyList<string> Tools)
     {
         public string Summary => Kind switch
         {
@@ -28,13 +30,24 @@ public sealed class Reloads(IPluginContext ctx)
             _ => $"Plugins reloaded: {string.Join(", ", Ids)}",
         };
 
+        /// <summary>What this reload means for the chats that were running: the tools at stake, or that there are none.</summary>
+        public string Impact => Tools.Count == 0
+            ? BusySessions.Count == 0
+                ? "no chat was running, and it registers no tools"
+                : $"{BusySessions.Count} chat(s) mid-turn; it registers no tools, so nothing is announced"
+            : BusySessions.Count == 0
+                ? $"{Tools.Count} tool(s) reload ({string.Join(", ", Tools)})"
+                : $"{BusySessions.Count} chat(s) mid-turn: {Tools.Count} tool(s) go away for a moment ({string.Join(", ", Tools)}), and each chat that holds one gets a notice";
+
         public JsonObject ToJson() => new()
         {
             ["ids"] = new JsonArray(Ids.Select(i => (JsonNode?)i).ToArray()),
             ["time"] = Time.ToString("O", CultureInfo.InvariantCulture),
             ["kind"] = Kind,
             ["summary"] = Summary,
+            ["tools"] = new JsonArray(Tools.Select(t => (JsonNode?)t).ToArray()),
             ["busySessions"] = new JsonArray(BusySessions.Select(s => (JsonNode?)s).ToArray()),
+            ["impact"] = Impact,
             ["ago"] = Inspector.Ago(DateTimeOffset.UtcNow - Time),
         };
     }
@@ -47,9 +60,14 @@ public sealed class Reloads(IPluginContext ctx)
         var busy = ctx.Services.Get<IAgentRuntime>()?.List(false)
             .Where(x => x.Status is AgentStatus.Running or AgentStatus.Queued)
             .Select(x => x.SessionId).Distinct(StringComparer.Ordinal).ToList() ?? [];
+        // what the reloaded plugins register right now: their tools are the ones a chat can lose (a tool-only plugin's
+        // registrations are still in place here, because the reload event follows the stop)
+        var tools = ctx.Tools.Registrations
+            .Where(r => ids.Contains(r.PluginId, StringComparer.OrdinalIgnoreCase))
+            .Select(r => r.Tool.Definition.Name).Distinct(StringComparer.Ordinal).OrderBy(n => n, StringComparer.Ordinal).ToList();
         lock (_gate)
         {
-            _list.AddFirst(new Record(ids, e.Time, d?["kind"]?.GetValue<string>() ?? "reload", busy));
+            _list.AddFirst(new Record(ids, e.Time, d?["kind"]?.GetValue<string>() ?? "reload", busy, tools));
             while (_list.Count > Capacity) _list.RemoveLast();
             while (_list.Last is { } old && DateTimeOffset.UtcNow - old.Value.Time > Window) _list.RemoveLast();
         }

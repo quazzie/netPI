@@ -252,16 +252,25 @@ public sealed class FakeRpc(Ownership? owner = null) : IRpcRegistry
 public sealed class FakeTools(Ownership? owner = null) : IToolRegistry
 {
     public List<IAgentTool> Tools { get; } = [];
-    public IDisposable Register(IAgentTool tool, int priority = 0)
+    /// <summary>Which plugin registered each tool (the owner, where a test needs one).</summary>
+    public Dictionary<IAgentTool, string> Owners { get; } = [];
+
+    public IDisposable Register(IAgentTool tool, int priority = 0) => Register(tool, "test");
+
+    public IDisposable Register(IAgentTool tool, string pluginId)
     {
-        lock (Tools) Tools.Add(tool);
-        var d = new Disposer(() => { lock (Tools) Tools.Remove(tool); });
+        lock (Tools) { Tools.Add(tool); Owners[tool] = pluginId; }
+        var d = new Disposer(() => { lock (Tools) { Tools.Remove(tool); Owners.Remove(tool); } });
         owner?.Own(d);
         return d;
     }
+
     public IReadOnlyList<IAgentTool> All { get { lock (Tools) return [.. Tools]; } }
     public IAgentTool? Get(string name) => All.FirstOrDefault(t => t.Definition.Name == name);
-    public IReadOnlyList<ToolRegistration> Registrations => All.Select(t => new ToolRegistration(t, "test", 0)).ToList();
+    public IReadOnlyList<ToolRegistration> Registrations
+    {
+        get { lock (Tools) return [.. Tools.Select(t => new ToolRegistration(t, Owners.GetValueOrDefault(t) ?? "test", 0))]; }
+    }
 }
 
 public sealed class FakeUi(Ownership? owner = null) : IUiRegistry
