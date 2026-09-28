@@ -83,13 +83,13 @@ Also useful: `runs.list` (every run), `agents.list` (the agents and their slots)
 `context.preview` (a chat's system prompt and tools), `models.list`, `plugins.list`, `usage.summary`, `budget.status`,
 `processes.list`, `rpc.list`. The log files are in `<home>/logs/netpi-YYYYMMDD.log`.
 
-**A retry notice in the chat is the short form.** "Connection lost (OpenRouter: Provider returned an empty response
-…). Retrying in 2s (attempt 3/6)…" leaves out the provider's own decoration — the request, response and generation ids
-and the path of the saved failed request. Those are the reason it says `ModelException.Detail` next to the message: the
-message keeps them (the log warning, `diag.calls`/`diag.call` and the error shown when the retries run out all carry
-them) while the notice, which repeats per attempt and is all a person ever sees, does not. To follow one failure from
-the notice: `diag.calls { errors: true }` for the call, then `diag.call` for its attempts, notices and reset reasons,
-and `diag.failures` for the saved body.
+**A retry notice in the chat is a status line, not a diagnosis.** "Connection lost. Retrying in 5s (attempt 4/6)…" says
+what happened and what is being done about it, in the harness's own words — no provider name, no error-type prefix, no
+"(upstream provider …)", no ids, no path to a saved request. The reason is not lost, it is just not on screen: the log
+warning above it, the `StreamReset` reason (`diag.call` shows both), and the error a person is finally shown when the
+retries run out — that one is `ModelException.DisplayMessage`, the message without `Detail`, which is where a provider
+names the decoration it appended to its own message. To follow one failure from a notice: `diag.calls { errors: true }`
+for the call, then `diag.call` for its attempts, notices and reset reasons, and `diag.failures` for the saved body.
 
 ## "Why did my tools change?"
 

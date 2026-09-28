@@ -102,16 +102,19 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
                 ExceptionDispatchInfo.Capture(failure!).Throw(); // caller cancellation: never retry
 
             string reason;
+            string what; // the notice's own words: what happened, in the harness's voice, without the provider's
             if (stalled)
             {
                 var secs = (first ? o.FirstEventTimeout : o.StallTimeout).TotalSeconds;
                 reason = first ? $"no response for {secs:0}s" : $"stream stalled for {secs:0}s";
+                what = first ? $"No response for {Ago(secs)}" : $"Stream stalled for {Ago(secs)}";
                 failure = new ModelException($"Model stream stalled: {reason}", true, null, "stalled", failure);
             }
             else
             {
                 if (!IsTransient(failure!)) ExceptionDispatchInfo.Capture(failure!).Throw();
                 reason = Describe(failure!);
+                what = "Connection lost";
             }
 
             if (attempt >= maxAttempts)
@@ -139,13 +142,13 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
                 yield return new StreamReset(reason);
             }
             var secsText = Math.Max(0, (int)Math.Ceiling(delay.TotalSeconds));
-            // The notice is the one part of a failure a person reads, and it repeats per attempt: the reason goes in
-            // without the provider's ids and dump path, which stay in the log warning above and in the StreamReset
-            // reason (idea-qz1a5z).
-            var shown = NoticeReason(failure!);
-            yield return new StreamNotice(asked is null
-                ? $"Connection lost ({shown}). Retrying in {secsText}s (attempt {attempt + 1}/{maxAttempts})…"
-                : $"{shown}: the server asked to wait. Retrying in {secsText}s (attempt {attempt + 1}/{maxAttempts})…", "warn");
+            // The notice is a status line, not a diagnosis: what happened and what is being done about it, in the
+            // harness's own words. The provider's reason is not in it — not its "OpenRouter: stream error: …", not
+            // "(upstream provider Stealth)", not the ids or the saved failed request. All of that is in the log
+            // warning above, in the StreamReset reason, and in the error a person is finally shown when the retries
+            // run out (idea-qz1a5z).
+            if (asked is not null) what = $"The server asked to wait {Ago(asked.Value.TotalSeconds)}";
+            yield return new StreamNotice($"{what}. Retrying in {secsText}s (attempt {attempt + 1}/{maxAttempts})…", "warn");
             if (delay > TimeSpan.Zero) await Task.Delay(delay, ct).ConfigureAwait(false);
         }
     }
@@ -182,24 +185,6 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
 
     private static string Describe(Exception ex) => Cap(OneLine(MessageOf(ex)), 160);
 
-    /// <summary>
-    /// The reason as the chat notice shows it: one line, capped, and without the provider's own decoration
-    /// (<see cref="ModelException.Detail"/> — request, response and generation ids, the path of the saved failed
-    /// request). The message itself is unchanged, so the log warning, <c>diag</c> and the error a person is finally
-    /// shown when the retries run out all keep the ids.
-    /// </summary>
-    public static string NoticeReason(Exception ex)
-    {
-        var msg = MessageOf(ex);
-        if (ex is ModelException { Detail: { Length: > 0 } detail })
-        {
-            // the provider appended "[detail]" to its own message: cut the bracketed tail off
-            var open = msg.LastIndexOf('[');
-            if (open > 0 && msg.TrimEnd().EndsWith(']') && msg.AsSpan(open + 1).StartsWith(detail)) msg = msg[..open];
-        }
-        return Cap(OneLine(msg), 100);
-    }
-
     private static string MessageOf(Exception ex)
     {
         var msg = ex.Message;
@@ -214,6 +199,13 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
     }
 
     private static string Cap(string msg, int max) => msg.Length > max ? msg[..(max - 3)] + "..." : msg;
+
+    /// <summary>A wait as a person reads it: whole seconds, and minutes once it is over a minute.</summary>
+    private static string Ago(double secs)
+    {
+        var s = Math.Max(1, (int)Math.Ceiling(secs));
+        return s >= 60 ? $"{s / 60} min" : $"{s}s";
+    }
 
     private static async ValueTask CleanupAsync(IAsyncEnumerator<ModelStreamEvent>? e, Task<bool>? pending,
         CancellationTokenSource linked, CancellationTokenSource stall)

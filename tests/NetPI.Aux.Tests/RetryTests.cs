@@ -72,7 +72,7 @@ public static class RetryTests
             var notice = events[2] as StreamNotice;
             Check.True(notice is not null);
             Check.Equal("warn", notice!.Level);
-            Check.Contains(notice.Text, "Connection lost (backend_unavailable). Retrying in ");
+            Check.Equal("Connection lost. Retrying in 1s (attempt 2/4)…", notice.Text);
             Check.Contains(notice.Text, "(attempt 2/4)");
             Check.True(events[3] is TextDelta { Text: "hello" });
             Check.True(events[4] is StreamCompleted);
@@ -137,46 +137,41 @@ public static class RetryTests
             Check.Equal(1, script.Calls);
         });
 
-        r.Add("retry: the notice drops the provider's ids and dump path; the reset reason and the rethrown error keep them", async () =>
+        r.Add("retry: the notice is a status line — the provider's words, ids and dump path are not in it", async () =>
         {
             // What the OpenRouter and AiProxy providers do: the ids go into the message and are named as Detail.
             const string Detail = "generation gen-1790629699-WxYBdRSnM2s3j77xSLV3, saved C:\\Users\\quazz\\.netpi\\logs\\failed-requests\\20260928-232737-795-stealth.json";
-            const string Reason = "OpenRouter: Provider returned an empty response (upstream provider Stealth)";
+            const string Reason = "OpenRouter: stream error: Provider returned an empty response (upstream provider Stealth)";
             static ModelException Failure() => new($"{Reason} [{Detail}]", true, null, "provider_error") { Detail = Detail };
 
             var script = new Script((n, _) => n == 1
                 ? Fail(Failure(), new TextDelta("hel"))      // partial output: a reset carries the reason to diag
                 : Events(new TextDelta("hello"), Done()));
             var events = await Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, script.Next, CancellationToken.None));
+            Check.Equal("Connection lost. Retrying in 1s (attempt 2/4)…", ((StreamNotice)events[2]).Text);
             var notice = ((StreamNotice)events[2]).Text;
-            Check.Contains(notice, $"Connection lost ({Reason}). Retrying in ");
+            Check.NotContains(notice, "OpenRouter");
             Check.NotContains(notice, "gen-1790629699");
             Check.NotContains(notice, "failed-requests");
+            // diagnostics keep the whole reason: the reset reason is what diag shows
             Check.Contains(((StreamReset)events[1]).Reason, "gen-1790629699");
 
-            // the error a person is finally shown, when the retries run out, is the provider's own message
+            // the error a person is finally shown, when the retries run out, is the reason without the decoration
             var always = new Script((_, _) => Fail(Failure()));
             var thrown = await Check.ThrowsAsync<ModelException>(() =>
                 Collect(new RetryMiddleware(() => Fast(attempts: 2)).InvokeAsync(Request, always.Next, CancellationToken.None)));
             Check.Contains(thrown.Message, "gen-1790629699");
-            Check.Equal(Detail, thrown.Detail);
+            Check.Equal(Reason, thrown.DisplayMessage);
         });
 
-        r.Add("retry: a long reason with no ids is capped on one line, and Detail is not cut out of the wrong bracket", async () =>
+        r.Add("retry: DisplayMessage is the message without Detail, and the message itself when there is none to remove", () =>
         {
-            // No Detail: the cap alone bounds the notice (nothing is guessed and removed).
-            var script = new Script((n, _) => n == 1
-                ? Fail(new ModelException("HTTP 429 [quota] " + new string('x', 300), true, 429))
-                : Events(new TextDelta("hello"), Done()));
-            var events = await Collect(new RetryMiddleware(() => Fast()).InvokeAsync(Request, script.Next, CancellationToken.None));
-            var notice = events.OfType<StreamNotice>().Single().Text;
-            Check.Contains(notice, "HTTP 429 [quota] xxx");
-            Check.True(notice.EndsWith("... (attempt 2/4)…") || notice.Contains("..."), notice);
-            Check.True(notice.Length < 160, $"{notice.Length} chars: {notice}");
-
-            // A Detail that is not the bracketed tail (nothing appended it) leaves the message alone.
-            var ex = new ModelException("OpenRouter: stream error [code 1]", true) { Detail = "generation gen-x" };
-            Check.Equal("OpenRouter: stream error [code 1]", RetryMiddleware.NoticeReason(ex));
+            Check.Equal("boom", new ModelException("boom", true).DisplayMessage);
+            var ids = "request req-1, response resp-1";
+            Check.Equal("boom", new ModelException($"boom [{ids}]", true) { Detail = ids }.DisplayMessage);
+            // a provider that wrote its own message, or renamed the decoration, keeps it: nothing is cut out of a guess
+            Check.Equal("boom [code 1]", new ModelException("boom [code 1]", true) { Detail = "generation gen-1" }.DisplayMessage);
+            Check.Equal("boom", new ModelException("boom", true) { Detail = "" }.DisplayMessage);
         });
 
         r.Add("retry: gives up after maxAttempts and rethrows the last error", async () =>
@@ -199,7 +194,7 @@ public static class RetryTests
             var events = await Collect(new RetryMiddleware(() => Fast(firstMs: 250, stallMs: 5000)).InvokeAsync(Request, script.Next, CancellationToken.None));
             Check.Equal(2, script.Calls);
             var notice = events.OfType<StreamNotice>().Single();
-            Check.Contains(notice.Text, "no response for");
+            Check.Equal("No response for 1s. Retrying in 1s (attempt 2/4)…", notice.Text);
             Check.False(events.Any(e => e is StreamReset));
             Check.True(events[^1] is StreamCompleted);
         });
@@ -211,7 +206,7 @@ public static class RetryTests
             Check.Equal(2, script.Calls);
             Check.True(events[0] is TextDelta { Text: "partial" });
             Check.True(events[1] is StreamReset { Reason: var reason } && reason.Contains("stalled"));
-            Check.Contains(((StreamNotice)events[2]).Text, "stream stalled");
+            Check.Equal("Stream stalled for 1s. Retrying in 1s (attempt 2/4)…", ((StreamNotice)events[2]).Text);
             Check.True(events[^1] is StreamCompleted);
         });
 
@@ -283,7 +278,7 @@ public static class RetryTests
             Check.True(clock.ElapsedMilliseconds >= 390, $"waited {clock.ElapsedMilliseconds} ms (the backoff alone is 1 ms)");
             Check.Equal(2, script.Calls);
             var notice = events.OfType<StreamNotice>().Single().Text;
-            Check.Contains(notice, "OpenRouter: HTTP 429: rate limited: the server asked to wait. Retrying in 1s (attempt 2/4)");
+            Check.Equal("The server asked to wait 1s. Retrying in 1s (attempt 2/4)…", notice);
             Check.Equal(TimeSpan.FromSeconds(3), RetryMiddleware.RetryAfterOf(new AggregateException(new ModelException("x", true) { RetryAfter = TimeSpan.FromSeconds(3) })));
             Check.True(RetryMiddleware.RetryAfterOf(new IOException("x")) is null);
         });

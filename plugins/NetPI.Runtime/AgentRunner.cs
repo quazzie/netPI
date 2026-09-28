@@ -266,9 +266,11 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         return Ctx.Models.DefaultModelRef;
     }
 
+    // One line for a person: DisplayMessage, not Message, so the provider's ids and the saved failed request stay in
+    // the log and diag where they belong (idea-qz1a5z).
     private static string ModelErrorText(Exception ex) => ex switch
     {
-        ModelException me => $"Model error{(me.StatusCode is { } c ? $" ({c})" : "")}: {me.Message}",
+        ModelException me => $"Model error{(me.StatusCode is { } c ? $" ({c})" : "")}: {me.DisplayMessage}",
         _ => $"Model call failed: {ex.Message}",
     };
 
