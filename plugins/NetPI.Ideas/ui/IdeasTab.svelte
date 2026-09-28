@@ -188,10 +188,10 @@
       if (r && list) list = { ...list, ideas: list.ideas.filter((i) => i.id !== id) };
       return r;
     },
-    // "Send to chat" stages a pointer, not the idea: the agent reads the idea itself (ideas.get, by id).
+    // "Send to chat" stages a pointer, not the idea: the agent reads the idea itself (ideas.get, by id). The text lands
+    // in the composer, which is the feedback — no toast (the user does not want one here).
     send: (idea) => {
       ctx.app.insertText(`Work on idea ${idea.id} (${idea.title}) — read it, then tell me what you plan to do.`);
-      ctx.app.toast('Idea staged in the composer — send when ready');
     },
     toPrompt: async (id) => {
       const text = await call('ideas.toPrompt', { id });

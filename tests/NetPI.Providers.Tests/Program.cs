@@ -953,6 +953,7 @@ await t.Run("openrouter: errors keep the server's text and add generation id, up
     var mid = await Fails(openrouter, Req(M("openrouter", "vendor/mid-error")));
     t.Check(mid is { Transient: true } && mid.Message.Contains("Provider disconnected unexpectedly"), "mid-stream error: " + mid?.Message);
     t.Check(mid!.Message.Contains("upstream provider UpstreamX") && mid.Message.Contains("generation gen-vendor-mid-error"), "upstream + generation id: " + mid.Message);
+    t.Check(mid.Detail is { Length: > 0 } && mid.Message.EndsWith($"[{mid.Detail}]"), "the ids are named as Detail, so a UI can leave them out: " + mid.Detail);
     var rate = await Fails(openrouter, Req(M("openrouter", "vendor/rate-limited")));
     t.Check(rate is { Transient: true, StatusCode: 429 } && rate.Message.Contains("free-models-per-min") && rate.Message.Contains("retry after 7 s"), "429: " + rate?.Message);
     t.Check(rate!.RetryAfter == TimeSpan.FromSeconds(7), "Retry-After kept for the retry plugin: " + rate.RetryAfter);

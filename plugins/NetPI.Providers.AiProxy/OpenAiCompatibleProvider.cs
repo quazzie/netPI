@@ -269,10 +269,14 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
             dump = DumpFailedRequest(ex, request, call);
         if (dump is not null) ids.Add("saved " + dump);
         if (ids.Count == 0) return ex;
-        return new ModelException($"{ex.Message} [{string.Join(", ", ids)}]", ex.Transient, ex.StatusCode, ex.ErrorType, ex)
+        // The ids stay in the message (the log, diag and a bug report want them) and are handed over as Detail, so the
+        // retry notice can show the reason without them (idea-qz1a5z).
+        var detail = string.Join(", ", ids);
+        return new ModelException($"{ex.Message} [{detail}]", ex.Transient, ex.StatusCode, ex.ErrorType, ex)
         {
             ContextOverflow = ex.ContextOverflow,
             RetryAfter = ex.RetryAfter,
+            Detail = detail,
         };
     }
 
