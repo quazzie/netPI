@@ -36,6 +36,9 @@ public static class InspectTests
         var ok = await Call(tool, """{ "action": "rpc", "method": "events.recent", "params": { "max": 100 } }""");
         Check.False(ok.IsError, ok.Content);
         Check.Equal(100, seen!.Int("max"), "the method's own parameters are passed on");
+        // and a quoted one, which is what a model sends for a value nested in an object
+        await Call(tool, """{ "action": "rpc", "method": "events.recent", "params": { "max": "7" } }""");
+        Check.Equal(7, seen!.Int("max"), "a model that quotes a number means the number");
         // it has to be in the schema's enum, or the model is never told it exists
         var actions = ((JsonArray)tool.Definition.Parameters["properties"]!["action"]!["enum"]!).Select(a => a.Str()).ToList();
         Check.True(actions.Contains("rpc"), "rpc is in the action enum");

@@ -84,6 +84,28 @@ public static class RegistryTests
             Check.Equal("x", via["s"]!.GetValue<string>());
         });
 
+        // A model quotes a number it nests inside an object (\"max\": \"2\"), and the strict reading turned that into a
+        // silently ignored filter - the reason the diag tool's rpc action looked broken when it was not.
+        r.Add("rpc: a quoted number or bool is read as the value, an absent one is still null", async () =>
+        {
+            var rpc = new RpcRegistry();
+            using var _ = rpc.Register("m.quoted", (req, _) => Task.FromResult<object?>(new JsonArray
+            {
+                req.Int("n") ?? -1, req.Int("missing") ?? -1, req.Int("word") ?? -1,
+                req.Bool("b") ?? false, req.Bool("missing") ?? false, req.Int("huge") ?? -1,
+            }));
+            var got = (JsonArray)(await rpc.InvokeAsync("m.quoted", new JsonObject
+            {
+                ["n"] = "2", ["b"] = "true", ["huge"] = 4294967296, // beyond int32, and a number besides
+            }))!;
+            Check.Equal(2, got[0]!.GetValue<int>(), "a quoted number");
+            Check.Equal(-1, got[1]!.GetValue<int>(), "an absent one");
+            Check.Equal(-1, got[2]!.GetValue<int>(), "a string that is not a number");
+            Check.True(got[3]!.GetValue<bool>(), "a quoted bool");
+            Check.False(got[4]!.GetValue<bool>(), "an absent bool");
+            Check.Equal(-1, got[5]!.GetValue<int>(), "a number too large for an int stays null, as before");
+        });
+
         r.Add("tools: highest priority per name, ties → latest, tools.disabled, tools.changed", async () =>
         {
             var file = Path.Combine(T.TempDir("tools"), "settings.json");

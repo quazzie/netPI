@@ -34,6 +34,11 @@ All other events are broadcast.
 
 HTTP fallback: `POST /api/rpc/{method}` with the params object as body → result JSON (`{ "error": {code,message} }` with 4xx on failure).
 
+A method's parameters are read leniently where it is unambiguous: a number or boolean that arrives **quoted** (`"2"`,
+`"true"`) is read as the value, because a model quotes a number it nests inside an object and a filter that is silently
+ignored is worse than one that errors. Everything else is strict: an absent parameter is the method's default, a string
+where a number belongs is not a number, and a number too large for an `int` is not one either.
+
 ## Data shapes (camelCase JSON)
 
 ```ts
