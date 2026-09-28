@@ -35,6 +35,8 @@ const option = (name) => {
 
 const write = flag('--write');
 const compact = flag('--compact');
+// Declared before its first use: the read-only map from rpc.list, fetched on demand (see declaredReadOnly below).
+let declared = null;
 const home = option('--home') ?? process.env.NETPI_HOME ?? path.join(os.homedir(), '.netpi');
 let method = args.shift() ?? 'diag.overview';
 let params = {};
@@ -76,7 +78,6 @@ console.log(compact ? JSON.stringify(result) : JSON.stringify(result, null, 2));
  * The host's own answer, not a guess: `rpc.list` carries `readOnly` per method (idea-de1s7t), so a method cannot become
  * writable — or blocked — because of its name. A server older than that has no flag, and the name rule below stands in.
  */
-let declared = null;
 async function declaredReadOnly() {
   if (declared === null) {
     try {

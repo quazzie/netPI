@@ -60,6 +60,30 @@ public static class RegistryTests
             Check.Equal("not_found", ex.Code);
         });
 
+        // What a plugin passes when it forwards a caller's own arguments (the diag tool's rpc action): a JsonObject.
+        // Every kind of member has to survive the trip, or a filtered method silently ignores the filter.
+        r.Add("rpc: a JsonObject's members arrive as they are (the diag rpc action's params)", async () =>
+        {
+            var rpc = new RpcRegistry();
+            using var _ = rpc.Register("m.params", (req, _) => Task.FromResult<object?>(new JsonObject
+            {
+                ["n"] = req.Int("n"), ["s"] = req.Str("s"), ["b"] = req.Bool("b"),
+                ["raw"] = req.Params.GetRawText(),
+            }));
+
+            var got = (JsonObject)(await rpc.InvokeAsync("m.params", new JsonObject { ["n"] = 3, ["s"] = "hi", ["b"] = true }))!;
+            Check.Equal(3, got["n"]!.GetValue<int>(), "a number");
+            Check.Equal("hi", got["s"]!.GetValue<string>(), "a string");
+            Check.True(got["b"]!.GetValue<bool>(), "a bool");
+            Check.Equal("""{"n":3,"s":"hi","b":true}""", got["raw"]!.GetValue<string>(), "nothing rewritten on the way");
+
+            // and an element passes straight through, which is the shape the tool now sends
+            using var doc = JsonDocument.Parse("""{"n":7,"s":"x"}""");
+            var via = (JsonObject)(await rpc.InvokeAsync("m.params", doc.RootElement.Clone()))!;
+            Check.Equal(7, via["n"]!.GetValue<int>());
+            Check.Equal("x", via["s"]!.GetValue<string>());
+        });
+
         r.Add("tools: highest priority per name, ties → latest, tools.disabled, tools.changed", async () =>
         {
             var file = Path.Combine(T.TempDir("tools"), "settings.json");
