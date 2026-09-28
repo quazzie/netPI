@@ -243,7 +243,9 @@
         </button>
       {/snippet}
     </Menu>
-    <span class="file np-mono np-grow" title={list?.file}><bdi>{list ? list.file : ''}</bdi></span>
+    {#if list?.file}
+      <span class="file" title={list.file}><Icon name="file" size={12} /></span>
+    {/if}
     <IconButton icon="plus" title="New idea" size="sm" pressed={adding} onclick={() => (adding = !adding)} />
   </div>
 
@@ -334,11 +336,16 @@
     gap: 8px;
     padding: 8px 8px 4px 12px;
   }
+  /* the project-filter Menu wraps its trigger in .np-menu-anchor: grow that, and let the badge fill it */
+  .scope > :global(.np-menu-anchor) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
   .badge {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    max-width: 55%;
+    width: 100%;
     height: 20px;
     padding: 0 8px;
     border: 0;
@@ -356,9 +363,8 @@
     color: var(--fg-muted);
   }
   .file {
-    direction: rtl;
-    text-align: left;
-    font-size: 10.5px;
+    display: inline-flex;
+    line-height: 20px;
     color: var(--fg-dim);
   }
   .filters {
