@@ -13,7 +13,10 @@ internal sealed class RpcRegistry : IRpcRegistry
     private readonly Lock _gate = new();
     private readonly Dictionary<string, List<Entry>> _methods = new(StringComparer.Ordinal);
 
-    public IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false) =>
+    public IDisposable Register(string method, RpcHandler handler, string? description = null) =>
+        Register(method, handler, description, "host", false);
+
+    public IDisposable Register(string method, RpcHandler handler, string? description, bool readOnly) =>
         Register(method, handler, description, "host", readOnly);
 
     public IDisposable Register(string method, RpcHandler handler, string? description, string owner, bool readOnly = false)

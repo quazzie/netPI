@@ -221,8 +221,8 @@ public sealed class FakeRpc : IRpcRegistry
 {
     private readonly ConcurrentDictionary<string, (RpcHandler Handler, string PluginId, bool ReadOnly)> _handlers = new();
 
-    public IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false) =>
-        RegisterFor(method, handler, "test", readOnly);
+    public IDisposable Register(string method, RpcHandler handler, string? description = null) => RegisterFor(method, handler, "test", false);
+    public IDisposable Register(string method, RpcHandler handler, string? description, bool readOnly) => RegisterFor(method, handler, "test", readOnly);
 
     public IDisposable RegisterFor(string method, RpcHandler handler, string pluginId, bool readOnly = false)
     {

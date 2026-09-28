@@ -180,7 +180,8 @@ public sealed class FakeRpc : IRpcRegistry
 {
     public Dictionary<string, RpcHandler> Handlers { get; } = [];
     public Dictionary<string, bool> ReadOnly { get; } = [];
-    public IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false)
+    public IDisposable Register(string method, RpcHandler handler, string? description = null) => Register(method, handler, description, false);
+    public IDisposable Register(string method, RpcHandler handler, string? description, bool readOnly)
     {
         Handlers[method] = handler;
         ReadOnly[method] = readOnly;
