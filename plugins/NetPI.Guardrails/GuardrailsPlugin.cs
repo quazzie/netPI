@@ -36,11 +36,11 @@ public sealed class GuardrailsPlugin : INetPiPlugin
                 SettingInfo.List("guardrails.paths", "Protected paths", RuleSet.DefaultPaths,
                     "Files and folders the agent may not change: write and edit refuse them, and so do bash and pwsh commands that name them (the read tool still reads them). ~ is your home. Start a line with ask: to ask you first."),
                 SettingInfo.Bool("guardrails.secondOpinion", "Second opinion before asking", false,
-                    "Before an ask: rule asks you about a shell command, a decision model reads it (the Decide plugin, through AiGateway); a command it finds confidently read-only runs without asking. Blocking rules and write/edit are never relaxed; without an answer you are asked."),
+                    "Before an ask: rule asks you about a shell command, a decision model reads it (the Decide plugin, through AiGateway); a command it finds confidently harmless runs without asking. Blocking rules and write/edit are never relaxed; without an answer you are asked."),
                 SettingInfo.Str("guardrails.secondOpinionModel", "Second-opinion model", SecondOpinion.DefaultModel,
                     "qwen3.8-27b (the NInfer chat model, about 0.3 s) was measured on 852 real commands; kev-9b calls too many local commands remote."),
                 SettingInfo.Number("guardrails.secondOpinionThreshold", "Second-opinion threshold", SecondOpinion.DefaultThreshold,
-                    "A command runs without asking only when p(read-only) ≥ 1 − this and p(destructive), p(stops a process), p(changes a remote) are each below it.", 0.01, 0.5),
+                    "A command runs without asking only when p(destructive), p(stops a process) and p(changes a remote) are each below it. p(read-only) is asked and shown, but not required: the model underrates builds and test runs as read-only (dotnet test 0.05-0.4), so a read-only bar cleared none of 50 hand-labelled hard commands, while the risk questions alone at 0.2 cleared 20 of their 39 read-only ones and none of the risky ones.", 0.01, 0.5),
             ],
         });
         var approvals = _approvals = new Approvals(context);
