@@ -196,6 +196,7 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `session.deleted` | no | `{ id }` |
 | `session.forked` | no | `{ sessionId /* the fork */, fromSessionId, upToSeq }` – after `sessions.fork`: the context plugin gives the fork the system prompt the original was sent at that point (so its next call starts with the prefix the backend saw), the todo plugin the checklist of its last `todo_write` |
 | `session.project` | no | `{ sessionId, projectId, cwd }` – attached to another project or detached |
+| `session.changed` | no | `{ sessionId, keys: string[] }` – the session's **meta** changed: the keys whose value is not what it was (added, changed, removed, sorted). A rewrite with the same value, and a field outside `meta` (title, model, project…), fire nothing. The key names are contract, not the plugin that writes them: `profile` (`SessionProfile.MetaKey`, the profiles plugin), `toolsOff` (`SessionTools.MetaKey`, `agent.setTools`), `identity` (`SessionIdentity.MetaKey`, a profile's prompt). It is the real signal for "the user switched this chat's profile", so a plugin can react to the change instead of looking for a notice kind or for message order (idea-m7vmue) |
 | `project.created` / `project.updated` | no | `{ project }` |
 | `project.deleted` | no | `{ id }` |
 | `message.added` / `message.updated` | yes | `{ sessionId, message: ChatMessage }` |

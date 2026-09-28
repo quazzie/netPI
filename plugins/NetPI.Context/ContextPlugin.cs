@@ -46,6 +46,7 @@ public sealed class ContextPlugin : INetPiPlugin
         context.Services.Register<IAgentHook>(toolNotices);
         // what reloaded: the cause of the next tool-set change (a "tools" notice names the plugin)
         context.Events.Subscribe(EventTypes.PluginsReloaded, toolNotices.OnPluginsReloaded);
+        context.Events.Subscribe(EventTypes.SessionChanged, toolNotices.OnSessionChanged);
         context.Events.Subscribe(EventTypes.SessionProject, e =>
         {
             if (e.As<JsonObject>()?["sessionId"]?.GetValue<string>() is { Length: > 0 } id) notices.OnProjectChanged(id);

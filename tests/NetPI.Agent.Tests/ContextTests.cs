@@ -17,6 +17,7 @@ public static class ContextTests
         t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
         t.Add("context: a tools notice says why (plugin reload, the user, a setting) and keeps the cause in meta", ToolChangeCauses);
+        t.Add("context: a profile switch is named by session.changed, not by the notice it happens to leave", ToolChangeCauseProfileEvent);
         t.Add("context: a tools notice names the user and a setting as the cause too", ToolChangeCausesUserAndSettings);
         t.Add("context: context.toolsets: the tools now, the baseline and every change with its cause", ToolSets);
         t.Add("context: context.toolsets reaches a change older than the newest 500 messages, and says when it stops", ToolSetsLongChat);
@@ -477,6 +478,56 @@ public static class ContextTests
         Check.Equal("Your tools changed. No longer available: web_probe (plugin reload netpi.tools.web).", reloaded.Text);
         Check.Equal("plugin-reload", reloaded.MetaString("cause"));
         Check.Equal("netpi.tools.web", ((JsonArray)reloaded.Meta!["plugins"]!)[0]!.GetValue<string>());
+    }
+
+    // The profile cause used to be a string-match on the last notice's kind, so renaming that kind would have silently
+    // turned it into "unknown". The host now publishes session.changed with the meta keys that changed, and that is the
+    // signal: a profile switch with no profile notice at all is still named. The notice-order check stays as the fallback
+    // for a chat whose event was missed (it started before this plugin did).
+    private static async Task ToolChangeCauseProfileEvent()
+    {
+        await using var h = await TestHost.StartAsync();
+        Task<ToolResult> Ok(ToolContext c, System.Text.Json.JsonElement a, CancellationToken t) => Task.FromResult(ToolResult.Ok(""));
+
+        // (1) the event: meta.profile written, no notice — the event alone must name the cause
+        var s = h.NewSession();
+        await Turn(h, s.Id, "hi");
+        var reg = h.Tools.Register(new FakeTool("web_probe", Ok), 0, "netpi.tools.web");
+        await Turn(h, s.Id, "a web tool?");
+        h.Sessions.UpdateSession(s.Id, x => (x.Meta ??= new System.Text.Json.Nodes.JsonObject())["profile"] = "coder");
+        await h.Bus.DrainAsync();
+        reg.Dispose();
+        await Turn(h, s.Id, "gone?");
+        var byEvent = Notices(h, s.Id, "tools").Last();
+        Check.Equal("Your tools changed. No longer available: web_probe (the user switched this chat's profile).", byEvent.Text);
+        Check.Equal("profile", byEvent.MetaString("cause"));
+
+        // (2) the fallback: the convention the profiles plugin follows (a "profile" notice) with no event to read
+        var t2 = h.NewSession();
+        await Turn(h, t2.Id, "hi");
+        var reg2 = h.Tools.Register(new FakeTool("media_probe", Ok), 0, "netpi.tools.media");
+        await Turn(h, t2.Id, "a media tool?");
+        var switched = h.Sessions.AppendMessage(t2.Id, ChatMessage.NoticeText("The user switched this chat to the profile \"x\".", "profile"));
+        await h.Bus.DrainAsync();
+        reg2.Dispose();
+        await Turn(h, t2.Id, "gone?");
+        var byNotice = Notices(h, t2.Id, "tools").Last();
+        Check.Contains(byNotice.Text, "(the user switched this chat's profile)");
+        Check.Equal("profile", byNotice.MetaString("cause"), "no event seen, the notice is the fallback");
+
+        // (3) one-shot: a meta change that changed no tools must not be blamed for a later, unrelated change
+        var u = h.NewSession();
+        await Turn(h, u.Id, "hi");
+        var reg3 = h.Tools.Register(new FakeTool("web_probe", Ok), 0, "netpi.tools.web");
+        await Turn(h, u.Id, "a web tool?");
+        h.Sessions.UpdateSession(u.Id, x => (x.Meta ??= new System.Text.Json.Nodes.JsonObject())["profile"] = "coder");
+        await h.Bus.DrainAsync();
+        await Turn(h, u.Id, "nothing changed here");   // the event is taken by this call and dropped
+        reg3.Dispose();
+        await Turn(h, u.Id, "gone?");
+        var stale = Notices(h, u.Id, "tools").Last();
+        Check.Equal("Your tools changed. No longer available: web_probe.", stale.Text, "a stale event must not be blamed");
+        Check.Equal("unknown", stale.MetaString("cause"));
     }
 
     // The other two causes: the user's own switches (which the text already names) and a setting that took a tool away.

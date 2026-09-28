@@ -350,6 +350,56 @@ public static class SessionStoreTests
             Check.Equal(1, evs.Count);
         });
 
+        r.Add("sessions: a meta change publishes session.changed with the keys that changed; a no-op or a field outside meta does not", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo { Meta = new JsonObject { ["profile"] = "coder", ["toolsOff"] = new JsonArray("probe") } });
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("hello"));
+            await f.Bus.FlushAsync();
+            lock (f.Events) f.Events.Clear();
+
+            async Task<List<string>> Keys()
+            {
+                var evs = await f.EventsAsync(EventTypes.SessionChanged);
+                lock (f.Events) f.Events.Clear();
+                var keys = new List<string>();
+                foreach (var e in evs)
+                {
+                    var d = e.As<JsonObject>()!;
+                    keys.Add($"{d["sessionId"]}:{string.Join("+", ((JsonArray)d["keys"]!).Select(k => k!.GetValue<string>()))}");
+                }
+                return keys;
+            }
+
+            // a profile switch: three keys at once, as the profiles plugin writes them
+            f.Store.UpdateSession(s.Id, x =>
+            {
+                x.Meta!["profile"] = "admin";
+                x.Meta["identity"] = "You are terse.";
+                x.Meta["toolsOff"] = new JsonArray();
+            });
+            Check.Equal($"{s.Id}:identity+profile+toolsOff", string.Join(" | ", await Keys()));
+
+            // one key
+            f.Store.UpdateSession(s.Id, x => x.Meta!["identity"] = "You are verbose.");
+            Check.Equal($"{s.Id}:identity", string.Join(" | ", await Keys()));
+
+            // the same value again, and a field outside meta: nothing changed, so nothing is announced
+            f.Store.UpdateSession(s.Id, x => x.Meta!["identity"] = "You are verbose.");
+            f.Store.UpdateSession(s.Id, x => { x.Title = "Renamed"; x.ContextTokens = 99; });
+            Check.Equal("", string.Join(" | ", await Keys()));
+
+            // a key removed counts as changed
+            f.Store.UpdateSession(s.Id, x => x.Meta!.Remove("profile"));
+            Check.Equal($"{s.Id}:profile", string.Join(" | ", await Keys()));
+
+            // and the transient path (a chat with no message yet) publishes it too: the profiles plugin gives a new chat
+            // its default profile before the first call, and that is exactly when the first tool set is decided
+            var t = f.Store.CreateSession(new SessionInfo());
+            f.Store.UpdateSession(t.Id, x => x.Meta = new JsonObject { ["profile"] = "admin" });
+            Check.Equal($"{t.Id}:profile", string.Join(" | ", await Keys()));
+        });
+
         r.Add("sessions: a no-message session is transient — in memory only, until its first message", async () =>
         {
             await using var f = new Fixture();

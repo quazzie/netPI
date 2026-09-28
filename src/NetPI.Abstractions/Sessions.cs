@@ -37,6 +37,48 @@ public sealed class SessionInfo
 }
 
 /// <summary>
+/// The rule behind <c>session.changed</c>: which meta keys a write actually changed. It lives here, not in the store,
+/// because it is the event's contract — a plugin that watches <c>session.changed</c> is told keys, and a test double of the
+/// session store has to report the same ones as the real store or every plugin test drifts from production.
+/// <para>A key with a null value counts as no key, and a key rewritten with the same value is not a change.</para>
+/// </summary>
+public static class SessionMeta
+{
+    /// <summary>The meta as it is now, key → its JSON. Take it <em>before</em> a write: the write edits the same object.</summary>
+    public static IReadOnlyDictionary<string, string> Snapshot(JsonObject? meta)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (meta is not null)
+            foreach (var (key, value) in meta)
+                if (value is not null) map[key] = value.ToJsonString();
+        return map;
+    }
+
+    /// <summary>The keys whose value is not what <paramref name="before"/> said: added, changed or removed, sorted.</summary>
+    public static IReadOnlyList<string> Changed(IReadOnlyDictionary<string, string> before, JsonObject? after)
+    {
+        var now = Snapshot(after);
+        var keys = new List<string>();
+        foreach (var (key, value) in now)
+            if (!before.TryGetValue(key, out var was) || was != value) keys.Add(key);
+        foreach (var key in before.Keys)
+            if (!now.ContainsKey(key)) keys.Add(key);
+        keys.Sort(StringComparer.Ordinal);
+        return keys;
+    }
+}
+
+/// <summary>
+/// The profile a session runs with: <c>meta.profile</c>, written by the profiles plugin (and by a project's default for a new
+/// chat). The key lives here, not in that plugin, because <c>session.changed</c> reports meta keys as data: a consumer of
+/// the event must be able to name the key without knowing which plugin wrote it (idea-m7vmue).
+/// </summary>
+public static class SessionProfile
+{
+    public const string MetaKey = "profile";
+}
+
+/// <summary>
 /// Tools switched off for one session: <c>meta.toolsOff</c> lists tool names its agent is not sent (the <c>agent.setTools</c>
 /// RPC; a subagent session starts with its parent's list). A change after the first model call applies from the next call.
 /// </summary>

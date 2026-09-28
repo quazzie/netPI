@@ -304,13 +304,19 @@ public sealed class FakeSessionStore(IEventBus bus, string workspace) : ISession
     public SessionInfo UpdateSession(string id, Action<SessionInfo> mutate)
     {
         SessionInfo s;
+        IReadOnlyDictionary<string, string> wasMeta;
         lock (_gate)
         {
             s = _sessions[id];
+            wasMeta = SessionMeta.Snapshot(s.Meta);  // the write edits this very object
             mutate(s);
             s.UpdatedAt = DateTimeOffset.UtcNow;
         }
         bus.Publish(EventTypes.SessionUpdated, new JsonObject { ["session"] = NetPiJson.ToNode(s) });
+        // the real store publishes this too: a plugin that watches it must not see less here than in production
+        var keys = SessionMeta.Changed(wasMeta, s.Meta);
+        if (keys.Count > 0)
+            bus.Publish(EventTypes.SessionChanged, new JsonObject { ["sessionId"] = id, ["keys"] = new JsonArray(keys.Select(k => (JsonNode?)k).ToArray()) });
         return s;
     }
 

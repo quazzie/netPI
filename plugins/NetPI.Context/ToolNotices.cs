@@ -29,6 +29,9 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
         var sessionId = turn.Run.Session.Id;
         var names = Names(turn.Tools);
         _changes.Remember(sessionId, turn.Tools);  // before the diff: a tool that came back with its plugin
+        // the session.changed this call owns (a profile switch since the last call), taken whatever happens next: a change
+        // that turns out to explain nothing must not be blamed for a later one
+        var changed = _changes.TakePending(sessionId);
         var baseline = store.GetTools(sessionId);
         if (baseline is null)
         {
@@ -37,11 +40,11 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
         }
         var known = Known(baseline, turn.Messages);
         if (known.SetEquals(names)) return;
-        if (Announce(sessionId, turn.Tools, baseline)) await turn.ReloadMessagesAsync().ConfigureAwait(false);
+        if (Announce(sessionId, turn.Tools, baseline, changed)) await turn.ReloadMessagesAsync().ConfigureAwait(false);
     }
 
     /// <summary>Appends a notice when the tools differ from what the context says, under a per-session lock.</summary>
-    internal bool Announce(string sessionId, IReadOnlyList<ToolDefinition> tools, ToolBaseline baseline)
+    internal bool Announce(string sessionId, IReadOnlyList<ToolDefinition> tools, ToolBaseline baseline, ToolChanges.MetaChange? changed = null)
     {
         lock (_gates.GetOrAdd(sessionId, _ => new object()))
         {
@@ -53,7 +56,7 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
             if (added.Count == 0 && removed.Count == 0) return false;
             var session = ctx.Sessions.GetSession(sessionId);
             var off = SessionTools.Off(session);
-            var cause = _changes.Cause(sessionId, added, removed, off, context);
+            var cause = _changes.Cause(sessionId, added, removed, off, context, changed);
             var notice = ChatMessage.NoticeText(Text(tools, added, removed, off, cause), Kind);
             notice.Meta!["added"] = new JsonArray(added.Select(n => (JsonNode?)n).ToArray());
             notice.Meta["removed"] = new JsonArray(removed.Select(n => (JsonNode?)n).ToArray());
@@ -69,6 +72,9 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
 
     /// <summary>Receives <c>plugins.reloaded</c>: the cause of the next tool-set change.</summary>
     internal void OnPluginsReloaded(BusEvent e) => _changes.OnPluginsReloaded(e);
+
+    /// <summary>Receives <c>session.changed</c>: the meta keys the user changed (the profile, the tools off for this chat).</summary>
+    internal void OnSessionChanged(BusEvent e) => _changes.OnSessionChanged(e);
 
     /// <summary>A deleted session: nothing left to remember its tools for.</summary>
     internal void Forget(string sessionId) => _changes.Forget(sessionId);

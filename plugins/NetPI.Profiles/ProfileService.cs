@@ -10,8 +10,9 @@ internal sealed class ProfileService(IPluginContext ctx)
 {
     /// <summary>Settings key of the global default (not a profile).</summary>
     public const string DefaultKey = "defaultProfile";
-    /// <summary>Session and project meta key; a project's <c>"none"</c> means no profile.</summary>
-    public const string MetaKey = "profile";
+    /// <summary>Session and project meta key; a project's <c>"none"</c> means no profile. The key is shared contract
+    /// (<see cref="SessionProfile.MetaKey"/>), because <c>session.changed</c> reports it as data.</summary>
+    public const string MetaKey = SessionProfile.MetaKey;
     public const string None = "none";
     public const string NoticeKind = "profile";
 
