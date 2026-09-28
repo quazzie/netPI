@@ -62,11 +62,16 @@ public sealed record RpcMethodInfo(string Method, string? Description, string Pl
 public interface IRpcRegistry
 {
     /// <summary>
-    /// Register a method. <paramref name="readOnly"/> says it only reads: <c>rpc.list</c> reports it, and the read-only
-    /// paths (<c>scripts/netpi.mjs</c>, the <c>diag</c> tool's rpc action) call only what is marked, so a method that
-    /// changes something has to say so to be reachable from a tool (idea-de1s7t). Unmarked means "may write".
+    /// Register a method. Unmarked means "may write": the read-only paths (<c>scripts/netpi.mjs</c>, the <c>diag</c>
+    /// tool's rpc action) call only what the other overload marks, so a method that changes something has to say so to
+    /// be reachable from a tool (idea-de1s7t).
+    /// <para>Two overloads, not one with a default: an added parameter changes this method's signature, and every plugin
+    /// compiled against the old contract then fails to link (<c>MissingMethodException</c> at <c>StartAsync</c>) — the
+    /// contracts are additive by rule.</para>
     /// </summary>
-    IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false);
+    IDisposable Register(string method, RpcHandler handler, string? description = null);
+    /// <summary>Register a method that only reads, so the read-only paths may call it (reported by <c>rpc.list</c>).</summary>
+    IDisposable Register(string method, RpcHandler handler, string? description, bool readOnly);
     /// <summary>Invoke a method in-process (plugins can call each other through RPC).</summary>
     Task<object?> InvokeAsync(string method, object? parameters = null, CancellationToken ct = default);
     IReadOnlyList<RpcMethodInfo> List();

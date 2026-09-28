@@ -69,7 +69,8 @@ public sealed class TestPluginContext : IPluginContext
 
     private sealed class TrackedRpc(FakeRpc inner, TestPluginContext ctx) : IRpcRegistry
     {
-        public IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false) =>
+        public IDisposable Register(string method, RpcHandler handler, string? description = null) => ctx.Track(inner.RegisterFor(method, handler, ctx.PluginId));
+        public IDisposable Register(string method, RpcHandler handler, string? description, bool readOnly) =>
             ctx.Track(inner.RegisterFor(method, handler, ctx.PluginId, readOnly));
         public Task<object?> InvokeAsync(string method, object? parameters = null, CancellationToken ct = default) => inner.InvokeAsync(method, parameters, ct);
         public IReadOnlyList<RpcMethodInfo> List() => inner.List();

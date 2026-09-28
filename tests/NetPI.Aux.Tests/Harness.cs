@@ -230,7 +230,9 @@ public sealed class FakeRpc(Ownership? owner = null) : IRpcRegistry
     /// <summary>What each method was registered as, so List() can report readOnly like the real registry (idea-de1s7t).</summary>
     public ConcurrentDictionary<string, bool> ReadOnly { get; } = new();
 
-    public IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false)
+    public IDisposable Register(string method, RpcHandler handler, string? description = null) => Register(method, handler, description, false);
+
+    public IDisposable Register(string method, RpcHandler handler, string? description, bool readOnly)
     {
         Handlers[method] = handler;
         ReadOnly[method] = readOnly;
