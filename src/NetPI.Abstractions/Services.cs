@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 
@@ -42,11 +43,33 @@ public sealed class RpcRequest
 
     public string Required(string name) => Str(name) ?? throw new RpcException("bad_request", $"Missing parameter '{name}'");
 
+    /// <summary>
+    /// A number parameter, or null. A model that quotes one — <c>{"max": "2"}</c>, which it does readily for a value
+    /// nested inside an object — means the number: the settings document is read the same way
+    /// (<c>JsonNumberHandling.AllowReadingFromString</c>). Refusing it instead would ignore the caller's filter in
+    /// silence, and a filter that is silently ignored is worse than one that errors.
+    /// </summary>
     public int? Int(string name) =>
-        Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : null;
+        Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v)
+            ? v.ValueKind switch
+            {
+                JsonValueKind.Number when v.TryGetInt32(out var n) => n,
+                JsonValueKind.String when int.TryParse(v.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var s) => s,
+                _ => null,
+            }
+            : null;
 
+    /// <summary>A boolean parameter, or null; <c>"true"</c> counts as <c>true</c> (see <see cref="Int"/>).</summary>
     public bool? Bool(string name) =>
-        Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False ? v.GetBoolean() : null;
+        Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v)
+            ? v.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.String => bool.TryParse(v.GetString(), out var b) ? b : null,
+                _ => null,
+            }
+            : null;
 
     public JsonElement? Prop(string name) =>
         Params.ValueKind == JsonValueKind.Object && Params.TryGetProperty(name, out var v) ? v : null;
