@@ -188,4 +188,14 @@ before anything loads). `.\build.ps1 -Publish -NextStart` does that with every c
 running NetPI gets nothing, and `-Pending` lists what waits. One plugin, live on purpose:
 `dotnet build plugins\MyPlugin -p:AppOutDir=artifacts/app/plugins/NetPI.MyPlugin/`.
 
+**A reload is a swap, not a restart.** The new version starts while the old one is still serving: a registration of the
+same name takes over as soon as the new instance makes it, and only then are the old registrations disposed. So a tool
+is never absent, a chat that calls a model in the middle sees no change at all (no "tools changed" notice), and a new
+version that fails to load or start leaves the running one alone — `plugins.reloaded` says `kind: "reload-failed"` and
+the plugin's `error` says why. What this asks of a plugin: `StartAsync` must tolerate a previous instance of *itself*
+being alive for a few milliseconds, so don't take an exclusive resource (a port, a lock) for the whole process without
+a named lock — a file that only one instance writes briefly is fine. `StopAsync` and the `Stopping` token of the
+replaced version arrive *after* the new one is up, so cleanup there must tolerate the overlap too. Reloads are
+serialised, one at a time.
+
 `/reload [pluginId]` in the chat, or the Diagnostics tab, reloads plugins on demand.

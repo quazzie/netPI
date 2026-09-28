@@ -79,6 +79,7 @@ public static class PluginTests
             var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
             await using var server = await StartAsync(pluginsRoot);
             Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"));
+            Check.Equal("none", (string?)await server.Rpc.InvokeAsync("sample.overlap"), "a first start has nothing before it");
             Check.Contains(await PingAsync(server), "v1"); // plugin-typed event payload in the bus ring buffer
             Check.Contains(await EchoJsonAsync(server), "v1"); // plugin-typed RPC result serialized with the collectible options
             var oldContext = CurrentContext(server);
@@ -91,6 +92,9 @@ public static class PluginTests
             // Registrations appear during StartAsync; the state flips to running once StartAsync returned.
             await Wait.UntilAsync(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running", LoadCount: 2 }, "plugin reloaded", 20_000);
             Check.Equal("v2", await TryValueAsync(server));
+            // the swap: the old tool was still registered when the new instance started, so no chat ever saw it missing
+            Check.Equal("present", (string?)await server.Rpc.InvokeAsync("sample.overlap"),
+                "the previous version's registrations are retired after the new instance is up, not before");
             var info = server.Plugins.List().Single(p => p.Id == "test.sample");
             Check.Equal("running", info.State);
             Check.Equal(2, info.LoadCount);
@@ -103,6 +107,31 @@ public static class PluginTests
             await Wait.UntilAsync(() => server.Kernel.Plugins.GetLoadState("test.sample").LastUnloadCollected is not null, "unload check finished", 30_000);
             Check.Equal(true, server.Kernel.Plugins.GetLoadState("test.sample").LastUnloadCollected, "host reports the old context collected");
             Check.True(await CollectedAsync(oldContext), "old AssemblyLoadContext was garbage collected");
+        });
+
+        r.Add("plugins: a reload that fails to start keeps the running version (swap, not restart)", async () =>
+        {
+            await SampleBuild.EnsureAsync();
+            var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
+            await using var server = await StartAsync(pluginsRoot);
+            Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"));
+            var oldContext = CurrentContext(server);
+
+            // the "rebuild" is a version whose StartAsync throws: the swap must not take the running one down with it
+            foreach (var file in Directory.GetFiles(SampleBuild.Dir("fail")))
+                File.Copy(file, Path.Combine(pluginDir, Path.GetFileName(file)), overwrite: true);
+
+            // the swap failed, the old load was put back: state is running again and the reason is on the plugin
+            await Wait.UntilAsync(() => server.Plugins.List().Single(p => p.Id == "test.sample") is { State: "running" } info && info.Error is not null,
+                "the failed swap was rolled back", 20_000);
+            var info = server.Plugins.List().Single(p => p.Id == "test.sample");
+            Check.Equal("running", info.State, "still serving");
+            Check.Equal("v1", (string?)await server.Rpc.InvokeAsync("sample.value"), "the old version kept its registrations");
+            Check.Equal("v1|test.sample|1|1", Inspect(server), "nothing was duplicated or lost");
+            Check.Contains(info.Error ?? "", "sample plugin failure", "and the reason is on the plugin");
+            Check.Equal("hello v1", await HttpGetAsync(server, "/api/p/test.sample/hello"), "its HTTP route is still mapped");
+            Check.True(ReferenceEquals(oldContext.Target, CurrentContext(server).Target),
+                "the running load context is the one that was there before, not a fresh one");
         });
 
         r.Add("plugins: wwwroot changes only bump the UI version (no reload)", async () =>
@@ -198,11 +227,17 @@ public static class PluginTests
             Check.Equal("new A", Text("plugins/A/A.dll"));
         });
 
-        r.Add("plugins: real built plugins (tools + providers) load from artifacts/app/plugins", async () =>
+        r.Add("plugins: real built plugins (tools + providers) load from the build output", async () =>
         {
-            var root = Path.Combine(T.RepoRoot, "artifacts", "app", "plugins");
+            // the build output (artifacts/dev/app) is where a build lands; NETPI_APP_DIR names an app folder (as
+            // build.ps1 -Test sets it) and artifacts/app is the installed app. A worktree has its own artifacts/.
+            var candidates = Environment.GetEnvironmentVariable("NETPI_APP_DIR") is { Length: > 0 } custom
+                ? new[] { Path.Combine(custom, "plugins") }
+                : new[] { "dev", "" }.Select(p => Path.Combine(T.RepoRoot, "artifacts", p, "app", "plugins")).ToArray();
+            var root = candidates.FirstOrDefault(d => File.Exists(Path.Combine(d, "NetPI.Tools.Files", "NetPI.Tools.Files.dll")))
+                ?? throw new AssertException($"no built plugins in {string.Join(" or ", candidates)}: run build.ps1");
             foreach (var name in new[] { "NetPI.Tools.Files", "NetPI.Tools.Shell", "NetPI.Providers.AiProxy", "NetPI.Providers.Anthropic" })
-                if (!File.Exists(Path.Combine(root, name, name + ".dll"))) throw new AssertException($"{name} is not built");
+                if (!File.Exists(Path.Combine(root, name, name + ".dll"))) throw new AssertException($"{name} is not built in {root}");
             await using var server = await StartAsync(root);
             var plugins = server.Plugins.List().ToDictionary(p => p.Id);
             foreach (var id in new[] { "netpi.tools.files", "netpi.tools.shell", "netpi.providers.aiproxy", "netpi.providers.anthropic" })

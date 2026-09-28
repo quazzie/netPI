@@ -27,6 +27,7 @@ public sealed class Reloads(IPluginContext ctx)
         {
             "disabled" => $"Plugins switched off: {string.Join(", ", Ids)}",
             "enabled" => $"Plugins switched on: {string.Join(", ", Ids)}",
+            "reload-failed" => $"Plugin reload failed, still on the running version: {string.Join(", ", Ids)}",
             _ => $"Plugins reloaded: {string.Join(", ", Ids)}",
         };
 
@@ -60,8 +61,9 @@ public sealed class Reloads(IPluginContext ctx)
         var busy = ctx.Services.Get<IAgentRuntime>()?.List(false)
             .Where(x => x.Status is AgentStatus.Running or AgentStatus.Queued)
             .Select(x => x.SessionId).Distinct(StringComparer.Ordinal).ToList() ?? [];
-        // what the reloaded plugins register right now: their tools are the ones a chat can lose (a tool-only plugin's
-        // registrations are still in place here, because the reload event follows the stop)
+        // what the reloaded plugins register right now: their tools are the ones a chat can lose (a reload swaps, so a
+        // tool that stays registered through it is never actually absent - only a plugin that changed its tools, or one
+        // that was switched off, takes any away)
         var tools = ctx.Tools.Registrations
             .Where(r => ids.Contains(r.PluginId, StringComparer.OrdinalIgnoreCase))
             .Select(r => r.Tool.Definition.Name).Distinct(StringComparer.Ordinal).OrderBy(n => n, StringComparer.Ordinal).ToList();

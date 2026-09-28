@@ -36,7 +36,9 @@ public static class UnloadTests
     private static async Task LoadRunUnload()
     {
         var root = FindRepoRoot();
-        var dlls = PluginNames.Select(n => root is null ? "" : Path.Combine(root, "artifacts", "app", "plugins", n, n + ".dll")).ToList();
+        // the build output (NETPI_APP_DIR, set by build.ps1 -Test); artifacts\app is the installed app, and a worktree has none
+        var app = root is null ? "" : Environment.GetEnvironmentVariable("NETPI_APP_DIR") is { Length: > 0 } custom ? custom : Path.Combine(root, "artifacts", "app");
+        var dlls = PluginNames.Select(n => app.Length == 0 ? "" : Path.Combine(app, "plugins", n, n + ".dll")).ToList();
         if (dlls.Any(d => !File.Exists(d)))
         {
             Console.WriteLine("        (skipped: build the plugins first)");

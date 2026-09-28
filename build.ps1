@@ -327,6 +327,8 @@ else {
 
 if ($Test) {
     Step 'Unit tests'
+    # the suites load the built plugins from here (NETPI_APP_DIR); a worktree has no artifacts\app to fall back on
+    $env:NETPI_APP_DIR = $dev
     $failed = 0
     foreach ($t in 'Providers', 'Tools', 'Agent', 'Aux', 'Host') {
         $dll = "tests\NetPI.$t.Tests\bin\$Configuration\NetPI.$t.Tests.dll"
@@ -334,6 +336,7 @@ if ($Test) {
         dotnet $dll
         if ($LASTEXITCODE) { $failed++ }
     }
+    Remove-Item Env:NETPI_APP_DIR -ErrorAction SilentlyContinue
     if ($failed) { throw "$failed test suite(s) failed" }
 }
 
