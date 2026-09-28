@@ -87,6 +87,19 @@ public sealed class ModelException(string message, bool transient, int? statusCo
     /// the path of the saved failed request). It stays in the message — the log, <c>diag</c> and a bug report want it —
     /// and is also named here, so a UI that shows the failure to a person can leave it out (idea-qz1a5z).</summary>
     public string? Detail { get; init; }
+    /// <summary><see cref="Exception.Message"/> without <see cref="Detail"/>: what a person reads, where the ids and the
+    /// dump path are noise. The message itself when there is no <see cref="Detail"/>, or when it does not end with it
+    /// (a provider may have written a message of its own).</summary>
+    public string DisplayMessage
+    {
+        get
+        {
+            if (Detail is not { Length: > 0 } detail) return Message;
+            var tail = $"[{detail}]";
+            var msg = Message.AsSpan().TrimEnd();
+            return msg.EndsWith(tail) ? msg[..^tail.Length].TrimEnd().ToString() : Message;
+        }
+    }
 }
 
 public delegate IAsyncEnumerable<ModelStreamEvent> ModelCallDelegate(ModelRequest request, CancellationToken ct);
