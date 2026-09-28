@@ -1,10 +1,29 @@
 # Inspecting the running app
 
-This is **the** way to look inside a running NetPI, for a person or a debugging agent: what runs, what waits and why,
-every model call with its timing and errors, every tool call, the events that led somewhere, the logs, the settings
-without secrets, and the requests a backend refused. Everything below only reads; nothing changes the app.
+This is **the** way to look inside a running NetPI, for a person, a debugging script or the agent itself: what runs,
+what waits and why, every model call with its timing and errors, every tool call, the events that led somewhere, the
+logs, the settings without secrets, and the requests a backend refused. Everything below only reads; nothing changes
+the app.
 
 ## Reaching the app
+
+**The agent asks with the `diag` tool** (the Diagnostics plugin registers it, read-only, one action per method). Nothing
+else: no CLI, no project path, no Node.
+
+```
+diag { "action": "overview" }                              # start here
+diag { "action": "problems" }                             # what looks wrong now
+diag { "action": "journal", "limit": 50 }                 # the timeline of this chat
+diag { "action": "toolsets" }                             # this chat's tools and every change, with its cause
+diag { "action": "logs", "level": "error", "sinceMinutes": 10 }
+```
+
+The session-scoped actions (`calls`, `tools`, `journal`, `run`, `toolsets`) use the calling chat unless another
+`sessionId` is given; `sessionId: "all"` means no filter. The result is the same JSON as the RPC below, in the tool
+result and in the chat. Writes are not reachable from it: the action picks the method out of a fixed list of the
+inspecting ones, so `reload` and everything else that changes the app are the user's (`/reload`, the Diagnostics tab).
+
+The rest of this page is the outside view, over HTTP.
 
 A running NetPI writes **`<home>/server.json`** (home: `%USERPROFILE%\.netpi`, `~/.netpi`, or `NETPI_HOME`) when it is
 ready and removes it when it stops:
@@ -52,14 +71,25 @@ Without Node: `curl -s -X POST -H "X-NetPI-Token: $TOKEN" -d '{}' $URL/api/rpc/d
 | `diag.logs` | Log entries, filtered: `level` (at least), `category`, `contains`, `sinceMinutes`, `limit` |
 | `diag.settings` | settings.json without secrets (API keys, tokens and passwords shown as their length; `env:NAME` references kept) |
 | `diag.failures`, `diag.failure` | The requests a backend refused, saved in `logs/failed-requests` (the newest 30): time, model, the server's request and response ids, the error; one with its body |
+| `diag.toolsets` | One chat's tools now, the baseline they started from, and every change with its cause (`plugin-reload` with the plugin ids, `profile`, `user`, `settings`, `unknown`) and the notice the model got. `context.toolsets` is the same thing from the context plugin, which keeps the record |
 
 Also useful: `runs.list` (every run), `agents.list` (the agents and their slots), `sessions.messages`, `agent.queue`,
 `context.preview` (a chat's system prompt and tools), `models.list`, `plugins.list`, `usage.summary`, `budget.status`,
 `processes.list`, `rpc.list`. The log files are in `<home>/logs/netpi-YYYYMMDD.log`.
 
+## "Why did my tools change?"
+
+A `/reload` (or a build that replaced a plugin's files) takes every running chat's tools away for a moment, and the
+chat gets a "tools" notice naming what went. Since the cause is known, the notice says so —
+`Your tools changed. No longer available: web_fetch (plugin reload netpi.tools.web).` — and the diagnostics plugin
+records the same reloads: `diag.overview` has `reloads` (which plugins, when, and which chats were mid-turn),
+`diag.problems` has a line for each one, and the Diagnostics tab shows both. The full history of one chat is
+`diag.toolsets { sessionId }`: its tools now, the baseline of its first model call, and every change with its cause.
+
 ## How it is kept
 
 The diagnostics plugin (`plugins/NetPI.Diagnostics`) records in memory from its start: the last 300 model calls (a model
-middleware around all others, so a call's retries belong to it), the last 500 tool calls, and a journal of the last
-3000 events. A restart or a reload of the plugin starts them empty. The Diagnostics tab shows the same: a problems strip,
-and a Calls view with each call's detail.
+middleware around all others, so a call's retries belong to it), the last 500 tool calls, a journal of the last
+3000 events, and the plugin reloads of the last 15 minutes (from the host's `plugins.reloaded`). A restart or a reload
+of the plugin starts them empty. The Diagnostics tab shows the same: a problems strip, a Calls view with each call's
+detail, and a "Tool changes" section per chat.

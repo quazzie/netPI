@@ -89,6 +89,7 @@ const RPC_DOCS = {
   'sessions.messages': 'Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore }',
   'work.snapshot': 'Aggregated overview for the Work tab → { agents, runs, processes, usage, time, errors? }',
   'diag.snapshot': 'Diagnostics overview → { plugins, tools, rpc, events, logs, runtime, time }',
+  'diag.toolsets': "A session's tools now and every change with its cause → { sessionId, tools, baseline, changes, reloads }",
   'ideas.list': 'Ideas of a project/session: { sessionId?, projectId? } → { file, scope, ideas, … }',
   'files.list': 'List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries }',
   'files.search': 'Fuzzy file-name search for @ mentions: { sessionId?, query, limit? } → { path, rel, isDir }[]',
@@ -465,7 +466,9 @@ const handlers = {
 
   'plugins.list': () => diag.list(),
   'plugins.reload': (p) => {
-    diag.reload(need(p, 'id'));
+    const id = need(p, 'id');
+    diag.reload(id);
+    publish('plugins.reloaded', { ids: [id], kind: 'reload' });
     return true;
   },
   'plugins.setEnabled': (p) => diag.setEnabled(need(p, 'id'), !!p.enabled),
@@ -637,7 +640,30 @@ const handlers = {
   'diag.problems': () => [
     { severity: 'warn', area: 'agents', message: 'reviewer (agt_r) has waited 2 min for qwen (2/2 busy: surveyor, Index docs for semantic search).', hint: 'diag.run { agentId } of the holders: are they stuck?' },
     { severity: 'info', area: 'agents', message: "Agent gemma is inactive: gemma-4 isn't loaded." },
+    { severity: 'info', area: 'plugins', message: 'Plugins reloaded: netpi.tools.shell 3 min ago, 2 chat(s) mid-turn lost their tools and got a notice.', hint: 'diag.toolsets { sessionId } of a chat that lost tools' },
   ],
+  // a chat's tools now and every change with its cause (the context plugin keeps the record; the mock tells a story)
+  'diag.toolsets': (p) => {
+    getSession(need(p, 'sessionId'));
+    const ago = 3 * 60_000;
+    return {
+      sessionId: p.sessionId,
+      tools: toolRows().filter((t) => t.active && !t.disabled).map((t) => t.name),
+      baseline: { tools: toolRows().filter((t) => t.active && !t.disabled).map((t) => t.name), sinceSeq: 4 },
+      changes: [
+        {
+          seq: 9,
+          time: new Date(Date.now() - ago).toISOString(),
+          added: [],
+          removed: ['bash', 'pwsh'],
+          cause: 'plugin-reload',
+          plugins: ['netpi.tools.shell'],
+          text: 'Your tools changed. No longer available: bash, pwsh (plugin reload netpi.tools.shell).',
+        },
+      ],
+      reloads: [{ ids: ['netpi.tools.shell'], time: new Date(Date.now() - ago).toISOString(), kind: 'reload' }],
+    };
+  },
   'diag.calls': (p = {}) => mockCalls().filter((c) => (!p.errors || c.state === 'error') && (!p.running || c.state === 'running')),
   'diag.call': (p) => {
     const c = mockCalls().find((x) => x.id === Number(p?.id));
@@ -664,6 +690,7 @@ const handlers = {
       return `Reloading ${diag.list().filter((x) => x.enabled).length} plugins…`;
     }
     const pl = diag.reload(id);
+    publish('plugins.reloaded', { ids: [id], kind: 'reload' });
     return `Reloaded ${pl.name} (${pl.id})`;
   },
   'files.open': (p = {}) => {
@@ -675,9 +702,11 @@ const handlers = {
     return { path: full, action: 'open' };
   },
   'mock.filesOpened': () => filesOpened,
+  // test helper: the chat whose user turns contain this phrase leaves the given plan when its tab is closed
+  'mock.closeLeavesPlan': (p = {}) => ideas.closeLeavesPlan(need(p, 'phrase'), p.title),
   'guard.pending': (p = {}) => agent.pendingApprovals(p.sessionId),
   'guard.answer': (p = {}) => {
-    if (agent.answerApproval(need(p, 'callId'), p.allow, p.scope) === 'not_found') throw new RpcError('not_found', 'No tool call waits for your OK with that id.');
+    if (agent.answerApproval(need(p, 'approvalId'), p.allow, p.scope) === 'not_found') throw new RpcError('not_found', 'No tool call waits for your OK with that id.');
     return true;
   },
   'ask.pending': (p = {}) => agent.pendingAsks(p.sessionId),

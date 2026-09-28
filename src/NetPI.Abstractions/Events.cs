@@ -80,6 +80,12 @@ public static class EventTypes
     public const string AgentsChanged = "agents.changed";
     public const string ModelsChanged = "models.changed";
     public const string PluginsChanged = "plugins.changed";
+    /// <summary>
+    /// Plugins were reloaded, enabled or disabled: <c>{ ids: string[], kind: "reload" | "enabled" | "disabled" }</c>.
+    /// The one event that says <em>what</em> changed, so plugins (e.g. context, which tells the model when its tools
+    /// change) can name the cause of a tool-set change instead of guessing.
+    /// </summary>
+    public const string PluginsReloaded = "plugins.reloaded";
     public const string UiChanged = "ui.changed";
     public const string SettingsChanged = "settings.changed";
     public const string UsageRecorded = "usage.recorded";

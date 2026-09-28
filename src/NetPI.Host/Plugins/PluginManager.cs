@@ -477,6 +477,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         finally
         {
             _op.Release();
+            PublishReloaded([e.Id], "reload");
             PublishChanged();
         }
     }
@@ -489,12 +490,14 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         {
             if (_disposed) return;
             var sets = EnabledSets.Read(_k.Settings);
+            var stopped = new List<string>();
             foreach (var e in Snapshot().Where(e => e.Instance is not null).OrderByDescending(e => e.Order))
             {
                 if (IsEnabled(e, sets)) continue;
                 _log.LogInformation("Disabling plugin {Id}", e.Id);
                 await StopInstanceAsync(e, track: true).ConfigureAwait(false);
                 e.State = "disabled";
+                stopped.Add(e.Id);
                 changed = true;
             }
             var toStart = Snapshot().Where(e => e.State == "disabled" && IsEnabled(e, sets)).ToList();
@@ -503,6 +506,8 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
                 await LoadAndStartAsync(toStart, ct).ConfigureAwait(false);
                 changed = true;
             }
+            if (stopped.Count > 0) PublishReloaded(stopped, "disabled");
+            if (toStart.Count > 0) PublishReloaded(toStart.Select(e => e.Id).ToList(), "enabled");
         }
         finally { _op.Release(); }
         if (changed) PublishChanged();
@@ -727,6 +732,10 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
 
     private void PublishChanged() =>
         _k.Bus.Publish(new BusEvent { Type = EventTypes.PluginsChanged, Data = new { }, Source = "host" });
+
+    /// <summary>What changed, for the plugins that keep state a reload touches (a chat's tools, e.g.).</summary>
+    private void PublishReloaded(IReadOnlyList<string> ids, string kind) =>
+        _k.Bus.Publish(new BusEvent { Type = EventTypes.PluginsReloaded, Data = new { ids, kind }, Source = "host" });
 
     private async Task Guard(Task task, string what)
     {

@@ -9,15 +9,17 @@ namespace NetPI.Context;
 /// session's own switches <c>meta.toolsOff</c>).
 /// Every request already carries the current tool definitions, but the frozen system prompt still has the guidelines of
 /// the first call and nothing in the conversation says what changed, so a "tools" notice names the added and removed
-/// tools and carries the new tools' guidelines. The baseline is the tool set of the session's first model call; each
-/// notice records its change in meta (<c>added</c>, <c>removed</c>), so the known set is the baseline plus the notices still
-/// in the context (a notice compacted away is announced again).
+/// tools, says why (<see cref="ToolChanges"/>, kept in the notice's meta) and carries the new tools' guidelines. The
+/// baseline is the tool set of the session's first model call; each notice records its change in meta (<c>added</c>,
+/// <c>removed</c>, <c>cause</c>, <c>plugins</c>), so the known set is the baseline plus the notices still in the context
+/// (a notice compacted away is announced again) and <c>context.toolsets</c> can replay the history.
 /// </summary>
 internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgentHook
 {
     public const string Kind = "tools";
 
     private readonly ConcurrentDictionary<string, object> _gates = new(StringComparer.Ordinal);
+    private readonly ToolChanges _changes = new(ctx);
 
     /// <summary>After compaction (-100), the project (500) and instruction (510) notices.</summary>
     public int Order => 520;
@@ -26,6 +28,7 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
     {
         var sessionId = turn.Run.Session.Id;
         var names = Names(turn.Tools);
+        _changes.Remember(sessionId, turn.Tools);  // before the diff: a tool that came back with its plugin
         var baseline = store.GetTools(sessionId);
         if (baseline is null)
         {
@@ -42,29 +45,52 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
     {
         lock (_gates.GetOrAdd(sessionId, _ => new object()))
         {
-            var known = Known(baseline, ctx.Sessions.GetContextMessages(sessionId));
+            var context = ctx.Sessions.GetContextMessages(sessionId);
+            var known = Known(baseline, context);
             var names = Names(tools);
             var added = names.Where(n => !known.Contains(n)).ToList();
             var removed = known.Where(n => !names.Contains(n)).OrderBy(n => n, StringComparer.Ordinal).ToList();
             if (added.Count == 0 && removed.Count == 0) return false;
-            var notice = ChatMessage.NoticeText(Text(tools, added, removed, SessionTools.Off(ctx.Sessions.GetSession(sessionId))), Kind);
+            var session = ctx.Sessions.GetSession(sessionId);
+            var off = SessionTools.Off(session);
+            var cause = _changes.Cause(sessionId, added, removed, off, context);
+            var notice = ChatMessage.NoticeText(Text(tools, added, removed, off, cause), Kind);
             notice.Meta!["added"] = new JsonArray(added.Select(n => (JsonNode?)n).ToArray());
             notice.Meta["removed"] = new JsonArray(removed.Select(n => (JsonNode?)n).ToArray());
+            notice.Meta["cause"] = cause.Cause;
+            if (cause.Plugins.Count > 0) notice.Meta["plugins"] = new JsonArray(cause.Plugins.Select(p => (JsonNode?)p).ToArray());
             ctx.Sessions.AppendMessage(sessionId, notice);
             return true;
         }
     }
 
-    /// <summary>The notice text; tools in <paramref name="switchedOff"/> (the session's own switches) are named as switched off by the user.</summary>
+    /// <summary>The reloads behind the tool changes seen lately (for <c>context.toolsets</c>).</summary>
+    internal IReadOnlyList<ToolChanges.Reload> Reloads(TimeSpan? window = null) => _changes.Reloads(window);
+
+    /// <summary>Receives <c>plugins.reloaded</c>: the cause of the next tool-set change.</summary>
+    internal void OnPluginsReloaded(BusEvent e) => _changes.OnPluginsReloaded(e);
+
+    /// <summary>A deleted session: nothing left to remember its tools for.</summary>
+    internal void Forget(string sessionId) => _changes.Forget(sessionId);
+
+    /// <summary>
+    /// The notice text: tools in <paramref name="switchedOff"/> (the session's own switches) are named as switched off by
+    /// the user, the rest get the cause as one clause ("plugin reload netpi.tools.web") when there is one to name.
+    /// </summary>
     internal static string Text(IReadOnlyList<ToolDefinition> tools, IReadOnlyList<string> added, IReadOnlyList<string> removed,
-        IReadOnlySet<string>? switchedOff = null)
+        IReadOnlySet<string>? switchedOff = null, ToolChanges.Change? cause = null)
     {
         var sb = new StringBuilder("Your tools changed.");
         if (added.Count > 0) sb.Append(" New: ").Append(string.Join(", ", added)).Append('.');
         var byUser = removed.Where(n => switchedOff?.Contains(n) == true).ToList();
         var gone = removed.Where(n => switchedOff?.Contains(n) != true).ToList();
         if (byUser.Count > 0) sb.Append(" The user switched off for this session: ").Append(string.Join(", ", byUser)).Append('.');
-        if (gone.Count > 0) sb.Append(" No longer available: ").Append(string.Join(", ", gone)).Append('.');
+        if (gone.Count > 0)
+        {
+            sb.Append(" No longer available: ").Append(string.Join(", ", gone));
+            if (cause is { Clause.Length: > 0 } c && c.Cause != ToolChanges.User) sb.Append(" (").Append(c.Clause).Append(')');
+            sb.Append('.');
+        }
         // a line the new tools share with tools the model already has is in its context already (prompt or earlier notice)
         var had = ToolsSection.Guidelines(tools.Where(t => !added.Contains(t.Name))).ToHashSet(StringComparer.Ordinal);
         var guidelines = ToolsSection.Guidelines(tools.Where(t => added.Contains(t.Name))).Where(g => !had.Contains(g)).ToList();

@@ -16,6 +16,9 @@ public static class ContextTests
         t.Add("context: a fork goes on with the prompt the original had at the fork point", ForkPrompt);
         t.Add("context: tools are sent sorted by name", ToolOrder);
         t.Add("context: tools added or removed mid-session arrive as a notice with their guidelines", ToolChangeNotices);
+        t.Add("context: a tools notice says why (plugin reload, the user, a setting) and keeps the cause in meta", ToolChangeCauses);
+        t.Add("context: a tools notice names the user and a setting as the cause too", ToolChangeCausesUserAndSettings);
+        t.Add("context: context.toolsets: the tools now, the baseline and every change with its cause", ToolSets);
         t.Add("context: a tools notice leaves out the guidelines the model already has", ToolNoticeKnownGuidelines);
         t.Add("context: tool guidelines are grouped by category, a line tools share listed once", GuidelineGroups);
         t.Add("context: guidance on using and keeping AGENTS.md (setting replaces or drops it)", InstructionGuidance);
@@ -443,6 +446,106 @@ public static class ContextTests
         await Turn(h, s.Id, "gone?");
         Check.Equal("Your tools changed. No longer available: web_probe.", Notices(h, s.Id, "tools").Last().Text);
         Check.Equal(2, Notices(h, s.Id, "tools").Count);
+    }
+
+    // A tools notice says why, so the model (and the user) can tell a plugin reload from a tool that vanished for no
+    // reason: the cause and the plugins behind it go in the notice's meta, and the reload is the host's plugins.reloaded.
+    private static async Task ToolChangeCauses()
+    {
+        await using var h = await TestHost.StartAsync();
+        Task<ToolResult> Ok(ToolContext c, System.Text.Json.JsonElement a, CancellationToken t) => Task.FromResult(ToolResult.Ok(""));
+        var s = h.NewSession();
+        await Turn(h, s.Id, "hi");
+
+        // a plugin's tool arrives: nothing to point at yet
+        using (h.Tools.Register(new FakeTool("web_probe", Ok), 0, "netpi.tools.web"))
+        {
+            await Turn(h, s.Id, "a web tool?");
+            Check.Equal("unknown", Notices(h, s.Id, "tools").Last().MetaString("cause"), "nothing explains a new plugin");
+
+            // the plugin is reloaded: the notice names it, and the meta keeps the cause
+            h.Bus.Publish(new BusEvent
+            {
+                Type = EventTypes.PluginsReloaded,
+                Data = new JsonObject { ["ids"] = new JsonArray("netpi.tools.web", "netpi.tools.media"), ["kind"] = "reload" },
+            });
+            await h.Bus.DrainAsync();
+        }
+        await Turn(h, s.Id, "gone?");
+        var reloaded = Notices(h, s.Id, "tools").Last();
+        Check.Equal("Your tools changed. No longer available: web_probe (plugin reload netpi.tools.web).", reloaded.Text);
+        Check.Equal("plugin-reload", reloaded.MetaString("cause"));
+        Check.Equal("netpi.tools.web", ((JsonArray)reloaded.Meta!["plugins"]!)[0]!.GetValue<string>());
+    }
+
+    // The other two causes: the user's own switches (which the text already names) and a setting that took a tool away.
+    private static async Task ToolChangeCausesUserAndSettings()
+    {
+        await using var h = await TestHost.StartAsync();
+        Task<ToolResult> Ok(ToolContext c, System.Text.Json.JsonElement a, CancellationToken t) => Task.FromResult(ToolResult.Ok(""));
+        h.AddTool(new FakeTool("probe_on", Ok));
+        h.AddTool(new FakeTool("probe_off", Ok));
+        var s = h.NewSession();
+        await Turn(h, s.Id, "hi");
+
+        await h.Rpc.CallAsync("agent.setTools", new { sessionId = s.Id, off = new[] { "probe_on" } });
+        await Turn(h, s.Id, "one less?");
+        var mine = Notices(h, s.Id, "tools").Last();
+        Check.Equal("Your tools changed. The user switched off for this session: probe_on.", mine.Text, "no clause: it says so already");
+        Check.Equal("user", mine.MetaString("cause"));
+
+        h.Settings.SetQuiet("tools.disabled", new JsonArray("probe_off"));
+        await Turn(h, s.Id, "and another?");
+        var setting = Notices(h, s.Id, "tools").Last();
+        Check.Equal("Your tools changed. No longer available: probe_off (the setting tools.disabled changed).", setting.Text);
+        Check.Equal("settings", setting.MetaString("cause"));
+    }
+
+    // context.toolsets answers "what changed in my environment, when and why" from what the context plugin already keeps.
+    private static async Task ToolSets()
+    {
+        await using var h = await TestHost.StartAsync();
+        Task<ToolResult> Ok(ToolContext c, System.Text.Json.JsonElement a, CancellationToken t) => Task.FromResult(ToolResult.Ok(""));
+        var s = h.NewSession();
+
+        var fresh = (JsonObject)(await h.Rpc.CallAsync("context.toolsets", new { sessionId = s.Id }))!;
+        Check.True(fresh["baseline"] is null, "no baseline before the first model call");
+        Check.Equal(0, ((JsonArray)fresh["changes"]!).Count);
+
+        await Turn(h, s.Id, "hi");
+        using (h.Tools.Register(new FakeTool("web_probe", Ok), 0, "netpi.tools.web")) await Turn(h, s.Id, "a web tool?");
+        h.Bus.Publish(new BusEvent
+        {
+            Type = EventTypes.PluginsReloaded,
+            Data = new JsonObject { ["ids"] = new JsonArray("netpi.tools.web"), ["kind"] = "reload" },
+        });
+        await h.Bus.DrainAsync();
+        await Turn(h, s.Id, "gone?");
+
+        var ts = (JsonObject)(await h.Rpc.CallAsync("context.toolsets", new { sessionId = s.Id }))!;
+        Check.Equal(s.Id, (string?)ts["sessionId"]);
+        var tools = ((JsonArray)ts["tools"]!).Select(t => (string?)t).ToList();
+        Check.True(tools.Contains("agent_choices"), "the tools it has now");
+        Check.False(tools.Contains("web_probe"), "the reloaded plugin's tool is gone");
+        var baseline = (JsonObject)ts["baseline"]!;
+        Check.True((long)baseline["sinceSeq"]! >= 0, "the baseline is the first call (after its setup notices)");
+        Check.True(((JsonArray)baseline["tools"]!).Any(t => (string?)t == "agent_choices"), "what it started with");
+        Check.False(((JsonArray)baseline["tools"]!).Any(t => (string?)t == "web_probe"), "before the tool arrived");
+
+        var changes = (JsonArray)ts["changes"]!;
+        Check.Equal(2, changes.Count, "both changes, oldest first");
+        Check.Equal("unknown", (string?)changes[0]!["cause"], "a new plugin, nothing to name");
+        Check.Equal("web_probe", ((JsonArray)changes[0]!["added"]!)[0]!.GetValue<string>());
+        var last = changes[1]!;
+        Check.Equal("plugin-reload", (string?)last["cause"]);
+        Check.Equal("web_probe", ((JsonArray)last["removed"]!)[0]!.GetValue<string>());
+        Check.Equal("netpi.tools.web", ((JsonArray)last["plugins"]!)[0]!.GetValue<string>());
+        Check.Contains((string?)last["text"], "plugin reload netpi.tools.web", "the notice as the model got it");
+        var reload = (JsonObject)((JsonArray)ts["reloads"]!)[0]!;
+        Check.Equal("netpi.tools.web", ((JsonArray)reload["ids"]!)[0]!.GetValue<string>());
+
+        var ex = await Check.ThrowsAsync<RpcException>(() => h.Rpc.CallAsync("context.toolsets", new { sessionId = "ses_nope" }));
+        Check.Equal("not_found", ex.Code);
     }
 
     // Tools of one plugin share lines (the file tools' "use the file tools, not the shell"): a new tool's shared line is in

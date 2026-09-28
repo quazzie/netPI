@@ -12,7 +12,8 @@ namespace NetPI.Context;
 /// <para>RPC: <c>context.preview { sessionId }</c> → <c>{ systemPrompt, frozen, tools: [{name, description, chars, schemaChars}], estimatedTokens }</c>;
 /// <c>context.reset { sessionId }</c> (a profile switch: the prompt is rendered again at the next call);
 /// <c>context.prompts { sessionId }</c> → every prompt the session was sent, with its tools (the chat shows them). Event
-/// <c>context.prompt { sessionId, version, afterSeq }</c> when a session is sent a new prompt.</para>
+/// <c>context.prompt { sessionId, version, afterSeq }</c> when a session is sent a new prompt; <c>context.toolsets</c> →
+/// its tools now and every change with its cause (a "tools" notice is what told it).</para>
 /// </summary>
 [NetPiPlugin("netpi.context", Name = "Context", Description = "System prompt (frozen per session), working-directory and tool-change notices", Order = 40)]
 public sealed class ContextPlugin : INetPiPlugin
@@ -40,15 +41,22 @@ public sealed class ContextPlugin : INetPiPlugin
         context.Services.Register<IPromptSection>(new AppendSection(context.Settings));
 
         var notices = new ProjectNotices(context);
+        var toolNotices = new ToolNotices(context, prompts);
         context.Services.Register<IAgentHook>(notices);
-        context.Services.Register<IAgentHook>(new ToolNotices(context, prompts));
+        context.Services.Register<IAgentHook>(toolNotices);
+        // what reloaded: the cause of the next tool-set change (a "tools" notice names the plugin)
+        context.Events.Subscribe(EventTypes.PluginsReloaded, toolNotices.OnPluginsReloaded);
         context.Events.Subscribe(EventTypes.SessionProject, e =>
         {
             if (e.As<JsonObject>()?["sessionId"]?.GetValue<string>() is { Length: > 0 } id) notices.OnProjectChanged(id);
         });
         context.Events.Subscribe(EventTypes.SessionDeleted, e =>
         {
-            if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id) prompts.Delete(id);
+            if (e.As<JsonObject>()?["id"]?.GetValue<string>() is { Length: > 0 } id)
+            {
+                prompts.Delete(id);
+                toolNotices.Forget(id);
+            }
         });
         // a fork goes on with the prompt the original had at the fork point (and its chat shows it right away)
         context.Events.Subscribe(EventTypes.SessionForked, e =>
@@ -74,6 +82,10 @@ public sealed class ContextPlugin : INetPiPlugin
         context.Rpc.Register("context.prompts", (req, _) =>
             Task.FromResult<object?>(PromptsJson(context, prompts, req.Required("sessionId"))),
             "The system prompts a session was sent, with their tools: { sessionId } → { prompts: [{ version, afterSeq, createdAt, systemPrompt, tools: [{ name, description, parameters? }] }] }");
+
+        context.Rpc.Register("context.toolsets", (req, _) =>
+            Task.FromResult<object?>(ToolSets.Build(context, toolNotices, prompts, req.Required("sessionId"))),
+            "A session's tools now and every change since its first model call, with the cause: { sessionId } → { sessionId, tools, baseline: { tools, sinceSeq } | null, changes: [{ seq, time, added, removed, cause: plugin-reload|profile|user|settings|unknown, plugins, text }], reloads: [{ ids, time, kind }] }");
         return Task.CompletedTask;
     }
 

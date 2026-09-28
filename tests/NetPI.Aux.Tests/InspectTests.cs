@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using NetPI.Diagnostics;
 
@@ -13,7 +14,16 @@ public static class InspectTests
         r.Add("inspect: the journal leaves out per-token events and sums up messages; tool calls from tool.start/end", JournalAndTools);
         r.Add("inspect: problems (failed plugin, waiters on an inactive agent, a long wait, errors in the log)", Problems);
         r.Add("inspect: settings without secrets, saved failed requests, the overview lists the diag methods", SettingsFailuresOverview);
+        r.Add("inspect: the diag tool answers with the RPC's JSON, defaults to the calling session and refuses every write", DiagTool);
     }
+
+    /// <summary>Run the plugin's own tool as the runtime would (the arguments arrive as JSON text).</summary>
+    private static Task<ToolResult> Call(DiagTool tool, string args, string sessionId = "ses_caller") =>
+        tool.ExecuteAsync(new ToolContext
+        {
+            SessionId = sessionId, AgentId = "agt_1", CallId = "call_1", Cwd = ".",
+            Services = new FakeServices(), Events = new FakeBus(),
+        }, JsonDocument.Parse(args).RootElement, CancellationToken.None);
 
     private static async Task<FakePluginContext> StartAsync()
     {
@@ -232,9 +242,65 @@ public static class InspectTests
         Check.Equal("bad_request", bad.Code);
 
         var overview = (JsonObject)(await ctx.RpcFake.Call("diag.overview"))!;
-        foreach (var key in new[] { "app", "process", "plugins", "models", "agents", "runs", "calls", "tools", "problems", "more" })
+        foreach (var key in new[] { "app", "process", "plugins", "models", "agents", "runs", "calls", "tools", "problems", "reloads", "more" })
             Check.True(((JsonObject)overview).ContainsKey(key), key);
         Check.True((int)overview["process"]!["pid"]! > 0);
         Check.True(((JsonArray)overview["more"]!).Any(m => m.Str()!.StartsWith("diag.calls: ")), "it points at the other diag methods");
+    }
+
+    // The tool is how an agent reads the harness: the same JSON as the RPCs, the calling session by default, and no way
+    // to reach anything that changes the app.
+    private static async Task DiagTool()
+    {
+        var ctx = await StartAsync();
+        var tool = ctx.ToolsFake.Tools.OfType<DiagTool>().Single();
+        Check.True(tool.Definition.ReadOnly, "read-only, so calls of one turn run in parallel");
+        var actions = ((JsonArray)tool.Definition.Parameters["properties"]!["action"]!["enum"]!).Select(a => a.Str()).ToList();
+        Check.True(actions.Contains("overview") && actions.Contains("toolsets"), "the actions are in the schema");
+
+        // a read: the RPC's own JSON, in Content (for the model) and in Details (for the chat)
+        var overview = await Call(tool, """{ "action": "overview" }""");
+        Check.False(overview.IsError, overview.Content);
+        Check.Contains(overview.Content, "\"pid\"");
+        Check.True(overview.Details is JsonObject, "the details the UI gets");
+        var settings = await Call(tool, """{ "action": "settings" }""");
+        Check.Contains(settings.Content, "\"file\"", "the settings document");
+        var empty = await Call(tool, """{ "action": "problems" }""");
+        Check.Equal("[]", empty.Content, "nothing wrong in a bare host");
+
+        // the session-scoped actions default to the caller's session; "all" means no filter
+        RpcRequest? seen = null;
+        ctx.RpcFake.Register("diag.toolsets", (r, _) => { seen = r; return Task.FromResult<object?>(new JsonObject { ["ok"] = true }); });
+        await Call(tool, """{ "action": "toolsets" }""");
+        Check.Equal("ses_caller", seen!.Str("sessionId"));
+        await Call(tool, """{ "action": "toolsets", "sessionId": "ses_other" }""");
+        Check.Equal("ses_other", seen!.Str("sessionId"));
+        await Call(tool, """{ "action": "toolsets", "sessionId": "all" }""");
+        Check.Equal(null, seen!.Str("sessionId"), "no filter");
+        seen = null;
+        await Call(tool, """{ "action": "overview", "limit": 5 }""");
+        Check.True(seen is null, "the global actions are not given a session");
+
+        // writes: the action picks the method out of the read-only list, so there is nothing to reach
+        var pm = new FakePluginManager();
+        pm.Plugins.Add(FakePluginManager.Info("netpi.context", "Context"));
+        ctx.ServicesFake.Register<IPluginManager>(pm);
+        var reloaded = 0;
+        ctx.RpcFake.Register("diag.reload", (_, _) => { reloaded++; return Task.FromResult<object?>("reloaded"); });
+        foreach (var arg in new[] { """{ "action": "reload" }""", """{ "action": "reload", "args": "netpi.context" }""", """{ "action": "RELOAD" }""" })
+        {
+            var refused = await Call(tool, arg);
+            Check.True(refused.IsError, arg);
+            Check.Contains(refused.Content, "only reads", arg);
+            Check.Contains(refused.Content, "/reload", arg);   // it says who may
+        }
+        var unknown = await Call(tool, """{ "action": "reset", "sessionId": "ses_1" }""");
+        Check.True(unknown.IsError);
+        Check.Contains(unknown.Content, "Unknown action");
+        var missing = await Call(tool, "{}");
+        Check.True(missing.IsError);
+        Check.Contains(missing.Content, "Missing 'action'");
+        Check.Equal(0, reloaded, "diag.reload was never called");
+        Check.Equal(0, pm.Reloaded.Count, "no plugin was reloaded");
     }
 }

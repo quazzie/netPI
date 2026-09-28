@@ -8,10 +8,10 @@ namespace NetPI.Diagnostics;
 
 /// <summary>
 /// The <c>diag.*</c> views of the running app for people and debugging agents: an overview, the problems it can see,
-/// model and tool calls, the event journal, one run in depth, the settings without secrets, filtered logs and the
-/// failed requests the providers saved. Everything is read-only.
+/// model and tool calls, the event journal, one run in depth, a session's tool-set changes, the settings without
+/// secrets, filtered logs and the failed requests the providers saved. Everything is read-only.
 /// </summary>
-public sealed partial class Inspector(IPluginContext ctx, Recorder recorder)
+public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Reloads reloads)
 {
     /// <summary>Thresholds of the problem checks.</summary>
     public static readonly TimeSpan QueuedLong = TimeSpan.FromSeconds(60);
@@ -50,6 +50,7 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder)
             },
             ["tools"] = new JsonObject { ["running"] = new JsonArray([.. recorder.Tools().Where(t => t.EndedAt is null).Select(t => (JsonNode?)t.ToJson())]) },
             ["processes"] = await ProcessesAsync(ct).ConfigureAwait(false),
+            ["reloads"] = reloads.ToJson(),
             ["problems"] = await ProblemsAsync(ct).ConfigureAwait(false),
             ["more"] = new JsonArray([.. ctx.Rpc.List().Where(m => m.Method.StartsWith("diag.", StringComparison.Ordinal))
                 .OrderBy(m => m.Method, StringComparer.Ordinal)
@@ -201,6 +202,12 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder)
         // plugins that failed to start
         foreach (var p in ctx.Services.Get<IPluginManager>()?.List() ?? [])
             if (p.State == "failed") Add("error", "plugins", $"Plugin {p.Id} failed: {p.Error}", "diag.logs { contains: \"" + p.Id + "\" }; plugins.reload { id }");
+
+        // a reload takes every running chat's tools away for a moment: say who did it and who it hit
+        foreach (var r in reloads.Recent(RecentWindow))
+            Add("info", "plugins", $"{r.Summary} {Ago(now - r.Time)} ago"
+                + (r.BusySessions.Count > 0 ? $", {r.BusySessions.Count} chat(s) mid-turn lost their tools and got a notice" : "") + ".",
+                "diag.toolsets { sessionId } of a chat that lost tools; diag.logs { contains: \"Reloading plugin\" }");
 
         // providers whose models are all offline
         foreach (var g in ctx.Models.Cached.GroupBy(m => m.Provider))
@@ -539,6 +546,19 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder)
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /// <summary>
+    /// A session's tools now and every change with its cause. The context plugin keeps the baseline and the notices
+    /// (it is what tells the model), so this is its <c>context.toolsets</c> as-is; without that plugin there is
+    /// nothing to replay.
+    /// </summary>
+    public async Task<JsonObject> ToolSetsAsync(string sessionId, CancellationToken ct)
+    {
+        var node = await RpcAsync("context.toolsets", new JsonObject { ["sessionId"] = sessionId }, ct).ConfigureAwait(false);
+        if (node is JsonObject o && o["error"] is { } error)
+            throw new RpcException("unavailable", $"context.toolsets failed: {error}");
+        return node as JsonObject ?? throw new RpcException("unavailable", "The context plugin is not loaded, so no tool-set history is kept.");
+    }
 
     private async Task<JsonNode?> RpcAsync(string method, JsonNode? parameters, CancellationToken ct)
     {

@@ -8,8 +8,17 @@ methods, the recent event stream and the log. It also provides the `/reload` com
   goes in `plugins/NetPI.Diagnostics/wwwroot/ui.js` (source in `plugins/NetPI.Diagnostics/ui/`).
 - Slash command: `{ name: "reload", argsHint: "[pluginId]", rpc: "diag.reload" }`.
 - It is also the way to inspect the running app from outside: the `diag.*` overview, problems, model and tool calls, the
-  event journal, runs, logs, settings and failed requests (`docs/DEBUGGING.md`). The tab shows the problems as a strip
-  above the views and the model calls in its Calls view.
+  event journal, runs, tool-set changes, logs, settings and failed requests (`docs/DEBUGGING.md`). The tab shows the
+  problems as a strip above the views and the model calls in its Calls view.
+- It registers the read-only **`diag` tool** (`docs/TOOLS.md`): the same views for the agent, as one action per method.
+  Only the inspecting methods are reachable, so `/reload` and the rest stay the user's.
+
+## `diag.toolsets`
+
+`{ sessionId }` → the context plugin's `context.toolsets`: the session's tools now, the baseline of its first model
+call, and every change with the cause the "tools" notice gave the model (`plugin-reload` with the plugin ids,
+`profile`, `user`, `settings`, `unknown`). Error `unavailable` when the context plugin is not loaded — it is what keeps
+the record.
 
 ## `diag.snapshot`
 
@@ -67,3 +76,7 @@ Show four collapsible sections:
 - **Events**: a live list that appends from `ctx.on('*', …)` while the tab is visible, with a type filter, and a detail
   pane (`diag.event`).
 - **Logs**: only when `logs` is not null.
+
+The Context view also shows a **Tool changes** section per chat (`diag.toolsets`): every change with its cause badge and
+the plugins behind it, so the tab says the same thing the chat's notice does. Recent reloads are in the problems strip
+and in `diag.overview`'s `reloads` (which plugins, when, and which chats were mid-turn).

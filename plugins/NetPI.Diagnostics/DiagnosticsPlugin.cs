@@ -6,11 +6,12 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Diagnostics;
 
 /// <summary>
-/// The way to inspect the running app (docs/DEBUGGING.md), for people (the Diagnostics tab) and debugging agents (the
-/// <c>diag.*</c> RPCs over HTTP, e.g. <c>node scripts/netpi.mjs diag.overview</c>): an overview, the problems it can
-/// see, every model call (a model middleware: start, first token, end, retries, tokens, errors), every tool call, a
-/// journal of the events that matter, one run in depth, the settings without secrets, filtered logs and the failed
-/// requests the providers saved. Also <c>diag.snapshot</c> and <c>diag.event</c> for the tab, and <c>/reload</c>.
+/// The way to inspect the running app (docs/DEBUGGING.md), for people (the Diagnostics tab), for agents (the read-only
+/// <c>diag</c> tool) and for debugging scripts (the <c>diag.*</c> RPCs over HTTP, e.g. <c>node scripts/netpi.mjs
+/// diag.overview</c>): an overview, the problems it can see, every model call (a model middleware: start, first token,
+/// end, retries, tokens, errors), every tool call, a journal of the events that matter, one run in depth, the settings
+/// without secrets, filtered logs, the failed requests the providers saved and a session's tool-set changes. Also
+/// <c>diag.snapshot</c> and <c>diag.event</c> for the tab, and <c>/reload</c>.
 /// </summary>
 [NetPiPlugin("netpi.diagnostics", Name = "Diagnostics", Description = "Inspect the running app: overview, problems, model and tool calls, events, runs, logs, settings, failed requests; /reload", Order = 90)]
 public sealed class DiagnosticsPlugin : INetPiPlugin
@@ -20,7 +21,9 @@ public sealed class DiagnosticsPlugin : INetPiPlugin
         var recorder = new Recorder(context);
         context.Services.Register(recorder.Middleware);
         context.Events.Subscribe("*", recorder.OnEvent);
-        var inspect = new Inspector(context, recorder);
+        var reloads = new Reloads(context);
+        context.Events.Subscribe(EventTypes.PluginsReloaded, reloads.OnEvent);
+        var inspect = new Inspector(context, recorder, reloads);
         context.Rpc.Register("diag.overview", async (_, rpcCt) => await inspect.OverviewAsync(rpcCt).ConfigureAwait(false),
             "Start here: app, process, plugins, models, agents with holders and waiters, active runs, model calls, running tools and processes, problems, the other diag methods");
         context.Rpc.Register("diag.problems", async (_, rpcCt) => await inspect.ProblemsAsync(rpcCt).ConfigureAwait(false),
@@ -45,14 +48,17 @@ public sealed class DiagnosticsPlugin : INetPiPlugin
             "Failed requests the providers saved (logs/failed-requests), newest first: { limit? (20) } → { name, time, bytes, provider, model, sessionId, transport, requestId, responseId, error }[]");
         context.Rpc.Register("diag.failure", (req, _) => Task.FromResult<object?>(inspect.Failure(req)),
             "One saved failed request with its body: { name, maxChars? (200000) } → { name, bytes, truncated, content }");
+        context.Rpc.Register("diag.toolsets", async (req, rpcCt) => await inspect.ToolSetsAsync(req.Required("sessionId"), rpcCt).ConfigureAwait(false),
+            "A session's tools now and every change with its cause (the context plugin's context.toolsets): { sessionId } → { sessionId, tools, baseline, changes: [{ seq, time, added, removed, cause, plugins }], reloads }");
 
         var diag = new DiagnosticsService(context);
+        context.Tools.Register(new DiagTool(context));
         context.Rpc.Register("diag.snapshot", async (req, rpcCt) => await diag.SnapshotAsync(req.Int("events") ?? 200, rpcCt).ConfigureAwait(false),
             "Diagnostics overview → { plugins, tools, rpc, events, logs, runtime, time }");
         context.Rpc.Register("diag.event", (req, _) => Task.FromResult<object?>(diag.Event(ParseSeq(req))),
             "Full data of a recent bus event: { seq } → { seq, type, sessionId, time, source, ui, data }");
         context.Rpc.Register("diag.reload", async (req, rpcCt) => await diag.ReloadAsync(req.Str("args") ?? req.Str("id"), rpcCt).ConfigureAwait(false),
-            "/reload command: { args?: pluginId } → status text (no id = all plugins)");
+            "/reload command: { args?: pluginId } → status text (no id = all plugins; the diag tool cannot call this)");
 
         context.Ui.AddTab(new UiTabInfo { Id = "diagnostics", Title = "Diagnostics", Panel = UiPanel.Right, Icon = "bug", Order = 90, Module = "ui.js" });
         context.Ui.AddCommand(new SlashCommandInfo

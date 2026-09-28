@@ -40,6 +40,10 @@ Every request carries the active tools (the highest-priority registration per na
   that. At the deepest level (`agents.maxDepth`) the orchestration tools are left out except `agent` (to send to the parent).
 
 A tool that appears or disappears during a session (a plugin loaded, reloaded or disabled) is announced the same way.
+The notice says why: the cause is worked out from the session's own switches, a profile switch, the host's
+`plugins.reloaded` and `tools.disabled`, and named in one clause ("Your tools changed. No longer available: web_fetch
+(plugin reload netpi.tools.web)."). `context.toolsets { sessionId }` is the whole history of one chat's tools
+(`diag.toolsets` returns the same), and the `diag` tool reads it.
 
 **Names in tool lists** (a session's switched-off tools, a profile's `toolsOff`, a subagent's `tools`) follow one rule
 (`ToolLists` in the contracts, `listedTools` in the UI): an entry is a tool's name, or `<tool>_<action>` of a tool with
@@ -703,4 +707,45 @@ Timeout: at least 600 s.
 
 ```ts
 details: { host, direction, from, to, local /* absolute */, remote /* "host:path" */, bytes /* local size */, recursive }
+```
+
+---
+
+## Diagnostics (`category: "general"`)
+
+### `diag` (read-only, summary arg `action`)
+
+`plugins/NetPI.Diagnostics`. The agent's own look inside the harness: every `diag.*` inspection method as one action
+(`docs/DEBUGGING.md`), so answering "why did my tools change" or "what is failing" is a tool call instead of a
+`node scripts/netpi.mjs diag.*` round trip that needs the project path and Node. `ReadOnly`, so read-only calls of a
+turn run in parallel.
+
+**It cannot change anything.** The action picks the method out of a fixed list of the inspecting ones, so `reload` and
+every other writing method are not reachable — an unknown action (including `reload`) is refused with the list of the
+read-only ones and who may write instead.
+
+| action | method | what it answers |
+|---|---|---|
+| `overview` | `diag.overview` | start here: app, process, plugins, models, agents (holders, waiters), runs, calls, running tools, `reloads`, problems |
+| `problems` | `diag.problems` | what looks wrong now, worst first |
+| `calls` | `diag.calls` | model calls, newest first (running ones too) |
+| `call` | `diag.call` | one model call in detail (`id`) |
+| `tools` | `diag.tools` | tool calls, newest first |
+| `tool` | `diag.tool` | one tool call with its arguments and the text the model got (`callId`) |
+| `journal` | `diag.journal` | the events that matter as a timeline (no per-token events) |
+| `run` | `diag.run` | one run in depth |
+| `toolsets` | `diag.toolsets` | this chat's tools now, the baseline and every change **with its cause** |
+| `logs` | `diag.logs` | log entries, filtered |
+| `settings` | `diag.settings` | the settings document without secrets |
+| `failures`, `failure` | `diag.failures` | the requests a backend refused (`failure`: one with its body) |
+| `snapshot`, `event` | `diag.snapshot` | plugins, tools, RPC methods, recent events, logs, runtime (`event`: one event's payload) |
+
+The arguments are the RPC's own: `limit`, `sessionId`, `runId`/`agentId`, `id`, `callId`, `name`, `type`, `sinceSeq`,
+`errors`, `running`, `detail`, `level`, `category`, `contains`, `sinceMinutes`, `maxChars`, `events`, `seq`. The
+session-scoped actions (`calls`, `tools`, `journal`, `run`, `toolsets`) default to the **calling** chat;
+`sessionId: "all"` means no filter.
+
+```ts
+content: the RPC's JSON, as the model reads it
+details: the same value as JSON (the chat shows it)
 ```

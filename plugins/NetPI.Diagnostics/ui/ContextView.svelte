@@ -1,14 +1,15 @@
 <script>
   import { onMount, untrack } from 'svelte';
-  import { Section, Empty, IconButton, bytes, tokens, copyText, desktop, basename } from '@netpi/kit';
+  import { Section, Empty, IconButton, Badge, TimeAgo, bytes, tokens, copyText, desktop, basename } from '@netpi/kit';
 
-  /** What the model sees for the active session: context.preview + agentsmd.list + skills.list. */
+  /** What the model sees for the active session: context.preview + agentsmd.list + skills.list, and how its tools got this way. */
   let { ctx, visible = true } = $props();
 
   let sid = $state(untrack(() => ctx.app.activeSessionId));
   let preview = $state.raw(null);
   let files = $state.raw(null);
   let skills = $state.raw(null); // null without the skills plugin
+  let toolSets = $state.raw(null); // null without the context plugin
   let error = $state('');
   let loading = $state(false);
   let full = $state(false);
@@ -16,20 +17,22 @@
   async function load() {
     sid = ctx.app.activeSessionId;
     if (!sid) {
-      preview = files = skills = null;
+      preview = files = skills = toolSets = null;
       return;
     }
     loading = true;
     const id = sid;
-    const [p, f, k] = await Promise.allSettled([
+    const [p, f, k, ts] = await Promise.allSettled([
       ctx.rpc('context.preview', { sessionId: id }),
       ctx.rpc('agentsmd.list', { sessionId: id }),
       ctx.rpc('skills.list', { sessionId: id }),
+      ctx.rpc('diag.toolsets', { sessionId: id }),
     ]);
     if (id !== sid) return;
     preview = p.status === 'fulfilled' ? p.value : null;
     files = f.status === 'fulfilled' ? f.value : null;
     skills = k.status === 'fulfilled' ? k.value : null;
+    toolSets = ts.status === 'fulfilled' ? ts.value : null;
     error = p.status === 'rejected' ? p.reason?.message : '';
     loading = false;
   }
@@ -43,6 +46,7 @@
 
   const session = $derived(sid ? ctx.app.activeSession : null);
   const promptTokens = $derived(preview ? Math.round((preview.systemPrompt?.length ?? 0) / 3.6) : 0);
+  const since = $derived(toolSets?.baseline?.tools?.length || 0);
 </script>
 
 {#if !sid}
@@ -115,6 +119,35 @@
         <div class="t" title={t.description}><span class="np-mono">{t.name}</span><span class="np-dim desc">{t.description}</span></div>
       {/each}
     </Section>
+
+    {#if toolSets}
+      <!-- why the tools are what they are: the baseline and every change with its cause, as the model was told -->
+      <Section
+        title="Tool changes"
+        count={toolSets.changes?.length || null}
+        collapsible
+        open={false}
+        storageKey="diag.ctx.toolsets"
+      >
+        {#each (toolSets.changes ?? []).slice().reverse() as c (c.seq)}
+          <div class="change" title={c.text}>
+            <Badge tone={c.cause === 'unknown' ? undefined : c.cause === 'plugin-reload' ? 'warn' : 'info'}>{c.cause}</Badge>
+            <TimeAgo time={c.time} class="np-dim" />
+            {#if c.removed?.length}
+              <span class="np-mono gone" title="no longer available">−{c.removed.join(' ')}</span>
+            {/if}
+            {#if c.added?.length}
+              <span class="np-mono new" title="new">+{c.added.join(' ')}</span>
+            {/if}
+            {#if c.plugins?.length}<span class="np-dim np-small">({c.plugins.join(', ')})</span>{/if}
+          </div>
+        {:else}
+          <div class="np-dim np-small">
+            No tool changes{since ? ` since the baseline of ${since} tools` : ''} — what the model has now is what it started with.
+          </div>
+        {/each}
+      </Section>
+    {/if}
   {/if}
 {/if}
 
@@ -243,5 +276,24 @@
     -webkit-line-clamp: 2;
     line-clamp: 2;
     overflow: hidden;
+  }
+  .change {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-height: 22px;
+    padding: 2px 0;
+    font-size: var(--fs-xs);
+  }
+  .change .np-mono {
+    font-size: 11.5px;
+    overflow-wrap: anywhere;
+  }
+  .gone {
+    color: var(--err);
+  }
+  .new {
+    color: var(--ok);
   }
 </style>
