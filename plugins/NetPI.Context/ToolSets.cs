@@ -12,15 +12,16 @@ namespace NetPI.Context;
 /// </summary>
 internal static class ToolSets
 {
-    /// <summary>How many messages back the notices are read (a page of the newest, then filtered).</summary>
+    /// <summary>Messages read per page, and how many pages to walk back (a chat's tool notices are sparse; this is a backstop).</summary>
     private const int MessagePage = 500;
+    private const int MaxPages = 20;
 
     public static JsonObject Build(IPluginContext ctx, ToolNotices notices, PromptStore store, string sessionId)
     {
         var session = ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
         var agent = ctx.Services.Get<IAgentRuntime>()?.GetBySession(sessionId);
         var baseline = store.GetTools(sessionId);
-        var changes = Changes(ctx, sessionId);
+        var (changes, truncated) = Scan(ctx, sessionId);
         var tools = ContextPlugin.ActiveTools(ctx, agent, session).Select(t => t.Definition.Name).OrderBy(n => n, StringComparer.Ordinal);
 
         return new JsonObject
@@ -35,6 +36,7 @@ internal static class ToolSets
                     ["sinceSeq"] = baseline.SinceSeq,
                 },
             ["changes"] = new JsonArray([.. changes]),
+            ["truncated"] = truncated,
             ["reloads"] = new JsonArray([.. notices.Reloads().Select(r => (JsonNode?)new JsonObject
             {
                 ["ids"] = new JsonArray(r.Ids.Select(id => (JsonNode?)id).ToArray()),
@@ -46,27 +48,36 @@ internal static class ToolSets
 
     /// <summary>
     /// Every tool-set change the session was told about, oldest first, from the "tools" notices in the whole chat (a
-    /// notice the context compacted away still happened, so it stays in the history).
+    /// notice the context compacted away still happened, so it stays in the history). The messages are walked back page
+    /// by page: <c>GetMessages</c> serves the <em>newest</em> page, so a long chat would otherwise lose its oldest
+    /// changes without a word. <paramref name="truncated"/> says when the walk hit <see cref="MaxPages"/>.
     /// </summary>
-    private static List<JsonObject> Changes(IPluginContext ctx, string sessionId)
+    private static (List<JsonObject> Changes, bool Truncated) Scan(IPluginContext ctx, string sessionId)
     {
         var list = new List<JsonObject>();
-        foreach (var m in ctx.Sessions.GetMessages(sessionId, null, MessagePage))
+        long? before = null;
+        var truncated = false;
+        for (var page = 0; page < MaxPages; page++)
         {
-            if (m.Role != MessageRole.Notice || m.MetaString("kind") != ToolNotices.Kind) continue;
-            list.Add(new JsonObject
+            var batch = ctx.Sessions.GetMessages(sessionId, before, MessagePage);
+            foreach (var m in batch)
             {
-                ["seq"] = m.Seq,
-                ["time"] = m.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
-                ["added"] = Strings(m, "added"),
-                ["removed"] = Strings(m, "removed"),
-                ["cause"] = m.MetaString("cause") ?? ToolChanges.Unknown,
-                ["plugins"] = Strings(m, "plugins"),
-                ["text"] = m.Text,
-            });
+                if (m.Role != MessageRole.Notice || m.MetaString("kind") != ToolNotices.Kind) continue;
+                list.Add(new JsonObject
+                {
+                    ["seq"] = m.Seq,
+                    ["time"] = m.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+                    ["added"] = Strings(m, "added"),
+                    ["removed"] = Strings(m, "removed"),
+                    ["cause"] = m.MetaString("cause") ?? ToolChanges.Unknown,
+                    ["plugins"] = Strings(m, "plugins"),
+                    ["text"] = m.Text,
+                });
+            }
+            if (batch.Count < MessagePage || batch[0].Seq <= 1) return (list, false);  // that was the first page
+            before = batch[0].Seq;   // carry on just before the oldest message of this one
         }
-        list.Sort((a, b) => ((long)a["seq"]!).CompareTo((long)b["seq"]!));
-        return list;
+        return (list, truncated: true);
     }
 
     private static JsonArray Strings(ChatMessage m, string key) =>

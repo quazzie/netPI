@@ -19,6 +19,7 @@ public static class ContextTests
         t.Add("context: a tools notice says why (plugin reload, the user, a setting) and keeps the cause in meta", ToolChangeCauses);
         t.Add("context: a tools notice names the user and a setting as the cause too", ToolChangeCausesUserAndSettings);
         t.Add("context: context.toolsets: the tools now, the baseline and every change with its cause", ToolSets);
+        t.Add("context: context.toolsets reaches a change older than the newest 500 messages, and says when it stops", ToolSetsLongChat);
         t.Add("context: a tools notice leaves out the guidelines the model already has", ToolNoticeKnownGuidelines);
         t.Add("context: tool guidelines are grouped by category, a line tools share listed once", GuidelineGroups);
         t.Add("context: guidance on using and keeping AGENTS.md (setting replaces or drops it)", InstructionGuidance);
@@ -499,6 +500,29 @@ public static class ContextTests
         var setting = Notices(h, s.Id, "tools").Last();
         Check.Equal("Your tools changed. No longer available: probe_off (the setting tools.disabled changed).", setting.Text);
         Check.Equal("settings", setting.MetaString("cause"));
+    }
+
+    // A change older than the newest page of messages must still be in the history: GetMessages serves the newest page,
+    // so a long chat used to lose its oldest tool changes silently.
+    private static async Task ToolSetsLongChat()
+    {
+        await using var h = await TestHost.StartAsync();
+        Task<ToolResult> Ok(ToolContext c, System.Text.Json.JsonElement a, CancellationToken t) => Task.FromResult(ToolResult.Ok(""));
+        var s = h.NewSession();
+        await Turn(h, s.Id, "hi");
+
+        using (h.Tools.Register(new FakeTool("old_probe", Ok), 0, "netpi.tools.web")) await Turn(h, s.Id, "a tool?");
+        var changeSeq = Notices(h, s.Id, "tools").Single().Seq;
+
+        // 520 later messages push that change out of the newest page
+        for (var i = 0; i < 520; i++) h.Sessions.AppendMessage(s.Id, ChatMessage.NoticeText($"filler {i}", "filler"));
+        Check.True(h.Messages(s.Id).Count > 500, "the chat is longer than one page");
+
+        var ts = (JsonObject)(await h.Rpc.CallAsync("context.toolsets", new { sessionId = s.Id }))!;
+        Check.Equal(false, (bool)ts["truncated"]!, "one page back is not the cap");
+        var changes = (JsonArray)ts["changes"]!;
+        Check.Equal(1, changes.Count, "the change is found again");
+        Check.Equal(changeSeq, (long)changes[0]!["seq"]!, "the same one, from before the filler");
     }
 
     // context.toolsets answers "what changed in my environment, when and why" from what the context plugin already keeps.
