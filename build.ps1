@@ -135,7 +135,9 @@ function Copy-Rel([string] $from, [string] $to, [string] $rel) {
 }
 
 # ---- what the running app is doing right now: a publish that hot-reloads plugins disturbs the chats that hold their
-# tools, so say so before doing it. Read-only, best effort: any failure just means no report.
+# tools, so say so before doing it. Read-only, best effort: any failure just means no report. Only a plugin that
+# registers tools can take any away (a hook-only one swaps under a run and announces nothing), so the report names the
+# tools actually at stake instead of warning about every reload.
 function Get-LiveChats {
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $null }
     try {
@@ -146,16 +148,38 @@ function Get-LiveChats {
     } catch { return $null }
 }
 
+# The tools the plugins about to be installed register (tools.list maps every tool to its plugin).
+function Get-PluginTools([string[]] $pluginNames) {
+    if (-not $pluginNames.Count -or -not (Get-Command node -ErrorAction SilentlyContinue)) { return $null }
+    try {
+        $tools = node scripts/netpi.mjs tools.list --compact 2>$null | ConvertFrom-Json
+        if (-not $tools) { return $null }
+        return @($tools | Where-Object { $pluginNames -contains $_.pluginId -and $_.active } |
+            Select-Object -ExpandProperty name | Sort-Object -Unique)
+    } catch { return $null }
+}
+
 function Show-PublishCost([string[]] $pluginNames) {
     $live = Get-LiveChats
     if (-not $live) { return }
     $names = if ($pluginNames.Count) { $pluginNames -join ', ' } else { 'the web UI' }
-    if ($live.Busy.Count) {
-        Write-Host "About to install into the running app: $names." -ForegroundColor Yellow
-        Write-Host "$($live.Busy.Count) chat(s) mid-turn ($(@($live.Busy | ForEach-Object { $_.name }) -join ', ')) will each get a tools notice at their next model call; -NextStart defers all of it to a restart." -ForegroundColor Yellow
+    $tools = Get-PluginTools $pluginNames
+    if ($null -ne $tools -and $tools.Count -eq 0) {
+        Write-Host "Installing into the running app: $names. They register no tools, so no chat loses any." -ForegroundColor Green
+        return
+    }
+    if (-not $live.Busy.Count) {
+        $what = if ($null -ne $tools) { "$($tools.Count) tool(s) reload ($($tools -join ', '))" } else { 'plugins reload' }
+        Write-Host "Installing into the running app: $names — $what. No chat is mid-turn." -ForegroundColor Green
+        return
+    }
+    $who = @($live.Busy | ForEach-Object { $_.name }) -join ', '
+    Write-Host "About to install into the running app: $names." -ForegroundColor Yellow
+    if ($null -ne $tools) {
+        Write-Host "$($live.Busy.Count) chat(s) mid-turn ($who); $($tools.Count) tool(s) go away for a moment ($($tools -join ', ')), and a chat holding one gets a notice at its next model call." -ForegroundColor Yellow
     }
     else {
-        Write-Host "Installing into the running app: $names. No chat is mid-turn." -ForegroundColor Green
+        Write-Host "$($live.Busy.Count) chat(s) mid-turn ($who); -NextStart defers the whole install to a restart." -ForegroundColor Yellow
     }
 }
 
@@ -303,6 +327,8 @@ else {
 
 if ($Test) {
     Step 'Unit tests'
+    # the suites load the built plugins from here (NETPI_APP_DIR); a worktree has no artifacts\app to fall back on
+    $env:NETPI_APP_DIR = $dev
     $failed = 0
     foreach ($t in 'Providers', 'Tools', 'Agent', 'Aux', 'Host') {
         $dll = "tests\NetPI.$t.Tests\bin\$Configuration\NetPI.$t.Tests.dll"
@@ -310,6 +336,7 @@ if ($Test) {
         dotnet $dll
         if ($LASTEXITCODE) { $failed++ }
     }
+    Remove-Item Env:NETPI_APP_DIR -ErrorAction SilentlyContinue
     if ($failed) { throw "$failed test suite(s) failed" }
 }
 

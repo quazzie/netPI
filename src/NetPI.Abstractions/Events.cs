@@ -81,9 +81,11 @@ public static class EventTypes
     public const string ModelsChanged = "models.changed";
     public const string PluginsChanged = "plugins.changed";
     /// <summary>
-    /// Plugins were reloaded, enabled or disabled: <c>{ ids: string[], kind: "reload" | "enabled" | "disabled" }</c>.
+    /// Plugins were reloaded, enabled or disabled: <c>{ ids: string[], kind: "reload" | "reload-failed" | "enabled" | "disabled" }</c>.
     /// The one event that says <em>what</em> changed, so plugins (e.g. context, which tells the model when its tools
-    /// change) can name the cause of a tool-set change instead of guessing.
+    /// change) can name the cause of a tool-set change instead of guessing. A reload is a swap (the new version starts
+    /// while the old one still serves, so a tool is never absent): <c>reload-failed</c> means the new version did not
+    /// start and the running one was kept.
     /// </summary>
     public const string PluginsReloaded = "plugins.reloaded";
     public const string UiChanged = "ui.changed";

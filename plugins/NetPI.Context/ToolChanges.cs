@@ -117,7 +117,9 @@ internal sealed class ToolChanges(IPluginContext ctx)
         foreach (var reload in Reloads(CauseWindow))
         {
             var hit = reload.Ids.Where(id => ids.Contains(id, StringComparer.Ordinal)).ToList();
-            if (hit.Count > 0) return reload.Kind == "reload" ? Change.Reloaded(hit) : Change.PluginsOff(hit, reload.Kind);
+            if (hit.Count == 0) continue;
+            // an enable/disable is a setting; a reload is a reload, whether or not the new version took over
+            return reload.Kind is "enabled" or "disabled" ? Change.PluginsOff(hit, reload.Kind) : Change.Reloaded(hit);
         }
 
         List<string> disabled = [];

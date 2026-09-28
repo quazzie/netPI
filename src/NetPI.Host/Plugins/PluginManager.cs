@@ -243,14 +243,14 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             ct.ThrowIfCancellationRequested();
             if (!IsEnabled(e, sets)) // the real id (from the attribute) may be disabled
             {
-                await UnloadContextAsync(e, track: true).ConfigureAwait(false);
+                await UnloadContextAsync(e, CurrentLoad(e), track: true).ConfigureAwait(false);
                 e.State = "disabled";
                 continue;
             }
             var twin = Snapshot().FirstOrDefault(o => !ReferenceEquals(o, e) && o.Instance is not null && o.Id.Equals(e.Id, StringComparison.OrdinalIgnoreCase));
             if (twin is not null)
             {
-                await UnloadContextAsync(e, track: true).ConfigureAwait(false);
+                await UnloadContextAsync(e, CurrentLoad(e), track: true).ConfigureAwait(false);
                 e.State = "failed";
                 e.Error = $"Duplicate plugin id '{e.Id}' (already loaded from {twin.Folder})";
                 _log.LogWarning("Plugin in {Folder}: {Error}", e.Folder, e.Error);
@@ -347,7 +347,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             scope.DisposeAll();
             stopping.Dispose();
             instance = null;
-            await UnloadContextAsync(e, track: true).ConfigureAwait(false);
+            await UnloadContextAsync(e, CurrentLoad(e), track: true).ConfigureAwait(false);
             e.State = "failed";
             e.Error = message;
         }
@@ -356,16 +356,12 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     /// <summary>StopAsync (10 s) → cancel Stopping → dispose registrations (reverse) → unload the context.</summary>
     private async Task StopInstanceAsync(PluginEntry e, bool track)
     {
-        var instance = e.Instance;
-        if (instance is not null) await StopQuietlyAsync(instance, e.Id).ConfigureAwait(false);
-        Cancel(e.Stopping, e.Id);
-        e.Scope?.DisposeAll();
-        e.Stopping?.Dispose();
-        e.Instance = null;
-        e.Scope = null;
-        e.Stopping = null;
-        instance = null;
-        await UnloadContextAsync(e, track).ConfigureAwait(false);
+        var load = TakeLoad(e);
+        if (load.Instance is not null) await StopQuietlyAsync(load.Instance, e.Id).ConfigureAwait(false);
+        Cancel(load.Stopping, e.Id);
+        load.Scope?.DisposeAll();
+        load.Stopping?.Dispose();
+        await UnloadContextAsync(e, load, track).ConfigureAwait(false);
         if (e.State == "running") e.State = "stopped";
     }
 
@@ -389,18 +385,21 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         catch (Exception ex) { _log.LogWarning(ex, "Plugin {Id}: a Stopping callback threw", id); }
     }
 
-    private async Task UnloadContextAsync(PluginEntry e, bool track)
+    /// <summary>
+    /// Unload a load context and watch whether it is collected. Works off <paramref name="load"/> rather than the
+    /// entry's fields, so a reload can unload the version it replaced while the entry already points at the new one.
+    /// </summary>
+    private async Task UnloadContextAsync(PluginEntry e, Load load, bool track)
     {
-        if (e.Alc is null) return;
-        var shadow = e.ShadowDir;
-        e.PluginType = null;
-        e.ShadowDir = null;
+        if (load.Alc is null) return;
+        var shadow = load.ShadowDir;
+        if (ReferenceEquals(e.Alc, load.Alc)) { e.PluginType = null; e.ShadowDir = null; }
         // Deliver queued events (they may carry plugin payloads) before snapshotting the ring buffer.
         try { await _k.Bus.FlushAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
         catch (TimeoutException) { }
         _k.Bus.DetachCollectible();
         _k.Services.ClearCache();
-        var weak = UnloadAndTrack(e);
+        var weak = UnloadAndTrack(load);
         ClearJsonCaches();
         e.LastUnloaded = weak;
         e.LastUnloadCollected = null;
@@ -408,10 +407,9 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static WeakReference UnloadAndTrack(PluginEntry e)
+    private static WeakReference UnloadAndTrack(Load load)
     {
-        var alc = e.Alc!;
-        e.Alc = null;
+        var alc = load.Alc!;
         alc.Unload();
         return new WeakReference(alc);
     }
@@ -448,38 +446,119 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// One load of a plugin: its context, its type, its instance and everything it registered. Held as a value so a
+    /// reload can start the <em>next</em> load while this one is still serving, then retire this one explicitly
+    /// (see <see cref="ReloadEntryAsync"/>).
+    /// </summary>
+    private sealed record Load(PluginLoadContext? Alc, Type? PluginType, string? ShadowDir, INetPiPlugin? Instance,
+        PluginScope? Scope, CancellationTokenSource? Stopping)
+    {
+        public static readonly Load None = new(null, null, null, null, null, null);
+        public bool Live => Alc is not null || Instance is not null;
+    }
+
+    private static Load TakeLoad(PluginEntry e)
+    {
+        var load = CurrentLoad(e);
+        ClearLoad(e);
+        return load;
+    }
+
+    /// <summary>The load the entry currently points at (not taken: the entry keeps pointing at it).</summary>
+    private static Load CurrentLoad(PluginEntry e) =>
+        new(e.Alc, e.PluginType, e.ShadowDir, e.Instance, e.Scope, e.Stopping);
+
+    private static void RestoreLoad(PluginEntry e, Load load)
+    {
+        e.Alc = load.Alc; e.PluginType = load.PluginType; e.ShadowDir = load.ShadowDir;
+        e.Instance = load.Instance; e.Scope = load.Scope; e.Stopping = load.Stopping;
+    }
+
     private async Task ReloadEntryAsync(PluginEntry e, CancellationToken ct)
     {
         await _op.WaitAsync(ct).ConfigureAwait(false);
+        var swapped = false;
         try
         {
             if (_disposed) return;
             lock (_gate) if (!_entries.Contains(e)) return;
             _log.LogInformation("Reloading plugin {Id}", e.Id);
-            await StopInstanceAsync(e, track: true).ConfigureAwait(false);
-            var manifestFile = Path.Combine(e.Folder, "plugin.json");
-            e.Manifest = File.Exists(manifestFile) ? PluginManifest.TryLoad(manifestFile, _log) : null;
-            e.AssemblyFile = AssemblyFileName(e.Manifest, e.FolderName);
-            if (!File.Exists(Path.Combine(e.Folder, e.AssemblyFile)))
+
+            // A swap, not a restart. The old load keeps serving while the next one starts: a registration of the same
+            // name and priority takes over the moment the new instance makes it (ties go to the latest), so a tool is
+            // never absent, and a chat that calls a model in the middle sees no change at all - the "tools changed"
+            // notice does not fire for a reload. The old registrations go last, and disposing them removes only the
+            // old ones. A new version that fails to load or start therefore leaves the running one alone.
+            var retired = TakeLoad(e);
+            e.State = "loading";
+            e.Error = null;
+            try
             {
+                var manifestFile = Path.Combine(e.Folder, "plugin.json");
+                e.Manifest = File.Exists(manifestFile) ? PluginManifest.TryLoad(manifestFile, _log) : null;
+                e.AssemblyFile = AssemblyFileName(e.Manifest, e.FolderName);
+                var file = Path.Combine(e.Folder, e.AssemblyFile);
+                if (!File.Exists(file))
+                {
+                    e.State = "unloaded";
+                    e.Error = $"{e.AssemblyFile} not found";
+                }
+                else if (await LoadAssemblyAsync(e).ConfigureAwait(false))
+                {
+                    await StartInstanceAsync(e, ct).ConfigureAwait(false);
+                    swapped = e.State == "running";
+                }
+            }
+            catch (Exception ex)   // a swap must not take the running plugin down with it
+            {
+                _log.LogError(ex, "Plugin {Id}: the new version could not be loaded", e.Id);
+                e.Error = JsonUtil.Unwrap(ex).Message;
                 e.State = "unloaded";
-                e.Error = $"{e.AssemblyFile} not found";
-                return;
             }
-            var sets = EnabledSets.Read(_k.Settings);
-            if (!IsEnabled(e, sets))
+
+            if (swapped)
             {
-                e.State = "disabled";
-                return;
+                // the new load is serving: now the old one's registrations go, and with them its context
+                await RetireAsync(e, retired, track: true).ConfigureAwait(false);
             }
-            await LoadAndStartAsync([e], ct).ConfigureAwait(false);
+            else
+            {
+                // Nothing took over, and the failed attempt already cleaned up after itself (its own scope and
+                // context). Put the running load back exactly as it was and leave it alone.
+                var why = e.Error ?? "the new version did not start";
+                ClearLoad(e);
+                RestoreLoad(e, retired);
+                e.State = retired.Instance is not null ? "running" : "stopped";
+                _log.LogWarning("Plugin {Id}: still on the running version ({Why})", e.Id, why);
+            }
         }
         finally
         {
             _op.Release();
-            PublishReloaded([e.Id], "reload");
+            PublishReloaded([e.Id], swapped ? "reload" : "reload-failed");
             PublishChanged();
         }
+    }
+
+    private static void ClearLoad(PluginEntry e)
+    {
+        e.Alc = null; e.PluginType = null; e.ShadowDir = null; e.Instance = null; e.Scope = null; e.Stopping = null;
+    }
+
+    /// <summary>
+    /// Stop, unregister and unload a load that has been replaced: StopAsync → cancel Stopping → dispose its
+    /// registrations → unload its context. The registrations go last, because they are what the tools are: until this
+    /// runs, the replaced version's tools are still callable.
+    /// </summary>
+    private async Task RetireAsync(PluginEntry e, Load load, bool track)
+    {
+        if (!load.Live) { load.Stopping?.Dispose(); return; }
+        if (load.Instance is not null) await StopQuietlyAsync(load.Instance, e.Id).ConfigureAwait(false);
+        Cancel(load.Stopping, e.Id);
+        load.Scope?.DisposeAll();
+        load.Stopping?.Dispose();
+        await UnloadContextAsync(e, load, track).ConfigureAwait(false);
     }
 
     private async Task ApplyEnabledStateAsync(CancellationToken ct)

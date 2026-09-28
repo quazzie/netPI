@@ -15,6 +15,56 @@ public static class InspectTests
         r.Add("inspect: problems (failed plugin, waiters on an inactive agent, a long wait, errors in the log)", Problems);
         r.Add("inspect: settings without secrets, saved failed requests, the overview lists the diag methods", SettingsFailuresOverview);
         r.Add("inspect: the diag tool answers with the RPC's JSON, defaults to the calling session and refuses every write", DiagTool);
+        r.Add("inspect: a reload says what it cost: the tools at stake, or that a hook-only plugin announces nothing", ReloadImpact);
+    }
+
+    // Only a plugin that registers tools can take a tool away. A hook-only reload (context, nudge) swaps under a
+    // running turn and announces nothing, and the report must say that rather than claim a notice.
+    private static async Task ReloadImpact()
+    {
+        var ctx = await StartAsync();
+        var runtime = new FakeAgentRuntime();
+        runtime.Agents.Add(new AgentInfo { Id = "agt_1", SessionId = "ses_1", Status = AgentStatus.Running });
+        ctx.ServicesFake.Register<IAgentRuntime>(runtime);
+        ctx.ToolsFake.Register(new StubTool("probe"), "netpi.tools.web");
+
+        // a tool plugin: the tools are named, and a chat that holds one is told to expect a notice
+        ctx.Bus.Publish(new BusEvent
+        {
+            Type = EventTypes.PluginsReloaded,
+            Data = new JsonObject { ["ids"] = new JsonArray("netpi.tools.web"), ["kind"] = "reload" },
+        });
+        await ctx.Bus.WaitForAsync(EventTypes.PluginsReloaded);
+        var problems = (JsonArray)(await ctx.RpcFake.Call("diag.problems"))!;
+        var withTools = problems.Select(p => (string?)p!["message"] ?? "").FirstOrDefault(m => m.Contains("netpi.tools.web"))!;
+        Check.Contains(withTools, "1 chat(s) mid-turn", withTools);
+        Check.Contains(withTools, "probe", "the tool at stake is named");
+        Check.Contains(withTools, "gets a notice", withTools);
+
+        // a hook-only plugin: nothing goes away, and the line says so
+        ctx.Bus.Publish(new BusEvent
+        {
+            Type = EventTypes.PluginsReloaded,
+            Data = new JsonObject { ["ids"] = new JsonArray("netpi.context"), ["kind"] = "reload" },
+        });
+        await ctx.Bus.WaitForAsync(EventTypes.PluginsReloaded, e => e.As<JsonObject>()?["ids"] is JsonArray { Count: 1 } a && a[0]?.GetValue<string>() == "netpi.context");
+        problems = (JsonArray)(await ctx.RpcFake.Call("diag.problems"))!;
+        var hookOnly = problems.Select(p => (string?)p!["message"] ?? "").FirstOrDefault(m => m.Contains("netpi.context"))!;
+        Check.Contains(hookOnly, "registers no tools, so nothing is announced", hookOnly);
+        Check.NotContains(hookOnly, "gets a notice", hookOnly);
+
+        // and the overview's record carries the same, machine-readable
+        var overview = (JsonObject)(await ctx.RpcFake.Call("diag.overview"))!;
+        var reloads = (JsonArray)overview["reloads"]!;
+        var hookRecord = (JsonObject)reloads.First(r => r!["ids"]!.ToJsonString().Contains("netpi.context"))!;
+        Check.Equal(0, ((JsonArray)hookRecord["tools"]!).Count, "no tools at stake");
+        Check.Equal(1, ((JsonArray)hookRecord["busySessions"]!).Count, "the chat that was running");
+    }
+
+    private sealed class StubTool(string name) : IAgentTool
+    {
+        public ToolDefinition Definition { get; } = new() { Name = name, Description = name };
+        public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct) => Task.FromResult(ToolResult.Ok("ok"));
     }
 
     /// <summary>Run the plugin's own tool as the runtime would (the arguments arrive as JSON text).</summary>

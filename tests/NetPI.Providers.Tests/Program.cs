@@ -979,8 +979,10 @@ await t.Run("built plugins load, run and unload in a collectible AssemblyLoadCon
     var root = PluginLoadTest.FindRepoRoot();
     t.Check(root is not null, "repo root found");
     if (root is null) return;
+    // the build output (NETPI_APP_DIR, set by build.ps1 -Test); artifacts\app is the installed app and a worktree has none
+    var app = Environment.GetEnvironmentVariable("NETPI_APP_DIR") is { Length: > 0 } custom ? custom : Path.Combine(root, "artifacts/app");
 
-    var apDll = Path.Combine(root, "artifacts/app/plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.dll");
+    var apDll = Path.Combine(app, "plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.dll");
     var apSettings = new JsonObject { ["providers"] = new JsonObject { ["aiproxy"] = new JsonObject { ["baseUrl"] = mock.BaseUrl } } };
     t.Check(!File.Exists(Path.Combine(Path.GetDirectoryName(apDll)!, "NetPI.Abstractions.dll")), "Abstractions not copied next to the plugin");
     t.Check(File.Exists(Path.Combine(Path.GetDirectoryName(apDll)!, "plugin.json")), "plugin.json copied");
@@ -988,13 +990,13 @@ await t.Run("built plugins load, run and unload in a collectible AssemblyLoadCon
     t.Check(r1 is { PluginId: "netpi.providers.aiproxy", Providers: 1, Models: 4, StreamedText: "Hello world", AbstractionsShared: true }, $"aiproxy ran in ALC ({r1})");
     t.Check(await PluginLoadTest.WaitCollectedAsync(r1.Alc), "aiproxy ALC collected after unload");
 
-    var anDll = Path.Combine(root, "artifacts/app/plugins/NetPI.Providers.Anthropic/NetPI.Providers.Anthropic.dll");
+    var anDll = Path.Combine(app, "plugins/NetPI.Providers.Anthropic/NetPI.Providers.Anthropic.dll");
     var anSettings = new JsonObject { ["providers"] = new JsonObject { ["anthropic"] = new JsonObject { ["baseUrl"] = mock.BaseUrl, ["apiKey"] = "k" } } };
     var r2 = await PluginLoadTest.LoadRunUnloadAsync(anDll, anSettings, _ => Req(AN.ClaudeCapabilities.ToModelInfo("anthropic", "claude-sonnet-4-5", null)));
     t.Check(r2 is { PluginId: "netpi.providers.anthropic", Providers: 1, Models: 2, StreamedText: "Sure, reading." }, $"anthropic ran in ALC ({r2})");
     t.Check(await PluginLoadTest.WaitCollectedAsync(r2.Alc), "anthropic ALC collected after unload");
 
-    var orDll = Path.Combine(root, "artifacts/app/plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.dll");
+    var orDll = Path.Combine(app, "plugins/NetPI.Providers.OpenRouter/NetPI.Providers.OpenRouter.dll");
     var orPluginSettings = new JsonObject { ["providers"] = new JsonObject { ["openrouter"] = new JsonObject { ["baseUrl"] = mock.BaseUrl + "/openrouter/api", ["apiKey"] = "k" } } };
     var r3 = await PluginLoadTest.LoadRunUnloadAsync(orDll, orPluginSettings, p => Req(M(p.Id, "vendor/plain:free")));
     t.Check(r3 is { PluginId: "netpi.providers.openrouter", Providers: 1, Models: 5, StreamedText: "Reading it.", AbstractionsShared: true }, $"openrouter ran in ALC ({r3})");

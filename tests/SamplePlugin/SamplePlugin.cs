@@ -28,7 +28,14 @@ public sealed class SamplePlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        // Was the previous version's tool still registered when this one started? A reload swaps (NetPI.Host's
+        // ReloadEntryAsync): the old registrations go only after the new instance is up, so a tool is never absent and
+        // no running chat sees a "tools changed" notice. On a first start there is nothing to be present. A bool, not
+        // the tool: holding the old instance's object would root its load context and the unload check would fail.
+        var overlapped = context.Tools.Get("sample_echo") is not null;
         context.Rpc.Register("sample.value", (_, _) => Task.FromResult<object?>(Value), "Returns the build variant");
+        context.Rpc.Register("sample.overlap", (_, _) => Task.FromResult<object?>(overlapped ? "present" : "none"),
+            "Whether the previous version's tool was still registered when this one started");
         context.Rpc.Register("sample.echo", (req, _) => Task.FromResult<object?>(new EchoResult(req.Str("text") ?? "", Value)));
         context.Tools.Register(new EchoTool());
         context.Services.Register<IPromptSection>(new Section());
