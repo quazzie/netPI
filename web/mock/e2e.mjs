@@ -518,6 +518,56 @@ log('ideas: recall on the first message (the chip above the composer)');
   await page.waitForTimeout(300);
 }
 
+log('ideas: save on tab close (the card above the composer)');
+{
+  // A chat with two user turns, told to leave a plan behind when its tab closes.
+  await page.keyboard.press('Control+t');
+  await page.waitForTimeout(400);
+  await ta.fill('the prefill scheduler should run short prompts first');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(700);
+  await ta.fill('and measure it before we change anything');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(700);
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const armed = await rpcCall('mock.closeLeavesPlan', { phrase: 'prefill scheduler', title: 'Prefill: short prompts first' });
+  check('save check: the mock was told to leave a plan (armed the closed chat)', armed === sid, `armed=${armed} chat=${sid}`);
+
+  // Closing the tab never waits for the check: the card arrives behind it, above the composer of whatever chat is
+  // open (the chat it came from is closed), so a new tab gives it somewhere to land.
+  await page.locator('.topbar .tab.active .tab-close').click();
+  await page.keyboard.press('Control+t');
+  const card = page.locator('[aria-label="Unsaved plan from a closed chat"]');
+  await card.waitFor({ timeout: 5000 }).catch(() => {});
+  check('save check: a card appears after the tab closes', (await card.count()) === 1, await card.innerText().catch(() => ''));
+  check('save check: the card names the closed chat', /prefill scheduler/.test(await card.innerText().catch(() => '')));
+  await shot(page, '27c-idea-card');
+
+  // Edit it, then save: the idea lands in the backlog with the chat on it.
+  await card.locator('button', { hasText: 'Edit' }).click();
+  await card.locator('input[aria-label="Idea title"]').fill('Prefill: short prompts first (measured)');
+  await card.locator('button', { hasText: 'Save' }).click();
+  await page.waitForTimeout(400);
+  check('save check: the card goes away after Save', (await card.count()) === 0);
+  const list = (await rpcCall('ideas.list'))?.ideas ?? [];
+  const saved = list.find((i) => /Prefill: short prompts first/.test(i.title));
+  check('save check: Save writes the idea with the closed chat on it', !!saved && saved.sessions?.length === 1, saved?.sessions?.[0]?.sessionId ?? 'no idea');
+
+  // A second chat closes with nothing to save: no card, and the backlog is untouched.
+  const before = list.length;
+  await ta.fill('thanks, that all worked out');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(600);
+  await ta.fill('and the deploy is done too');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(600);
+  await page.locator('.topbar .tab.active .tab-close').click();
+  await page.keyboard.press('Control+t');
+  await page.waitForTimeout(900);
+  check('save check: a chat with nothing unsaved leaves no card', (await card.count()) === 0);
+  check('save check: and nothing is added to the backlog', ((await rpcCall('ideas.list'))?.ideas ?? []).length === before);
+}
+
 log('plugin tab: Diagnostics');
 {
   await openStripTab('right', 'Diagnostics');
@@ -555,6 +605,12 @@ log('plugin tab: Diagnostics');
   await page.waitForSelector('.diag .prompt', { timeout: 5000 }).catch(() => {});
   check('diagnostics: context preview', (await page.locator('.diag .prompt').count()) > 0);
   check("diagnostics: the session's skills", (await page.locator('.diag .sname').allInnerTexts()).includes('release-notes'));
+  // the tool-set history: a plugin reload took two tools away, with its cause
+  await page.locator('.diag .np-section-title', { hasText: 'Tool changes' }).locator('button').click();
+  await page.waitForTimeout(300);
+  const changes = await page.locator('.diag .change').allInnerTexts();
+  check('diagnostics: tool changes name the cause and the plugin',
+    changes.some((t) => t.includes('plugin-reload') && t.includes('netpi.tools.shell') && t.includes('bash')));
   await right.screenshot({ path: path.join(OUT, '30-diagnostics-context.png') });
   await view('Plugins');
 }

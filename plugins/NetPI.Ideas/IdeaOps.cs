@@ -461,6 +461,27 @@ public static class IdeaOps
         if (!a.Any(x => Str(x) == sessionId)) a.Add(sessionId);
     }
 
+    /// <summary>
+    /// A session that worked on this idea, as an entry with its own note: <c>{ sessionId, title, at, seq?, note?, seen? }</c>.
+    /// Kept apart from the sections on purpose, so attaching a session never edits the idea's text. One entry per
+    /// session: a later one replaces the earlier (the note is the newer reading).
+    /// </summary>
+    public static void AddSessionEntry(JsonObject idea, JsonObject entry)
+    {
+        var id = Str(entry["sessionId"]);
+        if (string.IsNullOrEmpty(id)) return;
+        if (idea["sessions"] is not JsonArray a) { a = []; idea["sessions"] = a; }
+        var existing = a.OfType<JsonObject>().FirstOrDefault(s => Str(s["sessionId"]) == id);
+        if (existing is not null)
+        {
+            // A new note or title wins; what the entry already knows (its seq, its seen mark) is kept.
+            foreach (var k in new[] { "note", "title", "at" })
+                if (entry[k] is { } v) existing[k] = v.DeepClone();
+            return;
+        }
+        a.Add(entry.DeepClone());
+    }
+
     // ------------------------------------------------------------------ filtering & rendering
 
     public static bool Matches(JsonObject idea, string? status, string? tag, string? query)

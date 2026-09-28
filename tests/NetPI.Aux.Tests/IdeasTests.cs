@@ -648,5 +648,165 @@ public static class IdeasTests
 
             await Check.ThrowsAsync<RpcException>(() => env.Rpc("ideas.attach", new JsonObject { ["sessionId"] = env.Session.Id, ["id"] = "idea-nope00" }));
         });
+
+        // ------------------------------------------------------------------ save on tab close (phase 2)
+
+        // A chat with n user turns and an agent answer, so the check has a digest to read.
+        async Task<Env> TalkEnv(int users = 2)
+        {
+            var env = new Env();
+            await env.StartAsync();
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", ContextWindow = 262144, MaxOutputTokens = 16384 });
+            for (var i = 0; i < users; i++)
+            {
+                env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText($"please look at the nudge counter, part {i}"));
+                env.Ctx.SessionsFake.AppendMessage(env.Session.Id, new ChatMessage
+                {
+                    Role = MessageRole.Assistant, StopReason = "tool_calls",
+                    Parts = [new TextPart { Text = "On it." }, new ToolCallPart { Id = $"call_{i}", Name = "read" }],
+                });
+            }
+            return env;
+        }
+
+        async Task<JsonArray> Suggestions(Env env) => (JsonArray)(await env.Rpc("ideas.suggestions", new JsonObject()))["suggestions"]!.AsArray().DeepClone();
+
+        // The check runs in the background after the tab is gone; wait for its card (or for it to not come).
+        async Task<JsonArray> WaitForSuggestions(Env env, int count, int ms = 4000)
+        {
+            for (var waited = 0; waited < ms; waited += 25)
+            {
+                var s = await Suggestions(env);
+                if (s.Count == count) return s;
+                await Task.Delay(25);
+            }
+            throw new AssertException($"expected {count} suggestion(s), got {(await Suggestions(env)).Count}");
+        }
+
+        r.Add("ideas: closing a chat attaches it to the idea it worked on, with no question", async () =>
+        {
+            var env = await TalkEnv();
+            var mine = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Nudge reset", ["summary"] = "Reset the counter" } }))["id"].Str()!;
+            FakeDecision(env, _ => new() { ["A"] = 0.94, ["B"] = 0.05, ["C"] = 0.01 });
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "NOTHING" }] };
+
+            var res = await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
+            Check.Equal("started", res["reason"].Str());
+            // The attach runs in the background: wait for the entry, not for a card (NOTHING makes no card).
+            var sessions = new List<JsonObject>();
+            for (var waited = 0; waited < 4000 && sessions.Count == 0; waited += 25)
+            {
+                var idea = await env.Rpc("ideas.get", new JsonObject { ["id"] = mine });
+                sessions = idea["sessions"]?.AsArray().OfType<JsonObject>().ToList() ?? [];
+                if (sessions.Count == 0) await Task.Delay(25);
+            }
+            Check.Equal(1, sessions.Count);
+            Check.Equal(env.Session.Id, sessions[0]["sessionId"].Str());
+            Check.Equal("s", sessions[0]["title"].Str());
+            Check.Equal(false, sessions[0]["seen"]!.GetValue<bool>()); // unseen until the user opens the idea
+        });
+
+        r.Add("ideas: a plan the closed chat never built becomes a card, and saving it writes the idea with the session", async () =>
+        {
+            var env = await TalkEnv();
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage
+            {
+                Role = MessageRole.Assistant, StopReason = "stop",
+                Parts = [new TextPart { Text = "SAVE\nNudge: reset the counter\nThe nudge counter only grows within a run, so the cap applies to the whole run." }],
+            };
+            var published = new List<JsonObject>();
+            using var _events = env.Ctx.Events.Subscribe("ideas.suggested", e => published.Add((JsonObject)e.Data!));
+
+            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
+            var cards = await WaitForSuggestions(env, 1);
+            Check.Equal(1, published.Count);
+            Check.Contains(cards[0]!["title"].Str()!, "reset the counter");
+            Check.Equal(env.Session.Id, cards[0]!["sessionId"].Str());
+            Check.Equal(env.Project.Id, cards[0]!["project"]!["id"].Str());
+
+            var id = cards[0]!["id"].Str()!;
+            var saved = await env.Rpc("ideas.resolve", new JsonObject { ["id"] = id, ["action"] = "save" });
+            Check.Equal("Nudge: reset the counter", saved["saved"]!["title"].Str());
+            Check.Equal(env.Project.Id, saved["saved"]!["project"]!["id"].Str());
+            Check.Equal(env.Session.Id, saved["saved"]!["sessions"]![0]!["sessionId"].Str());
+            Check.Equal(0, (await Suggestions(env)).Count);
+
+            // The card is gone from the file: answering it twice says so rather than making two ideas.
+            await Check.ThrowsAsync<RpcException>(() => env.Rpc("ideas.resolve", new JsonObject { ["id"] = id, ["action"] = "save" }));
+        });
+
+        r.Add("ideas: NOTHING leaves no card, discard is final, and the user's edit is what gets saved", async () =>
+        {
+            var env = await TalkEnv();
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "NOTHING" }] };
+            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
+            Check.Equal(0, (await WaitForSuggestions(env, 0)).Count);
+
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "SAVE\nA plan\nSomething" }] };
+            env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText("and one more thing about the deploy steps"));
+            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
+            var id = (await WaitForSuggestions(env, 1))[0]!["id"].Str()!;
+
+            var saved = await env.Rpc("ideas.resolve", new JsonObject
+            {
+                ["id"] = id, ["action"] = "save", ["edit"] = new JsonObject { ["title"] = "Deploy checklist", ["summary"] = "What is left" },
+            });
+            Check.Equal("Deploy checklist", saved["saved"]!["title"].Str());
+            Check.Equal("What is left", saved["saved"]!["summary"].Str());
+        });
+
+        r.Add("ideas: a discarded card is gone, and the chats not worth checking never get one", async () =>
+        {
+            var env = await TalkEnv();
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "SAVE\nSomething\nLeft" }] };
+            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
+            var id = (await WaitForSuggestions(env, 1))[0]!["id"].Str()!;
+            var res = await env.Rpc("ideas.resolve", new JsonObject { ["id"] = id, ["action"] = "discard" });
+            Check.Equal(true, res["discarded"]!.GetValue<bool>());
+            Check.Equal(0, (await Suggestions(env)).Count);
+            Check.Equal(0, (await env.Rpc("ideas.list", new JsonObject()))["ideas"]!.AsArray().Count);
+
+            // One user turn, a subagent, an unknown session, a turn that was aborted, and the setting off.
+            Check.Equal("short", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.GlobalSession.Id }))["reason"].Str());
+            var sub = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "sub", Kind = "subagent" });
+            env.Ctx.SessionsFake.AppendMessage(sub.Id, ChatMessage.UserText("do the thing"));
+            env.Ctx.SessionsFake.AppendMessage(sub.Id, ChatMessage.UserText("and this"));
+            Check.Equal("subagent", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = sub.Id }))["reason"].Str());
+            Check.Equal("no_session", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = "ses_nope00" }))["reason"].Str());
+            var aborted = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "cut" });
+            env.Ctx.SessionsFake.AppendMessage(aborted.Id, ChatMessage.UserText("go"));
+            env.Ctx.SessionsFake.AppendMessage(aborted.Id, new ChatMessage { Role = MessageRole.Assistant, StopReason = "aborted", Parts = [new TextPart { Text = "…" }] });
+            env.Ctx.SessionsFake.AppendMessage(aborted.Id, ChatMessage.UserText("go on"));
+            Check.Equal("unfinished", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = aborted.Id }))["reason"].Str());
+            env.Ctx.SettingsFake.Set("ideas.saveCheck", JsonValue.Create(false));
+            Check.Equal("off", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
+        });
+
+        r.Add("ideas: one check per message count, and a reopened chat with new turns is checked again", async () =>
+        {
+            var env = await TalkEnv();
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "NOTHING" }] };
+            Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
+            await WaitForSuggestions(env, 0);
+            Check.Equal("already", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
+
+            env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText("one more question about the counter"));
+            Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
+            await WaitForSuggestions(env, 0);
+            Check.Equal(2, env.Ctx.ModelsFake.Requests.Count); // one model call per check, not per close
+        });
+
+        r.Add("ideas: the save check parses SAVE and NOTHING, and nothing else", () =>
+        {
+            Check.Equal(null, IdeaSaveCheck.Parse("NOTHING"));
+            Check.Equal(null, IdeaSaveCheck.Parse(""));
+            Check.Equal(null, IdeaSaveCheck.Parse("save\n\nSomething")); // no title: not a card
+            Check.Equal(null, IdeaSaveCheck.Parse("Sure! Here is what I found in the conversation:\n1. ..."));
+            var parsed = IdeaSaveCheck.Parse("SAVE\n# Reset the nudge counter\nThe counter **only grows**.\n\nMore detail.");
+            Check.Equal("Reset the nudge counter", parsed!.Value.Title);
+            Check.Equal("The counter **only grows**. More detail.", parsed.Value.Summary); // the summary keeps its markdown
+            Check.Equal("Title", IdeaSaveCheck.Parse("SAVE\n  **Title**  \nBody")!.Value.Title);
+            Check.Equal("Body", IdeaSaveCheck.Parse("SAVE\n**Title**\nBody")!.Value.Summary);
+        });
     }
 }

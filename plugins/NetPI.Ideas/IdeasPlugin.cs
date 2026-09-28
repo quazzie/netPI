@@ -26,8 +26,12 @@ public sealed class IdeasPlugin : INetPiPlugin
                     "While the first message of a chat is typed, a decision looks for the open idea it continues and offers to add it to the chat (needs the Decide plugin)."),
                 SettingInfo.Number("ideas.recallThreshold", "Suggestion threshold", IdeaRecall.DefaultThreshold,
                     "The decision's probability an idea needs before it is suggested. 0.8 gave no false suggestion on 56 unrelated messages (docs/DECISION-MODELS.md).", 0.3, 0.99),
+                SettingInfo.Bool("ideas.saveCheck", "Offer unsaved plans when a chat closes", true,
+                    "When a chat tab is closed, the model says whether it leaves a plan nobody built or wrote down. A new plan gets a card to save or discard; work on an open idea is attached to it instead."),
+                SettingInfo.Number("ideas.attachThreshold", "Attach threshold", IdeaSaveCheck.DefaultAttachThreshold,
+                    "The probability a closed chat has to be about an open idea before the chat is attached to it. 0.8 was right on 5 of 6 (docs/DECISION-MODELS.md).", 0.3, 0.99),
                 SettingInfo.Str("ideas.model", "Model for the idea checks", IdeaRecall.DefaultModel,
-                    "The decision model (through the Decide plugin's server). qwen3.8-27b, the NInfer chat model, was measured."),
+                    "The decision model (through the Decide plugin's server) and the model that drafts the save check. qwen3.8-27b, the NInfer chat model, was measured."),
             ],
         });
         var store = context.Track(new IdeasStore(context.Events, context.Logger));
@@ -40,6 +44,7 @@ public sealed class IdeasPlugin : INetPiPlugin
         var rpc = new IdeasRpc(store, locator);
         rpc.Register(context.Rpc);
         new IdeaRecall(context, store, locator).Register(context.Rpc);
+        new IdeaSaveCheck(context, store, locator).Register(context.Rpc);
 
         context.Ui.AddTab(new UiTabInfo { Id = "ideas", Title = "Ideas", Panel = UiPanel.Right, Icon = "idea", Order = 20, Module = "ui.js" });
         context.Ui.AddCommand(new SlashCommandInfo

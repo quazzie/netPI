@@ -1,6 +1,6 @@
 # Ideas follow the session: recall, save on close, close on commit
 
-Status: phase 1 (recall) built 2026-09-27; phases 2 and 3 next · idea-c7xyem
+Status: phases 1 (recall) and 2 (save on close) built 2026-09-28; phase 3 (close on commit) next · idea-c7xyem
 
 ## Goal
 
@@ -57,17 +57,22 @@ Everything lives in the **Ideas plugin**; the models are reached through the **D
 
 ### Phase 2: save on tab close
 
-- `closeTab` calls `ideas.closed { sessionId }` (fire and forget). The plugin skips chats with fewer than two user
-  messages, subagents and chats it checked at the same message count, then in the background:
-  1. which open idea the chat worked on (decision on the chat digest, p ≥ `ideas.attachThreshold`) → a `sessions`
-     entry on that idea, no question;
-  2. the save check (reasoning-low call, prompt v3) → on `SAVE`, a pending suggestion `{ id, kind: "save",
-     sessionId, title, summary, projectId }`.
-  Suggestions are kept in `~/.netpi/ideas-pending.json` (they survive a restart), listed by `ideas.suggestions`,
-  resolved by `ideas.resolve { id, action: "save" | "discard", edit? }`, announced by the unscoped event
-  `ideas.suggested` (the closed chat is no longer subscribed).
-- UI: a card stack above the composer of the active chat (like the ask cards), and an "Unsaved" line at the top of
-  the Ideas tab. Discard is final for that chat until it gets new messages.
+Built 2026-09-28 as designed, with these changes to the plan above:
+
+- The check runs on the **message count**, not on time: the pending file holds one mark per chat (`checked: { n, at }`,
+  kept 30 days), so a tab closed, reopened and closed again does not ask twice, but new turns earn a new check.
+- The **card UI is in core** (`composer/IdeaCards.svelte`), not the plugin tab: a plugin tab is only loaded once opened,
+  and the chat that made the card is closed. The Ideas tab carries an "unsaved" line for the same cards.
+- The **ideas file gains `sessions`** (`{ sessionId, title, at, seq?, note?, seen? }`, one entry per session), kept apart
+  from the sections: attaching a chat never edits the idea's text. A saved card's new idea starts with its own entry.
+- The pending file is `~/.netpi/ideas-pending.json` next to the ideas, atomic, and is never an idea: a card is an offer.
+  A file that cannot be read after three tries is left alone rather than overwritten with an empty backlog.
+- Skips: fewer than two user turns, subagents, a turn that ended `aborted` or `error`, an unknown session, off.
+- The digest is capped at 12k characters (user turns whole, answers and tool names clipped), not the raw transcript.
+
+`ideas.closed` → `{ checked, reason }`; `ideas.suggestions` → the cards; `ideas.resolve { id, action, edit? }` answers one.
+Tests: `tests/NetPI.Aux.Tests/IdeasTests.cs` (six cases: attach, card and save, NOTHING/edit, discard and the skips, one
+check per message count, the parser).
 
 ### Phase 3: close on commit
 
@@ -80,7 +85,8 @@ Everything lives in the **Ideas plugin**; the models are reached through the **D
 ## Tests and docs
 
 - `tests/NetPI.Aux.Tests/IdeasTests.cs`: recall (id match, model match above and below the threshold, "none" wins,
-  off, no Decide plugin), attach (notice, session recorded), save check and suggestions (fake `decide.*` and a fake
-  model responder), the commit watcher (a temp git repo). Decide: `decide.decision` against a fake server.
+  off, no Decide plugin), attach (notice, session recorded), the save check and its cards (fake `decide.*` and a fake
+  model responder), the skip rules and the one-check-per-message-count rule. Decide: `decide.decision` against a fake
+  server.
 - Mock UI (`web/mock/ideas.mjs`) handlers for every new RPC; `web/mock/e2e.mjs` checks for the chip and the card.
 - `docs/PROTOCOL.md` (RPC, event), `docs/SETTINGS.md`, `docs/PLUGIN-IDEAS.md`, `docs/UI.md`.

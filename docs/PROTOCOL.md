@@ -91,7 +91,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `projects.delete` | `{ id }` | `true` (its sessions are detached) |
 | `sessions.list` | `{ projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, limit?, offset? }` | `SessionInfo[]` (newest first) |
 | `sessions.create` | `{ title?, projectId?, model?, reasoning? }` | `SessionInfo` — until its first message the session is **transient**: no database row, not in `sessions.list`, no `session.created`, and the project's `last_used_at` is untouched (the creating client gets the `SessionInfo` as the RPC result). The first message materializes it |
-| `sessions.fork` | `{ id, upToSeq? (the last) }` | `SessionInfo`: a new chat with the messages up to `upToSeq` (same seqs, times, parts and meta; compaction as it was at that point); the original is unchanged. It takes the setup (project, model, reasoning, meta such as the profile, `toolsOff`, the agent), not the run state (`goal`, `todo`, `budgetAllowedFrom`, subagent keys), and gets `meta.forkedFrom { sessionId, title, seq }` and the title "Title (fork)", "Title (fork 2)"…. A subagent's chat gives `bad_request`. Publishes `session.created` (once the copy is complete), then `session.forked` — unless zero messages are copied, when the fork stays transient like a fresh `sessions.create` |
+| `sessions.fork` | `{ id, upToSeq? (the last) }` | `SessionInfo`: a new chat with the messages up to `upToSeq` (same seqs, times, parts and meta; compaction as it was at that point); the original is unchanged. It takes the setup (project, model, reasoning, meta such as the profile, `toolsOff`, the agent), not the run state (`goal`, `todo`, `budgetAllowedFrom`, `guardrailsAllowed`, subagent keys), and gets `meta.forkedFrom { sessionId, title, seq }` and the title "Title (fork)", "Title (fork 2)"…. A subagent's chat gives `bad_request`. Publishes `session.created` (once the copy is complete), then `session.forked` — unless zero messages are copied, when the fork stays transient like a fresh `sessions.create` |
 | `sessions.get` | `{ id }` | `SessionInfo` |
 | `sessions.update` | `{ id, title?, model?, reasoning?, archived?, meta? }` | `SessionInfo` (null clears model / reasoning) |
 | `sessions.delete` | `{ id }` | `true` (its subagent sessions are deleted too) |
@@ -139,21 +139,22 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `agents.setEnabled` | netpi.agents | `{ id, enabled }` → `AgentSlots[]`: switch an agent off (`agents.<id>.disabled`; runs on it finish, new ones stop with a notice) or back on |
 | `usage.summary` | netpi.agents | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] /* today */, budget: BudgetStatus, models: { agent, provider, model, calls, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unknownCost }[] /* this period */ }` |
 | `usage.session` | netpi.agents | `{ sessionId }` → `{ sessionId, costUsd, calls, withSubagentsUsd, withSubagentsCalls }` |
-| `budget.status` | netpi.agents | → `BudgetStatus`: `{ monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, warning, exhausted }` |
+| `budget.status` | netpi.agents | → `BudgetStatus`: `{ monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, reservedOrUnsettledUsd, interruptedEstimateUsd, unknownCostCalls, warning, exhausted }` |
 | `budget.allow` | netpi.agents | `{ sessionId }` → `BudgetStatus`: the chat may go over the budget until the period ends, and continues (`budget.onLimit: "ask"`) |
 | `agentsmd.list` | netpi.agentsmd | `{ sessionId }` or `{ projectId }` → `{ path, bytes, scope }[]` (instruction files for the session's working directory or the project folder; scope `global`, `project` or `extra`) |
 | `skills.list` | netpi.skills | `{ sessionId }` or `{ projectId }` → `{ skills: [{ name, description, path, scope, listed, userOnly, disabled, license?, compatibility?, allowedTools? }], problems: [{ path, level, message }] }` (the skills for the session's working directory or the project folder, in precedence order; scope `project`, `extra` or `global`; level `warning` or `error`; see [PLUGIN-SKILLS.md](PLUGIN-SKILLS.md)) |
 | `compaction.run` | netpi.compaction | `{ sessionId, args? /* extra focus for the summary */ }` → `string` (error `busy` while the agent runs) |
 | `context.preview` | netpi.context | `{ sessionId }` → `{ systemPrompt, frozen, tools: {name, description, chars, schemaChars}[], estimatedTokens }` (`frozen`: the prompt stored at the session's first model call; `chars`: what a tool costs in every request, its description and schema; `schemaChars`: the schema alone) |
 | `context.prompts` | netpi.context | `{ sessionId }` → `{ prompts: [{ version, afterSeq, createdAt, systemPrompt, tools: [{ name, description, parameters }] }] }`: every system prompt the session was sent, oldest first, with the tool definitions sent with it: the first (at the first model call, `afterSeq` = the last message then) and one after each `context.reset`. A session frozen before these were kept has version 1 only, with its tool names. The chat shows them as "System prompt" rows |
+| `context.toolsets` | netpi.context | `{ sessionId }` → `{ sessionId, tools, baseline: { tools, sinceSeq }\|null, changes: [{ seq, time, added, removed, cause, plugins, text }], reloads: [{ ids, time, kind }] }`: the session's tools now, the baseline of its first model call (null before it), and every tool-set change it was told about, oldest first, with the cause worked out for the notice (`plugin-reload` + the plugin ids, `profile`, `user`, `settings`, `unknown`) and the notice text. `reloads` are the `plugins.reloaded` events of the last 10 minutes. `diag.toolsets` returns the same |
 | `goal.get` | netpi.goal | `{ sessionId }` → `Goal\|null` (`meta.goal` unless cleared: `{ id, objective, status: active\|paused\|blocked\|complete, reason, tokenBudget, tokensUsed, continuations, noProgress, version, createdAt, updatedAt }`) |
 | `goal.set` | netpi.goal | `{ sessionId, objective (≤ 4000), tokenBudget? }` → `Goal` (a new goal; starts a run with a "goal" notice when the agent is idle; names an untitled session) |
 | `goal.edit` | netpi.goal | `{ sessionId, objective?, tokenBudget? }` → `Goal` (same goal; the model hears about it at its next call) |
 | `goal.pause` / `goal.resume` / `goal.clear` | netpi.goal | `{ sessionId }` → `Goal` (`clear` → `null`). Pause lets the current run finish; resume resets the counters and starts a run when idle (also for an active goal whose agent is idle) |
 | `ask.pending` | netpi.ask | `{ sessionId? }` → `{ sessionId, callId, agentId, agentName, questions: { question, options: { label, description? }[], multiple }[], askedAt }[]`: the questions waiting for the user (`ask_user`) |
 | `ask.answer` | netpi.ask | `{ callId, answers?: string[][], text? }` → `true`: the options picked per question and/or the user's own words; `not_found` when nothing waits under that id, `bad_request` for an empty answer |
-| `guard.pending` | netpi.guardrails | `{ sessionId? }` → `{ sessionId, callId, agentId, tool, kind: 'command'\|'path', subject, rule, askedAt, opinion? }[]`: tool calls waiting for the user's OK (a guardrails `ask:` rule); `opinion` is the second opinion (`guardrails.secondOpinion`) when one was asked: `{ model, harmless, p: { destructive, stops_process, remote_change, read_only }, ms, error? }` |
-| `guard.answer` | netpi.guardrails | `{ callId, allow, scope?: 'once'\|'session' }` → `true`: the call runs, or is blocked ("the user said no"); `not_found` when nothing waits under that id. `scope: 'session'` with `allow` also allows the rule that asked for the rest of that chat (session meta `guardrailsAllowed`, a list of rules) and the other calls of that chat waiting on the same rule; a refusal is never remembered |
+| `guard.pending` | netpi.guardrails | `{ sessionId? }` → `{ approvalId, sessionId, callId, agentId, tool, kind: 'command'\|'path', subject, rule, askedAt, opinion? }[]`: tool calls waiting for the user's OK (a guardrails `ask:` rule); `opinion` is the second opinion (`guardrails.secondOpinion`) when one was asked: `{ model, harmless, p: { destructive, stops_process, remote_change, read_only }, ms, error? }` |
+| `guard.answer` | netpi.guardrails | `{ approvalId, allow, scope?: 'once'\|'session' }` → `true`: the call runs, or is blocked ("the user said no"); `not_found` when nothing waits under that id. `scope: 'session'` with `allow` also allows the rule that asked for the rest of that chat (session meta `guardrailsAllowed`, a list of rules) and the other calls of that chat waiting on the same rule; a refusal is never remembered |
 | `files.search` | netpi.tools.files | `{ sessionId?, query, limit? }` → `{ path, rel, isDir }[]` (for `@` mentions) |
 | `files.open` | netpi.tools.files | `{ path, sessionId?, cwd? }` → `{ path, action: 'open'\|'edit'\|'reveal'\|'folder' }` (opens a path with the operating system; see `docs/TOOLS.md`) |
 | `files.list` | netpi.tools.files | `{ sessionId?, dir? }` → `{ root, dir, entries: {name, rel, isDir, size?, mtime?}[] }` |
@@ -163,7 +164,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `processes.output` | netpi.tools.shell | `{ id, tail? }` → `string` |
 | `processes.kill` | netpi.tools.shell | `{ id }` → `bool` |
 | `decide.decision` | netpi.decide | `{ messages, branches: [{ id?, content, labels }], model?, share_state? }` → NInfer's `/v1/decision` answer through the same server (`{ branches: [{ id, probabilities, mass, … }], usage, … }` plus `ms`); thinking off unless the caller sets it. The `messages` are the shared state NInfer caches across requests. Errors keep the server's code and request id |
-| `ideas.list` `ideas.get` `ideas.add` `ideas.update` `ideas.delete` `ideas.reorder` `ideas.toPrompt` `ideas.quickAdd` `ideas.recall` `ideas.attach` | netpi.ideas | see `docs/PLUGIN-IDEAS.md` |
+| `ideas.list` `ideas.get` `ideas.add` `ideas.update` `ideas.delete` `ideas.reorder` `ideas.toPrompt` `ideas.quickAdd` `ideas.recall` `ideas.attach` `ideas.closed` `ideas.suggestions` `ideas.resolve` | netpi.ideas | see `docs/PLUGIN-IDEAS.md` |
 | `work.snapshot` | netpi.work | → `{ agents, runs, processes, usage, time, errors? }` (each part `null` when unavailable; see `docs/PLUGIN-WORK.md`) |
 | `diag.overview` | netpi.diagnostics | → `{ time, app, process, plugins, models, agents, runs, calls: { running, last15m }, tools, processes, problems, more }`: start here (see `docs/DEBUGGING.md`) |
 | `diag.problems` | netpi.diagnostics | → `{ severity: 'error'|'warn'|'info', area, message, hint? }[]`, worst first |
@@ -177,6 +178,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `diag.logs` | netpi.diagnostics | `{ limit?, level?, category?, contains?, sinceMinutes? }` → log entries, oldest first |
 | `diag.failures` | netpi.diagnostics | `{ limit? }` → the saved failed requests: `{ name, time, bytes, provider, model, sessionId, transport, requestId, responseId, error }[]` |
 | `diag.failure` | netpi.diagnostics | `{ name, maxChars? }` → `{ name, bytes, truncated, content }` |
+| `diag.toolsets` | netpi.diagnostics | `{ sessionId }` → the context plugin's `context.toolsets` (needs it: it is what keeps the record); error `unavailable` without it |
 | `diag.snapshot` | netpi.diagnostics | `{ events? }` → `{ plugins, tools, rpc, events, logs, runtime, time }` (see `docs/PLUGIN-DIAGNOSTICS.md`) |
 | `diag.event` | netpi.diagnostics | `{ seq }` → `{ seq, type, sessionId?, time, source?, ui, data }` |
 | `diag.reload` | netpi.diagnostics | `{ args?: pluginId }` → `string` (`/reload`; no id = all plugins) |
@@ -208,9 +210,9 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `tool.end` | yes | `{ sessionId, callId, name, isError, durationMs }` – result arrives via `message.added` (role tool) |
 | `agent.status` | no | `{ agent: AgentInfo }` |
 | `ask.asked` | no | `{ sessionId, callId, agentId, agentName, questions, askedAt }` – a question waits for the user (`ask_user`); unscoped, so every window hears of it |
-| `guard.asked` | no | `{ sessionId, callId, agentId, tool, kind, subject, rule, askedAt, opinion? }` – a tool call waits for the user's OK (guardrails); unscoped |
+| `guard.asked` | no | `{ approvalId, sessionId, callId, agentId, tool, kind, subject, rule, askedAt, opinion? }` – a tool call waits for the user's OK (guardrails); unscoped |
 | `guard.cleared` | no | `{ sessionId, callId, agentId, tool, kind, subject, rule, by: 'opinion'\|'session', opinion? }` – an `ask:` rule matched and the call runs without asking: the second opinion found the command confidently read-only (`by: 'opinion'`, with `opinion`), or the user allowed that rule for this chat (`by: 'session'`); unscoped |
-| `guard.closed` | no | `{ sessionId, callId, status: 'allowed'\|'denied'\|'steered'\|'cancelled', scope?: 'session' }` – it stopped waiting (`scope` when it was allowed for the rest of the chat) |
+| `guard.closed` | no | `{ approvalId, sessionId, callId, status: 'allowed'\|'denied'\|'steered'\|'cancelled', scope?: 'session' }` – it stopped waiting (`scope` when it was allowed for the rest of the chat) |
 | `ask.closed` | no | `{ sessionId, callId, status: 'answered'\|'steered'\|'withdrawn'\|'cancelled', answers: string[][]\|null, text }` – it stopped waiting |
 | `agent.queue` | yes | `{ sessionId, items: QueuedInput[] }` |
 | `agent.notice` | yes | `{ sessionId, level: 'info'\|'warn'\|'error', text, kind?, phase?, mode? }` – transient (retry countdown etc.); a compaction's carry `kind: 'compaction'`, `phase: 'start'\|'done'\|'failed'` and `mode: 'auto'\|'overflow'\|'manual'` |
@@ -218,6 +220,7 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `session.context` | no | `{ sessionId, used, window }` |
 | `agents.changed` | no | `{ agents: AgentSlots[] }` – what `agents.list` returns, whenever a run takes or frees an instance or an agent's state changes |
 | `models.changed`, `plugins.changed`, `ui.changed`, `settings.changed` | no | `{}` |
+| `plugins.reloaded` | no | `{ ids: string[], kind: 'reload'\|'enabled'\|'disabled' }` – which plugins the host reloaded, enabled or disabled (every `/reload`, hot reload from the build, and a `plugins.disabled` change). What changed, not just that something did: the context plugin names it in the next "tools" notice, the diagnostics plugin lists it in `diag.overview`/`diag.problems` |
 | `usage.recorded` | no | `{ provider, model, usage }` (agent turns) |
 | `usage.changed` | no | `BudgetStatus`, after model calls were recorded (debounced) |
 | `process.started` / `process.exited` | no | `{ process: ProcessInfo }` |
@@ -262,3 +265,22 @@ Plugin UIs render inside the host DOM and should style themselves with the host 
 `--font-ui`, `--font-mono`, `--radius`) and the `np-*` utility classes documented in `web/src/styles/kit.css`.
 The mount element (`.plugin-root`) is a flex column at least as tall as the panel, and the panel scrolls it. To fill the
 height (for a footer at the bottom), give the tab's root `flex: 1 0 auto`; `min-height: 100%` does not resolve there.
+
+## Backups (netpi.backup)
+
+| RPC | Parameters | Result |
+|---|---|---|
+| `backup.list` | `{}` | Snapshot manifests with `id`, `path`, `version`, `createdAt`, `automatic`, `files` (SHA-256 per file). Listing does not rehash every snapshot. |
+| `backup.create` | `{}` | Creates and verifies a manual snapshot; returns its manifest and path. Allow a long RPC timeout for large databases. |
+| `backup.verify` | `{ id }` | Checks the manifest version and both file hashes; returns the manifest or an error. |
+
+`backup.created { id, path }` is published after a completed snapshot. Restore is offline through
+`scripts/restore-backup.mjs`, into a new home only. See [BACKUPS.md](BACKUPS.md).
+
+Approval compatibility: `guard.answer` now requires the unique `approvalId` from `guard.pending` or `guard.asked`.
+A provider's `callId` remains display/correlation data, never an authorization identifier. Old clients must refresh
+and fetch pending approvals; callId-only answers fail validation. `guard.closed` includes the approvalId it closes.
+
+Budget amounts include persistent reservations. `reservedOrUnsettledUsd` identifies the active/crash-left portion;
+`interruptedEstimateUsd` identifies calls whose final bill was unavailable, and `unknownCostCalls` counts unpriced
+calls. Every retry attempt gets its own ledger row. Amounts are attributed to the day the attempt started.

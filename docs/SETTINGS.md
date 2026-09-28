@@ -180,11 +180,34 @@ where a chat runs, the profile who it is.
 | `budget.warnPercent` | `80` | from here `agent_choices` tells agents to use paid agents only when you asked |
 | `budget.onLimit` | `"stop"` | when a budget is spent: `"stop"` paid calls, or `"ask"`: your chats stop with "let this chat go over" (`budget.allow`), subagents stop |
 
-Every model call is recorded with its tokens and cost (`usage_calls`: agents, compaction, anything that asks a model).
-The cost is what the provider reported (OpenRouter returns it for every call), else tokens × the price (the agent's
-`cost`, else the catalog's pricing), and $0 for local models. A cloud model without a known price counts $0 but is
-treated as paid when a budget is spent. The budget and the agents' daily caps (`agents.<id>.budget.limitUsd`) only
-stop paid models; free and local ones always run.
+Every provider attempt (including each retry) is recorded in `usage_calls`. Before dispatch, paid calls reserve
+uncached input plus the full output allowance at the configured/catalog price. Admission and reservation are one
+SQLite transaction, so concurrent chats and plugin generations share the same remaining budget. A reservation
+that would exceed a monthly, daily or per-agent limit stops the call; `budget.onLimit: "ask"` offers the existing
+explicit per-chat override. Subagents cannot override. Unknown cloud prices are refused when a dollar cap applies:
+configure **both** input and output prices in the agent, or explicitly allow the chat to go over.
+
+Completed usage replaces the reservation with provider-reported cost, else a token-price estimate. Interrupted
+calls keep reported cost when supplied; otherwise they retain a conservative estimate. Clear HTTP rejections
+(400/401/403/404/429 or context overflow) before usage release the reservation. Persistent reservations survive
+crashes and hot reload; a lost final bill stays marked reserved/unsettled instead of silently disappearing.
+The Budget page identifies reserved/unsettled, interrupted estimates and unknown-price calls separately.
+
+Reservations are estimates, not a provider billing guarantee: tokenization, image billing and provider price
+changes can differ. Amounts are attributed to the attempt's start day. Without a dollar cap unpriced calls remain
+allowed and are flagged unknown. Free/local models keep running. An unavailable ledger stops capped paid calls.
+
+## Backups
+
+| key | default | meaning |
+|---|---|---|
+| `backup.enabled` | `true` | Automatic database + settings snapshots, checked ten seconds after plugin start, then every minute |
+| `backup.intervalHours` | `24` | Time since the newest snapshot before another automatic one (1–720 hours) |
+| `backup.keepCount` | `7` | Automatic snapshots retained after successful creation (1–365); manual snapshots are never pruned |
+
+Settings → **Data & backups** provides **Back up now**, paths, and **Verify**. Snapshots live in `<home>/backups`.
+They include settings secrets and exclude project files, skills, plugins and external credentials. Copy snapshots
+to separate storage for disk-failure protection. See [BACKUPS.md](BACKUPS.md) for restore instructions.
 
 ## Context and AGENTS.md
 
@@ -254,7 +277,9 @@ used: the chat stays as it was. Beyond pi: a transcript too long for the summari
 | `ideas.fileName` | `ideas.json` | the global ideas file in `~/.netpi` (the single backlog of all projects; ideas carry a `project`) |
 | `ideas.recall` | `true` | while the first message of a chat is typed, a decision looks for the open idea it continues and the composer offers to add it (needs the Decide plugin) |
 | `ideas.recallThreshold` | `0.8` | the probability an idea needs before it is offered (0.3–0.99); 0.8 gave no false offer on 56 unrelated messages (docs/DECISION-MODELS.md, "Ideas recall") |
-| `ideas.model` | `qwen3.8-27b` | the decision model of the idea checks, asked through the Decide plugin's server |
+| `ideas.saveCheck` | `true` | when a chat tab is closed, the model says whether it leaves a plan nobody built or wrote down; a new plan gets a card to save or discard, work on an open idea is attached to that idea instead |
+| `ideas.attachThreshold` | `0.8` | the probability a closed chat has to be about an open idea before it is attached to it (0.3–0.99); 0.8 was right on 5 of 6 |
+| `ideas.model` | `qwen3.8-27b` | the decision model of the idea checks (asked through the Decide plugin's server) and the model that drafts the save check |
 
 ## Guardrails
 

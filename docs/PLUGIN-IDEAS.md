@@ -62,7 +62,10 @@ session store:
       "sections": [
         { "id": "sec-4f0a", "kind": "research", "title": "Findings", "content": "markdown…", "updatedAt": "…" }
       ],
-      "sessionIds": ["ses_…"]              // sessions that created or updated the idea
+      "sessionIds": ["ses_…"],            // sessions that created or updated the idea
+      "sessions": [                        // sessions that worked on the idea (phase 2, below)
+        { "sessionId": "ses_…", "title": "…", "at": "2026-09-28T10:00:00Z", "seq": 42, "note": "…", "seen": false }
+      ]
     }
   ]
 }
@@ -89,6 +92,7 @@ session store:
 | type | scoped | data |
 |---|---|---|
 | `ideas.changed` | no (broadcast) | `{ file: string }`: absolute path, the same string as `ideas.list().file` |
+| `ideas.suggested` | no (broadcast) | `{ suggestion }`: a card a closed chat left waiting. Fires when the save check makes one; the cards also survive a restart, so a window reads them with `ideas.suggestions` on start |
 
 The event fires after any change to the file, whether it came from this plugin (tools or RPC) or from an external
 editor. Changes are debounced by 250 ms, so a burst of writes produces one event. The file is watched from startup.
@@ -215,6 +219,37 @@ over 10 s; `error` holds the message, and the server log has it too).
 `meta.ideaId`) that starts *"The user added an idea from the ideas backlog to this chat"* and holds the idea's full
 markdown (as `get` renders it). The session is added to the idea's `sessionIds`. Added before the first message, the
 notice stays first; added during a run, the agent reads it at its next model call.
+
+### `ideas.closed` (save on tab close)
+
+`{ sessionId }` → `{ checked: bool, reason }`. The UI calls it from `closeTab`, fire and forget: the tab closes at once
+and the check runs behind it. `reason` is `started`, `already` (this chat was checked at this number of user turns), or
+one of the skips: `no_session`, `subagent`, `short` (fewer than two user turns), `unfinished` (a turn ended `aborted` or
+`error`), `off` (`ideas.saveCheck` is false).
+
+What runs in the background, in this order:
+
+1. **Attach.** One pick-one decision over the open ideas of the chat's project plus the global ones, the conversation
+   digest as the state. At p ≥ `ideas.attachThreshold` (0.8) and beating "none", a `sessions` entry is added to that
+   idea — `{ sessionId, title, at, seq?, seen: false }`, kept apart from the sections, so the idea's text never changes.
+   One entry per session.
+2. **Save check.** One generative call through `ideas.model` at the model's lowest reasoning effort, which answers
+   `NOTHING`, or `SAVE` with a title and a summary. The conversation is a digest (user turns whole, answers and tool
+   names clipped, 12k characters), not the raw transcript. Measured 8/11 caught, 1/32 false (docs/DECISION-MODELS.md).
+   A `SAVE` becomes a card in `~/.netpi/ideas-pending.json` and the `ideas.suggested` event fires.
+
+Nothing reaches the backlog without a click, and the pending file is never an idea: a card is an offer.
+
+### `ideas.suggestions` and `ideas.resolve`
+
+`ideas.suggestions` takes no arguments → `{ suggestions: [{ id, kind: "save", sessionId, sessionTitle, title, summary,
+at, project: { id, name } | null }] }`, oldest first. The file is `~/.netpi/ideas-pending.json`; it is written atomically
+and holds the per-chat check marks under `checked` (kept 30 days).
+
+`ideas.resolve { id, action: "save" | "discard", edit?: { title?, summary? } }` → `{ saved: idea | null, discarded }`.
+`save` writes the idea (stamped with the card's project, its own `sessions` entry for the chat it came from, and the
+user's `edit` when given); `discard` drops the card. Either way it leaves `ideas-pending.json`, so a second answer is
+`not_found`. The UI shows the cards above the composer and as an "unsaved" line in the Ideas tab.
 
 ## The agent tool: `ideas` (category `ideas`)
 

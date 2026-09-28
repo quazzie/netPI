@@ -10,6 +10,7 @@ import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick, firstLine } from '../notify.js';
 import { loadAsks, askEvent, pendingIn, approvalIn } from './asks.svelte.js';
+import { suggestions } from '../../components/composer/ideaSuggestions.svelte.js';
 
 const TABS_KEY = 'netpi.openTabs';
 
@@ -278,6 +279,9 @@ export function closeTab(id) {
   }
   resubscribe();
   persistTabs();
+  // Closing is when a plan gets forgotten (plugins/NetPI.Ideas): ask in the background what the chat leaves unsaved.
+  // Fire and forget — the tab is already gone and nothing here may hold up the next one.
+  rpc('ideas.closed', { sessionId: id }).catch(() => {});
 }
 
 export function moveTab(id, toIndex) {
@@ -596,6 +600,9 @@ function onEvent(d, env) {
       askEvent(type, d);
       if (type === 'ask.asked') askNotification(d);
       else if (type === 'guard.asked') approvalNotification(d);
+      break;
+    case 'ideas.suggested':
+      suggestions.event(d);
       break;
     default:
       break;

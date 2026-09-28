@@ -13,6 +13,7 @@
   import RunStatus from './RunStatus.svelte';
   import GoalStrip from './GoalStrip.svelte';
   import IdeaChip from './IdeaChip.svelte';
+  import IdeaCards from './IdeaCards.svelte';
   import { app, isBusy, modelFor, sendMessage, abortAgent } from '../../lib/state/app.svelte.js';
   import { pendingIn, answerAsk } from '../../lib/state/asks.svelte.js';
   import { composer, modals, prefs, toast } from '../../lib/state/ui.svelte.js';
@@ -352,6 +353,7 @@
     <GoalStrip {session} />
     <TodoStrip {session} />
     <IdeaChip {chat} {session} />
+    <IdeaCards />
 
     <div
       class="composer"
@@ -448,8 +450,8 @@
 
       <div class="bar">
         <button class="tb" title="Attach image" onclick={() => fileInput.click()}><Icon name="image" size={15} /></button>
-        <button class="tb" title="Commands (/)" onclick={() => triggerPopup('/')}><Icon name="slash" size={15} /></button>
-        <button class="tb" title="Mention a file (@)" onclick={() => triggerPopup('@')}><Icon name="at" size={15} /></button>
+        <button class="tb typed" title="Commands (/)" onclick={() => triggerPopup('/')}><Icon name="slash" size={15} /></button>
+        <button class="tb typed" title="Mention a file (@)" onclick={() => triggerPopup('@')}><Icon name="at" size={15} /></button>
         <span class="sep"></span>
         <ProfilePicker {session} />
         <ProjectPicker {session} />
@@ -501,6 +503,7 @@
   .dock-inner {
     position: relative; /* the run status line floats above it */
     width: 100%;
+    container-type: inline-size; /* the bar compacts by the composer's own width (side panels squeeze it) */
     max-width: var(--chat-max);
   }
   .banner {
@@ -597,6 +600,41 @@
     gap: 2px;
     padding: 4px 6px 6px 8px;
     min-width: 0;
+  }
+  /* the pickers shrink with ellipsis before anything overflows; narrower, they drop their labels (icon + tooltip) */
+  .bar > :global(.pick) {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .bar > :global(.pick > span) {
+    min-width: 0;
+  }
+  .bar > :global(.pick[aria-label='Agent']) {
+    min-width: 80px; /* the model name is the one label that stays */
+  }
+  .bar > :global(*) {
+    flex-shrink: 0;
+  }
+  @container (max-width: 640px) {
+    .bar > :global(.pick[aria-label='Profile'] > span:not(.np-icon)),
+    .bar > :global(.pick[aria-label='Project'] > span:not(.np-icon)),
+    .bar > :global(.pick[aria-label='Reasoning effort'] > span:not(.np-icon)) {
+      display: none;
+    }
+  }
+  @container (max-width: 440px) {
+    .sep,
+    .bar > :global(.cost) {
+      display: none;
+    }
+    .tb {
+      width: 24px;
+    }
+  }
+  @container (max-width: 340px) {
+    .tb.typed {
+      display: none; /* typing / or @ opens the same popups */
+    }
   }
   .tb {
     display: grid;

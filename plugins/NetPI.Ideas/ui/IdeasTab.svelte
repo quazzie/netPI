@@ -24,6 +24,31 @@
   let activeProjectId = $state(ctx.app.activeProject?.id ?? null);
   let projectFilter = $state(activeProjectId ?? 'global');
   let followsActive = true;
+  // Plans a closed chat left unsaved (the cards above the composer answer the same cards).
+  let unsaved = $state.raw([]);
+  let showUnsaved = $state(false);
+  let busy = $state(null);
+
+  async function loadUnsaved() {
+    try {
+      unsaved = (await ctx.rpc('ideas.suggestions', {}))?.suggestions ?? [];
+    } catch {
+      unsaved = []; // no Ideas plugin, or the check is off
+    }
+  }
+
+  async function resolve(id, action) {
+    busy = id;
+    try {
+      await ctx.rpc('ideas.resolve', { id, action });
+      unsaved = unsaved.filter((s) => s.id !== id);
+      await load();
+    } catch (e) {
+      error = e?.message ?? String(e);
+    } finally {
+      busy = null;
+    }
+  }
 
   async function load() {
     try {
@@ -45,6 +70,7 @@
 
   onMount(() => {
     load();
+    loadUnsaved();
     const offChange = ctx.app.onChange(() => {
       const pid = ctx.app.activeProject?.id ?? null;
       if (pid !== activeProjectId) {
@@ -56,9 +82,13 @@
       if (visible) load();
       else dirty = true;
     });
+    const offCards = ctx.on('ideas.suggested', () => {
+      if (visible) loadUnsaved();
+    });
     return () => {
       offChange();
       offEv();
+      offCards();
     };
   });
 
@@ -283,6 +313,28 @@
     <NewIdea onadd={add} oncancel={() => (adding = false)} projects={projects} activeProjectId={activeProjectId ?? ''} />
   {/if}
 
+  {#if unsaved.length}
+    <button class="unsaved" onclick={() => (showUnsaved = !showUnsaved)} title="Plans a closed chat left unsaved — save or discard them">
+      <Icon name="idea" size={12} />
+      <span class="np-ellipsis">{unsaved.length} unsaved {unsaved.length === 1 ? 'plan' : 'plans'} from closed chats</span>
+      <Icon name={showUnsaved ? 'chevron-down' : 'chevron-right'} size={11} />
+    </button>
+    {#if showUnsaved}
+      <div class="cards">
+        {#each unsaved as s (s.id)}
+          <div class="card">
+            <div class="np-ellipsis ct" title={s.title}>{s.title}</div>
+            {#if s.summary}<div class="cs">{s.summary}</div>{/if}
+            <div class="cb">
+              <Button size="sm" variant="primary" disabled={busy === s.id} onclick={() => resolve(s.id, 'save')}>Save</Button>
+              <Button size="sm" disabled={busy === s.id} onclick={() => resolve(s.id, 'discard')}>Discard</Button>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  {/if}
+
   <div class="list">
     {#if loading && !list}
       <Empty><span class="np-spinner"></span></Empty>
@@ -393,6 +445,57 @@
     flex-wrap: wrap;
     gap: 4px;
     padding: 2px 10px 2px 12px;
+  }
+  /* the cards a closed chat left unsaved: one line until opened, so the list below still reads as a list */
+  .unsaved {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: calc(100% - 16px);
+    margin: 0 8px 6px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--fg-muted);
+    font-size: var(--fs-sm);
+    text-align: left;
+  }
+  .unsaved:hover {
+    background: var(--bg-2);
+    color: var(--fg);
+  }
+  .unsaved .np-ellipsis {
+    flex: 1;
+    min-width: 0;
+  }
+  .cards {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 8px 8px;
+  }
+  .card {
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--radius);
+    background: var(--bg-1);
+    font-size: var(--fs-sm);
+  }
+  .ct {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .cs {
+    margin-top: 2px;
+    color: var(--fg-muted);
+    line-height: 1.45;
+  }
+  .cb {
+    display: flex;
+    gap: 6px;
+    margin-top: 7px;
   }
   .list {
     flex: 1;
