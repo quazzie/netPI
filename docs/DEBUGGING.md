@@ -58,9 +58,16 @@ node scripts/netpi.mjs methods diag.                  # every method with what i
 ```
 
 Options: `--home <dir>`, `--compact`, and `--write` for methods that change something (they are refused without it, so
-looking around never changes the app). Exit codes: 0 ok, 1 the call failed, 2 NetPI isn't running there.
+looking around never changes the app). Which methods those are is not a guess: the host marks each registration
+`readOnly` and `rpc.list` reports it, so a rename can neither make a method writable nor block a read (the name rule
+below is only the fallback for a server older than that flag). Exit codes: 0 ok, 1 the call failed, 2 NetPI isn't running there.
 
 Without Node: `curl -s -X POST -H "X-NetPI-Token: $TOKEN" -d '{}' $URL/api/rpc/diag.overview`.
+
+**An agent needs neither.** The `diag` tool has the same surface, and its `rpc` action reaches any method the host marks
+read-only — the ones above are not in the running app's set, they are what the tool itself wraps: `diag { action: "rpc",
+method: "events.recent", params: { max: 100 } }`, and `method: "rpc.list"` for what is reachable. So a fact diag does not
+wrap costs one tool call, not a secret read out of `server.json`.
 
 ## What to call
 
@@ -72,7 +79,7 @@ Without Node: `curl -s -X POST -H "X-NetPI-Token: $TOKEN" -d '{}' $URL/api/rpc/d
 | `diag.call` | One call in detail: the request's size (messages, tools, system prompt, input chars, the person's last message), the response (text/thinking chars, tool calls), each retry and notice, the error's type, HTTP status, transient, context overflow |
 | `diag.tools` | Tool calls, newest first: name, chat, run, state, duration, arguments and the result the model got (both cut short). Filters: `sessionId`, `name`, `errors`, `running` |
 | `diag.tool` | One tool call in full (`callId`, and `sessionId` once it has left the tool log): the parsed arguments, the whole result text the model got, the error flag, images and `details` |
-| `diag.journal` | The events that matter as a timeline, oldest first: statuses, messages (role, kind, a preview), tool starts and ends, stream starts and resets, agents' states, settings and plugin changes. Without the per-token events, which push everything else out of the host's `events.recent` within seconds. Filters: `sessionId`, `type` (prefix), `sinceSeq` |
+| `diag.journal` | The events that matter as a timeline, oldest first: statuses, messages (role, kind, a preview), tool starts and ends, stream starts and resets, agents' states, settings and plugin changes. Without the per-token events, which push everything else out of the host's `events.recent` within seconds. Filters: `sessionId`, `type` (prefix), `sinceSeq`. **Through the tool**, `sessionId` defaults to the calling chat — except with a `type` and no `sessionId`, which is a question about *every* session: a type filter quietly scoped to one chat is how you conclude an event never happened (idea-de1s7t) |
 | `diag.run` | One run in depth (`sessionId` or `agentId`): its info and since when it has its status, the chat (model, agent, profile, context size), the slot it holds or waits for (and who holds the others), its queued inputs, its subagents, its last calls, tool calls, journal and messages (tool calls with their arguments and call ids, tool results with a preview of their text) |
 | `diag.logs` | Log entries, filtered: `level` (at least), `category`, `contains`, `sinceMinutes`, `limit` |
 | `diag.settings` | settings.json without secrets (API keys, tokens and passwords shown as their length; `env:NAME` references kept) |

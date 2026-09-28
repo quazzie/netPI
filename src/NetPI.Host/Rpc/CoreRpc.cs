@@ -13,11 +13,11 @@ internal static class CoreRpc
 
     public static void Register(HostKernel k, List<IDisposable> registrations)
     {
-        void Add(string method, string description, Func<RpcRequest, object?> handler) =>
-            registrations.Add(k.Rpc.Register(method, (req, _) => Task.FromResult(handler(req)), description));
+        void Add(string method, string description, Func<RpcRequest, object?> handler, bool readOnly = false) =>
+            registrations.Add(k.Rpc.Register(method, (req, _) => Task.FromResult(handler(req)), description, readOnly));
 
-        void AddAsync(string method, string description, Func<RpcRequest, CancellationToken, Task<object?>> handler) =>
-            registrations.Add(k.Rpc.Register(method, (req, ct) => handler(req, ct), description));
+        void AddAsync(string method, string description, Func<RpcRequest, CancellationToken, Task<object?>> handler, bool readOnly = false) =>
+            registrations.Add(k.Rpc.Register(method, (req, ct) => handler(req, ct), description, readOnly));
 
         // ------------------------------------------------------------ app
         Add("app.info", "Host information → { version, os, home, appDir, defaultWorkspace, desktop, ... }", _ => new
@@ -34,10 +34,10 @@ internal static class CoreRpc
             dotnet = Environment.Version.ToString(),
             sqlite = Sqlite3.Version,
             pathSeparator = Path.DirectorySeparatorChar.ToString(),
-        });
+        }, readOnly: true);
 
         // ------------------------------------------------------------ projects
-        Add("projects.list", "All projects → ProjectInfo[]", _ => k.Sessions.ListProjects());
+        Add("projects.list", "All projects → ProjectInfo[]", _ => k.Sessions.ListProjects(), readOnly: true);
 
         Add("projects.create", "Create a project: { name, path, create? } → ProjectInfo", req =>
         {
@@ -60,7 +60,7 @@ internal static class CoreRpc
 
         // ------------------------------------------------------------ sessions
         Add("sessions.list", "Sessions, newest first: { projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, limit?, offset? } → SessionInfo[]",
-            req => k.Sessions.ListSessions(req.Bind<SessionQuery>()));
+            req => k.Sessions.ListSessions(req.Bind<SessionQuery>()), readOnly: true);
 
         Add("sessions.create", "Create a session: { title?, projectId?, model?, reasoning? } → SessionInfo", req =>
             k.Sessions.CreateSession(new SessionInfo
@@ -88,7 +88,7 @@ internal static class CoreRpc
         {
             var id = req.Required("id");
             return k.Sessions.GetSession(id) ?? throw new RpcException("not_found", $"Session {id} not found");
-        });
+        }, readOnly: true);
 
         Add("sessions.update", "Update a session: { id, title?, model?, reasoning?, archived?, meta? } → SessionInfo (null clears model/reasoning)", req =>
             k.Sessions.UpdateSession(req.Required("id"), s =>
@@ -117,18 +117,18 @@ internal static class CoreRpc
             var page = k.Sessions.GetMessages(id, req.Int64("beforeSeq"), limit + 1);
             var hasMore = page.Count > limit;
             return new { messages = hasMore ? page.Skip(1).ToList() : page, hasMore };
-        });
+        }, readOnly: true);
 
         // ------------------------------------------------------------ models
         AddAsync("models.list", "Models of all providers: { refresh? } → { models, defaultModel }", async (req, ct) =>
         {
             var models = await k.Models.ListAsync(req.Bool("refresh") ?? false, ct).ConfigureAwait(false);
             return new { models, defaultModel = k.Models.DefaultModelRef };
-        });
+        }, readOnly: true);
 
         // ------------------------------------------------------------ ui
-        Add("ui.tabs", "Plugin UI tabs → UiTabInfo[]", _ => k.Ui.Tabs);
-        Add("ui.commands", "Slash commands → SlashCommandInfo[]", _ => k.Ui.Commands);
+        Add("ui.tabs", "Plugin UI tabs → UiTabInfo[]", _ => k.Ui.Tabs, readOnly: true);
+        Add("ui.commands", "Slash commands → SlashCommandInfo[]", _ => k.Ui.Commands, readOnly: true);
 
         Add("ui.state.get", "Persisted UI state: { key } → JSON or null", req =>
         {
@@ -136,7 +136,7 @@ internal static class CoreRpc
             if (raw is null) return null;
             try { return JsonNode.Parse(raw); }
             catch (JsonException) { return null; }
-        });
+        }, readOnly: true);
 
         Add("ui.state.set", "Persist UI state: { key, value } → true (null value deletes)", req =>
         {
@@ -148,7 +148,7 @@ internal static class CoreRpc
         });
 
         // ------------------------------------------------------------ plugins
-        Add("plugins.list", "Plugins → PluginInfo[]", _ => k.Plugins.List());
+        Add("plugins.list", "Plugins → PluginInfo[]", _ => k.Plugins.List(), readOnly: true);
 
         AddAsync("plugins.reload", "Reload a plugin: { id } → true", async (req, ct) =>
         {
@@ -170,6 +170,8 @@ internal static class CoreRpc
         });
 
         // ------------------------------------------------------------ settings
+        // settings.get is deliberately NOT read-only: it returns the document as it is, API keys and all (that is why
+        // diag.settings redacts), so it must not be reachable from a tool. Everything marked below only reads.
         Add("settings.get", "Settings document → { path, settings }", _ => new { path = k.Settings.FilePath, settings = k.Settings.Snapshot() });
 
         Add("settings.set", "Set one value: { path (dotted), value } → true (null removes the key)", req =>
@@ -197,10 +199,10 @@ internal static class CoreRpc
             return CoreSettings.Sections(Path.Combine(k.Paths.Home, "workspace")).Concat(k.Services.GetAll<SettingsSection>())
                 .OrderBy(s => Rank(s.Group)).ThenBy(s => s.Order).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-        });
+        }, readOnly: true);
 
         // ------------------------------------------------------------ misc
-        Add("fs.dirs", "Folder picker: { path? } → { path, parent, dirs: {name,path}[], roots }", req => ListDirectories(req.Str("path")));
+        Add("fs.dirs", "Folder picker: { path? } → { path, parent, dirs: {name,path}[], roots }", req => ListDirectories(req.Str("path")), readOnly: true);
 
         Add("tools.list", "Tool registrations → { name, label, description, category, readOnly, pluginId, active, disabled, priority }[]", _ =>
         {
@@ -214,11 +216,11 @@ internal static class CoreRpc
                     pluginId = r.PluginId, active = active.Contains(r.Tool), disabled = k.Tools.IsDisabled(d.Name), priority = r.Priority,
                 };
             }).ToList();
-        });
+        }, readOnly: true);
 
-        Add("rpc.list", "RPC methods → { method, description, pluginId }[]", _ => k.Rpc.List());
+        Add("rpc.list", "RPC methods → { method, description, pluginId }[]", _ => k.Rpc.List(), readOnly: true);
 
-        Add("services.list", "Registered services (diagnostics)", _ => k.Services.List());
+        Add("services.list", "Registered services (diagnostics)", _ => k.Services.List(), readOnly: true);
 
         Add("events.recent", "Recent bus events: { max? } → { type, sid, d, seq, ts, source }[]", req =>
         {
@@ -227,7 +229,7 @@ internal static class CoreRpc
             {
                 type = e.Type, sid = e.SessionId, d = SafeElement(e.Data), seq = e.Seq, ts = e.Time.ToUnixTimeMilliseconds(), source = e.Source, ui = e.Ui,
             }).ToList();
-        });
+        }, readOnly: true);
 
         Add("logs.recent", "Recent log entries: { max? } → { time, level, category, message, exception? }[]", req =>
         {
@@ -236,7 +238,7 @@ internal static class CoreRpc
             {
                 time = e.Time, level = LogSink.LevelTag(e.Level).ToLowerInvariant(), category = e.Category, message = e.Message, exception = e.Exception,
             }).ToList();
-        });
+        }, readOnly: true);
     }
 
     private static string ExistingDirectory(string path, bool create)

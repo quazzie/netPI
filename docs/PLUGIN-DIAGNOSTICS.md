@@ -11,7 +11,12 @@ methods, the recent event stream and the log. It also provides the `/reload` com
   event journal, runs, tool-set changes, logs, settings and failed requests (`docs/DEBUGGING.md`). The tab shows the
   problems as a strip above the views and the model calls in its Calls view.
 - It registers the read-only **`diag` tool** (`docs/TOOLS.md`): the same views for the agent, as one action per method.
-  Only the inspecting methods are reachable, so `/reload` and the rest stay the user's.
+  Only the inspecting methods are reachable, so `/reload` and the rest stay the user's — with one exception, the `rpc`
+  action, which reaches **any** method whose registration says `readOnly` (`ctx.Rpc.Register(…, readOnly: true)`, reported
+  by `rpc.list`). Unmarked means "may write" and stays out; `diag.rpc` and `diag.reload` are refused outright, the answer
+  is cut at 200k characters, and a method that does not answer in 30 s is called out rather than waited on. That is what
+  makes "a fact diag does not wrap" one tool call instead of a hand-rolled POST with the token out of `server.json`
+  (idea-de1s7t). A plugin that registers only reads should mark them.
 
 ## `diag.toolsets`
 

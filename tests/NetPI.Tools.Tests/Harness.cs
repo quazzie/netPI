@@ -179,14 +179,16 @@ public sealed class FakeTools : IToolRegistry
 public sealed class FakeRpc : IRpcRegistry
 {
     public Dictionary<string, RpcHandler> Handlers { get; } = [];
-    public IDisposable Register(string method, RpcHandler handler, string? description = null)
+    public Dictionary<string, bool> ReadOnly { get; } = [];
+    public IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false)
     {
         Handlers[method] = handler;
-        return new Disposer(() => Handlers.Remove(method));
+        ReadOnly[method] = readOnly;
+        return new Disposer(() => { Handlers.Remove(method); ReadOnly.Remove(method); });
     }
     public Task<object?> InvokeAsync(string method, object? parameters = null, CancellationToken ct = default) =>
         Handlers[method](new RpcRequest { Method = method, Params = NetPiJson.ToElement(parameters ?? new { }) }, ct);
-    public IReadOnlyList<RpcMethodInfo> List() => Handlers.Keys.Select(k => new RpcMethodInfo(k, null, "test")).ToList();
+    public IReadOnlyList<RpcMethodInfo> List() => Handlers.Keys.Select(k => new RpcMethodInfo(k, null, "test", ReadOnly.GetValueOrDefault(k))).ToList();
     public bool Exists(string method) => Handlers.ContainsKey(method);
 }
 

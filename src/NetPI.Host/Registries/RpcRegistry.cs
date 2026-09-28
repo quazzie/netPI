@@ -8,19 +8,19 @@ namespace NetPI.Host.Registries;
 /// </summary>
 internal sealed class RpcRegistry : IRpcRegistry
 {
-    private sealed record Entry(string Method, RpcHandler Handler, string? Description, string Owner);
+    private sealed record Entry(string Method, RpcHandler Handler, string? Description, string Owner, bool ReadOnly);
 
     private readonly Lock _gate = new();
     private readonly Dictionary<string, List<Entry>> _methods = new(StringComparer.Ordinal);
 
-    public IDisposable Register(string method, RpcHandler handler, string? description = null) =>
-        Register(method, handler, description, "host");
+    public IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false) =>
+        Register(method, handler, description, "host", readOnly);
 
-    public IDisposable Register(string method, RpcHandler handler, string? description, string owner)
+    public IDisposable Register(string method, RpcHandler handler, string? description, string owner, bool readOnly = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(method);
         ArgumentNullException.ThrowIfNull(handler);
-        var entry = new Entry(method.Trim(), handler, description, owner);
+        var entry = new Entry(method.Trim(), handler, description, owner, readOnly);
         lock (_gate)
         {
             if (!_methods.TryGetValue(entry.Method, out var stack)) _methods[entry.Method] = stack = [];
@@ -59,7 +59,7 @@ internal sealed class RpcRegistry : IRpcRegistry
                 .Where(s => s.Count > 0)
                 .Select(s => s[^1])
                 .OrderBy(e => e.Method, StringComparer.Ordinal)
-                .Select(e => new RpcMethodInfo(e.Method, e.Description, e.Owner))
+                .Select(e => new RpcMethodInfo(e.Method, e.Description, e.Owner, e.ReadOnly))
                 .ToList();
     }
 

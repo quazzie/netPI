@@ -731,7 +731,8 @@ turn run in parallel.
 
 **It cannot change anything.** The action picks the method out of a fixed list of the inspecting ones, so `reload` and
 every other writing method are not reachable — an unknown action (including `reload`) is refused with the list of the
-read-only ones and who may write instead.
+read-only ones and who may write instead. The single exception is the `rpc` action, which reaches any method the host
+**marks** `readOnly` (see below).
 
 | action | method | what it answers |
 |---|---|---|
@@ -748,12 +749,31 @@ read-only ones and who may write instead.
 | `settings` | `diag.settings` | the settings document without secrets |
 | `failures`, `failure` | `diag.failures` | the requests a backend refused (`failure`: one with its body) |
 | `snapshot`, `event` | `diag.snapshot` | plugins, tools, RPC methods, recent events, logs, runtime (`event`: one event's payload) |
+| `rpc` | the method named by `method` | any other **read-only** method — the ones diag does not wrap |
 
 The arguments are the RPC's own: `limit`, `sessionId`, `runId`/`agentId`, `id`, `callId`, `name`, `type`, `sinceSeq`,
 `beforeSeq`, `errors`, `running`, `detail`, `level`, `category`, `contains`, `sinceMinutes`, `maxChars`, `events`,
-`seq`. The session-scoped actions (`calls`, `tools`, `journal`, `run`, `toolsets`, `messages`) default to the
-**calling** chat; `sessionId: "all"` means no filter. An action forwards to its method as-is, renaming a parameter
+`seq`, and for `rpc` `method` + `params`. The session-scoped actions (`calls`, `tools`, `journal`, `run`, `toolsets`,
+`messages`) default to the **calling** chat; `sessionId: "all"` means no filter. A `journal` query with a `type` and no
+`sessionId` is the exception: it looks at **every** session, because a type filter silently scoped to one chat is how you
+conclude an event never happened. An action forwards to its method as-is, renaming a parameter
 only where the method names it differently (`messages` → `sessions.messages`, which takes the session as `id`).
+
+**`rpc` in full** (idea-de1s7t):
+
+```
+diag { action: "rpc", method: "events.recent", params: { max: 100 } }  → the method's JSON
+diag { action: "rpc", method: "rpc.list" }                            → every method with readOnly
+```
+
+- Only methods registered `readOnly` are called. That is the registration's own claim (`IRpcRegistry.Register(method,
+  handler, description, readOnly: true)`, reported by `rpc.list`), not a name pattern: a renamed method neither becomes
+  writable nor gets blocked, and an **unmarked method may write and is refused** with who may instead. The host marks its
+  own reads (`app.info`, `projects.list`, `sessions.list/get/messages`, `models.list`, `ui.tabs`, `ui.commands`,
+  `ui.state.get`, `plugins.list`, `settings.schema`, `fs.dirs`, `tools.list`, `rpc.list`, `services.list`,
+  `events.recent`, `logs.recent`); `settings.get` is deliberately not among them (it returns API keys).
+- `diag.rpc` and `diag.reload` are refused (the tool cannot call itself or the one method that changes the app).
+- The result is cut at 200 000 characters, and a method that has not answered in 30 s is reported as such.
 
 ```ts
 content: the RPC's JSON, as the model reads it

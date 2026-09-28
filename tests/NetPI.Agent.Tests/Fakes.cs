@@ -219,13 +219,14 @@ public sealed class FakeTools(ISettings settings) : IToolRegistry
 
 public sealed class FakeRpc : IRpcRegistry
 {
-    private readonly ConcurrentDictionary<string, (RpcHandler Handler, string PluginId)> _handlers = new();
+    private readonly ConcurrentDictionary<string, (RpcHandler Handler, string PluginId, bool ReadOnly)> _handlers = new();
 
-    public IDisposable Register(string method, RpcHandler handler, string? description = null) => RegisterFor(method, handler, "test");
+    public IDisposable Register(string method, RpcHandler handler, string? description = null, bool readOnly = false) =>
+        RegisterFor(method, handler, "test", readOnly);
 
-    public IDisposable RegisterFor(string method, RpcHandler handler, string pluginId)
+    public IDisposable RegisterFor(string method, RpcHandler handler, string pluginId, bool readOnly = false)
     {
-        _handlers[method] = (handler, pluginId);
+        _handlers[method] = (handler, pluginId, readOnly);
         return new Disposer(() => _handlers.TryRemove(method, out _));
     }
 
@@ -239,7 +240,7 @@ public sealed class FakeRpc : IRpcRegistry
     /// <summary>Invoke and return the result as JSON (what the UI would receive).</summary>
     public async Task<JsonNode?> CallAsync(string method, object? parameters = null) => NetPiJson.ToNode(await InvokeAsync(method, parameters));
 
-    public IReadOnlyList<RpcMethodInfo> List() => _handlers.Select(kv => new RpcMethodInfo(kv.Key, null, kv.Value.PluginId)).ToList();
+    public IReadOnlyList<RpcMethodInfo> List() => _handlers.Select(kv => new RpcMethodInfo(kv.Key, null, kv.Value.PluginId, kv.Value.ReadOnly)).ToList();
     public bool Exists(string method) => _handlers.ContainsKey(method);
 }
 
