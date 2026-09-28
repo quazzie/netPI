@@ -362,6 +362,11 @@
     background: var(--bg-3);
     color: var(--fg-muted);
   }
+  /* stretch the label so the chevron sits at the right edge of the badge (buttons centre their text by default) */
+  .badge .np-ellipsis {
+    flex: 1 1 auto;
+    text-align: left;
+  }
   .file {
     display: inline-flex;
     line-height: 20px;
