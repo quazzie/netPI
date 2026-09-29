@@ -316,21 +316,12 @@ export class ChatStore {
         this.#endTimer = setTimeout(() => this.stream.ended && this.stream.clear(), 2500);
         break;
       case 'tool.start': {
-        let t = this.live.get(d.callId);
-        if (!t) {
-          t = new LiveTool(d);
-          this.live.set(d.callId, t);
-          if (this.live.size > 60) this.live.delete(this.live.keys().next().value);
-        }
+        this.#liveFor(d);
         break;
       }
       case 'tool.output': {
-        let t = this.live.get(d.callId);
-        if (!t) {
-          t = new LiveTool(d);
-          this.live.set(d.callId, t);
-        }
-        t.append(d.chunk ?? '');
+        // the start can be missed (a reconnect, an event lost): creating here, through the same capped path
+        this.#liveFor(d).append(d.chunk ?? '');
         break;
       }
       case 'tool.end':
@@ -352,6 +343,19 @@ export class ChatStore {
       default:
         break;
     }
+  }
+
+  /** The LiveTool behind a tool event, created on first sight: every creation goes through this one path, so the
+   *  map (each LiveTool holds up to 200 KB of output) never grows past its cap — a tool.output alone could
+   *  otherwise add entries without eviction. */
+  #liveFor(d) {
+    let t = this.live.get(d.callId);
+    if (!t) {
+      t = new LiveTool(d);
+      this.live.set(d.callId, t);
+      if (this.live.size > 60) this.live.delete(this.live.keys().next().value);
+    }
+    return t;
   }
 
   /** The model answers again: a kept banner (the compaction before this call) has done its job. */

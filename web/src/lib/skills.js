@@ -5,6 +5,12 @@ import { rpc } from './rpc.svelte.js';
 const TTL = 10_000;
 const cache = new Map(); // sessionId → { at, items }
 
+/** Expired entries are dropped when a fresh one lands: the cache must not keep one entry per session ever opened. */
+function evict() {
+  const now = Date.now();
+  for (const [id, e] of cache) if (now - e.at > TTL) cache.delete(id);
+}
+
 /** The cached entries (possibly empty); when a refresh brings new ones, onUpdate is called. */
 export function skillCommands(sessionId, onUpdate) {
   if (!sessionId) return [];
@@ -12,6 +18,7 @@ export function skillCommands(sessionId, onUpdate) {
   if (!entry || Date.now() - entry.at > TTL) {
     entry ??= { at: 0, items: [] };
     entry.at = Date.now();
+    evict();
     cache.set(sessionId, entry);
     const e = entry;
     rpc('skills.list', { sessionId }, { timeout: 8000 })
