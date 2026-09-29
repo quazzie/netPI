@@ -486,6 +486,23 @@ still open. The yue2 taskbar idea (v9dg6g), which the commits seem to finish, st
 
 ## Known limits and next experiments
 
+- **Four decision sites guard on a threshold and against "none"; none of them guards against a near-tie** (idea-grc0s8,
+  found 2026-09-28 while building the commit check). Every pick-one in the ideas plugin asks "which of these, or none"
+  and takes the winner when it clears its threshold *and* beats `none`:
+
+  | site | threshold | compares against |
+  |---|---|---|
+  | `ideas.recall` (which idea the first message continues) | `ideas.recallThreshold` 0.8 | `none` |
+  | `ideas.closed` attach (which idea the chat worked on) | `ideas.attachThreshold` 0.8 | `none` |
+  | commit check link (which idea the commit works on) | `ideas.linkThreshold` 0.7 | `none`, and *every* option above the threshold is linked |
+  | commit check done (is the idea finished) | `ideas.doneThreshold` 0.8 | `MORE` |
+
+  A winner at 0.71 with the runner-up at 0.29 is treated exactly like 0.99/0.01, and NInfer's label probabilities move
+  with the execution shape (two equally valid runs that only chunk the prompt differently disagreed on 26 of 480
+  answers), so a near-tie is a decision that could go either way reported as a fact. The cheap rule to try: require the
+  winner to beat the **runner-up** by a margin (or, for the `none` sites, to beat `none` by a margin as well) and to fall
+  back to "no offer" when it does not — the probability of every label is already in the answer, so it is a threshold and
+  a subtraction, not a new decision. It has not been measured; the runs above tuned the thresholds *against* `none` only.
 - **The log teacher is the ceiling, and the student reaches it.** Retrained on Qwen3.8-27B's labels, Laya went from
   0.53 to 0.78 on the subsystem and matches its teacher on the rest (gold per epoch: 0.79 / 0.93 / 0.95 / 0.91 after
   1, 0.76 / 0.92 / 0.93 / 0.97 after 2, 0.78 / 0.93 / 0.93 / 0.97 after 3: flat after the first epoch, so more epochs
