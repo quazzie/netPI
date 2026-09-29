@@ -32,6 +32,12 @@ public sealed class IdeasPlugin : INetPiPlugin
                     "The probability a closed chat has to be about an open idea before the chat is attached to it. 0.8 was right on 5 of 6 (docs/DECISION-MODELS.md).", 0.3, 0.99),
                 SettingInfo.Str("ideas.model", "Model for the idea checks", IdeaRecall.DefaultModel,
                     "The decision model (through the Decide plugin's server) and the model that drafts the save check. qwen3.8-27b, the NInfer chat model, was measured."),
+                SettingInfo.Bool("ideas.closeOnCommit", "Notice when a commit finishes an idea", true,
+                    "Every project with a git repository is watched. A commit is recorded on the open idea it works on, and when a commit may have finished one you get a card to mark it done (needs the Files and Decide plugins)."),
+                SettingInfo.Number("ideas.linkThreshold", "Link threshold", IdeaCommitCheck.DefaultLinkThreshold,
+                    "The probability a commit has to be about an open idea before the commit is recorded on it. 0.7 linked no wrong idea in 187 commits (docs/DECISION-MODELS.md).", 0.3, 0.99),
+                SettingInfo.Number("ideas.doneThreshold", "Finished threshold", IdeaCommitCheck.DefaultDoneThreshold,
+                    "The probability an idea has to be finished before you are offered. 0.8 offered 4 of 5 finished ideas and nothing that was only advanced.", 0.3, 0.99),
             ],
         });
         var store = context.Track(new IdeasStore(context.Events, context.Logger));
@@ -44,7 +50,12 @@ public sealed class IdeasPlugin : INetPiPlugin
         var rpc = new IdeasRpc(store, locator);
         rpc.Register(context.Rpc);
         new IdeaRecall(context, store, locator).Register(context.Rpc);
-        new IdeaSaveCheck(context, store, locator).Register(context.Rpc);
+        var saveCheck = new IdeaSaveCheck(context, store, locator);
+        saveCheck.Register(context.Rpc);
+        // Phase 3: watch the projects' repositories. Started after the tab and the file watcher, and it never blocks
+        // the start: a project that cannot be watched is retried on the next rescan.
+        var commitCheck = context.Track(new IdeaCommitCheck(context, store, locator, saveCheck));
+        _ = commitCheck.StartAsync();
 
         context.Ui.AddTab(new UiTabInfo { Id = "ideas", Title = "Ideas", Panel = UiPanel.Right, Icon = "idea", Order = 20, Module = "ui.js" });
         context.Ui.AddCommand(new SlashCommandInfo

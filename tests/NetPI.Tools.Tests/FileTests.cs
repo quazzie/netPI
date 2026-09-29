@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using NetPI.Tools.Files;
 
 namespace NetPI.Tools.Tests;
@@ -591,6 +592,65 @@ public static class FileTests
             Check.True(list.Entries.Any(e => e.Rel == "src/app.cs" && e.Size > 0 && e.Mtime is not null));
             var json = NetPiJson.Serialize(list);
             Check.Contains(json, "\"isDir\":");
+        });
+
+        r.Add("rpc: files.commits — the history newest first, only what came after a hash, null outside a repository", async () =>
+        {
+            var dir = T.TempDir("commits");
+            if (!await Git(dir, "init", "-q", "-b", "main"))
+            {
+                Console.WriteLine("    (no git on PATH: skipped)");
+                return;
+            }
+            var ctx = new FakePluginContext(dir);
+            await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
+            async Task<JsonArray?> Commits(object? p)
+            {
+                var r = NetPiJson.ToNode(await ctx.RpcFake.InvokeAsync("files.commits", p)) as JsonObject;
+                return r?["commits"] as JsonArray;
+            }
+
+            await Git(dir, "config", "user.email", "test@example.com");
+            await Git(dir, "config", "user.name", "Test");
+            Check.Equal(null, await Commits(new { cwd = dir }), "a repository without commits has none to list");
+
+            await File.WriteAllTextAsync(Path.Combine(dir, "a.txt"), "one");
+            await Git(dir, "add", "-A");
+            await Git(dir, "commit", "-q", "-m", "first: the nudge counter");
+            var first = (JsonArray)(await Commits(new { cwd = dir }))!;
+            Check.Equal(1, first.Count);
+            Check.Equal("first: the nudge counter", first[0]!["subject"]!.GetValue<string>());
+            Check.Equal(40, first[0]!["hash"]!.GetValue<string>().Length, "the full hash");
+            Check.Equal(7, first[0]!["short"]!.GetValue<string>().Length, "and the short one");
+            Check.Equal("Test", first[0]!["author"]!.GetValue<string>());
+
+            await File.WriteAllTextAsync(Path.Combine(dir, "b.txt"), "two");
+            await Git(dir, "add", "-A");
+            await Git(dir, "commit", "-q", "-m", "second (idea-c7xyem)");
+            var both = (JsonArray)(await Commits(new { cwd = dir }))!;
+            Check.Equal(2, both.Count, "newest first");
+            Check.Equal("second (idea-c7xyem)", both[0]!["subject"]!.GetValue<string>());
+
+            var after = (JsonArray)(await Commits(new { cwd = dir, since = first[0]!["hash"]!.GetValue<string>() }))!;
+            Check.Equal(1, after.Count, "only what came after the hash the caller last saw");
+            Check.Equal("second (idea-c7xyem)", after[0]!["subject"]!.GetValue<string>());
+
+            Check.Equal(1, (await Commits(new { cwd = dir, limit = 1 }))!.Count, "limit");
+            Check.Equal(2, (await Commits(new { cwd = dir, since = "not-a-hash" }))!.Count, "a hash the repository does not know is ignored, not an error");
+            Check.Equal(null, await Commits(new { cwd = T.TempDir("nogit") }), "outside a repository: null");
+
+            static async Task<bool> Git(string cwd, params string[] args)
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+                foreach (var a in args) psi.ArgumentList.Add(a);
+                try
+                {
+                    using var p = System.Diagnostics.Process.Start(psi)!;
+                    await p.WaitForExitAsync();
+                    return p.ExitCode == 0;
+                }
+                catch (System.ComponentModel.Win32Exception) { return false; }
+            }
         });
 
         r.Add("rpc: files.git — branch and the changes since the last commit, staged or not, new files counted", async () =>

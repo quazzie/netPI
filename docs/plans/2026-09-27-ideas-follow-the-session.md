@@ -76,11 +76,21 @@ check per message count, the parser).
 
 ### Phase 3: close on commit
 
-- A watcher per project with a git repository (`.git/logs/HEAD`, debounced like the ideas file watcher) reads the new
-  commits (`git log` since the last hash seen, kept per repository in the pending file).
-- Each commit: link decision over the ideas open then (p ≥ `ideas.linkThreshold`) → a `commits` entry on the idea;
-  then the done decision on the idea's full text and all its linked commits (p ≥ `ideas.doneThreshold`) → a pending
-  suggestion `{ kind: "done", ideaId, commits }` → "mark done?" card. One offer per idea.
+**Built 2026-09-28** (`plugins/NetPI.Ideas/IdeaCommitCheck.cs`, `files.commits` in the Files plugin, the `done` card in
+core and in the Ideas tab, settings `ideas.closeOnCommit` / `ideas.linkThreshold` / `ideas.doneThreshold`), with these
+changes to the plan above:
+
+- The watcher watches the **whole `.git` directory**, not `.git/logs/HEAD`: a repository has no reflog until its first
+  commit, so the file named in the plan does not exist in a fresh one and every commit of it would be missed. Any write
+  under `.git` wakes a debounced sweep; the sweep only acts on commits it has not seen.
+- The commits are read through the **Files plugin's `files.commits`** (a plugin cannot run `git`), which also resolves
+  the repository, so the watcher is installed even before the first commit.
+- The link decision links **every** option at or above the threshold instead of the single best one: a commit can finish
+  two ideas (b366dd88 did) and the pick-one only returns one.
+- The last commit read per repository lives in `ideas-pending.json` under `repos` (kept 60 days), not in memory, so a
+  restart does not sweep the backlog's own history.
+- The offer is a `done` card, like the save card: "may be done: <commits>", **Mark done** / **Dismiss**, in core
+  (the chat that made it may be closed) and in the Ideas tab's "waiting for you" line, which now names both kinds.
 
 ## Tests and docs
 

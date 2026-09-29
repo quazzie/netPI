@@ -76,6 +76,144 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas: a commit is recorded on the idea it works on, and only a clear 'finished' offers the card", async () =>
+        {
+            var env = new Env();
+            // A real repository, so the watcher watches a real reflog.
+            if (!await Git(env.ProjectDir, "init", "-q", "-b", "main")) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            await Git(env.ProjectDir, "config", "user.email", "test@example.com");
+            await Git(env.ProjectDir, "config", "user.name", "Test");
+            var calls = 0;
+            env.Ctx.RpcFake.Register("files.commits", (req, _) =>
+            {
+                Interlocked.Increment(ref calls);
+                var cwd = req.Str("cwd") ?? env.ProjectDir;
+                var since = req.Str("since");
+                var log = GitOut(cwd, "log", $"--max-count={req.Int("limit") ?? 20}",
+                    $"--format=%H%h%an%aI%s", since is { Length: > 0 } ? $"{since}..HEAD" : "HEAD");
+                var commits = new JsonArray();
+                foreach (var line in log.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var f = line.Split('');
+                    if (f.Length < 5) continue;
+                    commits.Add(new JsonObject { ["hash"] = f[0], ["short"] = f[1], ["author"] = f[2], ["at"] = f[3], ["subject"] = f[4] });
+                }
+                return Task.FromResult<object?>(new JsonObject { ["repo"] = cwd, ["commits"] = commits });
+            });
+            // The link picks the first idea, the done question is a plain two-way one.
+            var finished = false;
+            var asked = new List<JsonObject>();
+            env.Ctx.RpcFake.Register("decide.decision", (req, _) =>
+            {
+                asked.Add(JsonObject.Create(req.Params.Clone())!);
+                var labels = req.Params.GetProperty("branches")[0].GetProperty("labels").EnumerateArray().Select(e => e.GetString() ?? "").ToList();
+                var probs = new JsonObject();
+                if (labels is ["DONE", "MORE"]) { probs["DONE"] = finished ? 0.92 : 0.4; probs["MORE"] = finished ? 0.08 : 0.6; }
+                else { probs[labels[0]] = 0.86; foreach (var l in labels.Skip(1)) probs[l] = 0.14 / (labels.Count - 1); }
+                return Task.FromResult<object?>(new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["probabilities"] = probs }) });
+            });
+
+            await env.StartAsync();
+            var nudge = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Nudge counter reset" } }))["id"].Str()!;
+            var other = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Calm ideas tab" } }))["id"].Str()!;
+            await Until(() => Volatile.Read(ref calls) > 0, "the repository is watched");
+
+            // a commit that only advances the idea: recorded, no offer
+            await File.WriteAllTextAsync(Path.Combine(env.ProjectDir, "nudge.txt"), "one");
+            await Git(env.ProjectDir, "add", "-A");
+            await Git(env.ProjectDir, "commit", "-q", "-m", "nudge: first step of the reset");
+            await Until(() => (IdeaAt(env, nudge)["commits"] as JsonArray)?.Count > 0,
+                "the commit lands on the idea: " + string.Join(" | ", env.Ctx.Log.Lines.Reverse().Take(8).Select(l => l.ToString())), 6000);
+            var linked = ((JsonArray)IdeaAt(env, nudge)["commits"]!)[0]!;
+            Check.Equal("nudge: first step of the reset", linked["subject"]!.Str());
+            Check.Equal(40, linked["hash"]!.Str()!.Length);
+            Check.Equal(0, (IdeaAt(env, other)["commits"] as JsonArray)?.Count ?? 0, "not the other idea");
+            Check.Equal(0, (await Suggestions(env)).Count, "a commit that only advances an idea is not an offer");
+
+            // the commit that finishes it: the card, once
+            finished = true;
+            await File.WriteAllTextAsync(Path.Combine(env.ProjectDir, "nudge.txt"), "two");
+            await Git(env.ProjectDir, "add", "-A");
+            await Git(env.ProjectDir, "commit", "-q", "-m", "nudge: reset the counter after a good answer");
+            var cards = await WaitForSuggestions(env, 1, 8000);
+            var card = cards[0]!;
+            Check.Equal("done", card["kind"]!.Str());
+            Check.Equal(nudge, card["ideaId"]!.Str());
+            Check.Equal("Nudge counter reset", card["title"]!.Str());
+            Check.Equal(2, ((JsonArray)card["commits"]!).Count, "the card names the commits linked to the idea");
+            Check.Equal("open", IdeaAt(env, nudge)["status"]!.Str(), "nothing is marked done without a click");
+            Check.Contains(asked[^1]!["messages"]![0]!["content"]!.Str()!, "Nudge counter reset", "the done question carries the idea's text");
+            Check.Contains(asked[^1]!["messages"]![0]!["content"]!.Str()!, "reset the counter after a good answer", "and its commits");
+
+            // Mark done: the idea is done, the commits stay, the card is gone
+            var marked = await env.Rpc("ideas.resolve", new JsonObject { ["id"] = card["id"]!.Str(), ["action"] = "done" });
+            Check.Equal("done", marked["saved"]!["status"]!.Str());
+            Check.Equal(2, ((JsonArray)IdeaAt(env, nudge)["commits"]!).Count, "the commits stay on the idea");
+            Check.Equal(0, (await Suggestions(env)).Count, "and the card is answered");
+
+            // a commit whose message names the idea: linked with no model at all
+            asked.Clear();
+            var calm = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Ideas tab titles only" } }))["id"].Str()!;
+            await File.WriteAllTextAsync(Path.Combine(env.ProjectDir, "tab.txt"), "x");
+            await Git(env.ProjectDir, "add", "-A");
+            await Git(env.ProjectDir, "commit", "-q", "-m", $"the calm tab ({calm})");
+            await Until(() => (IdeaAt(env, calm)["commits"] as JsonArray)?.Count > 0, "the named idea is linked", 6000);
+            // No pick-one over the open ideas was asked: the message named it. (The done question still is - it is a
+            // different decision, and it is the one that decides whether to offer anything.)
+            var links = asked.Where(a => ((JsonArray)a["branches"]![0]!["labels"]!).Count > 2).ToList();
+            Check.Equal(0, links.Count, "a commit naming the idea needs no link decision");
+        });
+
+        r.Add("ideas: the commit check stays quiet without the Files or Decide plugin, and when it is off", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            // No files.commits registered: the watcher finds nothing to read and does nothing at all.
+            await Task.Delay(200);
+            Check.Equal(0, (await Suggestions(env)).Count);
+            var idea = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Quiet" } }))["id"].Str()!;
+            Check.Equal("open", IdeaAt(env, idea)["status"]!.Str());
+        });
+
+        /// <summary>One idea, read synchronously: the pollers below call it from a lambda.</summary>
+        JsonObject IdeaAt(Env env, string id) =>
+            (JsonObject)NetPiJson.ToNode(env.Ctx.RpcFake.Call("ideas.get", new JsonObject { ["id"] = id }).GetAwaiter().GetResult())!;
+
+        async Task Until(Func<bool> done, string what, int ms = 4000)
+        {
+            for (var waited = 0; waited < ms; waited += 25)
+            {
+                if (done()) return;
+                await Task.Delay(25);
+            }
+            throw new AssertException($"timed out waiting for: {what}");
+        }
+
+        static async Task<bool> Git(string cwd, params string[] args)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+            try
+            {
+                using var p = System.Diagnostics.Process.Start(psi)!;
+                await p.WaitForExitAsync();
+                return p.ExitCode == 0;
+            }
+            catch (System.ComponentModel.Win32Exception) { return false; }
+        }
+
+        static string GitOut(string cwd, params string[] args)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+            try
+            {
+                using var p = System.Diagnostics.Process.Start(psi)!;
+                return p.StandardOutput.ReadToEnd();
+            }
+            catch (System.ComponentModel.Win32Exception) { return ""; }
+        }
+
         r.Add("ideas: the ideas tool round trip (stamps the session's project; deleting is the user's)", async () =>
         {
             var env = new Env();

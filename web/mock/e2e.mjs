@@ -592,6 +592,22 @@ log('ideas: save on tab close (the card above the composer)');
   const saved = list.find((i) => /Prefill: short prompts first/.test(i.title));
   check('save check: Save writes the idea with the closed chat on it', !!saved && saved.sessions?.length === 1, saved?.sessions?.[0]?.sessionId ?? 'no idea');
 
+  // The commit check's card: an idea already in the backlog, and only its status in question.
+  await rpcCall('ideas.add', { projectId, idea: { title: 'Retry: shorter notices', summary: 'One line, no ids.' } });
+  await rpcCall('mock.commitFinishesIdea', { phrase: 'Retry: shorter' });
+  const doneCard = page.locator('[aria-label="An idea a commit may have finished"]');
+  await doneCard.waitFor({ timeout: 5000 }).catch(() => {});
+  check('commit check: a card offers an idea a commit may have finished', (await doneCard.count()) === 1, await doneCard.innerText().catch(() => ''));
+  check('commit check: the card names the idea and its commit',
+    /Retry: shorter notices/.test(await doneCard.innerText().catch(() => '')) && /measured/.test(await doneCard.innerText().catch(() => '')));
+  await shot(page, '27d-idea-done-card');
+  await doneCard.locator('button', { hasText: 'Mark done' }).click();
+  await page.waitForTimeout(400);
+  check('commit check: the card goes away after Mark done', (await doneCard.count()) === 0);
+  const afterDone = (await rpcCall('ideas.list'))?.ideas ?? [];
+  const closed = afterDone.find((i) => /Retry: shorter notices/.test(i.title));
+  check('commit check: Mark done closes the idea and keeps it in place', closed?.status === 'done', `${closed?.status} ${closed?.id}`);
+
   // A second chat closes with nothing to save: no card, and the backlog is untouched.
   const before = list.length;
   await ta.fill('thanks, that all worked out');

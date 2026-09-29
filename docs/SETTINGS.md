@@ -281,6 +281,9 @@ used: the chat stays as it was. Beyond pi: a transcript too long for the summari
 | `ideas.saveCheck` | `true` | when a chat tab is closed, the model says whether it leaves a plan nobody built or wrote down; a new plan gets a card to save or discard, work on an open idea is attached to that idea instead |
 | `ideas.attachThreshold` | `0.8` | the probability a closed chat has to be about an open idea before it is attached to it (0.3–0.99); 0.8 was right on 5 of 6 |
 | `ideas.model` | `qwen3.8-27b` | the decision model of the idea checks (asked through the Decide plugin's server) and the model that drafts the save check |
+| `ideas.closeOnCommit` | `true` | watch every project's repository: a commit is recorded on the open idea it works on, and when it may have finished one you get a card to mark it done (needs the Files plugin to read the commits and Decide for the questions) |
+| `ideas.linkThreshold` | `0.7` | the probability a commit has to be about an open idea before it is recorded on it (0.3–0.99); 0.7 linked no wrong idea in 187 commits |
+| `ideas.doneThreshold` | `0.8` | the probability an idea has to be finished before you are offered (0.3–0.99); 0.8 offered 4 of 5 finished ideas and nothing that was only advanced |
 
 ## Guardrails
 
