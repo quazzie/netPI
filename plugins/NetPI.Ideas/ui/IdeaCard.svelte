@@ -124,6 +124,8 @@
           <Icon name={idea.priority === 'high' ? 'arrow-up' : idea.priority === 'low' ? 'arrow-down' : 'more'} size={11} /><span class="plabel">{idea.priority}</span>
         </span>
         <span class="tags np-grow" title={(idea.tags ?? []).map((t) => `#${t}`).join(' ')}>{#each idea.tags ?? [] as t (t)}<span class="tag">#{t}</span>{/each}</span>
+    {#if idea.commits?.length}<span class="dim" title="{idea.commits.length} commit(s) recorded on this idea"><Icon name="branch" size={11} />{idea.commits.length}</span>{/if}
+    {#if idea.sessions?.length}<span class="dim" title="{idea.sessions.length} chat(s) attached to this idea"><Icon name="message" size={11} />{idea.sessions.length}</span>{/if}
         {#if agentMade}<span class="dim agent" title="Added by {idea.createdBy}"><Icon name="bot" size={11} /></span>{/if}
         <TimeAgo time={idea.updatedAt ?? idea.createdAt} class="dim when" />
       </div>

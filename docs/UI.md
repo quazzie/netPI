@@ -209,6 +209,13 @@ into locals first, because after the parent clears the modal state or the row re
      shows one line: the idea's title, **Add** (`ideas.attach`: the idea joins the chat as an `idea` notice) and ✕.
      Added or dismissed, that chat is not asked again; the state is per chat in `composer/ideaRecall.svelte.js`.
      The send never waits for it.
+   - **Idea cards.** `IdeaCards` (in the composer dock) shows the offers `ideas.suggestions` returns, for the window
+     rather than a chat — the chat a plan came from is closed. Two kinds: a **plan a closed chat left unsaved** (title,
+     summary, **Save** / **Edit** / **Discard**) and an **idea a commit may have finished** ("may be done", the idea's
+     title, the commits linked to it, **Mark done** / **Dismiss**, a green rule). Both are offers: nothing reaches the
+     backlog and nothing is marked done without a click. They arrive by the unscoped `ideas.suggested` event; a new
+     card after a restart is read once from `ideas.suggestions`. The Ideas tab carries the same offers as one
+     "waiting for you" line.
    - **Shown images.** A successful `show_image` result becomes its own `shown` item (`ShownImage`: the image, the
      caption, name · size), never folded into a steps group; a click opens the lightbox.
    - **Goal strip.** `GoalStrip` shows `meta.goal` (`plugins/NetPI.Goal`) unless it was cleared: the state (Goal,

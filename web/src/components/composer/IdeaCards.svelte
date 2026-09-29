@@ -1,9 +1,9 @@
 <script>
   /**
-   * The cards a closed chat leaves behind (plugins/NetPI.Ideas, phase 2 of
-   * docs/plans/2026-09-27-ideas-follow-the-session.md). One card per plan the save check found unsaved, above the
-   * composer of whatever chat is open: the chat it came from is closed, and the event is unscoped. An offer, never an
-   * action — nothing reaches the backlog without a click, and Discard is final for that card.
+   * The cards a closed chat leaves behind, and the ones a commit may have finished (plugins/NetPI.Ideas, phases 2 and 3
+   * of docs/plans/2026-09-27-ideas-follow-the-session.md). One card per offer, above the composer of whatever chat is
+   * open: the chat a plan came from is closed, and the events are unscoped. An offer, never an action — nothing reaches
+   * the backlog, and nothing is marked done, without a click.
    */
   import Icon from '../../lib/kit/Icon.svelte';
   import Button from '../../lib/kit/Button.svelte';
@@ -36,10 +36,20 @@
     }
   }
 
+  /** The commit check's card: the idea stays where it is, only its status changes. */
+  async function markDone(s) {
+    try {
+      const idea = await suggestions.resolve(s.id, 'done');
+      if (idea) toast(`Marked done: ${idea.title}`, 'info');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
   async function discard(s) {
     try {
       await suggestions.resolve(s.id, 'discard');
-      toast('Discarded. The chat is not asked about again.', 'info');
+      toast(s.kind === 'done' ? 'Left open. A later commit can ask again.' : 'Discarded. The chat is not asked about again.', 'info');
     } catch (e) {
       toast(e.message, 'error');
     }
@@ -47,6 +57,25 @@
 </script>
 
 {#each cards as s (s.id)}
+  {#if s.kind === 'done'}
+    <div class="card done" role="group" aria-label="An idea a commit may have finished">
+      <div class="head">
+        <span class="ic"><Icon name="check" size={13} /></span>
+        <span class="from np-ellipsis" title="A commit may have finished this idea">may be done</span>
+      </div>
+      <div class="np-ellipsis title" title={s.title}>{s.title}</div>
+      {#if s.commits?.length}
+        <div class="commits">
+          {#each s.commits.slice(0, 3) as c (c)}<div class="np-ellipsis commit" title={c}>{c}</div>{/each}
+          {#if s.commits.length > 3}<div class="commit dim">+{s.commits.length - 3} more</div>{/if}
+        </div>
+      {/if}
+      <div class="btns">
+        <Button size="sm" variant="primary" disabled={suggestions.busy === s.id} onclick={() => markDone(s)} title="Mark this idea done">Mark done</Button>
+        <Button size="sm" disabled={suggestions.busy === s.id} onclick={() => discard(s)} title="Leave it open">Dismiss</Button>
+      </div>
+    </div>
+  {:else}
   <div class="card" role="group" aria-label="Unsaved plan from a closed chat">
     <div class="head">
       <span class="ic"><Icon name="idea" size={13} /></span>
@@ -72,6 +101,7 @@
       {/if}
     </div>
   </div>
+  {/if}
 {/each}
 
 <style>
@@ -116,6 +146,21 @@
     margin-top: 2px;
     color: var(--fg-muted);
     line-height: 1.45;
+  }
+  /* the commit check's card: an idea that is already in the backlog, only its status is in question */
+  .card.done {
+    border-left-color: var(--ok);
+  }
+  .card.done .ic {
+    color: var(--ok);
+  }
+  .commits {
+    margin-top: 3px;
+  }
+  .commit {
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
   }
   textarea.summary {
     display: block;

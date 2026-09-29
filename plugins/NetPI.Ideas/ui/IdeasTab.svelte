@@ -37,9 +37,13 @@
     try {
       unsaved = (await ctx.rpc('ideas.suggestions', {}))?.suggestions ?? [];
     } catch {
-      unsaved = []; // no Ideas plugin, or the check is off
+      unsaved = []; // no Ideas plugin, or the checks are off
     }
   }
+
+  // The two offers: a plan a closed chat left unsaved, and an idea a commit may have finished.
+  const plans = $derived(unsaved.filter((s) => s.kind !== 'done'));
+  const maybes = $derived(unsaved.filter((s) => s.kind === 'done'));
 
   async function resolve(id, action) {
     busy = id;
@@ -345,14 +349,28 @@
   {/if}
 
   {#if unsaved.length}
-    <button class="unsaved" onclick={() => (showUnsaved = !showUnsaved)} title="Plans a closed chat left unsaved — save or discard them">
+    <button class="unsaved" onclick={() => (showUnsaved = !showUnsaved)} title="Waiting for you: plans a closed chat left unsaved, and ideas a commit may have finished">
       <Icon name="idea" size={12} />
-      <span class="np-ellipsis">{unsaved.length} unsaved {unsaved.length === 1 ? 'plan' : 'plans'} from closed chats</span>
+      <span class="np-ellipsis"
+        >{[plans.length ? `${plans.length} unsaved ${plans.length === 1 ? 'plan' : 'plans'}` : '', maybes.length ? `${maybes.length} maybe done` : '']
+          .filter(Boolean)
+          .join(' · ')}</span
+      >
       <Icon name={showUnsaved ? 'chevron-down' : 'chevron-right'} size={11} />
     </button>
     {#if showUnsaved}
       <div class="cards">
-        {#each unsaved as s (s.id)}
+        {#each maybes as s (s.id)}
+          <div class="card done">
+            <div class="np-ellipsis ct" title={s.title}>may be done: {s.title}</div>
+            {#if s.commits?.length}<div class="cs np-ellipsis" title={s.commits.join('\n')}>{s.commits.slice(0, 2).join(' · ')}</div>{/if}
+            <div class="cb">
+              <Button size="sm" variant="primary" disabled={busy === s.id} onclick={() => resolve(s.id, 'done')}>Mark done</Button>
+              <Button size="sm" disabled={busy === s.id} onclick={() => resolve(s.id, 'discard')}>Dismiss</Button>
+            </div>
+          </div>
+        {/each}
+        {#each plans as s (s.id)}
           <div class="card">
             <div class="np-ellipsis ct" title={s.title}>{s.title}</div>
             {#if s.summary}<div class="cs">{s.summary}</div>{/if}
@@ -539,6 +557,9 @@
   .ct {
     color: var(--fg);
     font-weight: 600;
+  }
+  .card.done {
+    border-left-color: var(--ok);
   }
   .cs {
     margin-top: 2px;

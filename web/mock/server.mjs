@@ -704,6 +704,8 @@ const handlers = {
   'mock.filesOpened': () => filesOpened,
   // test helper: the chat whose user turns contain this phrase leaves the given plan when its tab is closed
   'mock.closeLeavesPlan': (p = {}) => ideas.closeLeavesPlan(need(p, 'phrase'), p.title),
+  // test helper: offer the commit check's card for the idea whose title contains this phrase
+  'mock.commitFinishesIdea': (p = {}) => ideas.commitFinishesIdea(need(p, 'phrase')),
   'guard.pending': (p = {}) => agent.pendingApprovals(p.sessionId),
   'guard.answer': (p = {}) => {
     if (agent.answerApproval(need(p, 'approvalId'), p.allow, p.scope) === 'not_found') throw new RpcError('not_found', 'No tool call waits for your OK with that id.');

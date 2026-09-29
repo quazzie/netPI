@@ -63,9 +63,9 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         rpc.Register("ideas.closed", Closed,
             "A session tab was closed: { sessionId } → { checked: bool, reason } — attaches the chat to the idea it worked on and offers a card when it leaves an unsaved plan (background)");
         rpc.Register("ideas.suggestions", Suggestions,
-            "Cards waiting for the user (a plan a closed chat left unsaved): { } → { suggestions: [...] }");
+            "Cards waiting for the user (a plan a closed chat left unsaved, an idea a commit may have finished): { } → { suggestions: [...] }");
         rpc.Register("ideas.resolve", Resolve,
-            "Answer a card: { id, action: \"save\" | \"discard\", edit?: { title?, summary? } } → { saved: idea | null }");
+            "Answer a card: { id, action: \"save\" | \"done\" | \"discard\", edit?: { title?, summary? } } → { saved: idea | null, discarded }");
     }
 
     // ------------------------------------------------------------------ the check
@@ -273,7 +273,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
     {
         var id = req.Required("id");
         var action = (req.Str("action") ?? "").Trim().ToLowerInvariant();
-        if (action is not ("save" or "discard")) throw new RpcException("bad_request", "action must be \"save\" or \"discard\"");
+        if (action is not ("save" or "done" or "discard")) throw new RpcException("bad_request", "action must be \"save\", \"done\" or \"discard\"");
         var edit = req.Prop("edit") is { ValueKind: JsonValueKind.Object } e ? JsonObject.Create(e.Clone()) : null;
 
         JsonObject? found = null;
@@ -287,6 +287,22 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         if (found is null) throw new RpcException("not_found", "That card is gone (already answered, or NetPI restarted).");
 
         if (action == "discard") return new JsonObject { ["saved"] = null, ["discarded"] = true };
+
+        // "done": a commit may have finished an existing idea. The card named it; only the status changes, and the
+        // commits linked to it stay where they are.
+        if (action == "done")
+        {
+            var ideaId = IdeaOps.Str(found["ideaId"]);
+            if (ideaId is not { Length: > 0 }) throw new RpcException("bad_request", "That card is not about an idea.");
+            var marked = await store.UpdateAsync(locator.GlobalFile(), file =>
+            {
+                var idea = IdeaOps.Find(file.Ideas, ideaId) ?? throw new RpcException("not_found", $"No idea {ideaId}.");
+                IdeaOps.ApplyPatch(idea, new JsonObject { ["status"] = "done" }, fromUi: true);
+                return (JsonNode?)idea.DeepClone();
+            }, ct).ConfigureAwait(false);
+            return new JsonObject { ["saved"] = marked, ["discarded"] = false, ["marked"] = "done" };
+        }
+
         if (edit is not null)
         {
             if (edit["title"] is JsonValue t && t.TryGetValue<string>(out var t2) && t2.Trim().Length > 0) found["title"] = t2.Trim();
@@ -330,7 +346,13 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
     // an idea until the user says so). Written atomically, under one lock.
     private string PendingFile() => Path.Combine(Path.GetDirectoryName(locator.GlobalFile())!, "ideas-pending.json");
 
-    private async Task<T> MutateAsync<T>(Func<JsonObject, T> mutate, CancellationToken ct)
+    private Task<T> MutateAsync<T>(Func<JsonObject, T> mutate, CancellationToken ct) => MutatePendingAsync(mutate, ct);
+
+    /// <summary>
+    /// The pending file, read, changed and written under this class's one lock — the save check and the commit check
+    /// (which remembers the last commit it read per repository) share it, so the file has a single writer.
+    /// </summary>
+    internal async Task<T> MutatePendingAsync<T>(Func<JsonObject, T> mutate, CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -361,6 +383,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
                 if (root is null) return New();
                 if (root["suggestions"] is not JsonArray) root["suggestions"] = new JsonArray();
                 if (root["checked"] is not JsonObject) root["checked"] = new JsonObject();
+                if (root["repos"] is not JsonObject) root["repos"] = new JsonObject();
                 return root;
             }
             catch (Exception ex) when (ex is JsonException or IOException && attempt < 2) { last = ex; await Task.Delay(50, ct).ConfigureAwait(false); }
@@ -369,7 +392,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         return New();
     }
 
-    private static JsonObject New() => new() { ["suggestions"] = new JsonArray(), ["checked"] = new JsonObject() };
+    private static JsonObject New() => new() { ["suggestions"] = new JsonArray(), ["checked"] = new JsonObject(), ["repos"] = new JsonObject() };
 
     private static async Task WriteAsync(string file, JsonObject root, CancellationToken ct)
     {

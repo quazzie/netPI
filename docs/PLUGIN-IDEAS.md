@@ -65,6 +65,9 @@ session store:
       "sessionIds": ["ses_…"],            // sessions that created or updated the idea
       "sessions": [                        // sessions that worked on the idea (phase 2, below)
         { "sessionId": "ses_…", "title": "…", "at": "2026-09-28T10:00:00Z", "seq": 42, "note": "…", "seen": false }
+      ],
+      "commits": [                         // commits recorded on the idea (phase 3, below)
+        { "hash": "…", "short": "abc1234", "subject": "…", "at": "2026-09-28T11:00:00Z" }
       ]
     }
   ]
@@ -247,14 +250,39 @@ Nothing reaches the backlog without a click, and the pending file is never an id
 
 ### `ideas.suggestions` and `ideas.resolve`
 
-`ideas.suggestions` takes no arguments → `{ suggestions: [{ id, kind: "save", sessionId, sessionTitle, title, summary,
-at, project: { id, name } | null }] }`, oldest first. The file is `~/.netpi/ideas-pending.json`; it is written atomically
-and holds the per-chat check marks under `checked` (kept 30 days).
+`ideas.suggestions` takes no arguments → `{ suggestions: [{ id, kind, … }] }`, oldest first. Two kinds: `save` (a plan a
+closed chat left unsaved — `{ kind: "save", sessionId, sessionTitle, title, summary, at, project }`) and `done` (an idea a
+commit may have finished — `{ kind: "done", ideaId, title, commits: string[], at, project }`). The file is
+`~/.netpi/ideas-pending.json`; it is written atomically and holds the per-chat check marks under `checked` (kept 30 days)
+and, since the commit check, the last commit read per repository under `repos` (kept 60 days).
 
-`ideas.resolve { id, action: "save" | "discard", edit?: { title?, summary? } }` → `{ saved: idea | null, discarded }`.
+`ideas.resolve { id, action: "save" | "done" | "discard", edit?: { title?, summary? } }` → `{ saved: idea | null,
+discarded, marked? }`.
 `save` writes the idea (stamped with the card's project, its own `sessions` entry for the chat it came from, and the
-user's `edit` when given); `discard` drops the card. Either way it leaves `ideas-pending.json`, so a second answer is
-`not_found`. The UI shows the cards above the composer and as an "unsaved" line in the Ideas tab.
+user's `edit` when given); `done` marks the existing idea the card named as `done` and leaves its `commits` where they
+are; `discard` drops the card. Either way it leaves `ideas-pending.json`, so a second answer is `not_found`. The UI shows
+the cards above the composer and as a "waiting for you" line in the Ideas tab.
+
+### Close on commit (phase 3)
+
+Every project with a git repository is watched (`.git`, debounced 250 ms; the last commit read per repository is kept in
+`ideas-pending.json`, so a restart does not re-read the backlog's own history). The commits themselves are read through
+the Files plugin's `files.commits` — a plugin cannot run `git`.
+
+Each new commit is read twice over, in the order that measured best (docs/DECISION-MODELS.md):
+
+1. **Which idea is it about?** A commit message that names an idea id is the match with no model at all. Otherwise one
+   pick-one decision over the ideas open at that moment, linking *every* option at p ≥ `ideas.linkThreshold` (0.7 linked
+   no wrong idea in 187 commits) — a commit can finish two ideas, so it is not forced to pick one. The commit is recorded
+   on the idea as a `commits` entry `{ hash, short, subject, at }`, beside the idea's text, never inside it, and the row
+   shows a mark.
+2. **Is the idea finished?** Asked with the idea's full text (its plan and what is left) **and all its linked commits**,
+   because asking from one commit and the summary alone offered only 5/12. At p ≥ `ideas.doneThreshold` (0.8) and beating
+   "MORE", a `done` card asks the user — one per idea, never an action. A commit that only advances an idea is recorded
+   and nothing is offered.
+
+Skips: no repository, `ideas.closeOnCommit` off, no open idea in the project, no Decide plugin. Without the Files plugin
+there is nothing to read and the check does nothing at all.
 
 ## The agent tool: `ideas` (category `ideas`)
 

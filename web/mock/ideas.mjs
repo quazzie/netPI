@@ -277,11 +277,20 @@ export function createIdeas({ publish }) {
     },
     'ideas.suggestions': () => ({ suggestions: suggestions.map((s) => ({ ...s })) }),
     'ideas.resolve': (p) => {
-      if (!['save', 'discard'].includes(p.action)) throw err('bad_request', 'action must be "save" or "discard"');
+      if (!['save', 'done', 'discard'].includes(p.action)) throw err('bad_request', 'action must be "save", "done" or "discard"');
       const i = suggestions.findIndex((s) => s.id === p.id);
       if (i < 0) throw err('not_found', 'That card is gone (already answered, or NetPI restarted).');
       const [card] = suggestions.splice(i, 1);
       if (p.action === 'discard') return { saved: null, discarded: true };
+      if (p.action === 'done') {
+        // The commit check's card: an idea already in the backlog, only its status in question.
+        const idea = doc.ideas.find((x) => x.id === card.ideaId);
+        if (!idea) throw err('not_found', `No idea ${card.ideaId}.`);
+        idea.status = 'done';
+        idea.updatedAt = now();
+        changed();
+        return { saved: idea, discarded: false, marked: 'done' };
+      }
       const idea = api['ideas.add']({
         sessionId: card.sessionId,
         idea: { title: p.edit?.title ?? card.title, summary: p.edit?.summary ?? card.summary },
@@ -290,6 +299,24 @@ export function createIdeas({ publish }) {
       changed();
       return { saved: idea, discarded: false };
     },
+  };
+
+  /** The mock walkthrough: offer the commit check's card for an idea (the real one needs a repository). */
+  api.commitFinishesIdea = (phrase) => {
+    const idea = doc.ideas.find((i) => i.title.toLowerCase().includes(String(phrase).toLowerCase()));
+    if (!idea) return null;
+    const suggestion = {
+      id: `sg_${rid(8)}`,
+      kind: 'done',
+      ideaId: idea.id,
+      title: idea.title,
+      commits: [`${rid(7)} the ${idea.title.toLowerCase()}, measured`],
+      at: now(),
+      project: idea.project ?? null,
+    };
+    suggestions.push(suggestion);
+    publish('ideas.suggested', { suggestion });
+    return suggestion.id;
   };
 
   /** The mock walkthrough: make a chat leave the given plan when its tab is closed. */
@@ -372,5 +399,5 @@ export function createIdeas({ publish }) {
     doc.exists = true;
   }
 
-  return { api, seed, closeLeavesPlan: (phrase, title) => api.closeLeavesPlan(phrase, title) };
+  return { api, seed, closeLeavesPlan: (phrase, title) => api.closeLeavesPlan(phrase, title), commitFinishesIdea: (phrase) => api.commitFinishesIdea(phrase) };
 }

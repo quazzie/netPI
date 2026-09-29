@@ -21,7 +21,16 @@ internal static class GitStatus
     /// <summary>status: modified | added | deleted | renamed | copied | conflict | new (untracked).</summary>
     public sealed record Change(string Path, string Rel, string Status, int? Added, int? Deleted);
 
+    /// <summary>One commit: the full and short hash, its subject, who wrote it and when.</summary>
+    public sealed record Commit(string Hash, string Short, string Subject, string Author, string At);
+
+    /// <summary>What <c>files.commits</c> answers: the repository and its commits, newest first (null outside one).</summary>
+    public sealed record CommitsResult(string Repo, IReadOnlyList<Commit> Commits);
+
     public sealed record Result(string Repo, string? Branch, int Ahead, int Behind, IReadOnlyList<Change> Files, int Added, int Deleted);
+
+    /// <summary>Between the fields of one <c>git log</c> line: a subject line can hold anything else.</summary>
+    private const char Field = '\u001f';
 
     public static async Task<Result?> ReadAsync(string root, CancellationToken ct)
     {
@@ -33,6 +42,33 @@ internal static class GitStatus
         var hasHead = !string.IsNullOrWhiteSpace(await GitAsync(repo, ct, "rev-parse", "--verify", "--quiet", "HEAD").ConfigureAwait(false));
         var numstat = await GitAsync(repo, ct, "diff", "--numstat", "-z", hasHead ? "HEAD" : EmptyTree).ConfigureAwait(false) ?? "";
         return Build(repo, root, status, numstat);
+    }
+
+    /// <summary>
+    /// The commits of the repository, newest first: everything down to <paramref name="since"/> (a hash the caller last
+    /// saw) or the newest <paramref name="limit"/>. Null outside a git repository, or when the hash is unknown to it
+    /// (a rewritten history, a repository that was replaced) — the caller then starts again from the newest commit.
+    /// </summary>
+    public static async Task<CommitsResult?> CommitsAsync(string root, string? since, int limit, CancellationToken ct)
+    {
+        var top = (await GitAsync(root, ct, "rev-parse", "--show-toplevel").ConfigureAwait(false))?.Trim();
+        if (string.IsNullOrEmpty(top)) return null;
+        var repo = Path.GetFullPath(top);
+        var format = $"--format=%H{Field}%h{Field}%an{Field}%aI{Field}%s";
+        var log = since is { Length: > 0 } s && LooksLikeHash(s)
+            ? await GitAsync(repo, ct, "log", $"{s}..HEAD", $"-{limit}", format, "--no-color").ConfigureAwait(false)
+            : await GitAsync(repo, ct, "log", $"-{limit}", format, "--no-color").ConfigureAwait(false);
+        if (log is null) return null;
+        var commits = new List<Commit>();
+        foreach (var line in log.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var f = line.Split(Field);
+            if (f.Length < 5) continue;
+            commits.Add(new Commit(f[0].Trim(), f[1].Trim(), f[4].Trim(), f[2].Trim(), f[3].Trim()));
+        }
+        return new CommitsResult(repo, commits);
+
+        static bool LooksLikeHash(string s) => s.Length is >= 7 and <= 64 && s.All(char.IsLetterOrDigit);
     }
 
     /// <summary>Parses <c>git status --porcelain=v2 --branch -z</c> and <c>git diff --numstat -z</c> (paths relative to the repository).</summary>

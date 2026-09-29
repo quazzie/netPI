@@ -482,6 +482,26 @@ public static class IdeaOps
         a.Add(entry.DeepClone());
     }
 
+    /// <summary>
+    /// A commit that worked on this idea: <c>{ hash, short, subject, at }</c>, newest last. Like
+    /// <see cref="AddSessionEntry"/> it lives beside the idea's text, never inside it, and one entry per commit: a
+    /// re-read of the same hash updates what it says instead of adding a second one.
+    /// </summary>
+    public static void AddCommitEntry(JsonObject idea, JsonObject entry)
+    {
+        var hash = Str(entry["hash"]);
+        if (string.IsNullOrEmpty(hash)) return;
+        if (idea["commits"] is not JsonArray a) { a = []; idea["commits"] = a; }
+        var existing = a.OfType<JsonObject>().FirstOrDefault(c => Str(c["hash"]) == hash);
+        if (existing is not null)
+        {
+            foreach (var k in new[] { "short", "subject", "at" })
+                if (entry[k] is { } v) existing[k] = v.DeepClone();
+            return;
+        }
+        a.Add(entry.DeepClone());
+    }
+
     // ------------------------------------------------------------------ filtering & rendering
 
     public static bool Matches(JsonObject idea, string? status, string? tag, string? query)

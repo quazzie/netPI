@@ -164,6 +164,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `files.open` | netpi.tools.files | `{ path, sessionId?, cwd? }` → `{ path, action: 'open'\|'edit'\|'reveal'\|'folder' }` (opens a path with the operating system; see `docs/TOOLS.md`) |
 | `files.list` | netpi.tools.files | `{ sessionId?, dir? }` → `{ root, dir, entries: {name, rel, isDir, size?, mtime?}[] }` |
 | `files.git` | netpi.tools.files | `{ sessionId?, cwd? }` → `{ repo, branch, ahead, behind, files: { path, rel, status, added?, deleted? }[], added, deleted }\|null`: the uncommitted changes since the last commit (the Files tab's git line; see `docs/TOOLS.md`) |
+| `files.commits` | netpi.tools.files | `{ sessionId?, cwd?, since?, limit? (20, max 200) }` → `{ repo, commits: { hash, short, subject, author, at }[] }\|null`, newest first; `since` is a hash: only what came after it. The idea check reads a project's history through this, because a plugin cannot run `git` itself |
 | `decide.ask` | netpi.decide | `{ state: string\|object, questions /* the decide tool's shape or TypeSafe's */, model? }` → the model's `answers` (TypeSafe shape: `{ [id]: { type, choice?, score?, confidence?, probabilities?, noul? } }`); errors keep the server's code (`model_not_loaded`, `unreachable`, …) |
 | `processes.list` | netpi.tools.shell | → `ProcessInfo[]` |
 | `processes.output` | netpi.tools.shell | `{ id, tail? }` → `string` |
