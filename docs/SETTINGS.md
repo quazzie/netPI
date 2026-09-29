@@ -357,6 +357,17 @@ The default commands: `rm -r` of `/`, `/*`, `~` or `$HOME`; deleting a drive roo
 | `ssh.connectTimeoutSeconds` | `10` | (2–120) |
 | `ssh.timeoutSeconds` | `120` | default `ssh` `run` timeout (max 1800) |
 
-Calls to one host ride a single master connection (OpenSSH `ControlMaster`, 5 minutes after the last call):
-the first call of a run pays the TCP + transport + auth handshake, the rest reuse the socket. The control
-sockets live in `~/.netpi/ssh/` (one per host and user, hashed), so they don't touch the user's `~/.ssh`.
+Where the client supports it, calls to one host ride a single master connection (OpenSSH `ControlMaster`, 5 minutes
+after the last call): the first call of a run pays the TCP + transport + auth handshake, the rest reuse the socket. The
+control sockets live in `~/.netpi/ssh/` (one per host and user, hashed), so they don't touch the user's own folder.
+
+**The client is asked, not assumed** — an option it does not know is a hard error, and it may not multiplex at all:
+
+- The idle timeout is only passed to a client that accepts it. OpenSSH_for_Windows (NetPI's own client on Windows) has
+  no `ControlIdleTimeout`, and asking for it fails every call with `Bad configuration option`.
+- A client that cannot multiplex gets no master connection: OpenSSH_for_Windows accepts `ControlMaster` and then fails
+  every session with `getsockname failed: Not a socket`, so those calls each do their own handshake, as they did before
+  connection reuse. This is the normal case on Windows.
+
+Both questions are answered once per client, offline (`ssh -o … -G localhost` and `ssh -O check`), and take a few
+milliseconds; anything unexpected answers "not supported", so a call never fails because of the check itself.
