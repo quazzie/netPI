@@ -19,6 +19,7 @@ SshTests.Register(runner);
 PanelTests.Register(runner);
 InspectTests.Register(runner);
 LoadTests.Register(runner);
+ReviewStorageTests.Register(runner);
 var code = await runner.RunAsync(args);
 try { Directory.Delete(Path.Combine(Path.GetTempPath(), "netpi-aux-tests"), recursive: true); } catch { }
 return code;
