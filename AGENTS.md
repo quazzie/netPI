@@ -46,7 +46,7 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   that every session shares.
 - Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
   Agent, Aux, Host. End-to-end: `dotnet tests/NetPI.E2E/bin/<Config>/NetPI.E2E.dll` (see `docs/TESTING.md`).
-- UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`.
+- UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`. A worktree's `npm ci` can emit a cosmetically different bundle than the main checkout's `node_modules` did, so a plugin's committed `wwwroot/ui.js` (and `web/dist`) often comes out modified after a build you did not mean to change: revert those, and commit a bundle only when the *source* under `ui/` changed.
 
 ## Inspecting the running app
 - The **`diag` tool** (read-only, one action per method: overview, problems, calls, tools, journal, run, toolsets,
