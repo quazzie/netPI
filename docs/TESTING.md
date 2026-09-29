@@ -46,6 +46,8 @@ dotnet tests/NetPI.Providers.Tests/bin/Debug/NetPI.Providers.Tests.dll   # AiPro
 dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll           # read/write/edit/grep/find/ls, bash/pwsh, processes, files.open, files.git
 dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll           # agent loop, steering/queue/abort, subagents, agents, persistence, context notices, goals, skills
 dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll               # retry, nudge, tool repair, compaction, ideas, work, diagnostics, todo, web, media, ssh
+dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll ideas        # the ideas flow only: tools and RPC, storage failures (IdeasStorageTests),
+                                                                         # the chat checks (IdeasCheckTests), commit tracking (IdeasCommitTests)
                                                                          # (its load tests load the built plugins from artifacts/app, or from NETPI_APP_DIR)
 tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests                        # kernel: SQLite, settings, bus, registries, sessions, catalog, server, plugins
 ```
@@ -56,6 +58,12 @@ tests pass. `NETPI_TEST_LOGS=1` shows host logs in the Host suite.
 The web tool tests serve pages and fake SearXNG / Brave endpoints from a local Kestrel server and never read your pi
 config or `BRAVE_API_KEY`. The `screenshot` test drives a real headless Edge/Chrome/Chromium; without one installed it
 checks everything except the page screenshots and says so.
+
+The ideas suites inject the failures the happy paths cannot show: a file an editor holds, a backlog that cannot be
+written, two stores on one file (a reload swap), a card answered twice, an interrupted answer replayed at the next
+start, a decision that does not answer, a burst of 45 commits, a rewritten history and a worktree. The commit tests
+drive the check directly through `IdeaCommitCheck.SweepNowAsync` against a fake repository that behaves like
+`git log since..until`, so each case is exact and needs no git.
 
 The SSH tool tests use a fake launcher (no ssh runs). With `NETPI_SSH_TEST_HOSTS=nuc,server` the `ssh live` test also
 runs against those aliases of your `~/.ssh/config` (Linux hosts whose keys are set up): quoting, write/read/edit

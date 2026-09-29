@@ -164,7 +164,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `files.open` | netpi.tools.files | `{ path, sessionId?, cwd? }` → `{ path, action: 'open'\|'edit'\|'reveal'\|'folder' }` (opens a path with the operating system; see `docs/TOOLS.md`) |
 | `files.list` | netpi.tools.files | `{ sessionId?, dir? }` → `{ root, dir, entries: {name, rel, isDir, size?, mtime?}[] }` |
 | `files.git` | netpi.tools.files | `{ sessionId?, cwd? }` → `{ repo, branch, ahead, behind, files: { path, rel, status, added?, deleted? }[], added, deleted }\|null`: the uncommitted changes since the last commit (the Files tab's git line; see `docs/TOOLS.md`) |
-| `files.commits` | netpi.tools.files | `{ sessionId?, cwd?, since?, limit? (20, max 200) }` → `{ repo, commits: { hash, short, subject, author, at }[] }\|null`, newest first; `since` is a hash: only what came after it. The idea check reads a project's history through this, because a plugin cannot run `git` itself |
+| `files.commits` | netpi.tools.files | `{ sessionId?, cwd?, since?, until?, limit? (20, max 200) }` → `{ repo, gitDir, commonDir, reachable, commits: { hash, short, subject, author, at }[] }\|null`, newest first. `since`/`until` are hashes: only what came after / before it (both absent = the newest `limit`). `gitDir`/`commonDir` are the directories that hold this worktree's HEAD and the refs — a `.git` *file* (a worktree) is not a directory to watch. `reachable: false` means the range could not be resolved, i.e. `since` is not in this history any more (a rebase, a branch switch), so a caller that remembers a cursor can re-anchor instead of waiting forever. `null` only means "not a git repository". The idea check reads a project's history through this, because a plugin cannot run `git` itself |
 | `decide.ask` | netpi.decide | `{ state: string\|object, questions /* the decide tool's shape or TypeSafe's */, model? }` → the model's `answers` (TypeSafe shape: `{ [id]: { type, choice?, score?, confidence?, probabilities?, noul? } }`); errors keep the server's code (`model_not_loaded`, `unreachable`, …) |
 | `processes.list` | netpi.tools.shell | → `ProcessInfo[]` |
 | `processes.output` | netpi.tools.shell | `{ id, tail? }` → `string` |
@@ -232,6 +232,8 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `usage.changed` | no | `BudgetStatus`, after model calls were recorded (debounced) |
 | `process.started` / `process.exited` | no | `{ process: ProcessInfo }` |
 | `ideas.changed` | no | `{ file }` |
+| `ideas.suggested` | no | `{ suggestion }` – a card a closed chat (or a commit sweep) left waiting for the user |
+| `ideas.resolved` | no | `{ id, action?, card? }` – a card left `ideas-pending.json`: answered, discarded, or finished after a restart. A window that still shows the card drops it; both the composer and the Ideas tab re-read the file on reconnect and when they become visible |
 
 ## Plugin UI tabs
 

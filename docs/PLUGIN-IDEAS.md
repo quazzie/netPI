@@ -7,7 +7,9 @@ A backlog of ideas, research, plans and deferred work for the user and for agent
 - Tab: `{ id: "ideas", title: "Ideas", panel: "right", icon: "idea", order: 20, module: "ui.js" }`. The UI module goes in
   `plugins/NetPI.Ideas/wwwroot/ui.js` (source in `plugins/NetPI.Ideas/ui/`) and is served at `/plugins/netpi.ideas/ui.js`.
 - Slash command: `{ name: "idea", argsHint: "<title>", rpc: "ideas.quickAdd" }`.
-- Setting: `ideas.fileName` (default `"ideas.json"`; only the file name part is used; the file lives in `~/.netpi`).
+- Settings: `ideas.fileName` (default `"ideas.json"`; only the file name part is used; the file lives in `~/.netpi`),
+  `ideas.recall`, `ideas.recallThreshold`, `ideas.saveCheck`, `ideas.attachThreshold`, `ideas.model`,
+  `ideas.allowPaidModel`, `ideas.closeOnCommit`, `ideas.linkThreshold`, `ideas.doneThreshold` (docs/SETTINGS.md).
 
 ## Where ideas are stored
 
@@ -85,8 +87,16 @@ session store:
   - The indentation of the first indented line (tabs or 1–8 spaces). New files use 2 spaces.
   - What a save does **not** preserve: `//` comments and trailing commas. They are accepted when reading but dropped when
     the file is written.
-- Writes are atomic: a temp file `.ideas.json.<rand>.tmp` in the same folder is renamed over the file. If the rename
-  fails, the file is written in place. A per-file lock serializes all writes in the process.
+- Writes are atomic: a temp file `.ideas.json.<rand>.tmp` in the same folder is renamed over the file. **There is no
+  in-place fallback**: a rename that still fails after a few tries is reported (`io_error`) and the last valid file
+  stays exactly as it was, because an interrupted in-place write truncates it.
+- Every read and write happens while an OS lock on `.<file>.lock` is held (opened without sharing). A per-plugin
+  semaphore is not enough: a hot reload is a *swap*, so two plugin instances with two sets of locks are briefly live on
+  the same file and their read-modify-write can interleave and lose an idea. The lock is released by the handle, so a
+  crash cannot leave it held.
+- An editor that ignores the lock is not coordinated — writes stay atomic (such an editor can lose its change to a
+  rename, never the other way round), and content that really conflicts is caught by the revision check below rather
+  than by the lock.
 - A file that is not valid JSON is **never overwritten**. Tools return an error, and RPCs fail with code `invalid_file`.
   A bare top-level array is accepted and wrapped into `{ version, ideas }` on the next save.
 
@@ -110,7 +120,9 @@ decide the new idea's `project` stamp. Results are plain JSON: ideas are returne
 unknown fields.
 
 Error codes: `bad_request` (invalid input: the message says what is wrong, for example the list of valid statuses or
-projects), `not_found` (idea, session or project), `invalid_file`, `io_error`.
+projects), `not_found` (idea, session or project), `conflict` (an edit whose `expectedUpdatedAt` is stale, or a card
+another window is answering), `invalid_file` (a file we cannot read or do not understand — it is left alone, never
+replaced), `io_error` (a write that could not complete — the previous file is unchanged).
 
 ### `ideas.list`
 
@@ -159,6 +171,7 @@ No filtering happens on the server. The tab filters by project, status and tag c
 | `priority` | `low` / `medium` / `high` |
 | `tags` | replaces the tags |
 | `project` | rebind the idea: a project id or name, or `{ id, name? }` (a bare reference is resolved, the name snapshot refreshed); `null`, `""`, `"global"` or `"none"` unbinds it |
+| `expectedUpdatedAt` | (a parameter, not a patch field) what the editor read: the update is refused with `conflict` when the idea changed since, so a stale window or a card left open cannot silently overwrite newer content |
 | `sections` | **replaces all sections**, in the given order. An entry whose `id` matches an existing section updates that section: `title`, `content` and `kind`, plus any extra fields the entry carries (`null` removes one). The section's other stored fields are kept. Entries without a known id become new sections. Use this for drag-reordering and inline editing. |
 | `addSections` | `{ kind?, title?, content }[]`, appended |
 | `updateSections` | `{ id, title?, content?, kind? }[]` |
@@ -231,9 +244,15 @@ notice stays first; added during a run, the agent reads it at its next model cal
 ### `ideas.closed` (save on tab close)
 
 `{ sessionId }` → `{ checked: bool, reason }`. The UI calls it from `closeTab`, fire and forget: the tab closes at once
-and the check runs behind it. `reason` is `started`, `already` (this chat was checked at this number of user turns), or
-one of the skips: `no_session`, `subagent`, `short` (fewer than two user turns), `unfinished` (a turn ended `aborted` or
-`error`), `off` (`ideas.saveCheck` is false).
+and the check runs behind it. `reason` is `started`, `running` (the tab was closed while the agent was still working;
+the check waits for the run), `already` (this conversation revision was claimed and is running or finished), or one of
+the skips: `no_session`, `subagent`, `short` (fewer than two user turns), `unfinished` (the last turn ended `aborted`,
+`error`, `length` or `content_filter`), `off` (`ideas.saveCheck` is false).
+
+Whether the check may run is recorded per **conversation revision** (the messages the chat has now) with a state:
+`running` is a claim in flight, `done` is the only permanent one, and `failed` — with the reason — may be tried again a
+few times. A check that *ran* and found nothing is `done`, not failed: "nothing worth keeping" is an answer. An old
+aborted turn does not exclude the chat, and a check interrupted by a reload is finished at the next start.
 
 What runs in the background, in this order:
 
@@ -241,16 +260,24 @@ What runs in the background, in this order:
    digest as the state. At p ≥ `ideas.attachThreshold` (0.8) and beating "none", a `sessions` entry is added to that
    idea — `{ sessionId, title, at, seq?, seen: false }`, kept apart from the sections, so the idea's text never changes.
    One entry per session.
-2. **Save check.** One generative call through `ideas.model` at the model's lowest reasoning effort, which answers
-   `NOTHING`, or `SAVE` with a title and a summary. The conversation is a digest (user turns whole, answers and tool
-   names clipped, 12k characters), not the raw transcript. Measured 8/11 caught, 1/32 false (docs/DECISION-MODELS.md).
+2. **Save check.** One generative call through `ideas.model` at the model's cheapest reasoning effort it has (never a
+   step up, and the model's own default when it has none), which answers `NOTHING`, or `SAVE` with a title and a
+   summary. The conversation is a digest (user turns whole, answers and tool names clipped, 12k characters), not the
+   raw transcript — and a long chat keeps its **beginning and its ending**, because a check that only sees the
+   discussion mistakes an implemented or cancelled plan for an unsaved one. Measured 8/11 caught, 1/32 false
+   (docs/DECISION-MODELS.md).
+
+Both calls wait for a slot on the backend the chats use (through the agents' scheduler, behind them), and neither runs
+on a paid model unless `ideas.allowPaidModel` says so. A backlog larger than the 51 letters a decision can offer is
+ranked by what the conversation shares with each idea and asked about in bounded windows, so later ideas stay eligible.
    A `SAVE` becomes a card in `~/.netpi/ideas-pending.json` and the `ideas.suggested` event fires.
 
 Nothing reaches the backlog without a click, and the pending file is never an idea: a card is an offer.
 
 ### `ideas.suggestions` and `ideas.resolve`
 
-`ideas.suggestions` takes no arguments → `{ suggestions: [{ id, kind, … }] }`, oldest first. Two kinds: `save` (a plan a
+`ideas.suggestions` takes no arguments → `{ suggestions: [{ id, kind, … }] }`, oldest first. It is a plain read:
+listing the cards never rewrites the file they live in. Two kinds: `save` (a plan a
 closed chat left unsaved — `{ kind: "save", sessionId, sessionTitle, title, summary, at, project }`) and `done` (an idea a
 commit may have finished — `{ kind: "done", ideaId, title, commits: string[], at, project }`). The file is
 `~/.netpi/ideas-pending.json`; it is written atomically and holds the per-chat check marks under `checked` (kept 30 days)
@@ -260,14 +287,27 @@ and, since the commit check, the last commit read per repository under `repos` (
 discarded, marked? }`.
 `save` writes the idea (stamped with the card's project, its own `sessions` entry for the chat it came from, and the
 user's `edit` when given); `done` marks the existing idea the card named as `done` and leaves its `commits` where they
-are; `discard` drops the card. Either way it leaves `ideas-pending.json`, so a second answer is `not_found`. The UI shows
-the cards above the composer and as a "waiting for you" line in the Ideas tab.
+are; `discard` drops the card. The action is checked against the card's kind before the card is consumed.
+
+The two files are updated as one operation: the answer is written to a journal (`ops`) in the pending file *before* the
+backlog is touched and taken out *after*, and an unfinished journal entry is replayed at the next start — so a crash, a
+failed write or a reload in between cannot lose the card and cannot save the idea twice. One window answers a card at a
+time; a second answer is `conflict`. Either way the card leaves `ideas-pending.json`, so a later answer is `not_found`,
+and `ideas.resolved { id, action, card }` tells every other window to drop it. The UI shows the cards above the composer
+and as a "waiting for you" line in the Ideas tab; both re-read the file on reconnect and when they become visible.
 
 ### Close on commit (phase 3)
 
-Every project with a git repository is watched (`.git`, debounced 250 ms; the last commit read per repository is kept in
-`ideas-pending.json`, so a restart does not re-read the backlog's own history). The commits themselves are read through
-the Files plugin's `files.commits` — a plugin cannot run `git`.
+Every project with a git repository is watched (the git directories the Files plugin resolves — in a worktree `.git` is
+a *file* — debounced 250 ms, and swept every two minutes whether or not a watcher could be created). The last commit
+read per repository is kept in `ideas-pending.json`; a repository is anchored at HEAD only when nothing is remembered
+for it, so commits made while NetPI was closed are read rather than skipped. The commits themselves are read through the
+Files plugin's `files.commits` — a plugin cannot run `git`.
+
+Unseen history is read in bounded pages **oldest first** (`since..until`, then the pages in the opposite order, because
+git answers a range with its newest commits), so a burst of more than 20 is read whole: none skipped, none twice. The
+cursor moves past a commit only when it was handled — a decision that failed leaves it unread and the next sweep starts
+there — and a history that was rewritten under the cursor re-anchors at HEAD with a line in the log.
 
 Each new commit is read twice over, in the order that measured best (docs/DECISION-MODELS.md):
 
@@ -327,7 +367,9 @@ example `Unknown project 'nope'. Known projects: NetPI, aiproxy.`).
   (a drag or *Move up/down* orders within the rendered list).
 - New idea: title, summary, priority, a project picker (default: the active project; *Global* for unbound; any other
   project) and tags. The title has to carry the idea on its own — the `ideas` tool help and prompt guideline say so.
-- Actions: "Send to chat" (stages a pointer to the idea in the composer), "Insert the full text"
+- Evidence (in an open card): the chats that worked on the idea — with a dot for one you have not opened the idea since —
+  and the commits recorded for it, both with their dates.
+- Actions: "Send to chat" (stages a pointer to the idea in the composer — it never changes the status), "Insert the full text"
   (`ideas.toPrompt` → `ctx.app.insertText`), Delete (with a confirm) and drag to reorder
   (`ideas.reorder`).
 - Refresh on the `ideas.changed` event (the single file, so always) and follow the active project on
