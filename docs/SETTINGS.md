@@ -105,6 +105,8 @@ turned off; models without effort levels only get on/off. Free models are limite
 | `agent.maxToolResultChars` | `20000` | a longer tool result is saved to a file: the agent gets its start and end and the path, to read the rest in parts or grep it (`read` pages, the bash and `ssh` `run` tails stay under it) |
 | `agent.parallelReadOnlyTools` | `true` | run several read-only calls of one turn concurrently |
 | `agents.maxDepth` | `3` | subagent nesting depth (deeper agents get no orchestration tools) |
+| `agents.queueMax` | `20` | the longest an agent's queue of waiting runs grows: beyond it a new run is refused with a clear error instead of waiting (0: no waiting at all) |
+| `agents.queueTimeoutSeconds` | `600` | a run that has waited this long for a free slot fails with a clear error instead of waiting forever (0: no time limit) |
 
 ## Profiles
 
@@ -161,6 +163,9 @@ where a chat runs, the profile who it is.
   instances add up to more).
 - **A chat without an agent** takes an agent on its model (a free one first) and keeps it; with no agent on its model it
   stops with a notice. New chats start on the agent chosen last.
+- **Waiting:** a run whose agent is full waits in the agent's queue, which is capped and timed (`agents.queueMax`,
+  `agents.queueTimeoutSeconds`): a burst past the cap is refused at once, and a run that waits longer than the cap
+  fails with a clear error — neither parks forever.
 - **With no agents at all** (a settings file without any) every model call gets a slot per model:
   `models.localSlots` (1, when the catalog doesn't say) per local model, `models.cloudSlots` (4) per
   cloud provider. The same slots serve model calls without an agent (a `compaction.model` on another model).
@@ -350,3 +355,7 @@ The default commands: `rm -r` of `/`, `/*`, `~` or `$HOME`; deleting a drive roo
 | `ssh.config` | `~/.ssh/config` | where the host aliases come from; any other file is also passed to ssh and scp (`-F`) |
 | `ssh.connectTimeoutSeconds` | `10` | (2–120) |
 | `ssh.timeoutSeconds` | `120` | default `ssh` `run` timeout (max 1800) |
+
+Calls to one host ride a single master connection (OpenSSH `ControlMaster`, 5 minutes after the last call):
+the first call of a run pays the TCP + transport + auth handshake, the rest reuse the socket. The control
+sockets live in `~/.netpi/ssh/` (one per host and user, hashed), so they don't touch the user's `~/.ssh`.

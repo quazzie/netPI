@@ -257,6 +257,29 @@ public static class SshTests
             Check.Contains((await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", oldText = "one", newText = "1" })).Content, "changed on the host");
         });
 
+        r.Add("ssh: one master connection per host (ControlMaster, a hashed per-host-and-user ControlPath, persist)", async () =>
+        {
+            var env = new Env();
+            env.Fake.Reply = (_, _) => new SshExec(0, "", "", false, false);
+            await env.Run("ssh_run", new { host = "nuc", script = "ls" });
+            var args = string.Join(" ", env.Fake.Calls.Single().Args);
+            // %C is OpenSSH's hash of (remote host, port, remote user, local host): unique per host and per user, short
+            Check.Contains(args, "ControlMaster=auto");
+            Check.Contains(args, $"ControlPath={Path.Combine(env.Ctx.Paths.Home, "ssh")}{Path.DirectorySeparatorChar}netpi-%C");
+            Check.Contains(args, "ControlPersist=300");
+            Check.Contains(args, "ControlIdleTimeout=300");
+            Check.True(Directory.Exists(Path.Combine(env.Ctx.Paths.Home, "ssh")), "the control socket's directory is created");
+
+            // scp rides on the same options (the same socket)
+            File.WriteAllText(Path.Combine(env.Dir, "data.bin"), "1");
+            env.Ctx.SettingsFake.Set("ssh.scpPath", JsonValue.Create("fake-scp"));
+            await env.Run("ssh_copy", new { host = "nuc", direction = "upload", from = "data.bin", to = "/tmp/" });
+            var scp = string.Join(" ", env.Fake.Calls[^1].Args);
+            Check.Equal("fake-scp", env.Fake.Calls[^1].Exe);
+            Check.Contains(scp, "ControlMaster=auto");
+            Check.Contains(scp, "netpi-%C");
+        });
+
         r.Add("ssh: TextEdits (unique matches, replace_all, overlap, hunks and context)", () =>
         {
             var ten = string.Join("\n", Enumerable.Range(1, 12).Select(i => $"row{i:D2}")) + "\n";

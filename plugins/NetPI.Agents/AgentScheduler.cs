@@ -40,7 +40,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     // ---------------------------------------------------------------- agents
 
     /// <summary>Keys under <c>agents</c> that are settings, not agent ids.</summary>
-    internal static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase) { "maxDepth" };
+    internal static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase) { "maxDepth", "queueMax", "queueTimeoutSeconds" };
 
     internal sealed record AgentConfig(string Id, string Model, JsonObject Cfg)
     {
@@ -113,6 +113,8 @@ internal sealed class AgentScheduler : IAgentScheduler
         public DateTimeOffset Since { get; } = DateTimeOffset.UtcNow;
         public TaskCompletionSource<IAgentSlot> Tcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public CancellationTokenRegistration Registration { get; set; }
+        /// <summary>Fails the waiter when its longest wait (<see cref="QueueTimeoutSeconds"/>) is up; stopped on grant/cancel.</summary>
+        public CancellationTokenSource? WaitTimeout { get; set; }
     }
 
     internal sealed class Lease(AgentScheduler owner, AgentSlotRequest request) : IAgentSlot
@@ -318,6 +320,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         foreach (var (w, reason) in refused)
         {
             w.Registration.Unregister();
+            StopWaitTimeout(w);
             w.Tcs.TrySetException(new AgentUnavailableException(UnavailableMessage(w.Request.Key, reason)));
         }
         var signature = Signature();
@@ -404,7 +407,12 @@ internal sealed class AgentScheduler : IAgentScheduler
                 .ToList();
         }
         if (_usage is not null)
-            foreach (var info in list) info.SpentTodayUsd = Math.Round(_usage.SpentToday(info.Key), 6);
+        {
+            // One ledger roll for the whole snapshot, not one per pool: SpentToday rolls (a database read) per call, and
+            // a slot-churn burst would otherwise be one query per agent for every coalesced agents.changed.
+            var spent = _usage.SpentTodayByAgent();
+            foreach (var info in list) info.SpentTodayUsd = Math.Round(spent.GetValueOrDefault(info.Key), 6);
+        }
         return list;
     }
 
@@ -434,6 +442,19 @@ internal sealed class AgentScheduler : IAgentScheduler
         return true;
     }
 
+    /// <summary>How long a pool's wait queue may grow (<c>agents.queueMax</c>): beyond it a new run is refused, not parked.</summary>
+    private int QueueMax() => Math.Max(0, Setting("agents.queueMax", 20));
+
+    /// <summary>The longest a waiter may wait for a slot (<c>agents.queueTimeoutSeconds</c>): after it, the run fails.</summary>
+    private int QueueTimeoutSeconds() => Math.Max(0, Setting("agents.queueTimeoutSeconds", 600));
+
+    private static string QueueFull(Pool pool, int maxWaiters) => maxWaiters <= 0
+        ? $"The agent \"{pool.Key}\" takes no waiting runs (agents.queueMax is 0): run it when a slot is free, or use another agent."
+        : $"The agent \"{pool.Key}\" has no free slot and {maxWaiters} run(s) are already queued (the cap is agents.queueMax = {maxWaiters}). Run it again later, or use another agent.";
+
+    private static string QueueTimedOut(string poolKey, int seconds) =>
+        $"The agent \"{poolKey}\" had no free slot for {seconds} s (agents.queueTimeoutSeconds). Run it again later, or use another agent.";
+
     public ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct)
     {
         var provider = request.Provider ?? ProviderOf(request.Key);
@@ -442,6 +463,9 @@ internal sealed class AgentScheduler : IAgentScheduler
         ct.ThrowIfCancellationRequested();
 
         Waiter waiter;
+        // A burst past the pool's capacity (an unbounded subagents array) used to park in the queue without limit or
+        // timeout; both limits are settings, and over either the run is refused with a clear error, not a silent hang.
+        var maxWaiters = QueueMax();
         lock (_gate)
         {
             if (_stopped) throw new OperationCanceledException("The agent scheduler was stopped (plugin reload).");
@@ -455,6 +479,8 @@ internal sealed class AgentScheduler : IAgentScheduler
                 SchedulePublish();
                 return ValueTask.FromResult<IAgentSlot>(lease);
             }
+            if (pool.Waiters.Count >= maxWaiters)
+                throw new AgentUnavailableException(QueueFull(pool, maxWaiters));
             waiter = new Waiter { Request = request, Seq = ++_seq };
             // priority desc, then FIFO
             var index = pool.Waiters.FindIndex(w => w.Request.Priority < request.Priority);
@@ -462,6 +488,27 @@ internal sealed class AgentScheduler : IAgentScheduler
         }
         if (ct.CanBeCanceled)
             waiter.Registration = ct.Register(() => Cancel(waiter, ct));
+        var queueTimeout = QueueTimeoutSeconds();
+        if (queueTimeout is > 0)
+        {
+            // In line and still stuck (a run that never ends, a slot that never frees): fail the waiter instead of
+            // letting it wait forever.
+            waiter.WaitTimeout = new CancellationTokenSource();
+            var tcs = waiter.Tcs;
+            var w = waiter;
+            _ = Task.Delay(TimeSpan.FromSeconds(queueTimeout), waiter.WaitTimeout.Token).ContinueWith(_ =>
+            {
+                bool dropped;
+                lock (_gate) dropped = _pools.TryGetValue(w.Request.Key, out var p) && p.Waiters.Remove(w);
+                if (dropped)
+                {
+                    StopWaitTimeout(w);
+                    w.Registration.Unregister();
+                    tcs.TrySetException(new AgentUnavailableException(QueueTimedOut(w.Request.Key, queueTimeout)));
+                }
+                // No ExecuteSynchronously: this runs on the pool, so a Cancel from a path holding _gate cannot deadlock.
+            }, TaskScheduler.Default);
+        }
         SchedulePublish();
         return new ValueTask<IAgentSlot>(waiter.Tcs.Task);
     }
@@ -486,6 +533,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         }
         if (removed)
         {
+            StopWaitTimeout(waiter);
             waiter.Tcs.TrySetCanceled(ct);
             SchedulePublish();
         }
@@ -513,6 +561,7 @@ internal sealed class AgentScheduler : IAgentScheduler
             var w = pool.Waiters[0];
             pool.Waiters.RemoveAt(0);
             w.Registration.Unregister(); // never Dispose under the lock: it would wait for a running callback
+            StopWaitTimeout(w);
             var lease = new Lease(this, w.Request);
             pool.Owners.Add(lease);
             if (!w.Tcs.TrySetResult(lease))
@@ -521,6 +570,21 @@ internal sealed class AgentScheduler : IAgentScheduler
                 lease.MarkReleased();
             }
         }
+    }
+
+    /// <summary>
+    /// Stops a waiter's queue timeout. The delay's continuation holds the Waiter, which lives in this plugin's load
+    /// context, so it must not outlive the wait: disposing alone would leave the delay pending for the whole timeout
+    /// (minutes by default) and keep the context alive with it. Cancelling completes the delay at once; its
+    /// continuation runs on the pool, never inline, so calling this while holding <see cref="_gate"/> is safe.
+    /// </summary>
+    private static void StopWaitTimeout(Waiter w)
+    {
+        var cts = w.WaitTimeout;
+        if (cts is null) return;
+        w.WaitTimeout = null;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
     }
 
     /// <summary>Plugin stop: fail all waiters and forget all leases (their owners re-acquire from the next scheduler).</summary>
@@ -541,6 +605,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         foreach (var w in waiters)
         {
             w.Registration.Unregister();
+            StopWaitTimeout(w);
             w.Tcs.TrySetException(new OperationCanceledException("The agent scheduler was stopped (plugin reload)."));
         }
     }

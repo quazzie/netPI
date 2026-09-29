@@ -359,8 +359,12 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         {
             var file = PendingFile();
             var root = await ReadAsync(file, ct).ConfigureAwait(false);
+            var before = root.ToJsonString(PendingOptions);
             var result = mutate(root);
-            await WriteAsync(file, root, ct).ConfigureAwait(false);
+            // Most calls change nothing (a sweep with no new commit, a repository already seen): then the rewrite is pure
+            // churn — duplicate mtime, and a duplicate rewrite of the user's cards file for the same content.
+            if (root.ToJsonString(PendingOptions) != before)
+                await WriteAsync(file, root, ct).ConfigureAwait(false);
             return result;
         }
         finally { _gate.Release(); }
@@ -394,10 +398,12 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
 
     private static JsonObject New() => new() { ["suggestions"] = new JsonArray(), ["checked"] = new JsonObject(), ["repos"] = new JsonObject() };
 
+    private static readonly JsonSerializerOptions PendingOptions = new() { WriteIndented = true };
+
     private static async Task WriteAsync(string file, JsonObject root, CancellationToken ct)
     {
         var tmp = file + ".tmp";
-        await File.WriteAllTextAsync(tmp, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), ct).ConfigureAwait(false);
+        await File.WriteAllTextAsync(tmp, root.ToJsonString(PendingOptions), ct).ConfigureAwait(false);
         File.Move(tmp, file, overwrite: true); // atomic on the same volume
     }
 

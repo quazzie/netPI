@@ -15,6 +15,7 @@ public static class SchedulerTests
         t.Add("scheduler: priority, FIFO, cancellation, idempotent release", PriorityAndCancel);
         t.Add("agents: more instances wake waiters; instances follow the catalog", CapacityIncrease);
         t.Add("scheduler: agents.changed is debounced, and only sent on changes", Debounce);
+        t.Add("scheduler: the wait queue has a cap and a longest wait (agents.queueMax/queueTimeoutSeconds)", QueueCapAndTimeout);
         t.Add("scheduler: stop fails waiters; runs survive a reload of the agents plugin", ReloadDuringWait);
         t.Add("scheduler: budget exceeded + usage.summary", Budget);
         t.Add("scheduler: runs without the agents plugin", NoAgentsPlugin);
@@ -317,6 +318,46 @@ public static class SchedulerTests
         await Task.Delay(250);
         await h.Bus.DrainAsync();
         Check.Equal(after, h.Bus.OfType(EventTypes.AgentsChanged).Count);
+    }
+
+    private static async Task QueueCapAndTimeout()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.solo", J("""{ "model": "fake/solo" }"""));
+            x.Settings.SetQuiet("agents.queueMax", JsonValue.Create(1));
+            x.Settings.SetQuiet("agents.queueTimeoutSeconds", JsonValue.Create(2));
+        }, plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
+        var listed = (JsonArray)(await h.Rpc.CallAsync("agents.list"))!;
+        Check.Equal("solo", string.Join("|", listed.Select(p => (string?)p!["key"])), "the queue settings are not agents");
+
+        var a = await s.AcquireAsync(Req("solo", "A"), CancellationToken.None);
+        var w1 = s.AcquireAsync(Req("solo", "W1"), CancellationToken.None).AsTask();
+        await Task.Delay(50);
+        Check.Equal(1, s.Snapshot().Single(p => p.Key == "solo").Queued, "one waiter in line");
+
+        // beyond the cap: refused at once (the callers handle it and tell the user), not parked
+        try { await s.AcquireAsync(Req("solo", "W2"), CancellationToken.None); throw new AssertException("expected AgentUnavailableException"); }
+        catch (AgentUnavailableException ex) { Check.Contains(ex.Message, "agents.queueMax"); }
+        Check.Equal(1, s.Snapshot().Single(p => p.Key == "solo").Queued, "the refused one is not queued");
+
+        // a free slot goes to the waiter in line: the cap does not disturb the normal flow
+        a.Dispose();
+        var lw1 = await w1.WaitAsync(TimeSpan.FromSeconds(3));
+        Check.Equal("W1", lw1.AgentId);
+
+        // a waiter that waits longer than queueTimeoutSeconds fails with a clear error instead of waiting forever
+        lw1.Dispose();
+        var a2 = await s.AcquireAsync(Req("solo", "A2"), CancellationToken.None);
+        var w3 = s.AcquireAsync(Req("solo", "W3"), CancellationToken.None).AsTask();
+        await Task.Delay(50);
+        Check.Equal("queued", s.Snapshot().Single(p => p.Key == "solo").Status);
+        try { await w3.WaitAsync(TimeSpan.FromSeconds(10)); throw new AssertException("expected AgentUnavailableException"); }
+        catch (AgentUnavailableException ex) { Check.Contains(ex.Message, "agents.queueTimeoutSeconds"); Check.Contains(ex.Message, "2 s"); }
+        Check.True(s.Snapshot().Single(p => p.Key == "solo").Waiters.Count == 0, "the timed-out waiter is gone");
+        a2.Dispose();
+        Check.Equal(0, s.Snapshot().Sum(p => p.Busy + p.Queued));
     }
 
     private static async Task ReloadDuringWait()
