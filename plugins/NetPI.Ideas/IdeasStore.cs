@@ -26,9 +26,10 @@ public sealed class IdeasFile
 public sealed class IdeasFileException(string message) : Exception(message);
 
 /// <summary>
-/// Reads and writes ideas files: per-file lock, atomic writes (temp file + rename), original line endings and BOM kept,
-/// unknown fields preserved, a FileSystemWatcher per file that publishes a debounced <c>ideas.changed { file }</c>, and
-/// a short-lived cache of the parsed file so a run of reads does not re-parse the whole (append-only, growing) backlog.
+/// Reads and writes ideas files: an OS lock per file (<see cref="FileGate"/>, shared with a second plugin instance),
+/// atomic writes (temp file + rename), original line endings and BOM kept, unknown fields preserved, a
+/// FileSystemWatcher per file that publishes a debounced <c>ideas.changed { file }</c>, and a short-lived cache of the
+/// parsed file so a run of reads does not re-parse the whole (append-only, growing) backlog.
 /// </summary>
 public sealed class IdeasStore : IDisposable
 {
@@ -45,6 +46,8 @@ public sealed class IdeasStore : IDisposable
     private readonly IEventBus _events;
     private readonly ILogger? _logger;
     private readonly TimeSpan _debounce;
+    /// <summary>The lock the OS holds for us, so a reload swap's second store cannot lose an update to the first.</summary>
+    private readonly FileGate _files = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new(PathComparer);
     private readonly Dictionary<string, FileSystemWatcher> _watchers = new(PathComparer);
     private readonly List<string> _watchOrder = [];
@@ -63,17 +66,26 @@ public sealed class IdeasStore : IDisposable
 
     public static string Normalize(string path) => System.IO.Path.GetFullPath(path);
 
+    /// <summary>
+    /// Read under the file's lock (both this instance's semaphore and the OS lock every store shares), so a read never
+    /// sees a half-applied write from another plugin instance.
+    /// </summary>
     public async Task<T> ReadAsync<T>(string path, Func<IdeasFile, T> read, CancellationToken ct = default)
     {
         path = Normalize(path);
         Watch(path);
         var gate = _locks.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct).ConfigureAwait(false);
-        try { return read(await LoadAsync(path, ct).ConfigureAwait(false)); }
+        try { return await _files.WithFileAsync(path, async token => read(await LoadAsync(path, token).ConfigureAwait(false)), ct).ConfigureAwait(false); }
         finally { gate.Release(); }
     }
 
-    /// <summary>Load, mutate and save atomically (under the file's lock). Throw from <paramref name="mutate"/> to abort without saving.</summary>
+    /// <summary>
+    /// Load, mutate and save atomically: the read, the change and the rename all happen while the file's lock is held,
+    /// so two stores (or a store and a plugin swap) cannot both read the old file and write their own version. Throw from
+    /// <paramref name="mutate"/> to abort without saving. A write that cannot complete throws and leaves the file as it
+    /// was — the last valid backlog is never replaced by half of a new one.
+    /// </summary>
     public async Task<T> UpdateAsync<T>(string path, Func<IdeasFile, T> mutate, CancellationToken ct = default)
     {
         path = Normalize(path);
@@ -82,11 +94,17 @@ public sealed class IdeasStore : IDisposable
         await gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var file = await LoadAsync(path, ct).ConfigureAwait(false);
-            var result = mutate(file);
-            await SaveAsync(file, ct).ConfigureAwait(false);
-            Changed(path);
-            return result;
+            return await _files.WithFileAsync(path, async token =>
+            {
+                var file = await LoadAsync(path, token).ConfigureAwait(false);
+                var result = mutate(file);
+                // The cached tree is the one we just changed, so it leaves the cache before the write: a write that then
+                // fails must not leave a mutated backlog in memory for the next reader (which would add it a second time).
+                Invalidate(path);
+                await SaveAsync(file, token).ConfigureAwait(false);
+                Changed(path);
+                return result;
+            }, ct).ConfigureAwait(false);
         }
         finally { gate.Release(); }
     }
@@ -217,24 +235,9 @@ public sealed class IdeasStore : IDisposable
         var text = Render(file);
         var body = Encoding.UTF8.GetBytes(text);
         var bytes = file.Bom ? [0xEF, 0xBB, 0xBF, .. body] : body;
-
-        var dir = System.IO.Path.GetDirectoryName(file.Path)!;
-        Directory.CreateDirectory(dir);
-        var tmp = System.IO.Path.Combine(dir, $".{System.IO.Path.GetFileName(file.Path)}.{Ids.Short(6)}.tmp");
-        try
-        {
-            await File.WriteAllBytesAsync(tmp, bytes, ct).ConfigureAwait(false);
-            try { File.Move(tmp, file.Path, overwrite: true); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Locked by an editor / hidden file on Windows: fall back to an in-place write.
-                await File.WriteAllBytesAsync(file.Path, bytes, ct).ConfigureAwait(false);
-            }
-        }
-        finally
-        {
-            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-        }
+        // Through the temporary + rename, or not at all: there is no in-place fallback, because an interrupted one
+        // truncates the last valid backlog (an editor holding the file makes the rename fail, and it fails again later).
+        await FileGate.WriteAtomicAsync(file.Path, bytes, ct).ConfigureAwait(false);
     }
 
     // ------------------------------------------------------------------ change notification
@@ -273,6 +276,12 @@ public sealed class IdeasStore : IDisposable
             }
             catch (Exception ex) { _logger?.LogDebug(ex, "Cannot watch {Path}", path); }
         }
+    }
+
+    /// <summary>Drop the parsed file, so the next read comes from disk (the tree may have been changed, or the disk is newer).</summary>
+    private void Invalidate(string path)
+    {
+        lock (_gate) _parsed.Remove(path);
     }
 
     /// <summary>Publish <c>ideas.changed</c> after the file has been quiet for the debounce interval.</summary>

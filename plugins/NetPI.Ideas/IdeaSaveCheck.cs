@@ -27,6 +27,8 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
     /// <summary>How long a "this chat was checked" mark is kept, so a session reopened months later is not asked again.</summary>
     private const int MarkKeepDays = 30;
     public const string SuggestedEvent = "ideas.suggested";
+    /// <summary>A card left the pending file (answered, discarded, or finished after a restart).</summary>
+    public const string ResolvedEvent = "ideas.resolved";
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(60);
 
     // Single-token letters for the options (the last one used is "none"); more open ideas than letters: the newest stay out.
@@ -57,6 +59,8 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         """;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
+    /// <summary>The OS lock on the pending file, shared with any other instance of this plugin.</summary>
+    private readonly FileGate _files = new();
 
     public void Register(IRpcRegistry rpc)
     {
@@ -266,91 +270,262 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
 
     // ------------------------------------------------------------------ the cards
 
-    public async Task<object?> Suggestions(RpcRequest req, CancellationToken ct) =>
-        new JsonObject { ["suggestions"] = await MutateAsync(f => (JsonNode)f["suggestions"]!.DeepClone(), ct).ConfigureAwait(false) };
+    public async Task<object?> Suggestions(RpcRequest req, CancellationToken ct) => await Guard(async () =>
+        new JsonObject { ["suggestions"] = (await ReadPendingAsync(ct).ConfigureAwait(false))["suggestions"]!.DeepClone() }
+    ).ConfigureAwait(false);
 
-    public async Task<object?> Resolve(RpcRequest req, CancellationToken ct)
+    /// <summary>
+    /// Answer a card. The answer is written to the pending file <b>before</b> the backlog is touched and taken out of it
+    /// <b>after</b>, and the journal entry is replayed at the next start: a crash, a failed write or a reload between
+    /// the two cannot lose the card and cannot save the same idea twice. Everything it needs (the idea, its id and its
+    /// timestamps) is in the entry, so a replay writes exactly the same idea.
+    /// </summary>
+    public async Task<object?> Resolve(RpcRequest req, CancellationToken ct) => await Guard(() => ResolveCore(req, ct)).ConfigureAwait(false);
+
+    private async Task<object?> ResolveCore(RpcRequest req, CancellationToken ct)
     {
         var id = req.Required("id");
         var action = (req.Str("action") ?? "").Trim().ToLowerInvariant();
         if (action is not ("save" or "done" or "discard")) throw new RpcException("bad_request", "action must be \"save\", \"done\" or \"discard\"");
         var edit = req.Prop("edit") is { ValueKind: JsonValueKind.Object } e ? JsonObject.Create(e.Clone()) : null;
+        await RecoverAsync(ct).ConfigureAwait(false); // an interrupted answer is finished before this one
 
-        JsonObject? found = null;
-        await MutateAsync<object?>(f =>
+        // "discard" touches the pending file only: it is one write, and that write is atomic.
+        if (action == "discard")
         {
-            var list = f["suggestions"]!.AsArray();
-            for (var k = 0; k < list.Count; k++)
-                if (list[k] is JsonObject s && IdeaOps.Str(s["id"]) == id) { found = s; list.RemoveAt(k); break; }
-            return null;
+            var card = await MutateAsync(f =>
+            {
+                var found = Card(f, id) ?? throw Gone();
+                Validate(action, found);
+                Remove(f, id);
+                return (JsonNode)found.DeepClone();
+            }, ct).ConfigureAwait(false);
+            PublishResolved(id, action, card);
+            return new JsonObject { ["saved"] = null, ["discarded"] = true };
+        }
+
+        // 1. the answer, durable, with the idea it will write already built (so a replay writes the same idea)
+        var card0 = Card(await ReadPendingAsync(ct).ConfigureAwait(false), id) ?? throw Gone();
+        Validate(action, card0);
+        var entry = new JsonObject
+        {
+            ["id"] = "op_" + Guid.NewGuid().ToString("N")[..10],
+            ["action"] = action,
+            ["cardId"] = id,
+            ["at"] = IdeaOps.Now(),
+            ["applied"] = false,
+        };
+        if (action == "save") entry["idea"] = await DraftAsync(card0, edit, ct).ConfigureAwait(false);
+        else entry["ideaId"] = IdeaOps.Str(card0["ideaId"]);
+        JsonObject op = (JsonObject)(await MutateAsync(f =>
+        {
+            var card = Card(f, id) ?? throw Gone(); // another window answered it while we were building the idea
+            // One window answers a card. A claim left by an answer that is still in the journal means another window is
+            // on it right now; if that one dies the journal entry finishes its answer at the next start.
+            var claim = IdeaOps.Str(card["claim"]);
+            if (claim is { Length: > 0 } && claim != IdeaOps.Str(entry["id"]) && Op(f, claim) is not null)
+                throw new RpcException("conflict", "Another window is answering that card.");
+            card["claim"] = IdeaOps.Str(entry["id"]);
+            Ops(f).Add((JsonObject)entry.DeepClone());
+            return (JsonNode)entry.DeepClone();
+        }, ct).ConfigureAwait(false))!;
+
+        // 2. the backlog; 3. the card and the journal entry leave the pending file
+        try
+        {
+            var result = await ApplyAsync(op, ct).ConfigureAwait(false);
+            var card = await MutateAsync(f =>
+            {
+                Op(f, IdeaOps.Str(op["id"]))!["applied"] = true;
+                var card = Card(f, IdeaOps.Str(op["cardId"]));
+                Remove(f, IdeaOps.Str(op["cardId"]));
+                DropOp(f, IdeaOps.Str(op["id"]));
+                return (JsonNode?)card?.DeepClone();
+            }, ct).ConfigureAwait(false);
+            PublishResolved(IdeaOps.Str(op["cardId"]), action, card);
+            return result;
+        }
+        catch
+        {
+            // Nothing reached the backlog: take the answer back out, so the card stays answerable.
+            await DropOpQuietlyAsync(IdeaOps.Str(op["id"]), ct).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static RpcException Gone() => new("not_found", "That card is gone (already answered, discarded, or NetPI restarted).");
+
+    /// <summary>A file we cannot read or do not understand, or one we cannot write, is the caller's answer, not a crash.</summary>
+    private static async Task<object?> Guard(Func<Task<object?>> body)
+    {
+        try { return await body().ConfigureAwait(false); }
+        catch (IdeasFileException ex) { throw new RpcException("invalid_file", ex.Message); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw new RpcException("io_error", ex.Message); }
+    }
+
+    /// <summary>What the card is about has to match what the user answered, before the card is consumed.</summary>
+    private static void Validate(string action, JsonObject card)
+    {
+        var kind = IdeaOps.Str(card["kind"]) ?? "save";
+        if (action == "done" && kind != "done") throw new RpcException("bad_request", "That card asks to save an idea; answer \"save\" or \"discard\".");
+        if (action == "save" && kind == "done") throw new RpcException("bad_request", "That card marks an existing idea done; answer \"done\" or \"discard\".");
+        if (action == "done" && IdeaOps.Str(card["ideaId"]) is not { Length: > 0 }) throw new RpcException("bad_request", "That card is not about an idea.");
+        if (action == "save" && (IdeaOps.Str(card["title"]) ?? "").Trim().Length == 0) throw new RpcException("bad_request", "An idea needs a title.");
+    }
+
+    /// <summary>
+    /// The idea a "save" answers writes: the card's title and summary (the user's edit wins), stamped with the card's
+    /// project and its own session entry. Built once, here, so the journal holds the finished idea.
+    /// </summary>
+    private async Task<JsonObject> DraftAsync(JsonObject card, JsonObject? edit, CancellationToken ct)
+    {
+        if (edit is not null)
+        {
+            if (edit["title"] is JsonValue t && t.TryGetValue<string>(out var title) && title.Trim().Length > 0) card["title"] = title.Trim();
+            if (edit["summary"] is JsonValue sv && sv.TryGetValue<string>(out var summary)) card["summary"] = summary.Trim();
+        }
+        if ((IdeaOps.Str(card["title"]) ?? "").Trim().Length == 0) throw new RpcException("bad_request", "An idea needs a title.");
+        var project = card["project"] as JsonObject;
+        var sessionId = IdeaOps.Str(card["sessionId"]);
+        return await store.ReadAsync(locator.GlobalFile(), file =>
+        {
+            var idea = IdeaOps.CreateIdea(new JsonObject
+            {
+                ["title"] = IdeaOps.Str(card["title"]),
+                ["summary"] = IdeaOps.Str(card["summary"]),
+            }, file.Ideas, "user", sessionId is { Length: > 0 } sid ? sid : null, keepExtraFields: true);
+            IdeaOps.SetProject(idea,
+                project?["id"] is JsonValue pid && pid.TryGetValue<string>(out var id) ? id : null,
+                project?["name"] is JsonValue pname && pname.TryGetValue<string>(out var name) ? name : null);
+            IdeaOps.AddSessionEntry(idea, new JsonObject
+            {
+                ["sessionId"] = sessionId,
+                ["title"] = IdeaOps.Str(card["sessionTitle"]),
+                ["at"] = IdeaOps.Now(),
+                ["seen"] = true,
+            });
+            return (JsonObject)idea.DeepClone();
         }, ct).ConfigureAwait(false);
-        if (found is null) throw new RpcException("not_found", "That card is gone (already answered, or NetPI restarted).");
+    }
 
-        if (action == "discard") return new JsonObject { ["saved"] = null, ["discarded"] = true };
-
-        // "done": a commit may have finished an existing idea. The card named it; only the status changes, and the
-        // commits linked to it stay where they are.
-        if (action == "done")
+    /// <summary>Put the answer into the backlog. Idempotent: the same entry applied twice saves one idea.</summary>
+    private async Task<JsonObject> ApplyAsync(JsonObject op, CancellationToken ct)
+    {
+        if (IdeaOps.Str(op["action"]) == "done")
         {
-            var ideaId = IdeaOps.Str(found["ideaId"]);
-            if (ideaId is not { Length: > 0 }) throw new RpcException("bad_request", "That card is not about an idea.");
+            var target = IdeaOps.Str(op["ideaId"]) ?? "";
             var marked = await store.UpdateAsync(locator.GlobalFile(), file =>
             {
-                var idea = IdeaOps.Find(file.Ideas, ideaId) ?? throw new RpcException("not_found", $"No idea {ideaId}.");
+                var idea = IdeaOps.Find(file.Ideas, target) ?? throw new RpcException("not_found", $"No idea {target}.");
                 IdeaOps.ApplyPatch(idea, new JsonObject { ["status"] = "done" }, fromUi: true);
                 return (JsonNode?)idea.DeepClone();
             }, ct).ConfigureAwait(false);
             return new JsonObject { ["saved"] = marked, ["discarded"] = false, ["marked"] = "done" };
         }
 
-        if (edit is not null)
+        var saved = await store.UpdateAsync(locator.GlobalFile(), file =>
         {
-            if (edit["title"] is JsonValue t && t.TryGetValue<string>(out var t2) && t2.Trim().Length > 0) found["title"] = t2.Trim();
-            if (edit["summary"] is JsonValue sv && sv.TryGetValue<string>(out var s2)) found["summary"] = s2.Trim();
-        }
-        var title = (IdeaOps.Str(found["title"]) ?? "").Trim();
-        if (title.Length == 0) throw new RpcException("bad_request", "An idea needs a title.");
-        var project = found["project"] as JsonObject;
-        var sessionId = IdeaOps.Str(found["sessionId"]);
-        var sessionTitle = IdeaOps.Str(found["sessionTitle"]);
+            var idea = (JsonObject)op["idea"]!.DeepClone();
+            var id = IdeaOps.Str(idea["id"]) ?? "";
+            if (IdeaOps.Find(file.Ideas, id) is { } already && Same(already, idea)) return (JsonNode?)idea; // a replay
+            if (IdeaOps.Find(file.Ideas, id) is not null) idea["id"] = IdeaOps.NewId("idea-", new HashSet<string?>(), 6);
+            file.Ideas.Add(idea);
+            return (JsonNode?)idea.DeepClone();
+        }, ct).ConfigureAwait(false);
+        return new JsonObject { ["saved"] = saved, ["discarded"] = false };
+    }
 
-        return new JsonObject
+    /// <summary>The idea already in the file is the one this answer wrote (same id, title and creation time).</summary>
+    private static bool Same(JsonObject stored, JsonObject idea) =>
+        IdeaOps.Str(stored["title"]) == IdeaOps.Str(idea["title"]) && IdeaOps.Str(stored["createdAt"]) == IdeaOps.Str(idea["createdAt"]);
+
+    /// <summary>
+    /// Finish answers that were interrupted between the journal and the backlog (a crash, a reload, a failed write).
+    /// Called at start and before every card is answered or listed; applying an entry twice is harmless, so a recovery
+    /// that overlaps a live one changes nothing.
+    /// </summary>
+    public async Task RecoverAsync(CancellationToken ct)
+    {
+        JsonArray ops;
+        try { ops = (JsonArray?)Ops(await ReadPendingAsync(ct).ConfigureAwait(false))?.DeepClone() ?? []; }
+        catch (IdeasFileException) { return; } // the file is broken: the cards in it are the user's, leave them
+        foreach (var node in ops.OfType<JsonObject>())
         {
-            ["discarded"] = false,
-            ["saved"] = await store.UpdateAsync(locator.GlobalFile(), file =>
+            var id = IdeaOps.Str(node["id"]) ?? "";
+            var cardId = IdeaOps.Str(node["cardId"]) ?? "";
+            try
             {
-                var idea = IdeaOps.CreateIdea(new JsonObject
+                if (node["applied"] is not JsonValue v || !v.TryGetValue<bool>(out var applied) || !applied)
+                    await ApplyAsync(node, ct).ConfigureAwait(false);
+                var card = await MutateAsync(f =>
                 {
-                    ["title"] = title,
-                    ["summary"] = IdeaOps.Str(found["summary"]),
-                }, file.Ideas, "user", sessionId is { Length: > 0 } sid ? sid : null, keepExtraFields: true);
-                IdeaOps.SetProject(idea,
-                    project?["id"] is JsonValue pid && pid.TryGetValue<string>(out var id) ? id : null,
-                    project?["name"] is JsonValue pname && pname.TryGetValue<string>(out var name) ? name : null);
-                IdeaOps.AddSessionEntry(idea, new JsonObject
-                {
-                    ["sessionId"] = sessionId,
-                    ["title"] = sessionTitle,
-                    ["at"] = IdeaOps.Now(),
-                    ["seen"] = true,
-                });
-                file.Ideas.Add(idea);
-                return (JsonNode?)idea.DeepClone();
-            }, ct).ConfigureAwait(false),
-        };
+                    Remove(f, cardId);
+                    DropOp(f, id);
+                    return (JsonNode?)Card(f, cardId)?.DeepClone();
+                }, ct).ConfigureAwait(false);
+                PublishResolved(cardId, IdeaOps.Str(node["action"]), card);
+                ctx.Logger.LogInformation("Ideas: finished the interrupted answer of card {Card} ({Action})", cardId, IdeaOps.Str(node["action"]));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ctx.Logger.LogWarning("Ideas: the interrupted answer of card {Card} is still unfinished: {Message}", cardId, ex.Message);
+            }
+        }
+    }
+
+    private void PublishResolved(string? id, string? action, JsonNode? card) =>
+        ctx.Events.Publish(ResolvedEvent, new JsonObject { ["id"] = id, ["action"] = action, ["card"] = card?.DeepClone() });
+
+    private async Task DropOpQuietlyAsync(string? opId, CancellationToken ct)
+    {
+        try { await MutateAsync(f => { DropOp(f, opId); return true; }, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        { ctx.Logger.LogWarning("Ideas: the journal entry {Op} could not be taken out: {Message}", opId, ex.Message); }
+    }
+
+    private static JsonObject? Card(JsonObject pending, string? id)
+    {
+        foreach (var node in (pending["suggestions"] as JsonArray ?? []).OfType<JsonObject>())
+            if (IdeaOps.Str(node["id"]) == id) return node;
+        return null;
+    }
+
+    private static void Remove(JsonObject pending, string? id)
+    {
+        var list = pending["suggestions"] as JsonArray ?? [];
+        for (var k = 0; k < list.Count; k++)
+            if (list[k] is JsonObject s && IdeaOps.Str(s["id"]) == id) { list.RemoveAt(k); return; }
+    }
+
+    private static JsonArray Ops(JsonObject pending) => pending["ops"] as JsonArray ?? [];
+
+    private static JsonObject? Op(JsonObject pending, string? id)
+    {
+        foreach (var node in Ops(pending).OfType<JsonObject>())
+            if (IdeaOps.Str(node["id"]) == id) return node;
+        return null;
+    }
+
+    private static void DropOp(JsonObject pending, string? id)
+    {
+        var ops = Ops(pending);
+        for (var k = 0; k < ops.Count; k++)
+            if (ops[k] is JsonObject s && IdeaOps.Str(s["id"]) == id) { ops.RemoveAt(k); return; }
     }
 
     // ------------------------------------------------------------------ the pending file
 
     // Suggestions and the per-session check marks, in one small file next to the ideas (never inside it: a card is not
-    // an idea until the user says so). Written atomically, under one lock.
+    // an idea until the user says so). Written atomically under two locks: this class's own semaphore (the save check
+    // and the commit check, which remembers the last commit it read per repository, share the file) and the OS lock
+    // every plugin instance takes, so a reload swap cannot interleave a read-modify-write with the instance it is
+    // replacing.
     private string PendingFile() => Path.Combine(Path.GetDirectoryName(locator.GlobalFile())!, "ideas-pending.json");
 
     private Task<T> MutateAsync<T>(Func<JsonObject, T> mutate, CancellationToken ct) => MutatePendingAsync(mutate, ct);
 
     /// <summary>
-    /// The pending file, read, changed and written under this class's one lock — the save check and the commit check
-    /// (which remembers the last commit it read per repository) share it, so the file has a single writer.
+    /// The pending file, read, changed and written under the locks above. A call that changes nothing writes nothing.
     /// </summary>
     internal async Task<T> MutatePendingAsync<T>(Func<JsonObject, T> mutate, CancellationToken ct)
     {
@@ -358,54 +533,87 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         try
         {
             var file = PendingFile();
-            var root = await ReadAsync(file, ct).ConfigureAwait(false);
-            var before = root.ToJsonString(PendingOptions);
-            var result = mutate(root);
-            // Most calls change nothing (a sweep with no new commit, a repository already seen): then the rewrite is pure
-            // churn — duplicate mtime, and a duplicate rewrite of the user's cards file for the same content.
-            if (root.ToJsonString(PendingOptions) != before)
-                await WriteAsync(file, root, ct).ConfigureAwait(false);
-            return result;
+            return await _files.WithFileAsync(file, async token =>
+            {
+                var root = await ReadPendingAsync(file, token).ConfigureAwait(false);
+                var before = root.ToJsonString(PendingOptions);
+                var result = mutate(root);
+                // Most calls change nothing (a sweep with no new commit, a repository already seen): then the rewrite is pure
+                // churn — duplicate mtime, and a duplicate rewrite of the user's cards file for the same content.
+                if (root.ToJsonString(PendingOptions) != before)
+                    await WritePendingAsync(file, root, token).ConfigureAwait(false);
+                return result;
+            }, ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }
 
     /// <summary>
-    /// The pending file, or a fresh one. A file that cannot be read after three tries (a half-written one from a crash,
-    /// or a lock held by another process) is not overwritten with an empty backlog: the cards in it are the user's.
+    /// The pending file as it is on disk: a plain read that never writes. Listing the cards used to go through a
+    /// read-modify-write, so opening the window rewrote the file the user's answers live in.
     /// </summary>
-    private async Task<JsonObject> ReadAsync(string file, CancellationToken ct)
+    internal async Task<JsonObject> ReadPendingAsync(CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var file = PendingFile();
+            return await _files.WithFileAsync(file, token => ReadPendingAsync(file, token), ct).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// The pending file, or a fresh one. A file that cannot be read or has the wrong shape is reported and left alone:
+    /// the cards in it are the user's, and replacing them with empty structures would throw them away silently.
+    /// </summary>
+    private async Task<JsonObject> ReadPendingAsync(string file, CancellationToken ct)
     {
         Exception? last = null;
         for (var attempt = 0; attempt < 3; attempt++)
         {
+            ct.ThrowIfCancellationRequested();
             try
             {
                 if (!File.Exists(file)) return New();
                 var root = JsonNode.Parse(await File.ReadAllTextAsync(file, ct).ConfigureAwait(false),
                     documentOptions: new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip }) as JsonObject;
-                if (root is null) return New();
-                if (root["suggestions"] is not JsonArray) root["suggestions"] = new JsonArray();
-                if (root["checked"] is not JsonObject) root["checked"] = new JsonObject();
-                if (root["repos"] is not JsonObject) root["repos"] = new JsonObject();
+                if (root is null) throw new IdeasFileException($"{file} must contain a JSON object.");
+                Check(root, file);
                 return root;
             }
             catch (Exception ex) when (ex is JsonException or IOException && attempt < 2) { last = ex; await Task.Delay(50, ct).ConfigureAwait(false); }
         }
-        ctx.Logger.LogWarning("Ideas: {File} cannot be read, the cards in it are left alone: {Message}", file, last?.Message);
-        return New();
+        throw new IdeasFileException($"{file} cannot be read ({last?.Message}). The cards in it are left alone; fix or delete the file.");
     }
 
-    private static JsonObject New() => new() { ["suggestions"] = new JsonArray(), ["checked"] = new JsonObject(), ["repos"] = new JsonObject() };
+    /// <summary>
+    /// The shape of the pending file. A missing key is fine (an older version, or a file being written); a key of the
+    /// wrong type is not — that is a file we do not understand, and writing it back would destroy whatever it holds.
+    /// </summary>
+    private static void Check(JsonObject root, string file)
+    {
+        foreach (var (key, array) in new[] { ("suggestions", true), ("ops", true), ("checked", false), ("repos", false) })
+        {
+            var node = root[key];
+            if (node is null) { root[key] = array ? new JsonArray() : new JsonObject(); continue; }
+            if (array ? node is not JsonArray : node is not JsonObject)
+                throw new IdeasFileException($"{file}: \"{key}\" must be {(array ? "an array" : "an object")}. Fix the file; it will not be overwritten.");
+        }
+    }
+
+    private static JsonObject New() => new()
+    {
+        ["suggestions"] = new JsonArray(),
+        ["ops"] = new JsonArray(),
+        ["checked"] = new JsonObject(),
+        ["repos"] = new JsonObject(),
+    };
 
     private static readonly JsonSerializerOptions PendingOptions = new() { WriteIndented = true };
 
-    private static async Task WriteAsync(string file, JsonObject root, CancellationToken ct)
-    {
-        var tmp = file + ".tmp";
-        await File.WriteAllTextAsync(tmp, root.ToJsonString(PendingOptions), ct).ConfigureAwait(false);
-        File.Move(tmp, file, overwrite: true); // atomic on the same volume
-    }
+    private static Task WritePendingAsync(string file, JsonObject root, CancellationToken ct) =>
+        FileGate.WriteAtomicAsync(file, System.Text.Encoding.UTF8.GetBytes(root.ToJsonString(PendingOptions)), ct);
 
     // ------------------------------------------------------------------ helpers
 

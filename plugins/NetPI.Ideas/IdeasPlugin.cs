@@ -43,7 +43,7 @@ public sealed class IdeasPlugin : INetPiPlugin
         var store = context.Track(new IdeasStore(context.Events, context.Logger));
         var settings = context.Settings;
         var locator = new IdeasLocator(() => context.Sessions, context.Paths, () => settings);
-        await MigratePerProjectFiles(context, store, locator);
+        await MigratePerProjectFiles(context, store, locator, ct);
 
         context.Tools.Register(new IdeasTool(store, locator));
 
@@ -52,6 +52,10 @@ public sealed class IdeasPlugin : INetPiPlugin
         new IdeaRecall(context, store, locator).Register(context.Rpc);
         var saveCheck = new IdeaSaveCheck(context, store, locator);
         saveCheck.Register(context.Rpc);
+        // An answer that was interrupted between the journal and the backlog is finished before anything else asks for
+        // the cards: the card is either saved (once) or still there, never neither.
+        try { await saveCheck.RecoverAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) { context.Logger.LogWarning("Ideas: the interrupted card answers could not be finished: {Message}", ex.Message); }
         // Phase 3: watch the projects' repositories. Started after the tab and the file watcher, and it never blocks
         // the start: a project that cannot be watched is retried on the next rescan.
         var commitCheck = context.Track(new IdeaCommitCheck(context, store, locator, saveCheck));
@@ -70,14 +74,22 @@ public sealed class IdeasPlugin : INetPiPlugin
     /// <summary>
     /// One-time move of the per-project files of earlier versions (<c>.netpi/ideas.json</c>, and the legacy
     /// <c>ideas.json</c> in the project folder) into the single global file: the ideas are appended, stamped with
-    /// <c>project</c> and given a new id when they collide with one already there. A source is deleted only after the
-    /// merge has been written; while the global file cannot be read or written the migration is skipped and retried on
-    /// the next start.
+    /// <c>project</c> and given a new id when they collide with one already there. While the global file cannot be read
+    /// or written the migration is skipped and retried on the next start.
+    /// <para>
+    /// Each import is written to <c>ideas-migration.json</c> (path + content hash + the ids it produced) <b>before</b>
+    /// the source is deleted, and the source is deleted only after the import was read back from the file that was
+    /// written. So an interrupted run — a crash between the write and the delete, a delete that fails because the file
+    /// is open, a power cut — re-imports nothing: the next start sees its own receipt and only finishes the delete.
+    /// </para>
     /// </summary>
-    private static async Task MigratePerProjectFiles(IPluginContext ctx, IdeasStore store, IdeasLocator locator)
+    private static async Task MigratePerProjectFiles(IPluginContext ctx, IdeasStore store, IdeasLocator locator, CancellationToken ct)
     {
         var file = locator.GlobalFile();
         var name = locator.FileName();
+        var receiptFile = Path.Combine(Path.GetDirectoryName(file)!, MigrationReceipt.FileName);
+        var receipt = MigrationReceipt.Read(receiptFile);
+
         foreach (var p in ctx.Sessions.ListProjects().Where(p => !string.IsNullOrWhiteSpace(p.Path)))
         {
             var sources = new[]
@@ -87,33 +99,64 @@ public sealed class IdeasPlugin : INetPiPlugin
             }.Where(File.Exists).Distinct().ToList();
             if (sources.Count == 0) continue;
 
+            // Already imported (the delete did not happen last time): nothing to merge again, only to clean up.
+            var fresh = new List<(string Path, byte[] Bytes, string Hash)>();
+            foreach (var source in sources)
+            {
+                try
+                {
+                    var bytes = File.ReadAllBytes(source);
+                    var hash = MigrationReceipt.HashOf(bytes);
+                    if (receipt.Has(source, hash)) continue;
+                    fresh.Add((source, bytes, hash));
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    ctx.Logger.LogWarning("Ideas migration for project {Project} skipped: {Message}", p.Name, ex.Message);
+                }
+            }
+            if (fresh.Count == 0)
+            {
+                foreach (var source in sources) TryDelete(ctx, source);
+                continue;
+            }
+
             try
             {
-                var moved = await store.UpdateAsync(file, f =>
+                var imported = await store.UpdateAsync(file, f =>
                 {
                     var known = new HashSet<string?>(IdeaOps.All(f.Ideas).Select(i => IdeaOps.Str(i["id"])), StringComparer.OrdinalIgnoreCase);
-                    var count = 0;
-                    foreach (var source in sources)
+                    var ids = new List<string>();
+                    foreach (var (source, bytes, _) in fresh)
                     {
-                        var doc = IdeasStore.Parse(source, File.ReadAllBytes(source));
+                        var doc = IdeasStore.Parse(source, bytes);
                         foreach (var node in doc.Ideas.OfType<JsonObject>())
                         {
                             var idea = (JsonObject)node.DeepClone(); // detach from the source document
                             if (IdeaOps.ProjectOf(idea) is null) IdeaOps.SetProject(idea, p.Id, p.Name);
                             if (IdeaOps.Str(idea["id"]) is not { } id || !known.Add(id))
                             {
-                                var fresh = IdeaOps.NewId("idea-", known, 6);
-                                idea["id"] = fresh;
-                                known.Add(fresh);
+                                var freshId = IdeaOps.NewId("idea-", known, 6);
+                                idea["id"] = freshId;
+                                known.Add(freshId);
                             }
                             f.Ideas.Add(idea);
-                            count++;
+                            ids.Add(IdeaOps.Str(idea["id"])!);
                         }
                     }
-                    return count;
+                    return ids;
                 });
-                if (moved > 0) ctx.Logger.LogInformation("Merged {Count} idea(s) from project {Project} into {File}", moved, p.Name, file);
-                foreach (var source in sources) File.Delete(source);
+                // The import is only finished when it is really in the file that was written; the sources stay otherwise.
+                var stored = await store.ReadAsync(file, f => IdeaOps.All(f.Ideas).Select(i => IdeaOps.Str(i["id"])).ToHashSet(StringComparer.OrdinalIgnoreCase));
+                if (imported.Any(id => !stored.Contains(id)))
+                {
+                    ctx.Logger.LogWarning("Ideas migration for project {Project}: the merged ideas are not all in {File}; the sources are kept.", p.Name, file);
+                    continue;
+                }
+                foreach (var (source, _, hash) in fresh) receipt.Remember(source, hash, imported);
+                await receipt.SaveAsync(receiptFile, ct).ConfigureAwait(false);
+                ctx.Logger.LogInformation("Merged {Count} idea(s) from project {Project} into {File}", imported.Count, p.Name, file);
+                foreach (var (source, _, _) in fresh) TryDelete(ctx, source);
             }
             catch (IdeasFileException ex)
             {
@@ -126,6 +169,15 @@ public sealed class IdeasPlugin : INetPiPlugin
             }
         }
     }
+
+    /// <summary>A source that cannot be deleted stays; the receipt means the next start deletes it instead of importing it again.</summary>
+    private static void TryDelete(IPluginContext ctx, string source)
+    {
+        try { File.Delete(source); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { ctx.Logger.LogWarning("Ideas: the imported file {Source} could not be deleted ({Message}); it is finished at the next start.", source, ex.Message); }
+    }
+
 }
 
 /// <summary>ideas.* RPC handlers (see docs/PLUGIN-IDEAS.md).</summary>
@@ -139,7 +191,9 @@ public sealed class IdeasRpc(IdeasStore store, IdeasLocator locator)
         rpc.Register("ideas.list", List, "The ideas backlog (the single global file): { } → { file, fileName, exists, ideas }");
         rpc.Register("ideas.get", Get, "{ id } → idea");
         rpc.Register("ideas.add", Add, "{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections? }, prepend? } → idea; stamped with projectId (a project id or name, \"global\" for unbound), else the session's project");
-        rpc.Register("ideas.update", Update, "{ id, patch } → idea; patch.project: a project id/name or { id, name? } rebinds, null (or \"global\") unbinds");
+        rpc.Register("ideas.update", Update,
+            "{ id, patch, expectedUpdatedAt? } → idea; patch.project: a project id/name or { id, name? } rebinds, null (or \"global\") unbinds; " +
+            "expectedUpdatedAt: refused with \"conflict\" when the idea changed since it was read (a stale window or editor)");
         rpc.Register("ideas.delete", Delete, "{ id } → true");
         rpc.Register("ideas.reorder", Reorder, "{ ids: string[] } → true");
         rpc.Register("ideas.toPrompt", ToPrompt, "{ id } → markdown prompt text");
@@ -206,9 +260,15 @@ public sealed class IdeasRpc(IdeasStore store, IdeasLocator locator)
         var id = req.Required("id");
         var patch = ObjectParam(req, "patch");
         _locator.NormalizeProject(patch); // a bare project id/name in the patch → { id, name } (unknown: an error)
+        // Optional: what the editor had when it opened the card. Something else wrote the idea since (another window,
+        // the agent, a file edit) and the change is refused instead of silently overwriting it — a lock cannot see an
+        // editor that does not take it, this can.
+        var expected = req.Str("expectedUpdatedAt");
         return await _store.UpdateAsync(_locator.GlobalFile(), f =>
         {
             var idea = IdeaOps.Find(f.Ideas, id) ?? throw new RpcException("not_found", $"Idea {id} not found");
+            if (expected is { Length: > 0 } && IdeaOps.Str(idea["updatedAt"]) != expected)
+                throw new RpcException("conflict", $"Idea {id} changed since {expected} (it is now {IdeaOps.Str(idea["updatedAt"]) ?? "untouched"}). Reload it and apply the change again.");
             IdeaOps.ApplyPatch(idea, patch, fromUi: true);
             return (object?)idea.DeepClone();
         }, ct).ConfigureAwait(false);

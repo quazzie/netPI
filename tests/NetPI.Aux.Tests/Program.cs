@@ -7,6 +7,7 @@ NudgeTests.Register(runner);
 ToolRepairTests.Register(runner);
 CompactionTests.Register(runner);
 IdeasTests.Register(runner);
+IdeasStorageTests.Register(runner);
 TodoTests.Register(runner);
 WebTests.Register(runner);
 MediaTests.Register(runner);
