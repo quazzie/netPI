@@ -95,12 +95,17 @@ public static class IdeasCommitTests
             Check = Ctx.Owner.Owned.OfType<IdeaCommitCheck>().FirstOrDefault();
         }
 
-        /// <summary>Close and reopen: a new process over the same home and the same repository.</summary>
-        public async Task<Env> RestartAsync()
+        /// <summary>
+        /// Close and reopen: a new process over the same home and the same repository. The project keeps its id (a
+        /// restart does not renumber projects), and it is restored before the plugin starts, so the first sweep of the
+        /// new process already sees the same ideas in scope.
+        /// </summary>
+        public async Task<Env> RestartAsync(string? projectId = null)
         {
             var home = Ctx.Paths.Home;
+            projectId ??= Project.Id;
             Ctx.Unload();
-            var next = new Env(home, Repo);
+            var next = new Env(home, Repo) { Project = { Id = projectId } };
             await next.StartAsync();
             return next;
         }
@@ -169,8 +174,7 @@ public static class IdeasCommitTests
             env.Repo.Commit("made while closed 1");
             env.Repo.Commit("made while closed 2");
             env.Repo.Commit("made while closed 3");
-            var again = await env.RestartAsync();
-            again.Project.Id = env.Project.Id; // the same project after a restart, not a new one
+            var again = await env.RestartAsync(env.Project.Id);
             Check.Equal(1, (await again.CommitsOn(idea)).Count, "nothing is read before a sweep");
             await again.Check!.SweepNowAsync();
             Check.Equal(4, (await again.CommitsOn(idea)).Count, "the cursor was not re-anchored at HEAD");
