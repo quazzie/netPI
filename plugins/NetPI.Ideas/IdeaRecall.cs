@@ -67,38 +67,28 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasStore store, Ide
         if (text.Length < MinLength) return Result("short");
         if (!ctx.Rpc.Exists("decide.decision")) return Result("unavailable");
 
-        var candidates = open.Take(Letters.Length - 1).ToList();
-        var none = Letters[candidates.Count].ToString();
-        var list = new StringBuilder();
-        for (var k = 0; k < candidates.Count; k++)
-        {
-            var i = candidates[k];
-            list.Append(Letters[k]).Append(") [").Append(IdeaOps.ProjectLabel(i)).Append("] ").Append(IdeaOps.Str(i["title"]));
-            if (OneLine(IdeaOps.Str(i["summary"])) is { Length: > 0 } s) list.Append(" — ").Append(Clip(s, 240));
-            list.Append('\n');
-        }
-        list.Append(none).Append(") none of these: the message is about something else");
+        // One window while the user types (latency is the whole point here); a backlog larger than the letters is
+        // ranked by what the message shares with each idea, so the ideas past the 51st are still eligible.
+        var window = IdeaMatch.Windows(open, text, maxWindows: 1).First();
+        var list = IdeaMatch.Options(window, "none of these: the message is about something else", out var none, out var labels);
         var system = "You match the first message of a new chat with an AI coding agent to the user's backlog of open ideas " +
                      "(planned features, fixes and experiments), so the agent can be given the idea's notes. Reply with the letter of the best option only.\n\n" +
                      "Open ideas:\n" + list;
         var question = $"First message of a new chat:\n<<<\n{Clip(text, 2000)}\n>>>\n\n" +
                        "Is this message about working on one of the open ideas (continuing, building, testing or discussing it)? Which one? " +
                        $"Pick {none} when it is about something else, even if the topic is near an idea.\nAnswer with one letter.";
-        var labels = new JsonArray();
-        for (var k = 0; k <= candidates.Count; k++) labels.Add(Letters[k].ToString());
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(Timeout);
-        JsonObject answer;
+        object? answer;
         try
         {
-            var raw = await ctx.Rpc.InvokeAsync("decide.decision", new JsonObject
+            answer = await ctx.Rpc.InvokeAsync("decide.decision", new JsonObject
             {
                 ["model"] = Setting("ideas.model", DefaultModel) is { Length: > 0 } model ? model.Trim() : DefaultModel,
                 ["messages"] = new JsonArray(new JsonObject { ["role"] = "system", ["content"] = system }),
                 ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["content"] = question, ["labels"] = labels }),
             }, cts.Token).ConfigureAwait(false);
-            answer = raw as JsonObject ?? JsonSerializer.SerializeToNode(raw) as JsonObject ?? throw new InvalidOperationException("no answer");
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -110,15 +100,13 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasStore store, Ide
             return Result("error", error: ex.Message);
         }
 
-        if (answer["branches"] is not JsonArray { Count: > 0 } branches || branches[0]?["probabilities"] is not JsonObject probs)
-            return Result("error", error: "the decision returned no probabilities");
-        double P(string label) => probs[label] is JsonValue v && v.TryGetValue<double>(out var d) ? d : 0;
-        var best = -1;
-        for (var k = 0; k < candidates.Count; k++)
-            if (best < 0 || P(Letters[k].ToString()) > P(Letters[best].ToString())) best = k;
-        var p = P(Letters[best].ToString());
+        // The answer is read the same way the other checks read it: only letters we offered count, "none" is not an idea.
+        var pick = IdeaMatch.Answer(answer as JsonNode ?? JsonSerializer.SerializeToNode(answer), window.Count);
+        if (pick is null) return Result("error", error: "the decision returned no usable probabilities");
         var threshold = Math.Clamp(Setting("ideas.recallThreshold", DefaultThreshold), 0.3, 0.99);
-        return p >= threshold && p > P(none) ? Result("model", MatchOf(candidates[best], p)) : Result("none");
+        return pick.P >= threshold && pick.P > pick.None
+            ? Result("model", MatchOf(window[pick.Index], pick.P))
+            : Result("none");
     }
 
     public async Task<object?> Attach(RpcRequest req, CancellationToken ct)

@@ -483,6 +483,14 @@ public static class IdeaOps
     }
 
     /// <summary>
+    /// Whether this chat is already recorded as having worked on the idea (a <c>sessions</c> entry). This is not the
+    /// same as being in <c>sessionIds</c>, which only says the session created or updated the idea: that is provenance,
+    /// not a link between this conversation and this idea, and the close check does not mistake it for one.
+    /// </summary>
+    public static bool WorkedOnWith(JsonObject idea, string sessionId) =>
+        (idea["sessions"] as JsonArray ?? []).OfType<JsonObject>().Any(s => Str(s["sessionId"]) == sessionId);
+
+    /// <summary>
     /// A commit that worked on this idea: <c>{ hash, short, subject, at }</c>, newest last. Like
     /// <see cref="AddSessionEntry"/> it lives beside the idea's text, never inside it, and one entry per commit: a
     /// re-read of the same hash updates what it says instead of adding a second one.

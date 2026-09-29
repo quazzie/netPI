@@ -26,6 +26,13 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
     public const int MinUserMessages = 2;
     /// <summary>How long a "this chat was checked" mark is kept, so a session reopened months later is not asked again.</summary>
     private const int MarkKeepDays = 30;
+    /// <summary>How often a check that failed on this conversation is retried.</summary>
+    public const int MaxTries = 3;
+    /// <summary>And how long to wait before the next try.</summary>
+    public static readonly TimeSpan RetryAfter = TimeSpan.FromMinutes(5);
+    /// <summary>A tab closed while the agent was still working: the check waits for the run, this often and this long.</summary>
+    internal static TimeSpan DeferStep { get; set; } = TimeSpan.FromSeconds(30);
+    public const int MaxDefers = 20;
     public const string SuggestedEvent = "ideas.suggested";
     /// <summary>A card left the pending file (answered, discarded, or finished after a restart).</summary>
     public const string ResolvedEvent = "ideas.resolved";
@@ -37,6 +44,14 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
     // The digest the two checks read: what the user asked and what came back, tools by name. Never the raw transcript:
     // the measured runs used a digest, and a whole 200-turn session would not fit the check's window anyway.
     private const int MaxChars = 12000;
+    /// <summary>How much of the budget the beginning of a long chat keeps (the rest goes to its ending).</summary>
+    private const int HeadShare = 4;
+
+    /// <summary>How the last turn of a closed tab ended: still running, finished, or stopped badly.</summary>
+    private enum Turn { Open, Ended, Bad }
+
+    /// <summary>Why a check may not run (yet), and what the UI is told.</summary>
+    private sealed record Claim(bool Started, string Reason);
 
     private static readonly string SaveSystem = """
         You decide whether a finished conversation with an AI coding agent leaves something worth keeping in the
@@ -74,6 +89,12 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
 
     // ------------------------------------------------------------------ the check
 
+    /// <summary>
+    /// A tab was closed: the chat behind it may leave something worth keeping. The check runs in the background and
+    /// never holds the close. Whether it may run is decided from the conversation's <b>current</b> state and recorded
+    /// per conversation revision, so a chat is checked once per revision, a failed check is retried, and a chat closed
+    /// mid-run is checked when the run ends instead of never.
+    /// </summary>
     public async Task<object?> Closed(RpcRequest req, CancellationToken ct)
     {
         var sessionId = req.Required("sessionId");
@@ -85,35 +106,100 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         var messages = ctx.Sessions.GetMessages(sessionId);
         var users = messages.Count(m => m.Role == MessageRole.User);
         if (users < MinUserMessages) return Result("short");
-        if (messages.Any(m => m.Role == MessageRole.Assistant && m.StopReason is "aborted" or "error")) return Result("unfinished");
 
-        // One check per message count: a tab closed, reopened and closed again does not ask twice, but new turns earn a
-        // new one. Read, mark and prune in one pass over the file: _gate is not reentrant, so this is one call, not three.
-        var already = await MutateAsync(root =>
+        // The state the chat is in now, not every state it was in: a turn that was cut short hours ago and was worked
+        // on since is a finished conversation. A tab closed while the agent is still running is not: it waits.
+        var turn = TurnOf(messages);
+        if (turn == Turn.Bad) return Result("unfinished");
+
+        var rev = Revision(messages);
+        var claim = await ClaimAsync(sessionId, users, rev, ct).ConfigureAwait(false);
+        if (!claim.Started) return Result(claim.Reason);
+
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
+        ctx.Track(cts);
+        _ = Task.Run(() => DeferredRunAsync(session, messages, turn, cts.Token), CancellationToken.None);
+        return Result(turn == Turn.Open ? "running" : "started");
+    }
+
+    /// <summary>
+    /// Take the check for one conversation revision, or say why not. The mark has a state: <c>running</c> is a claim in
+    /// flight (a second close does not start a second check), <c>done</c> is the only permanent one, and <c>failed</c>
+    /// may be tried again a few times — so an outage, a timeout or a reload no longer eats the check silently.
+    /// </summary>
+    private async Task<Claim> ClaimAsync(string sessionId, int users, string rev, CancellationToken ct) =>
+        await MutateAsync(f =>
         {
-            var marks = root["checked"] as JsonObject;
-            if (marks is null) root["checked"] = marks = new JsonObject();
-            if (marks[sessionId] is JsonObject seen && (seen["n"]?.GetValue<int>() ?? 0) >= users) return true;
-            marks[sessionId] = new JsonObject { ["n"] = users, ["at"] = IdeaOps.Now() };
+            var marks = f["checked"] as JsonObject ?? (JsonObject)(f["checked"] = new JsonObject());
+            if (marks[sessionId] is JsonObject seen && IdeaOps.Str(seen["rev"]) == rev)
+            {
+                var state = IdeaOps.Str(seen["state"]) ?? "done"; // marks from before the states were just "checked"
+                if (state is "done" or "running") return new Claim(false, "already");
+                if (state == "failed" && Tries(seen) >= MaxTries
+                    && Stamp(seen["at"]) is { } at && DateTimeOffset.UtcNow - at < RetryAfter)
+                    return new Claim(false, "already");
+            }
+            marks[sessionId] = new JsonObject
+            {
+                ["n"] = users,
+                ["rev"] = rev,
+                ["state"] = "running",
+                ["tries"] = 0,
+                ["at"] = IdeaOps.Now(),
+            };
             var cutoff = DateTimeOffset.UtcNow.AddDays(-MarkKeepDays);
             foreach (var key in marks.Select(p => p.Key).ToList())
                 if (marks[key] is JsonObject m && Stamp(m["at"]) is { } at && at < cutoff)
                     marks.Remove(key);
-            return false;
+            return new Claim(true, "started");
         }, ct).ConfigureAwait(false);
-        if (already) return Result("already");
 
-        // The tab is already gone: everything from here runs in the background and only the cards are left.
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
-        ctx.Track(cts);
-        _ = Task.Run(() => RunAsync(session, messages, cts.Token), CancellationToken.None);
-        return Result("started");
+    /// <summary>Wait for an open run to end (a bounded number of times), then run the check once for real.</summary>
+    private async Task DeferredRunAsync(SessionInfo session, IReadOnlyList<ChatMessage> messages, Turn turn, CancellationToken ct)
+    {
+      try {
+        var current = messages;
+        for (var waited = 0; turn == Turn.Open && waited < MaxDefers; waited++)
+        {
+            await Task.Delay(DeferStep, ct).ConfigureAwait(false);
+            if (ct.IsCancellationRequested) return;
+            if (ctx.Sessions.GetSession(session.Id) is null) { await GiveUpAsync(session.Id, ct).ConfigureAwait(false); return; }
+            current = ctx.Sessions.GetMessages(session.Id);
+            turn = TurnOf(current);
+        }
+        await RunAsync(session, current, turn == Turn.Open, ct).ConfigureAwait(false);
+      } catch (Exception ex) when (ex is not OperationCanceledException) {
+        ctx.Logger.LogWarning("Ideas: the deferred check on {Session} failed: {Message}", session.Id, ex.Message);
+      }
     }
 
-    private async Task RunAsync(SessionInfo session, IReadOnlyList<ChatMessage> messages, CancellationToken ct)
+    /// <summary>The conversation as it will be judged: its beginning for the intent, its ending for what came of it.</summary>
+    private static Turn TurnOf(IReadOnlyList<ChatMessage> messages)
+    {
+        for (var k = messages.Count - 1; k >= 0; k--)
+        {
+            var m = messages[k];
+            if (m.Role != MessageRole.Assistant) continue;
+            return m.StopReason switch
+            {
+                null or "tool_use" => Turn.Open,
+                "aborted" or "error" or "length" or "content_filter" => Turn.Bad,
+                _ => Turn.Ended,
+            };
+        }
+        return Turn.Open; // the user has not had an answer yet
+    }
+
+    /// <summary>
+    /// What makes this conversation a different one to check: the messages it has now. Two closes of a chat that has
+    /// not changed are the same revision, a chat with a new turn is not.
+    /// </summary>
+    private static string Revision(IReadOnlyList<ChatMessage> messages) => messages.Count > 0 ? $"{messages.Count}:{messages[^1].Id}" : "0";
+
+    private async Task RunAsync(SessionInfo session, IReadOnlyList<ChatMessage> messages, bool gaveUpWaiting, CancellationToken ct)
     {
         var digest = Digest(messages);
-        if (digest.Length < 80) return;
+        if (digest.Length < 80) { await FinishAsync(session.Id, ct, "too short").ConfigureAwait(false); return; }
         var project = session.ProjectId is { } pid ? ctx.Sessions.GetProject(pid) : null;
 
         try
@@ -124,7 +210,11 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
 
             if (!ctx.Models.Cached.Any()) await ctx.Models.ListAsync(ct: ct).ConfigureAwait(false);
             var draft = await SaveCheckAsync(session, digest, ct).ConfigureAwait(false);
-            if (draft is null) return;
+            if (draft is null)
+            {
+                await FinishAsync(session.Id, ct, gaveUpWaiting ? "no card (the run never ended)" : "no card").ConfigureAwait(false);
+                return;
+            }
 
             var suggestion = new JsonObject
             {
@@ -140,45 +230,117 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
             if (project is not null) suggestion["project"] = new JsonObject { ["id"] = project.Id, ["name"] = project.Name };
             else suggestion["project"] = null;
 
-            await MutateAsync<object?>(f => { f["suggestions"]!.AsArray().Add(suggestion); return null; }, ct).ConfigureAwait(false);
+            var added = await MutateAsync(f =>
+            {
+                // One card per chat per plan: a check that runs twice (a retry, a restart) does not stack them.
+                var cards = f["suggestions"]!.AsArray();
+                foreach (var node in cards.OfType<JsonObject>())
+                    if (IdeaOps.Str(node["kind"]) is "save" or null && IdeaOps.Str(node["sessionId"]) == session.Id
+                        && Same(node["title"]?.DeepClone(), suggestion["title"]?.DeepClone()))
+                        return false;
+                cards.Add(suggestion);
+                return true;
+            }, ct).ConfigureAwait(false);
+            if (!added) { await FinishAsync(session.Id, ct, "the card was already there").ConfigureAwait(false); return; }
             ctx.Events.Publish(SuggestedEvent, new JsonObject { ["suggestion"] = suggestion.DeepClone() });
+            await FinishAsync(session.Id, ct, null).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await FinishAsync(session.Id, ct, "cancelled").ConfigureAwait(false);
+        }
         catch (Exception ex)
         {
+            // A failed check stays retryable: the mark records what went wrong and the next close of this conversation
+            // tries again (a few times), instead of the chat being silently excluded forever.
             ctx.Logger.LogWarning("Ideas: the save check on {Session} failed: {Message}", session.Id, ex.Message);
+            await FinishAsync(session.Id, ct, ex.Message).ConfigureAwait(false);
         }
     }
+
+    /// <summary>The mark for this conversation revision: done when the check worked, failed (and retryable) when it did not.</summary>
+    private async Task FinishAsync(string sessionId, CancellationToken ct, string? error)
+    {
+        try
+        {
+            await MutateAsync(f =>
+            {
+                if (f["checked"] is not JsonObject marks || marks[sessionId] is not JsonObject mark) return false;
+                if (IdeaOps.Str(mark["state"]) is not "running") return false; // a later close already took it
+                mark["state"] = error is null ? "done" : "failed";
+                mark["at"] = IdeaOps.Now();
+                if (error is not null) mark["error"] = Clip(error, 200);
+                if (mark["tries"] is JsonValue v && v.TryGetValue<int>(out var tries)) mark["tries"] = tries + 1;
+                return true;
+            }, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        { ctx.Logger.LogDebug("Ideas: the check mark for {Session} could not be written: {Message}", sessionId, ex.Message); }
+    }
+
+    /// <summary>A check that waited for a run that never ended stops trying (its mark is retryable).</summary>
+    private async Task GiveUpAsync(string sessionId, CancellationToken ct) =>
+        await FinishAsync(sessionId, ct, "the run never ended").ConfigureAwait(false);
 
     /// <summary>Which open idea the chat worked on: a <c>sessions</c> entry on that idea, no question asked.</summary>
     private async Task AttachAsync(List<JsonObject> open, SessionInfo session, string digest, CancellationToken ct)
     {
-        var candidates = open.Take(Letters.Length - 1).ToList();
-        var none = Letters[candidates.Count].ToString();
-        var list = new StringBuilder();
-        for (var k = 0; k < candidates.Count; k++)
+        // What the chat already says it worked on: an idea the user added to it (a notice), or a session entry an
+        // earlier check recorded. That is the answer — asking the model about it again could only make it worse.
+        var explicitId = await ExplicitIdeaOfAsync(session, ct).ConfigureAwait(false);
+        if (explicitId is not null)
         {
-            list.Append(Letters[k]).Append(") [").Append(IdeaOps.ProjectLabel(candidates[k])).Append("] ").Append(IdeaOps.Str(candidates[k]["title"]));
-            if (OneLine(IdeaOps.Str(candidates[k]["summary"])) is { Length: > 0 } s) list.Append(" — ").Append(Clip(s, 240));
-            list.Append('\n');
+            await RecordAsync(explicitId, session, ct).ConfigureAwait(false);
+            return;
         }
-        list.Append(none).Append(") none of these: the conversation is about something else");
 
-        var answer = await DecideAsync(new JsonObject
+        // Bounded: the digest picks the window when the backlog has more ideas than one decision can offer.
+        IdeaPick? best = null;
+        List<JsonObject>? bestWindow = null;
+        foreach (var window in IdeaMatch.Windows(open, digest))
         {
-            ["role"] = "system",
-            ["content"] = "You decide which of the user's backlog of open ideas a finished conversation with an AI coding " +
-                          "agent was about, so the conversation can be attached to it. Reply with the letter of the best option only.\n\n" +
-                          "Open ideas:\n" + list,
-        }, "Which open idea is this conversation about? " +
-           "Pick it when the conversation worked on it (built, tested, discussed or changed its plan), " +
-           $"pick {none} when it is about something else. Answer with one letter.",
-            Enumerable.Range(0, candidates.Count + 1).Select(k => Letters[k].ToString()).ToArray(), ct).ConfigureAwait(false);
-        if (answer is null) return;
-        var best = candidates[answer.Value.Index];
-        if (answer.Value.P < Math.Clamp(Setting("ideas.attachThreshold", DefaultAttachThreshold), 0.3, 0.99)
-            || answer.Value.P <= answer.Value.None) return;
+            var list = IdeaMatch.Options(window, "none of these: the conversation is about something else", out var none, out var labels);
+            var answer = await DecideAsync(new JsonObject
+            {
+                ["role"] = "system",
+                ["content"] = "You decide which of the user's backlog of open ideas a finished conversation with an AI coding " +
+                              "agent was about, so the conversation can be attached to it. Reply with the letter of the best option only.\n\n" +
+                              "Open ideas:\n" + list,
+            }, "Which open idea is this conversation about? " +
+               "Read the conversation: pick the idea it worked on (built, tested, discussed, or changed its plan), " +
+               $"pick {none} when it is about something else. Answer with one letter.\n\n" +
+               $"Conversation:\n<<<\n{Clip(digest, 4000)}\n>>>",
+                labels, ct).ConfigureAwait(false);
+            if (answer is null) return; // no usable answer: nothing is attached, and the save check still runs
+            if (best is null || answer.P > best.P) { best = answer; bestWindow = window; }
+            if (best.P > 0.5 || answer.None >= best.P) break; // decided (or nothing in this window): no further windows
+        }
+        if (best is null || bestWindow is null) return;
+        if (best.P < Math.Clamp(Setting("ideas.attachThreshold", DefaultAttachThreshold), 0.3, 0.99)
+            || best.P <= best.None) return;
+        if (IdeaOps.Str(bestWindow[best.Index]["id"]) is not { Length: > 0 } chosenId) return;
+        await RecordAsync(chosenId, session, ct).ConfigureAwait(false);
+    }
 
+    /// <summary>The idea this chat is explicitly about: one the user added to it, or one an earlier check recorded it on.</summary>
+    private async Task<string?> ExplicitIdeaOfAsync(SessionInfo session, CancellationToken ct)
+    {
+        foreach (var m in ctx.Sessions.GetMessages(session.Id))
+            if (m.Meta?["kind"] is JsonValue v && v.TryGetValue<string>(out var kind) && kind == "idea"
+                && m.Meta["ideaId"] is JsonValue id && id.TryGetValue<string>(out var ideaId) && ideaId.Length > 0)
+                return ideaId;
+        return await store.ReadAsync(locator.GlobalFile(), f => IdeaOps.All(f.Ideas)
+            .Where(i => IdeaOps.WorkedOnWith(i, session.Id))
+            .Select(i => IdeaOps.Str(i["id"]))
+            .FirstOrDefault(id => id is { Length: > 0 }), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Record on the idea that this chat worked on it — a <c>sessions</c> entry beside the text, one per session, so
+    /// the idea's own notes are never edited by the check.
+    /// </summary>
+    private async Task RecordAsync(string id, SessionInfo session, CancellationToken ct)
+    {
         // A session that recall already attached is not attached twice: the entry carries the note, not a second mark.
         var entry = new JsonObject
         {
@@ -190,8 +352,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         if (session.MessageCount > 0) entry["seq"] = session.MessageCount;
         await store.UpdateAsync<object?>(locator.GlobalFile(), f =>
         {
-            if (IdeaOps.Str(best["id"]) is { Length: > 0 } id && IdeaOps.Find(f.Ideas, id) is { } found)
-                IdeaOps.AddSessionEntry(found, entry);
+            if (IdeaOps.Find(f.Ideas, id) is { } found) IdeaOps.AddSessionEntry(found, entry);
             return null;
         }, ct).ConfigureAwait(false);
     }
@@ -200,18 +361,15 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
     private async Task<(string Title, string Summary)?> SaveCheckAsync(SessionInfo session, string digest, CancellationToken ct)
     {
         var model = await ResolveModelAsync(ct).ConfigureAwait(false);
-        if (model is null)
-        {
-            ctx.Logger.LogWarning("Ideas: the save check cannot run: model {Model} is not in the catalog.", Setting("ideas.model", DefaultModel));
-            return null;
-        }
+        // Not a silent "no card": the check did not run, so the mark says why and the next close tries again.
+        if (model is null) throw new InvalidOperationException($"model {Setting("ideas.model", DefaultModel)} is not in the catalog");
         var maxOut = Math.Clamp(model.MaxOutputTokens is > 0 and var m ? Math.Min(m, 1024) : 1024, 256, 4096);
         var request = new ModelRequest
         {
             Model = model,
             SystemPrompt = SaveSystem,
             Messages = [ChatMessage.UserText($"Conversation with the agent:\n<<<\n{digest}\n>>>\n\nDoes it leave something worth keeping?")],
-            ReasoningEffort = EffortFor(model, "low"),
+            ReasoningEffort = EffortFor(model),
             MaxOutputTokens = maxOut,
             SessionId = session.Id,
             Purpose = "other",
@@ -236,7 +394,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
 
     private static string Clean(string s) => s.Trim().Trim('#', '*', '`', '"', '\'', '-', ' ').Trim();
 
-    private async Task<(int Index, double P, double None)?> DecideAsync(JsonObject system, string question, string[] labels, CancellationToken ct)
+    private async Task<IdeaPick?> DecideAsync(JsonObject system, string question, JsonArray labels, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(Timeout);
@@ -246,15 +404,10 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
             {
                 ["model"] = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel,
                 ["messages"] = new JsonArray(system),
-                ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["content"] = question, ["labels"] = new JsonArray(labels.Select(l => (JsonNode)l!).ToArray()) }),
+                ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["content"] = question, ["labels"] = labels }),
             }, cts.Token).ConfigureAwait(false);
-            var answer = raw as JsonObject ?? JsonSerializer.SerializeToNode(raw) as JsonObject;
-            if (answer?["branches"] is not JsonArray { Count: > 0 } branches || branches[0]?["probabilities"] is not JsonObject probs) return null;
-            double P(string label) => probs[label] is JsonValue v && v.TryGetValue<double>(out var d) ? d : 0;
-            var index = -1;
-            for (var k = 0; k < labels.Length; k++)
-                if (index < 0 || P(labels[k]) > P(labels[index])) index = k;
-            return (index, P(labels[index]), P(labels[^1]));
+            // Read the answer once, in one place: only the letters we offered count, and "none" is never an idea.
+            return IdeaMatch.Answer(raw as JsonNode ?? JsonSerializer.SerializeToNode(raw), labels.Count - 1);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -439,6 +592,9 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
     private static bool Same(JsonObject stored, JsonObject idea) =>
         IdeaOps.Str(stored["title"]) == IdeaOps.Str(idea["title"]) && IdeaOps.Str(stored["createdAt"]) == IdeaOps.Str(idea["createdAt"]);
 
+    /// <summary>Two titles, compared the way the duplicate-card check needs them.</summary>
+    private static bool Same(JsonNode? a, JsonNode? b) => IdeaOps.Str(a) == IdeaOps.Str(b);
+
     /// <summary>
     /// Finish answers that were interrupted between the journal and the backlog (a crash, a reload, a failed write).
     /// Called at start and before every card is answered or listed; applying an entry twice is harmless, so a recovery
@@ -617,29 +773,36 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
 
     // ------------------------------------------------------------------ helpers
 
-    /// <summary>The conversation as the checks read it: the user turns whole, the answers and tools clipped.</summary>
+    /// <summary>
+    /// The conversation as the checks read it: the user turns whole, the answers and tools clipped. A long chat keeps
+    /// its <b>beginning and its ending</b> — the intent at the top and what came of it (built, cancelled, deferred) at
+    /// the bottom — because a check that only sees the discussion mistakes an implemented plan for an open one.
+    /// </summary>
     internal static string Digest(IReadOnlyList<ChatMessage> messages)
     {
-        var sb = new StringBuilder();
+        var lines = new List<string>();
         foreach (var m in messages)
         {
             switch (m.Role)
             {
                 case MessageRole.User:
-                    if (sb.Length > 0) sb.Append('\n');
-                    sb.Append("User: ").Append(Clip(Plain(m), 1500));
+                    lines.Add("User: " + Clip(Plain(m), 1500));
                     break;
                 case MessageRole.Assistant:
                     var text = Plain(m);
                     var tools = m.Parts.OfType<ToolCallPart>().Select(c => c.Name).ToList();
                     if (text.Length == 0 && tools.Count == 0) break;
-                    sb.Append("\nAgent: ").Append(Clip(text, 800));
-                    if (tools.Count > 0) sb.Append("\n  used: ").Append(string.Join(", ", tools.Distinct()));
+                    var line = "Agent: " + Clip(text, 800);
+                    if (tools.Count > 0) line += "\n  used: " + string.Join(", ", tools.Distinct());
+                    lines.Add(line);
                     break;
             }
-            if (sb.Length > MaxChars) break;
         }
-        return Clip(sb.ToString(), MaxChars);
+        var all = string.Join('\n', lines);
+        if (all.Length <= MaxChars) return all;
+        var head = MaxChars * HeadShare / (HeadShare + 1); // the rest is the ending
+        var tail = MaxChars - head;
+        return all[..head].TrimEnd() + "\n\n[... " + (all.Length - MaxChars).ToString("N0") + " characters of the middle of this conversation ...]\n\n" + all[^tail..];
     }
 
     private static string Plain(ChatMessage m) => string.Join(' ', m.Parts.OfType<TextPart>().Select(t => t.Text));
@@ -657,21 +820,33 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         catch (IdeasFileException ex) { throw new RpcException("invalid_file", ex.Message); }
     }
 
+    /// <summary>
+    /// The model the check runs on: exactly the one the user configured. There is no fallback to whatever else is in
+    /// the catalog — a check that silently runs on another model (a paid one, or a much weaker one) is worse than no
+    /// check, and the user is told instead.
+    /// </summary>
     private async Task<ModelInfo?> ResolveModelAsync(CancellationToken ct)
     {
         var name = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel;
-        return await ctx.Models.FindAsync(name, ct).ConfigureAwait(false) ?? ctx.Models.Cached.FirstOrDefault();
+        var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
+        if (model is null)
+            ctx.Logger.LogWarning("Ideas: the save check cannot run: model {Model} is not in the catalog (it is not replaced by another one).", name);
+        return model;
     }
 
-    /// <summary>The model's lowest reasoning effort when it has any; null is the model default (null = no reasoning block).</summary>
-    private static string? EffortFor(ModelInfo model, string wanted)
+    /// <summary>
+    /// The cheapest reasoning effort the model actually has, by an explicit order — "low" if it has it, then less, and
+    /// the model's own default when it has none of them. Never a step up: asking a big model to think harder is not
+    /// what this check wants.
+    /// </summary>
+    internal static string? EffortFor(ModelInfo model)
     {
         var r = model.Reasoning;
         if (r is null || !r.Supported) return null;
-        var efforts = r.Efforts;
-        return efforts.FirstOrDefault(e => string.Equals(e, wanted, StringComparison.OrdinalIgnoreCase))
-            ?? efforts.OrderByDescending(e => Rank(e)).FirstOrDefault();
-        static int Rank(string e) => e.ToLowerInvariant() switch { "none" or "off" => 0, "minimal" => 1, "low" => 2, _ => 3 };
+        foreach (var wanted in (string[])["low", "minimal", "none"])
+            if (r.Efforts.Any(e => string.Equals(e, wanted, StringComparison.OrdinalIgnoreCase)))
+                return r.Efforts.First(e => string.Equals(e, wanted, StringComparison.OrdinalIgnoreCase));
+        return null;
     }
 
     private T Setting<T>(string key, T fallback)
@@ -681,6 +856,8 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
     }
 
     private static JsonObject Result(string reason) => new() { ["checked"] = reason is "started" or "already", ["reason"] = reason };
+
+    private static int Tries(JsonObject mark) => mark["tries"] is JsonValue v && v.TryGetValue<int>(out var n) ? n : 0;
 
     /// <summary>An idea timestamp (an ISO string, <see cref="IdeaOps.Now"/>); null when it is missing or not one.</summary>
     private static DateTimeOffset? Stamp(JsonNode? node) =>
