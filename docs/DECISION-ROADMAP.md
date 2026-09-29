@@ -3,6 +3,10 @@
 Written 2026-09-26 at the end of the session that built `/v1/decision`. It lists every suggestion and next step from
 that session, in the order to do them. Results so far: `DECISION-MODELS.md`; the experiments: `archive/2026-09-26-decisions.md`.
 
+The work itself is in the ideas backlog, one idea per thread: **`idea-0m4hml`** — what NetPI uses decisions for
+(Phase 3), **`idea-im8862`** — engine work (Phase 2, global), **`idea-61dla9`** — the models behind the decisions
+(Phase 4). Earlier separate ideas are sections inside them, so a phase below names the section to read.
+
 ## Where things stand
 
 | piece | where | state |
@@ -198,9 +202,11 @@ approved. Next:
    during a 42k-token agent prefill: 5.4 s → p50 214 ms; the paused agent's answer and cached state are
    bit-identical to the prompt alone. The lane needs an AiHub restart to take effect (the hub reads lab.json at
    startup); priority and the pause are live. Details: the fork's `docs/decision.md`, "Decisions first".
-1. 3.2 prefix-reusing checks in NetPI: `/v1/decision` now reuses an agent's cache at any effort (batched branches
-   and `reasoning_effort` deployed, NInfer `a61d418c`). Needs NetPI's conversation as chat messages that render
-   exactly like its Responses requests (tool calls and results included); measure the reuse on real sessions first.
+1. 3.2 prefix-reusing checks in NetPI (`idea-0m4hml`, the plan on the agent's own cached context): `/v1/decision`
+   now reuses an agent's cache at any effort (batched branches and `reasoning_effort` deployed, NInfer `a61d418c`).
+   Needs NetPI's conversation as chat messages that render exactly like its Responses requests (tool calls and
+   results included); measure the reuse on real sessions first.
 2. Turn 3.1 on (`guardrails.secondOpinion: true`): the labels are in and the rule clears on the risk questions.
-3. 1.3. Phase 2 `states` (3.3) is parked: per-state prefixes cannot be shared inside one forward, so packing lines
-   does not beat ~95 ms per line batched, and bulk belongs on the nuc (Laya, 37 ms per line).
+3. 1.3. Phase 2 `states` (3.3) is parked (`idea-im8862`, and `idea-0m4hml` for where the bulk work goes instead):
+   per-state prefixes cannot be shared inside one forward, so packing lines does not beat ~95 ms per line batched,
+   and bulk belongs on the nuc (Laya, 37 ms per line).

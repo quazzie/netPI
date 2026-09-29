@@ -300,7 +300,10 @@ look at the open ideas (action list) before larger work. When you finish the wor
 | `get` | `{ id }` | Full markdown (the meta line carries the project: `… · project: NetPI · …` or `… · project: global · …`). Section headings carry the section ids: `## Plan: Rollout [sec-4f0a]`, and an idea with sections ends with a line on how to change or add one (`updateSections` / `addSections`). |
 | `update` | `{ id, title?, summary?, status?, priority?, tags?, project?, addSections?: [{kind, title?, content}], updateSections?: [{id, title?, content?, kind?}], removeSectionIds? }` (the section shapes are in the tool's schema, not only in its manual) | `project` (id/name, `"global"`, or `null`) rebinds/unbinds the idea. A `sections` argument is treated as `addSections`, and unknown fields are ignored. The session id is added to `sessionIds`. |
 
-Deleting is left to the user (the tab): `delete` returns an error that suggests `done` or `rejected` instead. The action
+Deleting is left to the user (the tab): `delete` returns an error that suggests `done` or `rejected` instead. There is
+no parent or merge field, so consolidating ideas means folding each one's text into **sections** of one keeper idea
+(`addSections`, the absorbed idea named in the section title so its id still finds its content) and setting the
+absorbed ones to `done` with a short "Merged into idea-…" note; the file keeps one flat list. The action
 is read leniently: synonyms (`create`, `show`, `edit`, `search`…), `close` / `done` / `complete` set the status to done,
 and without an action the arguments decide (an id with changes: update; an id alone: get; a title: add; else list).
 Every result has `details: { file, project?, idea? }`. Invalid input comes back as an `isError` result with a hint (for
