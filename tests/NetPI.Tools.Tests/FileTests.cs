@@ -612,7 +612,7 @@ public static class FileTests
 
             await Git(dir, "config", "user.email", "test@example.com");
             await Git(dir, "config", "user.name", "Test");
-            Check.Equal(null, await Commits(new { cwd = dir }), "a repository without commits has none to list");
+            Check.Equal(0, (await Commits(new { cwd = dir }))?.Count, "a repository without commits answers with none (not null: it is a repository)");
 
             await File.WriteAllTextAsync(Path.Combine(dir, "a.txt"), "one");
             await Git(dir, "add", "-A");
@@ -637,6 +637,13 @@ public static class FileTests
 
             Check.Equal(1, (await Commits(new { cwd = dir, limit = 1 }))!.Count, "limit");
             Check.Equal(2, (await Commits(new { cwd = dir, since = "not-a-hash" }))!.Count, "a hash the repository does not know is ignored, not an error");
+            var until = (JsonArray)(await Commits(new { cwd = dir, until = both[0]!["hash"]!.GetValue<string>() }))!; // both[0] is the newest
+            Check.Equal(1, until.Count, "until: only what came before that hash");
+            Check.Equal("first: the nudge counter", until[0]!["subject"]!.GetValue<string>());
+            var gone = NetPiJson.ToNode(await ctx.RpcFake.InvokeAsync("files.commits", new { cwd = dir, since = new string('a', 40) })) as JsonObject;
+            Check.Equal(0, gone!["commits"]!.AsArray().Count, "a cursor the repository does not have answers empty");
+            Check.Equal(false, gone["reachable"]!.GetValue<bool>(), "and says so, so the caller can re-anchor instead of waiting forever");
+            Check.True(gone["gitDir"]!.GetValue<string>().Length > 0, "the git directory is answered, so a worktree can be watched");
             Check.Equal(null, await Commits(new { cwd = T.TempDir("nogit") }), "outside a repository: null");
 
             static async Task<bool> Git(string cwd, params string[] args)

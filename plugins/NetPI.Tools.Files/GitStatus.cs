@@ -24,8 +24,9 @@ internal static class GitStatus
     /// <summary>One commit: the full and short hash, its subject, who wrote it and when.</summary>
     public sealed record Commit(string Hash, string Short, string Subject, string Author, string At);
 
-    /// <summary>What <c>files.commits</c> answers: the repository and its commits, newest first (null outside one).</summary>
-    public sealed record CommitsResult(string Repo, IReadOnlyList<Commit> Commits);
+    /// <summary>What <c>files.commits</c> answers: the repository (with the git directories that hold its refs and log), and
+    /// its commits newest first (null outside a repository).</summary>
+    public sealed record CommitsResult(string Repo, string GitDir, string CommonDir, IReadOnlyList<Commit> Commits, bool Reachable);
 
     public sealed record Result(string Repo, string? Branch, int Ahead, int Behind, IReadOnlyList<Change> Files, int Added, int Deleted);
 
@@ -45,20 +46,34 @@ internal static class GitStatus
     }
 
     /// <summary>
-    /// The commits of the repository, newest first: everything down to <paramref name="since"/> (a hash the caller last
-    /// saw) or the newest <paramref name="limit"/>. Null outside a git repository, or when the hash is unknown to it
-    /// (a rewritten history, a repository that was replaced) — the caller then starts again from the newest commit.
+    /// The commits of the repository, newest first: what came after <paramref name="since"/> and before
+    /// <paramref name="until"/> (both a hash; <c>null</c> means HEAD), capped at <paramref name="limit"/>. Null outside a
+    /// git repository. When <paramref name="since"/> is a hash the repository does not have — a rewritten history, a
+    /// branch that no longer contains it, a repository that was replaced — the answer is an empty list with
+    /// <see cref="CommitsResult.Reachable"/> false, so a caller that remembers a cursor learns it has to re-anchor
+    /// instead of waiting forever for commits that will never be named again.
     /// </summary>
-    public static async Task<CommitsResult?> CommitsAsync(string root, string? since, int limit, CancellationToken ct)
+    public static async Task<CommitsResult?> CommitsAsync(string root, string? since, string? until, int limit, CancellationToken ct)
     {
         var top = (await GitAsync(root, ct, "rev-parse", "--show-toplevel").ConfigureAwait(false))?.Trim();
         if (string.IsNullOrEmpty(top)) return null;
         var repo = Path.GetFullPath(top);
+        // In a worktree .git is a file: the directory that holds this worktree's HEAD, and the one that holds the refs.
+        var gitDir = Path.GetFullPath((await GitAsync(repo, ct, "rev-parse", "--absolute-git-dir").ConfigureAwait(false))?.Trim() ?? Path.Combine(repo, ".git"));
+        var common = (await GitAsync(repo, ct, "rev-parse", "--path-format=absolute", "--git-common-dir").ConfigureAwait(false))?.Trim();
+        var commonDir = string.IsNullOrEmpty(common) ? gitDir : Path.GetFullPath(common);
         var format = $"--format=%H{Field}%h{Field}%an{Field}%aI{Field}%s";
-        var log = since is { Length: > 0 } s && LooksLikeHash(s)
-            ? await GitAsync(repo, ct, "log", $"{s}..HEAD", $"-{limit}", format, "--no-color").ConfigureAwait(false)
-            : await GitAsync(repo, ct, "log", $"-{limit}", format, "--no-color").ConfigureAwait(false);
-        if (log is null) return null;
+        var lower = Hash(since);
+        var upper = Hash(until) ?? "HEAD";
+        var range = lower is { } s ? $"{s}..{upper}" : upper == "HEAD" ? null : $"{upper}^";
+        var log = range is null
+            ? await GitAsync(repo, ct, "log", $"-{limit}", format, "--no-color").ConfigureAwait(false)
+            : await GitAsync(repo, ct, "log", range, $"-{limit}", format, "--no-color").ConfigureAwait(false);
+        if (log is null)
+        {
+            // A range git cannot resolve: the caller's cursor is not in this history any more.
+            return new CommitsResult(repo, gitDir, commonDir, [], Reachable: lower is null);
+        }
         var commits = new List<Commit>();
         foreach (var line in log.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -66,9 +81,9 @@ internal static class GitStatus
             if (f.Length < 5) continue;
             commits.Add(new Commit(f[0].Trim(), f[1].Trim(), f[4].Trim(), f[2].Trim(), f[3].Trim()));
         }
-        return new CommitsResult(repo, commits);
+        return new CommitsResult(repo, gitDir, commonDir, commits, Reachable: true);
 
-        static bool LooksLikeHash(string s) => s.Length is >= 7 and <= 64 && s.All(char.IsLetterOrDigit);
+        static string? Hash(string? h) => h is { Length: >= 7 and <= 64 } v && v.All(char.IsLetterOrDigit) ? v : null;
     }
 
     /// <summary>Parses <c>git status --porcelain=v2 --branch -z</c> and <c>git diff --numstat -z</c> (paths relative to the repository).</summary>

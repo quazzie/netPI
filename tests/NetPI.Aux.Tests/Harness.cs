@@ -109,6 +109,8 @@ public sealed class Ownership
 {
     private readonly List<IDisposable> _owned = [];
     public IDisposable Own(IDisposable d) { lock (_owned) _owned.Add(d); return d; }
+    /// <summary>What has been registered, so a test can drive a plugin object the plugin itself owns.</summary>
+    public IReadOnlyList<IDisposable> Owned { get { lock (_owned) return [.. _owned]; } }
     public void DisposeAll()
     {
         List<IDisposable> items;

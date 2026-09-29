@@ -60,9 +60,11 @@ public sealed class FilesPlugin : INetPiPlugin
         context.Rpc.Register("files.commits", async (req, token) =>
         {
             var since = req.Str("since");
+            var until = req.Str("until");
             var limit = Math.Clamp(req.Int("limit") ?? 20, 1, 200);
-            return await GitStatus.CommitsAsync(ResolveRoot(context, req), since, limit, token).ConfigureAwait(false);
-        }, "The repository's commits, newest first: { sessionId?, cwd?, since? (a hash: only what came after it), limit? (20, max 200) } → { repo, commits: { hash, short, subject, author, at }[] } | null (not a git repository)", readOnly: true);
+            return await GitStatus.CommitsAsync(ResolveRoot(context, req), since, until, limit, token).ConfigureAwait(false);
+        }, "The repository's commits, newest first: { sessionId?, cwd?, since? (a hash: only what came after it), until? (a hash: only what came before it), " +
+           "limit? (20, max 200) } → { repo, gitDir, commonDir, reachable, commits: { hash, short, subject, author, at }[] } | null (not a git repository)", readOnly: true);
 
         // Left-panel file tree of the active session's workspace (UI in ui/main.js → wwwroot/ui.js).
         context.Ui.AddTab(new UiTabInfo { Id = "files", Title = "Files", Panel = UiPanel.Left, Icon = "files", Order = 30, Module = "ui.js" });

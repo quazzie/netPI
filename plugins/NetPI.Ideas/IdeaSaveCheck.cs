@@ -199,7 +199,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
     private async Task RunAsync(SessionInfo session, IReadOnlyList<ChatMessage> messages, bool gaveUpWaiting, CancellationToken ct)
     {
         var digest = Digest(messages);
-        if (digest.Length < 80) { await FinishAsync(session.Id, ct, "too short").ConfigureAwait(false); return; }
+        if (digest.Length < 80) { await FinishAsync(session.Id, ct, null).ConfigureAwait(false); return; } // nothing to judge: that is an outcome, not a failure
         var project = session.ProjectId is { } pid ? ctx.Sessions.GetProject(pid) : null;
 
         try
@@ -212,7 +212,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
             var draft = await SaveCheckAsync(session, digest, ct).ConfigureAwait(false);
             if (draft is null)
             {
-                await FinishAsync(session.Id, ct, gaveUpWaiting ? "no card (the run never ended)" : "no card").ConfigureAwait(false);
+                await FinishAsync(session.Id, ct, gaveUpWaiting ? "the run never ended, so the chat was judged as it was" : null).ConfigureAwait(false);
                 return;
             }
 
@@ -241,7 +241,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
                 cards.Add(suggestion);
                 return true;
             }, ct).ConfigureAwait(false);
-            if (!added) { await FinishAsync(session.Id, ct, "the card was already there").ConfigureAwait(false); return; }
+            if (!added) { await FinishAsync(session.Id, ct, null).ConfigureAwait(false); return; } // the card was already there: still a result
             ctx.Events.Publish(SuggestedEvent, new JsonObject { ["suggestion"] = suggestion.DeepClone() });
             await FinishAsync(session.Id, ct, null).ConfigureAwait(false);
         }
@@ -258,7 +258,11 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         }
     }
 
-    /// <summary>The mark for this conversation revision: done when the check worked, failed (and retryable) when it did not.</summary>
+    /// <summary>
+    /// The mark for this conversation revision. <paramref name="error"/> null means the check <b>ran</b> — "nothing worth
+    /// keeping" is an answer, not a failure — and only a check that could not run (the model was down, the file could
+    /// not be written, the run never ended) leaves the mark failed, and therefore worth trying again.
+    /// </summary>
     private async Task FinishAsync(string sessionId, CancellationToken ct, string? error)
     {
         try

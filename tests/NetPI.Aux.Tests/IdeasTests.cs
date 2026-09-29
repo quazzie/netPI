@@ -56,7 +56,7 @@ public static class IdeasTests
     private static JsonObject Idea(ToolResult r) => (JsonObject)((JsonObject)NetPiJson.ToNode(r.Details)!)["idea"]!;
 
     /// <summary>What the commit check's fake `files.commits` answers with: the real method's own types.</summary>
-    private sealed record CommitsResult(string Repo, IReadOnlyList<GitCommit> Commits);
+    private sealed record CommitsResult(string Repo, string GitDir, string CommonDir, IReadOnlyList<GitCommit> Commits, bool Reachable);
 
     private sealed record GitCommit(string Hash, string Short, string Subject, string Author, string At);
 
@@ -105,8 +105,9 @@ public static class IdeasTests
                 }
                 // The real method answers with a record, not a JsonObject: an RPC hands its handler's own object back
                 // in-process and its JSON over HTTP, so the reader has to cope with both (this is how it was missed).
-                return Task.FromResult<object?>(new CommitsResult(cwd, commits.OfType<JsonObject>()
-                    .Select(c => new GitCommit(c["hash"]!.GetValue<string>(), c["short"]!.GetValue<string>(), c["subject"]!.GetValue<string>(), c["author"]!.GetValue<string>(), c["at"]!.GetValue<string>())).ToList()));
+                var gitDir = Path.Combine(cwd, ".git");
+                return Task.FromResult<object?>(new CommitsResult(cwd, gitDir, gitDir, commits.OfType<JsonObject>()
+                    .Select(c => new GitCommit(c["hash"]!.GetValue<string>(), c["short"]!.GetValue<string>(), c["subject"]!.GetValue<string>(), c["author"]!.GetValue<string>(), c["at"]!.GetValue<string>())).ToList(), Reachable: true));
             });
             // The link picks the first idea, the done question is a plain two-way one.
             var finished = false;
@@ -977,8 +978,8 @@ public static class IdeasTests
 
             env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText("one more question about the counter"));
             Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
-            await WaitForSuggestions(env, 0);
-            Check.Equal(2, env.Ctx.ModelsFake.Requests.Count); // one model call per check, not per close
+            await Until(() => env.Ctx.ModelsFake.Requests.Count == 2, "both checks ran"); // one model call per check, not per close
+            Check.Equal(2, env.Ctx.ModelsFake.Requests.Count);
         });
 
         r.Add("ideas: the save check parses SAVE and NOTHING, and nothing else", () =>

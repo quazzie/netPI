@@ -73,6 +73,20 @@ internal static class IdeaMatch
         return new IdeaPick(best, P(Letters[best].ToString()), P(Letters[options].ToString()));
     }
 
+    /// <summary>The same reading, for an answer that has already been turned into label → probability.</summary>
+    public static IdeaPick? Pick(IReadOnlyDictionary<string, double> probs, IReadOnlyList<string> labels)
+    {
+        if (labels.Count < 2) return null;
+        var best = -1;
+        for (var k = 0; k < labels.Count - 1; k++)
+        {
+            if (!probs.ContainsKey(labels[k])) continue;
+            if (best < 0 || probs[labels[k]] > probs[labels[best]]) best = k;
+        }
+        if (best < 0) return null;
+        return new IdeaPick(best, probs[labels[best]], probs.GetValueOrDefault(labels[^1]));
+    }
+
     /// <summary>
     /// The candidates a decision may see, most relevant first, in windows of at most <see cref="MaxOptions"/>: with a
     /// backlog of 300 ideas one decision still cannot offer all of them, so the most relevant go first and the next

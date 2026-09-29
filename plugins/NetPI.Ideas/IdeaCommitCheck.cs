@@ -28,8 +28,10 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     public const string DefaultModel = "qwen3.8-27b";
     public const double DefaultLinkThreshold = 0.7;
     public const double DefaultDoneThreshold = 0.8;
-    /// <summary>Commits read per sweep. A burst (a rebase, a merge train) is read oldest first and capped here.</summary>
+    /// <summary>Commits read per page. A burst (a rebase, a merge train) is read oldest first, in bounded pages.</summary>
     public const int MaxCommits = 20;
+    /// <summary>Pages one sweep reads, so 45 unseen commits are read in three pages and none of them is skipped.</summary>
+    public const int MaxPages = 5;
     private static readonly TimeSpan Debounce = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan Rescan = TimeSpan.FromMinutes(2);
     /// <summary>How long a repository's last-seen commit is remembered; an untouched repository is dropped from the file.</summary>
@@ -46,19 +48,22 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
 
     private sealed class Watch(string repo, string path, string? projectId, string? projectName) : IDisposable
     {
+
         public string Repo { get; } = repo;
         public string Path { get; } = path;
         public string? ProjectId { get; } = projectId;
         public string? ProjectName { get; } = projectName;
-        public FileSystemWatcher? Fs { get; set; }
+        /// <summary>The git directories being watched (one in a plain repository, two in a worktree).</summary>
+        public List<FileSystemWatcher> Watchers { get; } = [];
         /// <summary>One sweep at a time, and the last one is not lost while it runs.</summary>
         public SemaphoreSlim Gate { get; } = new(1, 1);
-        /// <summary>The one-shot debounce timer, reused by every event (a burst of writes re-arms it, not allocates it).</summary>
+        /// <summary>The one-shot debounce timer, reused by every event (a burst re-arms it, not allocates it).</summary>
         public Timer? Timer { get; set; }
         public bool Again { get; set; }
         public void Dispose()
         {
-            Fs?.Dispose();
+            foreach (var w in Watchers) { try { w.Dispose(); } catch { } }
+            Watchers.Clear();
             Gate.Dispose();
             Timer?.Dispose();
         }
@@ -118,19 +123,21 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
                 if (_stopped) break;
                 if (!Setting("ideas.closeOnCommit", true)) break;
                 if (!ctx.Rpc.Exists("files.commits")) break;   // no Files plugin: nothing can read the commits
-                foreach (var project in ctx.Sessions.ListProjects())
+                var projects = ctx.Sessions.ListProjects();
+                foreach (var project in projects)
                 {
                     if (_stopped) break;
                     try { await WatchProjectAsync(project).ConfigureAwait(false); }
                     catch (Exception ex) { ctx.Logger.LogWarning(ex, "Ideas: cannot watch the repository of project {Project}", project.Name); }
                 }
+                DropStale(projects);
                 foreach (var watch in Watches())
                 {
                     if (_stopped) break;
                     await watch.Gate.WaitAsync(ctx.Stopping).ConfigureAwait(false);
                     try { await SweepAsync(watch).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (ctx.Stopping.IsCancellationRequested) { }
-                    catch (Exception ex) { ctx.Logger.LogWarning(ex, "Ideas: the commit check on {Repo} failed", watch.Repo); }
+                    catch (Exception ex) { ctx.Logger.LogWarning("Ideas: the commit check on {Repo} failed: {Message}", watch.Repo, ex.Message); }
                     finally { watch.Gate.Release(); }
                 }
             }
@@ -145,6 +152,45 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         }
     }
 
+    /// <summary>
+    /// Forget a repository whose project is gone (deleted, renamed or moved). It keeps a watcher and a file handle open
+    /// for a repository nothing in this NetPI is working on any more.
+    /// </summary>
+    private void DropStale(IReadOnlyList<ProjectInfo> projects)
+    {
+        lock (_watchLock)
+        {
+            foreach (var (repo, watch) in _watches.ToArray())
+                if (projects.All(p => !string.Equals(p.Path, watch.Path, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _watches.Remove(repo);
+                    watch.Dispose();
+                    ctx.Logger.LogDebug("Ideas: no longer watching {Repo} (its project is gone)", repo);
+                }
+        }
+    }
+
+    /// <summary>Read every watched repository once, now (the periodic sweep does this; the tests drive it directly).</summary>
+    internal async Task SweepNowAsync()
+    {
+        // The same lifecycle a scheduled sweep applies: pick up projects that are not watched yet, forget the ones
+        // that are gone, then read every repository once.
+        var projects = ctx.Sessions.ListProjects();
+        foreach (var project in projects)
+        {
+            try { await WatchProjectAsync(project).ConfigureAwait(false); }
+            catch (Exception ex) { ctx.Logger.LogWarning("Ideas: cannot watch the repository of project {Project}: {Message}", project.Name, ex.Message); }
+        }
+        DropStale(projects);
+        foreach (var watch in Watches())
+        {
+            await watch.Gate.WaitAsync(ctx.Stopping).ConfigureAwait(false);
+            try { await SweepAsync(watch).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { ctx.Logger.LogWarning("Ideas: the commit check on {Repo} failed: {Message}", watch.Repo, ex.Message); }
+            finally { watch.Gate.Release(); }
+        }
+    }
+
     private Watch[] Watches()
     {
         lock (_watchLock) return [.. _watches.Values];
@@ -156,7 +202,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         // A project that already has a live watcher has had its repository asked about once: do not spawn git per rescan
         // to re-ask (the two-minute timer would pay a git log per watched project for nothing).
         if (Watches().Any(w => string.Equals(w.Path, project.Path, StringComparison.OrdinalIgnoreCase))) return;
-        var found = await ctx.Rpc.InvokeAsync("files.commits", new JsonObject { ["cwd"] = project.Path, ["limit"] = 1 }).ConfigureAwait(false);
+        var found = await AskCommitsAsync(project.Path, null, null, 1).ConfigureAwait(false);
         // Through ToNode: an RPC answers with the handler's own object in-process and with its JSON over HTTP, and the
         // Files plugin answers with a record (like decide.decision's readers here, and for the same reason).
         var o = NetPiJson.ToNode(found) as JsonObject;
@@ -166,41 +212,56 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
             return;
         }
         var newest = (o?["commits"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault();
+        // Only a repository this plugin has never read is anchored at HEAD. A stored cursor is the progress made before
+        // the restart, and overwriting it would skip every commit that was made while NetPI was closed.
+        await RememberIfAbsentAsync(repo, IdeaOps.Str(newest?["hash"])).ConfigureAwait(false);
 
         lock (_watchLock)
         {
             if (_stopped || _watches.ContainsKey(repo)) return;
             var watch = new Watch(repo, project.Path, project.Id, project.Name);
-            // Start at the commit that is already there: the backlog is not swept through its own history.
-            RememberAsync(repo, IdeaOps.Str(newest?["hash"])).GetAwaiter().GetResult();
-            try
+            // The watch is registered before, and even without, a file watcher: the periodic sweep is the floor, so a
+            // repository whose git directory cannot be watched (a worktree, where .git is a file) is still read.
+            ctx.Logger.LogInformation("Ideas: watching {Repo} for commits (project {Project})", repo, project.Name);
+
+            // The whole git directory, subdirectories included: the reflog (.git/logs/HEAD) only exists once a
+            // repository has a first commit, so watching *it* would miss every commit of a fresh one. Any write here
+            // (an index, a ref, the reflog) wakes the sweep, which only acts on commits it has not seen. A worktree has
+            // two of them: its own (HEAD) and the common one where the refs live.
+            foreach (var dir in new[] { IdeaOps.Str(o?["gitDir"]), IdeaOps.Str(o?["commonDir"]) }
+                .Where(d => d is { Length: > 0 } && Directory.Exists(d)).Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                // The whole .git directory, subdirectories included: the reflog (.git/logs/HEAD) only exists once a
-                // repository has a first commit, so watching *it* would miss every commit of a fresh one. Any write here
-                // (an index, a ref, the reflog) wakes the sweep, which only acts on commits it has not seen.
-                var fs = new FileSystemWatcher(Path.Combine(repo, ".git"))
+                try
                 {
-                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName | NotifyFilters.DirectoryName,
-                    IncludeSubdirectories = true,
-                };
-                fs.Changed += (_, _) => Schedule(watch);
-                fs.Created += (_, _) => Schedule(watch);
-                fs.Renamed += (_, _) => Schedule(watch);
-                fs.Deleted += (_, _) => Schedule(watch);
-                fs.EnableRaisingEvents = true;
-                watch.Fs = fs;
-            }
-            catch (Exception ex)
-            {
-                watch.Dispose();
-                // A warning, not a debug line: "my commits are not being noticed" is worth seeing without raising the
-                // log level, and a silent early return here is exactly what makes that impossible to diagnose.
-                ctx.Logger.LogWarning(ex, "Ideas: cannot watch the repository {Git} of project {Project}", Path.Combine(repo, ".git"), project.Name);
-                return;
+                    var fs = new FileSystemWatcher(dir)
+                    {
+                        NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                        IncludeSubdirectories = true,
+                    };
+                    fs.Changed += (_, _) => Schedule(watch);
+                    fs.Created += (_, _) => Schedule(watch);
+                    fs.Renamed += (_, _) => Schedule(watch);
+                    fs.Deleted += (_, _) => Schedule(watch);
+                    fs.EnableRaisingEvents = true;
+                    watch.Watchers.Add(fs);
+                }
+                catch (Exception ex)
+                {
+                    // A warning, not a debug line: the sweep still runs, so this costs speed, not commits.
+                    ctx.Logger.LogWarning(ex, "Ideas: cannot watch the git directory {Git} of project {Project} (its commits are still read every {Minutes} min)", dir, project.Name, Rescan.TotalMinutes);
+                }
             }
             _watches[repo] = watch;
-            ctx.Logger.LogInformation("Ideas: watching {Repo} for commits (project {Project})", repo, project.Name);
         }
+    }
+
+    /// <summary><c>files.commits</c> as the Files plugin answers it (a record, read through JSON).</summary>
+    private async Task<object?> AskCommitsAsync(string path, string? since, string? until, int limit)
+    {
+        var request = new JsonObject { ["cwd"] = path, ["limit"] = limit };
+        if (since is { Length: > 0 }) request["since"] = since;
+        if (until is { Length: > 0 }) request["until"] = until;
+        return await ctx.Rpc.InvokeAsync("files.commits", request).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -233,53 +294,99 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         }, CancellationToken.None);
     }
 
+    /// <summary>
+    /// Read everything this repository has committed since the cursor, oldest first, in bounded pages.
+    /// <para>
+    /// The pages are fetched from HEAD downwards (<c>since..until</c>) and then read in the opposite order, because git
+    /// answers a range with its <em>newest</em> commits: asking for one page of the newest and remembering the newest
+    /// of that page silently drops everything older in the range, which is what lost commits in a burst of more than
+    /// <see cref="MaxCommits"/>. Reading them oldest first also means the decisions see a burst in the order it happened.
+    /// </para>
+    /// <para>
+    /// The cursor only moves past a commit that was handled. A decision that failed (the model is down, a timeout) stops
+    /// the sweep with the cursor where it was, so the next sweep tries that commit again instead of skipping it forever.
+    /// </para>
+    /// </summary>
     private async Task SweepAsync(Watch watch)
     {
-        if (_stopped) return;
+        if (_stopped || !Setting("ideas.closeOnCommit", true)) return;
         var since = await LastSeenAsync(watch.Repo).ConfigureAwait(false);
-        var found = await ctx.Rpc.InvokeAsync("files.commits", new JsonObject
+        var pages = new List<List<JsonObject>>();
+        string? upper = null;
+        for (var page = 0; page < MaxPages; page++)
         {
-            ["cwd"] = watch.Path, ["since"] = since ?? "", ["limit"] = MaxCommits,
-        }).ConfigureAwait(false);
-        if (NetPiJson.ToNode(found) is not JsonObject { } o || o["commits"] is not JsonArray commits || commits.Count == 0)
+            var found = await AskCommitsAsync(watch.Path, since, upper, MaxCommits).ConfigureAwait(false);
+            var o = NetPiJson.ToNode(found) as JsonObject;
+            var batch = (o?["commits"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+            if (o is null || batch.Count == 0)
+            {
+                // The cursor is not in this history any more (a rebase, a branch switch, a replaced repository): the only
+                // way forward is to start again at what is here now, and to say that the older history was not read.
+                if (o?["reachable"] is JsonValue r && r.TryGetValue<bool>(out var reachable) && !reachable)
+                {
+                    var newest = await HeadAsync(watch).ConfigureAwait(false);
+                    ctx.Logger.LogWarning("Ideas: the history of {Repo} was rewritten or the branch changed: the cursor is re-anchored at {Hash} and the older history is not read.",
+                        watch.Repo, newest ?? "HEAD");
+                    await RememberAsync(watch.Repo, newest).ConfigureAwait(false);
+                }
+                break;
+            }
+            pages.Add(batch);
+            if (batch.Count < MaxCommits) break;                 // that was everything below
+            upper = IdeaOps.Str(batch[^1]["hash"]);              // the next page is what came before this one
+        }
+
+        // Oldest first: page by page from the bottom, each page in the order it was committed.
+        var all = pages.SelectMany(p => p).Reverse().ToList();
+        if (all.Count == 0)
         {
             ctx.Logger.LogDebug("Ideas: no new commit in {Repo}", watch.Repo);
             return;
         }
-        ctx.Logger.LogInformation("Ideas: {Count} new commit(s) in {Repo} since {Since}", commits.Count, watch.Repo, since ?? "(the start)");
+        ctx.Logger.LogInformation("Ideas: {Count} new commit(s) in {Repo} since {Since}", all.Count, watch.Repo, since ?? "(the start)");
         ctx.Logger.LogDebug("Ideas: the watcher is the fast path; a missed event is caught by the {Minutes}-minute sweep", Rescan.TotalMinutes);
 
         // The backlog is read once for the whole sweep, not once per commit: a burst would otherwise re-parse the growing
         // file per commit, and the open set cannot change mid-sweep (only a user's click changes an idea's status).
         var open = await OpenAsync(watch.ProjectId).ConfigureAwait(false);
-
-        // Oldest first: a burst is read in the order it happened, and the last commit decides what is left.
-        foreach (var c in commits.OfType<JsonObject>().Reverse().Take(MaxCommits))
+        foreach (var commit in all)
         {
             if (_stopped) return;
-            await HandleAsync(watch, open, c).ConfigureAwait(false);
-            await RememberAsync(watch.Repo, IdeaOps.Str(c["hash"])).ConfigureAwait(false);
+            if (await HandleAsync(watch, open, commit).ConfigureAwait(false))
+                await RememberAsync(watch.Repo, IdeaOps.Str(commit["hash"])).ConfigureAwait(false);
+            else
+            {
+                ctx.Logger.LogWarning("Ideas: {Short} in {Repo} is not read yet (a check failed); the next sweep starts here again",
+                    IdeaOps.Str(commit["short"]) ?? IdeaOps.Str(commit["hash"]), watch.Repo);
+                return; // the cursor stays: this commit, and every one after it, are still unseen
+            }
         }
     }
 
     // ------------------------------------------------------------------ one commit
 
-    private async Task HandleAsync(Watch watch, List<JsonObject> open, JsonObject commit)
+    /// <summary>
+    /// One commit: which idea it is about, recorded on it, and whether the idea looks finished. False when the work
+    /// could not be carried out (the decision did not answer, the file could not be written), so the caller leaves the
+    /// cursor where it is and tries this commit again; true when it is handled, including "it is about nothing here".
+    /// </summary>
+    private async Task<bool> HandleAsync(Watch watch, List<JsonObject> open, JsonObject commit)
     {
         var hash = IdeaOps.Str(commit["hash"]);
-        if (hash is not { Length: > 0 }) return;
+        if (hash is not { Length: > 0 }) return true;  // nothing to remember it by, and nothing to do about it
         var subject = IdeaOps.Str(commit["subject"]) ?? "";
-        if (open.Count == 0) return;
+        if (open.Count == 0) return true;
 
         // 1. which idea is this commit about
         var linked = new List<JsonObject>();
         foreach (var idea in NamedIn(subject, open)) linked.Add(idea);   // deterministic: the message names the id
         if (linked.Count == 0)
         {
-            var picks = await LinkAsync(open, commit).ConfigureAwait(false);
+            var (picks, decided) = await LinkAsync(open, commit).ConfigureAwait(false);
+            if (!decided) return false;   // the decision did not answer: this commit is still unseen
             linked.AddRange(picks);
         }
-        if (linked.Count == 0) return;
+        if (linked.Count == 0) return true;
 
         var entry = new JsonObject
         {
@@ -315,11 +422,12 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
             // 2. is any of them done: the idea's full text and every commit linked to it, not this one alone
             foreach (var idea in fresh)
             {
-                if (_stopped) return;
+                if (_stopped) return true;
                 if (IdeaOps.Str(idea["status"]) is not ("open" or "planned" or "in-progress" or "parked")) continue;
-                if (await OfferDoneAsync(watch, idea, entry, titles).ConfigureAwait(false)) return;  // one offer per sweep
+                if (await OfferDoneAsync(watch, idea, entry, titles).ConfigureAwait(false)) break;  // one offer per sweep
             }
         }
+        return true;
     }
 
     /// <summary>A commit message that names an idea id (<c>… idea-c7xyem</c>) is the match, with no model at all.</summary>
@@ -334,38 +442,38 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         return found;
     }
 
-    /// <summary>Pick-one over the ideas open then; every option that clears the threshold is linked.</summary>
-    private async Task<List<JsonObject>> LinkAsync(List<JsonObject> open, JsonObject commit)
+    /// <summary>
+    /// Which open idea the commit is about. A commit message that names one or more idea ids links exactly those
+    /// (deterministic, no model). Otherwise one pick-one decision, and <b>only its best option</b> is linked: the answer
+    /// is a distribution over mutually exclusive options, so "everything above 0.7" would claim several ideas for one
+    /// commit on the strength of probabilities that were computed to compete with each other. A commit that really
+    /// finishes two ideas names both ids, or gets linked to the one it names best.
+    /// </summary>
+    private async Task<(List<JsonObject> Picks, bool Decided)> LinkAsync(List<JsonObject> open, JsonObject commit)
     {
-        if (!ctx.Rpc.Exists("decide.decision")) return [];
-        var candidates = open.Take(Letters.Length - 1).ToList();
-        if (candidates.Count == 0) return [];
-        var none = Letters[candidates.Count].ToString();
-        var list = new StringBuilder();
-        for (var k = 0; k < candidates.Count; k++)
-        {
-            list.Append(Letters[k]).Append(") [").Append(IdeaOps.ProjectLabel(candidates[k])).Append("] ").Append(IdeaOps.Str(candidates[k]["title"]));
-            if (OneLine(IdeaOps.Str(candidates[k]["summary"])) is { Length: > 0 } s) list.Append(" — ").Append(Clip(s, 240));
-            list.Append('\n');
-        }
-        list.Append(none).Append(") none of these: this commit is about something else");
-
+        if (!ctx.Rpc.Exists("decide.decision")) return ([], true);
         var subject = IdeaOps.Str(commit["subject"]) ?? "";
         var author = IdeaOps.Str(commit["author"]) ?? "";
-        var probs = await DecideAsync(new JsonObject
-        {
-            ["role"] = "system",
-            ["content"] = "You decide which of the user's backlog of open ideas a git commit was about, so the commit can be " +
-                          "recorded on it. Answer with the letter of the best option only.\n\n" +
-                          $"Commit by {author}:\n{subject}\n\nOpen ideas:\n" + list,
-        }, $"Which open idea is this commit about? Pick it when the commit works on it (implements it, or a step of it, " +
-           "or fixes it), pick it even when it only advances the idea. Pick " + none + " when it is about something else.",
-            Enumerable.Range(0, candidates.Count + 1).Select(k => Letters[k].ToString()).ToArray()).ConfigureAwait(false);
-        if (probs is null) return [];
         var threshold = Math.Clamp(Setting("ideas.linkThreshold", DefaultLinkThreshold), 0.3, 0.99);
-        double P(string label) => probs.TryGetValue(label, out var p) ? p : 0;
-        if (P(none) >= threshold) return [];   // "none" wins: the commit is about something else
-        return Enumerable.Range(0, candidates.Count).Where(k => P(Letters[k].ToString()) >= threshold).Select(k => candidates[k]).ToList();
+        List<JsonObject>? best = null;
+        foreach (var window in IdeaMatch.Windows(open, subject + " " + author))
+        {
+            var list = IdeaMatch.Options(window, "none of these: this commit is about something else", out var none, out var labels);
+            var answer = await DecidePickAsync(new JsonObject
+            {
+                ["role"] = "system",
+                ["content"] = "You decide which of the user's backlog of open ideas a git commit was about, so the commit can be " +
+                              "recorded on it. Answer with the letter of the best option only.\n\n" +
+                              $"Commit by {author}:\n{subject}\n\nOpen ideas:\n" + list,
+            }, $"Which open idea is this commit about? Pick it when the commit works on it (implements it, or a step of it, " +
+               $"or fixes it), pick it even when it only advances the idea. Pick {none} when it is about something else.",
+                labels).ConfigureAwait(false);
+            if (answer is null) return ([], false);
+            if (answer.P < threshold || answer.P <= answer.None) break;   // nothing here, or "none" wins
+            best = [window[answer.Index]];
+            break;                                                          // one commit, one idea
+        }
+        return (best ?? [], true);
     }
 
     /// <summary>
@@ -393,7 +501,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
                           "or when it is not clear.\n\n" +
                           $"Idea: {text}\n\nCommits linked to it:\n" + string.Join('\n', linked.Select((s, k) => $"{k + 1}. {s}")),
         }, $"Is the idea finished now? These commits were just made for it ({string.Join(", ", committed)}).",
-            ["DONE", "MORE"]).ConfigureAwait(false);
+            new JsonArray("DONE", "MORE")).ConfigureAwait(false);
         if (probs is null) return false;
         var threshold = Math.Clamp(Setting("ideas.doneThreshold", DefaultDoneThreshold), 0.3, 0.99);
         if ((probs.TryGetValue("DONE", out var done) ? done : 0) < threshold) return false;
@@ -428,8 +536,23 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
 
     // ------------------------------------------------------------------ the decisions
 
+    /// <summary>The newest commit of a repository (what a re-anchored cursor is set to).</summary>
+    private async Task<string?> HeadAsync(Watch watch)
+    {
+        var o = NetPiJson.ToNode(await AskCommitsAsync(watch.Path, null, null, 1).ConfigureAwait(false)) as JsonObject;
+        var newest = (o?["commits"] as JsonArray ?? []).OfType<JsonObject>().FirstOrDefault();
+        return IdeaOps.Str(newest?["hash"]);
+    }
+
+    /// <summary>One pick-one decision over lettered options, read like every other one (never "none" as an idea).</summary>
+    private async Task<IdeaPick?> DecidePickAsync(JsonObject system, string question, JsonArray labels)
+    {
+        var probs = await DecideAsync(system, question, labels).ConfigureAwait(false);
+        return probs is null ? null : IdeaMatch.Pick(probs, labels.OfType<JsonValue>().Select(v => IdeaOps.Str(v) ?? "").ToList());
+    }
+
     /// <summary>One pick-one decision: label → probability, or null when the Decide plugin cannot answer.</summary>
-    private async Task<Dictionary<string, double>?> DecideAsync(JsonObject system, string question, string[] labels)
+    private async Task<Dictionary<string, double>?> DecideAsync(JsonObject system, string question, JsonArray labels)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
         cts.CancelAfter(IdeaSaveCheck.Timeout);
@@ -443,7 +566,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
                 {
                     ["id"] = "pick",
                     ["content"] = question,
-                    ["labels"] = new JsonArray(labels.Select(l => (JsonNode)l!).ToArray()),
+                    ["labels"] = labels,
                 }),
             }, cts.Token).ConfigureAwait(false);
             var answer = raw as JsonObject ?? JsonSerializer.SerializeToNode(raw) as JsonObject;
@@ -451,7 +574,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
             var outp = new Dictionary<string, double>(StringComparer.Ordinal);
             foreach (var (label, node) in probs)
                 if (node is JsonValue v && v.TryGetValue<double>(out var d)) outp[label] = d;
-            return outp.Count == labels.Length ? outp : null;
+            return outp.Count == labels.Count ? outp : null; // a partial answer is not an answer
         }
         catch (OperationCanceledException) when (!ctx.Stopping.IsCancellationRequested)
         {
@@ -488,21 +611,37 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
             f["repos"] is JsonObject repos && repos[repo] is JsonObject r ? IdeaOps.Str(r["hash"]) : null, ctx.Stopping).ConfigureAwait(false);
     }
 
-    private async Task RememberAsync(string repo, string? hash)
+    /// <summary>
+    /// Remember a repository's newest commit when nothing is remembered yet: the progress made before a restart is not
+    /// progress that is thrown away, and the commits made while NetPI was closed are the ones worth reading.
+    /// </summary>
+    private async Task RememberIfAbsentAsync(string repo, string? hash)
     {
         if (hash is not { Length: > 0 } || _stopped) return;
         await save.MutatePendingAsync<int>(f =>
         {
-            if (f["repos"] is not JsonObject repos) f["repos"] = repos = new JsonObject();
-            repos[repo] = new JsonObject { ["hash"] = hash, ["at"] = IdeaOps.Now() };
-            var cutoff = DateTimeOffset.UtcNow.AddDays(-RepoKeepDays);
-            foreach (var key in repos.Select(p => p.Key).ToList())
-                if (repos[key] is JsonObject r && r["at"] is JsonValue v && v.TryGetValue<string>(out var at)
-                    && DateTimeOffset.TryParse(at, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var when)
-                    && when < cutoff)
-                    repos.Remove(key);
-            return 0;
+            if (f["repos"] is JsonObject repos && repos.ContainsKey(repo)) return 0;
+            return SaveRepoAsync(f, repo, hash);
         }, ctx.Stopping).ConfigureAwait(false);
+    }
+
+    private async Task RememberAsync(string repo, string? hash)
+    {
+        if (hash is not { Length: > 0 } || _stopped) return;
+        await save.MutatePendingAsync<int>(f => SaveRepoAsync(f, repo, hash), ctx.Stopping).ConfigureAwait(false);
+    }
+
+    private static int SaveRepoAsync(JsonObject pending, string repo, string hash)
+    {
+        if (pending["repos"] is not JsonObject repos) pending["repos"] = repos = new JsonObject();
+        repos[repo] = new JsonObject { ["hash"] = hash, ["at"] = IdeaOps.Now() };
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-RepoKeepDays);
+        foreach (var key in repos.Select(p => p.Key).ToList())
+            if (repos[key] is JsonObject r && r["at"] is JsonValue v && v.TryGetValue<string>(out var at)
+                && DateTimeOffset.TryParse(at, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var when)
+                && when < cutoff)
+                repos.Remove(key);
+        return 0;
     }
 
     // ------------------------------------------------------------------ helpers

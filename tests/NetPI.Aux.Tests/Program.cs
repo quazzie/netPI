@@ -9,6 +9,7 @@ CompactionTests.Register(runner);
 IdeasTests.Register(runner);
 IdeasStorageTests.Register(runner);
 IdeasCheckTests.Register(runner);
+IdeasCommitTests.Register(runner);
 TodoTests.Register(runner);
 WebTests.Register(runner);
 MediaTests.Register(runner);
