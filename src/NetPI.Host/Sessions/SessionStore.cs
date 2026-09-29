@@ -80,6 +80,16 @@ internal sealed class SessionStore : ISessionStore
     private readonly Dictionary<string, SessionInfo> _transient = new();
     private readonly object _transientLock = new();
 
+    // The deserialized context of the sessions being worked on. Without it every turn re-reads and re-parses the whole
+    // history (measured: ~30 ms and megabytes of garbage for a 1,500-message chat), and does so again for every hook
+    // that appends a notice. Only the few most recent sessions are kept, and a session too big to be worth retaining
+    // is never cached at all — see CacheContext.
+    private const int ContextCacheSessions = 3;
+    private const int ContextCacheMaxMessages = 2000;
+    private readonly Dictionary<string, ChatMessage[]> _context = new(StringComparer.Ordinal);
+    private readonly LinkedList<string> _contextLru = new();
+    private readonly object _contextLock = new();
+
     public SessionStore(IDatabase db, IEventBus bus, string defaultWorkspace)
     {
         _db = db;
@@ -147,10 +157,10 @@ internal sealed class SessionStore : ISessionStore
         var affected = _db.Transaction(_ =>
         {
             if (GetProject(id) is null) throw new KeyNotFoundException($"Project {id} not found");
-            var ids = _db.Query("SELECT id FROM sessions WHERE project_id = @id", new { id }, r => r.GetString("id"));
+            var detached = _db.Query($"SELECT {SessionColumns} FROM sessions WHERE project_id = @id", new { id }, ReadSession);
             _db.Execute("UPDATE sessions SET project_id = NULL WHERE project_id = @id", new { id });
             _db.Execute("DELETE FROM projects WHERE id = @id", new { id });
-            return ids;
+            return detached;
         });
         // Transient (no-message) sessions have no row: detach them in memory, like the ones above
         List<SessionInfo> detachedTransient = [];
@@ -165,8 +175,8 @@ internal sealed class SessionStore : ISessionStore
             }
         }
         Publish(EventTypes.ProjectDeleted, new { id });
-        foreach (var sid in affected)
-            if (GetSession(sid) is { } s) Publish(EventTypes.SessionUpdated, new { session = s });
+        // The sessions were read whole above: one query, not a GetSession per detached session.
+        foreach (var s in affected) Publish(EventTypes.SessionUpdated, new { session = s });
         foreach (var s in detachedTransient) Publish(EventTypes.SessionUpdated, new { session = s });
     }
 
@@ -329,15 +339,21 @@ internal sealed class SessionStore : ISessionStore
                 SELECT id FROM tree
                 """, new { id }, r => r.GetString("id"));
             if (ids.Count == 0) throw new KeyNotFoundException($"Session {id} not found");
-            foreach (var sid in ids)
-            {
-                _db.Execute("DELETE FROM messages WHERE session_id = @sid", new { sid });
-                _db.Execute("DELETE FROM sessions WHERE id = @sid", new { sid });
-            }
+            // Two set-based deletes over the tree, not two statements per session in it.
+            const string Tree = """
+                WITH RECURSIVE tree(id) AS (
+                    SELECT id FROM sessions WHERE id = @id
+                    UNION
+                    SELECT s.id FROM sessions s JOIN tree t ON s.parent_session_id = t.id
+                )
+                """;
+            _db.Execute(Tree + "DELETE FROM messages WHERE session_id IN (SELECT id FROM tree)", new { id });
+            _db.Execute(Tree + "DELETE FROM sessions WHERE id IN (SELECT id FROM tree)", new { id });
             return ids;
         });
         // Children first so a UI never sees an orphaned child of a deleted parent.
         for (var i = deleted.Count - 1; i >= 0; i--) Publish(EventTypes.SessionDeleted, new { id = deleted[i] });
+        foreach (var sid in deleted) DropContext(sid);
     }
 
     /// <summary>
@@ -439,15 +455,20 @@ internal sealed class SessionStore : ISessionStore
     /// <summary>Insert (inside a transaction), bump counters and auto-title. Returns the stored message.</summary>
     private ChatMessage AppendMessageCore(string sessionId, ChatMessage message, out SessionInfo session)
     {
+        DropContext(sessionId);   // the new message is in the context from here on
         var current = GetSession(sessionId) ?? throw new KeyNotFoundException($"Session {sessionId} not found");
-        var seq = (_db.Scalar<long?>("SELECT MAX(seq) FROM messages WHERE session_id = @sessionId", new { sessionId }) ?? 0) + 1;
         message.SessionId = sessionId;
-        message.Seq = seq;
         message.CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(message.CreatedAt.ToUnixTimeMilliseconds());
-        message.Id = _db.Insert($"""
+        // The next seq is worked out by the insert itself and handed back with it: one statement per message, not a
+        // SELECT MAX(seq) and then the insert. Safe under the unique index on (session_id, seq) and the transaction.
+        var stored = _db.QuerySingle<(long Id, long Seq)>("""
             INSERT INTO messages(session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta)
-            VALUES(@SessionId, @Seq, @Role, @Parts, @CreatedAt, @Provider, @Model, @StopReason, @Usage, @DurationMs, @Compacted, @Meta)
-            """, MessageArgs(message));
+            SELECT @SessionId, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = @SessionId), 0) + 1,
+                @Role, @Parts, @CreatedAt, @Provider, @Model, @StopReason, @Usage, @DurationMs, @Compacted, @Meta
+            RETURNING id, seq
+            """, MessageArgs(message), r => (r.GetInt64("id"), r.GetInt64("seq")));
+        message.Id = stored.Id;
+        message.Seq = stored.Seq;
 
         var title = current.Title;
         if (message.Role == MessageRole.User && (string.IsNullOrWhiteSpace(title) || title == DefaultTitle) && MakeTitle(message.Text) is { } auto)
@@ -465,6 +486,7 @@ internal sealed class SessionStore : ISessionStore
     public void UpdateMessage(ChatMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
+        DropContext(message.SessionId);
         var n = _db.Execute("""
             UPDATE messages SET role = @Role, parts = @Parts, provider = @Provider, model = @Model, stop_reason = @StopReason,
                 usage = @Usage, duration_ms = @DurationMs, compacted = @Compacted, meta = @Meta
@@ -498,8 +520,9 @@ internal sealed class SessionStore : ISessionStore
 
     public IReadOnlyList<ChatMessage> GetContextMessages(string sessionId)
     {
-        var list = _db.Query($"SELECT {MessageColumns} FROM messages WHERE session_id = @sessionId AND compacted = 0 ORDER BY seq",
-            new { sessionId }, ReadMessage);
+        var rows = ContextRows(sessionId);
+        // The caller gets its own list: it may reorder it, and the cached array must stay in database order.
+        var list = new List<ChatMessage>(rows);
         // Summaries are appended after the retained tail; the model must see the latest one first.
         var idx = list.FindLastIndex(m => m.Role == MessageRole.Summary);
         if (idx > 0)
@@ -511,10 +534,55 @@ internal sealed class SessionStore : ISessionStore
         return list;
     }
 
+    /// <summary>The session's uncompacted messages in database order, from the cache when it has them.</summary>
+    private ChatMessage[] ContextRows(string sessionId)
+    {
+        lock (_contextLock)
+            if (_context.TryGetValue(sessionId, out var cached))
+            {
+                TouchContextLocked(sessionId);
+                return cached;
+            }
+        var rows = _db.Query($"SELECT {MessageColumns} FROM messages WHERE session_id = @sessionId AND compacted = 0 ORDER BY seq",
+            new { sessionId }, ReadMessage).ToArray();
+        lock (_contextLock)
+        {
+            if (!_context.ContainsKey(sessionId) && rows.Length <= ContextCacheMaxMessages)
+            {
+                _context[sessionId] = rows;
+                _contextLru.AddLast(sessionId);
+                while (_contextLru.Count > ContextCacheSessions)
+                {
+                    _context.Remove(_contextLru.First!.Value);
+                    _contextLru.RemoveFirst();
+                }
+            }
+        }
+        return rows;
+    }
+
+    /// <summary>Forget a session's cached context. Every write that changes a message calls it.</summary>
+    private void DropContext(string sessionId)
+    {
+        lock (_contextLock)
+        {
+            if (_context.Remove(sessionId)) _contextLru.Remove(sessionId);
+        }
+    }
+
+    private void TouchContextLocked(string sessionId)
+    {
+        var node = _contextLru.Find(sessionId);
+        if (node is null) return;
+        _contextLru.Remove(node);
+        _contextLru.AddLast(node);
+    }
+
     public void MarkCompacted(string sessionId, long upToSeq)
     {
         _db.Execute("UPDATE messages SET compacted = 1 WHERE session_id = @sessionId AND seq <= @upToSeq AND compacted = 0",
             new { sessionId, upToSeq });
+        DropContext(sessionId);
         _bus.Publish(new BusEvent
         {
             Type = EventTypes.MessagesCompacted, SessionId = sessionId, Source = "host",

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -15,6 +16,9 @@ public sealed class Recorder
     public const int CallCapacity = 300;
     public const int ToolCapacity = 500;
     public const int JournalCapacity = 3000;
+    /// <summary>How much of an event's data the journal keeps: a preview, never the payload.</summary>
+    private const int SummaryChars = 400;
+    private const int TextPreviewChars = 160;
 
     /// <summary>Events too frequent to keep (every token, every output chunk).</summary>
     private static readonly HashSet<string> Skipped = new(StringComparer.Ordinal)
@@ -59,7 +63,7 @@ public sealed class Recorder
             Messages = request.Messages.Count,
             Tools = request.Tools.Count,
             SystemPromptChars = request.SystemPrompt?.Length ?? 0,
-            InputChars = request.Messages.Sum(m => m.Parts.Sum(PartChars)),
+            InputChars = InputCharsOf(request),
             // the person's latest message, not a harness notice (they travel as user messages too)
             LastUser = Preview(request.Messages.Where(m => m.Role == MessageRole.User)
                 .Select(m => m.Parts.OfType<TextPart>().FirstOrDefault()?.Text)
@@ -87,6 +91,16 @@ public sealed class Recorder
         ToolResultPart r => r.Content.Length,
         _ => 0,
     };
+
+    /// <summary>Characters of the whole request. A plain walk, not two nested LINQ closures over the history.</summary>
+    private static int InputCharsOf(ModelRequest request)
+    {
+        var total = 0;
+        foreach (var m in request.Messages)
+            foreach (var p in m.Parts)
+                total += PartChars(p);
+        return total;
+    }
 
     public IReadOnlyList<CallRecord> Calls()
     {
@@ -141,17 +155,31 @@ public sealed class Recorder
 
     // ---------------------------------------------------------------- tool calls and the journal
 
-    /// <summary>Called for every bus event (a "*" subscription).</summary>
+    /// <summary>Called for every bus event (a "*" subscription). Runs on the bus's single dispatcher thread, so it
+    /// must stay cheap: a payload is summarized, never materialized whole (a tool result can be megabytes).</summary>
     public void OnEvent(BusEvent e)
     {
         if (Skipped.Contains(e.Type)) return;
-        JsonObject? data = null;
-        try { data = NetPiJson.ToNode(e.Data) as JsonObject; } catch { }
-        if (e.Type == EventTypes.ToolStart) ToolStarted(e, data);
-        else if (e.Type == EventTypes.ToolEnd) ToolEnded(e, data);
-        // the chat: on the event, or in its data (agent.status carries it in the agent, message.added in the message)
-        var sessionId = e.SessionId ?? Str(data, "sessionId") ?? Str(data?["agent"] as JsonObject, "sessionId") ?? Str(data?["message"] as JsonObject, "sessionId");
-        var entry = new JournalEntry(e.Seq, e.Time, e.Type, sessionId, e.Source, Summarize(e.Type, data));
+        string? sessionId = e.SessionId;
+        JsonNode? summary;
+        if ((e.Type == EventTypes.MessageAdded || e.Type == EventTypes.MessageUpdated) && e.Data is ChatMessage message)
+        {
+            // The common shape of the busiest event: the message itself is the payload, so summarize the object.
+            // Round-tripping it through ToNode first would build a JsonNode tree of every part just to keep a preview.
+            summary = SummarizeMessage(message);
+            sessionId ??= message.SessionId;
+        }
+        else
+        {
+            JsonObject? data = null;
+            try { data = NetPiJson.ToNode(e.Data) as JsonObject; } catch { }
+            if (e.Type == EventTypes.ToolStart) ToolStarted(e, data);
+            else if (e.Type == EventTypes.ToolEnd) ToolEnded(e, data);
+            // the chat: on the event, or in its data (agent.status carries it in the agent, message.added in the message)
+            sessionId ??= Str(data, "sessionId") ?? Str(data?["agent"] as JsonObject, "sessionId") ?? Str(data?["message"] as JsonObject, "sessionId");
+            summary = Summarize(e.Type, data);
+        }
+        var entry = new JournalEntry(e.Seq, e.Time, e.Type, sessionId, e.Source, summary);
         lock (_gate)
         {
             _journal.AddFirst(entry);
@@ -216,19 +244,7 @@ public sealed class Recorder
         {
             case EventTypes.MessageAdded:
             case EventTypes.MessageUpdated:
-                if (d["message"] is JsonObject m)
-                {
-                    var parts = m["parts"] as JsonArray;
-                    return new JsonObject
-                    {
-                        ["role"] = m["role"]?.DeepClone(),
-                        ["seq"] = m["seq"]?.DeepClone(),
-                        ["kind"] = (m["meta"] as JsonObject)?["kind"]?.DeepClone(),
-                        ["stopReason"] = m["stopReason"]?.DeepClone(),
-                        ["parts"] = parts is null ? null : string.Join(",", parts.Select(p => (string?)p?["type"])),
-                        ["text"] = Preview(string.Join(" ", parts?.Select(p => (string?)p?["text"] ?? (string?)p?["content"]).Where(t => t is not null) ?? []), 160),
-                    };
-                }
+                if (d["message"] is JsonObject m) return SummarizeMessage(m);
                 break;
             case EventTypes.AgentsChanged:
                 if (d["agents"] is JsonArray agents)
@@ -247,8 +263,108 @@ public sealed class Recorder
             case EventTypes.ToolStart:
                 return new JsonObject { ["name"] = d["name"]?.DeepClone(), ["callId"] = d["callId"]?.DeepClone(), ["agentId"] = d["agentId"]?.DeepClone() };
         }
-        var json = d.ToJsonString();
-        return json.Length <= 400 ? d.DeepClone() : JsonValue.Create(json[..400] + "…");
+        // An event this recorder has no special form for: a bounded copy, not the payload and not a full serialization
+        // of it to find out how long it is. JournalEntry.ToJson deep-clones on read, so nothing is cloned here.
+        return Bounded(d, SummaryChars);
+    }
+
+    /// <summary>A message's journal form, from the object or its JSON: the fields below, never the parts themselves.</summary>
+    internal static JsonObject SummarizeMessage(ChatMessage m)
+    {
+        var types = new List<string>(m.Parts.Count);
+        var text = new StringBuilder(TextPreviewChars);
+        foreach (var p in m.Parts)
+        {
+            types.Add(PartType(p));
+            // The preview is capped, so stop accumulating once it cannot change: joining a 4 MB tool result into a
+            // string only to cut it to 160 characters is the single most wasteful thing this handler could do.
+            if (text.Length > TextPreviewChars) continue;
+            var t = p switch { TextPart x => x.Text, ThinkingPart x => x.Text, ToolResultPart x => x.Content, _ => null };
+            if (t is null) continue;
+            if (text.Length > 0) text.Append(' ');
+            var room = TextPreviewChars - text.Length;
+            text.Append(room <= 0 ? "" : t.Length <= room ? t : t[..room]);
+        }
+        return new JsonObject
+        {
+            // the enum's JSON form (camelCase), so both paths above read the same in diag.journal
+            ["role"] = EnumName(m.Role), ["seq"] = m.Seq, ["kind"] = m.MetaString("kind"),
+            ["stopReason"] = m.StopReason, ["parts"] = string.Join(",", types),
+            ["text"] = Preview(text.ToString(), TextPreviewChars),
+        };
+    }
+
+    /// <summary>The same fields from a message that is already JSON (a test, or a publisher that sent a node).</summary>
+    private static JsonObject SummarizeMessage(JsonObject m)
+    {
+        var parts = m["parts"] as JsonArray;
+        var text = new StringBuilder(TextPreviewChars);
+        var types = new List<string>(parts?.Count ?? 0);
+        foreach (var p in parts ?? [])
+        {
+            types.Add((string?)p?["type"] ?? "?");
+            if (text.Length > TextPreviewChars) continue;
+            var t = (string?)p?["text"] ?? (string?)p?["content"];
+            if (t is null) continue;
+            if (text.Length > 0) text.Append(' ');
+            var room = TextPreviewChars - text.Length;
+            text.Append(room <= 0 ? "" : t.Length <= room ? t : t[..room]);
+        }
+        return new JsonObject
+        {
+            ["role"] = m["role"]?.DeepClone(), ["seq"] = m["seq"]?.DeepClone(),
+            ["kind"] = (m["meta"] as JsonObject)?["kind"]?.DeepClone(), ["stopReason"] = m["stopReason"]?.DeepClone(),
+            ["parts"] = parts is null ? null : string.Join(",", types),
+            ["text"] = Preview(text.ToString(), TextPreviewChars),
+        };
+    }
+
+    private static string PartType(MessagePart? p) => p switch
+    {
+        TextPart => "text", ThinkingPart => "thinking", ToolCallPart => "tool_call",
+        ToolResultPart => "tool_result", ImagePart => "image", _ => "?",
+    };
+
+    private static string EnumName(MessageRole role)
+    {
+        var name = role.ToString();
+        return name.Length > 0 ? char.ToLowerInvariant(name[0]) + name[1..] : name;   // as NetPiJson writes enums
+    }
+
+    /// <summary>A copy of a node that stops at <paramref name="budget"/> characters instead of serializing all of it.</summary>
+    private static JsonNode? Bounded(JsonNode? node, int budget)
+    {
+        switch (node)
+        {
+            case JsonObject o:
+            {
+                var copy = new JsonObject();
+                foreach (var (key, value) in o)
+                {
+                    if (budget <= 0) { copy["…"] = "truncated"; break; }
+                    copy[key] = Bounded(value, budget - key.Length);
+                }
+                return copy;
+            }
+            case JsonArray a:
+            {
+                var copy = new JsonArray();
+                foreach (var value in a)
+                {
+                    if (budget <= 0) { copy.Add("…"); break; }
+                    copy.Add(Bounded(value, budget));
+                }
+                return copy;
+            }
+            case JsonValue v:
+            {
+                // a string is taken as it is: escaping it into JSON only to cut it would cost the whole thing
+                var text = v.TryGetValue<string>(out var s) ? s : v.ToJsonString();
+                if (text.Length <= budget) return v.DeepClone();
+                return JsonValue.Create(text[..Math.Max(0, budget)] + "…");
+            }
+            default: return null;
+        }
     }
 
     /// <summary>A number however it was stored (a JsonValue holding an int doesn't hand itself out as a long).</summary>
@@ -288,12 +404,13 @@ public sealed class CallRecord
 
     public string State { get; private set; } = "running";
     public bool Completed { get; private set; }
-    public long? FirstTokenMs { get; private set; }
+    public long? FirstTokenMs => _firstTokenMs < 0 ? null : _firstTokenMs;
     public long? DurationMs { get; private set; }
     private readonly List<string> _resets = [];
     private readonly List<string> _notices = [];
     private readonly List<string> _toolCalls = [];
     private int _textChars, _thinkingChars;
+    private int _firstTokenMs = -1;
     private Usage? _usage;
     private string? _stopReason, _error, _errorType;
     private int? _status;
@@ -301,21 +418,26 @@ public sealed class CallRecord
 
     internal void Observe(ModelStreamEvent e, Stopwatch clock)
     {
+        // The per-token cases are the hot ones: they only add up characters, so they take no lock at all. The rest
+        // append to lists or replace state, and go through the lock.
+        switch (e)
+        {
+            case TextDelta t:
+                FirstToken(clock);
+                Interlocked.Add(ref _textChars, t.Text.Length);
+                return;
+            case ThinkingDelta t:
+                FirstToken(clock);
+                Interlocked.Add(ref _thinkingChars, t.Text.Length);
+                return;
+            case ToolCallStarted:
+                FirstToken(clock);
+                return;
+        }
         lock (_gate)
         {
             switch (e)
             {
-                case TextDelta t:
-                    FirstTokenMs ??= clock.ElapsedMilliseconds;
-                    _textChars += t.Text.Length;
-                    break;
-                case ThinkingDelta t:
-                    FirstTokenMs ??= clock.ElapsedMilliseconds;
-                    _thinkingChars += t.Text.Length;
-                    break;
-                case ToolCallStarted:
-                    FirstTokenMs ??= clock.ElapsedMilliseconds;
-                    break;
                 case UsageUpdate u:
                     _usage = u.Usage;
                     break;
@@ -335,6 +457,10 @@ public sealed class CallRecord
             }
         }
     }
+
+    /// <summary>The first token of the call, once: every delta after it is only counted.</summary>
+    private void FirstToken(Stopwatch clock) =>
+        Interlocked.CompareExchange(ref _firstTokenMs, (int)clock.ElapsedMilliseconds, -1);
 
     internal void End(string state, Stopwatch clock, Exception? error)
     {
