@@ -87,13 +87,14 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     /// <summary>A new project may bring a repository; the list is re-read on a timer and on <c>project.created</c>.</summary>
     private async Task RescanAsync()
     {
-        if (_stopped || !Setting("ideas.closeOnCommit", true)) return;
+        if (_stopped) return;
+        if (!Setting("ideas.closeOnCommit", true)) return;
         if (!ctx.Rpc.Exists("files.commits")) return;   // no Files plugin: nothing can read the commits
         foreach (var project in ctx.Sessions.ListProjects())
         {
             if (_stopped) return;
             try { await WatchProjectAsync(project).ConfigureAwait(false); }
-            catch (Exception ex) { ctx.Logger.LogDebug(ex, "Ideas: cannot watch the repository of {Project}", project.Name); }
+            catch (Exception ex) { ctx.Logger.LogWarning(ex, "Ideas: cannot watch the repository of project {Project}", project.Name); }
         }
     }
 
@@ -104,7 +105,11 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         // Through ToNode: an RPC answers with the handler's own object in-process and with its JSON over HTTP, and the
         // Files plugin answers with a record (like decide.decision's readers here, and for the same reason).
         var o = NetPiJson.ToNode(found) as JsonObject;
-        if (IdeaOps.Str(o?["repo"]) is not { Length: > 0 } repo) return;
+        if (IdeaOps.Str(o?["repo"]) is not { Length: > 0 } repo)
+        {
+            ctx.Logger.LogDebug("Ideas: {Path} is not in a git repository (or files.commits is unavailable)", project.Path);
+            return;
+        }
         var newest = (o["commits"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault();
 
         lock (_watchLock)
@@ -130,9 +135,16 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
                 fs.EnableRaisingEvents = true;
                 watch.Fs = fs;
             }
-            catch (Exception ex) { watch.Dispose(); ctx.Logger.LogDebug(ex, "Ideas: cannot watch {Git} of {Repo}", Path.Combine(repo, ".git"), repo); return; }
+            catch (Exception ex)
+            {
+                watch.Dispose();
+                // A warning, not a debug line: "my commits are not being noticed" is worth seeing without raising the
+                // log level, and a silent early return here is exactly what makes that impossible to diagnose.
+                ctx.Logger.LogWarning(ex, "Ideas: cannot watch the repository {Git} of project {Project}", Path.Combine(repo, ".git"), project.Name);
+                return;
+            }
             _watches[repo] = watch;
-            ctx.Logger.LogDebug("Ideas: watching {Repo} for commits (project {Project})", repo, project.Name);
+            ctx.Logger.LogInformation("Ideas: watching {Repo} for commits (project {Project})", repo, project.Name);
         }
     }
 
@@ -167,8 +179,12 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         {
             ["cwd"] = watch.Path, ["since"] = since ?? "", ["limit"] = MaxCommits,
         }).ConfigureAwait(false);
-        if (NetPiJson.ToNode(found) is not JsonObject { } o || o["commits"] is not JsonArray commits || commits.Count == 0) return;
-        ctx.Logger.LogDebug("Ideas: {Count} new commit(s) in {Repo} since {Since}", commits.Count, watch.Repo, since ?? "(the start)");
+        if (NetPiJson.ToNode(found) is not JsonObject { } o || o["commits"] is not JsonArray commits || commits.Count == 0)
+        {
+            ctx.Logger.LogDebug("Ideas: no new commit in {Repo}", watch.Repo);
+            return;
+        }
+        ctx.Logger.LogInformation("Ideas: {Count} new commit(s) in {Repo} since {Since}", commits.Count, watch.Repo, since ?? "(the start)");
 
         // Oldest first: a burst is read in the order it happened, and the last commit decides what is left.
         foreach (var c in commits.OfType<JsonObject>().Reverse().Take(MaxCommits))
