@@ -27,6 +27,19 @@ public static class SshTests
         }
     }
 
+    /// <summary>A client answer: every option is known except <c>reject</c>, which it has never heard of.</summary>
+    private sealed class FileIOPermissionAwareProbe(List<string> asked, string reject)
+    {
+        public (int Exit, string Err) Ask(string[] args)
+        {
+            if (args.Contains("-O")) return (1, "Control socket connect(/tmp/x): No such file or directory");
+            var pair = args.FirstOrDefault(a => a.Contains('=') && !a.StartsWith("ControlPath=", StringComparison.Ordinal));
+            var name = pair?.Split('=')[0] ?? "";
+            asked.Add(name);
+            return name == reject ? (255, $"command-line: line 0: Bad configuration option: {reject.ToLowerInvariant()}") : (0, "");
+        }
+    }
+
     private sealed class Env
     {
         public FakePluginContext Ctx { get; } = new(T.TempDir("ssh-home"));
@@ -257,27 +270,123 @@ public static class SshTests
             Check.Contains((await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", oldText = "one", newText = "1" })).Content, "changed on the host");
         });
 
+        // What a client that can multiplex answers when the probe asks about a socket that is not there yet.
+        const string MuxYes = "Control socket connect(/tmp/x): No such file or directory";
+        /// <summary>OpenSSH_for_Windows, which accepts ControlMaster and then cannot use the socket.</summary>
+        const string MuxNo = "getsockname failed: Not a socket\nRead from remote host localhost: Unknown error";
+
         r.Add("ssh: one master connection per host (ControlMaster, a hashed per-host-and-user ControlPath, persist)", async () =>
         {
             var env = new Env();
             env.Fake.Reply = (_, _) => new SshExec(0, "", "", false, false);
-            await env.Run("ssh_run", new { host = "nuc", script = "ls" });
-            var args = string.Join(" ", env.Fake.Calls.Single().Args);
-            // %C is OpenSSH's hash of (remote host, port, remote user, local host): unique per host and per user, short
-            Check.Contains(args, "ControlMaster=auto");
-            Check.Contains(args, $"ControlPath={Path.Combine(env.Ctx.Paths.Home, "ssh")}{Path.DirectorySeparatorChar}netpi-%C");
-            Check.Contains(args, "ControlPersist=300");
-            Check.Contains(args, "ControlIdleTimeout=300");
-            Check.True(Directory.Exists(Path.Combine(env.Ctx.Paths.Home, "ssh")), "the control socket's directory is created");
+            var real = SshClient.Probe;
+            SshClient.Probe = (_, args) => args.Contains("-O") ? (1, MuxYes) : (0, "");
+            SshClient.Forget();
+            try
+            {
+                await env.Run("ssh_run", new { host = "nuc", script = "ls" });
+                var args = string.Join(" ", env.Fake.Calls.Single().Args);
+                // %C is OpenSSH's hash of (remote host, port, remote user, local host): unique per host and per user, short
+                Check.Contains(args, "ControlMaster=auto");
+                Check.Contains(args, $"ControlPath={Path.Combine(env.Ctx.Paths.Home, "ssh")}{Path.DirectorySeparatorChar}netpi-%C");
+                Check.Contains(args, "ControlPersist=300");
+                Check.Contains(args, "ControlIdleTimeout=300");
+                Check.True(Directory.Exists(Path.Combine(env.Ctx.Paths.Home, "ssh")), "the control socket's directory is created");
 
-            // scp rides on the same options (the same socket)
-            File.WriteAllText(Path.Combine(env.Dir, "data.bin"), "1");
-            env.Ctx.SettingsFake.Set("ssh.scpPath", JsonValue.Create("fake-scp"));
-            await env.Run("ssh_copy", new { host = "nuc", direction = "upload", from = "data.bin", to = "/tmp/" });
-            var scp = string.Join(" ", env.Fake.Calls[^1].Args);
-            Check.Equal("fake-scp", env.Fake.Calls[^1].Exe);
-            Check.Contains(scp, "ControlMaster=auto");
-            Check.Contains(scp, "netpi-%C");
+                // scp rides on the same options (the same socket)
+                File.WriteAllText(Path.Combine(env.Dir, "data.bin"), "1");
+                env.Ctx.SettingsFake.Set("ssh.scpPath", JsonValue.Create("fake-scp"));
+                await env.Run("ssh_copy", new { host = "nuc", direction = "upload", from = "data.bin", to = "/tmp/" });
+                var scp = string.Join(" ", env.Fake.Calls[^1].Args);
+                Check.Equal("fake-scp", env.Fake.Calls[^1].Exe);
+                Check.Contains(scp, "ControlMaster=auto");
+                Check.Contains(scp, "netpi-%C");
+            }
+            finally { SshClient.Probe = real; SshClient.Forget(); }
+        });
+
+        r.Add("ssh: an option this client does not know is left out, and the call still works", async () =>
+        {
+            // OpenSSH_for_Windows has no ControlIdleTimeout: passing it is a hard error on every call ("Bad
+            // configuration option"), so the client is asked once and the option goes when the answer is no.
+            var asked = new List<string>();
+            var real = SshClient.Probe;
+            SshClient.Probe = (_, args) => args.Contains("-O") ? (1, MuxYes) : (0, "");
+            SshClient.Forget();
+            try
+            {
+                var env = new Env();
+                env.Fake.Reply = (_, _) => new SshExec(0, "", "", false, false);
+                // A client that can multiplex but does not know the idle timeout: asked about exactly that one option.
+                var options = new FileIOPermissionAwareProbe(asked, reject: "ControlIdleTimeout");
+                SshClient.Probe = (_, args) => options.Ask(args);
+                await env.Run("ssh_run", new { host = "nuc", script = "ls" });
+                var args = string.Join(" ", env.Fake.Calls.Single().Args);
+                Check.NotContains(args, "ControlIdleTimeout", "the option the client rejected is not passed");
+                Check.Contains(args, "ControlMaster=auto", "multiplexing itself is untouched");
+                Check.Contains(args, "ControlPersist=300");
+                Check.Equal(1, env.Fake.Calls.Count, "the call ran once");
+                Check.True(asked.Contains("ControlIdleTimeout"), "and the client was asked about it: " + string.Join(",", asked));
+            }
+            finally { SshClient.Probe = real; SshClient.Forget(); }
+        });
+
+        r.Add("ssh: a client that cannot multiplex runs without connection reuse instead of failing", async () =>
+        {
+            // OpenSSH_for_Windows (NetPI's own client on Windows) accepts ControlMaster and then fails every session
+            // over the socket ("getsockname failed: Not a socket"), so it must not be asked to multiplex at all.
+            var real = SshClient.Probe;
+            SshClient.Probe = (_, args) => args.Contains("-O") ? (1, MuxNo) : (0, "");
+            SshClient.Forget();
+            try
+            {
+                var env = new Env();
+                env.Fake.Reply = (_, _) => new SshExec(0, "ok", "", false, false);
+                var r = await env.Run("ssh_run", new { host = "nuc", script = "ls" });
+                Check.False(r.IsError, "the call runs: " + r.Content);
+                var args = string.Join(" ", env.Fake.Calls.Single().Args);
+                Check.NotContains(args, "ControlMaster", "no multiplexing is asked for");
+                Check.NotContains(args, "ControlPath");
+                Check.NotContains(args, "ControlPersist");
+                Check.NotContains(args, "ControlIdleTimeout");
+                Check.Contains(args, "BatchMode=yes", "the rest of the options are unchanged");
+                Check.Contains(args, "ServerAliveInterval=15");
+            }
+            finally { SshClient.Probe = real; SshClient.Forget(); }
+        });
+
+        r.Add("ssh: the client is asked once, not on every call", async () =>
+        {
+            var asked = 0;
+            var real = SshClient.Probe;
+            SshClient.Probe = (_, args) => { if (args.Contains("-O")) asked++; return args.Contains("-O") ? (1, MuxYes) : (0, ""); };
+            SshClient.Forget();
+            try
+            {
+                var env = new Env();
+                env.Fake.Reply = (_, _) => new SshExec(0, "", "", false, false);
+                await env.Run("ssh_run", new { host = "nuc", script = "ls" });
+                await env.Run("ssh_run", new { host = "nuc", script = "ls" });
+                await env.Run("ssh_run", new { host = "server", script = "ls" });
+                Check.Equal(1, asked, "one question for three calls (the answer belongs to the client, not the call)");
+            }
+            finally { SshClient.Probe = real; SshClient.Forget(); }
+        });
+
+        r.Add("ssh: a client that cannot be asked loses the options, not the call", async () =>
+        {
+            var real = SshClient.Probe;
+            SshClient.Probe = (_, _) => throw new InvalidOperationException("the client is not there");
+            SshClient.Forget();
+            try
+            {
+                var env = new Env();
+                env.Fake.Reply = (_, _) => new SshExec(0, "ok", "", false, false);
+                var r = await env.Run("ssh_run", new { host = "nuc", script = "ls" });
+                Check.False(r.IsError, "the call still runs: " + r.Content);
+                Check.NotContains(string.Join(" ", env.Fake.Calls.Single().Args), "ControlMaster");
+            }
+            finally { SshClient.Probe = real; SshClient.Forget(); }
         });
 
         r.Add("ssh: TextEdits (unique matches, replace_all, overlap, hunks and context)", () =>

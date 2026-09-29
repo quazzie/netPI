@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 
 namespace NetPI.Tools.Ssh;
@@ -105,6 +106,114 @@ internal static class SshConfig
 }
 
 /// <summary>
+/// What the <c>ssh</c> client on this machine can do, asked once and remembered.
+/// <para>
+/// <b>An option the client does not know is not a warning, it is a hard error.</b> OpenSSH prints
+/// <c>Bad configuration option: …</c> and exits before it connects, so one <c>-o</c> that this build never had breaks
+/// every call. NetPI's own client on Windows is OpenSSH_for_Windows (LibreSSL), which has no <c>ControlIdleTimeout</c>;
+/// the Git/MSYS build does. Which one is in use is a fact only the binary knows, so the client is asked.
+/// </para>
+/// <para>
+/// <b>Connection multiplexing is not universal either.</b> The Windows port does not implement it: it accepts
+/// <c>ControlMaster</c> and then fails every session over the control socket with <c>getsockname failed: Not a
+/// socket</c>. So the client is also asked whether it can multiplex — <c>-O check</c> on a socket that is not there
+/// yet. A client that understands it answers <c>Control socket connect(…): No such file or directory</c> (nothing
+/// running yet, which is the normal state before the first call); one that cannot multiplex answers something else.
+/// </para>
+/// <para>
+/// The probes are offline (<c>-G</c> prints the effective configuration, <c>-O check</c> only inspects a socket), cost a
+/// few milliseconds once per client, and are bounded. Anything unexpected — no client, a timeout, a crash, an answer we
+/// do not recognise — counts as "not supported", which drops the option and the multiplexing: the call then runs the
+/// way it ran before connection reuse was added, which always worked. That is the direction to be wrong in.
+/// </para>
+/// </summary>
+internal static class SshClient
+{
+    /// <summary>How long the client has to answer before an option or multiplexing counts as unsupported.</summary>
+    public static TimeSpan ProbeTimeout { get; set; } = TimeSpan.FromSeconds(3);
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> Options = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> Multiplexing = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Asks the client (replaced in tests): the ssh executable and the arguments, and what it answered.</summary>
+    internal static Func<string, string[], (int Exit, string Err)> Probe = Run;
+
+    /// <summary>Whether this client accepts <paramref name="option"/>, asked once and remembered.</summary>
+    public static bool SupportsOption(string exe, string option, string value) =>
+        Answer(Options, exe, "option", option, () =>
+        {
+            var (exit, _) = Probe(exe, ["-o", $"{option}={value}", "-G", "localhost"]);
+            return exit == 0;
+        });
+
+    /// <summary>
+    /// Whether this client can reuse one connection per host. <paramref name="socketPath"/> is a path inside our own
+    /// control directory that no master uses; the probe only looks, so nothing is created and nothing connects.
+    /// </summary>
+    public static bool SupportsMultiplexing(string exe, string socketPath) =>
+        Answer(Multiplexing, exe, "multiplexing", socketPath, () =>
+        {
+            var (exit, err) = Probe(exe, ["-O", "check", "-S", socketPath, "localhost"]);
+            // A master is already running, or the client understood the command and found no socket yet.
+            if (exit == 0) return true;
+            return err.Contains("Control socket connect", StringComparison.OrdinalIgnoreCase);
+        });
+
+    /// <summary>Forget what was asked (a settings change points at a different client; tests reset the cache).</summary>
+    public static void Forget(string? exe = null)
+    {
+        void Clear(System.Collections.Concurrent.ConcurrentDictionary<string, bool> known)
+        {
+            if (exe is null) known.Clear();
+            else foreach (var key in known.Keys.Where(k => k.StartsWith(exe + "|", StringComparison.OrdinalIgnoreCase)).ToList()) known.TryRemove(key, out _);
+        }
+        Clear(Options);
+        Clear(Multiplexing);
+    }
+
+    /// <summary>Ask once, remember, and never let the question itself be the reason a call fails.</summary>
+    private static bool Answer(System.Collections.Concurrent.ConcurrentDictionary<string, bool> known, string exe, string what, string key, Func<bool> ask)
+    {
+        try { return known.GetOrAdd($"{exe}|{what}|{key}", _ => ask()); }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Run the client and read its answer. Nothing here connects to a host.</summary>
+    private static (int Exit, string Err) Run(string exe, string[] args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(exe)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+            using var process = Process.Start(psi);
+            if (process is null) return (255, "the client did not start");
+            var error = process.StandardError.ReadToEndAsync();
+            _ = process.StandardOutput.ReadToEndAsync();
+            if (!process.WaitForExit((int)ProbeTimeout.TotalMilliseconds)) { TryKill(process); return (255, "the client did not answer"); }
+            return (process.ExitCode, error.GetAwaiter().GetResult());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException or PlatformNotSupportedException)
+        {
+            return (255, ex.Message); // no client to ask, or one that cannot be started
+        }
+    }
+
+    private static void TryKill(Process process)
+    {
+        try { process.Kill(entireProcessTree: true); } catch { /* it may have exited on its own */ }
+    }
+}
+
+/// <summary>
 /// <c>ssh.*</c> settings, read on every call.
 /// <see cref="ControlDir"/> is null when the directory the control sockets live in cannot be created: the call
 /// then runs without multiplexing (one handshake per call) instead of failing.
@@ -171,7 +280,12 @@ internal sealed record SshOptions(string Ssh, string Scp, string Config, bool De
             // a fixed 32 hex chars, so the path stays under ControlPath's limit whatever the host names are. The
             // directory is ours (created before the first call); ssh will not make parent folders itself.
             args.AddRange(["-o", "ControlMaster=auto", "-o", $"ControlPath={Path.Combine(ControlDir, "netpi-%C")}",
-                "-o", $"ControlPersist={ControlPersistSeconds}", "-o", $"ControlIdleTimeout={ControlIdleSeconds}"]);
+                "-o", $"ControlPersist={ControlPersistSeconds}"]);
+            // Only a client that knows the option gets it: OpenSSH 10 dropped ControlIdleTimeout, and asking for it
+            // there fails every call before it connects. The connection is reused and expires on ControlPersist either
+            // way, and ServerAliveInterval above already reaps a master that stops answering.
+            if (SshClient.SupportsOption(Ssh, "ControlIdleTimeout", ControlIdleSeconds.ToString(CultureInfo.InvariantCulture)))
+                args.AddRange(["-o", $"ControlIdleTimeout={ControlIdleSeconds}"]);
         }
         if (!DefaultConfig) args.InsertRange(0, ["-F", Config]);
         return args;

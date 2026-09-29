@@ -145,6 +145,15 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) :
             ctx.Logger.LogDebug(ex, "SSH control directory {Dir} is not writable: calls fall back to one connection each", controlDir);
             controlDir = null;
         }
+        // A client that cannot reuse connections gets none: every call then does its own handshake, the way it did
+        // before connection reuse, instead of failing on a control socket it cannot use. NetPI's own client on Windows
+        // (OpenSSH_for_Windows) is such a client, so this is the normal case there, not an edge case. Asked once, and
+        // only when a directory for the sockets exists at all.
+        if (controlDir is not null && !SshClient.SupportsMultiplexing(SshOptions.Read(ctx.Settings, ctx.Paths.Home).Ssh, Path.Combine(controlDir, "netpi-probe")))
+        {
+            ctx.Logger.LogDebug("The ssh client at {Ssh} cannot multiplex connections: one handshake per call", SshOptions.Read(ctx.Settings, ctx.Paths.Home).Ssh);
+            controlDir = null;
+        }
         var o = SshOptions.Read(ctx.Settings, ctx.Paths.Home) with { ControlDir = controlDir };
         SshHost? host = null;
         if (this is not SshHostsTool)
