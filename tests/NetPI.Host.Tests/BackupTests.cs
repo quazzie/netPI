@@ -117,6 +117,17 @@ public static class BackupTests
                     var busy = await plugin.CreateAsync(ctx, false, default);
                     Check.Equal(2, busy["files"]!.AsObject().Count, "the ideas files were left out rather than copied half");
                     Check.False(File.Exists(Path.Combine(busy["path"]!.GetValue<string>(), "ideas-pending.json")), "and no half copy of the cards");
+                    // The snapshot says so: nothing may claim to hold ideas state that it does not hold.
+                    Check.Equal(true, busy["noIdeas"]!.GetValue<bool>(), "the manifest records that this snapshot has no ideas state");
+                    BackupPlugin.Verify(home, busy["id"]!.GetValue<string>());
+
+                    // Retention must not be the reason the last ideas state in a backup disappears: with room for one, a
+                    // snapshot that holds ideas survives a new one that does not.
+                    kernel.Settings.Set("backup.keepCount", JsonValue.Create(1));
+                    var withIdeas = Path.Combine(home, "backups", manual["id"]!.GetValue<string>());
+                    Check.True(File.Exists(Path.Combine(withIdeas, "backlog.json")), "the older snapshot holds the backlog");
+                    await plugin.CreateAsync(ctx, true, default);
+                    Check.True(Directory.Exists(withIdeas), "it is kept while the newer snapshot has no ideas state");
                 }
 
                 // Restore into a new home and start a host on it: the ideas and the card are there.
