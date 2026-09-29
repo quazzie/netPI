@@ -230,7 +230,9 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
             // (an index, a ref, the reflog) wakes the sweep, which only acts on commits it has not seen. A worktree has
             // two of them: its own (HEAD) and the common one where the refs live.
             foreach (var dir in new[] { IdeaOps.Str(o?["gitDir"]), IdeaOps.Str(o?["commonDir"]) }
-                .Where(d => d is { Length: > 0 } && Directory.Exists(d)).Distinct(StringComparer.OrdinalIgnoreCase))
+                .OfType<string>()
+                .Where(d => d.Length > 0 && Directory.Exists(d))
+                .Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 try
                 {

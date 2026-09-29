@@ -139,9 +139,10 @@ public sealed class BackupPlugin : INetPiPlugin
     /// </summary>
     private IReadOnlyList<string> SnapshotIdeas(IPluginContext ctx, string staging)
     {
-        var name = ctx.Settings.Get("ideas.fileName", "ideas.json");
+        // The file name part only, whatever the setting says: the snapshot must not be written outside the home.
+        var name = Path.GetFileName(ctx.Settings.Get("ideas.fileName", "ideas.json"));
         var sources = new[] { name, "ideas-pending.json", "ideas-migration.json" }
-            .Select(n => Path.Combine(ctx.Paths.Home, Path.GetFileName(n)))
+            .Select(n => Path.Combine(ctx.Paths.Home, n))
             .Where(File.Exists)
             .ToList();
         if (sources.Count == 0) return [];
