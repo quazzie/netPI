@@ -114,6 +114,7 @@ internal sealed class SettingsStore : ISettings, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var segments = path.Split('.');
         if (segments.Any(string.IsNullOrWhiteSpace)) throw new ArgumentException($"Invalid settings path '{path}'");
+        string? text = null;
         lock (_gate)
         {
             var parent = _root;
@@ -141,8 +142,9 @@ internal sealed class SettingsStore : ISettings, IDisposable
                 if (existing is not null && JsonNode.DeepEquals(existing, value)) return;
                 parent[key] = value.DeepClone();
             }
-            Save();
+            text = SnapshotLocked();
         }
+        WriteFile(text);   // outside the lock: see WriteFile
         OnChanged(path);
     }
 
@@ -150,12 +152,14 @@ internal sealed class SettingsStore : ISettings, IDisposable
     {
         ArgumentNullException.ThrowIfNull(root);
         var clone = (JsonObject)root.DeepClone();
+        string? text = null;
         lock (_gate)
         {
             if (JsonNode.DeepEquals(_root, clone)) return;
             _root = clone;
-            Save();
+            text = SnapshotLocked();
         }
+        WriteFile(text);
         OnChanged(null);
     }
 
@@ -200,8 +204,25 @@ internal sealed class SettingsStore : ISettings, IDisposable
     /// <summary>Atomic write of the current document. Caller holds the lock.</summary>
     private void Save()
     {
+        var text = SnapshotLocked();
+        WriteFile(text);
+    }
+
+    /// <summary>The document as it belongs on disk. Cheap enough to run under the lock; the write is not.</summary>
+    private string SnapshotLocked()
+    {
         var text = _root.ToJsonString(NetPiJson.Indented) + Environment.NewLine;
         _lastText = text;
+        return text;
+    }
+
+    /// <summary>
+    /// Writes the document to disk, WITHOUT the lock. A write can block on an editor or antivirus for well over a
+    /// second (the retries below), and every reader waits on that lock — including the origin check on every HTTP
+    /// request and the plugin settings a reload reads.
+    /// </summary>
+    private void WriteFile(string text)
+    {
         var tmp = FilePath + ".tmp";
         for (var attempt = 0; ; attempt++)
         {

@@ -108,6 +108,10 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
         lock (_gate)
         {
             if (!refresh && !_dirty && _inflight is null) return _cached;
+            // A read never waits on a refresh: a provider that hangs would otherwise delay the next model call by its
+            // whole timeout, with a perfectly good cache sitting right there. An empty cache is the exception - there is
+            // nothing to hand back yet, so a caller arriving during the first load still joins it.
+            if (!refresh && _inflight is not null && _cached.Count > 0) return _cached;
             if (_inflight is not null && !refresh) task = _inflight;
             else task = _inflight = RefreshAsync(refresh, ++_generation);
         }

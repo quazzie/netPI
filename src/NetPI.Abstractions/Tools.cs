@@ -28,6 +28,14 @@ public sealed class ToolDefinition
     public string Category { get; init; } = "general";
     /// <summary>Argument name whose value best summarizes a call in the UI (e.g. "path", "command").</summary>
     public string? SummaryArg { get; init; }
+
+    private int _parametersChars = -1;
+    /// <summary>
+    /// Length of <see cref="Parameters"/> as JSON, worked out once per definition. The compaction estimate needs it
+    /// for every tool on every turn, and serializing the whole schema tree just to measure it is tens of kilobytes of
+    /// garbage per turn for nothing.
+    /// </summary>
+    public int ParametersChars => _parametersChars < 0 ? _parametersChars = Parameters.ToJsonString().Length : _parametersChars;
 }
 
 /// <summary>

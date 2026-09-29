@@ -21,15 +21,22 @@ public sealed class CompactionPlan
 public static class CompactionPlanner
 {
     /// <summary>Token estimate of one message (chars/4 plus a small per-message overhead).</summary>
-    public static long Estimate(ChatMessage m) => ModelMessages.EstimateTokens([m]) + 4;
+    public static long Estimate(ChatMessage m) => EstimateTokens(m) + 4;
 
-    public static long Estimate(IEnumerable<ChatMessage> messages) => messages.Sum(Estimate);
+    public static long Estimate(IEnumerable<ChatMessage> messages)
+    {
+        long total = 0;
+        foreach (var m in messages) total += Estimate(m);   // one message, no List<ChatMessage> per message
+        return total;
+    }
+
+    private static long EstimateTokens(ChatMessage m) => ModelMessages.EstimateTokens([m]);
 
     public static long EstimateTools(IReadOnlyList<ToolDefinition> tools)
     {
         long chars = 0;
         foreach (var t in tools)
-            chars += t.Name.Length + t.Description.Length + t.Parameters.ToJsonString().Length + 16;
+            chars += t.Name.Length + t.Description.Length + t.ParametersChars + 16;   // cached per definition
         return chars / 4;
     }
 

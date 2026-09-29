@@ -249,7 +249,11 @@ internal sealed unsafe class Database : IDatabase, IDisposable
         public readonly Statement[] Statements = statements;
         public bool InUse;
         public bool Cached;
+        /// <summary>When this command was last rented, so the cache can drop the coldest one rather than all of them.</summary>
+        public long Used;
     }
+
+    private long _useClock;
 
     private Command Rent(string sql)
     {
@@ -260,13 +264,14 @@ internal sealed unsafe class Database : IDatabase, IDisposable
             if (!cached.InUse)
             {
                 cached.InUse = true;
+                cached.Used = ++_useClock;
                 return cached;
             }
             // Reentrant use of the same SQL (e.g. from a row mapper): use a private, uncached copy.
             var copy = new Command(Prepare(sql)) { InUse = true };
             return copy;
         }
-        var cmd = new Command(Prepare(sql)) { InUse = true, Cached = true };
+        var cmd = new Command(Prepare(sql)) { InUse = true, Cached = true, Used = ++_useClock };
         if (_cache.Count >= MaxCachedCommands) TrimCache();
         _cache[sql] = cmd;
         return cmd;
@@ -283,11 +288,14 @@ internal sealed unsafe class Database : IDatabase, IDisposable
         if (!cmd.Cached) Finalize(cmd);
     }
 
+    /// <summary>Makes room for one more statement by dropping the least recently used ones. Dropping the whole cache
+    /// instead would make every new statement re-prepare all of them, so the cache would swing between full and empty.</summary>
     private void TrimCache()
     {
-        foreach (var (sql, cmd) in _cache.ToList())
+        foreach (var (sql, cmd) in _cache.ToList().OrderBy(e => e.Value.Used).ToList())
         {
-            if (cmd.InUse) continue;
+            if (_cache.Count < MaxCachedCommands) return;
+            if (cmd.InUse) continue;   // a statement being stepped right now stays; the next trim will catch it
             _cache.Remove(sql);
             Finalize(cmd);
         }
