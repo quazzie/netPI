@@ -212,6 +212,23 @@ only (NetPI after 2026-09-26).
 
 ## CLM-8B (Contrastive Language Models), evaluated 2026-09-27
 
+**The labels for a head trained on our own decisions already exist** (idea-evz0xv). Four live sites in NetPI ask the
+same question shape — "which of these, or none" / "is it finished" — and each one is a (state, options, answer) triple
+waiting to be labelled, with the answer the model gave and the probability attached:
+
+| site | state | options | asked since |
+|---|---|---|---|
+| `ideas.recall` | the first message being typed, the open ideas of the chat's project | the ideas + "none" | 2026-09-27 |
+| `ideas.closed` attach | a closed chat's digest | the open ideas + "none" | 2026-09-28 |
+| commit check link | a commit's subject and author | the open ideas + "none" | 2026-09-28 |
+| commit check done | an idea's full text and its linked commits | `DONE` / `MORE` | 2026-09-28 |
+
+That is a small, self-labelling set (a few hundred runs so far, and the sites only fire when a person is working): the
+right first step for a trained head is a *replay* of it — collect (state, options, answer) from real sessions, train the
+20M head on the answers a person confirmed (an idea they saved, a card they dismissed), and compare it against the
+logit readout on the same rows. The reference head gives no zero-shot signal on these tasks, which is the reason to train
+rather than prompt.
+
 A System One model from Stanford/NVIDIA (https://contrastive-lm.notion.site, github.com/Contrastive-LM/CLM): a frozen
 Qwen3-8B encoder (last-token pooling) and two trained 20M-parameter heads (state, action) scored by cosine × 100;
 answer embeddings are cached. Its server (`clm-serve`) speaks TypeSafe `/v1/systemone`, so it could sit behind
