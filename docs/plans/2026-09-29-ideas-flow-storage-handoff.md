@@ -1,6 +1,8 @@
 # Ideas plugin: reliable capture, storage and completion tracking
 
-Status: implementation handoff; fixes are proposed, not implemented or deployed.
+Status: **implemented** on branch `ideas-flow` (worktree `../NetPI-ideas-flow`, 2026-09-29). Not deployed: nothing was
+published, no live home, settings or backlog was touched. The findings below are kept as the record of what was checked;
+what each one turned out to be is at the end of this file.
 Date: 2026-09-29. Reviewed source baseline: 12ed776.
 Scope: the Ideas plugin and its UI, persistence, backup and background-work integrations. This is separate from the agent-capacity handoff.
 
@@ -133,3 +135,101 @@ Definition of done: pending cards and ideas survive interrupted operations; back
 ## Dispatch prompt
 
 Read docs/plans/2026-09-29-ideas-flow-storage-handoff.md and repository instructions. Implement assignment <A/B/C/D/E> in your own branch/worktree, respecting dependencies and owned files. Reproduce each relevant finding in a test before fixing it. Coordinate shared contracts and test registration with the parent. Preserve documented behavior and unknown fields; do not deploy or touch live data/settings. Return your commit, changed paths, tests/results, compatibility notes and outstanding integration risks. The coordinator owns final validation and docs.
+
+
+## What was done (2026-09-29, branch `ideas-flow`)
+
+Every finding was re-checked against HEAD before it was fixed, and the failure was written as a test first. The tests
+live in three new suites plus the existing ones: `IdeasStorageTests` (A), `IdeasCheckTests` (B), `IdeasCommitTests`
+(C), and `BackupTests` (D).
+
+### A — durable storage, resolution and migration (`3c32110`)
+
+- **Card removed before the backlog save.** `ideas.resolve` now writes its answer to a journal (`ops`) in
+  `ideas-pending.json`, applies it idempotently (the journal holds the finished idea, id and timestamps included), and
+  takes the card out afterwards. An interrupted answer is replayed at the next start, from `RecoverAsync` (start of the
+  plugin, before every answer, before every list). One window answers a card at a time (`conflict` for the second), and
+  the action is checked against the card's kind before the card is consumed. Tests: a card survives an unwritable
+  backlog and is saved exactly once on the retry; an interrupted answer is finished once; two windows, one idea.
+- **Backups omit Ideas data.** Deferred to D (`c565b30`).
+- **Close-chat attachment lacks conversation evidence** and **selecting none indexes past candidates** — see B.
+- **Write coordination across instances.** `FileGate`: an OS lock (`.<file>.lock`, opened without sharing) held across
+  every read and write, so a reload swap's second store cannot lose an update to the first. Test: two stores, two
+  concurrent updates, both ideas in the file.
+- **Atomic-save fallback overwrote in place.** Removed. A rename that still fails is `io_error` and the previous file is
+  untouched (test: a file an editor holds). *Found while doing this:* a failed write left the mutated backlog in the
+  store's parse cache, so the next write added the same idea twice — the cache entry is now dropped before the write.
+- **Malformed pending shapes / read coordination.** A pending file that cannot be read or has a key of the wrong type is
+  reported (`invalid_file`) and left alone; `ideas.suggestions` is a plain read; every write uses its own temporary name.
+- **Revision detection.** `ideas.update` takes an optional `expectedUpdatedAt` and answers `conflict` when the idea
+  changed since.
+- **Migration.** `ideas-migration.json` (source, content hash, produced ids) is written before a source is deleted, and
+  a source is deleted only after the import was read back. Test: a source that could not be deleted is imported once.
+
+### B — closed-chat and recall correctness (`c02e82e`)
+
+- The attach decision carries the conversation (the digest is in the request; the test asserts the request body).
+- "none" winning no longer throws before the save check; all three pick-one decisions read their answer through
+  `IdeaMatch`, which only counts letters that were offered and never returns "none" as an idea. An answer without usable
+  probabilities is no answer: no crash, no attach, and the save check still runs.
+- Check marks have a state (`running` / `done` / `failed`) and a conversation revision. Only a check that *ran* is
+  `done`; a failed one records why and is retried a few times. *(Corrected while testing: "nothing worth keeping" was
+  being recorded as a failure, which made a successful check look retryable.)*
+- A chat that was cut short and worked on since is checked again; a tab closed while the agent is still working waits for
+  the run (bounded) instead of being skipped.
+- The digest keeps the beginning **and** the ending of a long chat, with the gap marked.
+- No silent model fallback: a missing `ideas.model` runs nothing and says so. The reasoning effort is an explicit
+  ascending order and never steps up.
+- Ideas past the 51st are eligible (ranked by shared words, bounded windows). A chat already linked to an idea is not
+  re-guessed, and one plan yields one card.
+
+### C — commit tracking (`0857590`)
+
+- The repository is anchored at HEAD only when no cursor is remembered, so commits made while NetPI was closed are read.
+- Unseen history is read in bounded pages oldest first (`since..until`), so a burst of 45 is read whole — 45 entries,
+  once each (test). The cursor moves only past a commit that was handled; a failed decision leaves it unread.
+- A worktree is watched through the git directories the Files plugin resolves, and the two-minute sweep covers a
+  repository no watcher could be created for.
+- A rewritten history re-anchors at HEAD and logs that the older history was not read (`reachable` from `files.commits`).
+- The setting is re-read inside a sweep; a repository whose project is gone is forgotten.
+- Linking claims one idea per commit (the best option); several come from a commit message that names them.
+
+### D — backups, events and evidence (`c565b30`)
+
+- A snapshot carries the backlog (under `ideas.fileName`), `ideas-pending.json` and `ideas-migration.json`, each with a
+  checksum; the retention allow-list knows them and `Verify` checks whatever the manifest lists, so older snapshots
+  still verify. The copy takes the same lock the ideas plugin writes under; if it cannot be taken within 5 s the files
+  are left out and the log says so. `scripts/restore-backup.mjs` restores what the manifest lists.
+- A real restore into a new home is a test (named ideas file, a pending card, a busy lock).
+- `ideas.resolved { id, action, card }` is broadcast when a card leaves the file; the composer and the tab drop it, a
+  card answered elsewhere is not an error card, and both re-read on reconnect and on visibility.
+- An open card lists its evidence: the chats (which open) and the commits.
+
+### E — admission and observability (`5128b8d`)
+
+- Every Ideas model call (the save check, the three decisions, recall) takes a slot from the agents' scheduler, behind
+  the chats, for at most 2 s; after that it runs anyway and the log says so, because a check asked for *by* an agent
+  run must not wait for a slot only that run can release.
+- A background check is never sent to a paid model (`ideas.allowPaidModel`, default off): the call is not made and the
+  log says why.
+- The log carries purpose, project, queueing time, hold time and the outcome.
+
+### Stale parts of this document, for the next reader
+
+- The paths are `plugins/NetPI.Tools.Files` (not `NetPI.Files`) and the Ideas Svelte sources are in
+  `plugins/NetPI.Ideas/ui/` (not `ui/src/`); the composer card UI is `web/src/components/composer/ideaSuggestions.svelte.js`.
+- "Use a retained, disposed debounce timer per watch" was already true at HEAD (`1f33840`).
+- "Toggling commit checks after watchers exist" was largely a non-issue before this work; the sweep now re-reads the
+  setting per sweep and stale watches are dropped.
+
+### Known limits after this work
+
+- A snapshot takes the ideas lock for at most five seconds and then leaves the files out (a stale snapshot rather than a
+  torn one); a snapshot can therefore be older than the newest ideas.
+- The check gives up after three tries on one conversation revision, and a chat closed mid-run gives up after twenty
+  waits (ten minutes at the default step); both leave a retryable mark.
+- A pick-one decision links one idea per commit. Linking several ideas from one message needs a per-candidate question,
+  which is a different (more expensive) shape than the measured one.
+- The lock does not coordinate an editor that ignores it.
+- Migration and recovery are exercised by unit tests with fault injection, not against a live home: nothing here was
+  published or run against the user's data.
