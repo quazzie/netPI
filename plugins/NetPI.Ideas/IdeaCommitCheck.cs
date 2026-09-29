@@ -38,6 +38,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     private const int RepoKeepDays = 60;
     private const string Letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
+    private readonly IdeaAdmission _admission = new(ctx);
     private readonly Lock _watchLock = new();
     private readonly Dictionary<string, Watch> _watches = new(StringComparer.OrdinalIgnoreCase); // repo path → its watcher
     private Timer? _timer;
@@ -352,7 +353,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         foreach (var commit in all)
         {
             if (_stopped) return;
-            if (await HandleAsync(watch, open, commit).ConfigureAwait(false))
+            if (await HandleAsync(watch, open, commit, ctx.Stopping).ConfigureAwait(false))
                 await RememberAsync(watch.Repo, IdeaOps.Str(commit["hash"])).ConfigureAwait(false);
             else
             {
@@ -370,7 +371,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     /// could not be carried out (the decision did not answer, the file could not be written), so the caller leaves the
     /// cursor where it is and tries this commit again; true when it is handled, including "it is about nothing here".
     /// </summary>
-    private async Task<bool> HandleAsync(Watch watch, List<JsonObject> open, JsonObject commit)
+    private async Task<bool> HandleAsync(Watch watch, List<JsonObject> open, JsonObject commit, CancellationToken ct)
     {
         var hash = IdeaOps.Str(commit["hash"]);
         if (hash is not { Length: > 0 }) return true;  // nothing to remember it by, and nothing to do about it
@@ -382,7 +383,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         foreach (var idea in NamedIn(subject, open)) linked.Add(idea);   // deterministic: the message names the id
         if (linked.Count == 0)
         {
-            var (picks, decided) = await LinkAsync(open, commit).ConfigureAwait(false);
+            var (picks, decided) = await LinkAsync(open, commit, watch.ProjectId, ctx.Stopping).ConfigureAwait(false);
             if (!decided) return false;   // the decision did not answer: this commit is still unseen
             linked.AddRange(picks);
         }
@@ -424,7 +425,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
             {
                 if (_stopped) return true;
                 if (IdeaOps.Str(idea["status"]) is not ("open" or "planned" or "in-progress" or "parked")) continue;
-                if (await OfferDoneAsync(watch, idea, entry, titles).ConfigureAwait(false)) break;  // one offer per sweep
+                if (await OfferDoneAsync(watch, idea, entry, titles, ct).ConfigureAwait(false)) break;  // one offer per sweep
             }
         }
         return true;
@@ -449,7 +450,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     /// commit on the strength of probabilities that were computed to compete with each other. A commit that really
     /// finishes two ideas names both ids, or gets linked to the one it names best.
     /// </summary>
-    private async Task<(List<JsonObject> Picks, bool Decided)> LinkAsync(List<JsonObject> open, JsonObject commit)
+    private async Task<(List<JsonObject> Picks, bool Decided)> LinkAsync(List<JsonObject> open, JsonObject commit, string? projectId, CancellationToken ct)
     {
         if (!ctx.Rpc.Exists("decide.decision")) return ([], true);
         var subject = IdeaOps.Str(commit["subject"]) ?? "";
@@ -467,7 +468,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
                               $"Commit by {author}:\n{subject}\n\nOpen ideas:\n" + list,
             }, $"Which open idea is this commit about? Pick it when the commit works on it (implements it, or a step of it, " +
                $"or fixes it), pick it even when it only advances the idea. Pick {none} when it is about something else.",
-                labels).ConfigureAwait(false);
+                labels, "the link question", projectId, ct).ConfigureAwait(false);
             if (answer is null) return ([], false);
             if (answer.P < threshold || answer.P <= answer.None) break;   // nothing here, or "none" wins
             best = [window[answer.Index]];
@@ -481,7 +482,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     /// commit and the summary alone offered only 5/12 (docs/DECISION-MODELS.md). On a clear margin a card is added; one per
     /// idea, and never for an idea that is already closed.
     /// </summary>
-    private async Task<bool> OfferDoneAsync(Watch watch, JsonObject idea, JsonObject commit, List<string> committed)
+    private async Task<bool> OfferDoneAsync(Watch watch, JsonObject idea, JsonObject commit, List<string> committed, CancellationToken ct)
     {
         if (!ctx.Rpc.Exists("decide.decision")) return false;
         var id = IdeaOps.Str(idea["id"]);
@@ -501,7 +502,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
                           "or when it is not clear.\n\n" +
                           $"Idea: {text}\n\nCommits linked to it:\n" + string.Join('\n', linked.Select((s, k) => $"{k + 1}. {s}")),
         }, $"Is the idea finished now? These commits were just made for it ({string.Join(", ", committed)}).",
-            new JsonArray("DONE", "MORE")).ConfigureAwait(false);
+            new JsonArray("DONE", "MORE"), "the done question", watch.ProjectId, ct).ConfigureAwait(false);
         if (probs is null) return false;
         var threshold = Math.Clamp(Setting("ideas.doneThreshold", DefaultDoneThreshold), 0.3, 0.99);
         if ((probs.TryGetValue("DONE", out var done) ? done : 0) < threshold) return false;
@@ -545,22 +546,26 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     }
 
     /// <summary>One pick-one decision over lettered options, read like every other one (never "none" as an idea).</summary>
-    private async Task<IdeaPick?> DecidePickAsync(JsonObject system, string question, JsonArray labels)
+    private async Task<IdeaPick?> DecidePickAsync(JsonObject system, string question, JsonArray labels, string purpose, string? project, CancellationToken ct)
     {
-        var probs = await DecideAsync(system, question, labels).ConfigureAwait(false);
+        var probs = await DecideAsync(system, question, labels, purpose, project, ct).ConfigureAwait(false);
         return probs is null ? null : IdeaMatch.Pick(probs, labels.OfType<JsonValue>().Select(v => IdeaOps.Str(v) ?? "").ToList());
     }
 
     /// <summary>One pick-one decision: label → probability, or null when the Decide plugin cannot answer.</summary>
-    private async Task<Dictionary<string, double>?> DecideAsync(JsonObject system, string question, JsonArray labels)
+    private async Task<Dictionary<string, double>?> DecideAsync(JsonObject system, string question, JsonArray labels, string purpose, string? project, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
         cts.CancelAfter(IdeaSaveCheck.Timeout);
         try
         {
+            var name = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel;
+            // The same admission as a chat's: the decision shares the backend, so it waits its turn like one.
+            var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
+            using var slot = await _admission.EnterAsync(model, purpose, sessionId: null, projectId: project, ct).ConfigureAwait(false);
             var raw = await ctx.Rpc.InvokeAsync("decide.decision", new JsonObject
             {
-                ["model"] = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel,
+                ["model"] = name,
                 ["messages"] = new JsonArray(system),
                 ["branches"] = new JsonArray(new JsonObject
                 {

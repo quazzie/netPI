@@ -32,6 +32,8 @@ public sealed class IdeasPlugin : INetPiPlugin
                     "The probability a closed chat has to be about an open idea before the chat is attached to it. 0.8 was right on 5 of 6 (docs/DECISION-MODELS.md).", 0.3, 0.99),
                 SettingInfo.Str("ideas.model", "Model for the idea checks", IdeaRecall.DefaultModel,
                     "The decision model (through the Decide plugin's server) and the model that drafts the save check. qwen3.8-27b, the NInfer chat model, was measured."),
+                SettingInfo.Bool("ideas.allowPaidModel", "Let the automatic checks use a paid model", false,
+                    "Off: a check that would run on a cloud model is skipped, because an invoice for a background check is never what you meant. On: the same model as above, local or not."),
                 SettingInfo.Bool("ideas.closeOnCommit", "Notice when a commit finishes an idea", true,
                     "Every project with a git repository is watched. A commit is recorded on the open idea it works on, and when a commit may have finished one you get a card to mark it done (needs the Files and Decide plugins)."),
                 SettingInfo.Number("ideas.linkThreshold", "Link threshold", IdeaCommitCheck.DefaultLinkThreshold,

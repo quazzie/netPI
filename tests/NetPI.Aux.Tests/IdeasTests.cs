@@ -842,7 +842,7 @@ public static class IdeasTests
         {
             var env = new Env();
             await env.StartAsync();
-            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", ContextWindow = 262144, MaxOutputTokens = 16384 });
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, ContextWindow = 262144, MaxOutputTokens = 16384 });
             for (var i = 0; i < users; i++)
             {
                 env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText($"please look at the nudge counter, part {i}"));

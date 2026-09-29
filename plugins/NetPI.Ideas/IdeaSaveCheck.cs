@@ -76,6 +76,8 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
     private readonly SemaphoreSlim _gate = new(1, 1);
     /// <summary>The OS lock on the pending file, shared with any other instance of this plugin.</summary>
     private readonly FileGate _files = new();
+    /// <summary>Background model work queues behind the chats, on the backend's own slots.</summary>
+    private readonly IdeaAdmission _admission = new(ctx);
 
     public void Register(IRpcRegistry rpc)
     {
@@ -209,7 +211,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
                 await AttachAsync(open, session, digest, ct).ConfigureAwait(false);
 
             if (!ctx.Models.Cached.Any()) await ctx.Models.ListAsync(ct: ct).ConfigureAwait(false);
-            var draft = await SaveCheckAsync(session, digest, ct).ConfigureAwait(false);
+            var draft = await SaveCheckAsync(session, digest, project, ct).ConfigureAwait(false);
             if (draft is null)
             {
                 await FinishAsync(session.Id, ct, gaveUpWaiting ? "the run never ended, so the chat was judged as it was" : null).ConfigureAwait(false);
@@ -362,7 +364,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
     }
 
     /// <summary>The generative check: NOTHING, or a drafted title and summary.</summary>
-    private async Task<(string Title, string Summary)?> SaveCheckAsync(SessionInfo session, string digest, CancellationToken ct)
+    private async Task<(string Title, string Summary)?> SaveCheckAsync(SessionInfo session, string digest, ProjectInfo? projectOf, CancellationToken ct)
     {
         var model = await ResolveModelAsync(ct).ConfigureAwait(false);
         // Not a silent "no card": the check did not run, so the mark says why and the next close tries again.
@@ -380,6 +382,8 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         };
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(Timeout);
+        using var slot = await _admission.EnterAsync(model, "the save check", session.Id, projectOf?.Id, ct).ConfigureAwait(false);
+        if (slot is null) return null; // a paid model the user did not allow: no call, and no card
         var response = await ctx.Models.CompleteAsync(request, cts.Token).ConfigureAwait(false);
         return Parse(response.Text);
     }
@@ -404,9 +408,13 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasStore store, IdeasLoc
         cts.CancelAfter(Timeout);
         try
         {
+            var name = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel;
+            // The decision runs on the same backend as the chats, so it takes a slot like everything else.
+            var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
+            using var slot = await _admission.EnterAsync(model, "an ideas decision", sessionId: null, projectId: null, ct).ConfigureAwait(false);
             var raw = await ctx.Rpc.InvokeAsync("decide.decision", new JsonObject
             {
-                ["model"] = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel,
+                ["model"] = name,
                 ["messages"] = new JsonArray(system),
                 ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["content"] = question, ["labels"] = labels }),
             }, cts.Token).ConfigureAwait(false);

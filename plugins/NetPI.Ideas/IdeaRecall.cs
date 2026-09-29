@@ -83,9 +83,14 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasStore store, Ide
         object? answer;
         try
         {
+            var name = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel;
+            // Typed-ahead background work: it waits for the backend's slot, briefly, and never for a paid model.
+            var admission = new IdeaAdmission(ctx);
+            using var slot = await admission.EnterAsync(await ctx.Models.FindAsync(name, ct).ConfigureAwait(false),
+                "recall", sessionId, project?.Id, ct).ConfigureAwait(false);
             answer = await ctx.Rpc.InvokeAsync("decide.decision", new JsonObject
             {
-                ["model"] = Setting("ideas.model", DefaultModel) is { Length: > 0 } model ? model.Trim() : DefaultModel,
+                ["model"] = name,
                 ["messages"] = new JsonArray(new JsonObject { ["role"] = "system", ["content"] = system }),
                 ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["content"] = question, ["labels"] = labels }),
             }, cts.Token).ConfigureAwait(false);

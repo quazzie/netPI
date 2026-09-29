@@ -32,6 +32,9 @@ public static class IdeasCheckTests
         public async Task<JsonObject> Rpc(string method, JsonObject p) => (JsonObject)(await Ctx.RpcFake.Call(method, p))!;
 
         /// <summary>A decision that answers with the given probabilities and records what it was asked.</summary>
+        /// <summary>A scheduler stand-in: counts what took a slot and how long it waited.</summary>
+        public FakeScheduler Scheduler { get; } = new();
+
         public void Decide(Func<JsonObject, Dictionary<string, double>> answer) =>
             Ctx.RpcFake.Register("decide.decision", (req, _) =>
             {
@@ -108,13 +111,71 @@ public static class IdeasCheckTests
         }
     }
 
+    /// <summary>
+    /// A scheduler that hands out <see cref="Busy"/> slots and records what waited for one. Mirrors the real one in
+    /// what the Ideas plugin depends on: a key per pool, a slot that must be released, and a bounded wait.
+    /// </summary>
+    private sealed class FakeScheduler : IAgentScheduler
+    {
+        public int Busy { get; set; } = 1;
+        public int Taken { get; set; }
+        public int Waits { get; set; }
+        public List<int> Priorities { get; } = [];
+        public List<string> Labels { get; } = [];
+        public bool Grant { get; set; } = true;
+
+        private sealed class Slot(Action release) : IAgentSlot
+        {
+            public string Key { get; } = "fake";
+            public string AgentId { get; } = "ideas";
+            public DateTimeOffset AcquiredAt { get; } = DateTimeOffset.UtcNow;
+            public bool IsReleased { get; private set; }
+            public void Dispose() { IsReleased = true; release(); }
+        }
+
+        public string Resolve(ModelInfo model) => model.Ref;
+        public string Resolve(ModelInfo model, string? agent) => model.Ref;
+        public IReadOnlyList<AgentSlots> Snapshot() => [];
+        public bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease)
+        {
+            lock (this)
+            {
+                if (!Grant || Taken >= Busy) { lease = null; return false; }
+                Taken++;
+                Priorities.Add(request.Priority);
+                Labels.Add(request.Label ?? "");
+                lease = new Slot(() => { Taken--; });
+                return true;
+            }
+        }
+        public async ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct)
+        {
+            for (var waited = 0; ; waited += 20)
+            {
+                lock (this)
+                {
+                    if (Grant && Taken < Busy)
+                    {
+                        Taken++;
+                        Waits++;
+                        Priorities.Add(request.Priority);
+                        Labels.Add(request.Label ?? "");
+                        return new Slot(() => { Taken--; });
+                    }
+                    Waits++;
+                }
+                await Task.Delay(20, ct);
+            }
+        }
+    }
+
     public static void Register(TestRunner r)
     {
         r.Add("ideas check: the attach decision is asked about the conversation, not only the option list", async () =>
         {
             var env = new Env();
             await env.StartAsync();
-            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", MaxOutputTokens = 16384 });
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             var idea = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Nudge reset" } }))["id"].Str()!;
             env.Talk("the nudge keeps nudging after a good answer, please reset the counter");
             env.Talk("and make it configurable");
@@ -136,7 +197,7 @@ public static class IdeasCheckTests
         {
             var env = new Env();
             await env.StartAsync();
-            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", MaxOutputTokens = 16384 });
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             var idea = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Nudge reset" } }))["id"].Str()!;
             env.Talk();
             env.Talk();
@@ -165,7 +226,7 @@ public static class IdeasCheckTests
             {
                 var env = new Env();
                 await env.StartAsync();
-                env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", MaxOutputTokens = 16384 });
+                env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
                 await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Nudge reset" } });
                 env.Talk();
                 env.Talk();
@@ -184,7 +245,7 @@ public static class IdeasCheckTests
         {
             var env = new Env();
             await env.StartAsync();
-            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", MaxOutputTokens = 16384 });
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             env.Talk();
             env.Talk();
             env.Decide(_ => new() { ["A"] = 0.9, ["B"] = 0.05, ["C"] = 0.05 });
@@ -215,7 +276,7 @@ public static class IdeasCheckTests
         {
             var env = new Env();
             await env.StartAsync();
-            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", MaxOutputTokens = 16384 });
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText("start the refactor"));
             env.Ctx.SessionsFake.AppendMessage(env.Session.Id, new ChatMessage { Role = MessageRole.Assistant, StopReason = "aborted", Parts = [new TextPart { Text = "…" }] });
             env.Talk("carried on and finished it", "Done, and here is what changed.");
@@ -238,7 +299,7 @@ public static class IdeasCheckTests
         {
             var env = new Env();
             await env.StartAsync();
-            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", MaxOutputTokens = 16384 });
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             env.Talk();
             env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText("and now the long one"));
             env.Ctx.SessionsFake.AppendMessage(env.Session.Id, new ChatMessage { Role = MessageRole.Assistant, Parts = [new ToolCallPart { Id = "c1", Name = "build" }] }); // no stop reason: the run is open
@@ -283,7 +344,7 @@ public static class IdeasCheckTests
         {
             var env = new Env();
             await env.StartAsync();
-            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", MaxOutputTokens = 16384 });
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "openai", Id = "gpt-5", MaxOutputTokens = 16384 });
             env.Ctx.SettingsFake.Set("ideas.model", "aiproxy/not-in-the-catalog");
             env.Talk();
@@ -337,11 +398,61 @@ public static class IdeasCheckTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas check: background model work waits for a slot, and a busy one is not waited for forever", async () =>
+        {
+            var env = new Env();
+            env.Ctx.ServicesFake.Register<IAgentScheduler>(env.Scheduler);
+            await env.StartAsync();
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
+            env.Talk();
+            env.Talk();
+            env.Says("SAVE\nA card\nWith the scheduler there");
+
+            await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
+            await env.WaitForCards(1);
+            Check.Equal(0, env.Scheduler.Taken, "and handed back");
+            Check.True(env.Scheduler.Priorities.Count > 0, "a slot was asked for");
+            Check.True(env.Scheduler.Priorities.All(p => p < 0), "background work queues behind the chats: " + string.Join(",", env.Scheduler.Priorities));
+            Check.True(env.Scheduler.Labels.Any(l => l.Contains("save check")), "and says what it is: " + string.Join(" | ", env.Scheduler.Labels));
+
+            // Both slots busy: the check still runs, because waiting could block the run that is waiting for it.
+            env.Scheduler.Busy = 0;
+            env.Says("SAVE\nA second card\nThis one ran without a slot");
+            env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText("and one more"));
+            env.Ctx.SessionsFake.AppendMessage(env.Session.Id, new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "Done." }] });
+            IdeaSaveCheck.DeferStep = TimeSpan.FromMilliseconds(50);
+            Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
+            await env.WaitForCards(2);
+            Check.Contains(env.Ctx.Log.Lines.FirstOrDefault(l => l.Contains("without a slot")) ?? "", "without a slot", "and the log says it ran without one");
+            IdeaSaveCheck.DeferStep = TimeSpan.FromSeconds(30);
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas check: a background check is never sent to a paid model on its own", async () =>
+        {
+            var env = new Env();
+            env.Ctx.ServicesFake.Register<IAgentScheduler>(env.Scheduler);
+            await env.StartAsync();
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "openai", Id = "gpt-5", IsLocal = false, MaxOutputTokens = 16384 });
+            env.Ctx.SettingsFake.Set("ideas.model", "openai/gpt-5");
+            env.Talk();
+            env.Talk();
+            env.Says("SAVE\nNever mind\nThis would cost money");
+
+            Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
+            var mark = await env.WaitForMark(env.Session.Id);
+            Check.Equal(0, env.Ctx.ModelsFake.Requests.Count, "no model was called");
+            Check.Equal(0, (await env.Cards()).Count, "and no card");
+            Check.Equal(0, env.Scheduler.Taken, "and it never took a slot");
+            Check.Contains(string.Join("|", env.Ctx.Log.Lines), "paid model", "the log says why");
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas check: the same chat checked twice leaves one card", async () =>
         {
             var env = new Env();
             await env.StartAsync();
-            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", MaxOutputTokens = 16384 });
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             env.Talk();
             env.Talk();
             env.Says("SAVE\nOne card only\nThe same plan, offered again");
