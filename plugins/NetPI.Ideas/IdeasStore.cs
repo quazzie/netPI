@@ -96,10 +96,14 @@ public sealed class IdeasStore : IDisposable
         {
             return await _files.WithFileAsync(path, async token =>
             {
-                var file = await LoadAsync(path, token).ConfigureAwait(false);
+                // A write always reads the file from disk. The parse cache exists for bursts of *reads* (a commit sweep,
+                // recall while the user types); a write that reused it could (a) mutate a tree that is also in the cache,
+                // so a patch that throws half way leaves its partial change there for the next writer to commit, and
+                // (b) write a tree that was parsed before somebody else's committed change, because our watcher missed
+                // their write. The lock says "one at a time"; it cannot make a stale tree current.
+                var file = await LoadAsync(path, token, fresh: true).ConfigureAwait(false);
                 var result = mutate(file);
-                // The cached tree is the one we just changed, so it leaves the cache before the write: a write that then
-                // fails must not leave a mutated backlog in memory for the next reader (which would add it a second time).
+                // Belt and braces: the tree we just changed must not be the one a reader gets from the cache.
                 Invalidate(path);
                 await SaveAsync(file, token).ConfigureAwait(false);
                 Changed(path);
@@ -120,12 +124,15 @@ public sealed class IdeasStore : IDisposable
     /// A file that cannot be parsed throws as before and is not cached, so the next read retries. Callers treat the
     /// file as read-only: mutations go through <see cref="UpdateAsync"/>, which saves the same tree (and invalidates).
     /// </summary>
-    private async Task<IdeasFile> LoadAsync(string path, CancellationToken ct)
+    private async Task<IdeasFile> LoadAsync(string path, CancellationToken ct, bool fresh = false)
     {
-        lock (_gate)
+        if (!fresh)
         {
-            if (_parsed.TryGetValue(path, out var hit) && DateTime.UtcNow - hit.At < ParseTtl)
-                return hit.File;
+            lock (_gate)
+            {
+                if (_parsed.TryGetValue(path, out var hit) && DateTime.UtcNow - hit.At < ParseTtl)
+                    return hit.File;
+            }
         }
         byte[]? bytes = null;
         for (var attempt = 0; ; attempt++)

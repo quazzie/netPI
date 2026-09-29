@@ -76,6 +76,8 @@ public sealed class BackupPlugin : INetPiPlugin
                 files[name] = Convert.ToHexString(SHA256.HashData(input)).ToLowerInvariant();
             }
             var manifest = new JsonObject { ["version"] = 1, ["id"] = id, ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"), ["automatic"] = automatic, ["files"] = files };
+            if (files.AsObject().Count == 2)
+                manifest["noIdeas"] = true; // the ideas files were busy or absent: this snapshot carries no ideas state
             File.WriteAllText(Path.Combine(staging, "manifest.json"), manifest.ToJsonString(NetPiJson.Indented));
             ct.ThrowIfCancellationRequested();
             var destination = Path.Combine(root, id);
@@ -86,6 +88,9 @@ public sealed class BackupPlugin : INetPiPlugin
             foreach (var old in List(ctx.Paths.Home).Where(n => n!["automatic"]?.GetValue<bool>() == true)
                 .OrderByDescending(n => n!["createdAt"]!.GetValue<string>()).Skip(Math.Clamp(ctx.Settings.Get("backup.keepCount", 7), 1, 365)))
             {
+                // A snapshot that still holds ideas state is not removed while this new one does not: retention must not
+                // be the reason the last ideas state in a backup disappears.
+                if (HoldsIdeas(old as JsonObject) && !HoldsIdeas(manifest)) continue;
                 var path = SnapshotPath(ctx.Paths.Home, old!["id"]!.GetValue<string>());
                 if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) continue;
                 // A snapshot this build would not write (new files in it) is kept rather than deleted.
@@ -116,14 +121,20 @@ public sealed class BackupPlugin : INetPiPlugin
         var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "manifest.json")))!.AsObject();
         if (manifest["version"]?.GetValue<int>() != 1 || manifest["id"]?.GetValue<string>() != id)
             throw new InvalidDataException("Unsupported or mismatched backup manifest");
-        // Whatever the manifest lists, so a snapshot written by this or an older build is checked in full.
-        foreach (var name in (manifest["files"] as JsonObject ?? []).Select(f => f.Key).Where(n => File.Exists(Path.Combine(dir, n))))
+        // Whatever the manifest lists, each one must be there: a snapshot that names a file it does not contain is not
+        // verified, whatever the checksum says. An older manifest (no ideas files) verifies exactly what it has.
+        var files = manifest["files"] as JsonObject ?? throw new InvalidDataException("The backup manifest lists no files");
+        foreach (var name in files.Select(f => f.Key))
         {
-            using var input = File.OpenRead(Path.Combine(dir, name));
+            var path = Path.Combine(dir, name);
+            if (!File.Exists(path)) throw new InvalidDataException($"The backup is missing {name}, which its manifest lists");
+            using var input = File.OpenRead(path);
             var actual = Convert.ToHexString(SHA256.HashData(input));
-            if (!actual.Equals(manifest["files"]?[name]?.GetValue<string>(), StringComparison.OrdinalIgnoreCase))
+            if (!actual.Equals(files[name]?.GetValue<string>(), StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException($"Backup checksum mismatch: {name}");
         }
+        foreach (var name in new[] { "netpi.db", "settings.json" })
+            if (!files.ContainsKey(name)) throw new InvalidDataException($"The backup manifest does not list {name}");
         return manifest;
     }
 
@@ -131,11 +142,16 @@ public sealed class BackupPlugin : INetPiPlugin
     private static readonly TimeSpan IdeasLockWait = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// The ideas files of this snapshot, copied while the ideas plugin's own lock is held: the backlog, the cards and
+    /// The ideas files of this snapshot, copied while the ideas plugin's own locks are held: the backlog, the cards and
     /// check marks waiting in the pending file, and the import receipt of the old per-project files. Taking the same
-    /// lock (<c>.&lt;name&gt;.lock</c>, which the OS releases even after a crash) is what makes this a coordinated
-    /// snapshot — a card answered at this moment is either in both files or in neither. If the lock cannot be taken the
-    /// files are left out and the log says so: an older snapshot is better than one that caught half an answer.
+    /// locks (<c>.&lt;name&gt;.lock</c>, which the OS releases even after a crash) is what makes this a coordinated
+    /// snapshot: a card answered at this moment is in both files or in neither. All of them are taken, in a fixed order
+    /// so two snapshots cannot wait on each other, and the pending file is locked by its own writer — the backlog lock
+    /// alone would not cover it.
+    /// <para>
+    /// If the locks cannot be taken the files are left out and the snapshot says so in its manifest, so nothing claims
+    /// to hold ideas state that it does not hold.
+    /// </para>
     /// </summary>
     private IReadOnlyList<string> SnapshotIdeas(IPluginContext ctx, string staging)
     {
@@ -147,23 +163,23 @@ public sealed class BackupPlugin : INetPiPlugin
             .ToList();
         if (sources.Count == 0) return [];
         var deadline = DateTimeOffset.UtcNow + IdeasLockWait;
-        FileStream? hold = null;
+        var held = new List<FileStream>();
         try
         {
-            while (DateTimeOffset.UtcNow < deadline)
+            foreach (var lockPath in sources.Select(s => "." + Path.GetFileName(s) + ".lock").OrderBy(p => p, StringComparer.Ordinal).Select(p => Path.Combine(ctx.Paths.Home, p)))
             {
-                try
+                FileStream? open = null;
+                while (DateTimeOffset.UtcNow < deadline)
                 {
-                    var lockPath = Path.Combine(ctx.Paths.Home, "." + Path.GetFileName(sources[0]) + ".lock");
-                    hold = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-                    break;
+                    try { open = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); break; }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Thread.Sleep(50); }
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Thread.Sleep(50); }
-            }
-            if (hold is null)
-            {
-                ctx.Logger.LogWarning("Backups: the ideas files were busy, so this snapshot does not include them (the previous snapshot still does)");
-                return [];
+                if (open is null)
+                {
+                    ctx.Logger.LogWarning("Backups: {Lock} was busy, so this snapshot does not include the ideas files (the previous snapshot still does)", lockPath);
+                    return [];
+                }
+                held.Add(open);
             }
             foreach (var source in sources) File.Copy(source, Path.Combine(staging, Path.GetFileName(source)), overwrite: true);
             return sources.Select(s => Path.GetFileName(s)).ToList();
@@ -173,7 +189,18 @@ public sealed class BackupPlugin : INetPiPlugin
             ctx.Logger.LogWarning(ex, "Backups: the ideas files could not be read, so this snapshot does not include them");
             return [];
         }
-        finally { hold?.Dispose(); }
+        finally { foreach (var open in held) try { open.Dispose(); } catch { } }
+    }
+
+    /// <summary>
+    /// Whether a snapshot carries ideas state. The manifest is the only answer: it lists the files (an older snapshot
+    /// lists none of the ideas files, which is the same answer) and says <c>noIdeas</c> when they were busy.
+    /// </summary>
+    private static bool HoldsIdeas(JsonObject? manifest)
+    {
+        if (manifest?["noIdeas"] is JsonValue flag && flag.TryGetValue<bool>(out var skipped) && skipped) return false;
+        return manifest?["files"] is JsonObject files
+            && (files.ContainsKey("ideas.json") || files.ContainsKey("ideas-pending.json"));
     }
 
     /// <summary>The files a snapshot is made of, in the order they are written.</summary>
