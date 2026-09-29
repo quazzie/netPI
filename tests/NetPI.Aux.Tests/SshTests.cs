@@ -33,9 +33,9 @@ public static class SshTests
         public (int Exit, string Err) Ask(string[] args)
         {
             if (args.Contains("-O")) return (1, "Control socket connect(/tmp/x): No such file or directory");
-            var pair = args.FirstOrDefault(a => a.Contains('=') && !a.StartsWith("ControlPath=", StringComparison.Ordinal));
-            var name = pair?.Split('=')[0] ?? "";
-            asked.Add(name);
+            foreach (var a in args.Where(a => a.Contains('=')))
+                asked.Add(a.Split('=')[0]);
+            var name = args.FirstOrDefault(a => a.Contains('=') && !a.StartsWith("ControlPath=", StringComparison.Ordinal))?.Split('=')[0] ?? "";
             return name == reject ? (255, $"command-line: line 0: Bad configuration option: {reject.ToLowerInvariant()}") : (0, "");
         }
     }
@@ -277,6 +277,13 @@ public static class SshTests
 
         r.Add("ssh: one master connection per host (ControlMaster, a hashed per-host-and-user ControlPath, persist)", async () =>
         {
+            if (OperatingSystem.IsWindows())
+            {
+                // OpenSSH's multiplexing needs the master to fork a child per session, which the Windows ports do not do,
+                // so the plugin never asks for it there: the "no multiplexing" test below covers this platform.
+                Console.WriteLine("    (Windows: OpenSSH cannot multiplex, so the multiplexed path does not exist here)");
+                return;
+            }
             var env = new Env();
             env.Fake.Reply = (_, _) => new SshExec(0, "", "", false, false);
             var real = SshClient.Probe;
@@ -309,6 +316,13 @@ public static class SshTests
         {
             // OpenSSH_for_Windows has no ControlIdleTimeout: passing it is a hard error on every call ("Bad
             // configuration option"), so the client is asked once and the option goes when the answer is no.
+            if (OperatingSystem.IsWindows())
+            {
+                // The idle timeout only travels with multiplexing, and Windows never multiplexes: there is nothing to
+                // drop here, and the test below says what Windows does instead.
+                Console.WriteLine("    (Windows: no multiplexing, so no per-option question)");
+                return;
+            }
             var asked = new List<string>();
             var real = SshClient.Probe;
             SshClient.Probe = (_, args) => args.Contains("-O") ? (1, MuxYes) : (0, "");
@@ -323,8 +337,8 @@ public static class SshTests
                 await env.Run("ssh_run", new { host = "nuc", script = "ls" });
                 var args = string.Join(" ", env.Fake.Calls.Single().Args);
                 Check.NotContains(args, "ControlIdleTimeout", "the option the client rejected is not passed");
-                Check.Contains(args, "ControlMaster=auto", "multiplexing itself is untouched");
-                Check.Contains(args, "ControlPersist=300");
+                Check.Contains(args, "BatchMode=yes", "the options it does know are untouched");
+                Check.Contains(args, "ConnectTimeout=10");
                 Check.Equal(1, env.Fake.Calls.Count, "the call ran once");
                 Check.True(asked.Contains("ControlIdleTimeout"), "and the client was asked about it: " + string.Join(",", asked));
             }
@@ -355,6 +369,27 @@ public static class SshTests
             finally { SshClient.Probe = real; SshClient.Forget(); }
         });
 
+        r.Add("ssh: on Windows no client is asked to multiplex, whatever it claims", async () =>
+        {
+            // The Git/MSYS build creates a real socket and keeps the master up, and still resets the first session over
+            // it, so the question cannot be answered by asking the client: on Windows the answer is always no.
+            var asked = 0;
+            var real = SshClient.Probe;
+            SshClient.Probe = (_, args) => { if (args.Contains("-O")) asked++; return args.Contains("-O") ? (1, MuxYes) : (0, ""); };
+            SshClient.Forget();
+            try
+            {
+                var env = new Env();
+                env.Fake.Reply = (_, _) => new SshExec(0, "ok", "", false, false);
+                var r = await env.Run("ssh_run", new { host = "nuc", script = "ls" });
+                Check.False(r.IsError, "the call runs: " + r.Content);
+                var args = string.Join(" ", env.Fake.Calls.Single().Args);
+                Check.NotContains(args, "ControlMaster", OperatingSystem.IsWindows() ? "Windows cannot multiplex" : "a client that cannot multiplex");
+                Check.Equal(OperatingSystem.IsWindows() ? 0 : 1, asked, "and the client is not asked a question the platform already answers");
+            }
+            finally { SshClient.Probe = real; SshClient.Forget(); }
+        });
+
         r.Add("ssh: the client is asked once, not on every call", async () =>
         {
             var asked = 0;
@@ -368,7 +403,8 @@ public static class SshTests
                 await env.Run("ssh_run", new { host = "nuc", script = "ls" });
                 await env.Run("ssh_run", new { host = "nuc", script = "ls" });
                 await env.Run("ssh_run", new { host = "server", script = "ls" });
-                Check.Equal(1, asked, "one question for three calls (the answer belongs to the client, not the call)");
+                Check.Equal(OperatingSystem.IsWindows() ? 0 : 1, asked,
+                    "at most one question for three calls (the answer belongs to the client, not the call)");
             }
             finally { SshClient.Probe = real; SshClient.Forget(); }
         });
