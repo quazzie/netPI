@@ -27,12 +27,17 @@ public sealed class IdeasFileException(string message) : Exception(message);
 
 /// <summary>
 /// Reads and writes ideas files: per-file lock, atomic writes (temp file + rename), original line endings and BOM kept,
-/// unknown fields preserved, and a FileSystemWatcher per file that publishes a debounced <c>ideas.changed { file }</c>.
+/// unknown fields preserved, a FileSystemWatcher per file that publishes a debounced <c>ideas.changed { file }</c>, and
+/// a short-lived cache of the parsed file so a run of reads does not re-parse the whole (append-only, growing) backlog.
 /// </summary>
 public sealed class IdeasStore : IDisposable
 {
     public const string ChangedEvent = "ideas.changed";
     private const int MaxWatchers = 32;
+    /// <summary>The parsed file is kept this long (short: it is a backstop, not the mechanism — see <see cref="LoadAsync"/>).</summary>
+    private static readonly TimeSpan ParseTtl = TimeSpan.FromSeconds(5);
+    /// <summary>How many parsed files the cache keeps (paths are not bounded by anything else: tools pass their own).</summary>
+    private const int MaxCached = 64;
 
     private static readonly JsonDocumentOptions ReadOptions = new() { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip };
     private static readonly StringComparer PathComparer = OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
@@ -44,6 +49,8 @@ public sealed class IdeasStore : IDisposable
     private readonly Dictionary<string, FileSystemWatcher> _watchers = new(PathComparer);
     private readonly List<string> _watchOrder = [];
     private readonly Dictionary<string, Timer> _timers = new(PathComparer);
+    /// <summary>The parsed files, by path (under <see cref="_gate"/>).</summary>
+    private readonly Dictionary<string, (IdeasFile File, DateTime At)> _parsed = new(PathComparer);
     private readonly object _gate = new();
     private bool _disposed;
 
@@ -86,8 +93,22 @@ public sealed class IdeasStore : IDisposable
 
     // ------------------------------------------------------------------ load/save
 
-    private static async Task<IdeasFile> LoadAsync(string path, CancellationToken ct)
+    /// <summary>
+    /// The parsed file, or the disk. The recall check asks once a second while a new chat is typed (and a commit sweep
+    /// reads per commit), so a burst of reads must not re-parse the whole backlog each time: a hit returns the tree that
+    /// is on disk. The TTL is only a backstop — it bounds staleness when a change event is missed (a watcher is one of
+    /// at most MaxWatchers files, and the OS drops events under load); in the normal case the watcher's change events and
+    /// the store's own writes remove the entry in <see cref="Changed"/> before the next read, which is what keeps it safe.
+    /// A file that cannot be parsed throws as before and is not cached, so the next read retries. Callers treat the
+    /// file as read-only: mutations go through <see cref="UpdateAsync"/>, which saves the same tree (and invalidates).
+    /// </summary>
+    private async Task<IdeasFile> LoadAsync(string path, CancellationToken ct)
     {
+        lock (_gate)
+        {
+            if (_parsed.TryGetValue(path, out var hit) && DateTime.UtcNow - hit.At < ParseTtl)
+                return hit.File;
+        }
         byte[]? bytes = null;
         for (var attempt = 0; ; attempt++)
         {
@@ -96,7 +117,14 @@ public sealed class IdeasStore : IDisposable
             catch (DirectoryNotFoundException) { break; }
             catch (IOException) when (attempt < 5) { await Task.Delay(40, ct).ConfigureAwait(false); } // sharing violation
         }
-        return Parse(path, bytes);
+        var file = Parse(path, bytes);
+        lock (_gate)
+        {
+            if (_parsed.Count >= MaxCached)
+                _parsed.Remove(_parsed.OrderBy(p => p.Value.At).First().Key); // the least recently cached
+            _parsed[path] = (file, DateTime.UtcNow);
+        }
+        return file;
     }
 
     public static IdeasFile Parse(string path, byte[]? bytes)
@@ -253,6 +281,8 @@ public sealed class IdeasStore : IDisposable
         lock (_gate)
         {
             if (_disposed) return;
+            // The watcher's event or our own save: the next read re-parses, so a write is visible to a read at once.
+            _parsed.Remove(path);
             if (!_timers.TryGetValue(path, out var timer))
             {
                 timer = new Timer(_ => Fire(path), null, Timeout.Infinite, Timeout.Infinite);
@@ -279,6 +309,7 @@ public sealed class IdeasStore : IDisposable
             _watchers.Clear();
             foreach (var t in _timers.Values) t.Dispose();
             _timers.Clear();
+            _parsed.Clear();
         }
     }
 }

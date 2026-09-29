@@ -16,13 +16,13 @@
   let { chat, session } = $props();
 
   const build = createItemBuilder();
+  // The finished items come from the loaded window only: a stream frame must not re-run this (it walks the whole
+  // window and rewraps ~200 items), so it is kept separate from the live stream item, which joins on top of it.
+  const built = $derived.by(() => build(chat.messages, chat.prompts, !chat.hasMore));
   // the streaming answer is laid out like the finished one (thinking and tool calls join the open steps group), so the
   // chat does not jump when message.added replaces it
   // with the system prompts the chat was sent (the first above the first message when the window starts there)
-  const items = $derived.by(() => {
-    const built = build(chat.messages, chat.prompts, !chat.hasMore);
-    return chat.hasNewer ? built : withStream(built, chat.stream);
-  });
+  const items = $derived(chat.hasNewer ? built : withStream(built, chat.stream));
   const running = $derived(isBusy(session.id));
   // fork: a user message forks before it (its text goes to the new chat's message box), an answer forks after it
   const forkable = $derived(session.kind !== 'subagent');
@@ -30,10 +30,12 @@
   const forkBefore = (m) => forkSession(session.id, m.seq - 1, textOf(m));
   const forkAfter = (m) => forkSession(session.id, m.seq);
   const base = $derived(projectOf(session)?.path ?? null);
-  // index of the user message that started the current run (steering input does not start a new one)
+  // index of the user message that started the current run (steering input does not start a new one): over the
+  // finished list — the stream item never is a user one and sits at the end, so its index is the same in the
+  // combined list, and stream frames do not recompute it
   const lastUserIdx = $derived.by(() => {
-    for (let i = items.length - 1; i >= 0; i--)
-      if (items[i].kind === 'user' && items[i].msg.meta?.kind !== 'steer' && items[i].msg.meta?.delivery !== 'steer') return i;
+    for (let i = built.length - 1; i >= 0; i--)
+      if (built[i].kind === 'user' && built[i].msg.meta?.kind !== 'steer' && built[i].msg.meta?.delivery !== 'steer') return i;
     return -1;
   });
 

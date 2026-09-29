@@ -644,6 +644,45 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas: a burst of reads parses once; a write is visible to the next read; a broken file is never cached", async () =>
+        {
+            var env = new Env();
+            var store = new IdeasStore(env.Ctx.Bus);
+            var file = Path.Combine(env.Ctx.Paths.Home, "cache-test.json");
+            try
+            {
+                File.WriteAllText(file, """{ "version": 1, "ideas": [ { "id": "idea-cac001", "title": "Cached" } ] }""");
+                var n1 = await store.ReadAsync(file, f => f.Ideas.Count);
+                var n2 = await store.ReadAsync(file, f => f.Ideas.Count);
+                Check.Equal((1, 1), (n1, n2));
+                var t1 = await store.ReadAsync(file, f => (JsonNode)f.Root);
+                var t2 = await store.ReadAsync(file, f => (JsonNode)f.Root);
+                Check.True(ReferenceEquals(t1, t2), "a run of reads: the parsed file is not parsed again");
+
+                // the store's own write: the next read sees it at once (the store invalidates on its own save)
+                await store.UpdateAsync(file, f => { f.Ideas.Add(new JsonObject { ["id"] = "idea-cac002", ["title"] = "New" }); return 2; });
+                var t3 = await store.ReadAsync(file, f => (JsonNode)f.Root);
+                Check.False(ReferenceEquals(t1, t3), "re-parsed after the write");
+                Check.Equal(2, ((JsonArray)t3!["ideas"]!).Count);
+            }
+            finally { store.Dispose(); }
+
+            // a file that cannot be parsed behaves as before: the error comes from every read, is never cached
+            // (the next read retries), and the file is left alone
+            var broken = Path.Combine(env.Ctx.Paths.Home, "broken.json");
+            var bstore = new IdeasStore(env.Ctx.Bus);
+            try
+            {
+                File.WriteAllText(broken, "{ broken");
+                await Check.ThrowsAsync<IdeasFileException>(() => bstore.ReadAsync(broken, f => f.Ideas.Count));
+                await Check.ThrowsAsync<IdeasFileException>(() => bstore.ReadAsync(broken, f => f.Ideas.Count), "the failure is not cached");
+                File.WriteAllText(broken, """{ "version": 1, "ideas": [] }""");
+                Check.Equal(0, await bstore.ReadAsync(broken, f => f.Ideas.Count), "the next read retries and sees the fix");
+            }
+            finally { bstore.Dispose(); }
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas: IdeaOps project helpers; the action from the arguments", () =>
         {
             var idea = new JsonObject();

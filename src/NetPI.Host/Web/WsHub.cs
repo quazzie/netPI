@@ -14,6 +14,9 @@ namespace NetPI.Host.Web;
 /// </summary>
 internal sealed class WsHub : IDisposable
 {
+    /// <summary>How many WebSocket clients one app serves at once (see the refusal in WebServer.WebSocketAsync).</summary>
+    public const int MaxClients = 50;
+
     private readonly HostKernel _k;
     private readonly ILogger _log;
     private readonly ConcurrentDictionary<string, WsClient> _clients = new();
@@ -69,8 +72,14 @@ internal sealed class WsHub : IDisposable
 
 internal sealed class WsClient
 {
-    private const int MaxMessageBytes = 64 * 1024 * 1024;
+    // The websocket protocol carries small JSON envelopes; a request body over the HTTP API is what needs room, and that
+    // limit is set on the server (MaxRequestBodySize). Renting 64 MB per client because one message was big is a way to
+    // lose the process, not a way to serve a big request.
+    private const int MaxMessageBytes = 2 * 1024 * 1024;
     private const int MaxPending = 20_000;
+    /// <summary>Queued bytes per client, besides the message count: a client that never reads is cut off by whichever
+    /// limit it reaches first, so a few large messages cannot sit in the queue for nothing.</summary>
+    private const int MaxPendingBytes = 32 * 1024 * 1024;
 
     private readonly WebSocket _ws;
     private readonly HostKernel _k;
@@ -79,6 +88,7 @@ internal sealed class WsClient
     private readonly CancellationTokenSource _cts = new();
     private volatile SessionFilter _filter = SessionFilter.None;
     private int _pending;
+    private long _pendingBytes;
 
     public WsClient(WebSocket ws, HostKernel kernel, ILogger log)
     {
@@ -98,13 +108,21 @@ internal sealed class WsClient
 
     public void Enqueue(byte[] message)
     {
-        if (Interlocked.Increment(ref _pending) > MaxPending)
+        if (Interlocked.Increment(ref _pending) > MaxPending ||
+            Interlocked.Add(ref _pendingBytes, message.Length) > MaxPendingBytes)
         {
-            _log.LogWarning("WebSocket client {Id} is not reading ({Pending} messages queued); disconnecting it", Id, MaxPending);
+            _log.LogWarning("WebSocket client {Id} is not reading ({Pending} messages, {Bytes} bytes queued); disconnecting it",
+                Id, Volatile.Read(ref _pending), Interlocked.Read(ref _pendingBytes));
             Abort();
             return;
         }
-        if (!_out.Writer.TryWrite(message)) Interlocked.Decrement(ref _pending);
+        if (!_out.Writer.TryWrite(message)) Release(message.Length);
+    }
+
+    private void Release(int bytes)
+    {
+        Interlocked.Decrement(ref _pending);
+        Interlocked.Add(ref _pendingBytes, -bytes);
     }
 
     public void Abort()
@@ -154,7 +172,7 @@ internal sealed class WsClient
             {
                 while (reader.TryRead(out var message))
                 {
-                    Interlocked.Decrement(ref _pending);
+                    Release(message.Length);
                     await _ws.SendAsync(message, WebSocketMessageType.Text, endOfMessage: true, token).ConfigureAwait(false);
                 }
             }

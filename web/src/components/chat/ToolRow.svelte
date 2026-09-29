@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import ShellView from './tools/ShellView.svelte';
   import DiffView from './tools/DiffView.svelte';
@@ -105,7 +106,8 @@
   $effect(() => {
     if (status !== 'running') return;
     now = Date.now();
-    const t = setInterval(() => (now = Date.now()), 1000);
+    // 250 ms (not 1 s): the elapsed time, and the collapsed tail below, recompute on this tick
+    const t = setInterval(() => (now = Date.now()), 250);
     return () => clearInterval(t);
   });
   const dur = $derived(
@@ -113,13 +115,17 @@
   );
 
   // collapsed running shell command: show the last few output lines under the row, once it has run for a second (a
-  // quick command would flash them in and out)
+  // quick command would flash them in and out). Computed on the tick above (4x/s), not per output frame: the scan
+  // walks the whole output buffer (up to 200 KB), so the output read is untracked to keep it out of this derived's
+  // dependencies
   const tail = $derived.by(() => {
-    if (open || status !== 'running' || meta.view !== 'shell' || !lt?.output || now - lt.startedAt < 1000) return '';
-    const out = lt.output.replace(/\n+$/, '');
-    let idx = out.length;
-    for (let k = 0; k < 5 && idx > 0; k++) idx = out.lastIndexOf('\n', idx - 1);
-    return out.slice(idx + 1);
+    if (open || status !== 'running' || meta.view !== 'shell' || !lt || now - lt.startedAt < 1000) return '';
+    const out = untrack(() => lt.output);
+    if (!out) return '';
+    const s = out.replace(/\n+$/, '');
+    let idx = s.length;
+    for (let k = 0; k < 5 && idx > 0; k++) idx = s.lastIndexOf('\n', idx - 1);
+    return s.slice(idx + 1);
   });
 
   function toggle() {

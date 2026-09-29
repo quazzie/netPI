@@ -104,22 +104,28 @@ internal static class SshConfig
     }
 }
 
-/// <summary><c>ssh.*</c> settings, read on every call.</summary>
-internal sealed record SshOptions(string Ssh, string Scp, string Config, bool DefaultConfig, int ConnectTimeout, int Timeout)
+/// <summary>
+/// <c>ssh.*</c> settings, read on every call.
+/// <see cref="ControlDir"/> is null when the directory the control sockets live in cannot be created: the call
+/// then runs without multiplexing (one handshake per call) instead of failing.
+/// </summary>
+internal sealed record SshOptions(string Ssh, string Scp, string Config, bool DefaultConfig, int ConnectTimeout, int Timeout, string? ControlDir)
 {
     public static readonly string DefaultConfigPath =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh", "config");
 
-    public static SshOptions Read(ISettings s)
+    public static SshOptions Read(ISettings s, string home)
     {
         var ssh = Blank(s.Get<string>("ssh.path")) ?? FindSsh();
         var scp = Blank(s.Get<string>("ssh.scpPath")) ?? Sibling(ssh, OperatingSystem.IsWindows() ? "scp.exe" : "scp");
         var config = Blank(s.Get<string>("ssh.config"));
         if (config is not null && (config.StartsWith("~/") || config.StartsWith("~\\")))
             config = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), config[2..]);
+        // ~/.netpi is the app's own state (NETPI_HOME when overridden): the sockets are NetPI's, not the user's ~/.ssh's.
+        var controlDir = Path.Combine(home, "ssh");
         return new SshOptions(ssh, scp, config ?? DefaultConfigPath, config is null,
             Math.Clamp(s.Get("ssh.connectTimeoutSeconds", 10), 2, 120),
-            Math.Clamp(s.Get("ssh.timeoutSeconds", 120), 1, 1800));
+            Math.Clamp(s.Get("ssh.timeoutSeconds", 120), 1, 1800), controlDir);
     }
 
     private static string? Blank(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
@@ -143,7 +149,15 @@ internal sealed record SshOptions(string Ssh, string Scp, string Config, bool De
         return string.IsNullOrEmpty(dir) ? Path.GetFileNameWithoutExtension(name) : Path.Combine(dir, name);
     }
 
-    /// <summary>Options shared by ssh and scp: never prompt, reject unknown host keys, fail fast, no banners.</summary>
+    /// <summary>How long a master connection stays after the last call — and dies once it has been idle that long.</summary>
+    public const int ControlPersistSeconds = 300;
+    public const int ControlIdleSeconds = 300;
+
+    /// <summary>
+    /// Options shared by ssh and scp: never prompt, reject unknown host keys, fail fast, no banners — plus one master
+    /// connection per host (OpenSSH's ControlMaster): a run of calls to the same host pays the TCP + transport + auth
+    /// handshake once and the rest ride the control socket instead of each doing their own.
+    /// </summary>
     public List<string> CommonArgs()
     {
         var args = new List<string>
@@ -151,6 +165,14 @@ internal sealed record SshOptions(string Ssh, string Scp, string Config, bool De
             "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", $"ConnectTimeout={ConnectTimeout}",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "LogLevel=ERROR",
         };
+        if (ControlDir is not null)
+        {
+            // %C is OpenSSH's hash of (remote host, port, remote user, local host): unique per host and per user, and
+            // a fixed 32 hex chars, so the path stays under ControlPath's limit whatever the host names are. The
+            // directory is ours (created before the first call); ssh will not make parent folders itself.
+            args.AddRange(["-o", "ControlMaster=auto", "-o", $"ControlPath={Path.Combine(ControlDir, "netpi-%C")}",
+                "-o", $"ControlPersist={ControlPersistSeconds}", "-o", $"ControlIdleTimeout={ControlIdleSeconds}"]);
+        }
         if (!DefaultConfig) args.InsertRange(0, ["-F", Config]);
         return args;
     }

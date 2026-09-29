@@ -47,6 +47,13 @@ export function askEvent(type, d) {
   else if (type === 'guard.cleared') asks.cleared.set(JSON.stringify([d.sessionId, d.callId]), d);
 }
 
+/** The session went: drop its closed answers and guard clears (the maps would otherwise keep one entry per closed
+ * ask of a deleted chat). */
+export function pruneSession(sessionId) {
+  for (const [callId, a] of asks.closed) if (a.sessionId === sessionId) asks.closed.delete(callId);
+  for (const key of [...asks.cleared.keys()]) if (JSON.parse(key)[0] === sessionId) asks.cleared.delete(key);
+}
+
 const RISKS = { destructive: 'destructive', stops_process: 'stops a process', remote_change: 'changes a remote' };
 const pct = (p) => `${Math.round(p * 100)}%`;
 

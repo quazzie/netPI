@@ -1,5 +1,6 @@
 <script>
   import { SvelteSet } from 'svelte/reactivity';
+  import { untrack } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import PluginTabHost from './PluginTabHost.svelte';
   import { layout, saveLayout } from '../../lib/state/ui.svelte.js';
@@ -13,12 +14,24 @@
   const active = $derived(list.find((t) => t.key === st.active) ?? list[0] ?? null);
   const open = $derived(!!active && !st.collapsed);
 
-  // Tabs stay mounted (hidden) once visited so plugin state survives switching.
-  const visited = new SvelteSet();
+  // Tabs stay mounted (hidden) once visited so their state survives switching. Core tabs (the built-ins, which have
+  // their own component) are cheap, so they stay mounted for good; plugin tabs hold real state, so they are bounded:
+  // a plugin tab keeps its state only while it stays within the last 3 visited plugin tabs — beyond that it is
+  // unmounted and rebuilt when it is visited again.
+  const KEEP_PLUGIN_TABS = 3;
+  const visited = new SvelteSet(); // core tab keys, once seen
+  let recentPlugins = $state.raw([]); // plugin tab keys, most recent first
   $effect(() => {
-    if (open && active) visited.add(active.key);
+    if (!open || !active) return;
+    if (active.component) visited.add(active.key);
+    // untrack: the effect writes recentPlugins and would otherwise also read it, which Svelte takes for a
+    // self-dependency and reports as effect_update_depth_exceeded.
+    else recentPlugins = untrack(() => [active.key, ...recentPlugins.filter((k) => k !== active.key)].slice(0, KEEP_PLUGIN_TABS));
   });
-  const mounted = $derived(list.filter((t) => visited.has(t.key)));
+  const mounted = $derived(
+    // the active tab is always mounted (the visit may have been recorded only now)
+    list.filter((t) => t.key === active?.key || (t.component ? visited.has(t.key) : recentPlugins.includes(t.key))),
+  );
 
   function clickTab(t) {
     if (active?.key === t.key && !st.collapsed) st.collapsed = true;

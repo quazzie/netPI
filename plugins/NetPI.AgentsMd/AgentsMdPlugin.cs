@@ -87,7 +87,7 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
     public const int MaxBytes = 32 * 1024;
     public static readonly string[] DefaultFileNames = ["AGENTS.md", "CLAUDE.md"];
 
-    private sealed record CacheEntry(DateTime MtimeUtc, long Length, string Content);
+    private sealed record CacheEntry(DateTime MtimeUtc, long Length, string Content, string Hash);
     private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(PathComparer);
 
     internal static StringComparer PathComparer => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
@@ -158,13 +158,21 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
     }
 
     /// <summary>File content capped at <see cref="MaxBytes"/> (with a note), cached by path + mtime + size.</summary>
-    public string? Read(string path)
+    public string? Read(string path) => ReadHashed(path).Content;
+
+    /// <summary>
+    /// The file's content and the hash of it, both from the same cache entry. The hash is what the hook compares on
+    /// every model call, so it is kept next to the content instead of being recomputed from it each time: the file
+    /// does not change, but the turn still has to prove it, and SHA-256 over every instruction file is not free.
+    /// </summary>
+    public (string? Content, string? Hash) ReadHashed(string path)
     {
         try
         {
             var fi = new FileInfo(path);
-            if (!fi.Exists) return null;
-            if (_cache.TryGetValue(path, out var hit) && hit.MtimeUtc == fi.LastWriteTimeUtc && hit.Length == fi.Length) return hit.Content;
+            if (!fi.Exists) return (null, null);
+            if (_cache.TryGetValue(path, out var hit) && hit.MtimeUtc == fi.LastWriteTimeUtc && hit.Length == fi.Length)
+                return (hit.Content, hit.Hash);
 
             string content;
             using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
@@ -187,13 +195,14 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
                     content += $"\n\n[Truncated: this file is {fi.Length / 1024} KB; only the first {MaxBytes / 1024} KB are included. Read the file for the rest.]";
                 }
             }
-            _cache[path] = new CacheEntry(fi.LastWriteTimeUtc, fi.Length, content);
-            return content;
+            var hash = InstructionNotices.Hash(content.Trim());
+            _cache[path] = new CacheEntry(fi.LastWriteTimeUtc, fi.Length, content, hash);
+            return (content, hash);
         }
         catch (Exception ex)
         {
             ctx.Logger.LogDebug(ex, "Cannot read {Path}", path);
-            return null;
+            return (null, null);
         }
     }
 }
@@ -259,9 +268,10 @@ internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader load
         var current = new List<Current>();
         foreach (var f in loader.Discover(cwd))
         {
-            var content = loader.Read(f.Path)?.Trim();
-            if (string.IsNullOrEmpty(content)) continue;
-            current.Add(new Current(f, content, Hash(content)));
+            var (content, hash) = loader.ReadHashed(f.Path);
+            content = content?.Trim();
+            if (string.IsNullOrEmpty(content) || hash is null) continue;
+            current.Add(new Current(f, content, hash));
         }
         var changed = current.Where(c => !known.TryGetValue(c.File.Path, out var h) || h != c.Hash).ToList();
         var removed = known.Keys.Where(k => !current.Any(c => AgentsMdLoader.PathComparer.Equals(c.File.Path, k))).ToList();
@@ -300,6 +310,6 @@ internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader load
         return sb.ToString().TrimEnd();
     }
 
-    private static string Hash(string content) =>
+    internal static string Hash(string content) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)))[..16].ToLowerInvariant();
 }

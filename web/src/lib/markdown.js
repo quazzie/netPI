@@ -60,8 +60,27 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 
 const PURIFY = { ADD_ATTR: ['target'], FORBID_TAGS: ['style', 'form', 'iframe', 'object', 'embed'] };
 
-const cache = new Map();
+// The cache is budgeted in bytes, not entries: an entry holds the source text (as the Map's own key) and the
+// sanitized HTML, so a 100 KB answer is ~200 KB in here — the entry cap alone could not bound it. The entry cap
+// stays as a secondary guard (many tiny entries).
+const cache = new Map(); // text → { html, bytes }
 const CACHE_MAX = 600;
+const CACHE_BYTES = 8 * 1024 * 1024;
+let cacheBytes = 0;
+const utf8 = new TextEncoder();
+
+/** One render's room in the cache: the source (the Map's key, still held by the Map) and the HTML it produced. */
+const sizeOf = (text, html) => utf8.encode(text).length + utf8.encode(html).length;
+
+/** Evict oldest (least recently used) first, until the byte budget and the entry cap are both held. */
+function evictCache() {
+  while (cacheBytes > CACHE_BYTES || cache.size > CACHE_MAX) {
+    const [text, entry] = cache.entries().next().value;
+    if (!entry) break;
+    cache.delete(text);
+    cacheBytes -= entry.bytes;
+  }
+}
 
 /** Render markdown to sanitized HTML. Results are memoized by source text unless cache=false. */
 export function renderMarkdown(text, { cache: useCache = true } = {}) {
@@ -72,7 +91,7 @@ export function renderMarkdown(text, { cache: useCache = true } = {}) {
       // refresh LRU position
       cache.delete(text);
       cache.set(text, hit);
-      return hit;
+      return hit.html;
     }
   }
   let html;
@@ -82,8 +101,10 @@ export function renderMarkdown(text, { cache: useCache = true } = {}) {
     html = `<pre>${esc(text)}</pre>`;
   }
   if (useCache) {
-    cache.set(text, html);
-    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    const entry = { html, bytes: sizeOf(text, html) };
+    cache.set(text, entry);
+    cacheBytes += entry.bytes;
+    evictCache();
   }
   return html;
 }

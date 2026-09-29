@@ -252,6 +252,15 @@ internal sealed class WebServer : IAsyncDisposable
             await WriteErrorAsync(ctx, 403, "forbidden", "Origin not allowed").ConfigureAwait(false);
             return;
         }
+        // A desktop app has a handful of clients (the window, a devtools page, a second window). Each one parks two
+        // tasks and a queue, so an unbounded number of them is a way to run the machine out of memory rather than a
+        // feature: past the cap the upgrade is refused with an error the client can show.
+        if (_hub.ClientCount >= WsHub.MaxClients)
+        {
+            _log.LogWarning("Refused a WebSocket: {Count} clients are already connected", _hub.ClientCount);
+            await WriteErrorAsync(ctx, 503, "too_many_clients", $"Too many WebSocket clients (max {WsHub.MaxClients})").ConfigureAwait(false);
+            return;
+        }
         using var ws = await ctx.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, _stopping.Token);
         await _hub.RunClientAsync(ws, lifetime.Token).ConfigureAwait(false);
@@ -346,7 +355,7 @@ internal sealed class WebServer : IAsyncDisposable
         var headers = ctx.Response.Headers;
         headers.ETag = etag;
         headers.CacheControl = cacheControl;
-        if (ctx.Request.Headers.IfNoneMatch.ToString().Contains(etag, StringComparison.Ordinal))
+        if (Matches(ctx.Request.Headers.IfNoneMatch.ToString(), etag))
         {
             ctx.Response.StatusCode = 304;
             return;
@@ -356,6 +365,23 @@ internal sealed class WebServer : IAsyncDisposable
         ctx.Response.ContentLength = info.Length;
         if (HttpMethods.IsHead(ctx.Request.Method)) return;
         await ctx.Response.SendFileAsync(file, ctx.RequestAborted).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Whether an <c>If-None-Match</c> header names this etag. The header is a list of etags, each optionally
+    /// <c>W/</c>-prefixed, so the entries are compared whole: a substring match would answer 304 for an etag that
+    /// merely contains ours.
+    /// </summary>
+    private static bool Matches(string header, string etag)
+    {
+        if (header.Length == 0) return false;
+        foreach (var entry in header.Split(','))
+        {
+            var candidate = entry.Trim();
+            if (candidate.StartsWith("W/", StringComparison.Ordinal)) candidate = candidate[2..];
+            if (candidate == "*" || string.Equals(candidate, etag, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     private static FileExtensionContentTypeProvider CreateContentTypes()

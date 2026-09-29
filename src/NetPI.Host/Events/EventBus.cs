@@ -12,6 +12,14 @@ namespace NetPI.Host.Events;
 internal sealed class EventBus : IEventBus, IAsyncDisposable
 {
     public const int RingSize = 500;
+    /// <summary>
+    /// How long one subscriber may hold the dispatcher before it is called stuck. Delivery is one task, one event at a
+    /// time, so a handler that never returns would otherwise freeze every later event — including the UI fan-out, which
+    /// is itself just a subscriber. A handler that outlives this keeps running; it is only let go of, and it is logged.
+    /// </summary>
+    public static readonly TimeSpan HandlerTimeout = TimeSpan.FromSeconds(30);
+    /// <summary>Backlog past which the bus says so. It never drops events; the log is the signal, not a lossy queue.</summary>
+    public const int BacklogWarnAt = 1000;
 
     private readonly Channel<object> _queue = Channel.CreateUnbounded<object>(new UnboundedChannelOptions { SingleReader = true });
     private readonly ILogger _log;
@@ -22,6 +30,8 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     private Subscription[] _subs = [];
     private int _ringNext, _ringCount;
     private long _seq;
+    private long _backlog;
+    private int _warnedBacklog;
 
     public EventBus(ILogger log)
     {
@@ -31,11 +41,20 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
 
     public int SubscriberCount => Volatile.Read(ref _subs).Length;
 
+    /// <summary>Events published but not yet delivered. Delivery is serial, so this is how far behind the bus is.</summary>
+    public int Backlog => (int)Math.Min(int.MaxValue, Interlocked.Read(ref _backlog));
+
     public void Publish(BusEvent evt)
     {
         ArgumentNullException.ThrowIfNull(evt);
         if (string.IsNullOrEmpty(evt.Type)) throw new ArgumentException("Event type is required", nameof(evt));
-        _queue.Writer.TryWrite(evt);
+        var depth = Interlocked.Increment(ref _backlog);
+        if (depth >= BacklogWarnAt && depth >= (long)Volatile.Read(ref _warnedBacklog) * 2)
+        {
+            Volatile.Write(ref _warnedBacklog, (int)Math.Min(int.MaxValue, depth));
+            _log.LogWarning("The event bus is {Depth} events behind: a subscriber is slow, or events arrive faster than they are delivered", depth);
+        }
+        if (!_queue.Writer.TryWrite(evt)) Interlocked.Decrement(ref _backlog);
     }
 
     public void Publish(string type, object? data = null, string? sessionId = null, bool ui = true) =>
@@ -124,6 +143,7 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
                 item = null!;
                 if (!pending.IsCompletedSuccessfully) await pending.ConfigureAwait(false);
                 pending = default;
+                Interlocked.Decrement(ref _backlog);
             }
         }
     }
@@ -144,7 +164,21 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
                 else
                 {
                     var vt = s.Async!(evt);
-                    if (!vt.IsCompletedSuccessfully) await vt.ConfigureAwait(false);
+                    // A sync handler is given no rope (it cannot yield); an async one is let go of after HandlerTimeout,
+                    // so one wedged subscriber delays the bus instead of stopping it.
+                    if (!vt.IsCompletedSuccessfully)
+                    {
+                        var task = vt.AsTask();
+                        try { await task.WaitAsync(HandlerTimeout).ConfigureAwait(false); }
+                        catch (TimeoutException)
+                        {
+                            _log.LogError("Event handler '{Pattern}' is stuck on '{Type}' (over {Timeout}s); the bus moved on without it",
+                                s.Pattern, evt.Type, HandlerTimeout.TotalSeconds);
+                            // Nobody awaits it any more, so watch it: a fault after the timeout must not surface as an
+                            // unobserved task exception (it is already logged as the handler's own failure).
+                            _ = task.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
+                        }
+                    }
                 }
             }
             catch (Exception ex)

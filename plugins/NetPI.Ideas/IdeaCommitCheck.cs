@@ -40,6 +40,8 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     private readonly Dictionary<string, Watch> _watches = new(StringComparer.OrdinalIgnoreCase); // repo path → its watcher
     private Timer? _timer;
     private volatile bool _stopped;
+    private int _rescanRunning;
+    private volatile bool _rescanQueued;
     private bool _disposed;
 
     private sealed class Watch(string repo, string path, string? projectId, string? projectName) : IDisposable
@@ -51,8 +53,15 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         public FileSystemWatcher? Fs { get; set; }
         /// <summary>One sweep at a time, and the last one is not lost while it runs.</summary>
         public SemaphoreSlim Gate { get; } = new(1, 1);
+        /// <summary>The one-shot debounce timer, reused by every event (a burst of writes re-arms it, not allocates it).</summary>
+        public Timer? Timer { get; set; }
         public bool Again { get; set; }
-        public void Dispose() { Fs?.Dispose(); Gate.Dispose(); }
+        public void Dispose()
+        {
+            Fs?.Dispose();
+            Gate.Dispose();
+            Timer?.Dispose();
+        }
     }
 
     // ------------------------------------------------------------------ watching
@@ -93,22 +102,46 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     private async Task RescanAsync()
     {
         if (_stopped) return;
-        if (!Setting("ideas.closeOnCommit", true)) return;
-        if (!ctx.Rpc.Exists("files.commits")) return;   // no Files plugin: nothing can read the commits
-        foreach (var project in ctx.Sessions.ListProjects())
+        // Single-flight: one rescan at a time, at most one queued behind it. A trigger landing while the previous rescan
+        // is still sweeping would otherwise run a second full re-sweep in parallel — a duplicate git spawn per repository
+        // and a duplicate pass over the pending file, for nothing.
+        if (Interlocked.Exchange(ref _rescanRunning, 1) == 1)
         {
-            if (_stopped) return;
-            try { await WatchProjectAsync(project).ConfigureAwait(false); }
-            catch (Exception ex) { ctx.Logger.LogWarning(ex, "Ideas: cannot watch the repository of project {Project}", project.Name); }
+            _rescanQueued = true;
+            return;
         }
-        foreach (var watch in Watches())
+        try
         {
-            if (_stopped) return;
-            await watch.Gate.WaitAsync(ctx.Stopping).ConfigureAwait(false);
-            try { await SweepAsync(watch).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (ctx.Stopping.IsCancellationRequested) { }
-            catch (Exception ex) { ctx.Logger.LogWarning(ex, "Ideas: the commit check on {Repo} failed", watch.Repo); }
-            finally { watch.Gate.Release(); }
+            do
+            {
+                _rescanQueued = false;
+                if (_stopped) break;
+                if (!Setting("ideas.closeOnCommit", true)) break;
+                if (!ctx.Rpc.Exists("files.commits")) break;   // no Files plugin: nothing can read the commits
+                foreach (var project in ctx.Sessions.ListProjects())
+                {
+                    if (_stopped) break;
+                    try { await WatchProjectAsync(project).ConfigureAwait(false); }
+                    catch (Exception ex) { ctx.Logger.LogWarning(ex, "Ideas: cannot watch the repository of project {Project}", project.Name); }
+                }
+                foreach (var watch in Watches())
+                {
+                    if (_stopped) break;
+                    await watch.Gate.WaitAsync(ctx.Stopping).ConfigureAwait(false);
+                    try { await SweepAsync(watch).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (ctx.Stopping.IsCancellationRequested) { }
+                    catch (Exception ex) { ctx.Logger.LogWarning(ex, "Ideas: the commit check on {Repo} failed", watch.Repo); }
+                    finally { watch.Gate.Release(); }
+                }
+            }
+            while (_rescanQueued);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _rescanRunning, 0);
+            // A trigger that landed between the last while-check and the clear above saw the rescan as running, parked
+            // itself in _rescanQueued, and would otherwise have to wait for the next two-minute tick.
+            if (_rescanQueued) { _rescanQueued = false; _ = RescanAsync(); }
         }
     }
 
@@ -120,6 +153,9 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     private async Task WatchProjectAsync(ProjectInfo project)
     {
         if (!Directory.Exists(project.Path)) return;
+        // A project that already has a live watcher has had its repository asked about once: do not spawn git per rescan
+        // to re-ask (the two-minute timer would pay a git log per watched project for nothing).
+        if (Watches().Any(w => string.Equals(w.Path, project.Path, StringComparison.OrdinalIgnoreCase))) return;
         var found = await ctx.Rpc.InvokeAsync("files.commits", new JsonObject { ["cwd"] = project.Path, ["limit"] = 1 }).ConfigureAwait(false);
         // Through ToNode: an RPC answers with the handler's own object in-process and with its JSON over HTTP, and the
         // Files plugin answers with a record (like decide.decision's readers here, and for the same reason).
@@ -129,7 +165,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
             ctx.Logger.LogDebug("Ideas: {Path} is not in a git repository (or files.commits is unavailable)", project.Path);
             return;
         }
-        var newest = (o["commits"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault();
+        var newest = (o?["commits"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault();
 
         lock (_watchLock)
         {
@@ -167,27 +203,34 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         }
     }
 
-    /// <summary>Debounced: a commit writes the reflog a few times, and a burst is one sweep.</summary>
+    /// <summary>
+    /// Debounced: a commit writes the reflog a few times, and a burst is one sweep. One timer per repository, re-armed by
+    /// every event (reusing it would queue one sweep per write; allocating one per event just adds garbage to a burst
+    /// that already coalesces into the single sweep below).
+    /// </summary>
     private void Schedule(Watch watch)
     {
         if (_stopped) return;
-        var timer = new Timer(_ =>
+        watch.Timer ??= new Timer(_ => SweepDue(watch), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        watch.Timer.Change(Debounce, Timeout.InfiniteTimeSpan);
+    }
+
+    private void SweepDue(Watch watch)
+    {
+        if (_stopped) return;
+        // A sweep is already running: let it finish and run once more, rather than queueing one per write.
+        if (!watch.Gate.Wait(0)) { watch.Again = true; return; }
+        _ = Task.Run(async () =>
         {
-            if (_stopped) return;
-            // A sweep is already running: let it finish and run once more, rather than queueing one per write.
-            if (!watch.Gate.Wait(0)) { watch.Again = true; return; }
-            _ = Task.Run(async () =>
+            try { await SweepAsync(watch).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (_stopped) { }
+            catch (Exception ex) { ctx.Logger.LogWarning("Ideas: the commit check on {Repo} failed: {Message}", watch.Repo, ex.Message); }
+            finally
             {
-                try { await SweepAsync(watch).ConfigureAwait(false); }
-                catch (OperationCanceledException) when (_stopped) { }
-                catch (Exception ex) { ctx.Logger.LogWarning("Ideas: the commit check on {Repo} failed: {Message}", watch.Repo, ex.Message); }
-                finally
-                {
-                    watch.Gate.Release();
-                    if (watch.Again && !_stopped) { watch.Again = false; Schedule(watch); }
-                }
-            }, CancellationToken.None);
-        }, null, Debounce, Timeout.InfiniteTimeSpan);
+                watch.Gate.Release();
+                if (watch.Again && !_stopped) { watch.Again = false; Schedule(watch); }
+            }
+        }, CancellationToken.None);
     }
 
     private async Task SweepAsync(Watch watch)
@@ -206,23 +249,26 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         ctx.Logger.LogInformation("Ideas: {Count} new commit(s) in {Repo} since {Since}", commits.Count, watch.Repo, since ?? "(the start)");
         ctx.Logger.LogDebug("Ideas: the watcher is the fast path; a missed event is caught by the {Minutes}-minute sweep", Rescan.TotalMinutes);
 
+        // The backlog is read once for the whole sweep, not once per commit: a burst would otherwise re-parse the growing
+        // file per commit, and the open set cannot change mid-sweep (only a user's click changes an idea's status).
+        var open = await OpenAsync(watch.ProjectId).ConfigureAwait(false);
+
         // Oldest first: a burst is read in the order it happened, and the last commit decides what is left.
         foreach (var c in commits.OfType<JsonObject>().Reverse().Take(MaxCommits))
         {
             if (_stopped) return;
-            await HandleAsync(watch, c).ConfigureAwait(false);
+            await HandleAsync(watch, open, c).ConfigureAwait(false);
             await RememberAsync(watch.Repo, IdeaOps.Str(c["hash"])).ConfigureAwait(false);
         }
     }
 
     // ------------------------------------------------------------------ one commit
 
-    private async Task HandleAsync(Watch watch, JsonObject commit)
+    private async Task HandleAsync(Watch watch, List<JsonObject> open, JsonObject commit)
     {
         var hash = IdeaOps.Str(commit["hash"]);
         if (hash is not { Length: > 0 }) return;
         var subject = IdeaOps.Str(commit["subject"]) ?? "";
-        var open = await OpenAsync(watch.ProjectId).ConfigureAwait(false);
         if (open.Count == 0) return;
 
         // 1. which idea is this commit about
@@ -243,27 +289,36 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
             ["at"] = commit["at"]?.DeepClone() ?? IdeaOps.Now(),
         };
         var titles = new List<string>();
-        foreach (var idea in linked)
-        {
-            titles.Add(IdeaOps.Str(idea["title"]) ?? "?");
-            var id = IdeaOps.Str(idea["id"]);
-            await store.UpdateAsync<object?>(locator.GlobalFile(), f =>
-            {
-                if (id is { Length: > 0 } && IdeaOps.Find(f.Ideas, id) is { } found) IdeaOps.AddCommitEntry(found, entry);
-                return null;
-            }).ConfigureAwait(false);
-        }
+        foreach (var idea in linked) titles.Add(IdeaOps.Str(idea["title"]) ?? "?");
 
-        // 2. is any of them done: the idea's full text and every commit linked to it, not this one alone
-        foreach (var idea in linked)
+        // Every commit entry in one write (one parse, one save — the file used to be read-modify-written per idea), and
+        // the fresh copies the "is it done" question below needs are taken in the same pass: a re-read per idea would
+        // re-parse the file this very write just rewrote.
+        if (linked.Any(i => IdeaOps.Str(i["id"]) is { Length: > 0 }))
         {
-            if (_stopped) return;
-            var id = IdeaOps.Str(idea["id"]);
-            if (id is not { Length: > 0 }) continue;
-            var fresh = await store.ReadAsync(locator.GlobalFile(), f => IdeaOps.Find(f.Ideas, id) is { } i
-                ? (JsonObject)i.DeepClone() : null).ConfigureAwait(false);
-            if (fresh is null || IdeaOps.Str(fresh["status"]) is not ("open" or "planned" or "in-progress" or "parked")) continue;
-            if (await OfferDoneAsync(watch, fresh, entry, titles).ConfigureAwait(false)) return;  // one offer per sweep
+            var fresh = await store.UpdateAsync<List<JsonObject>>(locator.GlobalFile(), f =>
+            {
+                var done = new List<JsonObject>();
+                foreach (var idea in linked)
+                {
+                    var id = IdeaOps.Str(idea["id"]);
+                    if (id is not { Length: > 0 }) continue;
+                    if (IdeaOps.Find(f.Ideas, id) is { } found)
+                    {
+                        IdeaOps.AddCommitEntry(found, entry);
+                        done.Add((JsonObject)found.DeepClone());
+                    }
+                }
+                return done;
+            }).ConfigureAwait(false);
+
+            // 2. is any of them done: the idea's full text and every commit linked to it, not this one alone
+            foreach (var idea in fresh)
+            {
+                if (_stopped) return;
+                if (IdeaOps.Str(idea["status"]) is not ("open" or "planned" or "in-progress" or "parked")) continue;
+                if (await OfferDoneAsync(watch, idea, entry, titles).ConfigureAwait(false)) return;  // one offer per sweep
+            }
         }
     }
 

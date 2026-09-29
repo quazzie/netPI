@@ -24,6 +24,11 @@ class Recall {
     }
     return s;
   }
+
+  /** The session went: forget its state (the map would otherwise keep one ChatRecall per session ever opened). */
+  prune(sessionId) {
+    this.#chats.delete(sessionId);
+  }
 }
 
 export const recall = new Recall();

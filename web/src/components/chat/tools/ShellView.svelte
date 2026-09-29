@@ -19,9 +19,19 @@
 
   let full = $state(false);
   let pre = $state();
+  let lastScroll = 0;
   $effect(() => {
     output;
-    if (running && pre && !full) pre.scrollTop = pre.scrollHeight;
+    if (running && pre && !full) {
+      // setting scrollTop forces a layout of this whole <pre> (up to 200 KB of text); at stream speed that is a
+      // forced synchronous layout ~60x/s. The position is indistinguishable at 4x/s, and the text keeps being
+      // appended every frame either way.
+      const t = Date.now();
+      if (t - lastScroll >= 250) {
+        lastScroll = t;
+        pre.scrollTop = pre.scrollHeight;
+      }
+    }
   });
 
   let copied = $state(false);

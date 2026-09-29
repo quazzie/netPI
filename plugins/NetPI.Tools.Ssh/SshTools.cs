@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
 
 namespace NetPI.Tools.Ssh;
 
@@ -135,7 +136,16 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) :
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
         args = A.Unwrap(args);
-        var o = SshOptions.Read(ctx.Settings);
+        // The control socket's directory must exist before ssh uses it (ssh will not make parent folders);
+        // when it cannot be made the call runs without multiplexing rather than failing.
+        var controlDir = Path.Combine(ctx.Paths.Home, "ssh");
+        try { Directory.CreateDirectory(controlDir); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ctx.Logger.LogDebug(ex, "SSH control directory {Dir} is not writable: calls fall back to one connection each", controlDir);
+            controlDir = null;
+        }
+        var o = SshOptions.Read(ctx.Settings, ctx.Paths.Home) with { ControlDir = controlDir };
         SshHost? host = null;
         if (this is not SshHostsTool)
         {

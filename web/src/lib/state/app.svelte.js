@@ -9,7 +9,8 @@ import { toast, syncUiStateFromHost, composer } from './ui.svelte.js';
 import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick, firstLine } from '../notify.js';
-import { loadAsks, askEvent, pendingIn, approvalIn } from './asks.svelte.js';
+import { loadAsks, askEvent, pendingIn, approvalIn, pruneSession } from './asks.svelte.js';
+import { recall } from '../../components/composer/ideaRecall.svelte.js';
 import { suggestions } from '../../components/composer/ideaSuggestions.svelte.js';
 
 const TABS_KEY = 'netpi.openTabs';
@@ -382,6 +383,10 @@ function removeSessionLocal(id) {
   if (app.openTabs.includes(id)) closeTab(id);
   app.sessions = app.sessions.filter((s) => s.id !== id);
   dropChat(id);
+  // drop the per-session bookkeeping that would otherwise keep an entry for this chat forever
+  saidJustNow.delete(id);
+  recall.prune(id);
+  pruneSession(id);
 }
 
 export async function setSessionProject(id, projectId) {

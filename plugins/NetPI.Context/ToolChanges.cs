@@ -109,14 +109,18 @@ internal sealed class ToolChanges(IPluginContext ctx)
     /// <summary>Remember which plugin each of the session's tools belongs to, so a tool that vanishes can be named.</summary>
     public void Remember(string sessionId, IReadOnlyList<ToolDefinition> tools)
     {
+        // The hook calls this on every model call: a set of names to look registrations up in, instead of scanning the
+        // session's tools once per registration.
+        var names = new HashSet<string>(tools.Select(t => t.Name), StringComparer.Ordinal);
         var owners = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var r in ctx.Tools.Registrations)
         {
             var name = r.Tool.Definition.Name;
-            if (!tools.Any(t => t.Name == name)) continue;  // only what this session is sent
+            if (!names.Contains(name)) continue;  // only what this session is sent
             if (!ReferenceEquals(ctx.Tools.Get(name), r.Tool)) continue;  // not the registration that wins
             owners[name] = r.PluginId;
         }
+        if (owners.Count == 0) return;   // nothing to add: a later call may still, but an empty set is not worth locking for
         lock (_owners)
             _owners.AddOrUpdate(sessionId, _ => owners, (_, old) => { foreach (var kv in owners) old[kv.Key] = kv.Value; return old; });
     }

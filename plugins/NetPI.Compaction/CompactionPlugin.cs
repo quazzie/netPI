@@ -177,19 +177,23 @@ public sealed class CompactionHook(CompactionService service, ILogger? logger = 
     public static long EstimateContext(AgentTurnContext turn, long overheadTokens)
     {
         var msgs = turn.Messages;
-        var full = overheadTokens + CompactionPlanner.Estimate(msgs);
-        if (turn.LastContextTokens <= 0) return full;
+        // The full chars/4 estimate walks the whole history, so it is worked out only on a path that needs it.
+        var full = -1L;
+        long Full() => full >= 0 ? full : full = overheadTokens + CompactionPlanner.Estimate(msgs);
+        if (turn.LastContextTokens <= 0) return Full();
 
+        // One pass for both: the last assistant message that reported a context size, and the newest summary.
         var last = -1;
-        for (var i = msgs.Count - 1; i >= 0; i--)
-            if (msgs[i].Role == MessageRole.Assistant && msgs[i].Usage is { ContextTokens: > 0 }) { last = i; break; }
-        if (last < 0) return full;
-
         long summarySeq = 0;
-        foreach (var m in msgs) if (m.Role == MessageRole.Summary) summarySeq = Math.Max(summarySeq, m.Seq);
-        if (summarySeq > 0 && msgs[last].Seq > 0 && msgs[last].Seq < summarySeq) return full;
+        for (var i = msgs.Count - 1; i >= 0; i--)
+        {
+            if (msgs[i].Role == MessageRole.Summary) summarySeq = Math.Max(summarySeq, msgs[i].Seq);
+            else if (last < 0 && msgs[i].Role == MessageRole.Assistant && msgs[i].Usage is { ContextTokens: > 0 }) last = i;
+        }
+        if (last < 0) return Full();
+        if (summarySeq > 0 && msgs[last].Seq > 0 && msgs[last].Seq < summarySeq) return Full();
 
         var fromUsage = turn.LastContextTokens + CompactionPlanner.Estimate(msgs.Skip(last + 1));
-        return Math.Max(full, fromUsage);
+        return Math.Max(Full(), fromUsage);
     }
 }

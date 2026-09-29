@@ -392,15 +392,19 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// <summary>Set status/activity; persists and publishes when the status changed.</summary>
     internal void SetStatus(AgentState s, AgentStatus status, string? activity, bool keepActivity = false)
     {
-        bool changed;
+        bool changed, activityChanged;
         lock (s.Gate)
         {
             changed = s.Info.Status != status;
             s.Info.Status = status;
+            activityChanged = !keepActivity && s.Info.Activity != activity;
             if (!keepActivity) s.Info.Activity = activity;
         }
         if (changed) Save(s);
-        PublishStatus(s);
+        // Nothing to say when neither the status nor the activity moved. Every turn asks for a slot, and an unchanged
+        // agent.status is still a bus event the UI serializes and the diagnostics recorder summarizes; a client that
+        // missed one gets the whole agent over RPC anyway.
+        if (changed || activityChanged) PublishStatus(s);
     }
 
     /// <summary>Set the activity text (throttled publish when it changed).</summary>

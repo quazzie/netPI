@@ -271,6 +271,19 @@ internal sealed partial class Ledger
         lock (_gate) { Roll(DateTime.Now); return _agentToday.GetValueOrDefault(agent); }
     }
 
+    /// <summary>
+    /// What every agent has spent today in one roll: the agent list shows every pool at once, so a snapshot must not
+    /// roll (a database read) once per pool.
+    /// </summary>
+    public IReadOnlyDictionary<string, double> SpentTodayByAgent()
+    {
+        lock (_gate)
+        {
+            Roll(DateTime.Now);
+            return new Dictionary<string, double>(_agentToday, StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
     private void ScheduleChanged()
     {
         if (Interlocked.Exchange(ref _changeScheduled, 1) == 1) return;
