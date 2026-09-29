@@ -149,15 +149,26 @@ internal static class SshClient
     /// <summary>
     /// Whether this client can reuse one connection per host. <paramref name="socketPath"/> is a path inside our own
     /// control directory that no master uses; the probe only looks, so nothing is created and nothing connects.
+    /// <para>
+    /// On Windows the answer is always no, and no client is asked. OpenSSH's multiplexing has the master fork a child
+    /// for every session, which the Windows ports do not do: the socket appears and the master stays up, and the first
+    /// session over it is reset (<c>mux_client_request_session: read from master failed</c>). That is true of both
+    /// builds here — OpenSSH_for_Windows, and the Git/MSYS 10.3p1 client — so it is a fact about the platform rather
+    /// than the version, and asking the client cannot find it out (it reports the socket as merely absent, which is
+    /// also what a working client says before its first call).
+    /// </para>
     /// </summary>
-    public static bool SupportsMultiplexing(string exe, string socketPath) =>
-        Answer(Multiplexing, exe, "multiplexing", socketPath, () =>
+    public static bool SupportsMultiplexing(string exe, string socketPath)
+    {
+        if (OperatingSystem.IsWindows()) return false;
+        return Answer(Multiplexing, exe, "multiplexing", socketPath, () =>
         {
             var (exit, err) = Probe(exe, ["-O", "check", "-S", socketPath, "localhost"]);
             // A master is already running, or the client understood the command and found no socket yet.
             if (exit == 0) return true;
             return err.Contains("Control socket connect", StringComparison.OrdinalIgnoreCase);
         });
+    }
 
     /// <summary>Forget what was asked (a settings change points at a different client; tests reset the cache).</summary>
     public static void Forget(string? exe = null)
