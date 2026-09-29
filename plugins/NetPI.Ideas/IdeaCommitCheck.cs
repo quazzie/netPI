@@ -101,7 +101,10 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     {
         if (!Directory.Exists(project.Path)) return;
         var found = await ctx.Rpc.InvokeAsync("files.commits", new JsonObject { ["cwd"] = project.Path, ["limit"] = 1 }).ConfigureAwait(false);
-        if (found is not JsonObject { } o || IdeaOps.Str(o["repo"]) is not { Length: > 0 } repo) return;
+        // Through ToNode: an RPC answers with the handler's own object in-process and with its JSON over HTTP, and the
+        // Files plugin answers with a record (like decide.decision's readers here, and for the same reason).
+        var o = NetPiJson.ToNode(found) as JsonObject;
+        if (IdeaOps.Str(o?["repo"]) is not { Length: > 0 } repo) return;
         var newest = (o["commits"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault();
 
         lock (_watchLock)
@@ -164,7 +167,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         {
             ["cwd"] = watch.Path, ["since"] = since ?? "", ["limit"] = MaxCommits,
         }).ConfigureAwait(false);
-        if (found is not JsonObject { } o || o["commits"] is not JsonArray commits || commits.Count == 0) return;
+        if (NetPiJson.ToNode(found) is not JsonObject { } o || o["commits"] is not JsonArray commits || commits.Count == 0) return;
         ctx.Logger.LogDebug("Ideas: {Count} new commit(s) in {Repo} since {Since}", commits.Count, watch.Repo, since ?? "(the start)");
 
         // Oldest first: a burst is read in the order it happened, and the last commit decides what is left.

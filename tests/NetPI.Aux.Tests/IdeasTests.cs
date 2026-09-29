@@ -55,6 +55,11 @@ public static class IdeasTests
 
     private static JsonObject Idea(ToolResult r) => (JsonObject)((JsonObject)NetPiJson.ToNode(r.Details)!)["idea"]!;
 
+    /// <summary>What the commit check's fake `files.commits` answers with: the real method's own types.</summary>
+    private sealed record CommitsResult(string Repo, IReadOnlyList<GitCommit> Commits);
+
+    private sealed record GitCommit(string Hash, string Short, string Subject, string Author, string At);
+
     public static void Register(TestRunner r)
     {
         r.Add("ideas: plugin registers one tool, RPC, tab and /idea command", async () =>
@@ -98,7 +103,10 @@ public static class IdeasTests
                     if (f.Length < 5) continue;
                     commits.Add(new JsonObject { ["hash"] = f[0], ["short"] = f[1], ["author"] = f[2], ["at"] = f[3], ["subject"] = f[4] });
                 }
-                return Task.FromResult<object?>(new JsonObject { ["repo"] = cwd, ["commits"] = commits });
+                // The real method answers with a record, not a JsonObject: an RPC hands its handler's own object back
+                // in-process and its JSON over HTTP, so the reader has to cope with both (this is how it was missed).
+                return Task.FromResult<object?>(new CommitsResult(cwd, commits.OfType<JsonObject>()
+                    .Select(c => new GitCommit(c["hash"]!.GetValue<string>(), c["short"]!.GetValue<string>(), c["subject"]!.GetValue<string>(), c["author"]!.GetValue<string>(), c["at"]!.GetValue<string>())).ToList()));
             });
             // The link picks the first idea, the done question is a plain two-way one.
             var finished = false;
