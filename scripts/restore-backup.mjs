@@ -11,12 +11,16 @@ export async function restoreBackup(backup, destination) {
   const manifest = JSON.parse(await fs.readFile(path.join(backup, 'manifest.json'), 'utf8'));
   if (manifest.version !== 1) throw new Error('Unsupported backup version');
   const contents = new Map();
-  for (const name of ['netpi.db', 'settings.json']) {
+  // Whatever the manifest lists (netpi.db, settings.json, and the ideas files a newer snapshot carries), each with a
+  // checksum of its own. An older snapshot restores exactly what it has.
+  for (const name of Object.keys(manifest.files ?? {})) {
     const data = await fs.readFile(path.join(backup, name));
     const hash = createHash('sha256').update(data).digest('hex');
     if (hash !== manifest.files?.[name]?.toLowerCase()) throw new Error(`Checksum mismatch: ${name}`);
     contents.set(name, data);
   }
+  if (!contents.has('netpi.db')) throw new Error('The snapshot has no netpi.db');
+  if (!contents.has('settings.json')) throw new Error('The snapshot has no settings.json');
   if (contents.get('netpi.db').subarray(0, 16).toString('ascii') !== 'SQLite format 3\0') throw new Error('Invalid SQLite database');
   const settings = JSON.parse(contents.get('settings.json').toString('utf8'));
   if (!settings || Array.isArray(settings) || typeof settings !== 'object') throw new Error('Invalid settings');

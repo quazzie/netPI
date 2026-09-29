@@ -8,6 +8,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import Button from '../../lib/kit/Button.svelte';
   import { toast } from '../../lib/state/ui.svelte.js';
+  import { onOpen } from '../../lib/rpc.svelte.js';
   import { suggestions } from './ideaSuggestions.svelte.js';
 
   let editing = $state(null); // the card being edited, with the draft fields
@@ -18,6 +19,16 @@
 
   $effect(() => {
     suggestions.load();
+  });
+
+  // A card answered in another window (or finished after a restart) arrives by event; a window that was hidden or
+  // reconnecting catches up from the file when it comes back, so no unanswerable card is left on screen.
+  $effect(() => onOpen(({ reconnect }) => { if (reconnect) suggestions.refresh(); }));
+  $effect(() => {
+    if (typeof document === 'undefined') return;
+    const onVisible = () => { if (document.visibilityState === 'visible') suggestions.refresh(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
   });
 
   function startEdit(s) {
@@ -32,8 +43,23 @@
       if (idea) toast(`Saved to the ideas backlog: ${idea.title}`, 'info');
       editing = null;
     } catch (e) {
-      toast(e.message, 'error');
+      gone(s, e);
     }
+  }
+
+  /**
+   * A card that another window answered is not an error here: it is simply no longer there. Re-read the file and
+   * drop it, so nothing stays on screen that cannot be answered.
+   */
+  function gone(s, e) {
+    if (/not_found|no longer|gone|conflict/i.test(e?.message ?? '')) {
+      suggestions.items.delete(s.id);
+      editing = null;
+      suggestions.refresh();
+      toast('That card was answered somewhere else.', 'info');
+      return;
+    }
+    toast(e.message, 'error');
   }
 
   /** The commit check's card: the idea stays where it is, only its status changes. */
@@ -42,7 +68,7 @@
       const idea = await suggestions.resolve(s.id, 'done');
       if (idea) toast(`Marked done: ${idea.title}`, 'info');
     } catch (e) {
-      toast(e.message, 'error');
+      gone(s, e);
     }
   }
 
@@ -51,7 +77,7 @@
       await suggestions.resolve(s.id, 'discard');
       toast(s.kind === 'done' ? 'Left open. A later commit can ask again.' : 'Discarded. The chat is not asked about again.', 'info');
     } catch (e) {
-      toast(e.message, 'error');
+      gone(s, e);
     }
   }
 </script>

@@ -6,6 +6,7 @@
   let {
     idea,
     api,
+    ctx,
     open = false,
     ontoggle,
     canUp = false,
@@ -172,6 +173,36 @@
         <SectionEditor section={null} onsave={saveSection} oncancel={() => (secEdit = null)} />
       {/if}
 
+      <!-- The evidence: which chats worked on this idea and which commits were recorded for it, as entries the user
+           can open, not as counts. A commit entry is plain text (there is no commit view to link into); a chat opens. -->
+      {#if (idea.sessions ?? []).length || (idea.commits ?? []).length}
+        <div class="evidence">
+          {#if (idea.sessions ?? []).length}
+            <div class="ev-head"><Icon name="message" size={11} />Chats</div>
+            {#each idea.sessions as s (s.sessionId + (s.at ?? ''))}
+              <div class="ev-row np-line">
+                {#if s.seen === undefined || s.seen === false}
+                  <span class="unseen" title="You have not opened this idea since this chat worked on it"></span>
+                {/if}
+                <button class="ev-link" onclick={(e) => (e.stopPropagation(), ctx.app.openSession(s.sessionId))} title="Open this chat">
+                  {s.title || s.sessionId}
+                </button>
+                <span class="dim when"><TimeAgo time={s.at} /></span>
+              </div>
+            {/each}
+          {/if}
+          {#if (idea.commits ?? []).length}
+            <div class="ev-head"><Icon name="branch" size={11} />Commits</div>
+            {#each idea.commits as c (c.hash)}
+              <div class="ev-row np-line">
+                <code class="hash">{c.short}</code><span class="np-grow np-ellipsis" title={c.subject}>{c.subject}</span>
+                <span class="dim when"><TimeAgo time={c.at} /></span>
+              </div>
+            {/each}
+          {/if}
+        </div>
+      {/if}
+
       <div class="actions np-line">
         <Button variant="primary" size="sm" icon="steer" onclick={() => api.send(idea)} title="Stage a pointer to this idea in the composer — the agent reads the idea itself">Send<span class="to-chat">to chat</span></Button>
         {#if secEdit !== 'new'}<Button size="sm" icon="plus" onclick={() => (secEdit = 'new')} title="Add section"><span class="wide">Section</span></Button>{/if}
@@ -187,6 +218,38 @@
 </div>
 
 <style>
+  .evidence {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin: 6px 0 2px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-1);
+  }
+  .ev-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+  .ev-row { gap: 6px; font-size: 11px; }
+  .ev-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    cursor: pointer;
+    text-align: left;
+  }
+  .ev-link:hover { text-decoration: underline; }
+  .hash { font-family: var(--mono); color: var(--text-dim); }
+  .unseen { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
   .card {
     position: relative;
     border: 1px solid var(--border);

@@ -33,6 +33,27 @@ class Suggestions {
     if (s?.id) this.items.set(s.id, s);
   }
 
+  /**
+   * ideas.resolved: a card left the file (answered in this or another window, or finished after a restart). Dropping it
+   * here is what keeps a second window from showing a card that cannot be answered any more.
+   */
+  resolved(d) {
+    if (d?.id) this.items.delete(d.id);
+  }
+
+  /** Re-read the cards from the file: after a reconnect, or when this window becomes visible again. */
+  async refresh() {
+    if (!this.enabled) return;
+    try {
+      const res = await rpc('ideas.suggestions', {});
+      const fresh = res?.suggestions ?? [];
+      const seen = new Set(fresh.map((s) => s.id));
+      for (const id of [...this.items.keys()]) if (!seen.has(id)) this.items.delete(id);
+      for (const s of fresh) this.items.set(s.id, s);
+      this.loaded = true;
+    } catch { /* the file may be busy; the next event or the next visibility will try again */ }
+  }
+
   /** Save (with the user's edit) or discard. Discard is final for that card: it is gone from the file too. */
   async resolve(id, action, edit) {
     if (this.busy) return;

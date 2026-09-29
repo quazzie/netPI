@@ -609,6 +609,9 @@ function onEvent(d, env) {
     case 'ideas.suggested':
       suggestions.event(d);
       break;
+    case 'ideas.resolved':
+      suggestions.resolved(d);
+      break;
     default:
       break;
   }

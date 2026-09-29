@@ -52,7 +52,9 @@
       unsaved = unsaved.filter((s) => s.id !== id);
       await load();
     } catch (e) {
-      error = e?.message ?? String(e);
+      // Answered somewhere else: the card is gone from the file, not an error to keep on screen.
+      if (/not_found|no longer|gone|conflict/i.test(e?.message ?? '')) await loadUnsaved();
+      else error = e?.message ?? String(e);
     } finally {
       busy = null;
     }
@@ -93,10 +95,15 @@
     const offCards = ctx.on('ideas.suggested', () => {
       if (visible) loadUnsaved();
     });
+    // A card answered in the composer or in another window leaves the file: drop it here too.
+    const offResolved = ctx.on('ideas.resolved', (d) => {
+      unsaved = unsaved.filter((s) => s.id !== d?.id);
+    });
     return () => {
       offChange();
       offEv();
       offCards();
+      offResolved();
     };
   });
 
@@ -406,6 +413,7 @@
         <IdeaCard
           {idea}
           {api}
+          {ctx}
           open={expanded.has(idea.id)}
           ontoggle={() => toggleExpanded(idea.id)}
           canUp={placed(idea.id) > 0}
