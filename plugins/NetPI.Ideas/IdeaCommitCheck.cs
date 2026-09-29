@@ -84,7 +84,12 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         Stop();
     }
 
-    /// <summary>A new project may bring a repository; the list is re-read on a timer and on <c>project.created</c>.</summary>
+    /// <summary>
+    /// Every repository is watched *and* swept on a timer. The watcher is the fast path; the sweep is the floor, because
+    /// a <see cref="FileSystemWatcher"/> can miss events (an internal-buffer overflow during a rebase, a watcher that
+    /// goes quiet after its first burst) and a commit that is never noticed is worse than one noticed two minutes late.
+    /// It also picks up a project that was added while NetPI was running.
+    /// </summary>
     private async Task RescanAsync()
     {
         if (_stopped) return;
@@ -96,6 +101,20 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
             try { await WatchProjectAsync(project).ConfigureAwait(false); }
             catch (Exception ex) { ctx.Logger.LogWarning(ex, "Ideas: cannot watch the repository of project {Project}", project.Name); }
         }
+        foreach (var watch in Watches())
+        {
+            if (_stopped) return;
+            await watch.Gate.WaitAsync(ctx.Stopping).ConfigureAwait(false);
+            try { await SweepAsync(watch).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (ctx.Stopping.IsCancellationRequested) { }
+            catch (Exception ex) { ctx.Logger.LogWarning(ex, "Ideas: the commit check on {Repo} failed", watch.Repo); }
+            finally { watch.Gate.Release(); }
+        }
+    }
+
+    private Watch[] Watches()
+    {
+        lock (_watchLock) return [.. _watches.Values];
     }
 
     private async Task WatchProjectAsync(ProjectInfo project)
@@ -185,6 +204,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
             return;
         }
         ctx.Logger.LogInformation("Ideas: {Count} new commit(s) in {Repo} since {Since}", commits.Count, watch.Repo, since ?? "(the start)");
+        ctx.Logger.LogDebug("Ideas: the watcher is the fast path; a missed event is caught by the {Minutes}-minute sweep", Rescan.TotalMinutes);
 
         // Oldest first: a burst is read in the order it happened, and the last commit decides what is left.
         foreach (var c in commits.OfType<JsonObject>().Reverse().Take(MaxCommits))
