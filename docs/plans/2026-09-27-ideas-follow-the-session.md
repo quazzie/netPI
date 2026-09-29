@@ -83,6 +83,13 @@ changes to the plan above:
 - The watcher watches the **whole `.git` directory**, not `.git/logs/HEAD`: a repository has no reflog until its first
   commit, so the file named in the plan does not exist in a fresh one and every commit of it would be missed. Any write
   under `.git` wakes a debounced sweep; the sweep only acts on commits it has not seen.
+- The two-minute rescan **sweeps the watched repositories as well as** installing watchers for new projects. A live run
+  showed the watcher pick up the first commit after a reload and then go quiet — the next commit was never noticed, with
+  nothing wrong anywhere and no error to find (the same watcher delivers three commits in a row in a plain process).
+  Whatever the cause, the watcher is the fast path and not the truth: the cost of a missed event is two minutes, not never.
+- Everything it does is **logged at a level a person can see**: watching a repository and finding commits are
+  Information, a repository it could not watch is a Warning, and only "not a repository" and "nothing new" are Debug. The
+  first version returned silently from every early exit, which is what made the run above hard to read.
 - The commits are read through the **Files plugin's `files.commits`** (a plugin cannot run `git`), which also resolves
   the repository, so the watcher is installed even before the first commit.
 - The link decision links **every** option at or above the threshold instead of the single best one: a commit can finish
