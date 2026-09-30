@@ -66,7 +66,7 @@ public static class SettingsTests
 
             var onDisk = JsonNode.Parse(File.ReadAllText(file))!;
             Check.Equal("http://x:1", onDisk["providers"]!["aiproxy"]!["baseUrl"]!.GetValue<string>());
-            Check.False(File.Exists(file + ".tmp"), "temp file moved into place");
+            Check.Equal(0, Directory.GetFiles(Path.GetDirectoryName(file)!, "*.tmp").Length, "the temp file moved into place");
 
             s.Replace(new JsonObject { ["only"] = true });
             Check.True(s.Get<bool>("only"));
@@ -106,6 +106,69 @@ public static class SettingsTests
             doc["ui"]!["theme"] = "blue";
             File.WriteAllText(file, doc.ToJsonString());
             await Wait.UntilAsync(() => s.Get<string>("ui.theme") == "blue", "valid JSON picked up again");
+        });
+
+        r.Add("settings: concurrent writers on distinct keys all reach the file", () =>
+        {
+            var dir = T.TempDir("settings");
+            var file = Path.Combine(dir, "settings.json");
+            using var s = new SettingsStore(file, NullLogger.Instance);
+            const int rounds = 6, writers = 16;
+            Parallel.For(0, rounds, round =>
+            {
+                for (var i = 0; i < writers; i++) s.Set($"conc.{round}.{i}", JsonValue.Create(round * 1000 + i));
+            });
+            var onDisk = JsonNode.Parse(File.ReadAllText(file))!["conc"]!.AsObject();
+            for (var round = 0; round < rounds; round++)
+                for (var i = 0; i < writers; i++)
+                    Check.Equal(round * 1000 + i, onDisk[round.ToString()]![i.ToString()]!.GetValue<int>(), $"round {round}, key {i}");
+            Check.Equal(0, Directory.GetFiles(dir, "*.tmp").Length, "no temp file left behind");
+        });
+
+        r.Add("settings: the file matches the live document whatever the mix of writers", () =>
+        {
+            var file = Path.Combine(T.TempDir("settings"), "settings.json");
+            using var s = new SettingsStore(file, NullLogger.Instance);
+            Parallel.For(0, 12, i =>
+            {
+                if (i % 3 == 0)
+                {
+                    var doc = s.Snapshot();
+                    doc["mix"] = JsonValue.Create(i);   // a whole-document write racing the single-key ones
+                    s.Replace(doc);
+                }
+                else s.Set($"mix.{i}", JsonValue.Create(i));
+            });
+            // The invariant: what is on disk is the live document, in the order the writes were made.
+            Check.True(JsonNode.DeepEquals(s.Snapshot(), JsonNode.Parse(File.ReadAllText(file))), "memory == disk");
+        });
+
+        r.Add("settings: a failed write changes nothing, and the identical retry writes", () =>
+        {
+            var dir = T.TempDir("settings");
+            var file = Path.Combine(dir, "settings.json");
+            using var s = new SettingsStore(file, NullLogger.Instance);
+            s.Set("ui.theme", JsonValue.Create("dark"));
+            var before = File.ReadAllText(file);
+            var changes = 0;
+            s.Changed += _ => Interlocked.Increment(ref changes);
+
+            // A read-only destination: the move into place fails, however often it is retried.
+            File.SetAttributes(file, FileAttributes.ReadOnly);
+            var failed = false;
+            try { s.Set("ui.theme", JsonValue.Create("light")); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { failed = true; }
+            Check.True(failed, "the write failed");
+            Check.Equal("dark", s.Get<string>("ui.theme"), "a value that is not on disk is not live either");
+            Check.Equal(before, File.ReadAllText(file), "the file is untouched");
+            Check.Equal(0, Volatile.Read(ref changes), "no change event for a write that did not happen");
+            Check.Equal(0, Directory.GetFiles(dir, "*.tmp").Length, "no temp file left behind");
+
+            File.SetAttributes(file, FileAttributes.Normal);
+            s.Set("ui.theme", JsonValue.Create("light"));   // the identical retry is a real write, not a no-op
+            Check.Equal("light", s.Get<string>("ui.theme"));
+            Check.Equal("light", JsonNode.Parse(File.ReadAllText(file))!["ui"]!["theme"]!.GetValue<string>());
+            Check.Equal(1, Volatile.Read(ref changes), "one event, for the write that happened");
         });
     }
 }
