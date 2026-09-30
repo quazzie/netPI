@@ -17,8 +17,9 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   `tests/MockLlm` (scripted model server), `tests/NetPI.E2E` (end-to-end suite).
 
 ## Build & test
-- **Work in a worktree, not here** (see `C:\AI\Projects\AGENTS.md`): one worktree and branch per task. It is how you
-  avoid another agent's *edits* reaching you and yours reaching them.
+- **Work in a worktree, not here** (see `C:\AI\Projects\AGENTS.md`): one worktree and branch per agent. It is how you
+  avoid another agent's *edits* reaching you and yours reaching them. Several fixes can share that one tree — take them
+  one at a time, one commit each, merging each into `master` before the next.
 - **A build never touches the running app.** `AppOutDir` (`Directory.Build.props`) is `artifacts/dev/app`, so a plain
   `dotnet build` of a plugin — or of a test project that references one — lands there, and a running NetPI (which loads
   its plugins from `artifacts/app`) sees nothing: no chat loses a tool because someone ran the tests. Installing into
