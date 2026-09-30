@@ -225,13 +225,20 @@ try {
     $argList.Add('--out'); $argList.Add($out)
 
     $wall = [Diagnostics.Stopwatch]::StartNew()
-    # the runner prints this as its rerun hint, instead of a dotnet command line
+    # the runner prints this as its rerun hint, instead of a dotnet command line. Only for this child: the variable must not stay in the
+    # caller's session (the runner's own self-test, run next in the same session, read it and failed)
+    $hadRerun = Test-Path Env:NETPI_E2E_RERUN
+    $oldRerun = $env:NETPI_E2E_RERUN
     $env:NETPI_E2E_RERUN = ".\scripts\e2e.ps1 -Only {ids} -SkipBuild`n  .\scripts\e2e.ps1 -Failed -SkipBuild        (everything still failing, across runs)"
-    & dotnet $dll @argList 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath (Join-Path $out 'console.txt')
-    $code = $LASTEXITCODE
+    try {
+        & dotnet $dll @argList 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath (Join-Path $out 'console.txt')
+        $code = $LASTEXITCODE
+    }
+    finally {
+        if ($hadRerun) { $env:NETPI_E2E_RERUN = $oldRerun } else { Remove-Item Env:NETPI_E2E_RERUN -ErrorAction SilentlyContinue }
+    }
     $wall.Stop()
     if ($List) { exit $code }
-
 
     Write-Host ("`nwall {0:0.0}s (builds included above)  ·  results: {1}" -f $wall.Elapsed.TotalSeconds, $out) -ForegroundColor DarkGray
     exit $code

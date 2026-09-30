@@ -17,7 +17,7 @@ small fix and another full run, again and again. "2 minutes 30000 times during d
 | one test, server start included | ~a full run | ~2 s |
 | smoke set (9 tests) | none | ~9 s |
 | one plugin edited + its tests (`-Changed`) | a full run plus a build of everything | ~9 s (incremental build 1.7 s) |
-| UI walkthrough (`npm run e2e`), whole | 144 s, **and it died at check 218 of ~300** on master | see the last bullet below |
+| UI walkthrough (`npm run e2e`), whole | 144 s, **and it died at check 218 of ~300** on master (4 of 5 runs) | ~215 s, passes (278-281 checks); 3 concurrent runs: 3/3 |
 | UI walkthrough, one section | the whole walkthrough | 8–20 s |
 | unit-suite-style "is anything stale" check before a run | n/a | 0.2 s |
 
@@ -69,6 +69,8 @@ syntax; a UI section audit; the policy text in `AGENTS.md` ("never run the whole
 | `ui.smoke` "streaming rows shown" | looked at a state that exists ~100 ms | `hold=1500` in the scenario tag; the streaming state is now in `ui-02-streaming.png` every time |
 | UI walkthrough "streaming thinking opens" (failed in 4 of 5 full runs on master, always at the same step) | **not** the short thinking window that AGENTS.md blames. The step pressed Ctrl+T and waited for `.intro`, which is already on screen when the tab you are on is an empty chat: the text was typed into the old tab's composer while the new session was still being created, and Enter then hit the new, empty one. The page sent `sessions.create` and `agents.use` and never `agent.send` (seen in the frames the page and the mock logged) | `newTab()` waits for the tab count to grow (10 call sites); `mock.thinkDelay` is re-landed too, unchanged, but it was not the cause |
 | UI walkthrough "budget" check | read the Work tab's budget line before the tab's 30 s refresh | the section refreshes the tab like a user would, then waits for the text |
+| Aux `ssh_edit: the remote write script…` (fails every time under `scripts/test.ps1`, passes from Git Bash) | Git's `bash.exe` takes the caller's PATH as it is: from PowerShell there is no Git `usrin`, so `stat` is "command not found" | the helper puts the folder of the bash it starts first on PATH |
+| the runner's own self-test (failed once, right after a full `e2e.ps1` in the same session) | `e2e.ps1` left `NETPI_E2E_RERUN` in the caller's session and the rerun-hint assertion read it | the script restores it; the self-test sets what it needs itself and has a test for the hint |
 
 **How that one was found:** it never failed when its section ran alone, and a prefix run with the sections silenced passed too. So the walkthrough now saves `FAILED.png` and `FAILED.txt` when it dies (page text, toasts that showed, the frames the page sent, the frames and clients the mock saw; `mock.wsLog` is new), and two or three full runs at once reproduced it within minutes.
 
@@ -82,11 +84,12 @@ slot before it is recorded as finished (harmless, but it is what made `wait-stee
   `compaction.*` 4-5 s) with MockLlm gates; the coverage ledger. Measure first: they are already parallel, the suite is bounded by
   `ui.smoke` (~26 s).
 - Split `ui.smoke` into a small browser round trip (join `smoke`) and the panel/steer/abort/backup parts; trim its fixed sleeps.
-- The UI walkthrough: a full end-to-end run on this machine, see the last bullet of the table's note; `NEEDS` is the honest list of
-  what sections build on.
+- The UI walkthrough: `NEEDS` is the list of what sections build on; `npm run e2e:sections` keeps it honest (37/37 alone). Sections still
+  spend most of their time in fixed `waitForTimeout` pauses (187 of them): replacing the positive-condition ones with waits for the state
+  would cut the whole run, and is the next saving there.
 - D: the CI `e2e` job is written and unverified on a runner; a manually triggered full job and a scheduled run are not added.
-- Projects and git worktrees: see the separate findings in the session report (edits can land in the project checkout when an agent
-  is told to use another worktree).
+- Projects and git worktrees: the audit is in `docs/STATUS.md` ("Projects and git worktrees"): edits can land in the project's checkout when an
+  agent is told to use another worktree, and nothing warns. Nothing was changed there; it needs a decision on what the harness should do.
 
 ## Outcome
 

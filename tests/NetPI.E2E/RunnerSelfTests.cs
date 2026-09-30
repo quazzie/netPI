@@ -12,6 +12,15 @@ public static class RunnerSelfTests
 {
     public static async Task<int> RunAsync()
     {
+        // the rerun hint reads this (scripts/e2e.ps1 sets it for its child): the tests decide it themselves, not the caller's session
+        var inherited = Environment.GetEnvironmentVariable("NETPI_E2E_RERUN");
+        Environment.SetEnvironmentVariable("NETPI_E2E_RERUN", null);
+        try { return await RunTestsAsync(); }
+        finally { Environment.SetEnvironmentVariable("NETPI_E2E_RERUN", inherited); }
+    }
+
+    private static async Task<int> RunTestsAsync()
+    {
         var tests = new List<(string Name, Func<Task> Body)>
         {
             ("catalog: ids are unique, well formed, and every tag entry names a real test", Catalog_IsConsistent),
@@ -22,6 +31,7 @@ public static class RunnerSelfTests
             ("output: console lines of concurrent tests stay with their test", Output_IsRouted),
             ("containment: a timed-out body cannot touch the next test's fixture", Containment_TimedOutBodyIsCut),
             ("report: outcomes, exit codes, all failures at once, evidence files", Report_AndExitCodes),
+            ("rerun hint: the caller's command line when it gave one, else a dotnet command", RerunHint_FollowsTheCaller),
             ("setup failure: the shard's tests are reported as not run, exit 3", SetupFailure_IsNotRun),
             ("repeat: a test that fails sometimes is reported as flaky, with its failure file per attempt", Repeat_FindsFlaky),
             ("failing list: a failure is remembered until it passes; a rerun of others does not forget it", FailingList_Persists),
@@ -234,6 +244,23 @@ public static class RunnerSelfTests
         Check.Equal(2, json["counts"]!["failed"]!.GetValue<int>(), "...and the counts");
         Check.Equal(4, json["tests"]!.AsArray().Count, "...and every test");
         Check.True(json["wallMs"]!.GetValue<long>() >= 0 && json["shards"]!.AsArray().Count == 1, "...and the phase timings per shard");
+    }
+
+    private static async Task RerunHint_FollowsTheCaller()
+    {
+        var dry = Cases(("a.bad", "bad"), ("b.bad", "bad too"));
+        TestRunner Fails() { var r = new TestRunner(); r.Add("a.bad", "bad", () => throw new AssertException("x")); r.Add("b.bad", "bad too", () => throw new AssertException("y")); return r; }
+        var (_, plain, _, _) = await Run(dry, _ => Task.FromResult(Shard(Fails())));
+        Check.Contains(plain, "dotnet \"", "a direct run gets a dotnet command");
+        Check.Contains(plain, "a.bad b.bad", "with the failing ids");
+        Environment.SetEnvironmentVariable("NETPI_E2E_RERUN", "script -Only {ids} -SkipBuild");
+        try
+        {
+            var (_, scripted, _, _) = await Run(dry, _ => Task.FromResult(Shard(Fails())));
+            Check.Contains(scripted, "script -Only a.bad,b.bad -SkipBuild", "the caller's template, ids comma-separated");
+            Check.NotContains(scripted, "dotnet \"", "and not the dotnet command");
+        }
+        finally { Environment.SetEnvironmentVariable("NETPI_E2E_RERUN", null); }
     }
 
     private static async Task SetupFailure_IsNotRun()
