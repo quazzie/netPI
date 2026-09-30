@@ -98,6 +98,13 @@ internal sealed class AgentScheduler : IAgentScheduler
         public string Source { get; set; } = "default";
         /// <summary>An agent the user set up (else a slot for model calls without an agent).</summary>
         public bool Configured { get; set; }
+        /// <summary>
+        /// A configured agent that was removed: its runs finish, nothing new starts on it, and its queued work is
+        /// refused. Distinct from a pool that was never configured (a plain model call), which is available again the
+        /// moment a slot frees. The model association is kept while owners remain, so their calls still count against
+        /// the shared slots of the local model they run on.
+        /// </summary>
+        public bool Retired { get; set; }
         public string? Model { get; set; }
         public string? Use { get; set; }
         public bool Disabled { get; set; }
@@ -179,6 +186,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     {
         var model = _models.GetValueOrDefault(a.Model);
         pool.Configured = true;
+        pool.Retired = false;   // the agent is in the settings again: it takes work once more
         pool.Model = a.Model;
         pool.Use = a.Use;
         pool.Disabled = a.Disabled;
@@ -213,6 +221,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     /// <summary>Whether an agent can take work now, and why not. Caller holds <see cref="_gate"/>.</summary>
     private (bool Available, string? Reason) AvailabilityOf(Pool p)
     {
+        if (p.Retired) return (false, "removed");
         if (!p.Configured) return (true, null);
         if (p.Disabled) return (false, "disabled");
         if (p.Model is null || !_models.TryGetValue(p.Model, out var m)) return (false, $"{p.Model} is not in the model list");
@@ -301,9 +310,12 @@ internal sealed class AgentScheduler : IAgentScheduler
             {
                 if (pool.Configured && !ids.Contains(pool.Key))
                 {
-                    // an agent that was removed: its runs finish, nothing new starts on it
+                    // An agent that was removed: its runs finish, nothing new starts on it, and whatever was queued for
+                    // it is refused below (an unconfigured pool used to count as available, so a waiter was handed the
+                    // removed agent's slot). The model association stays until the last owner releases, so those runs
+                    // keep counting against the shared slots of their local model.
                     pool.Configured = false;
-                    pool.Models.Clear();
+                    pool.Retired = true;
                 }
                 if (!pool.Configured && pool.Owners.Count == 0 && pool.Waiters.Count == 0) { _pools.Remove(pool.Key); continue; }
                 var (available, reason) = AvailabilityOf(pool);
@@ -337,9 +349,16 @@ internal sealed class AgentScheduler : IAgentScheduler
                 .Select(p => $"{p.Key}|{p.Capacity}|{p.Disabled}|{AvailabilityOf(p).Available}|{p.Use}|{p.Model}"));
     }
 
-    internal static string UnavailableMessage(string agent, string reason) => reason == "disabled"
-        ? $"The agent \"{agent}\" is disabled. Enable it (Settings → Agents, or its switch in the Work tab) or choose another agent."
-        : $"The agent \"{agent}\" can't take work now: {reason}. Load its model (AiSwitcher) or choose another agent.";
+    internal static string UnavailableMessage(string agent, string reason) => reason switch
+    {
+        "removed" =>
+            $"The agent \"{agent}\" was removed while this was waiting for a slot, so the work was not started. " +
+            "Add the agent back in Settings → Agents, or send the message again on another agent.",
+        "disabled" =>
+            $"The agent \"{agent}\" is disabled. Enable it (Settings → Agents, or its switch in the Work tab) or choose another agent.",
+        _ =>
+            $"The agent \"{agent}\" can't take work now: {reason}. Load its model (AiSwitcher) or choose another agent.",
+    };
 
     private Pool GetOrCreate(string key, string? provider = null)
     {
@@ -418,6 +437,7 @@ internal sealed class AgentScheduler : IAgentScheduler
 
     private static string StatusOf(Pool p, bool available)
     {
+        if (p.Retired) return p.Owners.Count > 0 ? "retiring" : "retired";
         if (p.Waiters.Count > 0) return "queued";
         if (p.Owners.Count >= p.Capacity) return "full";
         if (p.Owners.Count > 0) return "busy";
