@@ -336,8 +336,13 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
         };
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(Timeout);
-        using var slot = await _admission.EnterAsync(model, "the save check", session.Id, projectOf?.Id, ct).ConfigureAwait(false);
-        if (slot is null) return null; // a paid model the user did not allow: no call, and no card
+        var admission = await _admission.EnterAsync(model, "the save check", session.Id, projectOf?.Id, ct).ConfigureAwait(false);
+        // A drop is a failure, not an answer: the mark stays retryable and carries the reason, so the next close of
+        // this conversation runs the check again instead of the chat being silently excluded. A skip (no model, or a
+        // paid one the user did not allow) will not change on a retry, so it is an outcome: no call, and no card.
+        if (admission.Retryable) throw new InvalidOperationException($"dropped, and it runs again later: {admission.Reason}");
+        if (!admission.Admitted) return null;
+        using var slot = admission.Lease!;
         var response = await ctx.Models.CompleteAsync(request, cts.Token).ConfigureAwait(false);
         return Parse(response.Text);
     }
@@ -365,7 +370,9 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
             var name = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel;
             // The decision runs on the same backend as the chats, so it takes a slot like everything else.
             var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
-            using var slot = await _admission.EnterAsync(model, "an ideas decision", sessionId: null, projectId: null, ct).ConfigureAwait(false);
+            var admission = await _admission.EnterAsync(model, "an ideas decision", sessionId: null, projectId: null, ct).ConfigureAwait(false);
+            if (!admission.Admitted) throw new InvalidOperationException($"no decision: {admission.Reason}");
+            using var slot = admission.Lease!;
             var raw = await ctx.Rpc.InvokeAsync("decide.decision", new JsonObject
             {
                 ["model"] = name,

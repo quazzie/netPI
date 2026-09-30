@@ -84,10 +84,13 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
         try
         {
             var name = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel;
-            // Typed-ahead background work: it waits for the backend's slot, briefly, and never for a paid model.
+            // Typed-ahead background work: it waits for the backend's slot, briefly, and never for a paid model. A drop
+            // here is a keystroke without a suggestion, not a failure to report: the composer moves on.
             var admission = new IdeaAdmission(ctx);
-            using var slot = await admission.EnterAsync(await ctx.Models.FindAsync(name, ct).ConfigureAwait(false),
-                "recall", sessionId, project?.Id, ct).ConfigureAwait(false);
+            var admit = await admission.EnterAsync(await ctx.Models.FindAsync(name, ct).ConfigureAwait(false),
+                "recall", sessionId, project?.Id, ct, IdeaAdmission.InteractiveWait).ConfigureAwait(false);
+            if (!admit.Admitted) return Result(admit.Retryable ? "no_slot" : "skipped", error: admit.Reason);
+            using var slot = admit.Lease!;
             answer = await ctx.Rpc.InvokeAsync("decide.decision", new JsonObject
             {
                 ["model"] = name,

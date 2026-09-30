@@ -377,6 +377,7 @@ public static class IdeasCheckTests
         {
             var env = new Env();
             await env.StartAsync();
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             for (var i = 0; i < 60; i++)
                 await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = $"Filler idea number {i}" } });
             var last = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject
@@ -400,7 +401,7 @@ public static class IdeasCheckTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas check: background model work waits for a slot, and a busy one is not waited for forever", async () =>
+        r.Add("ideas check: background model work waits for a slot, and work that does not get one is dropped, not run anyway", async () =>
         {
             var env = new Env();
             env.Ctx.ServicesFake.Register<IAgentScheduler>(env.Scheduler);
@@ -417,15 +418,30 @@ public static class IdeasCheckTests
             Check.True(env.Scheduler.Priorities.All(p => p < 0), "background work queues behind the chats: " + string.Join(",", env.Scheduler.Priorities));
             Check.True(env.Scheduler.Labels.Any(l => l.Contains("save check")), "and says what it is: " + string.Join(" | ", env.Scheduler.Labels));
 
-            // Both slots busy: the check still runs, because waiting could block the run that is waiting for it.
+            // Both slots busy: the check waits, and then it is dropped. Running it without a slot is what let a sweep, a
+            // save check and a recall put three calls on a two-slot model, so the bound is the whole point.
             env.Scheduler.Busy = 0;
-            env.Says("SAVE\nA second card\nThis one ran without a slot");
+            env.Ctx.SettingsFake.Set("ideas.checkWaitSeconds", 1);
+            env.Says("SAVE\nA second card\nThis one must not run without a slot");
             env.Ctx.SessionsFake.AppendMessage(env.Session.Id, ChatMessage.UserText("and one more"));
             env.Ctx.SessionsFake.AppendMessage(env.Session.Id, new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "Done." }] });
             IdeaSaveCheck.DeferStep = TimeSpan.FromMilliseconds(50);
             Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
-            await env.WaitForCards(2);
-            Check.Contains(env.Ctx.Log.Lines.FirstOrDefault(l => l.Contains("without a slot")) ?? "", "without a slot", "and the log says it ran without one");
+            var mark = await env.WaitForMark(env.Session.Id, 8000);
+            Check.Equal("failed", mark["state"]!.Str(), "a dropped check is retryable, not done");
+            Check.Contains(mark["error"]!.Str(), "dropped", "and the mark says why: " + mark["error"]!.Str());
+            Check.Equal(1, (await env.Cards()).Count, "no card from a check that never ran");
+            Check.Equal(0, env.Scheduler.Taken, "and it never held a slot");
+            Check.Contains(string.Join("|", env.Ctx.Log.Lines), "was dropped", "the log names the work and the reason");
+            Check.Equal(0, env.Ctx.ModelsFake.Requests.Count - 1, "only the first check called the model");
+
+            // The queue opens again: the next close of the same conversation runs the check for real.
+            env.Scheduler.Busy = 1;
+            env.Says("SAVE\nRecovered\nThe retry ran");
+            Check.Equal("started", (await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id }))["reason"].Str());
+            var cards = await env.WaitForCards(2);
+            Check.Equal("Recovered", cards[1]!["title"].Str());
+            Check.Equal("done", env.Mark(env.Session.Id)["state"]!.Str());
             IdeaSaveCheck.DeferStep = TimeSpan.FromSeconds(30);
             env.Ctx.Unload();
         });

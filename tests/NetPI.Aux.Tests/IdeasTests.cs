@@ -20,6 +20,9 @@ public static class IdeasTests
         public Env()
         {
             Ctx = new FakePluginContext(T.TempDir("ideas-home"));
+            // The checks decide on a model that has to exist, and the commit sweep and the recall both go through
+            // admission before they ask, so the catalog needs one.
+            Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             ProjectDir = T.TempDir("ideas-proj");
             Project = Ctx.SessionsFake.CreateProject("Demo", ProjectDir);
             Project2Dir = T.TempDir("ideas-proj2");

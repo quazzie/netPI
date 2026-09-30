@@ -59,6 +59,9 @@ public static class IdeasCommitTests
         public Env(string? home = null, Repo? repo = null)
         {
             Ctx = new FakePluginContext(home ?? T.TempDir("ideas-home"));
+            // The checks decide on a model that has to exist: admission is what the sweep goes through, and a sweep with
+            // no model in the catalog has nothing to ask.
+            Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
             var dir = repo?.Path ?? T.TempDir("ideas-repo");
             Repo = repo ?? new Repo(dir, Path.Combine(dir, ".git"));
             Project = Ctx.SessionsFake.CreateProject("Demo", dir);
@@ -128,6 +131,40 @@ public static class IdeasCommitTests
         }
 
         public async Task<int> Cards() => ((JsonArray)(await Rpc("ideas.suggestions", new JsonObject()))["suggestions"]!.AsArray()).Count;
+    }
+
+    /// <summary>A backend with no free slot: the wait runs out and admission drops the work, exactly as in the app.</summary>
+    private sealed class FullScheduler : IAgentScheduler
+    {
+        public bool Full { get; set; } = true;
+        public int Asked;
+
+        private sealed class Slot : IAgentSlot
+        {
+            public string Key => "full";
+            public string AgentId => "ideas";
+            public DateTimeOffset AcquiredAt => DateTimeOffset.UtcNow;
+            public bool IsReleased => true;
+            public void Dispose() { }
+        }
+
+        public string Resolve(ModelInfo model) => model.Ref;
+        public IReadOnlyList<AgentSlots> Snapshot() => [];
+        public bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease)
+        {
+            lease = Full ? null : new Slot();
+            return lease is not null;
+        }
+        public async ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct)
+        {
+            Asked++;
+            while (Full)
+            {
+                await Task.Delay(20, ct).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+            }
+            return new Slot();
+        }
     }
 
     public static void Register(TestRunner r)
@@ -209,6 +246,29 @@ public static class IdeasCommitTests
             await env.Check.SweepNowAsync();
             Check.Equal(2, (await env.CommitsOn(idea)).Count, "both are read on the next sweep");
             Check.Equal(env.Repo.Commits[1].Hash, env.Cursor);
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: a full model drops the sweep's question, and the commit is read again", async () =>
+        {
+            var env = new Env();
+            var full = new FullScheduler();
+            env.Ctx.ServicesFake.Register<IAgentScheduler>(full);
+            await env.StartAsync();
+            var idea = await env.AddIdea("Bound the sweep");
+            env.Repo.Commit("a commit the sweep cannot afford right now");
+            env.Ctx.SettingsFake.Set("ideas.checkWaitSeconds", 1);
+
+            await env.Check!.SweepNowAsync();
+            Check.True(full.Asked > 0, "the sweep asked for a slot");
+            Check.Equal(0, (await env.CommitsOn(idea)).Count, "nothing was linked");
+            Check.Equal(null, env.Cursor, "and the cursor did not move: the commit is still unseen");
+            Check.Contains(string.Join("|", env.Ctx.Log.Lines), "was dropped", "the log says the work was dropped, not run without a slot");
+
+            full.Full = false;
+            await env.Check.SweepNowAsync();
+            Check.Equal(1, (await env.CommitsOn(idea)).Count, "the next sweep reads it");
+            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor);
             env.Ctx.Unload();
         });
 
