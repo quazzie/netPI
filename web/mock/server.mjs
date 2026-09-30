@@ -316,6 +316,7 @@ function uiTabs() {
 
 let procTailDelayMs = 0; // e2e test helper: delay the tail responses so the UI can collapse a row inside its fetchTail() await
 let filesDelayMs = 0; // e2e test helper: delay the files.* responses so a workspace switch lands mid-fetch
+let offlineUntil = 0; // e2e test helper: while in effect the /ws upgrades are refused and open sockets dropped — the server keeps running, its events are just lost (the browser is offline)
 let filesCalls = []; // e2e test helper: the files.* responses served, in order, for the late-response checks
 const handlers = {
   'app.info': () => ({ version: VERSION, os: `${os.type()} ${os.release()}`, home: os.homedir(), appDir: path.join(REPO, 'artifacts/app'), defaultWorkspace: path.join(os.homedir(), '.netpi', 'workspace'), desktop: false }),
@@ -732,6 +733,19 @@ const handlers = {
     return true;
   },
   'mock.queueInternal': (p) => (agent.queueInternal(need(p, 'sessionId')), true),
+  // e2e test helper: drop the WebSocket link for `ms` (the server keeps running: runs finish and persist while the
+  // browser is disconnected); mock.online ends it early
+  'mock.offline': (p) => {
+    offlineUntil = Date.now() + Number(p?.ms ?? 0);
+    for (const c of [...clients]) {
+      clients.delete(c);
+      try {
+        c.ws.terminate();
+      } catch {}
+    }
+    return true;
+  },
+  'mock.online': () => ((offlineUntil = 0), true),
   'agentsmd.list': (p = {}) => {
     const s = p.sessionId ? store.sessions.get(p.sessionId) : null;
     const pr = p.projectId ? store.projects.get(p.projectId) : s?.projectId ? store.projects.get(s.projectId) : null;
@@ -871,6 +885,7 @@ const handlers = {
   'mock.reset': () => {
     procTailDelayMs = 0;
     filesDelayMs = 0;
+    offlineUntil = 0;
     filesCalls = [];
     msgLoads.clear();
     for (const s of store.sessions.keys()) agent.abort(s);
@@ -1003,6 +1018,7 @@ const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname !== '/ws') return socket.destroy();
+  if (Date.now() < offlineUntil) return socket.destroy(); // e2e: the browser is offline
   const origin = req.headers.origin;
   if (origin) {
     const o = new URL(origin);

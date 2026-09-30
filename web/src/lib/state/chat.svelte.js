@@ -380,6 +380,16 @@ export class ChatStore {
     for (const t of this.live.values()) if (t.status === 'running') t.status = 'done';
   }
 
+  /** Reconcile the transient state against the server's truth for this session's run: a run that ended while we
+   *  were disconnected never delivered stream.end, so an active stream under a finished run is stale and is
+   *  cleared — a run that is still busy keeps streaming, and its live state stays. */
+  reconcile(runBusy) {
+    if (runBusy) return;
+    if (this.stream.active) this.stream.clear();
+    if (this.notice && this.notice.level !== 'error') this.notice = null;
+    for (const t of this.live.values()) if (t.status === 'running') t.status = 'done';
+  }
+
   dispose() {
     clearTimeout(this.#endTimer);
     clearTimeout(this.#noticeTimer);
