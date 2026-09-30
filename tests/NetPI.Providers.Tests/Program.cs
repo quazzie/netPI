@@ -79,6 +79,29 @@ List<ChatMessage> Conversation(string assistantProvider) =>
 
 // ================================================================== unit tests
 
+// The provider transports put a tool's Parameters node into the request body with a DeepClone(). An audit called that
+// "pure waste" and suggested assigning the node by reference instead. Measured here, because the answer decides it: a
+// JsonNode has exactly one parent, the tool definition's own object already owns that node, and assigning it a second
+// time throws. The clone is load-bearing.
+await t.Run("JsonNode: a tool schema node cannot be re-parented, so the providers must clone it", () =>
+{
+    var definition = new ToolDefinition { Name = "read", Description = "Read a file", Parameters = new JsonObject { ["type"] = "object" } };
+    var body = new JsonObject { ["tools"] = new JsonArray(new JsonObject { ["name"] = definition.Name, ["parameters"] = definition.Parameters.DeepClone() }) };
+    t.Eq("{\"tools\":[{\"name\":\"read\",\"parameters\":{\"type\":\"object\"}}]}", body.ToJsonString(), "cloned: the body serializes the schema");
+
+    var threwOnSecond = false;
+    try
+    {
+        new JsonObject { ["parameters"] = definition.Parameters.DeepClone() };              // what the providers do
+        new JsonObject { ["parameters"] = definition.Parameters };                            // what the audit suggested
+        new JsonObject { ["parameters"] = definition.Parameters };                            // ...and again, on the next call
+    }
+    catch (InvalidOperationException ex) { threwOnSecond = ex.Message.Contains("already has a parent", StringComparison.OrdinalIgnoreCase); }
+    t.Check(threwOnSecond, "without the clone the second call throws 'The node already has a parent' - the audit's suggestion would pass one test and break every call after it");
+    t.Check(!ReferenceEquals(definition.Parameters, ((JsonArray)body["tools"]!)[0]!["parameters"]), "and the body's node is its own");
+    return Task.CompletedTask;
+});
+
 await t.Run("SSE reader: event names, multi-line data, comments, CRLF, missing separators, [DONE], EOF", async () =>
 {
     var raw = "event: a\r\ndata: {\"x\":\r\ndata: 1}\r\n\r\n: comment\n\nretry: 5\ndata: {\"y\":2}\ndata: {\"z\":3}\n\nid: 7\ndata:[DONE]\n\ndata: last";
