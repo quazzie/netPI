@@ -283,12 +283,12 @@ public static class T
         return p;
     }
 
-    public static string WriteText(string dir, string rel, string text, bool bom = false)
-    {
-        var bytes = System.Text.Encoding.UTF8.GetBytes(text);
-        if (bom) bytes = [0xEF, 0xBB, 0xBF, .. bytes];
-        return WriteBytes(dir, rel, bytes);
-    }
+    public static string WriteText(string dir, string rel, string text, bool bom = false) =>
+        WriteBytes(dir, rel, bom ? [0xEF, 0xBB, 0xBF, .. System.Text.Encoding.UTF8.GetBytes(text)] : System.Text.Encoding.UTF8.GetBytes(text));
+
+    /// <summary>Write a file in a specific encoding (the huge-file read path has to detect what a file really is).</summary>
+    public static string WriteText(string dir, string rel, string text, System.Text.Encoding encoding) =>
+        WriteBytes(dir, rel, encoding.GetBytes(text));
 
     public static string ReadRaw(string path) => System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(path));
 }

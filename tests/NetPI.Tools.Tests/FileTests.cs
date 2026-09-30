@@ -318,6 +318,90 @@ public static class FileTests
             Check.Error(await T.Run(Read, dir, new { path = "big.txt", offset = 6000 }), "past the end");
         });
 
+        r.Add("read: a huge file is paged without reading it to the end", async () =>
+        {
+            var dir = T.TempDir("read-stream");
+            // The streaming path with a production-sized file is 32 MiB; the threshold is a field so this test can put a
+            // small file on it and assert what it does.
+            var was = ReadTool.StreamingThresholdBytes;
+            ReadTool.StreamingThresholdBytes = 1024;
+            try
+            {
+                var all = Enumerable.Range(1, 400).Select(i => $"row {i}").ToArray();
+                T.WriteText(dir, "huge.txt", string.Join("\n", all) + "\n");
+
+                // A page in the middle: the count is not known (it would take reading the rest of the file), and the
+                // note says more lines follow because one extra line proved it.
+                var res = await T.Run(Read, dir, new { path = "huge.txt", offset = 100, limit = 5 });
+                Check.Ok(res);
+                Check.Equal("row 100\nrow 101\nrow 102\nrow 103\nrow 104", res.Content.Split("\n\n[Showing")[0]);
+                Check.Contains(res.Content, "[Showing lines 100-104; more lines follow. Use offset=105 to continue.]");
+                var d = T.D(res);
+                Check.Equal(100, d.Int("startLine"));
+                Check.Equal(104, d.Int("endLine"));
+                Check.True(d.Bool("truncated"));
+                Check.True(!d.TryGetProperty("totalLines", out var tl) || tl.ValueKind == JsonValueKind.Null,
+                    "no line count: the file was not read to the end");
+
+                // The last page reaches the end of the file, so it knows the exact total (and says nothing about
+                // continuing, because there is nothing to continue to).
+                res = await T.Run(Read, dir, new { path = "huge.txt", offset = 398, limit = 5 });
+                Check.Equal("row 398\nrow 399\nrow 400", res.Content);
+                Check.Equal(400, T.D(res).Int("totalLines"));
+                Check.False(T.D(res).Bool("truncated"), "and nothing is truncated");
+
+                // A negative offset within one page: one pass, the exact count, the last lines.
+                res = await T.Run(Read, dir, new { path = "huge.txt", offset = -3 });
+                Check.Equal("row 398\nrow 399\nrow 400", res.Content);
+                Check.Equal(400, T.D(res).Int("totalLines"));
+                res = await T.Run(Read, dir, new { path = "huge.txt", offset = -2, limit = 1 });
+                Check.Equal("row 399", res.Content.Split("\n\n[Showing")[0], "fewer lines than asked for: the page starts at the line the offset names");
+                Check.Contains(res.Content, "[Showing lines 399-399 of 400. Use offset=400 to continue.]");
+                Check.Equal(400, T.D(res).Int("totalLines"));
+                Check.True(T.D(res).Bool("truncated"), "and there is more after it");
+                // More lines asked for than a page holds: the window ends before the last line, so the count comes first
+                // and the page is read after it.
+                res = await T.Run(Read, dir, new { path = "huge.txt", offset = -10, limit = 3 });
+                Check.Equal("row 391\nrow 392\nrow 393", res.Content.Split("\n\n[Showing")[0]);
+                Check.Contains(res.Content, "[Showing lines 391-393 of 400. Use offset=394 to continue.]");
+                res = await T.Run(Read, dir, new { path = "huge.txt", offset = -1000 });
+                Check.Contains(res.Content, "row 1\nrow 2\n", "a negative offset past the start starts at line 1");
+
+                // Past the end is still an error, with the count the pass found. A negative offset past the start is not
+                // an error and never was: it clamps to line 1.
+                Check.Error(await T.Run(Read, dir, new { path = "huge.txt", offset = 500 }), "past the end");
+            }
+            finally { ReadTool.StreamingThresholdBytes = was; }
+        });
+
+        r.Add("read: a huge file is decoded with its own encoding, not assumed to be UTF-8", async () =>
+        {
+            var dir = T.TempDir("read-encoding");
+            var was = ReadTool.StreamingThresholdBytes;
+            ReadTool.StreamingThresholdBytes = 1024;
+            try
+            {
+                var lines = Enumerable.Range(1, 200).Select(i => $"row {i} café").ToArray();
+                // Latin-1 (not valid UTF-8) and UTF-16 LE with a BOM, both over the threshold.
+                T.WriteText(dir, "latin.txt", string.Join("\n", lines) + "\n", Encoding.Latin1);
+                var utf16 = new UnicodeEncoding(false, true);
+                T.WriteBytes(dir, "utf16.txt", [.. utf16.GetPreamble(), .. utf16.GetBytes(string.Join("\n", lines) + "\n")]);
+                foreach (var name in new[] { "latin.txt", "utf16.txt" })
+                {
+                    var res = await T.Run(Read, dir, new { path = name, offset = 1, limit = 2 });
+                    Check.Equal("row 1 café\nrow 2 café", res.Content.Split("\n\n[Showing")[0], name);
+                    var d = T.D(res);
+                    Check.True(d.Bool("truncated"), name);
+                    if (name == "latin.txt") Check.Equal("latin1", d.Str("encoding"), "a Latin-1 file says so, as the small path does");
+                    else Check.True(d.Bool("bom"), "the UTF-16 BOM is reported");
+                    // The last line is reachable by a negative offset, so the whole file decodes, not just the sample.
+                    res = await T.Run(Read, dir, new { path = name, offset = -1 });
+                    Check.Equal("row 200 café", res.Content, name);
+                }
+            }
+            finally { ReadTool.StreamingThresholdBytes = was; }
+        });
+
         r.Add("read: pages fit the tool result limit (at most 50KB), huge single line, empty file", async () =>
         {
             var dir = T.TempDir("read");

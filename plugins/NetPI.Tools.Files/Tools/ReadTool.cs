@@ -7,7 +7,11 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
     public const int MaxLines = 2000;
     public const int MaxBytes = 50 * 1024;
     private const long MaxImageBytes = 20L * 1024 * 1024;
-    private const long StreamingThreshold = 32L * 1024 * 1024;
+    /// <summary>
+    /// Above this size a file is paged by streaming instead of being read whole. A field, not a constant, so a test can
+    /// put a small file on the streaming path and assert what it does (the production value is what ships).
+    /// </summary>
+    internal static long StreamingThresholdBytes = 32L * 1024 * 1024;
 
     public override ToolDefinition Definition { get; } = new()
     {
@@ -46,7 +50,7 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
         var limit = Math.Clamp(limitArg ?? MaxLines, 1, MaxLines);
 
         var maxBytes = PageBytes();
-        if (fi.Length > StreamingThreshold) return ReadLarge(ctx, fi, offsetArg, limit, maxBytes, ct);
+        if (fi.Length > StreamingThresholdBytes) return ReadLarge(ctx, fi, offsetArg, limit, maxBytes, ct);
 
         var bytes = await File.ReadAllBytesAsync(full, ct).ConfigureAwait(false);
         if (TextCodec.IsBinary(bytes))
@@ -62,9 +66,17 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
     /// </summary>
     internal int PageBytes() => ToolResultLimit.Fit(Settings, MaxBytes, 400);
 
-    private static ToolResult Page(ToolContext ctx, string full, IReadOnlyList<string> lines, int total, int? offsetArg, int limit,
-        int maxBytes, EolStyle? eol, bool bom, bool legacy, int firstLineNumber = 1)
+    /// <summary>
+    /// One page. <paramref name="totalArg"/> null means the file was paged by streaming and its line count was never
+    /// needed, so it is not known - reading a multi-gigabyte file to the end to print a number is the work this avoids.
+    /// Everything that needs a count is guarded on it, and <paramref name="moreAfterWindow"/> says whether the window we
+    /// were given is followed by more lines (the one extra line a streamed read costs, so the note the model reads is
+    /// true rather than hopeful).
+    /// </summary>
+    private static ToolResult Page(ToolContext ctx, string full, IReadOnlyList<string> lines, int? totalArg, int? offsetArg, int limit,
+        int maxBytes, EolStyle? eol, bool bom, bool legacy, int firstLineNumber = 1, bool moreAfterWindow = false)
     {
+        var total = totalArg;
         object Details(int start, int end, bool truncated) => new
         {
             path = full,
@@ -80,10 +92,10 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
         if (total == 0) return ToolResult.Ok("(empty file)", Details(0, 0, false));
 
         var offset = offsetArg ?? 1;
-        if (offset < 0) offset = Math.Max(1, total + offset + 1); // -100 = last 100 lines
+        if (offset < 0 && total is { } known) offset = Math.Max(1, known + offset + 1); // -100 = last 100 lines
         if (offset == 0) offset = 1;
-        if (offset > total)
-            return ToolResult.Error($"offset {offset} is past the end of the file: {Rel(ctx, full)} has {total} line{(total == 1 ? "" : "s")}.", Details(0, 0, false));
+        if (total is { } t && offset > t)
+            return ToolResult.Error($"offset {offset} is past the end of the file: {Rel(ctx, full)} has {t} line{(t == 1 ? "" : "s")}.", Details(0, 0, false));
 
         var sb = new StringBuilder();
         var bytes = 0;
@@ -111,10 +123,13 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
             taken++;
         }
         var end = offset + taken - 1;
-        var truncated = end < total || lineNote is not null;
+        var more = moreAfterWindow || (total is { } tt && end < tt);
+        var truncated = more || lineNote is not null;
         if (lineNote is not null) sb.Append("\n\n").Append(lineNote);
-        if (end < total)
-            sb.Append("\n\n").Append($"[Showing lines {offset}-{end} of {total}. Use offset={end + 1} to continue.]");
+        if (more)
+            sb.Append("\n\n").Append(total is { } knownTotal
+                ? $"[Showing lines {offset}-{end} of {knownTotal}. Use offset={end + 1} to continue.]"
+                : $"[Showing lines {offset}-{end}; more lines follow. Use offset={end + 1} to continue.]");
         return ToolResult.Ok(sb.ToString(), Details(offset, end, truncated));
     }
 
@@ -126,7 +141,14 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
         return s[..len];
     }
 
-    /// <summary>Huge files: stream lines instead of loading the whole file.</summary>
+    /// <summary>
+    /// Huge files: stream the page instead of loading the whole file, and <b>stop at the end of the page</b>. Reading a
+    /// 2 GB log to count its lines for every page is the work this avoids, so a page that does not reach the end of the
+    /// file reports no line count (<c>totalLines</c> is null) and says that more lines follow - which is what one extra
+    /// <see cref="StreamReader.ReadLine"/> buys. A page that <em>does</em> reach the end knows the exact total, and so
+    /// does every negative offset: one pass with a ring buffer of the last <c>min(|offset|, limit)</c> lines answers both
+    /// "how many lines" and "the last N", where the old code counted to the end and then started over.
+    /// </summary>
     private static ToolResult ReadLarge(ToolContext ctx, FileInfo fi, int? offsetArg, int limit, int maxBytes, CancellationToken ct)
     {
         using var fs = new FileStream(fi.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16);
@@ -134,33 +156,85 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
         var headLen = fs.Read(head, 0, head.Length);
         if (TextCodec.IsBinary(head.AsSpan(0, headLen)))
             return ToolResult.Error($"{fi.FullName} appears to be a binary file ({PathDisplay.FormatSize(fi.Length)}); read only displays text.");
-        var sample = TextCodec.Decode(head[..headLen]);
-        fs.Position = 0;
-        using var reader = new StreamReader(fs, TextCodec.Utf8NoBom, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 16);
+        // The encoding comes from the same sample the small path decodes, so a huge UTF-16 or Latin-1 file reads the way
+        // its content says it should and not as whatever UTF-8 makes of it (a sample cut mid-character is not a legacy
+        // file - DetectEncoding knows the difference).
+        var (encoding, legacy, bomLength) = TextCodec.DetectEncoding(head.AsSpan(0, headLen));
+        var sample = TextCodec.Decode(head.AsSpan(0, headLen).ToArray());
+        fs.Position = bomLength;
+        using var reader = new StreamReader(fs, encoding, detectEncodingFromByteOrderMarks: false, bufferSize: 1 << 16);
 
-        // Negative offsets need the total first.
-        var total = -1;
         var offset = offsetArg ?? 1;
+        var window = new List<string>(Math.Min(limit, 4096));
+        var total = -1;          // -1 = not known (the page did not reach the end of the file)
+        var moreAfterWindow = false;
+
         if (offset < 0)
         {
-            total = 0;
-            while (reader.ReadLine() is not null) { total++; if ((total & 0xFFFF) == 0) ct.ThrowIfCancellationRequested(); }
-            offset = Math.Max(1, total + offset + 1);
-            fs.Position = 0;
+            var o = -offset; // the caller wants the last o lines
+            if (o <= limit)
+            {
+                // The whole window is the last o lines, so one pass with a ring of o answers both the count and the page.
+                var ring = new string?[o];
+                var at = 0;
+                var n = 0;
+                string? line;
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    ring[at] = line;
+                    at = (at + 1) % o;
+                    n++;
+                    if ((n & 0xFFFF) == 0) ct.ThrowIfCancellationRequested();
+                }
+                total = n;
+                offset = Math.Max(1, total - o + 1);
+                // The ring in file order: when it wrapped, the oldest entry is the slot the next write would take;
+                // before that it is the first one written.
+                var oldest = n < o ? 0 : n % o;
+                for (var k = 0; k < Math.Min(n, o); k++) window.Add(ring[(oldest + k) % o]!);
+                return Page(ctx, fi.FullName, window, total, offset, limit, maxBytes,
+                    sample.DetectedEol, bomLength > 0, legacy || sample.Legacy, firstLineNumber: offset);
+            }
+            // More lines were asked for than a page holds, so the window ends before the last line and a ring would have
+            // to be bigger than a page to catch it: count first, then read the page (as before), and the count is exact.
+            var seen = 0;
+            while (reader.ReadLine() is not null) { seen++; if ((seen & 0xFFFF) == 0) ct.ThrowIfCancellationRequested(); }
+            total = seen;
+            offset = Math.Max(1, total - o + 1);
+            fs.Position = bomLength;
             reader.DiscardBufferedData();
+            var lineNo = 0;
+            string? line2;
+            while ((line2 = reader.ReadLine()) is not null)
+            {
+                lineNo++;
+                if (lineNo >= offset) window.Add(line2);
+                if (window.Count >= limit) break;
+            }
+            moreAfterWindow = offset + window.Count - 1 < total;
         }
-        if (offset == 0) offset = 1;
-        var window = new List<string>(Math.Min(limit, 4096));
-        var lineNo = 0;
-        string? line;
-        while ((line = reader.ReadLine()) is not null)
+        else
         {
-            lineNo++;
-            if (lineNo >= offset && window.Count < limit) window.Add(line);
-            if ((lineNo & 0xFFFF) == 0) ct.ThrowIfCancellationRequested(); // keep counting for the total
+            if (offset == 0) offset = 1;
+            var lineNo = 0;
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                lineNo++;
+                if (lineNo >= offset) window.Add(line);
+                if (window.Count >= limit)
+                {
+                    // The page is full. One more line decides whether there is anything after it, which is the only
+                    // reason to read past the page: the note the model reads has to be true.
+                    moreAfterWindow = reader.ReadLine() is not null;
+                    break;
+                }
+                if ((lineNo & 0xFFFF) == 0) ct.ThrowIfCancellationRequested();
+            }
+            if (!moreAfterWindow) total = lineNo;   // the end of the file was reached: the count is exact
         }
-        total = lineNo;
-        return Page(ctx, fi.FullName, window, total, offset, limit, maxBytes, sample.DetectedEol, sample.Bom, sample.Legacy, firstLineNumber: offset);
+        return Page(ctx, fi.FullName, window, total < 0 ? null : total, offset, limit, maxBytes,
+            sample.DetectedEol, bomLength > 0, legacy || sample.Legacy, firstLineNumber: offset, moreAfterWindow: moreAfterWindow);
     }
 
     private static async Task<ToolResult> ReadImageAsync(ToolContext ctx, FileInfo fi, CancellationToken ct)

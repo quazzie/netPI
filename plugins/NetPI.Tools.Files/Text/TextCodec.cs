@@ -127,6 +127,30 @@ public static class TextCodec
         _ => null,
     };
 
+    /// <summary>
+    /// The encoding a file is in, decided from a <b>sample</b> of its first bytes (a page of a huge file cannot hold the
+    /// whole thing). Same rules as <see cref="Decode"/>, with one difference that only a sample needs: a sample can end
+    /// in the middle of a multi-byte character, and a truncated tail is not a reason to call the file Latin-1. So the
+    /// last few bytes are dropped until the strict UTF-8 decode succeeds, and only a failure that survives that is
+    /// legacy. <paramref name="legacy"/> says whether the file round-trips as Latin-1, exactly as in
+    /// <see cref="TextDocument.Legacy"/>.
+    /// </summary>
+    public static (Encoding Encoding, bool Legacy, int BomLength) DetectEncoding(ReadOnlySpan<byte> sample)
+    {
+        var (bomLen, bomEnc) = DetectBom(sample);
+        if (bomLen > 0 && bomEnc is not null) return (bomEnc, Legacy: false, bomLen);
+        for (var trim = 0; trim <= 3 && sample.Length > trim; trim++)
+        {
+            try
+            {
+                _ = Utf8Strict.GetString(sample[..^trim]);
+                return (Utf8NoBom, Legacy: false, 0);
+            }
+            catch (DecoderFallbackException) { /* a bad byte, or a character the sample cut in half */ }
+        }
+        return (Encoding.Latin1, Legacy: true, 0);
+    }
+
     /// <summary>Decode bytes: BOM-aware (UTF-8/UTF-16), strict UTF-8 with Latin-1 fallback, LF-normalized.</summary>
     public static TextDocument Decode(byte[] bytes)
     {
