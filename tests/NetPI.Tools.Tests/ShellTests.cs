@@ -15,6 +15,21 @@ public static class ShellTests
 
     private static ShellTool Bash(ShellService s) => new("bash", s);
 
+    /// <summary>Runs one short command with live-output and exit callbacks that capture a marker (standing for a plugin's closure).
+    /// Not inlined, so nothing here keeps the marker alive once it returns.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static async Task<(WeakReference Caller, ManagedProcess Process)> StartWithCallbacks(string dir)
+    {
+        var marker = new object();
+        var caller = new WeakReference(marker);
+        const string command = "echo hi";
+        var spec = ShellLaunch.Bash(ShellLocator.FindBash(null)!, command, dir);
+        var mp = ManagedProcess.Start(Ids.New("proc"), spec, command, dir, new OutputCapture(),
+            live: _ => GC.KeepAlive(marker), onExited: _ => GC.KeepAlive(marker));
+        await mp.Completion;
+        return (caller, mp);
+    }
+
     private static bool ProcessAlive(int pid)
     {
         if (OperatingSystem.IsWindows())
@@ -233,6 +248,24 @@ public static class ShellTests
             // argv reaches bash verbatim only outside Windows (the reason the Windows style exists)
             if (!OperatingSystem.IsWindows())
                 Check.Equal(expected, await RunSpec(ShellLaunch.Bash(bash, command, dir, windowsStyle: false)), "bash -c");
+        });
+
+        // E2E reload.runtime-midrun failed whenever a bash call had run before: the registry keeps the last 50 finished
+        // processes, and each kept the caller's live-output and exit callbacks (closures of the runtime plugin), so the old
+        // runtime's load context could not be collected after a reload (the host logs "previous load context is still alive").
+        r.Add("shell: a finished process lets go of its caller's callbacks, so reloading the calling plugin can unload it", async () =>
+        {
+            var (caller, mp) = await StartWithCallbacks(T.TempDir("bash"));
+            Check.Equal("exited", mp.Status);
+            for (var i = 0; i < 5 && caller.IsAlive; i++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                await Task.Delay(20);
+            }
+            Check.False(caller.IsAlive, "a finished process still references its caller's callbacks");
+            GC.KeepAlive(mp); // the record itself stays in the registry
         });
 
         r.Add("bash: very long commands go through a temp script", async () =>
