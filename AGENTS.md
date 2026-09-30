@@ -40,6 +40,10 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   - `.\build.ps1 -Run` — publish and start the desktop app. `./build.sh` takes `--publish`, `--next-start`,
     `--pending`, `--discard`, `--app-dir`.
   - One plugin only, on purpose: `dotnet build plugins/<Name> -p:AppOutDir=<app>/plugins/<Name>/`.
+- **A publish from a worktree stages plugins instead of swapping them.** The built `NetPI.Abstractions.dll` never hash-matches
+  the one the running app holds open, so `-Publish` reports "the contracts changed" and puts every plugin in `.pending` for the
+  next start. To hot-swap one plugin anyway, copy its `.dll` and `.pdb` from the worktree's `artifacts\dev\app\plugins\<Name>\`
+  into `<app>\plugins\<Name>\` — the running app reloads it (same contracts, so it is safe when only that plugin's source changed).
 - **Want nothing to move under a running chat?** Set `plugins.quiet` (Settings or settings.json). Reloads are then
   recorded and not applied — the running versions keep serving, nothing swaps, no state is lost — and switching it off
   applies everything that piled up. This is the one thing a worktree cannot do: the running app is a single process
