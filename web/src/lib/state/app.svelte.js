@@ -49,6 +49,9 @@ class AppState {
 
 export const app = new AppState();
 
+// Sessions deleted while this window was open (removeSessionLocal); see there for why it is a plain Set.
+export const goneSessions = new Set();
+
 // ------------------------------------------------------------------------------------------ helpers
 
 export function sessionModelRef(s) {
@@ -411,6 +414,13 @@ export async function deleteSession(id) {
 }
 
 function removeSessionLocal(id) {
+  // The plain (non-reactive) set of sessions that went while this window was open, written before any reactive
+  // state changes: right after the delete, a Svelte teardown can still answer reactive reads (activeId,
+  // openTabs) with the pre-delete values, and only this — read synchronously, never rolled back — may decide
+  // that the app must not (re)materialize a chat store for the id. Capped: ids are short, and 4096 deleted
+  // sessions in one window is far beyond anything a person deletes.
+  goneSessions.add(id);
+  if (goneSessions.size > 4096) goneSessions.delete(goneSessions.values().next().value);
   if (app.openTabs.includes(id)) closeTab(id);
   app.sessions = app.sessions.filter((s) => s.id !== id);
   dropChat(id);
@@ -509,10 +519,29 @@ function setAgent(a) {
 // ------------------------------------------------------------------------------------------ notifications (notify.js)
 
 const titleOf = (s) => s?.title || 'New session';
-const saidJustNow = new Map(); // sessionId -> when a specific notification (goal, budget) went out
+export const saidJustNow = new Map(); // sessionId -> when a specific notification (goal, budget) went out
+
+// A suppression entry is only worth the window below (10 s): it exists so a "Finished" is not announced right
+// after the "Goal complete" that explains the ending. Without a lifetime the map would keep one entry per
+// notified session for the life of the window, so expired ones are dropped on every write, and the total is
+// capped (a flood of notifications keeps the most recent sessions; an evicted one just gets announced a moment
+// earlier than the flood would have let it).
+const SAID_JUST_NOW_WINDOW = 10_000;
+const SAID_JUST_NOW_MAX = 64;
+
+function noteSaidNow(sid) {
+  const now = Date.now();
+  for (const [k, t] of saidJustNow) if (now - t > SAID_JUST_NOW_WINDOW) saidJustNow.delete(k);
+  if (saidJustNow.size >= SAID_JUST_NOW_MAX) {
+    let oldest = null;
+    for (const [k, t] of saidJustNow) if (oldest === null || t < oldest[1]) oldest = [k, t];
+    if (oldest) saidJustNow.delete(oldest[0]);
+  }
+  saidJustNow.set(sid, now);
+}
 
 function notifyAbout(sid, s, body) {
-  saidJustNow.set(sid, Date.now());
+  noteSaidNow(sid);
   notify(sid, titleOf(s), body);
 }
 
@@ -526,7 +555,7 @@ function runEndedNotification(a) {
     const now = app.agents.get(sid);
     if (!now || BUSY.has(now.status)) return;
     const s = app.sessionsById.get(sid);
-    if (s?.meta?.goal?.status === 'active' || Date.now() - (saidJustNow.get(sid) ?? 0) < 10_000) return;
+    if (s?.meta?.goal?.status === 'active' || Date.now() - (saidJustNow.get(sid) ?? 0) < SAID_JUST_NOW_WINDOW) return;
     notify(sid, titleOf(s), now.status === 'failed' ? `Failed${now.error ? `: ${firstLine(now.error)}` : ''}` : 'Finished');
   }, 1500);
 }
