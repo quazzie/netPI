@@ -22,6 +22,8 @@ function err(code, message) {
 export function createIdeas({ publish }) {
   const file = GLOBAL;
   const doc = { ideas: [], exists: false };
+  // Attached image bytes, keyed by their reference path (the host writes them under <home>/idea-images).
+  const files = new Map();
   const suggestions = []; // the cards of closed chats (~/.netpi/ideas-pending.json)
   const checked = new Map(); // sessionId → the user-turn count it was last checked at
   const leavePlans = new Map(); // sessionId → the plan its closed tab should leave behind
@@ -160,6 +162,27 @@ export function createIdeas({ publish }) {
       changed();
       return true;
     },
+    // Images: the mock keeps the bytes in memory instead of on disk, and hands them back the way the host does.
+    'ideas.addImage': (p) => {
+      const mediaType = p.mediaType ?? 'image/png';
+      if (!/^image\/(png|jpeg|gif|webp)$/.test(mediaType)) throw err('bad_request', 'An idea image must be a png, jpeg, gif or webp.');
+      const data = String(p.data ?? '').replace(/^data:[^,]+,/, '');
+      const bytes = Math.floor((data.length * 3) / 4);
+      if (!bytes) throw err('bad_request', 'The image was empty.');
+      if (bytes > 4 * 1024 * 1024) throw err('bad_request', 'The image is larger than 4 MB — shrink it before attaching.');
+      const ref = { path: `idea-images/img-${rid(6)}.${mediaType === 'image/jpeg' ? 'jpg' : mediaType.split('/')[1]}`, name: p.name ?? 'image', mediaType, bytes };
+      files.set(ref.path, { mediaType, data });
+      return ref;
+    },
+    'ideas.removeImage': (p) => {
+      files.delete(p.path);
+      return true;
+    },
+    'ideas.image': (p) => {
+      const f = files.get(p.path);
+      if (!f) throw err('not_found', 'The image is gone from disk.');
+      return { path: p.path, mediaType: f.mediaType, bytes: Math.floor((f.data.length * 3) / 4), data: f.data };
+    },
     'ideas.reorder': (p) => {
       const ids = p.ids ?? [];
       const listed = ids.map((id) => doc.ideas.find((x) => x.id === id)).filter(Boolean);
@@ -178,6 +201,11 @@ export function createIdeas({ publish }) {
         `Priority: ${idea.priority} · Project: ${proj}${idea.tags.length ? ` · Tags: ${idea.tags.join(', ')}` : ''}`,
       ];
       if (idea.summary) lines.push('', idea.summary);
+      if (idea.images?.length) {
+        lines.push('', '## Images');
+        for (const i of idea.images) lines.push(`- ${i.name} — read it: ${i.path}`);
+        lines.push('Read the ones that matter before you start; they are the report.');
+      }
       for (const s of idea.sections) lines.push('', `## ${s.kind[0].toUpperCase()}${s.kind.slice(1)}${s.title ? `: ${s.title}` : ''}`, s.content);
       return lines.join('\n');
     },

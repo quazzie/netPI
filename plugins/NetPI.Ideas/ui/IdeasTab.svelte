@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { Icon, IconButton, SearchInput, Menu, Empty, Button, basename } from '@netpi/kit';
+  import { Icon, IconButton, SearchInput, Menu, Empty, Button, basename, prepareImage } from '@netpi/kit';
   import IdeaCard from './IdeaCard.svelte';
   import NewIdea from './NewIdea.svelte';
   import { STATUSES, ACTIVE, STATUS_TONE, matches, GROUP_ORDER, CLOSED_ORDER } from './model.js';
@@ -247,6 +247,35 @@
     },
   };
 
+  // ------------------------------------------------------------------ images
+  // Thumbnails are fetched per card when it opens (ideas.image) and kept here, so a backlog of ideas carries no image
+  // bytes and a card that was opened once does not ask again.
+  let imageCache = $state({});
+  async function attachImage(file) {
+    // A failure here must say so: an image that silently does not appear is the worst outcome of all three.
+    try {
+      const { image, note } = await prepareImage(file);   // shrink to what a message can carry, or refuse with a reason
+      if (!image) return { image: null, note };
+      const r = await call('ideas.addImage', { data: image.data, mediaType: image.mediaType, name: image.name });
+      if (!r) return { image: null, note };
+      imageCache = { ...imageCache, [r.path]: `data:${r.mediaType};base64,${image.data}` };
+      return { image: { ...r, url: image.url }, note };
+    } catch (e) {
+      toast(`Could not attach ${file.name || 'the image'}: ${e?.message ?? e}`, 'error');
+      return { image: null, note: null };
+    }
+  }
+  async function detachImage(path) {
+    delete imageCache[path];
+    imageCache = { ...imageCache };
+    try { await call('ideas.removeImage', { path }); } catch { /* the reference is gone from the card either way */ }
+  }
+  async function loadImage(path) {
+    if (imageCache[path]) return;
+    const r = await ctx.rpc('ideas.image', { path }).catch(() => null);
+    if (r?.data) imageCache = { ...imageCache, [path]: `data:${r.mediaType};base64,${r.data}` };
+  }
+
   async function add(idea, projectId) {
     const params = { idea, prepend: true, sessionId: ctx.app.activeSessionId || undefined };
     if (projectId) params.projectId = projectId; // '' → omitted: the session's project is the default stamp
@@ -374,7 +403,7 @@
   {/if}
 
   {#if adding}
-    <NewIdea onadd={add} oncancel={() => (adding = false)} projects={projects} activeProjectId={activeProjectId ?? ''} />
+    <NewIdea onadd={add} oncancel={() => (adding = false)} onattach={attachImage} ondetach={detachImage} projects={projects} activeProjectId={activeProjectId ?? ''} />
   {/if}
 
   {#if unsaved.length}
@@ -436,6 +465,9 @@
           {idea}
           {api}
           {ctx}
+          images={imageCache}
+          loadimage={loadImage}
+          ondetachimage={detachImage}
           open={expanded.has(idea.id)}
           ontoggle={() => toggleExpanded(idea.id)}
           canUp={placed(idea.id) > 0}

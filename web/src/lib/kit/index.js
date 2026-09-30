@@ -19,5 +19,8 @@ export { default as Segmented } from './Segmented.svelte';
 export { default as Menu } from './Menu.svelte';
 export { default as Pips } from './Pips.svelte';
 export { timeAgo, duration, tokens, usd, bytes, relPath, basename, truncate, stamp } from '../format.js';
+// Image handling for anything that attaches one (the composer, the ideas tab): shrink to fit a message, refuse
+// politely, and say what happened. Browser-only (canvas), which is fine — the kit is UI.
+export { prepareImage, imageBudget, sendBudget, payloadBytes, formatBytes } from '../images.js';
 export { host, renderMarkdown, confirm, copyText, desktop } from './host.js';
 export { clockNow, secondNow } from './ticker.svelte.js';

@@ -7,6 +7,9 @@
     idea,
     api,
     ctx,
+    images = {},
+    loadimage,
+    ondetachimage,
     open = false,
     ontoggle,
     canUp = false,
@@ -29,6 +32,20 @@
   );
   const agentMade = $derived(String(idea.createdBy ?? '').startsWith('agent'));
   const proj = $derived(idea.project?.id ? (idea.project.name ?? idea.project.id) : null);
+  const shots = $derived(idea.images ?? []);
+
+  // Thumbnails arrive when the card opens: one fetch per image, kept by the tab, so a list of ideas stays cheap.
+  $effect(() => {
+    if (!open) return;
+    for (const img of shots) loadimage?.(img.path);
+  });
+
+  // Removing an image drops the file (ideas.detach) and the reference in one patch. The idea keeps the rest.
+  async function removeImage(path) {
+    const kept = shots.filter((i) => i.path !== path).map(({ path: p, name, mediaType, bytes }) => ({ path: p, name, mediaType, bytes }));
+    await ondetachimage?.(path);
+    await api.update(idea.id, { images: kept });
+  }
 
   function startEdit(e) {
     e?.stopPropagation();
@@ -127,9 +144,28 @@
         <span class="tags np-grow" title={(idea.tags ?? []).map((t) => `#${t}`).join(' ')}>{#each idea.tags ?? [] as t (t)}<span class="tag">#{t}</span>{/each}</span>
     {#if idea.commits?.length}<span class="dim" title="{idea.commits.length} commit(s) recorded on this idea"><Icon name="branch" size={11} />{idea.commits.length}</span>{/if}
     {#if idea.sessions?.length}<span class="dim" title="{idea.sessions.length} chat(s) attached to this idea"><Icon name="message" size={11} />{idea.sessions.length}</span>{/if}
+    {#if shots.length}<span class="dim" title="{shots.length} image(s) attached"><Icon name="image" size={11} />{shots.length}</span>{/if}
         {#if agentMade}<span class="dim agent" title="Added by {idea.createdBy}"><Icon name="bot" size={11} /></span>{/if}
         <TimeAgo time={idea.updatedAt ?? idea.createdAt} class="dim when" />
       </div>
+      {#if shots.length}
+        <!-- The screenshots are the report: they sit above the text, big enough to read, removable one by one. -->
+        <div class="shots">
+          {#each shots as img (img.path)}
+            <figure>
+              {#if images[img.path]}
+                <img src={images[img.path]} alt={img.name} />
+              {:else}
+                <div class="pending" title={img.name}><span class="np-spinner"></span></div>
+              {/if}
+              <figcaption>
+                <span class="np-ellipsis" title={img.name}>{img.name}</span>
+                <IconButton icon="x" size={11} title="Remove image" onclick={() => removeImage(img.path)} />
+              </figcaption>
+            </figure>
+          {/each}
+        </div>
+      {/if}
       {#if editing}
         <form class="edit" onsubmit={saveEdit}>
           <input class="np-input" bind:value={form.title} placeholder="Title" />
@@ -422,6 +458,45 @@
   }
   .meta :global(.when) {
     flex: none;
+  }
+  .shots {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0 2px;
+  }
+  .shots figure {
+    margin: 0;
+    width: 168px;
+    border: 1px solid var(--border, #555);
+    border-radius: 5px;
+    overflow: hidden;
+    background: var(--bg-2, #252525);
+  }
+  .shots img,
+  .shots .pending {
+    display: block;
+    width: 100%;
+    height: 104px;
+    object-fit: cover;
+  }
+  .shots .pending {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.6;
+  }
+  .shots figcaption {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px 2px 6px;
+    font-size: var(--fs-xs);
+    color: var(--fg-dim);
+  }
+  .shots figcaption :global(.np-ellipsis) {
+    flex: 1 1 auto;
+    min-width: 0;
   }
   .tags .tag + .tag {
     margin-left: 6px;
