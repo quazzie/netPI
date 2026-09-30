@@ -15,6 +15,7 @@ IdeasStorageTests.Register(runner);
 IdeasMigrationTests.Register(runner);
 IdeasCheckTests.Register(runner);
 IdeasCommitTests.Register(runner);
+IdeasNoticeTests.Register(runner);
 TodoTests.Register(runner);
 WebTests.Register(runner);
 MediaTests.Register(runner);
