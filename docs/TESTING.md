@@ -295,3 +295,5 @@ Fresh suite results are recorded in STATUS.md. Live paid billing and Linux/macOS
 ## MCP fixtures
 
 MCP tests run in the existing Aux, Agent, Host and E2E suites. The shared `McpFixture.cs` mode launches a protocol-only stdio child via `--mcp-fixture`. HTTP fixtures bind local ephemeral ports. Run the scoped cases with filters `mcp`, `deferred:` and `mcp host:`; the E2E filter `mcp` includes actual Responses request captures and the narrow-panel UI check. The standalone UI check is `node tests/NetPI.E2E/ui/mcp-smoke.mjs`. All fixtures use isolated homes/processes and never install into the running app.
+
+Browser launches disable Edge's `msWindowTabManagerPublic` feature, including the browser and screenshot tools exercised by the Aux suite and the Playwright UI smoke tests. Otherwise headless Edge can leave Explorer-owned tab proxies in Alt-Tab after the browser exits. This flag prevents new entries; restarting Windows Explorer clears old entries (and briefly restarts the taskbar).

@@ -47,12 +47,12 @@ async function loadPlaywright() {
 /** Playwright's own Chromium, else an installed Edge/Chrome when that build is not downloaded (Edge ships with Windows). */
 async function launchBrowser(pw) {
   try {
-    return await pw.chromium.launch();
+    return await pw.chromium.launch({ args: ["--disable-features=msWindowTabManagerPublic"] });
   } catch (e) {
     if (!String(e?.message).includes("Executable doesn't exist")) throw e;
     for (const channel of process.platform === 'win32' ? ['msedge', 'chrome'] : ['chrome', 'msedge']) {
       try {
-        const b = await pw.chromium.launch({ channel });
+        const b = await pw.chromium.launch({ channel, args: ["--disable-features=msWindowTabManagerPublic"] });
         console.log(`  browser: ${channel} (Playwright's Chromium build is not installed)`);
         return b;
       } catch {}

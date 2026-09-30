@@ -242,7 +242,7 @@ internal sealed class BrowserHost : IAsyncDisposable
             var args = new List<string>
             {
                 "--no-first-run", "--no-default-browser-check", "--disable-sync", "--disable-search-engine-choice-screen",
-                "--hide-crash-restore-bubble", "--disable-features=Translate", "--mute-audio", "--remote-debugging-port=0",
+                "--hide-crash-restore-bubble", "--disable-features=Translate,msWindowTabManagerPublic", "--mute-audio", "--remote-debugging-port=0",
                 $"--user-data-dir={profile}", "--window-size=1280,900", "about:blank",
             };
             if (o.BrowserHeadless) args.Insert(0, "--headless=new");

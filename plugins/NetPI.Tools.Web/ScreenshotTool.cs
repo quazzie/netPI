@@ -214,7 +214,7 @@ internal sealed class HeadlessBrowser : IAsyncDisposable
         };
         foreach (var a in new[]
                  {
-                     "--headless=new", "--disable-gpu", "--hide-scrollbars", "--mute-audio", "--no-first-run", "--no-default-browser-check",
+                     "--headless=new", "--disable-features=msWindowTabManagerPublic", "--disable-gpu", "--hide-scrollbars", "--mute-audio", "--no-first-run", "--no-default-browser-check",
                      "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-component-update",
                      "--remote-debugging-port=0", $"--user-data-dir={profile}", $"--window-size={width},{height}", "about:blank",
                  })
