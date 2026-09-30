@@ -406,6 +406,52 @@ await openStripTab('left', 'Sessions');
 await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
 await page.waitForTimeout(200);
 
+// ------------------------------------------------------------------ the archived section: an archive 200 newer actives would hide
+log('sessions: the archived section lists what a newest-first window hides');
+{
+  // 201 active sessions (newest, one per hour back) + 59 newer archives, then one very old archive: in the old
+  // "Show archived" query shape (the newest 200 active + archived, filtered locally) the old archive was outside
+  // the window, so the panel said "Nothing archived".
+  const HIDDEN = 'Old archive, hidden by 200 actives';
+  const bulk = await rpcCall('mock.seedMany', { active: 201, archived: 59, title: HIDDEN });
+  try {
+    // the setup really hides it: the newest-200 window of active + archived holds no archive
+    const window = await rpcCall('sessions.list', { includeArchived: true, limit: 200 });
+    check('setup: 201 newer actives push the old archive out of the newest-200 window',
+      window.length === 200 && window.every((s) => !s.archived),
+      `${window.length} rows, archives in window: ${window.filter((s) => s.archived).length}`);
+
+    const askForArchived = page.locator('.panel.left .foot .link', { hasText: 'Show archived' });
+    await askForArchived.click();
+    await page.locator('.srow.archived').first().waitFor({ timeout: 5000 }).catch(() => {});
+    const asks = (await rpcCall('mock.listCalls')).filter((c) => c.archivedOnly);
+    check('archived section: the archives are listed from an archivedOnly query',
+      (await page.locator('.srow.archived').count()) === 50 && asks.length > 0,
+      `archived rows: ${await page.locator('.srow.archived').count()}; archivedOnly calls: ${JSON.stringify(asks)}`);
+    check('the hidden one is not in the first page (it is the oldest, 60 archives deep)',
+      (await page.locator('.srow.archived', { hasText: HIDDEN }).count()) === 0);
+
+    // 60 archives over 50-row pages: the hidden one is the oldest, so it is on page 2
+    const more = page.locator('.panel.left .list button', { hasText: 'Show more' });
+    check('archived section: 60 archives offer a second page', (await more.count()) === 1, `archived rows now: ${await page.locator('.srow.archived').count()}`);
+    if (await more.count()) {
+      await more.first().click();
+      await page.locator('.srow.archived', { hasText: HIDDEN }).waitFor({ timeout: 5000 }).catch(() => {});
+    }
+    const asks2 = (await rpcCall('mock.listCalls')).filter((c) => c.archivedOnly);
+    check('…and paging brings the hidden archive',
+      (await page.locator('.srow.archived', { hasText: HIDDEN }).count()) > 0,
+      `archived rows: ${await page.locator('.srow.archived').count()}; archivedOnly calls: ${JSON.stringify(asks2)}`);
+    await shot(page, '15b-archived-hidden');
+    // back to the plain list (the panel keeps its place for the later sections)
+    const hide = page.locator('.panel.left .foot .link', { hasText: 'Hide archived' });
+    if (await hide.count()) await hide.click();
+    await page.waitForTimeout(150);
+  } finally {
+    await rpcCall('mock.clearMany');
+  }
+}
+
 log('plugin tab: Work');
 {
   await openStripTab('right', 'Work');

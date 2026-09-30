@@ -201,6 +201,58 @@ export function agentFor(sessionId) {
   return a;
 }
 
+// e2e helper state: the ids seedMany() created (a wall of recent actives behind one very old archive, the
+// archived-filter check); mock.reset and clearBulk() drop them
+const bulk = new Set();
+
+/**
+ * e2e helper: seedMany({ active = 0, archived = 0, title = null, base = Date.now() }) →
+ * { active: id[], archived: id[], hidden: id|null }. The active sessions are the newest, one per hour back; the
+ * archived ones span 30→31 days behind, and `title` (the hidden archive) sits ~33 days behind, strictly oldest —
+ * so it is outside the newest-200 window of active + archived (the old "Show archived" query shape) and, of the
+ * 50-row archived pages, it is the last row of page 2.
+ */
+export function seedMany({ active = 0, archived = 0, title = null, base = Date.now() } = {}) {
+  const HOUR = 3600_000;
+  const DAY = 24 * HOUR;
+  const out = { active: [], archived: [], hidden: null };
+  for (let i = 0; i < active; i++) {
+    const at = base - (i + 1) * HOUR;
+    const s = mkSession({ title: `Bulk chat ${String(i + 1).padStart(3, '0')}`, createdAt: iso(at), updatedAt: iso(at) });
+    pushMessage(s.id, 'user', [text(`bulk ${i + 1}`)], {}, at);
+    bulk.add(s.id);
+    out.active.push(s.id);
+  }
+  for (let i = 0; i < archived; i++) {
+    const at = base - 30 * DAY - i * HOUR;
+    const s = mkSession({ title: `Bulk archive ${String(i + 1).padStart(2, '0')}`, archived: true, createdAt: iso(at), updatedAt: iso(at) });
+    pushMessage(s.id, 'user', [text(`archived bulk ${i + 1}`)], {}, at);
+    bulk.add(s.id);
+    out.archived.push(s.id);
+  }
+  if (title) {
+    const at = base - 33 * DAY;
+    const s = mkSession({ title, archived: true, createdAt: iso(at), updatedAt: iso(at) });
+    pushMessage(s.id, 'user', [text('an old archived chat')], {}, at);
+    bulk.add(s.id);
+    out.hidden = s.id;
+    out.archived.push(s.id);
+  }
+  return out;
+}
+
+/** Drop every seedMany() session (a test helper, like the store itself: no session.deleted events). */
+export function clearBulk() {
+  for (const id of bulk) {
+    store.sessions.delete(id);
+    store.messages.delete(id);
+    store.agents.delete(id);
+    store.queues.delete(id);
+    store.seqs.delete(id);
+  }
+  bulk.clear();
+}
+
 // ------------------------------------------------------------------------------------------ seed
 
 const MIN = 60_000;
@@ -307,6 +359,7 @@ function seedCycle(sid, i, t, cwd) {
 export function resetStore() {
   for (const k of ['projects', 'sessions', 'messages', 'agents', 'queues', 'uiState', 'seqs']) store[k].clear();
   store.nextMsgId = 1;
+  bulk.clear();
 }
 
 export function seed() {

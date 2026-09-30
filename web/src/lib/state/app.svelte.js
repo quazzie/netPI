@@ -21,6 +21,8 @@ class AppState {
   info = $state.raw(null);
   projects = $state.raw([]);
   sessions = $state.raw([]); // all known sessions (incl. subagents), newest first
+  sessionsMore = $state(false); // the last sessions.list page was full: an older page exists ("Show older")
+  sessionsOffset = 0; // rows the server has handed over so far (the next offset)
   models = $state.raw([]);
   defaultModel = $state(null);
   slots = $state.raw([]); // agents.list: the agents the user set up (configured) and other model calls in progress
@@ -124,12 +126,30 @@ function resubscribe() {
 
 // ------------------------------------------------------------------------------------------ loading
 
-export async function loadSessions() {
-  const list = await rpc('sessions.list', { includeSubagents: true, limit: 300 });
-  const known = new Set(list.map((s) => s.id));
-  // keep open sessions that fell outside the page
-  const extra = app.sessions.filter((s) => !known.has(s.id) && app.openTabs.includes(s.id));
-  app.sessions = [...list, ...extra];
+// The session list's page size: the sessions panel's "Show older" loads the next page, so no cap hides a session silently.
+const SESSION_PAGE = 300;
+
+/**
+ * Load a page of the session list (active sessions, newest first). `append` adds an older page to what is
+ * already loaded instead of replacing it (the panel's "Show older" button). Existing callers' behavior is
+ * unchanged: the first page replaces, keeping open sessions that fell outside it.
+ */
+export async function loadSessions(offset = 0, append = false) {
+  const list = await rpc('sessions.list', { includeSubagents: true, limit: SESSION_PAGE, offset });
+  if (append) {
+    // the rows we don't have yet, in newest-first order (a row that moved up stays where it is)
+    const known = new Set(app.sessions.map((s) => s.id));
+    const older = list.filter((s) => !known.has(s.id));
+    if (older.length) app.sessions = [...app.sessions, ...older];
+  } else {
+    const known = new Set(list.map((s) => s.id));
+    // keep open sessions that fell outside the page
+    const extra = app.sessions.filter((s) => !known.has(s.id) && app.openTabs.includes(s.id));
+    app.sessions = [...list, ...extra];
+  }
+  app.sessionsOffset = offset + list.length;
+  app.sessionsMore = list.length === SESSION_PAGE;
+  return list;
 }
 
 export async function loadProjects() {

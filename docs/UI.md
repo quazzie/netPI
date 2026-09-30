@@ -720,8 +720,9 @@ names or an inline `<svg …>` string.
 
 ## What the UI expects from the host (beyond PROTOCOL.md)
 
-- `sessions.list` accepts `includeArchived: true`. It is in `SessionQuery` but not in the protocol table; the
-  archived list and unarchiving depend on it.
+- `sessions.list` accepts `includeArchived: true` (a mixed newest-first result) and `archivedOnly: true` (archives only, which the
+  sessions panel's "Show archived" section fetches as a separate, paged query so the newest active sessions cannot push an
+  old archive out of the window). Both are in the protocol table.
 - `sessions.update { model: '' }` and `{ reasoning: '' }` must reset to the default. The UI sends an empty
   string for "default".
 - `runs.list { includeFinished: true }` is called at startup to seed the status dots, including failed and

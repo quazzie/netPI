@@ -323,6 +323,59 @@ public static class SessionStoreTests
             Check.Throws<KeyNotFoundException>(() => f.Store.DeleteSession(parent.Id));
         });
 
+        r.Add("sessions: an old archive survives a newest-first window: archivedOnly filter and stable paging", async () =>
+        {
+            await using var f = new Fixture();
+            // The oldest session of the store, archived: the newer actives below push it outside any newest-first window
+            var hidden = f.Store.CreateSession(new SessionInfo { Title = "Old archive" });
+            f.Store.AppendMessage(hidden.Id, ChatMessage.UserText("hello"));
+            f.Store.UpdateSession(hidden.Id, x => x.Archived = true);
+
+            for (var i = 1; i <= 201; i++)
+            {
+                var s = f.Store.CreateSession(new SessionInfo { Title = $"Active {i:D3}" });
+                f.Store.AppendMessage(s.Id, ChatMessage.UserText("m" + i));
+            }
+
+            Check.Equal(201, f.Store.ListSessions(new SessionQuery { Limit = 5000 }).Count, "the default query sees active sessions only");
+            Check.True(f.Store.ListSessions(new SessionQuery { Limit = 5000 }).All(s => s.Id != hidden.Id));
+
+            // The shape of the old bug: a newest-first window over active + archived, with the archives filtered client-side
+            var window = f.Store.ListSessions(new SessionQuery { IncludeArchived = true, Limit = 200 });
+            Check.Equal(200, window.Count);
+            Check.True(window.All(s => s.Id != hidden.Id), "the old archive is outside the newest-200 window");
+
+            // The fix: an archived-only query returns it, with or without a search
+            Check.Equal(hidden.Id, f.Store.ListSessions(new SessionQuery { ArchivedOnly = true }).Single().Id);
+            Check.Equal(hidden.Id, f.Store.ListSessions(new SessionQuery { ArchivedOnly = true, Search = "Old archive" }).Single().Id);
+            Check.Equal(0, f.Store.ListSessions(new SessionQuery { ArchivedOnly = true, Search = "Active" }).Count);
+
+            // More archives: paging over the archived-only list never skips or repeats a session
+            for (var i = 1; i <= 11; i++)
+            {
+                var a = f.Store.CreateSession(new SessionInfo { Title = $"Archive {i:D2}" });
+                f.Store.AppendMessage(a.Id, ChatMessage.UserText("a" + i));
+                f.Store.UpdateSession(a.Id, x => x.Archived = true);
+            }
+            var all = f.Store.ListSessions(new SessionQuery { ArchivedOnly = true, Limit = 5000 });
+            Check.Equal(12, all.Count);
+
+            var walked = new List<string>();
+            var seen = new HashSet<string>();
+            for (var off = 0; ; off += 5)
+            {
+                var page = f.Store.ListSessions(new SessionQuery { ArchivedOnly = true, Limit = 5, Offset = off });
+                if (page.Count == 0) break;
+                Check.True(page.All(s => s.Archived), $"an archived-only page at offset {off} never leaks an active session");
+                foreach (var s in page) Check.True(seen.Add(s.Id), $"no session repeats across page boundaries: {s.Id}");
+                walked.AddRange(page.Select(s => s.Id));
+                if (page.Count < 5) break;
+            }
+            Check.Equal(12, walked.Count, "no session skipped at a page boundary");
+            Check.Equal(string.Join(",", all.Select(s => s.Id)), string.Join(",", walked), "the paged walk matches the full list in order");
+            Check.Equal(0, f.Store.ListSessions(new SessionQuery { ArchivedOnly = true, Limit = 5, Offset = 50 }).Count, "beyond the end: empty");
+        });
+
         r.Add("sessions: update mutates, persists and publishes session.updated", async () =>
         {
             await using var f = new Fixture();
