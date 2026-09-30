@@ -1899,6 +1899,44 @@ log('notifications');
 // ------------------------------------------------------------------ reconnect
 if (!EXTERNAL) {
   log('reconnect');
+  // a run that ends while the browser is offline: its stream.end is lost with the socket, so on reconnect the UI
+  // must reconcile its transient state against the server truth (the run is done) and not keep the partial stream
+  {
+    await page.keyboard.press('Control+t');
+    await page.waitForSelector('.intro');
+    await ta.fill('Why does the agent scheduler throw when a pool is missing? Make it fail with a clear message.');
+    await ta.press('Enter');
+    // drop the link as soon as the answer is streaming: between stream.start and message.added the partial stream
+    // is the only place it lives (it is cleared by the message that replaces it), so the drop has to land there
+    await page.waitForSelector('.thinking.live', { timeout: 15_000 });
+    const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+    check('the run is streaming before the drop',
+      (await page.locator('.thinking.live').count() + (await page.locator('.assistant.live').count())) > 0);
+    // the mock drops the WebSocket link (the server keeps running, its events are just lost)
+    await rpcCall('mock.offline', { ms: 60_000 });
+    await page.waitForSelector('.conn[data-status="reconnecting"]', { timeout: 5_000 }).catch(() => {});
+    check('connection indicator shows reconnecting after the drop', (await page.locator('.conn[data-status="reconnecting"]').count()) > 0);
+    // the run keeps going on the server and ends while the socket is down
+    let busy = true;
+    for (let i = 0; busy && i < 120; i++) {
+      busy = (await rpcCall('runs.list')).some((a) => a.sessionId === sid && ['running', 'queued', 'yielded'].includes(a.status));
+      if (busy) await sleep(500);
+    }
+    check('the run finishes while the browser is offline', !busy);
+    const msgs = (await rpcCall('sessions.messages', { id: sid, limit: 6 })).messages;
+    check('its final answer is persisted server-side', msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant');
+    await rpcCall('mock.online');
+    await page.waitForSelector('.conn[data-status="open"]', { timeout: 30_000 });
+    // loadAll (reconnect) is done once the re-fetched agents leave the composer's running state; the reconcile runs inside it
+    await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 30_000 });
+    await page.locator('.content .item[data-kind="text"]', { hasText: 'unknown-pool handling' }).waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(400);
+    check('on reconnect the finished run\'s stale partial stream is gone',
+      (await page.locator('.thinking.live').count() + (await page.locator('.assistant.live').count())) === 0,
+      `live blocks: thinking ${await page.locator('.thinking.live').count()}, text ${await page.locator('.assistant.live').count()}`);
+    check('…and the persisted final answer is shown', (await page.locator('.content .item[data-kind="text"]', { hasText: 'unknown-pool handling' }).count()) > 0);
+    await shot(page, '24a-run-ended-while-offline');
+  }
   await page.locator('.panel.left .strip-tab', { hasText: 'Sessions' }).click();
   // Forks sort ahead of the original, and disappear from the mock's memory when it restarts.
   await page.locator('.srow', { has: page.locator('.title', { hasText: /^Fix streaming reconnect bug$/ }) }).click();

@@ -168,8 +168,10 @@ async function loadAgents() {
     const list = await rpc('runs.list', { includeFinished: true }, { timeout: 8000 });
     app.agents.clear();
     for (const a of list ?? []) setAgent(a);
+    return new Map((list ?? []).map((a) => [a.sessionId, a]));
   } catch {
     /* agent plugin missing */
+    return null;
   }
 }
 
@@ -192,8 +194,9 @@ async function fetchSession(id) {
 }
 
 async function loadAll({ reconnect }) {
+  let agentsNow = null; // the fresh run states (loadAgents) — null when the agents plugin is missing
   try {
-    const [info] = await Promise.all([
+    const [info, , , , , , now] = await Promise.all([
       rpc('app.info').catch(() => null),
       loadProjects(),
       loadSessions(),
@@ -205,6 +208,7 @@ async function loadAll({ reconnect }) {
       loadAsks(),
     ]);
     app.info = info;
+    agentsNow = now;
   } catch (e) {
     toast(`Failed to load: ${e.message}`, 'error');
   }
@@ -223,7 +227,13 @@ async function loadAll({ reconnect }) {
   } else {
     // we may have missed events: refresh the active chat, mark the others stale
     resubscribe();
-    for (const c of allChats()) c.stale = true;
+    for (const c of allChats()) {
+      c.stale = true;
+      // a run may have ended while we were disconnected (its stream.end was lost with the socket): reconcile the
+      // transient state against the server's run state, so a finished run's partial stream does not stay active —
+      // a run that is still busy keeps its live state
+      if (agentsNow) c.reconcile(!!agentsNow.get(c.id) && BUSY.has(agentsNow.get(c.id).status));
+    }
     if (app.activeId) {
       const c = getChat(app.activeId);
       c.stale = false;
