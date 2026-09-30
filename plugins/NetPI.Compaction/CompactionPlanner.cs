@@ -197,21 +197,60 @@ public static class TranscriptSerializer
         return s[..head] + $"\n…[{s.Length - max} chars omitted]…\n" + s[^tail..];
     }
 
-    /// <summary>Split serialized entries into chunks of at most <paramref name="maxChars"/> (oversized entries are truncated).</summary>
+    /// <summary>Room left in a piece for its part marker (" (part 2/7)").</summary>
+    private const int PartTagRoom = 24;
+
+    /// <summary>Split serialized entries into chunks of at most <paramref name="maxChars"/>. An entry that does not fit
+    /// on its own is split into successive pieces rather than truncated, so a huge paste reaches the summarizer whole —
+    /// it costs more rolling calls, which is the point.</summary>
     public static List<string> Chunk(IEnumerable<string> entries, int maxChars)
     {
         maxChars = Math.Max(maxChars, 500);
         var chunks = new List<string>();
         var sb = new StringBuilder();
+        void Flush()
+        {
+            if (sb.Length > 0) { chunks.Add(sb.ToString()); sb.Clear(); }
+        }
         foreach (var raw in entries)
         {
             if (string.IsNullOrWhiteSpace(raw)) continue;
-            var e = raw.Length > maxChars - 2 ? Truncate(raw, maxChars - 60) : raw;
-            if (sb.Length > 0 && sb.Length + e.Length + 2 > maxChars) { chunks.Add(sb.ToString()); sb.Clear(); }
-            if (sb.Length > 0) sb.Append("\n\n");
-            sb.Append(e);
+            foreach (var piece in Pieces(raw, maxChars))
+            {
+                if (sb.Length > 0 && sb.Length + piece.Length + 2 > maxChars) Flush();
+                if (sb.Length > 0) sb.Append("\n\n");
+                sb.Append(piece);
+            }
         }
-        if (sb.Length > 0) chunks.Add(sb.ToString());
+        Flush();
         return chunks;
+    }
+
+    /// <summary>One entry as the pieces it packs into: itself when it fits, otherwise its parts, each still reading as
+    /// the same message (the role tag is repeated and the piece numbered) and nothing dropped.</summary>
+    private static List<string> Pieces(string raw, int maxChars)
+    {
+        if (raw.Length <= maxChars - 2) return [raw];
+        // The first line is the role tag ("[User]", "[Assistant]", "[Notice: kind]"); the body is what is long.
+        var nl = raw.IndexOf('\n');
+        var header = nl > 0 && raw[0] == '[' ? raw[..nl] : null;
+        var body = header is null ? raw : raw[(nl + 1)..];
+        var budget = Math.Max(200, maxChars - 2 - (header?.Length ?? 0) - PartTagRoom);
+        var parts = new List<string>();
+        var rest = body;
+        while (rest.Length > budget)
+        {
+            var cut = rest.LastIndexOf('\n', budget);
+            if (cut <= 0) cut = budget;   // one long line (a pasted blob): a hard cut
+            parts.Add(rest[..cut]);
+            rest = rest[cut..].TrimStart('\n');
+        }
+        if (rest.Length > 0) parts.Add(rest);
+        if (parts.Count <= 1) return [raw];
+        return parts.Select((p, i) =>
+        {
+            var tag = $" (part {i + 1}/{parts.Count})";
+            return header is null ? p + tag : $"{header}{tag}\n{p}";
+        }).ToList();
     }
 }
