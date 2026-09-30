@@ -478,6 +478,13 @@ the idea (`get`) and works from what it read. Invalid input comes back as an `is
 The backlog moved out of JSON files once, and the files are still readable afterwards. What each side does with them is
 deliberate, because a storage version is not something to find out by trying to write it.
 
+**The cutover happens on the first start, and the safe way to reach it is a restart.** Nothing has to be run by hand
+(see "The one-time cutover" above), but the first start of the new build is the moment a *still-running* older build
+could be writing the same JSON file — which is exactly what a plugin reload is. So: after the upgrade, stop NetPI and
+start it again rather than reloading the plugin into the running instance. If an old build did get a write in, the file
+reappears where the new build no longer looks, and `ideas.migration` reports it as `orphanedSources`; nothing merges it
+silently, and `ideas.migrate { confirm: true, force: true }` takes it in on purpose (with the ids and the order it had).
+
 **A database from a newer NetPI is refused.** The tables carry a storage version (1 now). A build that finds a higher
 one logs an error and registers neither the tab nor the tool, rather than reading a shape it would mangle on the next
 write. Nothing is written, the backlog stays exactly as the newer build left it, and the answer is "update NetPI" —
