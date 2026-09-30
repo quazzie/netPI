@@ -542,19 +542,29 @@ public sealed class IdeasRepository
     /// once, or the same answer retried after a timeout, therefore have one effect: the second reads the recorded
     /// resolution and reports the same outcome instead of producing it again.
     /// </summary>
-    public CardResolution ResolveCard(string cardId, string action, JsonObject? edit, Action<JsonObject>? afterCommit = null)
+    public CardResolution ResolveCard(string cardId, string action, JsonObject? edit, Action<JsonObject>? afterCommit = null) =>
+        ResolveCard(cardId, action, edit, afterCommit, requireCard: true);
+
+    /// <summary>
+    /// As <see cref="ResolveCard(string, string, JsonObject?, Action{JsonObject}?)"/>, but an answer whose card is
+    /// already gone is still applied: that is what an interrupted answer of an older version looks like (the card left
+    /// the queue, the idea never landed). A caller that is answering a card the user is looking at wants the card.
+    /// </summary>
+    public CardResolution ResolveCard(string cardId, string action, JsonObject? edit, Action<JsonObject>? afterCommit, bool requireCard)
     {
         var result = _db.Transaction(_ =>
         {
             if (Resolution(cardId) is { } done) // already answered: the same answer, not a second one
                 return new CardResolution(done.IdeaId is { Length: > 0 } id ? Find(id)?.Doc : null, true, done.Action);
 
-            var card = Card(cardId) ?? throw new RpcException("not_found", "That card is gone (already answered, discarded, or NetPI restarted).");
-            ValidateAnswer(action, card);
+            var card = Card(cardId);
+            if (card is null && requireCard)
+                throw new RpcException("not_found", "That card is gone (already answered, discarded, or NetPI restarted).");
+            if (card is not null) ValidateAnswer(action, card);
             var idea = action switch
             {
-                "save" => SaveCard_(card, edit),
-                "done" => MarkDone_(IdeaOps.Str(card["ideaId"]) ?? "").Doc,
+                "save" => SaveCard_(card ?? throw new RpcException("bad_request", "An answer that saves an idea needs the card it was about."), edit),
+                "done" => MarkDone_(IdeaOps.Str(card?["ideaId"]) ?? "").Doc,
                 _ => null,
             };
             _db.Execute("INSERT INTO ideas_resolutions (suggestion_id, action, idea_id, at) VALUES (@id, @a, @i, @at)",
@@ -564,6 +574,36 @@ public sealed class IdeasRepository
         });
         // Only after the commit: nothing is announced that did not happen.
         if (result.Idea is not null) afterCommit?.Invoke(result.Idea);
+        Announce("answer");
+        return result;
+    }
+
+    /// <summary>
+    /// Finish an answer an older version left in its journal: the entry carries the idea it wrote (with the id and the
+    /// timestamps it had), so the answer is completed exactly as it was meant, once. An idea that is already there is
+    /// not written again, and an id that is taken is given a new one rather than overwriting somebody's idea.
+    /// </summary>
+    public CardResolution FinishLegacyAnswer(string cardId, string action, JsonObject? wanted, string? ideaId)
+    {
+        var result = _db.Transaction(_ =>
+        {
+            if (Resolution(cardId) is { } done) return new CardResolution(done.IdeaId is { Length: > 0 } id ? Idea(id) : null, true, done.Action);
+            JsonObject? idea = null;
+            if (action == "save" && wanted is not null)
+            {
+                var doc = (JsonObject)wanted.DeepClone();
+                var wantedId = IdeaOps.Str(doc["id"]);
+                if (wantedId is not { Length: > 0 } || Find(wantedId) is not null)
+                    doc["id"] = IdeaOps.NewId("idea-", TakenIds(), 6);
+                idea = Insert_(doc, _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_items") ?? 0).Doc;
+            }
+            else if (action == "done" && ideaId is { Length: > 0 })
+                idea = MarkDone_(ideaId).Doc;
+            _db.Execute("INSERT INTO ideas_resolutions (suggestion_id, action, idea_id, at) VALUES (@id, @a, @i, @at)",
+                new { id = cardId, a = action, i = (object?)IdeaOps.Str(idea?["id"]), at = IdeaOps.Now() });
+            RemoveCard(cardId);
+            return new CardResolution(idea, false, action);
+        });
         Announce("answer");
         return result;
     }

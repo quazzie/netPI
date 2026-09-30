@@ -194,6 +194,8 @@ public sealed class IdeasMigration(IdeasRepository repo, IdeasLocator locator, F
 
         var diagnostics = new List<JsonObject>();
         var read = new List<(LegacySource Source, byte[] Bytes)>();
+        // What the JSON version's own receipt says it merged already: those files are accounted for, not merged again.
+        var merged = ReceiptEntries();
         foreach (var source in Sources())
         {
             ct.ThrowIfCancellationRequested();
@@ -206,9 +208,15 @@ public sealed class IdeasMigration(IdeasRepository repo, IdeasLocator locator, F
                 continue;
             }
             if (file is null || bytes is null) continue;
-            if (!force && _repo.HasImport(ImportId(source), LegacyBacklog.HashOf(bytes!)))
+            var hash = LegacyBacklog.HashOf(bytes!);
+            if (!force && (_repo.HasImport(ImportId(source), hash) || merged.ContainsKey(source.Path)))
             {
-                diagnostics.Add(new JsonObject { ["path"] = source.Path, ["skipped"] = "already imported" });
+                diagnostics.Add(new JsonObject
+                {
+                    ["path"] = source.Path,
+                    ["skipped"] = "the JSON version had already merged this file",
+                    ["ids"] = new JsonArray((merged.TryGetValue(source.Path, out var known) ? known : []).Select(i => (JsonNode?)i).ToArray()),
+                });
                 continue;
             }
             if (source.Kind is "backlog" or "project")
@@ -385,9 +393,7 @@ public sealed class IdeasMigration(IdeasRepository repo, IdeasLocator locator, F
             }
             try
             {
-                var resolution = action == "save"
-                    ? r.ResolveCard(cardId, "save", null)
-                    : r.ResolveCard(cardId, action, null);
+                var resolution = r.FinishLegacyAnswer(cardId, action, wanted, IdeaOps.Str(node["ideaId"]));
                 counts["answers"] = (int)(counts["answers"]!.GetValue<int>() + 1);
                 diagnostics.Add(new JsonObject { ["op"] = opId, ["card"] = cardId, ["action"] = action, ["ideaId"] = IdeaOps.Str(resolution.Idea?["id"]), ["note"] = "finished" });
             }
@@ -416,6 +422,25 @@ public sealed class IdeasMigration(IdeasRepository repo, IdeasLocator locator, F
             r.RecordImport(ImportId(new LegacySource("project", source)), "legacy-project", source, hash, new JsonObject { ["ids"] = new JsonArray(ids.Select(i => (JsonNode?)i).ToArray()) });
             diagnostics.Add(new JsonObject { ["source"] = source, ["note"] = "the JSON version had already merged this file", ["ids"] = ids.Count });
         }
+    }
+
+    /// <summary>The per-project files the JSON version's own receipt says it merged, and the ids it gave them.</summary>
+    private Dictionary<string, List<string>> ReceiptEntries()
+    {
+        var map = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        var file = Path.Combine(_locator.Home, ReceiptFileName);
+        try
+        {
+            if (!File.Exists(file)) return map;
+            var root = JsonNode.Parse(File.ReadAllText(file), documentOptions: new JsonDocumentOptions { AllowTrailingCommas = true }) as JsonObject;
+            foreach (var node in (root?["imports"] as JsonArray ?? []).OfType<JsonObject>())
+            {
+                if (IdeaOps.Str(node["source"]) is not { Length: > 0 } source) continue;
+                map[source] = (node["imported"] as JsonArray ?? []).Select(IdeaOps.Str).Where(i => i is { Length: > 0 }).Select(i => i!).ToList();
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or IOException) { /* an unreadable receipt is an empty one */ }
+        return map;
     }
 
     /// <summary>Import an ideas file an older build wrote after the cutover, keeping what is already there.</summary>
