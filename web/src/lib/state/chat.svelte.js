@@ -4,6 +4,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { rpc } from '../rpc.svelte.js';
 import { nextFrame, flushNow } from '../frame.js';
+import { draftImages, dropDraft, setDraftImages, touchDraft } from './drafts.svelte.js';
 
 export const PAGE = 60;
 export const CAP = 200; // max messages kept in the window (≈ DOM cap)
@@ -145,9 +146,16 @@ export class ChatStore {
   // the user opened (true) or closed (false) the thinking of a streaming answer: later streams in this chat start that
   // way too, and so do the finished thinking rows of those answers; null = follow the "Expand thinking" preference
   liveThinkingOpen = $state(null);
-  // composer
+  // composer: the text persists in localStorage (saveDraft); the image blobs live in the draft store
+  // (drafts.svelte.js), app-lifetime and bounded there — the store only shows them, so both survive
+  // this store's eviction
   draft = $state('');
-  images = $state.raw([]);
+  get images() {
+    return draftImages(this.id);
+  }
+  set images(v) {
+    setDraftImages(this.id, v);
+  }
   // scroll memory (restored when the tab is shown again)
   scroll = null;
 
@@ -160,6 +168,8 @@ export class ChatStore {
     try {
       this.draft = localStorage.getItem(`netpi.draft.${id}`) ?? '';
     } catch {}
+    // rebuilding the store is the session being (re)opened: keep a draft with blobs ahead of the eviction order
+    if (draftImages(id).length) touchDraft(id);
   }
 
   saveDraft() {
@@ -418,6 +428,7 @@ export function dropChat(id) {
     c.dispose();
     cache.delete(id);
   }
+  dropDraft(id); // the session is deleted: its draft blobs are released too
 }
 
 export function allChats() {

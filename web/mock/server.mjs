@@ -97,6 +97,7 @@ const RPC_DOCS = {
   'logs.recent': 'Recent log entries: { max? } → { time, level, category, message, exception? }[]',
 };
 const filesOpened = [];
+const msgLoads = new Map(); // e2e test helper: sessions.messages calls per session — a fresh call means the chat store was rebuilt (evicted and reopened)
 
 const SYSTEM_PROMPT = (project, session) => `You are a coding agent running in NetPI, an agent harness on the user's own machine. Work through the tools you have: act rather than describe, check the results and verify your work when practical. Ask only when a request is genuinely ambiguous or an action would be destructive. Be concise, and end with a short summary of what you did or found.
 
@@ -443,6 +444,7 @@ const handlers = {
   },
   'sessions.messages': (p) => {
     const id = need(p, 'id');
+    msgLoads.set(id, (msgLoads.get(id) ?? 0) + 1);
     getSession(id);
     let msgs = store.messages.get(id) ?? [];
     if (p.beforeSeq != null) msgs = msgs.filter((m) => m.seq < p.beforeSeq);
@@ -710,6 +712,7 @@ const handlers = {
   // test helpers: slow the process tails and observe who asks for them (the e2e leak check)
   'mock.procTailDelay': (p) => ((procTailDelayMs = p.ms ?? 0), true),
   'mock.procStats': () => work.procStats(),
+  'mock.msgLoads': () => Object.fromEntries(msgLoads),
   'guard.pending': (p = {}) => agent.pendingApprovals(p.sessionId),
   'guard.answer': (p = {}) => {
     if (agent.answerApproval(need(p, 'approvalId'), p.allow, p.scope) === 'not_found') throw new RpcError('not_found', 'No tool call waits for your OK with that id.');
@@ -854,6 +857,7 @@ const handlers = {
   // test helper: back to the seeded state
   'mock.reset': () => {
     procTailDelayMs = 0;
+    msgLoads.clear();
     for (const s of store.sessions.keys()) agent.abort(s);
     resetStore();
     seed();

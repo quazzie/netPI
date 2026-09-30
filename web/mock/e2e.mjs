@@ -4,7 +4,7 @@
 // (MOCK_SPEED=3) so it can also test reconnects; pass --url to use a running server instead.
 //
 //   npm run build && npm run e2e
-//   node web/mock/e2e.mjs [--out dir] [--only shot,shot] [--url http://127.0.0.1:7431] [--no-dev]
+//   node web/mock/e2e.mjs [--out dir] [--only <section>,<section>] [--url http://127.0.0.1:7431] [--no-dev]
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -25,13 +25,19 @@ const rpcCall = (method, params = {}) =>
 fs.mkdirSync(OUT, { recursive: true });
 
 const results = [];
-const log = (...a) => console.log(...a);
+let section = ''; // the current section header: what --only gates the checks by
+const log = (...a) => {
+  // a top-level single-string header names the section; the "  ✓ …" and "  📸 …" lines and the final summary don't
+  if (a.length === 1 && typeof a[0] === 'string' && !a[0].startsWith(' ') && !a[0].startsWith('\n')) section = a[0];
+  console.log(...a);
+};
 const shot = async (page, name) => {
   if (ONLY && !ONLY.has(name)) return;
   await page.screenshot({ path: path.join(OUT, `${name}.png`) });
   log(`  📸 ${name}.png`);
 };
 function check(name, ok, detail = '') {
+  if (ONLY && !ONLY.has(section)) return; // --only: report the chosen sections' checks only
   results.push({ name, ok, detail });
   log(`  ${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`);
 }
@@ -1421,6 +1427,62 @@ log('images');
   await page.waitForSelector('.user .img img', { timeout: 5000 }).catch(() => {});
   check('user message shows the image', (await page.locator('.user .img img').count()) > 0);
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 20_000 }).catch(() => {});
+}
+
+// ------------------------------------------------------------------ composer drafts
+log('composer drafts');
+{
+  // Unsent composer state must not live in the per-chat cache (a 5-store LRU, chat.svelte.js): attach an
+  // image, open five more chats so this session's store is evicted, come back — the chip must still be
+  // there. The mock's sessions.messages counter proves the store was rebuilt on return, so a pass cannot
+  // come from a still-live store.
+  await page.keyboard.press('Control+t');
+  await page.waitForSelector('.intro');
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const loads = async () => ((await rpcCall('mock.msgLoads')) ?? {})[sid] ?? 0;
+  for (let i = 0; i < 20 && !(await loads()); i++) await sleep(100); // the new chat's first page
+  const base = await loads();
+  const png = await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 48;
+    c.height = 32;
+    const g = c.getContext('2d');
+    const grad = g.createLinearGradient(0, 0, 48, 32);
+    grad.addColorStop(0, '#7c93ff');
+    grad.addColorStop(1, '#4cc38a');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 48, 32);
+    return c.toDataURL('image/png').split(',')[1];
+  });
+  await page.locator('.composer input[type=file]').setInputFiles({ name: 'draft.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
+  await page.waitForSelector('.composer .thumb');
+  check('draft: an attached image shows as a chip', (await page.locator('.composer .thumb').count()) === 1);
+  const evictors = [];
+  for (let i = 0; i < 5; i++) {
+    const n = await page.locator('.topbar .tab').count();
+    await page.keyboard.press('Control+t');
+    // wait for the new tab itself: the previous empty chat's .intro is still in the DOM while the switch lags
+    await page.waitForFunction((m) => document.querySelectorAll('.topbar .tab').length === m + 1, n, { timeout: 5000 });
+    await page.waitForSelector('.intro');
+    evictors.push(await page.locator('.topbar .tab.active').getAttribute('data-tab'));
+  }
+  await page.locator(`.topbar .tab[data-tab="${sid}"]`).click();
+  const back = await loads();
+  check('draft: the chat store was evicted (a fresh load on return)', back > base, `sessions.messages ${base} → ${back} for ${sid}`);
+  check('draft: the attachment chip survives cache eviction', (await page.locator('.composer .thumb').count()) === 1);
+  await shot(page, '21b-draft-chip-after-eviction');
+  // the bound: more attachments than DRAFT_IMAGES_MAX keep the newest (drafts.svelte.js)
+  const many = Array.from({ length: 8 }, (_, i) => ({ name: `img-${i}.png`, mimeType: 'image/png', buffer: Buffer.from(png, 'base64') }));
+  await page.locator('.composer input[type=file]').setInputFiles(many);
+  await page.waitForFunction(() => document.querySelectorAll('.composer .thumb').length === 6, null, { timeout: 5000 }).catch(() => {});
+  const titles = await page.locator('.composer .thumb').evaluateAll((els) => els.map((e) => e.title));
+  check('draft: a draft keeps at most six attachments, the newest', titles.length === 6 && titles[0] === 'img-2.png' && titles.at(-1) === 'img-7.png', titles.join(' '));
+  // discard: removing a chip releases it from the draft
+  await page.locator('.composer .thumb-x').first().click();
+  check('draft: removing a chip clears it', (await page.locator('.composer .thumb').count()) === 5);
+  // the five empty chats were only here to evict the store: close them again
+  for (const id of evictors) await page.locator(`.topbar .tab[data-tab="${id}"] .tab-close`).click();
+  await page.waitForTimeout(200);
 }
 
 // ------------------------------------------------------------------ web tools, todo plan, tools notice, file links

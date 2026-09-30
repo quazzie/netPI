@@ -16,6 +16,7 @@
   import IdeaCards from './IdeaCards.svelte';
   import { app, isBusy, modelFor, sendMessage, abortAgent } from '../../lib/state/app.svelte.js';
   import { pendingIn, answerAsk } from '../../lib/state/asks.svelte.js';
+  import { DRAFT_IMAGES_MAX } from '../../lib/state/drafts.svelte.js';
   import { composer, modals, prefs, toast } from '../../lib/state/ui.svelte.js';
   import { allCommands, parseCommand } from '../../lib/commands.js';
   import { skillCommands } from '../../lib/skills.js';
@@ -283,7 +284,9 @@
     const imgs = (await Promise.all([...files].map(readImage))).filter(Boolean);
     if (!imgs.length) return;
     if (!acceptsImages) toast(`${model?.displayName || model?.id || 'This model'} may not accept images`, 'warn');
-    chat.images = [...chat.images, ...imgs];
+    const next = [...chat.images, ...imgs];
+    if (next.length > DRAFT_IMAGES_MAX) toast(`A draft keeps at most ${DRAFT_IMAGES_MAX} images — the oldest were dropped`, 'warn');
+    chat.images = next;
     ta?.focus();
   }
   function onPaste(e) {
