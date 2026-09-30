@@ -97,8 +97,11 @@
   }
 
   onMount(() => {
+    // captured, not re-read in the teardown: by the time the teardown runs the session may be gone (deleted or its
+    // tab closed), and the chat prop then answers null — the position is remembered on the store instance itself
+    const store = chat;
     // restore the scroll position remembered for this session (or start at the bottom)
-    const saved = chat.scroll;
+    const saved = store.scroll;
     if (saved && !saved.atBottom) {
       scroller.scrollTop = saved.top;
       lastTop = scroller.scrollTop;
@@ -117,7 +120,7 @@
     return () => {
       ro.disconnect();
       // the element may already be gone here: keep the position the scroll handler last saw
-      chat.scroll = { top: lastTop, atBottom: stick };
+      store.scroll = { top: lastTop, atBottom: stick };
     };
   });
 

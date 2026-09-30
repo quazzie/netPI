@@ -54,15 +54,25 @@ seed();
 const clients = new Set();
 let seq = 0;
 const recent = [];
+const subLog = []; // subscription frames, for e2e forensics (mock.subLog): which client saw which sessions, when
+const wsLog = []; // every frame a client sends (mock.wsLog), so a lost rpc frame is visible in a failed run
+const droppedLogged = new Set(); // `${type}:${sid}`: a dropped frame is logged once per session, not per frame
 
 function publish(type, d = {}, sid = null, source = 'mock') {
   const env = { t: 'ev', type, sid: sid ?? null, d, seq: ++seq, ts: Date.now(), source };
   recent.push(env);
   if (recent.length > 300) recent.shift();
   const json = JSON.stringify(env);
+  let delivered = 0;
   for (const c of clients) {
     if (sid && !c.subs.has(sid) && !c.subs.has('*')) continue;
-    if (c.ws.readyState === 1) c.ws.send(json);
+    if (c.ws.readyState === 1) { c.ws.send(json); delivered++; }
+  }
+  // a scoped stream event that reaches no subscribed client is lost for good; say so, or the e2e fails opaquely
+  // (once per type+session — an offline case streams a run to nobody and must not flood the log)
+  if (sid && delivered === 0 && type.startsWith('stream.') && !droppedLogged.has(`${type}:${sid}`)) {
+    droppedLogged.add(`${type}:${sid}`);
+    console.error(`[mock] ${type} [${sid}] dropped: no subscribed client`);
   }
 }
 
@@ -98,6 +108,9 @@ const RPC_DOCS = {
 };
 const filesOpened = [];
 const msgLoads = new Map(); // e2e test helper: sessions.messages calls per session — a fresh call means the chat store was rebuilt (evicted and reopened)
+// e2e test helper: the app's client cache sizes, reported from the page (mock.cacheReport, every 250 ms)
+let cacheReport = { n: 0, at: 0, last: null };
+let trafficSeq = 0;
 
 const SYSTEM_PROMPT = (project, session) => `You are a coding agent running in NetPI, an agent harness on the user's own machine. Work through the tools you have: act rather than describe, check the results and verify your work when practical. Ask only when a request is genuinely ambiguous or an action would be destructive. Be concise, and end with a short summary of what you did or found.
 
@@ -316,6 +329,7 @@ function uiTabs() {
 
 let procTailDelayMs = 0; // e2e test helper: delay the tail responses so the UI can collapse a row inside its fetchTail() await
 let filesDelayMs = 0; // e2e test helper: delay the files.* responses so a workspace switch lands mid-fetch
+let thinkDelayMs = 0; // e2e test helper: hold the live thinking line so a waitForSelector can see it (mock.thinkDelay)
 let offlineUntil = 0; // e2e test helper: while in effect the /ws upgrades are refused and open sockets dropped — the server keeps running, its events are just lost (the browser is offline)
 let filesCalls = []; // e2e test helper: the files.* responses served, in order, for the late-response checks
 let listCalls = []; // e2e test helper: the sessions.list calls with their params (the archived-only check)
@@ -726,6 +740,50 @@ const handlers = {
     return { path: full, action: 'open' };
   },
   'mock.filesOpened': () => filesOpened,
+  // e2e test helpers: the app's client cache state. mock.cacheReport arrives from the page (window.__netpiProbe,
+  // installed only when the page runs against the mock); mock.caches reads back the latest report
+  'mock.cacheReport': (p) => ((cacheReport.n++, cacheReport.at = Date.now(), (cacheReport.last = p)), true),
+  'mock.caches': () => cacheReport,
+  // e2e test helper: a burst of closed asks for one session (ask.closed, unscoped — what every window hears)
+  'mock.asks.closed': (p) => {
+    const sid = need(p, 'sessionId');
+    const n = ++trafficSeq;
+    for (let i = 0; i < (p.count ?? 0); i++)
+      publish('ask.closed', { id: `mockclosed_${n}_${i}`, sessionId: sid, callId: `mockcall_${n}_${i}`, status: 'answered', answers: [['ok']], text: '', askedAt: new Date().toISOString() });
+    return p.count ?? 0;
+  },
+  // e2e test helper: a burst of second-opinion clears for one session (guard.cleared, unscoped)
+  'mock.guard.cleared': (p) => {
+    const sid = need(p, 'sessionId');
+    const n = ++trafficSeq;
+    for (let i = 0; i < (p.count ?? 0); i++)
+      publish('guard.cleared', { sessionId: sid, callId: `mockcleared_${n}_${i}`, agentId: 'mock', tool: 'bash', kind: 'command', subject: `mock command ${i}`, rule: 'ask: ^rm', by: 'once', opinion: null });
+    return p.count ?? 0;
+  },
+  // e2e test helper: `count` short asks (asked then closed, so nothing stays pending). Each ask.asked makes the
+  // app send a notification and record its suppression timestamp; returns the session ids used
+  'mock.asks.tick': (p = {}) => {
+    const n = ++trafficSeq;
+    const sids = [];
+    for (let i = 0; i < (p.count ?? 0); i++) {
+      const sid = p.sessionId ?? `mocktick_${n}_${i}`;
+      sids.push(sid);
+      publish('ask.asked', { id: `mockask_${n}_${i}`, sessionId: sid, callId: `mockcall_${n}_${i}`, agentId: 'mock', agentName: 'mock', questions: [{ question: 'A mock question', options: [{ label: 'a' }] }], askedAt: new Date().toISOString() });
+      publish('ask.closed', { id: `mockask_${n}_${i}`, sessionId: sid, callId: `mockcall_${n}_${i}`, status: 'answered', answers: [['a']], text: '' });
+    }
+    return sids;
+  },
+  // e2e test helper: tool.output for call ids the app never saw start (a reconnect lost the tool.start). Each one
+  // can create a LiveTool in the chat's store, so a burst must not grow the live map past its cap
+  'mock.tools.outputBurst': (p) => {
+    const sid = need(p, 'sessionId');
+    const n = ++trafficSeq;
+    const chunk = 'x'.repeat(200);
+    for (let i = 0; i < (p.count ?? 0); i++) publish('tool.output', { sessionId: sid, callId: `mockunk_${n}_${i}`, chunk }, sid);
+    return p.count ?? 0;
+  },
+  'mock.subLog': (p = {}) => subLog.slice(-(p.max ?? 50)),
+  'mock.wsLog': (p = {}) => wsLog.slice(-(p.max ?? 100)),
   // test helper: the chat whose user turns contain this phrase leaves the given plan when its tab is closed
   'mock.closeLeavesPlan': (p = {}) => ideas.closeLeavesPlan(need(p, 'phrase'), p.title),
   // test helper: offer the commit check's card for the idea whose title contains this phrase
@@ -739,6 +797,8 @@ const handlers = {
   // e2e test helpers: slow the diag.calls responses and observe the in-flight count (the single-flight polling
   // check). The delay setter also resets the counters: a check times its window from that call.
   'mock.diagCallsDelay': (p) => ((diagCallsDelayMs = p.ms ?? 0), (diagCallsServed = 0), (diagCallsMaxInFlight = 0), true),
+  // e2e test helper: stretch the agent's thinking phase so its live line is observable (0 restores normal speed)
+  'mock.thinkDelay': (p) => ((thinkDelayMs = p.ms ?? 0), agent.setThinkDelay(thinkDelayMs), true),
   'mock.diagCallsStats': () => ({ served: diagCallsServed, inFlight: diagCallsInFlight, maxInFlight: diagCallsMaxInFlight }),
   // e2e test helper: how many times each session's messages were loaded (a rebuilt chat store)
   'mock.msgLoads': () => Object.fromEntries(msgLoads),
@@ -913,9 +973,14 @@ const handlers = {
   'mock.reset': () => {
     procTailDelayMs = 0;
     filesDelayMs = 0;
+    thinkDelayMs = 0;
+    agent.setThinkDelay(0);
     offlineUntil = 0;
     filesCalls = [];
     listCalls = [];
+    cacheReport = { n: 0, at: 0, last: null };
+    trafficSeq = 0;
+    droppedLogged.clear();
     diagCallsDelayMs = 0;
     diagCallsInFlight = 0;
     diagCallsMaxInFlight = 0;
@@ -1079,9 +1144,13 @@ wss.on('connection', (ws) => {
     } catch {
       return;
     }
+    wsLog.push({ id: client.id, ts: Date.now(), m: msg.t === 'rpc' ? `rpc ${msg.m}` : msg.t });
+    if (wsLog.length > 100) wsLog.shift();
     if (msg.t === 'ping') return ws.send('{"t":"pong"}');
     if (msg.t === 'sub') {
       client.subs = new Set(Array.isArray(msg.sessions) ? msg.sessions : []);
+      subLog.push({ id: client.id, ts: Date.now(), sessions: [...client.subs] });
+      if (subLog.length > 50) subLog.shift();
       return;
     }
     if (msg.t === 'rpc') {
