@@ -7,7 +7,8 @@ namespace NetPI.Host.Settings;
 
 /// <summary>
 /// <see cref="ISettings"/> backed by <c>settings.json</c> (comments and trailing commas allowed). Values are read and
-/// written by dotted path. Writes are atomic (temp file + move). External edits are picked up by a debounced
+/// written by dotted path. Writes are serialized and atomic (a writer gate, then a unique temp file + move): a failed
+/// write changes nothing, so a value is either on disk and live or neither. External edits are picked up by a debounced
 /// FileSystemWatcher; invalid JSON is logged and the last good document is kept. Every change publishes
 /// <c>settings.changed</c> (<c>{ path }</c> for single-value writes, <c>{ source: "file" }</c> for external edits).
 /// </summary>
@@ -17,6 +18,8 @@ internal sealed class SettingsStore : ISettings, IDisposable
     private static readonly UTF8Encoding Utf8NoBom = new(false);
 
     private readonly Lock _gate = new();
+    /// <summary>One writer at a time, so the file ends up in the order the document was changed in. Readers never take it.</summary>
+    private readonly Lock _writeGate = new();
     private readonly ILogger _log;
     private JsonObject _root;
     private string? _lastText;
@@ -44,7 +47,7 @@ internal sealed class SettingsStore : ISettings, IDisposable
         else
         {
             _root = DefaultSettings.Create();
-            lock (_gate) Save();
+            Save();
             _log.LogInformation("Created default settings at {File}", filePath);
         }
     }
@@ -114,37 +117,48 @@ internal sealed class SettingsStore : ISettings, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var segments = path.Split('.');
         if (segments.Any(string.IsNullOrWhiteSpace)) throw new ArgumentException($"Invalid settings path '{path}'");
-        string? text = null;
-        lock (_gate)
+        lock (_writeGate)
         {
-            var parent = _root;
-            for (var i = 0; i < segments.Length - 1; i++)
+            JsonObject previous, changed;
+            string? previousText;
+            string text;
+            lock (_gate)
             {
-                if (parent[segments[i]] is JsonObject child)
+                var parent = _root;
+                for (var i = 0; i < segments.Length - 1; i++)
                 {
-                    parent = child;
-                    continue;
+                    if (parent[segments[i]] is JsonObject child)
+                    {
+                        parent = child;
+                        continue;
+                    }
+                    if (value is null) return; // removing below a missing branch: nothing to do
+                    var created = new JsonObject();
+                    parent[segments[i]] = created;
+                    parent = created;
                 }
-                if (value is null) return; // removing below a missing branch: nothing to do
-                var created = new JsonObject();
-                parent[segments[i]] = created;
-                parent = created;
+                var key = segments[^1];
+                var existing = parent.TryGetPropertyValue(key, out var old) ? old : null;
+                if (value is null)
+                {
+                    if (!parent.ContainsKey(key)) return;
+                }
+                else if (existing is not null && JsonNode.DeepEquals(existing, value)) return;
+
+                previous = (JsonObject)_root.DeepClone();
+                previousText = _lastText;
+                if (value is null) parent.Remove(key);
+                else parent[key] = value.DeepClone();
+                text = SnapshotLocked();
+                changed = _root;
             }
-            var key = segments[^1];
-            var existing = parent.TryGetPropertyValue(key, out var old) ? old : null;
-            if (value is null)
+            try { WriteFile(text); }   // outside _gate: see WriteFile
+            catch
             {
-                if (!parent.ContainsKey(key)) return;
-                parent.Remove(key);
+                Rollback(changed, previous, previousText);
+                throw;
             }
-            else
-            {
-                if (existing is not null && JsonNode.DeepEquals(existing, value)) return;
-                parent[key] = value.DeepClone();
-            }
-            text = SnapshotLocked();
         }
-        WriteFile(text);   // outside the lock: see WriteFile
         OnChanged(path);
     }
 
@@ -152,14 +166,27 @@ internal sealed class SettingsStore : ISettings, IDisposable
     {
         ArgumentNullException.ThrowIfNull(root);
         var clone = (JsonObject)root.DeepClone();
-        string? text = null;
-        lock (_gate)
+        lock (_writeGate)
         {
-            if (JsonNode.DeepEquals(_root, clone)) return;
-            _root = clone;
-            text = SnapshotLocked();
+            JsonObject previous, changed;
+            string? previousText;
+            string text;
+            lock (_gate)
+            {
+                if (JsonNode.DeepEquals(_root, clone)) return;
+                previous = _root;
+                previousText = _lastText;
+                _root = clone;
+                text = SnapshotLocked();
+                changed = _root;
+            }
+            try { WriteFile(text); }
+            catch
+            {
+                Rollback(changed, previous, previousText);
+                throw;
+            }
         }
-        WriteFile(text);
         OnChanged(null);
     }
 
@@ -201,11 +228,30 @@ internal sealed class SettingsStore : ISettings, IDisposable
         return false;
     }
 
-    /// <summary>Atomic write of the current document. Caller holds the lock.</summary>
+    /// <summary>Writes the current document (the file does not exist yet).</summary>
     private void Save()
     {
-        var text = SnapshotLocked();
-        WriteFile(text);
+        lock (_writeGate)
+        {
+            string text;
+            lock (_gate) text = SnapshotLocked();
+            WriteFile(text);
+        }
+    }
+
+    /// <summary>
+    /// Puts the document back after a failed write: a value that never reached the disk is not live, so the identical
+    /// retry is a real write instead of a no-op, and no change event is owed. A reload that replaced the document in
+    /// the meantime keeps its own state.
+    /// </summary>
+    private void Rollback(JsonObject changed, JsonObject previous, string? previousText)
+    {
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_root, changed)) return;
+            _root = previous;
+            _lastText = previousText;
+        }
     }
 
     /// <summary>The document as it belongs on disk. Cheap enough to run under the lock; the write is not.</summary>
@@ -223,23 +269,33 @@ internal sealed class SettingsStore : ISettings, IDisposable
     /// </summary>
     private void WriteFile(string text)
     {
-        var tmp = FilePath + ".tmp";
-        for (var attempt = 0; ; attempt++)
+        // A unique name per write: two writers never share a temp file, and a leftover cannot be picked up by the
+        // next write (which a fixed settings.json.tmp could be, if a write was killed between the two calls).
+        var tmp = FilePath + "." + Guid.NewGuid().ToString("N")[..8] + ".tmp";
+        try
         {
-            try
+            for (var attempt = 0; ; attempt++)
             {
-                File.WriteAllText(tmp, text, Utf8NoBom);
-                File.Move(tmp, FilePath, overwrite: true);
-                return;
+                try
+                {
+                    File.WriteAllText(tmp, text, Utf8NoBom);
+                    File.Move(tmp, FilePath, overwrite: true);
+                    return;
+                }
+                catch (IOException) when (attempt < 5)
+                {
+                    Thread.Sleep(40 * (attempt + 1)); // editor or antivirus holding the file
+                }
+                catch (UnauthorizedAccessException) when (attempt < 5)
+                {
+                    Thread.Sleep(40 * (attempt + 1));
+                }
             }
-            catch (IOException) when (attempt < 5)
-            {
-                Thread.Sleep(40 * (attempt + 1)); // editor or antivirus holding the file
-            }
-            catch (UnauthorizedAccessException) when (attempt < 5)
-            {
-                Thread.Sleep(40 * (attempt + 1));
-            }
+        }
+        finally
+        {
+            try { File.Delete(tmp); }   // nothing to do after the move
+            catch (Exception ex) { _log.LogDebug(ex, "Could not remove the temporary settings file {Tmp}", tmp); }
         }
     }
 
