@@ -699,9 +699,13 @@ details: { host, path /* "host:path" */, created, append, bytes, lines }
 
 `{ host, path, edits: { oldText, newText, replace_all? }[], cwd? }` (a single `oldText`/`newText` pair is accepted too).
 Like `edit`: each `oldText` must match exactly once unless `replace_all`, overlapping edits are refused, matching
-ignores CRLF vs LF and the file keeps its line endings. The file is read, edited locally and written back only if its
-size and mtime are unchanged; otherwise nothing is written and the agent is told to read it again. Files over 8 MB,
-binary files and files that are not valid UTF-8 are refused (use `run` with sed or python for those).
+ignores CRLF vs LF and the file keeps its line endings. The file is read (with its content hash), edited locally and
+written back only if the hash is unchanged — a same-size edit inside one second, which size plus mtime could not see,
+is refused; otherwise nothing is written and the agent is told to read it again. The new content is written to a
+temporary file in the same directory and put in place with an atomic rename (mode preserved), so an interrupted
+write leaves the old content intact; a writer that rewrites the file between the check and the rename still wins,
+so concurrent writers need coordination. Files over 8 MB, binary files and files that are not valid UTF-8 are
+refused (use `run` with sed or python for those).
 
 ```ts
 details: { host, path /* "host:path" */, diff /* unified, 3 lines of context */, added, removed, edits /* replacements */,
