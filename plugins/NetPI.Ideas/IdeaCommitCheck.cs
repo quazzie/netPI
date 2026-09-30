@@ -23,7 +23,7 @@ namespace NetPI.Ideas;
 /// The card is an offer, never an action: nothing is marked done without a click, and a commit that only advances an
 /// idea never closes it.
 /// </summary>
-public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasLocator locator, IdeaSaveCheck save) : IDisposable
+public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, IdeaSaveCheck save) : IDisposable
 {
     public const string DefaultModel = "qwen3.8-27b";
     public const double DefaultLinkThreshold = 0.7;
@@ -39,6 +39,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     private const string Letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
     private readonly IdeaAdmission _admission = new(ctx);
+    private readonly IdeasRepository _repo = repo;
     private readonly Lock _watchLock = new();
     private readonly Dictionary<string, Watch> _watches = new(StringComparer.OrdinalIgnoreCase); // repo path → its watcher
     private Timer? _timer;
@@ -132,6 +133,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
                     catch (Exception ex) { ctx.Logger.LogWarning(ex, "Ideas: cannot watch the repository of project {Project}", project.Name); }
                 }
                 DropStale(projects);
+                ForgetStale();
                 foreach (var watch in Watches())
                 {
                     if (_stopped) break;
@@ -215,7 +217,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         var newest = (o?["commits"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault();
         // Only a repository this plugin has never read is anchored at HEAD. A stored cursor is the progress made before
         // the restart, and overwriting it would skip every commit that was made while NetPI was closed.
-        await RememberIfAbsentAsync(repo, IdeaOps.Str(newest?["hash"])).ConfigureAwait(false);
+        _repo.RememberIfAbsent(repo, IdeaOps.Str(newest?["hash"]), project.Id, project.Name);
 
         lock (_watchLock)
         {
@@ -313,7 +315,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
     private async Task SweepAsync(Watch watch)
     {
         if (_stopped || !Setting("ideas.closeOnCommit", true)) return;
-        var since = await LastSeenAsync(watch.Repo).ConfigureAwait(false);
+        var since = _repo.LastSeen(watch.Repo);
         var pages = new List<List<JsonObject>>();
         string? upper = null;
         for (var page = 0; page < MaxPages; page++)
@@ -330,7 +332,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
                     var newest = await HeadAsync(watch).ConfigureAwait(false);
                     ctx.Logger.LogWarning("Ideas: the history of {Repo} was rewritten or the branch changed: the cursor is re-anchored at {Hash} and the older history is not read.",
                         watch.Repo, newest ?? "HEAD");
-                    await RememberAsync(watch.Repo, newest).ConfigureAwait(false);
+                    _repo.Remember(watch.Repo, newest, watch.ProjectId, watch.ProjectName, "the history was rewritten or the branch changed");
                 }
                 break;
             }
@@ -349,14 +351,14 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         ctx.Logger.LogInformation("Ideas: {Count} new commit(s) in {Repo} since {Since}", all.Count, watch.Repo, since ?? "(the start)");
         ctx.Logger.LogDebug("Ideas: the watcher is the fast path; a missed event is caught by the {Minutes}-minute sweep", Rescan.TotalMinutes);
 
-        // The backlog is read once for the whole sweep, not once per commit: a burst would otherwise re-parse the growing
-        // file per commit, and the open set cannot change mid-sweep (only a user's click changes an idea's status).
-        var open = await OpenAsync(watch.ProjectId).ConfigureAwait(false);
+        // The backlog is read once for the whole sweep, not once per commit: a burst would otherwise re-read the backlog
+        // per commit, and the open set cannot change mid-sweep (only a user's click changes an idea's status).
+        var open = OpenAsync(watch.ProjectId, ctx.Stopping);
         foreach (var commit in all)
         {
             if (_stopped) return;
             if (await HandleAsync(watch, open, commit, ctx.Stopping).ConfigureAwait(false))
-                await RememberAsync(watch.Repo, IdeaOps.Str(commit["hash"])).ConfigureAwait(false);
+                _repo.Remember(watch.Repo, IdeaOps.Str(commit["hash"]), watch.ProjectId, watch.ProjectName);
             else
             {
                 ctx.Logger.LogWarning("Ideas: {Short} in {Repo} is not read yet (a check failed); the next sweep starts here again",
@@ -401,26 +403,12 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         var titles = new List<string>();
         foreach (var idea in linked) titles.Add(IdeaOps.Str(idea["title"]) ?? "?");
 
-        // Every commit entry in one write (one parse, one save — the file used to be read-modify-written per idea), and
-        // the fresh copies the "is it done" question below needs are taken in the same pass: a re-read per idea would
-        // re-parse the file this very write just rewrote.
+        // Every commit entry in one transaction (one statement per idea), and the fresh copies the "is it done"
+        // question below needs come out of it: a re-read per idea would be a second round trip for what the write
+        // already knows.
         if (linked.Any(i => IdeaOps.Str(i["id"]) is { Length: > 0 }))
         {
-            var fresh = await store.UpdateAsync<List<JsonObject>>(locator.GlobalFile(), f =>
-            {
-                var done = new List<JsonObject>();
-                foreach (var idea in linked)
-                {
-                    var id = IdeaOps.Str(idea["id"]);
-                    if (id is not { Length: > 0 }) continue;
-                    if (IdeaOps.Find(f.Ideas, id) is { } found)
-                    {
-                        IdeaOps.AddCommitEntry(found, entry);
-                        done.Add((JsonObject)found.DeepClone());
-                    }
-                }
-                return done;
-            }).ConfigureAwait(false);
+            var fresh = _repo.AddCommitEntries(linked.Select(i => IdeaOps.Str(i["id"])), entry);
 
             // 2. is any of them done: the idea's full text and every commit linked to it, not this one alone
             foreach (var idea in fresh)
@@ -515,6 +503,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
             ["id"] = "sg_" + Guid.NewGuid().ToString("N")[..10],
             ["kind"] = "done",
             ["ideaId"] = id,
+            ["ideaRevision"] = _repo.Find(id)?.Revision ?? 0, // the version of the idea this offer was made from
             ["title"] = IdeaOps.Str(idea["title"]) ?? "",
             ["commits"] = new JsonArray(linked.Select(c => (JsonNode)c!).ToArray()),
             ["at"] = IdeaOps.Now(),
@@ -524,17 +513,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
                 : null,
         };
         // One offer per idea: a second commit that also finishes it changes nothing the user has not answered.
-        var added = false;
-        await save.MutatePendingAsync<int>(f =>
-        {
-            var list = f["suggestions"]!.AsArray();
-            if (list.OfType<JsonObject>().Any(s => IdeaOps.Str(s["ideaId"]) == id)) return 0;
-            list.Add(suggestion);
-            added = true;
-            return 1;
-        }, ctx.Stopping).ConfigureAwait(false);
-        if (added) ctx.Events.Publish(IdeaSaveCheck.SuggestedEvent, new JsonObject { ["suggestion"] = suggestion.DeepClone() });
-        return added;
+        return save.Offer(suggestion);
     }
 
     // ------------------------------------------------------------------ the decisions
@@ -595,61 +574,17 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasStore store, IdeasL
         }
     }
 
-    private async Task<List<JsonObject>> OpenAsync(string? projectId)
+    /// <summary>The open ideas a commit is linked against: the project's and the unbound ones, in backlog order.</summary>
+    private List<JsonObject> OpenAsync(string? projectId, CancellationToken ct)
     {
-        try
-        {
-            return await store.ReadAsync(locator.GlobalFile(), f => IdeaOps.All(f.Ideas)
-                .Where(i => IdeaOps.Str(i["status"]) is not ("done" or "rejected"))
-                .Where(i => IdeaOps.MatchesProject(i, projectId, includeUnbound: true))
-                .Select(i => (JsonObject)i.DeepClone())
-                .ToList()).ConfigureAwait(false);
-        }
-        catch (IdeasFileException ex) { throw new RpcException("invalid_file", ex.Message); }
+        ct.ThrowIfCancellationRequested();
+        return _repo.OpenIdeas(projectId);
     }
 
-    // ------------------------------------------------------------------ the pending file (shared with the save check)
+    // ------------------------------------------------------------------ the cursors (shared with the save check)
 
-    /// <summary>The newest commit this plugin has read for a repository, remembered so a restart does not re-read history.</summary>
-    private async Task<string?> LastSeenAsync(string repo)
-    {
-        if (_stopped) return null;
-        return await save.MutatePendingAsync<string?>(f =>
-            f["repos"] is JsonObject repos && repos[repo] is JsonObject r ? IdeaOps.Str(r["hash"]) : null, ctx.Stopping).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Remember a repository's newest commit when nothing is remembered yet: the progress made before a restart is not
-    /// progress that is thrown away, and the commits made while NetPI was closed are the ones worth reading.
-    /// </summary>
-    private async Task RememberIfAbsentAsync(string repo, string? hash)
-    {
-        if (hash is not { Length: > 0 } || _stopped) return;
-        await save.MutatePendingAsync<int>(f =>
-        {
-            if (f["repos"] is JsonObject repos && repos.ContainsKey(repo)) return 0;
-            return SaveRepoAsync(f, repo, hash);
-        }, ctx.Stopping).ConfigureAwait(false);
-    }
-
-    private async Task RememberAsync(string repo, string? hash)
-    {
-        if (hash is not { Length: > 0 } || _stopped) return;
-        await save.MutatePendingAsync<int>(f => SaveRepoAsync(f, repo, hash), ctx.Stopping).ConfigureAwait(false);
-    }
-
-    private static int SaveRepoAsync(JsonObject pending, string repo, string hash)
-    {
-        if (pending["repos"] is not JsonObject repos) pending["repos"] = repos = new JsonObject();
-        repos[repo] = new JsonObject { ["hash"] = hash, ["at"] = IdeaOps.Now() };
-        var cutoff = DateTimeOffset.UtcNow.AddDays(-RepoKeepDays);
-        foreach (var key in repos.Select(p => p.Key).ToList())
-            if (repos[key] is JsonObject r && r["at"] is JsonValue v && v.TryGetValue<string>(out var at)
-                && DateTimeOffset.TryParse(at, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var when)
-                && when < cutoff)
-                repos.Remove(key);
-        return 0;
-    }
+    /// <summary>How long a repository's last-seen commit is remembered.</summary>
+    private void ForgetStale() => _repo.ForgetStaleRepos(RepoKeepDays);
 
     // ------------------------------------------------------------------ helpers
 

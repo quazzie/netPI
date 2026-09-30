@@ -4,12 +4,15 @@ using System.Text.Json.Nodes;
 namespace NetPI.Ideas;
 
 /// <summary>
-/// Where the ideas live: one global file (<c>~/.netpi/ideas.json</c>; name: setting <c>ideas.fileName</c>). A session's
-/// calls default to the ideas of its project (the ideas with a matching <c>project</c>), and the agent's
-/// <c>project</c> argument reaches any project or the unbound ("global") ones.
+/// Where the ideas live: in the app's database, in the tables of the <c>netpi.ideas</c> plugin. The
+/// <c>ideas.fileName</c> setting survives as the name of the file the JSON versions used — the one a cutover reads, and
+/// the default name an export is written under — and no longer as a live file. A session's calls default to the ideas of
+/// its project (the ideas with a matching <c>project</c>), and the agent's <c>project</c> argument reaches any project
+/// or the unbound ("global") ones.
 /// </summary>
 public sealed class IdeasLocator(Func<ISessionStore?> sessions, NetPiPaths paths, Func<ISettings?> settings)
 {
+    /// <summary>The name the JSON backlog had (setting <c>ideas.fileName</c>, default "ideas.json").</summary>
     public string FileName()
     {
         string? name = null;
@@ -18,18 +21,14 @@ public sealed class IdeasLocator(Func<ISessionStore?> sessions, NetPiPaths paths
         return name.Length == 0 ? "ideas.json" : name;
     }
 
-    /// <summary>The single ideas file, always the global one.</summary>
-    public string GlobalFile() => IdeasStore.Normalize(Path.Combine(paths.Home, FileName()));
+    /// <summary>Where that legacy file is, or would be. The backlog is not written there any more.</summary>
+    public string LegacyFile() => Path.GetFullPath(Path.Combine(paths.Home, FileName()));
 
-    /// <summary>The file as prompts name it: <c>~/.netpi/ideas.json</c> (the full path when it is not under the user profile).</summary>
-    public string Shown()
-    {
-        var file = GlobalFile();
-        var userHome = IdeasStore.Normalize(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-        var prefix = userHome + Path.DirectorySeparatorChar;
-        if (!file.StartsWith(prefix, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) return file;
-        return "~/" + Path.GetRelativePath(userHome, file).Replace('\\', '/');
-    }
+    /// <summary>The default name an export gets (the same one, so a round trip is obvious).</summary>
+    public string DefaultExportName() => Path.GetFileNameWithoutExtension(FileName()) + "-export.json";
+
+    /// <summary>The home the backlog's tables live in (the app's database is here).</summary>
+    public string Home => paths.Home;
 
     /// <summary>The project a session's calls default to (a new idea's stamp, a list's slice); null when the session has no project. Unknown sessions are an error.</summary>
     public ProjectInfo? ProjectOfSession(string? sessionId)
@@ -82,13 +81,13 @@ public sealed class IdeasLocator(Func<ISessionStore?> sessions, NetPiPaths paths
 
 /// <summary>
 /// The agent's tool: <c>ideas</c> with an action (list, get, add, update), one schema in every request instead of
-/// five. It works on the single global ideas file; new ideas are stamped with the session's project by default, and
-/// the <c>project</c> argument (or the update's <c>project</c> patch field) changes that. Deleting is left to the user,
-/// in the Ideas tab.
+/// five. It works on the backlog in the app's database; new ideas are stamped with the session's project by default,
+/// and the <c>project</c> argument (or the update's <c>project</c> patch field) changes that. Deleting is left to the
+/// user, in the Ideas tab.
 /// </summary>
-public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTool
+public sealed class IdeasTool(IdeasRepository repo, IdeasLocator locator) : IAgentTool
 {
-    private readonly IdeasStore _store = store;
+    private readonly IdeasRepository _repo = repo;
     private readonly IdeasLocator _locator = locator;
 
     public ToolDefinition Definition { get; } = new()
@@ -99,7 +98,7 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
         SummaryArg = "action",
         Description = "The ideas backlog (the user sees it in the Ideas tab): list, get, add or update ideas.",
         Help =
-            "A single global file, ~/.netpi/ideas.json; ideas carry a project. Deleting is up to the user.\n" +
+            "The user's backlog of ideas, kept in NetPI's own database; ideas carry a project. Deleting is up to the user.\n" +
             "- list: the open ideas of the session's project plus the unbound \"global\" ones (id, status, priority, title, summary, " +
             "tags). Filters: status (open, parked, planned, in-progress, done, rejected; also active = not done or rejected, the " +
             "default, or all), tag, query (words that must all appear in the title, summary, tags or sections), project.\n" +
@@ -136,7 +135,7 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
                 ["tag"] = Str(),
                 ["query"] = Str(),
                 // The section shapes are in the schema itself: a model that never asks for the manual still sees them
-                // (without them a local agent went to read ideas.json by hand).
+                // (without them a local agent went looking for the ideas file by hand).
                 ["sections"] = Sections("add: the idea's details"),
                 ["addSections"] = Sections("update: new sections"),
                 ["updateSections"] = new JsonObject
@@ -158,24 +157,23 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         try
         {
-            var file = _locator.GlobalFile();
             var a = Args(args);
             return Action(a) switch
             {
-                "list" => await ListAsync(context, file, a, ct).ConfigureAwait(false),
-                "get" => await GetAsync(file, a, ct).ConfigureAwait(false),
-                "add" => await AddAsync(context, file, a, ct).ConfigureAwait(false),
-                "update" => await UpdateAsync(context, file, a, ct).ConfigureAwait(false),
+                "list" => await ListAsync(context, a, ct).ConfigureAwait(false),
+                "get" => await GetAsync(a, ct).ConfigureAwait(false),
+                "add" => await AddAsync(context, a, ct).ConfigureAwait(false),
+                "update" => await UpdateAsync(context, a, ct).ConfigureAwait(false),
                 "delete" => ToolResult.Error("Deleting an idea is up to the user, in the Ideas tab. Set it to done or rejected instead (action update)."),
                 var other => ToolResult.Error($"Unknown action \"{other}\": use list, get, add or update."),
             };
         }
         catch (IdeaInputException ex) { return ToolResult.Error(ex.Message); }
-        catch (IdeasFileException ex) { return ToolResult.Error(ex.Message); }
-        catch (IOException ex) { return ToolResult.Error("Could not access the ideas file: " + ex.Message); }
-        catch (UnauthorizedAccessException ex) { return ToolResult.Error("Could not access the ideas file: " + ex.Message); }
+        catch (IdeasConflictException ex) { return ToolResult.Error(ex.Message); }
+        catch (RpcException ex) when (ex.Code == "not_found") { return ToolResult.Error(ex.Message); }
     }
 
     /// <summary>
@@ -211,25 +209,29 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
         return IdeaOps.Str(args, "title") is { Length: > 0 } ? "add" : "list";
     }
 
-    private async Task<ToolResult> AddAsync(ToolContext context, string file, JsonObject args, CancellationToken ct)
+    private Task<ToolResult> AddAsync(ToolContext context, JsonObject args, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         // The project argument overrides the session's project (which is the default stamp).
         var stamp = IdeaOps.Has(args, "project") ? _locator.ResolveRef(IdeaOps.Str(args, "project")) : _locator.ProjectOfTool(context);
-        var idea = await _store.UpdateAsync(file, f =>
-        {
-            var created = IdeaOps.CreateIdea(args, f.Ideas, "agent:" + context.AgentId, context.SessionId);
-            IdeaOps.SetProject(created, stamp?.Id, stamp?.Name);
-            f.Ideas.Add(created);
-            return (JsonObject)created.DeepClone();
-        }, ct).ConfigureAwait(false);
-        var n = (idea["sections"] as JsonArray)?.Count ?? 0;
-        return ToolResult.Ok($"Added idea {IdeaOps.Str(idea["id"])}: {IdeaOps.Str(idea["title"])}" +
-                             (n > 0 ? $" ({n} section{(n == 1 ? "" : "s")})" : "") +
-                             $" to {file} (project {IdeaOps.ProjectLabel(idea)})", Details(file, idea));
+        var idea = _repo.Add(Build(context, args, stamp));
+        var n = (idea.Doc["sections"] as JsonArray)?.Count ?? 0;
+        return Task.FromResult(ToolResult.Ok($"Added idea {IdeaOps.Str(idea.Doc["id"])}: {IdeaOps.Str(idea.Doc["title"])}" +
+            (n > 0 ? $" ({n} section{(n == 1 ? "" : "s")})" : "") +
+            $" to the ideas backlog (project {IdeaOps.ProjectLabel(idea.Doc)})", Details(idea.Doc)));
     }
 
-    private async Task<ToolResult> ListAsync(ToolContext context, string file, JsonObject args, CancellationToken ct)
+    /// <summary>The new idea, built the way every creator builds one (the tool is not special).</summary>
+    private JsonObject Build(ToolContext context, JsonObject args, ProjectInfo? stamp)
     {
+        var created = IdeaOps.CreateIdea(args, _repo.TakenIds(), "agent:" + context.AgentId, context.SessionId);
+        IdeaOps.SetProject(created, stamp?.Id, stamp?.Name);
+        return created;
+    }
+
+    private Task<ToolResult> ListAsync(ToolContext context, JsonObject args, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
         var status = IdeaOps.Str(args, "status");
         var tag = IdeaOps.Str(args, "tag");
         var query = IdeaOps.Str(args, "query", "search");
@@ -255,62 +257,57 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
         }
         var scopeId = scopeInfo?.Id;
 
-        var (lines, total, hidden, unboundShown) = await _store.ReadAsync(file, f =>
-        {
-            var inScope = IdeaOps.All(f.Ideas).Where(i =>
-                all || (unboundOnly ? IdeaOps.ProjectOf(i) is null : IdeaOps.MatchesProject(i, scopeId, includeUnbound))).ToList();
-            var effective = string.IsNullOrWhiteSpace(status) ? "active" : status;
-            var matched = inScope.Where(i => IdeaOps.Matches(i, effective, tag, query)).ToList();
-            var hiddenCount = string.IsNullOrWhiteSpace(status)
-                ? inScope.Count(i => IdeaOps.Matches(i, "all", tag, query)) - matched.Count
-                : 0;
-            string? Label(JsonObject i) =>
-                all ? IdeaOps.ProjectLabel(i) : (IdeaOps.ProjectOf(i) is null && includeUnbound ? "global" : null);
-            return (matched.Select(i => IdeaOps.ListLine(i, Label(i))).ToList(), inScope.Count, hiddenCount,
-                    matched.Count(i => IdeaOps.ProjectOf(i) is null));
-        }, ct).ConfigureAwait(false);
+        // The whole backlog in scope (the "hidden" line below is about ideas that are done or rejected), not only the
+        // open ones — the checks read the open ones, this is the user's list.
+        var inScope = (all ? _repo.All()
+                : _repo.All().Where(i => unboundOnly ? IdeaOps.ProjectOf(i) is null : IdeaOps.MatchesProject(i, scopeId, includeUnbound)))
+            .ToList();
+        var effective = string.IsNullOrWhiteSpace(status) ? "active" : status;
+        var matched = inScope.Where(i => IdeaOps.Matches(i, effective, tag, query)).ToList();
+        var hiddenCount = string.IsNullOrWhiteSpace(status)
+            ? inScope.Count(i => IdeaOps.Matches(i, "all", tag, query)) - matched.Count
+            : 0;
+        string? Label(JsonObject i) => all ? IdeaOps.ProjectLabel(i) : (IdeaOps.ProjectOf(i) is null && includeUnbound ? "global" : null);
+        var lines = matched.Select(i => IdeaOps.ListLine(i, Label(i))).ToList();
+        var unboundShown = matched.Count(i => IdeaOps.ProjectOf(i) is null);
 
         var where = all ? "all projects" : scopeInfo is null ? "the global backlog" : $"project \"{scopeInfo.Name}\"";
-        if (total == 0 && unboundShown == 0)
-            return ToolResult.Ok($"No ideas yet in {where} ({file}).", Details(file, null));
+        if (inScope.Count == 0 && unboundShown == 0)
+            return Task.FromResult(ToolResult.Ok($"No ideas yet in {where}.", new JsonObject { ["project"] = scopeInfo?.Name, ["count"] = 0, ["total"] = 0 }));
         var head = lines.Count == 0
-            ? $"No matching ideas in {where} ({total} total, {file})."
+            ? $"No matching ideas in {where} ({inScope.Count} total)."
             : lines.Count == unboundShown && unboundShown > 0
-                ? $"{lines.Count} global ideas in {file}:"
-                : $"{lines.Count} idea{(lines.Count == 1 ? "" : "s")} in {where}{(includeUnbound && unboundShown > 0 ? $" ({unboundShown} global)" : "")} ({file}):";
+                ? $"{lines.Count} global ideas:"
+                : $"{lines.Count} idea{(lines.Count == 1 ? "" : "s")} in {where}{(includeUnbound && unboundShown > 0 ? $" ({unboundShown} global)" : "")}:";
         var text = head + (lines.Count > 0 ? "\n" + string.Join('\n', lines) : "");
-        if (hidden > 0) text += $"\n({hidden} done/rejected hidden; pass status \"all\" to include them.)";
-        return ToolResult.Ok(text, new JsonObject { ["file"] = file, ["project"] = scopeInfo?.Name, ["count"] = lines.Count, ["total"] = total });
+        if (hiddenCount > 0) text += $"\n({hiddenCount} done/rejected hidden; pass status \"all\" to include them.)";
+        return Task.FromResult(ToolResult.Ok(text, new JsonObject { ["project"] = scopeInfo?.Name, ["count"] = lines.Count, ["total"] = inScope.Count }));
     }
 
-    private async Task<ToolResult> GetAsync(string file, JsonObject args, CancellationToken ct)
+    private Task<ToolResult> GetAsync(JsonObject args, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var id = RequireId(args);
-        var idea = await _store.ReadAsync(file, f => IdeaOps.Find(f.Ideas, id)?.DeepClone() as JsonObject, ct).ConfigureAwait(false)
-                   ?? throw NotFound(id);
-        var text = IdeaOps.RenderMarkdown(idea);
-        if ((idea["sections"] as JsonArray)?.Count > 0)
+        var found = _repo.Find(id) ?? throw NotFound(id);
+        var text = IdeaOps.RenderMarkdown(found.Doc);
+        if ((found.Doc["sections"] as JsonArray)?.Count > 0)
             text += "\n(To change a section: action update with updateSections [{\"id\": \"sec-…\", \"content\": \"…\"}]; " +
                     "to add one: addSections [{\"kind\": \"note\", \"title\": \"…\", \"content\": \"…\"}].)\n";
-        return ToolResult.Ok(text, Details(file, idea));
+        return Task.FromResult(ToolResult.Ok(text, Details(found.Doc)));
     }
 
-    private async Task<ToolResult> UpdateAsync(ToolContext context, string file, JsonObject args, CancellationToken ct)
+    private Task<ToolResult> UpdateAsync(ToolContext context, JsonObject args, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var id = RequireId(args);
         var patch = (JsonObject)args.DeepClone();
         foreach (var k in new[] { "id", "ideaId", "action", "op", "operation", "command", "mode" }) patch.Remove(k);
         _locator.NormalizeProject(patch); // "project": a bare id/name → { id, name } or null (unknown projects are errors)
-        var (idea, changes) = await _store.UpdateAsync(file, f =>
-        {
-            var target = IdeaOps.Find(f.Ideas, id) ?? throw NotFound(id);
-            var c = IdeaOps.ApplyPatch(target, patch, fromUi: false, context.SessionId);
-            return ((JsonObject)target.DeepClone(), c);
-        }, ct).ConfigureAwait(false);
+        var (idea, _, changes) = _repo.Update(id, patch, fromUi: false, context.SessionId);
         var text = changes.Count == 0
             ? $"No changes to {IdeaOps.Str(idea["id"])} (values were already set)."
             : $"Updated {IdeaOps.Str(idea["id"])} ({IdeaOps.Str(idea["title"])}): {string.Join(", ", changes)}.";
-        return ToolResult.Ok(text, Details(file, idea));
+        return Task.FromResult(ToolResult.Ok(text, Details(idea)));
     }
 
     /// <summary>Arguments as a JsonObject (a JSON string holding the object is unwrapped).</summary>
@@ -327,9 +324,12 @@ public sealed class IdeasTool(IdeasStore store, IdeasLocator locator) : IAgentTo
     private static string RequireId(JsonObject args) =>
         IdeaOps.Str(args, "id", "ideaId") is { Length: > 0 } id ? id.Trim() : throw new IdeaInputException("Missing 'id'. The list action shows the ids.");
 
-    private static JsonObject Details(string file, JsonObject? idea) => new()
+    /// <summary>
+    /// UI data for the tool result: the idea as it is stored, carrying the revision (an editor submits the revision it
+    /// read, and a stale one is a conflict rather than an overwrite).
+    /// </summary>
+    private static JsonObject Details(JsonObject? idea) => new()
     {
-        ["file"] = file,
         ["project"] = idea is null ? null : idea["project"]?.DeepClone(),
         ["idea"] = idea,
     };

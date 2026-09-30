@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using NetPI.Host.Data;
 
 namespace NetPI.Aux.Tests;
 
@@ -44,7 +45,16 @@ public static class Check
 
     public static async Task<TEx> ThrowsAsync<TEx>(Func<Task> body, string? message = null) where TEx : Exception
     {
-        try { await body(); }
+        try { await body().ConfigureAwait(false); }
+        catch (TEx ex) { return ex; }
+        catch (Exception ex) { throw new AssertException($"{message ?? "wrong exception"}: expected {typeof(TEx).Name}, got {ex.GetType().Name}: {ex.Message}"); }
+        throw new AssertException($"{message ?? "no exception"}: expected {typeof(TEx).Name}");
+    }
+
+    /// <summary>The exception a synchronous body threw, as an <see cref="AssertException"/> (so a lambda can stay a lambda).</summary>
+    public static TEx Throws<TEx>(Action body, string? message = null) where TEx : Exception
+    {
+        try { body(); }
         catch (TEx ex) { return ex; }
         catch (Exception ex) { throw new AssertException($"{message ?? "wrong exception"}: expected {typeof(TEx).Name}, got {ex.GetType().Name}: {ex.Message}"); }
         throw new AssertException($"{message ?? "no exception"}: expected {typeof(TEx).Name}");
@@ -495,7 +505,7 @@ public sealed class FakePluginContext : IPluginContext
         Paths = new NetPiPaths
         {
             AppDir = home, Home = home, LogsDir = home, WebRoot = home, SettingsFile = Path.Combine(home, "settings.json"),
-            DatabaseFile = Path.Combine(home, "db"), TempDir = home, PluginDirs = [], DefaultWorkspace = home,
+            DatabaseFile = Path.Combine(home, "netpi.db"), TempDir = home, PluginDirs = [], DefaultWorkspace = home,
         };
         Bus = new FakeBus(Owner);
         ServicesFake = new FakeServices(Owner);
@@ -523,7 +533,14 @@ public sealed class FakePluginContext : IPluginContext
     public IHttpRegistry Http { get; } = new FakeHttp();
     public FakeSettings SettingsFake { get; } = new();
     public ISettings Settings => SettingsFake;
-    public IDatabase Db => throw new NotSupportedException();
+    private Database? _db;
+    /// <summary>
+    /// A real SQLite database in the context's home (the same one the host hands a plugin), so a plugin that owns
+    /// tables is exercised against an actual database: transactions, unique indexes and rollback are the point, and a
+    /// fake cannot prove any of them. Opened on first use and closed by <see cref="Unload"/>, so a "restart" in a test
+    /// is a second connection to the same file — the data has to have survived it.
+    /// </summary>
+    public IDatabase Db => _db ??= new Database(Path.Combine(Paths.Home, "netpi.db"));
     public FakeSessionStore SessionsFake { get; } = new();
     public ISessionStore Sessions => SessionsFake;
     public FakeModelCatalog ModelsFake { get; } = new();
@@ -536,6 +553,8 @@ public sealed class FakePluginContext : IPluginContext
     {
         _stopping.Cancel();
         Owner.DisposeAll();
+        _db?.Dispose();
+        _db = null;
     }
 }
 

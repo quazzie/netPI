@@ -118,17 +118,8 @@ public static class IdeasCommitTests
             return idea["id"].Str()!;
         }
 
-        public JsonObject Pending() => JsonNode.Parse(File.ReadAllText(PendingFile))!.AsObject();
-
-        public string? Cursor
-        {
-            get
-            {
-                if (!File.Exists(PendingFile)) return null;
-                var entry = (Pending()["repos"] as JsonObject)?[Repo.Path] as JsonObject;
-                return entry is null ? null : IdeaOps.Str(entry["hash"]);
-            }
-        }
+        /// <summary>The newest commit this NetPI has read for the repository, as the database holds it.</summary>
+        public string? Cursor => IdeasRepository.Open(Ctx.Db, Ctx.Log, Ctx.Paths.DatabaseFile).LastSeen(Repo.Path);
 
         public async Task<List<string>> CommitsOn(string ideaId)
         {
@@ -175,7 +166,8 @@ public static class IdeasCommitTests
             env.Repo.Commit("made while closed 2");
             env.Repo.Commit("made while closed 3");
             var again = await env.RestartAsync(env.Project.Id);
-            Check.Equal(1, (await again.CommitsOn(idea)).Count, "nothing is read before a sweep");
+            // The start sweeps in the background, so a commit may already be recorded here; what must not happen is the
+            // cursor being re-anchored at HEAD, which would skip the three commits made while NetPI was closed.
             await again.Check!.SweepNowAsync();
             Check.Equal(4, (await again.CommitsOn(idea)).Count, "the cursor was not re-anchored at HEAD");
             Check.Equal(env.Repo.Commits[3].Hash, again.Cursor);

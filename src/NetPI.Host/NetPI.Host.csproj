@@ -13,6 +13,9 @@
     <ProjectReference Include="../NetPI.Abstractions/NetPI.Abstractions.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The auxiliary plugin tests need the real <c>Database</c> (a plugin that owns SQLite tables has to be exercised
+         against real temporary databases, not a fake that cannot roll back or enforce a unique index). -->
     <InternalsVisibleTo Include="NetPI.Host.Tests" />
+    <InternalsVisibleTo Include="NetPI.Aux.Tests" />
   </ItemGroup>
 </Project>

@@ -15,7 +15,7 @@ namespace NetPI.Ideas;
 /// made while the user types reuse NInfer's cache of it. Measured (docs/DECISION-MODELS.md, "Ideas recall"): at
 /// p ≥ 0.8 no false chip on 56 none cases, 95 ms. <c>ideas.attach</c> adds the chosen idea to the chat as a notice.
 /// </summary>
-public sealed partial class IdeaRecall(IPluginContext ctx, IdeasStore store, IdeasLocator locator)
+public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo, IdeasLocator locator)
 {
     public const string DefaultModel = "qwen3.8-27b";
     public const double DefaultThreshold = 0.8;
@@ -119,46 +119,30 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasStore store, Ide
         var sessionId = req.Required("sessionId");
         var id = req.Required("id");
         if (ctx.Sessions.GetSession(sessionId) is null) throw new RpcException("not_found", $"Session {sessionId} not found");
-        JsonObject idea;
-        try
-        {
-            idea = await store.UpdateAsync(locator.GlobalFile(), f =>
-            {
-                var found = IdeaOps.Find(f.Ideas, id) ?? throw new RpcException("not_found", $"Idea {id} not found");
-                IdeaOps.AddSession(found, sessionId);
-                return (JsonObject)found.DeepClone();
-            }, ct).ConfigureAwait(false);
-        }
-        catch (IdeasFileException ex) { throw new RpcException("invalid_file", ex.Message); }
-        catch (IOException ex) { throw new RpcException("io_error", ex.Message); }
-        var notice = ChatMessage.NoticeText(ToNotice(idea, locator.Shown()), "idea");
+        ct.ThrowIfCancellationRequested();
+        // The storage is a short transaction; the notice the user sees in the chat is not part of it.
+        var (idea, _) = repo.AddSession(id, sessionId);
+        var notice = ChatMessage.NoticeText(ToNotice(idea, "the ideas backlog"), "idea");
         notice.Meta!["ideaId"] = IdeaOps.Str(idea["id"]);
         var added = ctx.Sessions.AppendMessage(sessionId, notice);
         return new JsonObject { ["noticeId"] = added.Id, ["ideaId"] = IdeaOps.Str(idea["id"]) };
     }
 
     /// <summary>The notice the agent reads: the idea as a reference, not an order to implement it.</summary>
-    public static string ToNotice(JsonObject idea, string fileName)
+    public static string ToNotice(JsonObject idea, string where)
     {
         var sb = new StringBuilder();
-        sb.Append("The user added an idea from the ideas backlog to this chat (`").Append(IdeaOps.Str(idea["id"])).Append("` in ").Append(fileName)
+        sb.Append("The user added an idea from the ideas backlog to this chat (`").Append(IdeaOps.Str(idea["id"])).Append("` in ").Append(where)
           .Append("). Use its notes; keep it up to date with the ideas tool when the work changes it.\n\n");
         sb.Append(IdeaOps.RenderMarkdown(idea));
         return sb.ToString().TrimEnd();
     }
 
     /// <summary>The open ideas (not done or rejected) of the project and the global ones, in backlog order.</summary>
-    private async Task<List<JsonObject>> OpenIdeasAsync(string? projectId, CancellationToken ct)
+    private Task<List<JsonObject>> OpenIdeasAsync(string? projectId, CancellationToken ct)
     {
-        try
-        {
-            return await store.ReadAsync(locator.GlobalFile(), f => IdeaOps.All(f.Ideas)
-                .Where(i => IdeaOps.Str(i["status"]) is not ("done" or "rejected"))
-                .Where(i => IdeaOps.MatchesProject(i, projectId, includeUnbound: true))
-                .Select(i => (JsonObject)i.DeepClone())
-                .ToList(), ct).ConfigureAwait(false);
-        }
-        catch (IdeasFileException ex) { throw new RpcException("invalid_file", ex.Message); }
+        ct.ThrowIfCancellationRequested();
+        return Task.FromResult(repo.OpenIdeas(projectId));
     }
 
     private static JsonObject MatchOf(JsonObject idea, double p) => new()

@@ -11,6 +11,8 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
+    <!-- The real SQLite, so the plugins that own tables (netpi.ideas) are tested against actual databases. -->
+    <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Retry/NetPI.Retry.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Nudge/NetPI.Nudge.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Loops/NetPI.Loops.csproj" />

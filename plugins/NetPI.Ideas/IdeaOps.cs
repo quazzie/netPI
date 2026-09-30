@@ -21,7 +21,7 @@ public static class IdeaOps
     private static readonly HashSet<string> Protected = new(StringComparer.OrdinalIgnoreCase)
     {
         "id", "createdAt", "createdBy", "updatedAt", "sessionIds", "sections", "addSections", "updateSections", "removeSectionIds",
-        "title", "summary", "status", "priority", "tags", "project",
+        "title", "summary", "status", "priority", "tags", "project", "revision",
     };
 
     public static string Now() => DateTimeOffset.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
@@ -230,14 +230,18 @@ public static class IdeaOps
     /// Create an idea from an input object ({ title, summary?, status?, priority?, tags?, sections? }).
     /// With <paramref name="keepExtraFields"/> (UI) other input fields are stored as well.
     /// </summary>
-    public static JsonObject CreateIdea(JsonObject input, JsonArray existing, string createdBy, string? sessionId, bool keepExtraFields = false)
+    public static JsonObject CreateIdea(JsonObject input, JsonArray existing, string createdBy, string? sessionId, bool keepExtraFields = false) =>
+        CreateIdea(input, All(existing).Select(i => Str(i["id"])), createdBy, sessionId, keepExtraFields);
+
+    /// <summary>As above, for a caller that holds the taken ids (the SQLite repository) rather than the whole backlog.</summary>
+    public static JsonObject CreateIdea(JsonObject input, IEnumerable<string?> existingIds, string createdBy, string? sessionId, bool keepExtraFields = false)
     {
         var title = Str(input, "title")?.Trim();
         if (string.IsNullOrEmpty(title)) throw new IdeaInputException("An idea needs a title.");
         var now = Now();
         var idea = new JsonObject
         {
-            ["id"] = NewId("idea-", All(existing).Select(i => Str(i["id"])), 6),
+            ["id"] = NewId("idea-", existingIds, 6),
             ["title"] = title,
             ["summary"] = Str(input, "summary", "description")?.Trim() ?? "",
             ["status"] = Str(input, "status") is { Length: > 0 } st ? NormalizeStatus(st) : "open",

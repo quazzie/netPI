@@ -82,9 +82,11 @@ public static class IdeasCheckTests
             throw new AssertException($"expected {count} card(s), got {(await Cards()).Count}");
         }
 
-        public JsonObject Pending() => JsonNode.Parse(File.ReadAllText(Path.Combine(Ctx.Paths.Home, "ideas-pending.json")))!.AsObject();
-
-        public JsonObject Mark(string sessionId) => Pending()["checked"]![sessionId]!.AsObject();
+        /// <summary>One conversation's check mark, as the database holds it.</summary>
+        public JsonObject Mark(string sessionId) =>
+            IdeasRepository.Open(Ctx.Db, Ctx.Log, Ctx.Paths.DatabaseFile).Checks()
+                .FirstOrDefault(m => m["sessionId"]!.Str() == sessionId)
+            ?? new JsonObject { ["state"] = "none" };
 
         /// <summary>Wait until the check for this conversation reached a state that is not in flight.</summary>
         public async Task<JsonObject> WaitForMark(string sessionId, int ms = 5000)
