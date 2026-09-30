@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using NetPI.Host.Data;
 using NetPI.Host.Logging;
 using NetPI.Host.Sessions;
+using NetPI.Host.Web;
 
 namespace NetPI.Host.Rpc;
 
@@ -20,7 +21,7 @@ internal static class CoreRpc
             registrations.Add(k.Rpc.Register(method, (req, ct) => handler(req, ct), description, readOnly));
 
         // ------------------------------------------------------------ app
-        Add("app.info", "Host information → { version, os, home, appDir, defaultWorkspace, desktop, ... }", _ => new
+        Add("app.info", "Host information → { version, os, home, appDir, defaultWorkspace, desktop, maxMessageBytes, ... }", _ => new
         {
             version = HostInfo.Version,
             os = HostInfo.OsName,
@@ -34,6 +35,7 @@ internal static class CoreRpc
             dotnet = Environment.Version.ToString(),
             sqlite = Sqlite3.Version,
             pathSeparator = Path.DirectorySeparatorChar.ToString(),
+            maxMessageBytes = WsHub.MaxMessageBytes,
         }, readOnly: true);
 
         // ------------------------------------------------------------ projects

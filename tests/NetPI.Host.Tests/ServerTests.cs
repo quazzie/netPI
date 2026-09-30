@@ -19,6 +19,10 @@ public sealed class WsTestClient : IAsyncDisposable
 
     public List<JsonNode> Received { get; } = [];
     public string ClientId { get; private set; } = "";
+    /// <summary>How the host closed the socket, when it did (a message over the limit arrives as 1009).</summary>
+    public bool Closed { get; private set; }
+    public WebSocketCloseStatus? ClosedWith { get; private set; }
+    public string CloseDescription { get; private set; } = "";
 
     private WsTestClient(ClientWebSocket ws)
     {
@@ -52,7 +56,16 @@ public sealed class WsTestClient : IAsyncDisposable
                     r = await _ws.ReceiveAsync(buffer.AsMemory(count), CancellationToken.None);
                     count += r.Count;
                 } while (!r.EndOfMessage);
-                if (r.MessageType == WebSocketMessageType.Close) break;
+                if (r.MessageType == WebSocketMessageType.Close)
+                {
+                    // Answer the close so the handshake completes — that is when the reason the peer sent is readable.
+                    try { await _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, null, new CancellationTokenSource(2000).Token); }
+                    catch { }
+                    Closed = true;
+                    ClosedWith = _ws.CloseStatus;
+                    CloseDescription = _ws.CloseStatusDescription ?? "";
+                    break;
+                }
                 var node = JsonNode.Parse(Encoding.UTF8.GetString(buffer, 0, count))!;
                 lock (Received) Received.Add(node);
                 _incoming.Writer.TryWrite(node);
@@ -101,6 +114,18 @@ public sealed class WsTestClient : IAsyncDisposable
         lock (Received)
             return Received.Any(n => n["t"]?.GetValue<string>() == "ev" && n["type"]?.GetValue<string>() == type &&
                                      (sid is null || n["sid"]?.GetValue<string>() == sid));
+    }
+
+    /// <summary>Wait for the host to close the socket; false if it stayed open.</summary>
+    public async Task<bool> WaitForCloseAsync(int timeoutMs = 5000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (Environment.TickCount64 < deadline)
+        {
+            if (Closed) return true;
+            await Task.Delay(25);
+        }
+        return Closed;
     }
 
     public async ValueTask DisposeAsync()
@@ -313,6 +338,26 @@ public static class ServerTests
             Check.True(cors.Response.Headers.Contains("Access-Control-Allow-Origin"));
             var foreignPreflight = await SendAsync(http, HttpMethod.Options, server.BaseUrl + "/api/rpc/app.info", null, q => q.Headers.Add("Origin", "http://evil.example"));
             Check.False(foreignPreflight.Response.Headers.Contains("Access-Control-Allow-Origin"));
+        });
+
+        r.Add("server: a message over the websocket limit closes the socket and says what the limit is", async () =>
+        {
+            await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"), CreateWebRoot());
+            // The UI reads this and fits its payloads into it (base64 images), so it has to be the real limit.
+            var info = await SendAsync(NewHttp(), HttpMethod.Post, server.BaseUrl + "/api/rpc/app.info", "", q => q.Headers.Add(WebServer.TokenHeader, server.Token));
+            Check.Equal(WsHub.MaxMessageBytes, JsonNode.Parse(info.Body)!["maxMessageBytes"]!.GetValue<int>());
+
+            await using var ws = await WsTestClient.ConnectAsync(server);
+            await ws.SyncAsync();
+            // What a 2.5 MB screenshot becomes once base64 is inside the JSON envelope: past the 2 MB limit.
+            var huge = new string('x', 2_600_000);
+            await ws.SendAsync(new { t = "rpc", id = 99, m = "agent.send", p = new { sessionId = "s", text = "look", images = new[] { new { mediaType = "image/png", data = huge } } } });
+            var closed = await ws.WaitForCloseAsync();
+            Check.True(closed, "the host closed the socket instead of reading the message");
+            Check.Equal(WebSocketCloseStatus.MessageTooBig, ws.ClosedWith);
+            // The reason reaches the user as "Connection lost: ..." — it has to name the limit.
+            Check.Contains(ws.CloseDescription, "2 MB");
+            Check.Contains(ws.CloseDescription, "app.info.maxMessageBytes");
         });
 
         r.Add("server: core RPC methods (PROTOCOL.md table)", async () =>

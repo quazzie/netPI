@@ -89,7 +89,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 
 | method | params | result |
 |---|---|---|
-| `app.info` | – | `{ version, os, osDescription, home, appDir, defaultWorkspace, settingsFile, desktop, pid, dotnet, sqlite, pathSeparator }` |
+| `app.info` | – | `{ version, os, osDescription, home, appDir, defaultWorkspace, settingsFile, desktop, pid, dotnet, sqlite, pathSeparator, maxMessageBytes }` — `maxMessageBytes` is the largest single WebSocket message the host will read; anything larger is closed with `1009 message too big`, so the UI fits its payloads into it (base64 images, for one) instead of being cut off |
 | `projects.list` | – | `ProjectInfo[]` |
 | `projects.create` | `{ name, path, create? }` | `ProjectInfo` |
 | `projects.update` | `{ id, name?, path?, meta? }` | `ProjectInfo` (`meta` is merged key by key; a null value removes a key) |

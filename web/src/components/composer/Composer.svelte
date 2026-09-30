@@ -19,6 +19,7 @@
   import { composer, modals, prefs, toast } from '../../lib/state/ui.svelte.js';
   import { allCommands, parseCommand } from '../../lib/commands.js';
   import { skillCommands } from '../../lib/skills.js';
+  import { prepareImage } from '../../lib/images.js';
   import { rpc } from '../../lib/rpc.svelte.js';
 
   let { chat, session, onsent } = $props();
@@ -271,23 +272,12 @@
   }
 
   // ------------------------------------------------------------------ images
-  const MAX_IMAGE = 20 * 1024 * 1024;
-  function readImage(file) {
-    return new Promise((resolve) => {
-      if (!file.type.startsWith('image/')) return resolve(null);
-      if (file.size > MAX_IMAGE) {
-        toast(`${file.name || 'Image'} is larger than 20 MB`, 'warn');
-        return resolve(null);
-      }
-      const r = new FileReader();
-      r.onload = () => {
-        const url = String(r.result);
-        const i = url.indexOf(',');
-        resolve({ mediaType: file.type, data: url.slice(i + 1), url, name: file.name || 'pasted image' });
-      };
-      r.onerror = () => resolve(null);
-      r.readAsDataURL(file);
-    });
+  // What fits is the host's message limit, not the file size: prepareImage shrinks a big screenshot instead of
+  // letting the send be cut off (idea-8hfc3m).
+  async function readImage(file) {
+    const { image, note } = await prepareImage(file, app.info?.maxMessageBytes);
+    if (note) toast(note, image ? 'info' : 'warn');
+    return image;
   }
   async function addFiles(files) {
     const imgs = (await Promise.all([...files].map(readImage))).filter(Boolean);
