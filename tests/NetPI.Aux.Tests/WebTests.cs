@@ -511,7 +511,7 @@ public static class WebTests
             });
             // a browser standing in for the user's Chrome: its DevTools port in the user data folder
             var psi = new System.Diagnostics.ProcessStartInfo(exe) { UseShellExecute = false, CreateNoWindow = true };
-            foreach (var a in new[] { "--headless=new", "--no-first-run", "--remote-debugging-port=0", $"--user-data-dir={userData}", "about:blank" }) psi.ArgumentList.Add(a);
+            foreach (var a in new[] { "--headless=new", "--disable-features=msWindowTabManagerPublic", "--no-first-run", "--remote-debugging-port=0", $"--user-data-dir={userData}", "about:blank" }) psi.ArgumentList.Add(a);
             using var user = System.Diagnostics.Process.Start(psi)!;
             try
             {

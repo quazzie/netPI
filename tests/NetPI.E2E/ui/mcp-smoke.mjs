@@ -22,8 +22,8 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 let browser;
 const errors=[];
 try {
-  try { browser=await chromium.launch(); }
-  catch { browser=await chromium.launch({channel:'msedge'}); }
+  try { browser=await chromium.launch({args:["--disable-features=msWindowTabManagerPublic"]}); }
+  catch { browser=await chromium.launch({channel:'msedge',args:['--disable-features=msWindowTabManagerPublic']}); }
   const page=await browser.newPage();
   page.on('pageerror',error=>errors.push(String(error)));
   for(const width of [230,380,1000]) {
