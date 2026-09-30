@@ -608,6 +608,41 @@ public static class CompactionTests
             Check.Equal("test/small", scheduler.Acquired.Last().Key);
         });
 
+        r.Add("compaction: a previous summary that still fits is rolled in as it is (no condense pass)", async () =>
+        {
+            // The condense threshold reserves room for the smallest chunk the chunker produces (2000 chars ≈ 500 tokens).
+            // Between that and the old 2000-token reservation a prior still fits, and condensing it anyway would spend
+            // extra summarizer calls and shorten the summary for nothing (idea-8t4amp).
+            var env = new Env();
+            var small = T.Model("small", 8_192, "test");
+            env.Ctx.ModelsFake.Models.Add(small);
+            env.Ctx.ServicesFake.Register<IAgentScheduler>(new FakeAgentScheduler());
+
+            // ~19.2k chars ≈ 4.8k tokens: over the old threshold (8192 − 2048 − 2000), under the real one (… − 500).
+            var prior = "## Task\nOLD " + new string('S', 19_180);
+            env.Ctx.ModelsFake.Responder = req => new ChatMessage
+            {
+                Role = MessageRole.Assistant, StopReason = "stop",
+                Parts = [new TextPart { Text = req.Model.Id == "small" ? "## Task\nROLLED" : prior }],
+            };
+            env.Conversation(13, "A");
+            await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            env.Conversation(2, "B");
+
+            env.Ctx.SettingsFake.Set("compaction.model", "test/small");
+            var result = await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            Check.True(result.Compacted, result.Message);
+
+            var reqs = env.Ctx.ModelsFake.Requests.Skip(1).ToList();
+            Check.True(reqs.Count > 0, "the small summarizer ran");
+            foreach (var r in reqs)
+                Check.True(ModelMessages.EstimateTokens(r.Messages[0].Text) < 8_192, $"fits the summarizer window: {ModelMessages.EstimateTokens(r.Messages[0].Text)} tokens");
+            // No condense pass: the very first request already carries the previous summary.
+            Check.Contains(reqs[0].Messages[0].Text, "<previous-summary>", "the roll starts with the prior summary, not with a condense of it");
+            Check.NotContains(reqs[0].Messages[0].Text, "CONDENSED");
+            Check.Equal(reqs.Count, result.SummarizerCalls, "every call is a roll call");
+        });
+
         r.Add("compaction: the summary at the chat's reasoning effort; token formatting", () =>
         {
             Check.Equal("high", CompactionService.EffortFor(T.Model(efforts: ["low", "high"]), "high"));

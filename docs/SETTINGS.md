@@ -249,7 +249,9 @@ summarized only if it holds conversation, not just notices (their plugins announ
 nothing but notices to summarize is nothing to compact). The files read and modified are listed from the tool calls themselves
 (`<read-files>`, `<modified-files>`) and carried from summary to summary. A summary cut off at its output limit is not
 used: the chat stays as it was. Beyond pi: a transcript too long for the summarizer is summarized in rolling parts, and
-`compaction.model` can summarize with another model.
+`compaction.model` can summarize with another model. A *previous* summary that the summarizer in use could not have
+written — it was made by a bigger model, or the setting changed — is condensed in its own calls first; that costs extra
+summarizer calls and shortens the result, so a smaller `compaction.model` shows up as more calls and a terser summary.
 
 | key | default | |
 |---|---|---|
