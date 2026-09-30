@@ -254,7 +254,8 @@
     if (r) {
       list = { ...list, exists: true, ideas: [r, ...(list?.ideas ?? [])] };
       adding = false;
-      expanded = new Set([r.id]);
+      // The new card joins the list collapsed, so filing several ideas in a row does not push the previous one out
+      // of view each time (idea-qrp60h). Opening it is one click on the title.
     }
     return r;
   }
