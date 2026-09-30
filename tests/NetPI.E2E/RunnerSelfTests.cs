@@ -98,7 +98,8 @@ public static class RunnerSelfTests
         string[] None = [];
         Check.Equal("chat.stream", string.Join(",", Selection.Resolve(all, ["chat.stream"], None, None).Selected.Select(c => c.Id)), "exact id");
         Check.Equal("retry.drop", string.Join(",", Selection.Resolve(all, ["retry.drop"], None, None).Selected.Select(c => c.Id)), "an exact id does not also pull in look-alikes");
-        Check.Equal("retry.drop,retry.503,slots.three-chats", string.Join(",", Selection.Resolve(all, ["retry"], None, None).Selected.Select(c => c.Id)), "substring of id or name, registration order");
+        Check.Equal("retry.drop,retry.503", string.Join(",", Selection.Resolve(all, ["retry"], None, None).Selected.Select(c => c.Id)), "a substring of ids: a sentence that merely mentions retry is not pulled in");
+        Check.Equal("slots.three-chats", string.Join(",", Selection.Resolve(all, ["not involved"], None, None).Selected.Select(c => c.Id)), "names are searched when no id matches");
         Check.Equal("retry.drop,retry.503", string.Join(",", Selection.Resolve(all, [], ["retry"], None).Selected.Select(c => c.Id)), "tag = area");
         Check.Equal("retry.drop,chat.stream", string.Join(",", Selection.Resolve(all, ["chat.stream", "DROPPED"], None, None).Selected.Select(c => c.Id)), "filters are OR-ed, case-insensitive");
         Check.Equal("retry.drop,retry.503,chat.stream,slots.three-chats", string.Join(",", Selection.Resolve(all, [], None, ["ui"]).Selected.Select(c => c.Id)), "no selection = all, minus skipped tags");

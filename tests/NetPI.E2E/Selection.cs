@@ -4,7 +4,8 @@ public sealed record SelectionResult(List<TestCase> Selected, List<string> Error
 
 /// <summary>
 /// Which tests a command line asks for, decided before any server or browser starts. A positional filter is an exact test id,
-/// or else a substring of the id or the name (the old name filters keep working); <c>--tag</c> adds every test with a tag;
+/// else a substring of ids, else (only when no id matches) a substring of names, so the old name filters keep working while
+/// <c>errors</c> means the errors.* tests and not every test whose sentence mentions errors; <c>--tag</c> adds every test with a tag;
 /// <c>--skip-tag</c> removes. A filter or tag that matches nothing is an error, so a typo can never become a green empty run.
 /// </summary>
 public static class Selection
@@ -18,8 +19,8 @@ public static class Selection
         foreach (var f in filters)
         {
             var hits = all.Where(c => string.Equals(c.Id, f, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (hits.Count == 0)
-                hits = all.Where(c => c.Id.Contains(f, StringComparison.OrdinalIgnoreCase) || c.Name.Contains(f, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (hits.Count == 0) hits = all.Where(c => c.Id.Contains(f, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (hits.Count == 0) hits = all.Where(c => c.Name.Contains(f, StringComparison.OrdinalIgnoreCase)).ToList();
             if (hits.Count == 0) errors.Add($"'{f}' matches no test (by id or name){Suggest(all, f)}");
             foreach (var h in hits) picked.Add(h.Id);
         }

@@ -312,8 +312,11 @@ public sealed class Orchestrator
             Console.WriteLine($"\nFAILED ({bad.Select(b => b.Id).Distinct().Count()}):");
             foreach (var b in bad.DistinctBy(x => x.Id))
                 Console.WriteLine($"  {b.Id}: {(b.Message ?? "").Split('\n')[0]}");
-            var ids = string.Join(" ", bad.Select(b => b.Id).Distinct());
-            Console.WriteLine($"\nRerun just these (seconds, not the whole run):\n  dotnet \"{Dll}\" {ids}");
+            var ids = bad.Select(b => b.Id).Distinct().ToList();
+            // scripts/e2e.ps1 sets NETPI_E2E_RERUN to its own command line ({ids} = comma-separated); a direct run gets the dotnet one
+            var template = Environment.GetEnvironmentVariable("NETPI_E2E_RERUN");
+            Console.WriteLine("\nRerun just these (seconds, not the whole run):\n  " + (string.IsNullOrEmpty(template)
+                ? $"dotnet \"{Dll}\" {string.Join(" ", ids)}" : template.Replace("{ids}", string.Join(",", ids))));
             Console.WriteLine($"Evidence per failure: {Path.Combine(Options.OutDir, "failures")}");
         }
         if (notRun > 0)
