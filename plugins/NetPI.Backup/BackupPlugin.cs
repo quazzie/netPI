@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NetPI.Backup;
 
-[NetPiPlugin("netpi.backup", Name = "Backups", Description = "Database, settings and ideas snapshots with checksums and retention", Order = 95)]
+[NetPiPlugin("netpi.backup", Name = "Backups", Description = "Database and settings snapshots with checksums and retention (the ideas backlog travels in the database)", Order = 95)]
 public sealed class BackupPlugin : INetPiPlugin
 {
     private CancellationTokenSource? _stop;
@@ -17,13 +17,13 @@ public sealed class BackupPlugin : INetPiPlugin
         {
             Id = "backup", Title = "Backups", Group = "Data", Order = 10,
             Settings = [
-                SettingInfo.Bool("backup.enabled", "Automatic backups", true, "A consistent database snapshot, settings and the ideas backlog (with its pending cards), stored in your NetPI home. Project files and skills are not included."),
+                SettingInfo.Bool("backup.enabled", "Automatic backups", true, "A consistent snapshot of the database (which holds the ideas backlog, its cards and its commit cursors) and of your settings, stored in your NetPI home. Project files and skills are not included."),
                 SettingInfo.Int("backup.intervalHours", "Interval", 24, "Checked at startup and every minute.", 1, 720, "hours"),
                 SettingInfo.Int("backup.keepCount", "Automatic backups to keep", 7, "Manual backups are kept until you remove them.", 1, 365),
             ],
         });
         ctx.Rpc.Register("backup.list", (_, _) => Task.FromResult<object?>(List(ctx.Paths.Home)), "Available verified-format snapshots → { id, path, createdAt, automatic }[]");
-        ctx.Rpc.Register("backup.create", async (_, token) => await CreateAsync(ctx, false, token), "Create a database, settings and ideas snapshot → { id, path, createdAt, automatic }");
+        ctx.Rpc.Register("backup.create", async (_, token) => await CreateAsync(ctx, false, token), "Create a database and settings snapshot → { id, path, createdAt, automatic }");
         ctx.Rpc.Register("backup.verify", (r, _) => Task.FromResult<object?>(Verify(ctx.Paths.Home, r.Required("id"))), "Verify all checksums: { id } → snapshot manifest");
         _stop = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
         _worker = RunAsync(ctx, _stop.Token);
@@ -76,8 +76,6 @@ public sealed class BackupPlugin : INetPiPlugin
                 files[name] = Convert.ToHexString(SHA256.HashData(input)).ToLowerInvariant();
             }
             var manifest = new JsonObject { ["version"] = 1, ["id"] = id, ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"), ["automatic"] = automatic, ["files"] = files };
-            if (files.AsObject().Count == 2)
-                manifest["noIdeas"] = true; // the ideas files were busy or absent: this snapshot carries no ideas state
             File.WriteAllText(Path.Combine(staging, "manifest.json"), manifest.ToJsonString(NetPiJson.Indented));
             ct.ThrowIfCancellationRequested();
             var destination = Path.Combine(root, id);
@@ -88,13 +86,11 @@ public sealed class BackupPlugin : INetPiPlugin
             foreach (var old in List(ctx.Paths.Home).Where(n => n!["automatic"]?.GetValue<bool>() == true)
                 .OrderByDescending(n => n!["createdAt"]!.GetValue<string>()).Skip(Math.Clamp(ctx.Settings.Get("backup.keepCount", 7), 1, 365)))
             {
-                // A snapshot that still holds ideas state is not removed while this new one does not: retention must not
-                // be the reason the last ideas state in a backup disappears.
-                if (HoldsIdeas(old as JsonObject) && !HoldsIdeas(manifest)) continue;
                 var path = SnapshotPath(ctx.Paths.Home, old!["id"]!.GetValue<string>());
                 if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) continue;
-                // A snapshot this build would not write (new files in it) is kept rather than deleted.
-                if (Directory.EnumerateFileSystemEntries(path).Any(p => !new[] { "netpi.db", "settings.json", "manifest.json", "ideas.json", "ideas-pending.json", "ideas-migration.json" }.Contains(Path.GetFileName(p)))) continue;
+                // A snapshot this build would not write (files in it a new snapshot does not have) is kept rather than
+                // deleted: an older snapshot's ideas files are still the only copy of anything, if the user is on one.
+                if (Directory.EnumerateFileSystemEntries(path).Any(p => !Required.Contains(Path.GetFileName(p)) && Path.GetFileName(p) != "manifest.json")) continue;
                 foreach (var file in Directory.EnumerateFiles(path)) File.Delete(file);
                 Directory.Delete(path);
             }
@@ -115,100 +111,57 @@ public sealed class BackupPlugin : INetPiPlugin
         return Path.Combine(home, "backups", id);
     }
 
+    /// <summary>The files every snapshot has to carry: the database (which holds the ideas tables) and the settings.</summary>
+    private static readonly string[] Required = ["netpi.db", "settings.json"];
+
+    /// <summary>
+    /// The files a snapshot is made of, in the order they are written. The ideas backlog, the cards waiting for an
+    /// answer and the commit cursors are plugin-owned tables in <c>netpi.db</c>, so they travel inside the consistent
+    /// database snapshot: a backup does not need the ideas plugin to be running, and it cannot be a snapshot that
+    /// quietly left the ideas out.
+    /// </summary>
+    private static IReadOnlyList<string> SnapshotFiles(IPluginContext ctx, string staging) => Required;
+
     public static JsonObject Verify(string home, string id)
     {
         var dir = SnapshotPath(home, id);
         var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "manifest.json")))!.AsObject();
         if (manifest["version"]?.GetValue<int>() != 1 || manifest["id"]?.GetValue<string>() != id)
             throw new InvalidDataException("Unsupported or mismatched backup manifest");
-        // Whatever the manifest lists, each one must be there: a snapshot that names a file it does not contain is not
-        // verified, whatever the checksum says. An older manifest (no ideas files) verifies exactly what it has.
+        // Whatever the manifest lists, each one must be there, be a file inside this snapshot and have the checksum the
+        // manifest says. A name that climbs out of the snapshot is refused before it is opened or written anywhere.
         var files = manifest["files"] as JsonObject ?? throw new InvalidDataException("The backup manifest lists no files");
-        foreach (var name in files.Select(f => f.Key))
+        if (files.Count == 0) throw new InvalidDataException("The backup manifest lists no files");
+        foreach (var (name, node) in files)
         {
-            var path = Path.Combine(dir, name);
+            if (node is not JsonValue hash || !hash.TryGetValue<string>(out var expected) || expected.Length != 64)
+                throw new InvalidDataException($"The backup manifest has no checksum for {name}");
+            var path = Inside(dir, name);
             if (!File.Exists(path)) throw new InvalidDataException($"The backup is missing {name}, which its manifest lists");
             using var input = File.OpenRead(path);
             var actual = Convert.ToHexString(SHA256.HashData(input));
-            if (!actual.Equals(files[name]?.GetValue<string>(), StringComparison.OrdinalIgnoreCase))
+            if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException($"Backup checksum mismatch: {name}");
         }
-        foreach (var name in new[] { "netpi.db", "settings.json" })
+        foreach (var name in Required)
             if (!files.ContainsKey(name)) throw new InvalidDataException($"The backup manifest does not list {name}");
         return manifest;
     }
 
-    /// <summary>How long a snapshot waits for the ideas files to be free before leaving them out of it.</summary>
-    private static readonly TimeSpan IdeasLockWait = TimeSpan.FromSeconds(5);
-
     /// <summary>
-    /// The ideas files of this snapshot, copied while the ideas plugin's own locks are held: the backlog, the cards and
-    /// check marks waiting in the pending file, and the import receipt of the old per-project files. Taking the same
-    /// locks (<c>.&lt;name&gt;.lock</c>, which the OS releases even after a crash) is what makes this a coordinated
-    /// snapshot: a card answered at this moment is in both files or in neither. All of them are taken, in a fixed order
-    /// so two snapshots cannot wait on each other, and the pending file is locked by its own writer — the backlog lock
-    /// alone would not cover it.
-    /// <para>
-    /// If the locks cannot be taken the files are left out and the snapshot says so in its manifest, so nothing claims
-    /// to hold ideas state that it does not hold.
-    /// </para>
+    /// A file of a snapshot is a plain name inside it: no directory, no <c>..</c>, no rooted path, nothing that
+    /// resolves outside. A manifest is a file that was written once and can be edited by anything that can write to the
+    /// snapshot, so what it names is checked before it is read (and, in the restore script, before it is written).
     /// </summary>
-    private IReadOnlyList<string> SnapshotIdeas(IPluginContext ctx, string staging)
+    internal static string Inside(string dir, string name)
     {
-        // The file name part only, whatever the setting says: the snapshot must not be written outside the home.
-        var name = Path.GetFileName(ctx.Settings.Get("ideas.fileName", "ideas.json"));
-        var sources = new[] { name, "ideas-pending.json", "ideas-migration.json" }
-            .Select(n => Path.Combine(ctx.Paths.Home, n))
-            .Where(File.Exists)
-            .ToList();
-        if (sources.Count == 0) return [];
-        var deadline = DateTimeOffset.UtcNow + IdeasLockWait;
-        var held = new List<FileStream>();
-        try
-        {
-            foreach (var lockPath in sources.Select(s => "." + Path.GetFileName(s) + ".lock").OrderBy(p => p, StringComparer.Ordinal).Select(p => Path.Combine(ctx.Paths.Home, p)))
-            {
-                FileStream? open = null;
-                while (DateTimeOffset.UtcNow < deadline)
-                {
-                    try { open = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); break; }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Thread.Sleep(50); }
-                }
-                if (open is null)
-                {
-                    ctx.Logger.LogWarning("Backups: {Lock} was busy, so this snapshot does not include the ideas files (the previous snapshot still does)", lockPath);
-                    return [];
-                }
-                held.Add(open);
-            }
-            foreach (var source in sources) File.Copy(source, Path.Combine(staging, Path.GetFileName(source)), overwrite: true);
-            return sources.Select(s => Path.GetFileName(s)).ToList();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            ctx.Logger.LogWarning(ex, "Backups: the ideas files could not be read, so this snapshot does not include them");
-            return [];
-        }
-        finally { foreach (var open in held) try { open.Dispose(); } catch { } }
-    }
-
-    /// <summary>
-    /// Whether a snapshot carries ideas state. The manifest is the only answer: it lists the files (an older snapshot
-    /// lists none of the ideas files, which is the same answer) and says <c>noIdeas</c> when they were busy.
-    /// </summary>
-    private static bool HoldsIdeas(JsonObject? manifest)
-    {
-        if (manifest?["noIdeas"] is JsonValue flag && flag.TryGetValue<bool>(out var skipped) && skipped) return false;
-        return manifest?["files"] is JsonObject files
-            && (files.ContainsKey("ideas.json") || files.ContainsKey("ideas-pending.json"));
-    }
-
-    /// <summary>The files a snapshot is made of, in the order they are written.</summary>
-    private IReadOnlyList<string> SnapshotFiles(IPluginContext ctx, string staging)
-    {
-        var names = new List<string> { "netpi.db", "settings.json" };
-        names.AddRange(SnapshotIdeas(ctx, staging));
-        return names;
+        if (string.IsNullOrWhiteSpace(name) || name != Path.GetFileName(name) || name is "." or "..")
+            throw new InvalidDataException($"The backup manifest names '{name}', which is not a file of the snapshot");
+        var full = Path.GetFullPath(Path.Combine(Path.GetFullPath(dir), name));
+        var root = Path.GetFullPath(dir) + Path.DirectorySeparatorChar;
+        if (!full.StartsWith(root, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            throw new InvalidDataException($"The backup manifest names '{name}', which is outside the snapshot");
+        return full;
     }
 
     public static JsonArray List(string home)

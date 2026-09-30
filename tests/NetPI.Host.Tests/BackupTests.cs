@@ -78,14 +78,14 @@ public static class BackupTests
     }
 
     /// <summary>
-    /// The ideas backlog is in the home as plain files, so a snapshot has to carry them: the backlog (under the name
-    /// the user configured), the cards waiting to be answered, and the import receipt. Restoring them into a fresh home
-    /// and starting the host on it is what shows that they came back (docs/plans/2026-09-29-ideas-flow-storage-handoff.md,
-    /// assignment D).
+    /// The ideas backlog, the cards waiting for an answer and the commit cursors are plugin-owned tables in
+    /// <c>netpi.db</c>, so they travel inside the consistent database snapshot: restoring a snapshot into a fresh home
+    /// and querying the real ideas rows is what shows they came back (docs/plans/2026-09-29-ideas-sqlite-migration.md,
+    /// assignment D). An older snapshot that still carries the ideas files restores exactly what it has.
     /// </summary>
     private static async Task BackupIdeasRoundTrip(TestRunner r)
     {
-        r.Add("backup: the ideas backlog, its pending cards and its receipt are in the snapshot and come back", async () =>
+        r.Add("backup: the SQLite-backed ideas backlog, its cards and its cursors are in the snapshot and come back", async () =>
         {
             var home = T.TempDir("backup-ideas");
             await using var kernel = HostKernel.Create(new NetPiServerOptions { Home = home, ConsoleLogging = false });
@@ -93,44 +93,48 @@ public static class BackupTests
             var ctx = new PluginContext(kernel, "netpi.backup", home, scope, default, () => "test");
             var plugin = new BackupPlugin();
             kernel.Settings.Set("backup.enabled", JsonValue.Create(false));
-            kernel.Settings.Set("ideas.fileName", JsonValue.Create("backlog.json")); // a named file, not the default
-            var backlog = "{ \"version\": 1, \"ideas\": [ { \"id\": \"idea-keep01\", \"title\": \"Keep me\" } ] }\n";
-            var pending = "{ \"suggestions\": [ { \"id\": \"sg_keep001\", \"kind\": \"save\", \"title\": \"Waiting\" } ], \"ops\": [], \"checked\": {}, \"repos\": {} }";
-            await File.WriteAllTextAsync(Path.Combine(home, "backlog.json"), backlog);
-            await File.WriteAllTextAsync(Path.Combine(home, "ideas-pending.json"), pending);
-            await File.WriteAllTextAsync(Path.Combine(home, "ideas-migration.json"), "{ \"version\": 1, \"imports\": [] }");
+
+            // The backlog as the ideas plugin stores it: a table, an id, a revision and the document.
+            foreach (var statement in new[]
+            {
+                "CREATE TABLE ideas_items (id TEXT PRIMARY KEY, ord INTEGER NOT NULL, revision INTEGER NOT NULL," +
+                    " title TEXT NOT NULL, status TEXT NOT NULL, priority TEXT NOT NULL, project_id TEXT, project_name TEXT," +
+                    " created_at TEXT, updated_at TEXT, doc TEXT NOT NULL)",
+                """INSERT INTO ideas_items VALUES ('idea-keep01', 0, 1, 'Keep me', 'open', 'medium', NULL, NULL,""" +
+                    """ '2026-09-29T10:00:00Z', '2026-09-29T10:00:00Z', '{"id":"idea-keep01","title":"Keep me","custom":{"kept":true}}')""",
+                "CREATE TABLE ideas_suggestions (id TEXT PRIMARY KEY, ord INTEGER NOT NULL, kind TEXT NOT NULL, session_id TEXT," +
+                    " idea_id TEXT, project_id TEXT, source_rev INTEGER, title TEXT NOT NULL, at TEXT NOT NULL, doc TEXT NOT NULL)",
+                "INSERT INTO ideas_suggestions VALUES ('sg_keep001', 0, 'save', 'ses_1', NULL, NULL, NULL, 'Waiting'," +
+                    " '2026-09-29T10:00:00Z', '{\"id\":\"sg_keep001\",\"kind\":\"save\",\"title\":\"Waiting\"}')",
+                "CREATE TABLE ideas_repos (repo TEXT PRIMARY KEY, project_id TEXT, project_name TEXT, hash TEXT, at TEXT NOT NULL," +
+                    " tries INTEGER NOT NULL, error TEXT)",
+                "INSERT INTO ideas_repos VALUES ('C:/repo', 'prj_1', 'Demo', 'abc123', '2026-09-29T10:00:00Z', 1, NULL)",
+            }) kernel.Db.Execute(statement);
 
             await plugin.StartAsync(ctx, default);
             try
             {
                 var manual = await plugin.CreateAsync(ctx, false, default);
                 var dir = manual["path"]!.GetValue<string>();
-                Check.Equal(5, manual["files"]!.AsObject().Count, "database, settings and the three ideas files");
-                Check.Equal(File.ReadAllText(Path.Combine(home, "backlog.json")), File.ReadAllText(Path.Combine(dir, "backlog.json")));
-                Check.Equal(pending.Replace(" ", ""), File.ReadAllText(Path.Combine(dir, "ideas-pending.json")).Replace(" ", ""), "the cards waiting for an answer");
-                BackupPlugin.Verify(home, manual["id"]!.GetValue<string>()); // every file, checksums included
+                Check.Equal(2, manual["files"]!.AsObject().Count, "the database and the settings");
+                Check.False(manual.ContainsKey("noIdeas"), "a snapshot is never a snapshot that left the ideas out");
+                Check.False(File.Exists(Path.Combine(dir, "ideas.json")), "the ideas are not a file any more");
+                BackupPlugin.Verify(home, manual["id"]!.GetValue<string>());
 
-                // The snapshot a busy ideas plugin refused: no torn files, and the log says so.
-                await File.WriteAllTextAsync(Path.Combine(home, "ideas-pending.json"), pending.Replace("Waiting", "Waiting again"));
-                using (var held = new FileStream(Path.Combine(home, ".backlog.json.lock"), FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+                // The database in the snapshot really holds them (the ideas plugin is not running here at all).
+                var checkFile = Path.Combine(home, "check-ideas.db");
+                File.Copy(Path.Combine(dir, "netpi.db"), checkFile);
+                using (var snapshot = new Database(checkFile))
                 {
-                    var busy = await plugin.CreateAsync(ctx, false, default);
-                    Check.Equal(2, busy["files"]!.AsObject().Count, "the ideas files were left out rather than copied half");
-                    Check.False(File.Exists(Path.Combine(busy["path"]!.GetValue<string>(), "ideas-pending.json")), "and no half copy of the cards");
-                    // The snapshot says so: nothing may claim to hold ideas state that it does not hold.
-                    Check.Equal(true, busy["noIdeas"]!.GetValue<bool>(), "the manifest records that this snapshot has no ideas state");
-                    BackupPlugin.Verify(home, busy["id"]!.GetValue<string>());
-
-                    // Retention must not be the reason the last ideas state in a backup disappears: with room for one, a
-                    // snapshot that holds ideas survives a new one that does not.
-                    kernel.Settings.Set("backup.keepCount", JsonValue.Create(1));
-                    var withIdeas = Path.Combine(home, "backups", manual["id"]!.GetValue<string>());
-                    Check.True(File.Exists(Path.Combine(withIdeas, "backlog.json")), "the older snapshot holds the backlog");
-                    await plugin.CreateAsync(ctx, true, default);
-                    Check.True(Directory.Exists(withIdeas), "it is kept while the newer snapshot has no ideas state");
+                    Check.Equal("ok", snapshot.Scalar<string>("PRAGMA integrity_check"));
+                    Check.Equal("Keep me", snapshot.Scalar<string>("SELECT title FROM ideas_items WHERE id = 'idea-keep01'"));
+                    var doc = snapshot.Scalar<string>("SELECT doc FROM ideas_items WHERE id = 'idea-keep01'")!;
+                    Check.True(doc.Contains("\"kept\":true"), "a field the ideas plugin stores as it is: " + doc);
+                    Check.Equal(1L, snapshot.Scalar<long>("SELECT COUNT(*) FROM ideas_suggestions WHERE id = 'sg_keep001'"));
+                    Check.Equal("abc123", snapshot.Scalar<string>("SELECT hash FROM ideas_repos WHERE repo = 'C:/repo'"));
                 }
 
-                // Restore into a new home and start a host on it: the ideas and the card are there.
+                // Restore into a new home and start a host on it: the data is there to be read.
                 var restored = Path.Combine(home, "restored-ideas");
                 var repo = FindRepo();
                 var info = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
@@ -143,8 +147,46 @@ public static class BackupTests
                 if (process.ExitCode != 0) Console.WriteLine("    " + await error);
                 await output;
                 Check.Equal(0, process.ExitCode, "the snapshot restores");
-                Check.Equal(backlog, File.ReadAllText(Path.Combine(restored, "backlog.json")));
-                Check.Contains(File.ReadAllText(Path.Combine(restored, "ideas-pending.json")), "sg_keep001", "and the card that was waiting for the user");
+                using (var recovered = new Database(Path.Combine(restored, "netpi.db")))
+                {
+                    Check.Equal("Keep me", recovered.Scalar<string>("SELECT title FROM ideas_items WHERE id = 'idea-keep01'"));
+                    Check.Equal(1L, recovered.Scalar<long>("SELECT COUNT(*) FROM ideas_suggestions"));
+                    Check.Equal(1L, recovered.Scalar<long>("SELECT COUNT(*) FROM ideas_repos"));
+                }
+
+                // An older snapshot, with the ideas as files, still restores exactly what it has.
+                var old = Path.Combine(home, "backups", "20200101-000000-old");
+                Directory.CreateDirectory(old);
+                var backlog = "{ \"version\": 1, \"ideas\": [ { \"id\": \"idea-old001\", \"title\": \"From the file era\" } ] }\n";
+                File.WriteAllText(Path.Combine(old, "ideas.json"), backlog);
+                File.Copy(Path.Combine(dir, "netpi.db"), Path.Combine(old, "netpi.db"));
+                File.Copy(Path.Combine(dir, "settings.json"), Path.Combine(old, "settings.json"));
+                var hashes = new JsonObject();
+                foreach (var name in new[] { "netpi.db", "settings.json", "ideas.json" })
+                    hashes[name] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(old, name)))).ToLowerInvariant();
+                File.WriteAllText(Path.Combine(old, "manifest.json"), new JsonObject
+                {
+                    ["version"] = 1, ["id"] = "20200101-000000-old", ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"),
+                    ["automatic"] = true, ["files"] = hashes,
+                }.ToJsonString());
+                BackupPlugin.Verify(home, "20200101-000000-old");
+                var oldHome = Path.Combine(home, "restored-old");
+                info = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+                info.ArgumentList.Add(Path.Combine(repo, "scripts", "restore-backup.mjs"));
+                info.ArgumentList.Add(old);
+                info.ArgumentList.Add(oldHome);
+                using var oldProcess = Process.Start(info)!;
+                var oldOutput = oldProcess.StandardOutput.ReadToEndAsync(); var oldError = oldProcess.StandardError.ReadToEndAsync();
+                await oldProcess.WaitForExitAsync();
+                if (oldProcess.ExitCode != 0) Console.WriteLine("    " + await oldError);
+                await oldOutput;
+                Check.Equal(0, oldProcess.ExitCode, "a snapshot of the file era still restores");
+                Check.Equal(backlog, File.ReadAllText(Path.Combine(oldHome, "ideas.json")), "with the backlog the cutover then imports");
+
+                // Retention keeps a snapshot this build would not write: its ideas files are the only copy.
+                kernel.Settings.Set("backup.keepCount", JsonValue.Create(1));
+                await plugin.CreateAsync(ctx, true, default);
+                Check.True(Directory.Exists(old), "an older snapshot with ideas files is kept rather than deleted");
             }
             finally { await plugin.StopAsync(default); scope.DisposeAll(); }
         });

@@ -5,18 +5,31 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
+/** A snapshot's files are plain names inside it: no directory, no "..", nothing that resolves outside. */
+function inside(dir, name) {
+  if (typeof name !== 'string' || !name || name !== path.basename(name) || name === '.' || name === '..')
+    throw new Error(`The manifest names ${JSON.stringify(name)}, which is not a file of the snapshot`);
+  const full = path.resolve(dir, name);
+  if (path.dirname(full) !== path.resolve(dir)) throw new Error(`The manifest names ${name}, which is outside the snapshot`);
+  return full;
+}
+
 export async function restoreBackup(backup, destination) {
   backup = path.resolve(backup);
   destination = path.resolve(destination);
   const manifest = JSON.parse(await fs.readFile(path.join(backup, 'manifest.json'), 'utf8'));
   if (manifest.version !== 1) throw new Error('Unsupported backup version');
+  const listed = manifest.files;
+  if (!listed || typeof listed !== 'object' || Array.isArray(listed) || Object.keys(listed).length === 0)
+    throw new Error('The manifest lists no files');
   const contents = new Map();
-  // Whatever the manifest lists (netpi.db, settings.json, and the ideas files a newer snapshot carries), each with a
-  // checksum of its own. An older snapshot restores exactly what it has.
-  for (const name of Object.keys(manifest.files ?? {})) {
-    const data = await fs.readFile(path.join(backup, name));
+  // Whatever the manifest lists, each with a checksum of its own, read from inside the snapshot only. An older
+  // snapshot restores exactly what it has (its ideas files, before they became tables in the database).
+  for (const [name, expected] of Object.entries(listed)) {
+    if (typeof expected !== 'string' || expected.length !== 64) throw new Error(`The manifest has no checksum for ${name}`);
+    const data = await fs.readFile(inside(backup, name));
     const hash = createHash('sha256').update(data).digest('hex');
-    if (hash !== manifest.files?.[name]?.toLowerCase()) throw new Error(`Checksum mismatch: ${name}`);
+    if (hash !== expected.toLowerCase()) throw new Error(`Checksum mismatch: ${name}`);
     contents.set(name, data);
   }
   if (!contents.has('netpi.db')) throw new Error('The snapshot has no netpi.db');
@@ -27,7 +40,7 @@ export async function restoreBackup(backup, destination) {
   // Exclusive creation rejects existing homes, including symlinks. On a write failure keep the partial directory
   // for inspection; another restore must choose a different destination.
   await fs.mkdir(destination);
-  for (const [name, data] of contents) await fs.writeFile(path.join(destination, name), data, { flag: 'wx', mode: 0o600 });
+  for (const [name, data] of contents) await fs.writeFile(inside(destination, name), data, { flag: 'wx', mode: 0o600 });
   return destination;
 }
 
