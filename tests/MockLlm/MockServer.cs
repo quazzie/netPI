@@ -352,6 +352,7 @@ public sealed class MockLlmServer : IAsyncDisposable
     {
         private readonly int _delay = (int)Math.Round(plan.ChunkDelayMs / Math.Max(0.01, speed));
         private int _chunksLeftBeforeDrop = -1;
+        private bool _held;
         public CancellationToken Ct => ctx.RequestAborted;
 
         public async Task SendAsync(string? evt, JsonNode data)
@@ -373,6 +374,11 @@ public sealed class MockLlmServer : IAsyncDisposable
         public async Task<bool> TickAsync()
         {
             if (_delay > 0) await Task.Delay(_delay, Ct).ConfigureAwait(false);
+            if (!_held && plan.HoldMs > 0)
+            {
+                _held = true; // once, after the first chunk: the client has the stream start and the first delta, and the rest waits
+                await Task.Delay(plan.HoldMs, Ct).ConfigureAwait(false);
+            }
             if (_chunksLeftBeforeDrop > 0 && --_chunksLeftBeforeDrop == 0)
             {
                 if (plan.Drop) return false;
