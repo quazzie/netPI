@@ -501,6 +501,19 @@ await t.Run("chat: reasoning_content, split <think> tags, tool calls by index, u
     t.Eq("vllm", msg.Provider, "provider id");
 });
 
+await t.Run("chat: a tool name split across chunks is not truncated to its first fragment", async () =>
+{
+    var events = await Collect(apPlugin.Providers[1], Req(M("vllm", "frag")));
+    var msg = ((StreamCompleted)events[^1]).Message;
+    var call = msg.ToolCalls.Single();
+    t.Eq("write_file", call.Name, "name from both fragments");
+    t.Eq("""{"path":"a.txt"}""", call.Arguments, "arguments across chunks");
+    var started = events.OfType<ToolCallStarted>().Single();
+    t.Eq(started.Id, call.Id, "the part keeps the id the events were emitted with");
+    t.Check(events.OfType<ToolCallArgsDelta>().All(d => d.Id == started.Id), "every args delta carries the same id");
+    t.Eq("tool_use", msg.StopReason, "stop reason");
+});
+
 await t.Run("chat: request body (system, tool_calls, tool results, images, stream_options, auth headers)", async () =>
 {
     var model = M("vllm", "gemma-4");
@@ -912,6 +925,15 @@ await t.Run("openrouter: stream → thinking + merged reasoning_details, text, t
     t.Check(msg.Usage is { InputTokens: 300, CacheReadTokens: 600, CacheWriteTokens: 100, OutputTokens: 50, ReasoningTokens: 20 }, "usage: prompt = uncached + cache reads + cache writes");
     t.Eq(0.0012, msg.Usage?.CostUsd, "the reported cost travels in the usage (the agents plugin's ledger reads it)");
     t.Eq("""{"openrouter":{"generationId":"gen-stealth-bunny","provider":"Stealth","cost":0.0012}}""", msg.Meta?.ToJsonString(), "generation id, upstream provider, cost");
+});
+
+await t.Run("openrouter: a tool name split across chunks is not truncated to its first fragment", async () =>
+{
+    var events = await Collect(openrouter, Req(M("openrouter", "vendor/frag")));
+    var call = events.OfType<StreamCompleted>().Single().Message.ToolCalls.Single();
+    t.Eq("write_file", call.Name, "name from both fragments");
+    t.Eq("""{"path":"b.txt"}""", call.Arguments, "arguments");
+    t.Eq(events.OfType<ToolCallStarted>().Single().Id, call.Id, "the part keeps the id the events were emitted with");
 });
 
 await t.Run("openrouter: reasoning_details go back unmodified, only to the model that produced them", async () =>

@@ -325,6 +325,16 @@ internal sealed class MockServer : IAsyncDisposable
                             choices = new[] { new { index = 0, delta = new { content = "" }, finish_reason = "error" } } }),
                 ]);
                 return;
+            case "vendor/frag":
+                // A tool name split across chunks ("wr" + "ite_file"), and an id that only arrives after the part exists.
+                await Sse(ctx,
+                [
+                    OrChunk(new { tool_calls = new[] { new { index = 0, type = "function", function = new { name = "wr" } } } }),
+                    OrChunk(new { tool_calls = new[] { new { index = 0, id = "call_of1", type = "function", function = new { name = "ite_file" } } } }),
+                    OrChunk(new { tool_calls = new[] { new { index = 0, function = new { arguments = "{\"path\":\"b.txt\"}" } } } }, "tool_calls"),
+                    "data: [DONE]\n\n",
+                ]);
+                return;
         }
 
         // Default: reasoning text + reasoning_details streamed in pieces (keep-alive comments between), text, a tool call
@@ -386,6 +396,17 @@ internal sealed class MockServer : IAsyncDisposable
                 {"id":"c2","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"<think>t</think>Plain JSON","tool_calls":[{"id":"call_j","type":"function","function":{"name":"ls","arguments":"{}"}}]},"finish_reason":"tool_calls"}],
                  "usage":{"prompt_tokens":12,"completion_tokens":4,"prompt_cache_hit_tokens":2}}
                 """);
+                return;
+            case "frag":
+                // A tool name split across chunks ("wr" + "ite_file"), and an id that only arrives after the part exists.
+                await Sse(ctx,
+                [
+                    Chunk(new { tool_calls = new[] { new { index = 0, type = "function", function = new { name = "wr" } } } }),
+                    Chunk(new { tool_calls = new[] { new { index = 0, id = "call_f1", type = "function", function = new { name = "ite_file" } } } }),
+                    Chunk(new { tool_calls = new[] { new { index = 0, function = new { arguments = "{\"path\":" } } } }),
+                    Chunk(new { tool_calls = new[] { new { index = 0, function = new { arguments = "\"a.txt\"}" } } } }, "tool_calls"),
+                    "data: [DONE]\n\n",
+                ]);
                 return;
         }
 

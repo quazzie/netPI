@@ -409,13 +409,17 @@ internal sealed class OpenRouterStreamParser(MessageAssembler asm, string provid
             _order.Add(call);
         }
         if (call.Id is null && !string.IsNullOrEmpty(id)) call.Id = id;
-        if (!string.IsNullOrEmpty(name) && call.Part is null) call.Name += name;
+        // A name can arrive in fragments ("wr" then "ite"): keep accumulating after the part exists, or the call is
+        // dispatched under its first fragment. The part keeps the id it was started with, so the events already
+        // emitted for it (ToolCallStarted, ToolCallArgsDelta) and the persisted part still agree.
+        if (!string.IsNullOrEmpty(name)) call.Name += name;
 
         if (call.Part is null && call.Name.Length > 0)
         {
             call.Part = asm.StartToolCall(call.Id, call.Name);
             if (call.PendingArgs.Length > 0) { asm.AppendToolArgs(call.Part, call.PendingArgs.ToString()); call.PendingArgs.Clear(); }
         }
+        else if (call.Part is not null) call.Part.Name = call.Name;
         if (string.IsNullOrEmpty(args)) return;
         if (call.Part is null) call.PendingArgs.Append(args);
         else asm.AppendToolArgs(call.Part, args);
