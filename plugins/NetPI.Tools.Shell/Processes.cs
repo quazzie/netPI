@@ -43,6 +43,7 @@ public sealed class ManagedProcess : IDisposable
     private readonly List<Task> _pumps = [];
     private readonly object _statusLock = new();
     private readonly LaunchSpec _spec;
+    private readonly ProcessTree? _tree;
     private OutputThrottle? _live;
     private string _status = "running";
     private string? _requestedStatus;
@@ -63,6 +64,12 @@ public sealed class ManagedProcess : IDisposable
     public bool IsRunning => Status == "running";
     /// <summary>Completes when the process has exited and its output was drained.</summary>
     public Task Completion => _exited.Task;
+    /// <summary>
+    /// True when the output pipes reached EOF, i.e. nothing is still holding them. False means a
+    /// descendant outlived the shell and kept the pipe open, so the capture stopped at the drain grace
+    /// and the result is only what arrived in that window.
+    /// </summary>
+    public bool OutputReachedEof { get; private set; }
     public TimeSpan Elapsed => (EndedAt ?? DateTimeOffset.UtcNow) - StartedAt;
 
     /// <summary>Called once when the process has finished (status set, output drained).</summary>
@@ -71,13 +78,14 @@ public sealed class ManagedProcess : IDisposable
     /// <summary>Grace period to drain output after the shell exited (orphaned grandchildren may keep the pipes open).</summary>
     public static TimeSpan DrainGrace { get; set; } = TimeSpan.FromMilliseconds(750);
 
-    private ManagedProcess(string id, LaunchSpec spec, string command, string cwd, Process process, OutputCapture output)
+    private ManagedProcess(string id, LaunchSpec spec, string command, string cwd, Process process, OutputCapture output, ProcessTree? tree)
     {
         Id = id;
         _spec = spec;
         Command = command;
         Cwd = cwd;
         _process = process;
+        _tree = tree;
         Output = output;
         Pid = process.Id;
         StartedAt = DateTimeOffset.UtcNow;
@@ -105,7 +113,11 @@ public sealed class ManagedProcess : IDisposable
         }
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
         if (!process.Start()) throw new InvalidOperationException($"Failed to start {spec.Executable}");
-        var mp = new ManagedProcess(id, spec, command, cwd, process, output)
+        // Before anything else: put it in a job, so a later kill reaches every descendant
+        // (see ProcessTree for why the parent-pid walk is not enough on Windows).
+        ProcessTree? tree = null;
+        try { tree = ProcessTree.Attach(process); } catch { /* kill falls back to the tree walk */ }
+        var mp = new ManagedProcess(id, spec, command, cwd, process, output, tree)
         {
             SessionId = sessionId,
             AgentId = agentId,
@@ -162,8 +174,8 @@ public sealed class ManagedProcess : IDisposable
         catch { }
         // Drain what is left; do not wait forever for grandchildren that inherited the pipes.
         var pumps = Task.WhenAll(_pumps);
-        if (await Task.WhenAny(pumps, Task.Delay(DrainGrace)).ConfigureAwait(false) != pumps)
-            _pumpCts.Cancel();
+        OutputReachedEof = await Task.WhenAny(pumps, Task.Delay(DrainGrace)).ConfigureAwait(false) == pumps;
+        if (!OutputReachedEof) _pumpCts.Cancel();
         int? code = null;
         try { code = _process.ExitCode; } catch { }
         lock (_statusLock)
@@ -190,13 +202,17 @@ public sealed class ManagedProcess : IDisposable
             try { if (_process.HasExited) return false; } catch { }
             _requestedStatus ??= status;
         }
-        try
+        if (_tree is not null) _tree.Kill();
+        else
         {
-            if (!_process.HasExited) _process.Kill(entireProcessTree: true);
+            try
+            {
+                if (!_process.HasExited) _process.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+            catch (NotSupportedException) { }
         }
-        catch (InvalidOperationException) { }
-        catch (System.ComponentModel.Win32Exception) { }
-        catch (NotSupportedException) { }
         return true;
     }
 
@@ -217,6 +233,7 @@ public sealed class ManagedProcess : IDisposable
     {
         _live?.Dispose();
         Output.Dispose();
+        _tree?.Dispose();
         try { _process.Dispose(); } catch { }
         _pumpCts.Dispose();
     }

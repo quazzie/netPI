@@ -15,6 +15,10 @@ public static class ShellTests
 
     private static ShellTool Bash(ShellService s) => new("bash", s);
 
+    /// <summary>
+    /// Is this <b>Windows</b> pid running? Only for pids Windows handed out (ManagedProcess.Pid).
+    /// A pid from <c>bash $!</c> is an MSYS pid and must not be passed here — see <see cref="ShellChild"/>.
+    /// </summary>
     private static bool ProcessAlive(int pid)
     {
         if (OperatingSystem.IsWindows())
@@ -135,7 +139,7 @@ public static class ShellTests
             var (svc, _, _) = NewService();
             var dir = T.TempDir("bash");
             var sw = Stopwatch.StartNew();
-            var res = await T.Run(Bash(svc), dir, new { command = "sleep 60 & echo $! > child.pid; echo started; sleep 60; echo never", timeout = 1 });
+            var res = await T.Run(Bash(svc), dir, new { command = "sleep 60 & echo started; sleep 60; echo never", timeout = 1 });
             sw.Stop();
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(8), $"returned after {sw.Elapsed}");
             Check.Error(res, "[timed out after 1s");
@@ -144,9 +148,13 @@ public static class ShellTests
             var d = T.D(res);
             Check.Equal("timeout", d.Str("status"));
             Check.True(d.Bool("timedOut"));
-            var childPid = int.Parse(File.ReadAllText(Path.Combine(dir, "child.pid")).Trim());
-            await Task.Delay(300);
-            Check.False(ProcessAlive(childPid), $"background child {childPid} must be killed");
+            // The point of the whole test. A `sleep 60` that survives the kill keeps the output pipe
+            // open, and the caller then blocks on it long after the tool answered — which is exactly
+            // what made the Tools suite take a minute longer than its tests did. Asserting on a pid
+            // could never see that: bash's $! is an MSYS pid, and Process.GetProcessById throws on it.
+            // The pipe is the honest witness, and it is the thing a caller actually waits on.
+            Check.True(d.Bool("outputEof"), "captured output reached EOF: nothing is still holding the pipe");
+            Check.NotContains(res.Content, "still running and holding its output open");
         });
 
         r.Add("bash: cancellation (abort) kills the process tree", async () =>
@@ -155,12 +163,10 @@ public static class ShellTests
             var dir = T.TempDir("bash");
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(700));
             var sw = Stopwatch.StartNew();
-            var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "sleep 30 & echo $! > c.pid; sleep 30" }), cts.Token);
+            var res = await Bash(svc).ExecuteAsync(T.Ctx(dir), T.Args(new { command = "sleep 30 & sleep 30" }), cts.Token);
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(8));
             Check.Error(res, "[aborted");
-            var pid = int.Parse(File.ReadAllText(Path.Combine(dir, "c.pid")).Trim());
-            await Task.Delay(300);
-            Check.False(ProcessAlive(pid));
+            Check.True(T.D(res).Bool("outputEof"), "captured output reached EOF after the abort");
         });
 
         // E2E regression: after a user abort, the next call of the batch still ran its command with the cancelled token.
@@ -180,11 +186,17 @@ public static class ShellTests
         {
             var (svc, _, _) = NewService();
             var dir = T.TempDir("bash");
+            // Here the child is meant to survive: the point is that the tool does not wait for it.
+            // So the test owns it and takes it down itself, by the pid Windows actually uses.
+            using var child = ShellChild.For(svc, dir, "orphan");
             var sw = Stopwatch.StartNew();
-            var res = await T.Run(Bash(svc), dir, new { command = "(sleep 20; echo late) & echo $! > o.pid; echo quick" });
+            var res = await T.Run(Bash(svc), dir, new { command = child.Preamble + "echo quick" });
+            sw.Stop();
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(6), $"took {sw.Elapsed}");
             Check.Contains(res.Content, "quick");
-            try { Process.GetProcessById(int.Parse(File.ReadAllText(Path.Combine(dir, "o.pid")).Trim())).Kill(true); } catch { }
+            Check.True(await child.IsAlive(), "the detached child should still be running when the tool returns");
+            await child.RememberNativePid();
+            Check.True(child.NativePid is > 0, "resolved the child's Windows pid (not the MSYS one)");
         });
 
         r.Add("bash: output truncation keeps the tail and spills the full output", async () =>

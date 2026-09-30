@@ -46,10 +46,12 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   that every session shares.
 - Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
   Agent, Aux, Host. End-to-end: `dotnet tests/NetPI.E2E/bin/<Config>/NetPI.E2E.dll` (see `docs/TESTING.md`).
-- **The test loop: one big run, then only the failures.** `.\scripts\test.ps1` builds the five suites, runs them once
-  (log in `artifacts/testlogs`), and prints the failing names as a paste-ready `-Only` command — re-run that while
-  fixing (seconds, not ~90 s), and the full run again before merging. `-Suite Aux`, `-Only "settings:"` (substring,
-  OR-ed), `-SkipBuild`. Never re-run the whole set to check one fix.
+- **The test loop: one big run, then only the failures.** `.\scripts\test.ps1` builds the selected suites once
+  (one generated solution), runs them (up to 3 processes at once; `-Serial` for one), keeps the log and timings in
+  `artifacts/testlogs`, and prints the failing names as a paste-ready `-Only` command — re-run that while fixing
+  (seconds, not the whole set), and the full run again before merging. `-Suite Aux`, `-Only "settings:"` (substring,
+  OR-ed), `-SkipBuild`. Never re-run the whole set to check one fix. The summary shows each suite's process time
+  next to its own reported test time: a gap there means the runner waited on output that never arrived.
 - UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`. A worktree's `npm ci` can emit a cosmetically different bundle than the main checkout's `node_modules` did, so a plugin's committed `wwwroot/ui.js` (and `web/dist`) often comes out modified after a build you did not mean to change: revert those, and commit a bundle only when the *source* under `ui/` changed.
 
 ## Inspecting the running app

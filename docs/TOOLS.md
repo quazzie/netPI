@@ -282,7 +282,8 @@ The root is chosen in this order: `cwd`, then the session's cwd (`ISessionStore.
 ```ts
 details: { command, shell: 'bash'|'pwsh', cwd, exitCode?: number /* absent while running */, durationMs?: number,
            truncated: boolean, fullOutputPath?: string, background: boolean, processId: string, pid: number,
-           status: 'running'|'exited'|'killed'|'timeout', timedOut?: true, aborted?: true }
+           status: 'running'|'exited'|'killed'|'timeout', timedOut?: true, aborted?: true,
+           outputEof: boolean /* false: something the command started is still holding its output open */ }
 // spawn / "shell not found" errors: { command, shell, cwd, background }
 ```
 

@@ -87,6 +87,7 @@ public sealed class TestRunner
             }
         }
         Console.WriteLine();
+        if (selected.Count == 0) Console.WriteLine("No test matches the filter.");
         Console.WriteLine($"{passed} passed, {failed} failed, {selected.Count} total in {total.Elapsed.TotalSeconds:0.0}s");
         if (failed > 0)
         {

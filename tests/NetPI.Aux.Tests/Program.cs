@@ -22,5 +22,6 @@ InspectTests.Register(runner);
 LoadTests.Register(runner);
 ReviewStorageTests.Register(runner);
 var code = await runner.RunAsync(args);
-try { Directory.Delete(Path.Combine(Path.GetTempPath(), "netpi-aux-tests"), recursive: true); } catch { }
+// only this run's root, so a concurrent run of the same suite keeps its files
+try { Directory.Delete(T.TestRoot, recursive: true); } catch { }
 return code;

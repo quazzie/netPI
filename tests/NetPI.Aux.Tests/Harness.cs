@@ -102,6 +102,7 @@ public sealed class TestRunner
             }
         }
         Console.WriteLine();
+        if (selected.Count == 0) Console.WriteLine("No test matches the filter.");
         Console.WriteLine($"{passed} passed, {failed} failed, {selected.Count} total in {total.Elapsed.TotalSeconds:0.0}s");
         if (failed > 0)
         {
@@ -562,9 +563,17 @@ public sealed class FakePluginContext : IPluginContext
 
 public static class T
 {
+    /// <summary>
+    /// Root for this run's temporary files. Scoped to the process (or to <c>NETPI_TEST_ROOT</c>) so two
+    /// runs of the same suite cannot delete each other's directories.
+    /// </summary>
+    public static string TestRoot { get; } = Environment.GetEnvironmentVariable("NETPI_TEST_ROOT") is { Length: > 0 } custom
+        ? custom
+        : Path.Combine(Path.GetTempPath(), "netpi-aux-tests", Environment.ProcessId.ToString());
+
     public static string TempDir(string prefix)
     {
-        var dir = Path.Combine(Path.GetTempPath(), "netpi-aux-tests", prefix + "-" + Guid.NewGuid().ToString("N")[..8]);
+        var dir = Path.Combine(TestRoot, prefix + "-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dir);
         return dir;
     }

@@ -184,6 +184,8 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         if (timedOut) sb.Append($"\n[timed out after {timeoutSeconds}s; the process tree was killed. Use a longer timeout or background=true for long-running commands.]");
         else if (aborted) sb.Append("\n[aborted; the process tree was killed]");
         else if (mp.ExitCode is { } code && code != 0) sb.Append($"\n[exit code {code}]");
+        if (!mp.OutputReachedEof)
+            sb.Append("\n[note: something the command started is still running and holding its output open, so this may be incomplete]");
 
         return new ToolResult
         {
@@ -212,5 +214,6 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         status = mp.Status,
         timedOut = timedOut ? true : (bool?)null,
         aborted = aborted ? true : (bool?)null,
+        outputEof = mp.OutputReachedEof,
     };
 }

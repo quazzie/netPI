@@ -50,7 +50,20 @@ full run belongs at the end, before a merge.
 .\scripts\test.ps1                                   # build + run all five, print a re-run command for the failures
 .\scripts\test.ps1 -Only "settings:", "goal:"        # just tests whose name contains these (substring, OR-ed)
 .\scripts\test.ps1 -Suite Aux -SkipBuild             # one suite, reusing the build (nothing changed)
+.\scripts\test.ps1 -Serial                           # one suite at a time, when a run misbehaves
 ```
+
+The suites are built **once**, as one generated solution holding just the requested projects (`artifacts/test-speed`),
+so shared dependencies are compiled once instead of once per suite. Up to three suite *processes* then run at a
+time (`-Parallel`, default 2; `-Serial` for one). Each suite gets its own temporary root (`NETPI_TEST_ROOT`, under
+the system temp — not the repo, because the git tests create real repositories and a nested one behaves
+differently), so two invocations of the same suite never delete each other's files.
+
+Next to each suite's result the script prints the **process time** and the time the suite's own timers reported, and
+calls out any suite that spent more than three seconds outside its own tests. That gap is not noise: it is the
+runner waiting for output that never arrived, which is what a child process outliving its command looks like. A
+suite that exits non-zero without reporting a failure is reported as a crash, and a filter that matched nothing is
+reported as such — neither is ever green. `artifacts/testlogs/<timestamp>.json` holds the same numbers machine-readably.
 
 Each suite can also be run directly, which is what the script does:
 

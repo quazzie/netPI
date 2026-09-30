@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using NetPI.Tools.Shell;
 
 namespace NetPI.Tools.Tests;
 
@@ -95,6 +96,7 @@ public sealed class TestRunner
             }
         }
         Console.WriteLine();
+        if (selected.Count == 0) Console.WriteLine("No test matches the filter.");
         Console.WriteLine($"{passed} passed, {failed} failed, {selected.Count} total in {total.Elapsed.TotalSeconds:0.0}s");
         if (failed > 0)
         {
@@ -237,6 +239,103 @@ public sealed class Disposer(Action action) : IDisposable
     public void Dispose() => action();
 }
 
+// ------------------------------------------------------------------ shell children
+
+/// <summary>
+/// A background child a shell test started, with an identity the test can actually check.
+/// <para>
+/// <c>sleep 60 &amp; echo $!</c> reports an <b>MSYS</b> pid, not a Windows pid. On this machine MSYS 3031
+/// was native 14944, and <c>Process.GetProcessById(3031)</c> <i>throws</i> — so a check written as
+/// "is the pid from $! still alive?" always answered "no" and the test passed while the child lived on,
+/// holding the runner's stdout pipe open for the rest of its sleep. These tests therefore judge by side
+/// effect: the child appends to a file for as long as it lives, so growth is proof of life and the end
+/// of growth is proof it was killed. <see cref="NativePid"/> resolves the real Windows pid (through
+/// <c>ps -W</c>) so a test can still kill a survivor it did create on purpose.
+/// </para>
+/// <para>
+/// Always dispose it, including after a failed assertion — a survivor outlives the suite otherwise.
+/// </para>
+/// </summary>
+public sealed class ShellChild : IDisposable
+{
+    private readonly ShellService _svc;
+    private readonly string _dir;
+    private int? _nativePid;
+    private bool _disposed;
+
+    public string Name { get; }
+    /// <summary>Appended to while the child lives; its size is the liveness signal.</summary>
+    public string AliveFile { get; }
+    private string MsysPidFile { get; }
+
+    private ShellChild(ShellService svc, string dir, string name)
+    {
+        _svc = svc; _dir = dir; Name = name;
+        AliveFile = Path.Combine(dir, name + ".alive").Replace('\\', '/');
+        MsysPidFile = Path.Combine(dir, name + ".pid").Replace('\\', '/');
+    }
+
+    /// <summary>Describe a child that <see cref="Preamble"/> will start in <paramref name="dir"/>.</summary>
+    public static ShellChild For(ShellService svc, string dir, string name) => new(svc, dir, name);
+
+    /// <summary>Bash to put in front of a test command: starts the child and records its pid.</summary>
+    public string Preamble =>
+        $"( while true; do echo x >> {AliveFile}; sleep 0.2; done ) & echo $! > {MsysPidFile}; ";
+
+    /// <summary>The MSYS pid the shell reported ($!). Not a Windows pid; do not pass it to Process.</summary>
+    public string MsysPid => File.Exists(MsysPidFile) ? File.ReadAllText(MsysPidFile).Trim() : "";
+
+    /// <summary>The Windows pid, resolved through <c>ps -W</c>. Null while it is unknown or already gone.</summary>
+    public int? NativePid => _nativePid;
+
+    private long Bytes()
+    {
+        try { return File.Exists(AliveFile) ? new FileInfo(AliveFile).Length : 0; } catch { return 0; }
+    }
+
+    /// <summary>True if the file grew during the sample window: the child is running.</summary>
+    public async Task<bool> IsAlive(int windowMs = 700)
+    {
+        var before = Bytes();
+        await Task.Delay(windowMs);
+        return Bytes() > before;
+    }
+
+    /// <summary>Resolve the Windows pid while the child is still running (so it can be killed later).</summary>
+    public async Task RememberNativePid()
+    {
+        if (_nativePid is not null) return;
+        var msys = MsysPid;
+        if (msys.Length == 0) return;
+        var win = await Bash($"ps -W | awk -v p={msys} '$1==p{{print $4}}'");
+        if (int.TryParse(win.Trim(), out var id) && id > 0) _nativePid = id;
+    }
+
+    private async Task<string> Bash(string command)
+    {
+        var res = await T.Run(new ShellTool("bash", _svc), _dir, new { command });
+        return res.Content;
+    }
+
+    /// <summary>Kill a survivor the test created on purpose. Best effort: it is cleanup, not an assertion.</summary>
+    public void Kill()
+    {
+        var id = _nativePid;
+        if (id is { } pid && pid > 0)
+        {
+            try { using var p = System.Diagnostics.Process.GetProcessById(pid); p.Kill(entireProcessTree: true); }
+            catch { /* already gone */ }
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        Kill();
+    }
+}
+
 // ------------------------------------------------------------------ helpers
 
 public static class T
@@ -268,9 +367,17 @@ public static class T
     public static bool Bool(this JsonElement e, string name) => e.GetProperty(name).GetBoolean();
     public static bool Has(this JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null;
 
+    /// <summary>
+    /// Root for this run's temporary files. Scoped to the process (or to <c>NETPI_TEST_ROOT</c>) so two
+    /// runs of the same suite cannot delete each other's directories.
+    /// </summary>
+    public static string TestRoot { get; } = Environment.GetEnvironmentVariable("NETPI_TEST_ROOT") is { Length: > 0 } custom
+        ? custom
+        : Path.Combine(Path.GetTempPath(), "netpi-tests", Environment.ProcessId.ToString());
+
     public static string TempDir(string prefix)
     {
-        var dir = Path.Combine(Path.GetTempPath(), "netpi-tests", prefix + "-" + Guid.NewGuid().ToString("N")[..8]);
+        var dir = Path.Combine(TestRoot, prefix + "-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dir);
         return dir;
     }

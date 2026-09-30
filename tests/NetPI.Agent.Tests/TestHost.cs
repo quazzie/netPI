@@ -130,7 +130,9 @@ public sealed class TestHost : IAsyncDisposable
 
     private TestHost(IDatabase? db)
     {
-        Root = Path.Combine(Path.GetTempPath(), "netpi-agent-tests", Ids.Short(10));
+        Root = Path.Combine(Environment.GetEnvironmentVariable("NETPI_TEST_ROOT") is { Length: > 0 } custom
+            ? custom
+            : Path.Combine(Path.GetTempPath(), "netpi-agent-tests"), Ids.Short(10));
         Workspace = Path.Combine(Root, "workspace");
         Home = Path.Combine(Root, "home");
         Directory.CreateDirectory(Workspace);
