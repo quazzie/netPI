@@ -83,12 +83,25 @@ internal sealed class SessionStore : ISessionStore
     // The deserialized context of the sessions being worked on. Without it every turn re-reads and re-parses the whole
     // history (measured: ~30 ms and megabytes of garbage for a 1,500-message chat), and does so again for every hook
     // that appends a notice. Only the few most recent sessions are kept, and a session too big to be worth retaining
-    // is never cached at all — see CacheContext.
+    // is never cached at all — see ContextRows.
+    //
+    // An appended message goes INTO the cached context (AppendContext) instead of throwing it away, because dropping it
+    // is what made the turn-start read a guaranteed miss: a turn appends its own messages, so every turn paid the full
+    // read again. Anything that changes a message in place, or compacts, still drops the entry.
     private const int ContextCacheSessions = 3;
     private const int ContextCacheMaxMessages = 2000;
-    private readonly Dictionary<string, ChatMessage[]> _context = new(StringComparer.Ordinal);
+
+    /// <summary>A session's uncompacted messages in database order, and the seq they end at.</summary>
+    private sealed record ContextEntry(List<ChatMessage> Rows, long LastSeq);
+
+    private readonly Dictionary<string, ContextEntry> _context = new(StringComparer.Ordinal);
     private readonly LinkedList<string> _contextLru = new();
     private readonly object _contextLock = new();
+    private long _contextHits;
+    private long _contextReads;
+
+    /// <summary>Times the cached context answered a read; the rest were read from the database. Diagnostics and tests.</summary>
+    internal (long Hits, long Reads) ContextCache => (Interlocked.Read(ref _contextHits), Interlocked.Read(ref _contextReads));
 
     public SessionStore(IDatabase db, IEventBus bus, string defaultWorkspace)
     {
@@ -415,6 +428,7 @@ internal sealed class SessionStore : ISessionStore
         }
         SessionInfo session = null!;
         var appended = _db.Transaction(_ => AppendMessageCore(sessionId, message, out session));
+        AppendContext(appended);   // committed: the cached context can take it (inside the transaction it might roll back)
         PublishMessage(EventTypes.MessageAdded, appended);
         Publish(EventTypes.SessionUpdated, new { session });
         return appended;
@@ -449,6 +463,7 @@ internal sealed class SessionStore : ISessionStore
             Publish(EventTypes.SessionCreated, new { session });
             PublishMessage(EventTypes.MessageAdded, message);
             Publish(EventTypes.SessionUpdated, new { session });
+            AppendContext(message);   // committed: a fresh session has no cached context yet, so this is usually a no-op
             return message;
         }
     }
@@ -456,7 +471,6 @@ internal sealed class SessionStore : ISessionStore
     /// <summary>Insert (inside a transaction), bump counters and auto-title. Returns the stored message.</summary>
     private ChatMessage AppendMessageCore(string sessionId, ChatMessage message, out SessionInfo session)
     {
-        DropContext(sessionId);   // the new message is in the context from here on
         var current = GetSession(sessionId) ?? throw new KeyNotFoundException($"Session {sessionId} not found");
         message.SessionId = sessionId;
         message.CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(message.CreatedAt.ToUnixTimeMilliseconds());
@@ -521,9 +535,20 @@ internal sealed class SessionStore : ISessionStore
 
     public IReadOnlyList<ChatMessage> GetContextMessages(string sessionId)
     {
-        var rows = ContextRows(sessionId);
-        // The caller gets its own list: it may reorder it, and the cached array must stay in database order.
-        var list = new List<ChatMessage>(rows);
+        // One copy, taken under the cache lock: it is a reference copy, and it is what the read costs now (before this,
+        // a turn re-read the whole history out of SQLite and re-parsed its JSON — ~30 ms and megabytes of garbage for a
+        // 1,500-message chat, every turn).
+        List<ChatMessage> list;
+        lock (_contextLock)
+        {
+            if (_context.TryGetValue(sessionId, out var cached))
+            {
+                Interlocked.Increment(ref _contextHits);
+                TouchContextLocked(sessionId);
+                list = [.. cached.Rows];
+            }
+            else list = ContextRowsLocked(sessionId);
+        }
         // Summaries are appended after the retained tail; the model must see the latest one first.
         var idx = list.FindLastIndex(m => m.Role == MessageRole.Summary);
         if (idx > 0)
@@ -535,31 +560,51 @@ internal sealed class SessionStore : ISessionStore
         return list;
     }
 
-    /// <summary>The session's uncompacted messages in database order, from the cache when it has them.</summary>
-    private ChatMessage[] ContextRows(string sessionId)
+    /// <summary>
+    /// The session's uncompacted messages in database order: the cached list, or one read that fills the cache. Caller
+    /// holds <see cref="_contextLock"/>; the returned list is the cache's own, so it must not be handed out.
+    /// </summary>
+    private List<ChatMessage> ContextRowsLocked(string sessionId)
     {
-        lock (_contextLock)
-            if (_context.TryGetValue(sessionId, out var cached))
-            {
-                TouchContextLocked(sessionId);
-                return cached;
-            }
+        Interlocked.Increment(ref _contextReads);
         var rows = _db.Query($"SELECT {MessageColumns} FROM messages WHERE session_id = @sessionId AND compacted = 0 ORDER BY seq",
-            new { sessionId }, ReadMessage).ToArray();
-        lock (_contextLock)
+            new { sessionId }, ReadMessage).ToList();
+        if (rows.Count <= ContextCacheMaxMessages)
         {
-            if (!_context.ContainsKey(sessionId) && rows.Length <= ContextCacheMaxMessages)
+            _context[sessionId] = new ContextEntry(rows, rows.Count == 0 ? 0 : rows[^1].Seq);
+            _contextLru.AddLast(sessionId);
+            while (_contextLru.Count > ContextCacheSessions)
             {
-                _context[sessionId] = rows;
-                _contextLru.AddLast(sessionId);
-                while (_contextLru.Count > ContextCacheSessions)
-                {
-                    _context.Remove(_contextLru.First!.Value);
-                    _contextLru.RemoveFirst();
-                }
+                _context.Remove(_contextLru.First!.Value);
+                _contextLru.RemoveFirst();
             }
         }
         return rows;
+    }
+
+    /// <summary>
+    /// A committed append extends the cached context instead of dropping it, so the next turn reads it warm. Only an
+    /// append that lands after the last cached seq can be added: two appends to one session can commit in either order
+    /// (a plugin's notice and the runtime's own message), and a message that arrives out of order would corrupt the
+    /// order the model sees — that case drops the entry and the next read rebuilds it, exactly as before. A message
+    /// stored as already compacted does not belong in this list at all.
+    /// </summary>
+    private void AppendContext(ChatMessage message)
+    {
+        if (string.IsNullOrEmpty(message.SessionId) || message.Compacted) return;
+        lock (_contextLock)
+        {
+            if (!_context.TryGetValue(message.SessionId, out var entry)) return;
+            if (message.Seq <= entry.LastSeq || entry.Rows.Count >= ContextCacheMaxMessages)
+            {
+                _context.Remove(message.SessionId);
+                _contextLru.Remove(message.SessionId);
+                return;
+            }
+            entry.Rows.Add(message);
+            _context[message.SessionId] = entry with { LastSeq = message.Seq };
+            TouchContextLocked(message.SessionId);
+        }
     }
 
     /// <summary>Forget a session's cached context. Every write that changes a message calls it.</summary>
