@@ -48,6 +48,10 @@ public sealed class IdeasPlugin : INetPiPlugin
                     "The probability a commit has to be about an open idea before the commit is recorded on it. 0.7 linked no wrong idea in 187 commits (docs/DECISION-MODELS.md).", 0.3, 0.99),
                 SettingInfo.Number("ideas.doneThreshold", "Finished threshold", IdeaCommitCheck.DefaultDoneThreshold,
                     "The probability an idea has to be finished before you are offered. 0.8 offered 4 of 5 finished ideas and nothing that was only advanced.", 0.3, 0.99),
+                SettingInfo.Bool("ideas.tellAgentOnCommit", "Tell the agent to close its own idea on a commit", true,
+                    "After the agent itself runs a successful git commit or git merge in the session's project, one notice asks it to mark the idea that commit finished (or to say that none of them is about it). Nothing happens when the project has no open idea. The cards above stay: they are what catches a commit made outside any chat."),
+                SettingInfo.Int("ideas.commitNoticesPerRun", "Commit notices per run", IdeaCommitNoticeHook.DefaultMaxPerRun,
+                    "How many of those notices one run may get, so a run that commits in a loop is asked a bounded number of times.", 0, 10),
             ],
         });
 
@@ -105,6 +109,12 @@ public sealed class IdeasPlugin : INetPiPlugin
         // that cannot be watched is retried on the next rescan.
         var commitCheck = context.Track(new IdeaCommitCheck(context, repo, saveCheck));
         _ = commitCheck.StartAsync();
+
+        // The other half of "close on commit": the check above watches repositories, this one listens to the run that
+        // made the commit. It is a notice, so the agent (which knows what it just committed) updates the idea itself.
+        context.Services.Register<IAgentHook>(new IdeaCommitNoticeHook(
+            () => context.Settings,
+            projectId => repo.OpenIdeas(projectId)));
 
         context.Ui.AddTab(new UiTabInfo { Id = "ideas", Title = "Ideas", Panel = UiPanel.Right, Icon = "idea", Order = 20, Module = "ui.js" });
         context.Ui.AddCommand(new SlashCommandInfo

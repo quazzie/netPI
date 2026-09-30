@@ -10,7 +10,8 @@ A backlog of ideas, research, plans and deferred work for the user and for agent
 - Settings: `ideas.fileName` (default `"ideas.json"`; the name the JSON backlog had — read once by the cutover and the
   default name an export is written under, no longer a live file), `ideas.recall`, `ideas.recallThreshold`,
   `ideas.saveCheck`, `ideas.attachThreshold`, `ideas.model`, `ideas.allowPaidModel`, `ideas.closeOnCommit`,
-  `ideas.linkThreshold`, `ideas.doneThreshold` (docs/SETTINGS.md).
+  `ideas.linkThreshold`, `ideas.doneThreshold`, `ideas.tellAgentOnCommit`, `ideas.commitNoticesPerRun`
+  (docs/SETTINGS.md).
 
 ## Where ideas are stored
 
@@ -410,6 +411,32 @@ Each new commit is read twice over, in the order that measured best (docs/DECISI
 
 Skips: no repository, `ideas.closeOnCommit` off, no open idea in the project, no Decide plugin. Without the Files plugin
 there is nothing to read and the check does nothing at all.
+
+### Tell the run that committed (phase 4)
+
+The check above is the right shape for a commit made in a terminal: no conversation is watching it, so the model is asked
+twice and the **user** gets a card. A commit the agent made itself is the opposite case — the run that wrote it knows what
+it was for and is usually still going. So `IdeaCommitNoticeHook` (an `IAgentHook`, order 260) watches the run's own tool
+calls and injects **one notice** (kind `git-commit`) before the next model call:
+
+> A commit just landed in NetPI (the git command you ran succeeded). Open ideas of that project: "…", "…". If this
+> commit finishes one of them, update that idea now with the ideas tool: mark it done, or leave it open and add a short
+> section saying what landed. If none of them is about this commit, say so in one line and do not create an idea for it.
+
+It is advice, not an action, exactly like a nudge: the agent decides, the user reads what it did. What it takes to get
+there, all of it a reason to stay silent instead:
+
+- the tool call is `bash`/`pwsh` and its `command` runs `commit` or `merge` (token by token, so `git -C dir commit` and
+  `git add -A; git commit` are seen, and `git log`/`git push` are not), with none of `--dry-run`, `--abort`, `--quit`,
+  `--no-commit` after it;
+- the result is not an error and its exit code is 0 (a JSON null exit code is a background command still running);
+- the working directory (the call's `cwd`, else the run's) is inside the session's **project**, and the run has a project
+  and the `ideas` tool;
+- the project has at least one open idea (so a project without a backlog never pays an extra model call);
+- the run has not had `ideas.commitNoticesPerRun` (2) of them yet. Two commits inside one model call are one notice.
+
+The card flow is unchanged and still needed: a commit the agent closed is no longer open, so it is not offered twice,
+and a commit nobody made in a chat is exactly what the watcher is for. Skips: `ideas.tellAgentOnCommit` off.
 
 ## The agent tool: `ideas` (category `ideas`)
 
