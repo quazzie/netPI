@@ -143,6 +143,7 @@ choice) renders the system prompt again (`context.reset`; the next call re-reads
 | `IModelProvider` | `ctx.Services.Register<IModelProvider>` | model backends (see the AiProxy / Anthropic plugins) |
 | `IModelMiddleware` | `ctx.Services.Register<IModelMiddleware>` | wrap every model call (retry, logging, budgets) |
 | `IAgentHook` | `ctx.Services.Register<IAgentHook>` | agent lifecycle: before/after model calls (compaction, nudge, tool repair), tool calls (permission gates), run start/end |
+| `IAgentCallObserver` | `ctx.Services.Register<IAgentCallObserver>` | watching a model call without deciding anything (metering, diagnostics): always runs, where a hook stops at the first non-null decision |
 | `IPromptSection` | `ctx.Services.Register<IPromptSection>` | system prompt sections |
 | `ToolResultLimit` | `ToolResultLimit.Fit(ctx.Settings, ownCap)` | a tool that pages or tails its own output stays under the tool result limit (the runner saves longer results to a file) |
 | `IAgentRuntime.WaitYieldedAsync` | `context.Services.Get<IAgentRuntime>()` in a tool | a tool that waits for something outside the run (the user's answer: `ask_user`) gives its agent's instance back meanwhile, like `agent_wait`; false when the user steered instead |

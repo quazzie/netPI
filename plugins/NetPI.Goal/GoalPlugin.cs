@@ -27,6 +27,7 @@ public sealed class GoalPlugin : INetPiPlugin
         context.Tools.Register(new GoalUpdateTool(goals));
         context.Tools.Register(new GoalSetTool(goals));
         context.Services.Register<IAgentHook>(new GoalHook(goals));
+        context.Services.Register<IAgentCallObserver>(new GoalUsageObserver(goals));
         RegisterRpc(context, goals);
         return Task.CompletedTask;
     }
@@ -71,12 +72,6 @@ internal sealed class GoalHook(Goals goals) : IAgentHook
 
     public async ValueTask OnBeforeModelCallAsync(AgentTurnContext turn) => await goals.SyncNoticeAsync(turn).ConfigureAwait(false);
 
-    public ValueTask<TurnDecision?> OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant)
-    {
-        goals.CountUsage(turn.Run, assistant.Usage);
-        return ValueTask.FromResult<TurnDecision?>(null);
-    }
-
     public ValueTask OnAfterToolCallAsync(AgentTurnContext turn, ToolCallPart call, ToolResultPart result)
     {
         goals.ToolDone(turn.Run, call, result);
@@ -86,6 +81,22 @@ internal sealed class GoalHook(Goals goals) : IAgentHook
     public ValueTask OnRunEndAsync(AgentRunContext run)
     {
         goals.RunEnded(run);
+        return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>
+/// What the goal spent, counted on every model call. This is an observer, not a hook: hook dispatch stops at the first
+/// non-null decision, so a call that tool repair, nudge or loops decided (a textual call, a stalled turn) would never
+/// reach a metering hook behind them, and the token budget would keep less than the run cost.
+/// </summary>
+internal sealed class GoalUsageObserver(Goals goals) : IAgentCallObserver
+{
+    public int Order => 535;
+
+    public ValueTask OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant)
+    {
+        goals.CountUsage(turn.Run, assistant.Usage);
         return ValueTask.CompletedTask;
     }
 }

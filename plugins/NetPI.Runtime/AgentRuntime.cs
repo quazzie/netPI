@@ -162,6 +162,13 @@ internal sealed class AgentRuntime : IAgentRuntime
         catch { return []; }
     }
 
+    /// <summary>Observers see every model call; unlike the hooks, nothing they come after can cut the chain short.</summary>
+    internal IReadOnlyList<IAgentCallObserver> CallObservers()
+    {
+        try { return Ctx.Services.GetAll<IAgentCallObserver>().OrderBy(o => o.Order).ToList(); }
+        catch { return []; }
+    }
+
     /// <summary>
     /// The tools an agent is sent, sorted by name (tool definitions are part of the request prefix, and registry order
     /// changes when a plugin reloads): the registry's tools, a subagent's allowlist, no orchestration tools at the maximum

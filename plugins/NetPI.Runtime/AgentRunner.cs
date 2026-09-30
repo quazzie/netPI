@@ -222,6 +222,11 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             if (after is { Action: TurnAction.Replace, Replacement: { } replacement })
                 assistant = ReplaceAssistant(assistant, replacement);
 
+            // metering and diagnostics see every call, whoever decided it (a hook that only counts would sit behind
+            // the first decision and miss those calls: the goal's token budget is the case that bit us)
+            foreach (var observer in rt.CallObservers())
+                await SafeAsync(() => observer.OnAfterModelCallAsync(turn, assistant), "OnAfterModelCall (observer)", ct).ConfigureAwait(false);
+
             var calls = assistant.ToolCalls.ToList();
             if (after?.Action == TurnAction.Stop)
             {
