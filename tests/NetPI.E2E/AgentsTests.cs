@@ -186,11 +186,14 @@ public static class AgentsTests
             var mark = env.Client.Mark();
             var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "Pick one [s:ask]" });
             var answered = false;
+            string id = "";
             try
             {
                 var asked = await env.Client.WaitFor(mark, e => e.Type == "ask.asked" && e.D.S("sessionId") == sid, "ask.asked", 20_000);
                 Check.True(asked.Sid is null, "ask.asked is unscoped");
                 var callId = asked.D.S("callId")!;
+                id = asked.D.S("id")!;
+                Check.True(id != callId, "the question has an id of its own, not the model's call id");
                 Check.Equal("Which way?", asked.D.Arr("questions").Single().S("question"));
                 Check.Equal("Thorough", asked.D.Arr("questions").Single().Arr("options").Last().S("label"));
                 // the question is out a moment before the runtime shows the agent as yielded
@@ -198,7 +201,8 @@ public static class AgentsTests
                                                                   && e.D.P("agent").S("status") == "yielded", "the agent yielded", 5000);
                 Check.Equal("waiting for your answer", yielded.D.P("agent").S("activity"));
                 Check.Equal(callId, (await env.Rpc("ask.pending", new { sessionId = sid })).Arr().Single().S("callId"));
-                Check.True((await env.Rpc("ask.answer", new { callId, answers = new[] { new[] { "Thorough" } } })).GetBoolean());
+                Check.Equal(id, (await env.Rpc("ask.pending", new { sessionId = sid })).Arr().Single().S("id"));
+                Check.True((await env.Rpc("ask.answer", new { id, answers = new[] { new[] { "Thorough" } } })).GetBoolean());
                 answered = true;
             }
             finally
@@ -211,6 +215,7 @@ public static class AgentsTests
             Check.Contains(run.FinalText, "ASK-DONE");
             var closed = await env.Client.WaitFor(mark, e => e.Type == "ask.closed" && e.D.S("sessionId") == sid, "ask.closed", 5000);
             Check.Equal("answered", closed.D.S("status"));
+            Check.Equal(id, closed.D.S("id"), "the question that closed is the one that was answered");
             Check.Equal(0, (await env.Rpc("ask.pending", new { })).Arr().Count());
         });
 

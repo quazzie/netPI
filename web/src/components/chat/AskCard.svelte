@@ -1,6 +1,6 @@
 <script>
   import Icon from '../../lib/kit/Icon.svelte';
-  import { asks, pick, answerAsk } from '../../lib/state/asks.svelte.js';
+  import { asks, pendingFor, closedFor, pick, answerAsk } from '../../lib/state/asks.svelte.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import { parseArgs } from '../../lib/tools.js';
   import { firstLine } from '../../lib/format.js';
@@ -14,7 +14,7 @@
    * the message box goes with them (Composer). Once they stopped waiting the card is one line, question → answer, that
    * opens to every question and its answer; to read the context the user scrolls up.
    */
-  let { item } = $props();
+  let { item, sessionId } = $props();
 
   // the raw arguments, when neither the pending question nor the result has the questions as the plugin read them
   function fromArgs(a) {
@@ -30,9 +30,11 @@
     );
   }
 
-  const id = $derived(item.call.id);
-  const pending = $derived(asks.pending.get(id) ?? null);
-  const closed = $derived(asks.closed.get(id) ?? null);
+  const callId = $derived(item.call.id);
+  // The call id is the model's, and two chats can have the same one: the question's own id (with this chat) says which is which.
+  const pending = $derived(pendingFor(sessionId, callId));
+  const closed = $derived(closedFor(sessionId, callId));
+  const id = $derived(pending?.id ?? callId);
   const r = $derived(item.result);
   const d = $derived(r && !r.isError ? r.details : null);
   const questions = $derived(pending?.questions ?? d?.questions ?? fromArgs(parseArgs(item.call)));
@@ -68,7 +70,7 @@
   }
 
   // the turn's numbers (TurnLine) go under the card when asking was the last thing its message did
-  const endsTurn = $derived(item.msg?.stopReason === 'tool_use' && item.msg.parts.findLast((p) => p.type === 'tool_call')?.id === id);
+  const endsTurn = $derived(item.msg?.stopReason === 'tool_use' && item.msg.parts.findLast((p) => p.type === 'tool_call')?.id === callId);
 
   const answerOf = (i) => (answers[i]?.length ? answers[i].join(', ') : '');
   const summary = $derived.by(() => {

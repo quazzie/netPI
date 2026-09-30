@@ -9,6 +9,8 @@ namespace NetPI.Ask;
 /// <c>ask_user</c>: the agent asks the user questions, with options to pick from, and waits for the answers with its
 /// instance given back meanwhile (<see cref="IAgentRuntime.WaitYieldedAsync"/>, like agent wait). The UI shows the
 /// questions inline in the chat and answers through <c>ask.answer</c>; <c>ask.pending</c> lists the questions that wait.
+/// Every question has an id of its own (<c>ask_…</c>, like a guard approval): a tool call id belongs to the model that
+/// made it, and two chats can hold the same one, so it cannot say which question is being answered.
 /// Events (unscoped, the session in their data, so a window without the chat open hears of it too): <c>ask.asked</c>
 /// when a question starts waiting, <c>ask.closed</c> when it stops (answered, steered: the user wrote a new message
 /// instead, withdrawn: this plugin stopped, cancelled: the run was stopped). Subagents can't ask: nobody watches their chat.
@@ -23,9 +25,9 @@ public sealed class AskPlugin : INetPiPlugin
         var pending = _pending = new PendingAsks(context);
         context.Tools.Register(new AskUserTool(pending));
         context.Rpc.Register("ask.pending", (req, _) => Task.FromResult<object?>(pending.List(req.Str("sessionId"))),
-            "Questions waiting for the user: { sessionId? } → { sessionId, callId, agentId, agentName, questions, askedAt }[]");
+            "Questions waiting for the user: { sessionId? } → { id, sessionId, callId, agentId, agentName, questions, askedAt }[]");
         context.Rpc.Register("ask.answer", (req, _) => Task.FromResult<object?>(pending.Answer(req)),
-            "Answer a waiting question: { callId, answers?: string[][] (the options picked, per question), text? } → true");
+            "Answer a waiting question: { id, answers?: string[][] (the options picked, per question), text? } → true (id, or callId + sessionId for an older caller)");
         return Task.CompletedTask;
     }
 
@@ -47,13 +49,14 @@ internal sealed record AskAnswer(IReadOnlyList<IReadOnlyList<string>> Selected, 
     public static readonly AskAnswer Withdrawn = new([], null);
 }
 
-/// <summary>The questions that wait for an answer, by the tool call's id.</summary>
+/// <summary>The questions that wait for an answer, by the question's own id (never by the tool call's, which two chats can share).</summary>
 internal sealed class PendingAsks(IPluginContext ctx)
 {
-    private readonly ConcurrentDictionary<string, Entry> _byCall = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Entry> _byId = new(StringComparer.Ordinal);
 
     internal sealed class Entry
     {
+        public required string Id { get; init; }
         public required string SessionId { get; init; }
         public required string CallId { get; init; }
         public required string AgentId { get; init; }
@@ -65,8 +68,12 @@ internal sealed class PendingAsks(IPluginContext ctx)
 
     public Entry Add(ToolContext context, IReadOnlyList<AskQuestion> questions, string? agentName)
     {
-        var e = new Entry { SessionId = context.SessionId, CallId = context.CallId, AgentId = context.AgentId, AgentName = agentName, Questions = questions };
-        _byCall[e.CallId] = e;
+        var e = new Entry
+        {
+            Id = "ask_" + Ids.Short(12), SessionId = context.SessionId, CallId = context.CallId,
+            AgentId = context.AgentId, AgentName = agentName, Questions = questions,
+        };
+        _byId[e.Id] = e;
         ctx.Events.Publish("ask.asked", Json(e)); // unscoped: every window learns that a chat needs the user
         return e;
     }
@@ -74,9 +81,10 @@ internal sealed class PendingAsks(IPluginContext ctx)
     /// <summary>Stops waiting: <paramref name="status"/> is answered | steered | withdrawn | cancelled.</summary>
     public void Close(Entry e, string status, AskAnswer? answer = null)
     {
-        if (!_byCall.TryRemove(new KeyValuePair<string, Entry>(e.CallId, e))) return;
+        if (!_byId.TryRemove(new KeyValuePair<string, Entry>(e.Id, e))) return;
         ctx.Events.Publish("ask.closed", new JsonObject
         {
+            ["id"] = e.Id,
             ["sessionId"] = e.SessionId,
             ["callId"] = e.CallId,
             ["status"] = status,
@@ -86,12 +94,12 @@ internal sealed class PendingAsks(IPluginContext ctx)
     }
 
     public JsonArray List(string? sessionId) =>
-        new([.. _byCall.Values.Where(e => sessionId is null || e.SessionId == sessionId).OrderBy(e => e.AskedAt).Select(e => (JsonNode)Json(e))]);
+        new([.. _byId.Values.Where(e => sessionId is null || e.SessionId == sessionId).OrderBy(e => e.AskedAt).Select(e => (JsonNode)Json(e))]);
 
     public bool Answer(RpcRequest req)
     {
-        var callId = req.Required("callId");
-        if (!_byCall.TryGetValue(callId, out var e)) throw new RpcException("not_found", "No question waits with that id (it was answered, or its run ended).");
+        var e = Find(req.Str("id"), req.Str("callId"), req.Str("sessionId"));
+        if (e is null) throw new RpcException("not_found", "No question waits with that id (it was answered, or its run ended).");
         var selected = new List<IReadOnlyList<string>>();
         if (req.Prop("answers") is { ValueKind: JsonValueKind.Array } answers)
         {
@@ -119,11 +127,20 @@ internal sealed class PendingAsks(IPluginContext ctx)
 
     public void WithdrawAll()
     {
-        foreach (var e in _byCall.Values) e.Answer.TrySetResult(AskAnswer.Withdrawn);
+        foreach (var e in _byId.Values) e.Answer.TrySetResult(AskAnswer.Withdrawn);
+    }
+
+    /// <summary>The question a caller means. Its own id, or the tool call's together with the chat (an older caller).</summary>
+    private Entry? Find(string? id, string? callId, string? sessionId)
+    {
+        if (!string.IsNullOrEmpty(id) && _byId.TryGetValue(id, out var byId)) return byId;
+        if (string.IsNullOrEmpty(callId)) return null;
+        return _byId.Values.FirstOrDefault(x => x.CallId == callId && (sessionId is null || x.SessionId == sessionId));
     }
 
     private static JsonObject Json(Entry e) => new()
     {
+        ["id"] = e.Id,
         ["sessionId"] = e.SessionId,
         ["callId"] = e.CallId,
         ["agentId"] = e.AgentId,
