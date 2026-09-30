@@ -8,7 +8,7 @@ public static class InspectTests
 {
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("inspect: server.json, diag.* over HTTP after a real run, and scripts/netpi.mjs with its read-only guard", async () =>
+        r.Add("inspect.diag", "inspect: server.json, diag.* over HTTP after a real run, and scripts/netpi.mjs with its read-only guard", async () =>
         {
             // how tools find this run
             using var info = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(env.Home, "server.json")));

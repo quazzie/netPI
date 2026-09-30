@@ -6,7 +6,7 @@ Three layers, all without NuGet packages (console runners, no test framework):
 |---|---|---|
 | unit suites | `tests/NetPI.{Host,Providers,Tools,Agent,Aux}.Tests` | the built projects |
 | mock model server | `tests/MockLlm` | nothing (ASP.NET shared framework) |
-| end-to-end suite | `tests/NetPI.E2E` | the built app (`artifacts/app`), the mock, and for the UI test Node 22 + Playwright (`playwright-core` devDependency; falls back to an installed Edge/Chrome) |
+| end-to-end suite | `tests/NetPI.E2E` | the built app (`artifacts/dev/app`, which `scripts/e2e.ps1` builds as needed), the mock, and for the UI tests Node 22 + Playwright (`playwright-core` devDependency; falls back to an installed Edge/Chrome) |
 
 ## Build
 
@@ -126,7 +126,8 @@ none/low/medium/xhigh, 262k context, 16k max output) — plus `tiny-ctx` (loaded
 
 The answer is scripted by the conversation: the `[s:name key=value …]` tag in the latest user message that is not a
 harness notice picks the scenario, and the step is the number of assistant messages after that message. No tag = a
-markdown echo of the message. Two rules apply to every scenario: when the last message is a `nudge` notice the model
+markdown echo of the message. Every tag also takes `hold=<ms>`: the first answer of the scenario stays open for that long after its first chunk (a fixed time, not
+scaled by `--speed`), so a test can observe the live state instead of racing it. Two rules apply to every scenario: when the last message is a `nudge` notice the model
 finishes (`NUDGE-RESUMED`), and when it is an `agent-result` notice it acknowledges the report (`AGENT-RESULT-RECEIVED`).
 Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …) that tests look for.
 
@@ -183,26 +184,75 @@ instance (`NETPI_URL`, default `http://127.0.0.1:7431`).
 
 ## End-to-end suite (`tests/NetPI.E2E`)
 
-```bash
-dotnet tests/NetPI.E2E/bin/Debug/NetPI.E2E.dll [options] [name filter…]
-  --port N        netpi-server port (default 7470)
-  --mock-port N   MockLlm port (default 7471)
-  --app DIR       run this app folder instead of a fresh copy of artifacts/app
-  --speed X       mock stream speed factor
-  --no-ui         skip the Playwright UI test
-  --keep          keep the work folder (server.log, home, projects, app copy)
-  --verbose       echo server log lines and mock requests
-  --list          list the tests
+The real `netpi-server` (a private copy of the dev build) against the mock model server, driven over HTTP/WebSocket like the UI
+does. **Run it by what your change can reach, not as a whole, while you work**: one test is ~2 s, the whole suite ~35 s.
+
+```powershell
+.\scripts\e2e.ps1 -Changed                        # the tests your changed files can affect (tests\NetPI.E2E\areas.json)
+.\scripts\e2e.ps1 -Only control.abort-stream, retry   # test ids, or substrings of an id (then of a name)
+.\scripts\e2e.ps1 -Tag scheduling                 # an area or a tag (-List shows them)
+.\scripts\e2e.ps1 -Smoke                          # one representative test per boundary, ~10 s
+.\scripts\e2e.ps1 -Failed                         # what failed and has not passed since, across runs
+.\scripts\e2e.ps1 -List [-Tag x]                  # ids, tags, last duration, name; starts nothing
+.\scripts\e2e.ps1                                 # everything, sharded: the gate before a merge
+.\scripts\e2e.ps1 -Only <id> -Repeat 20 -Fresh    # how often does it fail? every failure keeps its evidence
+.\scripts\e2e.ps1 -Fresh                          # every test alone on its own server: finds hidden order dependencies
+.\scripts\e2e.ps1 -SelfTest                       # the runner's own tests (selection, scheduling, containment, report); no server
 ```
 
-61 tests; allow about three minutes on Windows with the UI smoke. Build first (it runs whatever is in `artifacts/app`, including the web UI from `npm run build`).
+The script builds only the projects whose sources changed since their last build here (per-project stamps in
+`artifacts/e2elogs`; output in `artifacts/dev/app`, nothing installed, a running NetPI untouched). `-SkipBuild` trusts what is
+there, `-Rebuild` builds the solution. It runs the same thing as the runner directly:
 
-What it does: starts MockLlm in-process, copies `artifacts/app` to `<temp>/netpi-e2e/<run>/app`, writes a settings file
-into a fresh home (`providers.*` → the mock, fast retry backoff), starts `dotnet app/netpi-server.dll --home … --token
-e2e-token`, connects over `/ws` like the UI (subscribed to all sessions, every event recorded) and runs the tests against
-one server instance (the last test stops it with SIGTERM and restarts it on the same home). Each test creates its own
-sessions/projects. The work folder is deleted at the end unless `--keep` is given (then `server.log`, the home with its
-SQLite database and the project folders stay for inspection).
+```bash
+dotnet tests/NetPI.E2E/bin/Release/NetPI.E2E.dll [options] [test id | filter]...
+  <filter>          an exact test id, else a substring of ids, else (only if no id matches) of names; several are OR-ed
+  --tag a,b         add every test with one of these tags (an area such as `retry`, or smoke, lifecycle, scheduling, ui, needs-node)
+  --smoke           = --tag smoke.   --skip-tag a,b / --no-ui leave tests out.   --failed: the tests that are failing now
+  --list            the selected tests, and start nothing.   A filter or tag that matches nothing exits 2 before anything starts.
+  --parallel N|auto shards running at once (default auto: about one per 12 s of estimated work, at most min(cores/2, 4))
+  --repeat N        every selected test N times.   --fresh: a fresh server for every test run.   --timeout-scale X
+  --out DIR         this run's folder (default artifacts/e2elogs/<run>)      --state-dir DIR / --no-state
+  --speed X  --app DIR  --port N  --mock-port N  --keep  --verbose  --self-test
+```
+
+**Shards.** Each shard is a server and a mock model server of its own (a copy of the dev build, its own home and free ports),
+so they cannot disturb one another; the selected tests are split over them by how long each took last time
+(`artifacts/e2elogs/timings.json`), longest first, and each shard runs its tests in registration order. Two runs at once (two
+agents) share nothing: ports, work folders, screenshots and result folders are per run. Measured on one 16-core machine
+(2026-09-30): the whole suite took 126 s serially and ~35 s in 4 shards; the longest single test (`ui.smoke`, ~26 s) bounds it.
+
+**Results.** Every run leaves `artifacts/e2elogs/<run>/`: `report.json` (selection, per-test outcome and time, per-shard
+setup/test/teardown time, revision), `console.txt` (from the script), `screenshots/`, and `failures/<id>.txt` for each failed
+test: the message, the test's console output, the server log since it started, the requests the mock model server got and the
+client events. All failures of a run are listed together with a rerun command; `failing.json` remembers them across runs until
+they pass (`-Failed`). The 20 newest run folders are kept. Exit codes: 0 passed, 1 a test failed or timed out, 2 bad selection,
+3 a server would not start (that shard's tests are reported as *not run*), 4 the runner itself failed.
+
+**A timed-out test is contained.** Its body keeps running in the background, so its server is stopped and the rest of its shard
+gets a fresh one: it can never mutate the next test's fixture. `--self-test` pins this (and was mutation-checked).
+
+**Ids and tags.** An id is `area.name` (`retry.drop`); the area is also a tag. `tests/NetPI.E2E/Catalog.cs` holds the other tags.
+`smoke` is one representative test per boundary: startup, chat and a real file tool, the Responses/Chat/Anthropic adapters, abort
+and slot scheduling, persistence across a restart and a reload while active (the `lifecycle` tag is the wider group of those). The
+browser tests (`ui`, `needs-node`) are not in smoke yet. `areas.json` maps source paths to tags/ids for `-Changed`; `--self-test`
+fails when it names something that does not exist or a plugin has no rule.
+
+**Each test works alone.** Checked by running every test on its own fresh server (`-Fresh`); a test that depends on another
+having run first (or that asserts a server-wide total) is a bug. Two were found that way: the usage summary total and
+`subagents.wait-steer`. The same tool measures a flaky test (`-Repeat 20 -Fresh`). Never run it again "to see": read
+`failures/<id>.txt`, find the state the test raced, and either wait for that state or give the mock a knob that holds it
+(`hold=<ms>` in a scenario tag keeps the first answer's stream open after its first chunk).
+
+Adding a test: see the end of this section. It needs an id in `r.Add("<id>", "<name>", …)` and, if it belongs to a group, an entry
+in `Catalog.cs` and (for a new plugin or file) `areas.json`.
+
+What it does: starts MockLlm in-process, copies the dev build (`artifacts/dev/app`; `--app DIR` names another) to
+`<temp>/netpi-e2e/<run>/app`, writes a settings file into a fresh home (`providers.*` → the mock, fast retry backoff), starts
+`dotnet app/netpi-server.dll --home … --token e2e-token`, connects over `/ws` like the UI (subscribed to all sessions, every
+event recorded) and runs the tests against that server. Each test creates its own sessions/projects. The work folder is deleted
+at the end unless `--keep` is given (then `server.log`, the home with its SQLite database and the project folders stay for
+inspection).
 
 Coverage (run `--list` for the names):
 

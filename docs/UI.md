@@ -15,8 +15,15 @@ npm install
 npm run build            # build:web (→ artifacts/app/wwwroot) + build:plugins (plugins/*/ui → wwwroot/ui.js)
 npm run dev              # Vite dev server on :5173, proxies /ws /api /plugins → http://127.0.0.1:7431
 npm run mock             # mock host on :7431 (serves the built UI + the sample plugin), token "dev"
-npm run e2e              # Playwright walkthrough (starts its own mock on :7432), screenshots → web/mock/screenshots
-                         # (uses the playwright-core devDependency, or a local/global `playwright`; see web/mock/pw.mjs)
+npm run e2e              # the whole Playwright walkthrough (starts its own mock on :7432; ~2.5 min): the gate before a merge,
+                         # not a loop. Screenshots → web/mock/screenshots. (playwright-core devDependency, or a local/global
+                         # `playwright`; see web/mock/pw.mjs)
+npm run e2e -- --list    # its sections (one per log('…') header)
+npm run e2e -- --only "plugin tab: Work"   # just that section, 8-20 s: a part of a name is enough ("Work" is exact-or-substring),
+                         # several with |; everything else is skipped with its setup. --with <section> adds a silent prerequisite,
+                         # --port N runs next to another run. A name that matches nothing exits 2 before anything starts.
+npm run e2e:sections     # every section alone, 4 at a time (web/mock/sections.mjs): a section that cannot stand alone must
+                         # list what it builds on in NEEDS (web/mock/e2e.mjs) or set that state up itself
 node web/scripts/build-plugins.mjs --watch            # rebuild plugin UIs on change
 node web/scripts/build-plugins.mjs web/mock/sample-plugin   # plus extra plugin dirs
 node web/mock/fake-openai.mjs [port]  # scripted OpenAI-compatible model server for exercising the real host

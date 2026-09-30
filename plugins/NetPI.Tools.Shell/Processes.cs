@@ -173,11 +173,15 @@ public sealed class ManagedProcess : IDisposable
             _status = _requestedStatus ?? "exited";
         }
         _live?.Dispose();
+        // This record stays in the registry (the last 50). The callbacks are the caller's closures, so keeping them pins the
+        // caller's plugin: reloading the agent runtime after any bash call could not collect the old load context.
+        _live = null;
         if (_spec.TempScript is not null)
         {
             try { File.Delete(_spec.TempScript); } catch { }
         }
         try { OnExited?.Invoke(this); } catch { }
+        OnExited = null;
         _exited.TrySetResult();
     }
 

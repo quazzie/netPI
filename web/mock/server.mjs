@@ -52,6 +52,7 @@ seed();
 
 // ------------------------------------------------------------------------------------------ event bus
 const clients = new Set();
+const wsLog = []; // the last rpc frames clients sent (mock.wsLog), so a frame that never arrived is visible in a failed e2e run
 let seq = 0;
 const recent = [];
 
@@ -316,6 +317,7 @@ function uiTabs() {
 
 let procTailDelayMs = 0; // e2e test helper: delay the tail responses so the UI can collapse a row inside its fetchTail() await
 let filesDelayMs = 0; // e2e test helper: delay the files.* responses so a workspace switch lands mid-fetch
+let thinkDelayMs = 0; // e2e test helper: hold the live thinking line so a waitForSelector can see it (mock.thinkDelay)
 let offlineUntil = 0; // e2e test helper: while in effect the /ws upgrades are refused and open sockets dropped — the server keeps running, its events are just lost (the browser is offline)
 let filesCalls = []; // e2e test helper: the files.* responses served, in order, for the late-response checks
 let listCalls = []; // e2e test helper: the sessions.list calls with their params (the archived-only check)
@@ -739,6 +741,10 @@ const handlers = {
   // e2e test helpers: slow the diag.calls responses and observe the in-flight count (the single-flight polling
   // check). The delay setter also resets the counters: a check times its window from that call.
   'mock.diagCallsDelay': (p) => ((diagCallsDelayMs = p.ms ?? 0), (diagCallsServed = 0), (diagCallsMaxInFlight = 0), true),
+  // e2e test helper: stretch the agent's thinking phase so its live line is observable (0 restores normal speed)
+  'mock.thinkDelay': (p) => ((thinkDelayMs = p.ms ?? 0), agent.setThinkDelay(thinkDelayMs), true),
+  // e2e forensics: the last rpc frames received, and the connected clients with their subscriptions
+  'mock.wsLog': () => ({ frames: wsLog, clients: [...clients].map((c) => ({ id: c.id, open: c.ws.readyState === 1, subs: [...c.subs].length })) }),
   'mock.diagCallsStats': () => ({ served: diagCallsServed, inFlight: diagCallsInFlight, maxInFlight: diagCallsMaxInFlight }),
   // e2e test helper: how many times each session's messages were loaded (a rebuilt chat store)
   'mock.msgLoads': () => Object.fromEntries(msgLoads),
@@ -913,6 +919,8 @@ const handlers = {
   'mock.reset': () => {
     procTailDelayMs = 0;
     filesDelayMs = 0;
+    thinkDelayMs = 0;
+    agent.setThinkDelay(0);
     offlineUntil = 0;
     filesCalls = [];
     listCalls = [];
@@ -1085,6 +1093,8 @@ wss.on('connection', (ws) => {
       return;
     }
     if (msg.t === 'rpc') {
+      wsLog.push({ at: new Date().toISOString().slice(11, 23), client: client.id, id: msg.id, m: msg.m });
+      if (wsLog.length > 120) wsLog.shift();
       try {
         const r = await dispatch(msg.m, msg.p);
         ws.send(JSON.stringify({ t: 'res', id: msg.id, r: r ?? null }));

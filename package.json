@@ -10,7 +10,8 @@
     "build:plugins": "node web/scripts/build-plugins.mjs",
     "dev": "vite --config web/vite.config.js",
     "mock": "node web/scripts/build-plugins.mjs --only web/mock/sample-plugin && node web/mock/server.mjs",
-    "e2e": "node web/mock/e2e.mjs"
+    "e2e": "node web/mock/e2e.mjs",
+    "e2e:sections": "node web/mock/sections.mjs"
   },
   "dependencies": {
     "dompurify": "^3.4.16",

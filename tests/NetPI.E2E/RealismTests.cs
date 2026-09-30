@@ -21,7 +21,7 @@ public static class RealismTests
 
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("usage: cached prompt tokens are mapped per API; context meter = prompt + completion; agent totals add up", () => WithChatGemma(env, async () =>
+        r.Add("usage.cached-tokens", "usage: cached prompt tokens are mapped per API; context meter = prompt + completion; agent totals add up", () => WithChatGemma(env, async () =>
         {
             foreach (var (model, api) in Apis)
             {
@@ -58,7 +58,7 @@ public static class RealismTests
             }
         }));
 
-        r.Add("think tags: <think>…</think> in the content becomes a thinking part (chat and responses)", () => WithChatGemma(env, async () =>
+        r.Add("provider.think-tags", "think tags: <think>…</think> in the content becomes a thinking part (chat and responses)", () => WithChatGemma(env, async () =>
         {
             foreach (var model in new[] { "aiproxy/gemma-4", CoreTests.Qwen })
             {
@@ -72,7 +72,7 @@ public static class RealismTests
             }
         }));
 
-        r.Add("broken tool calls: invalid JSON arguments and an unknown tool are reported back and the model recovers", async () =>
+        r.Add("tools.broken-calls", "broken tool calls: invalid JSON arguments and an unknown tool are reported back and the model recovers", async () =>
         {
             var p = await env.NewProject("badargs", CoreTests.Seed);
             var s = await env.NewSession(projectId: p.S("id"));
@@ -89,7 +89,7 @@ public static class RealismTests
             Check.Contains(run.FinalText, "alpha line");
         });
 
-        r.Add("empty answer: an empty response is nudged (responses and anthropic)", async () =>
+        r.Add("nudge.empty", "empty answer: an empty response is nudged (responses and anthropic)", async () =>
         {
             foreach (var model in new[] { CoreTests.Qwen, "anthropic/claude-sonnet-4-5" })
             {
@@ -104,7 +104,7 @@ public static class RealismTests
             }
         });
 
-        r.Add("in-stream errors: response.failed / error chunk / overloaded_error are retried on all three APIs", () => WithChatGemma(env, async () =>
+        r.Add("retry.in-stream-errors", "in-stream errors: response.failed / error chunk / overloaded_error are retried on all three APIs", () => WithChatGemma(env, async () =>
         {
             foreach (var (model, api) in Apis)
             {

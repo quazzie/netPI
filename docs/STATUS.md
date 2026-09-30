@@ -38,6 +38,17 @@ output; these changes have not been installed into the user's running app by thi
   external credentials need separate backup; the ideas backlog is plugin-owned tables in that database, so it travels
   inside the database copy. Copies on the same disk do not protect against disk loss.
 - Guardrails are pattern/path checks, not an OS sandbox. Arbitrary code and trusted plugins retain user privileges.
+- **Projects and git worktrees** (audited 2026-09-30, `docs/plans/2026-09-30-e2e-feedback.md` has the context): a chat's working
+  directory is its project's path and the agent cannot change it (only the `sessions.setProject` RPC does). Relative paths in the
+  file tools and a plain `bash` call therefore resolve in the *project's* checkout, and nothing warns when an agent told to "work in
+  `..\NetPI-x`" is in a project that points at master; absolute paths and `bash` with `cwd` reach the worktree. Subagents copy the
+  parent's project (`SpawnRequest.ProjectId` exists but the spawn tool never sets it), so "one worktree per subagent" is only possible
+  through absolute paths. Also: the ideas commit notice reads only the `cwd` argument (`IdeaCommitNotice.InProject` treats a relative
+  one as in-project and ignores `git -C`), so a worktree commit from a master chat can be attributed to master's ideas; project
+  names are not unique (`ResolveRef` takes the first match); AGENTS.md discovery walks every ancestor directory, so a worktree
+  nested in the repo also gets the main checkout's file. Git status, ignore rules and skills handle `.git` as a file correctly.
+- The Work tab shows a changed budget limit only on its next refresh (30 s, or when a call is recorded): the host publishes
+  `usage.changed` after a recorded call, not when `budget.*` settings change.
 - Reloading the agents plugin can temporarily exceed configured execution slots for already-running agents;
   persistent budget reservations are still shared across the old and new plugin instances.
 - Linux/macOS and paid/live-provider billing behavior were not validated in this change. The Anthropic provider

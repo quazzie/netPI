@@ -641,6 +641,11 @@ public static class SshTests
         };
         psi.ArgumentList.Add("-c");
         psi.ArgumentList.Add(body);
+        // Git's bash.exe takes the caller's PATH as it is: started from PowerShell (scripts/test.ps1) that has no Git usr\bin, and the
+        // script's stat/chmod/mv are "command not found". From Git Bash the PATH already has it, which is why the test only ever
+        // failed under PowerShell. Put the folder of the bash that runs the script first.
+        if (OperatingSystem.IsWindows() && Path.GetDirectoryName(bash) is { Length: > 0 } binDir)
+            psi.Environment["PATH"] = binDir + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
         using var p = Process.Start(psi)!;
         var outT = p.StandardOutput.ReadToEndAsync();
         var errT = p.StandardError.ReadToEndAsync();

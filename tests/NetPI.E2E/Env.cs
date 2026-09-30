@@ -9,17 +9,75 @@ namespace NetPI.E2E;
 
 public sealed class E2EOptions
 {
-    public int Port { get; set; } = 7470;
-    public int MockPort { get; set; } = 7471;
-    /// <summary>App directory to run (default: a fresh copy of artifacts/app, so plugin files can be touched safely).</summary>
+    /// <summary>netpi-server port; 0 (the default) picks a free one per server, so two runs at once never meet on a port.</summary>
+    public int Port { get; set; }
+    /// <summary>MockLlm port; 0 picks a free one.</summary>
+    public int MockPort { get; set; }
+    /// <summary>App directory to run (default: a fresh copy of the build output, artifacts/dev/app, so plugin files can be touched safely).</summary>
     public string? AppDir { get; set; }
     public bool Keep { get; set; }
-    public bool Ui { get; set; } = true;
     public bool Verbose { get; set; }
     public double MockSpeed { get; set; } = 1;
     public int TinyContext { get; set; } = 12000;
+    /// <summary>Where this run keeps what it leaves behind: report.json, failures/, screenshots/ (one folder per run).</summary>
+    public string OutDir { get; set; } = "";
     public List<string> Filters { get; } = [];
+    public List<string> Tags { get; } = [];
+    public List<string> SkipTags { get; } = [];
+    /// <summary>Shards (server + mock pairs) running tests at once; 0 = as many as the selection is worth.</summary>
+    public int Parallel { get; set; }
+    /// <summary>Every selected test this many times (finding out how often a flaky one fails).</summary>
+    public int Repeat { get; set; } = 1;
+    /// <summary>A fresh server for every test run, so none can see what another left behind.</summary>
+    public bool Fresh { get; set; }
+    /// <summary>Multiplies every test's timeout (a slow or busy machine).</summary>
+    public double TimeoutScale { get; set; } = 1;
+    /// <summary>Where the failing list and the timing history persist between runs; empty = nowhere.</summary>
+    public string StateDir { get; set; } = "";
+
+    public E2EOptions ForServer(int port, int mockPort)
+    {
+        var o = (E2EOptions)MemberwiseClone();
+        o.Port = port;
+        o.MockPort = mockPort;
+        return o;
+    }
 }
+
+/// <summary>Free TCP ports, taken together so that two asks never get the same one.</summary>
+public static class Ports
+{
+    // ports this process handed out: a port freed a moment ago must not be handed to the next shard before its server binds it
+    private static readonly HashSet<int> Given = [];
+
+    public static int[] Pick(int count)
+    {
+        lock (Given)
+        {
+            var ports = new List<int>();
+            while (ports.Count < count)
+            {
+                var listeners = new List<System.Net.Sockets.TcpListener>();
+                try
+                {
+                    for (var i = 0; i < count - ports.Count; i++)
+                    {
+                        var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+                        l.Start();
+                        listeners.Add(l);
+                    }
+                    foreach (var p in listeners.Select(l => ((System.Net.IPEndPoint)l.LocalEndpoint).Port))
+                        if (Given.Add(p)) ports.Add(p);
+                }
+                finally { foreach (var l in listeners) l.Stop(); }
+            }
+            return ports.ToArray();
+        }
+    }
+}
+
+/// <summary>Where a test started: what to cut from the server log, the mock's request log and the client's events to explain a failure.</summary>
+public readonly record struct DiagMark(long ServerLogBytes, long MockSeq, long ClientIndex);
 
 /// <summary>A running netpi-server process (a copy of artifacts/app, own home) plus the mock model server.</summary>
 public sealed class Env : IAsyncDisposable
@@ -37,6 +95,10 @@ public sealed class Env : IAsyncDisposable
     public string Home => Path.Combine(Root, "home");
     public string Projects => Path.Combine(Root, "projects");
     public string ServerLog => Path.Combine(Root, "server.log");
+    /// <summary>Screenshots of this run (run-specific, so two runs never write the same file).</summary>
+    public string ScreenshotDir => Path.Combine(Options.OutDir.Length > 0 ? Options.OutDir : Root, "screenshots");
+    /// <summary>How long each phase of starting this env took (copy, mock, server), for the report.</summary>
+    public Dictionary<string, long> Setup { get; } = [];
     public string BaseUrl { get; private set; } = "";
     public int Port { get; private set; }
     public MockLlmServer Mock { get; private set; } = null!;
@@ -53,6 +115,11 @@ public sealed class Env : IAsyncDisposable
 
     public static async Task<Env> StartAsync(E2EOptions o)
     {
+        if (o.Port == 0 || o.MockPort == 0)
+        {
+            var p = Ports.Pick(2);
+            o = o.ForServer(o.Port == 0 ? p[0] : o.Port, o.MockPort == 0 ? p[1] : o.MockPort);
+        }
         var repo = FindRepoRoot();
         var root = Path.Combine(Path.GetTempPath(), "netpi-e2e", DateTime.Now.ToString("MMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..4]);
         Directory.CreateDirectory(root);
@@ -63,12 +130,15 @@ public sealed class Env : IAsyncDisposable
 
     private async Task StartCoreAsync()
     {
-        Log($"work dir: {Root}");
+        if (Options.Verbose) Log($"work dir: {Root}");
+        var phase = Stopwatch.StartNew();
         Mock = await MockLlmServer.StartAsync(new MockOptions
         {
             Port = Options.MockPort, Speed = Options.MockSpeed, TinyContext = Options.TinyContext, AnthropicKey = "mock-anthropic-key",
             Verbose = Options.Verbose,
         });
+        Setup["mock"] = phase.ElapsedMilliseconds;
+        phase.Restart();
 
         // The server runs from a copy, so the hot-reload test can touch plugin files without disturbing other instances.
         // The source is the build output (artifacts/dev/app): a build never writes into the app folder a running
@@ -85,6 +155,7 @@ public sealed class Env : IAsyncDisposable
                     $"netpi-server is not built ({Path.Combine(RepoRoot, "artifacts", "dev", "app")} and artifacts/app): run build.ps1, or pass --app <dir>");
             CopyDir(src, AppDir);
         }
+        Setup["copy"] = phase.ElapsedMilliseconds;
 
         Directory.CreateDirectory(Home);
         Directory.CreateDirectory(Projects);
@@ -136,7 +207,8 @@ public sealed class Env : IAsyncDisposable
         BaseUrl = await ready.Task.WaitAsync(TimeSpan.FromSeconds(60));
         Port = new Uri(BaseUrl).Port;
         if (Port != Options.Port) throw new InvalidOperationException($"port {Options.Port} is busy (the server fell back to {Port})");
-        Log($"netpi-server pid {_proc.Id} ready at {BaseUrl} in {sw.ElapsedMilliseconds} ms");
+        Setup["server"] = sw.ElapsedMilliseconds;
+        if (Options.Verbose) Log($"netpi-server pid {_proc.Id} ready at {BaseUrl} in {sw.ElapsedMilliseconds} ms");
         Client = await NetPiClient.ConnectAsync(BaseUrl, Token);
         await Client.Subscribe("*");
     }
@@ -195,6 +267,60 @@ public sealed class Env : IAsyncDisposable
         Directory.CreateDirectory(dst);
         foreach (var f in Directory.GetFiles(src)) File.Copy(f, Path.Combine(dst, Path.GetFileName(f)), overwrite: true);
         foreach (var d in Directory.GetDirectories(src)) CopyDir(d, Path.Combine(dst, Path.GetFileName(d)));
+    }
+
+    // ------------------------------------------------------------------ diagnostics (what a failed test leaves behind)
+
+    public async Task<DiagMark> MarkAsync()
+    {
+        long bytes = 0;
+        try { bytes = new FileInfo(ServerLog).Length; } catch { }
+        long seq = 0;
+        try { seq = await MockMark(); } catch { }
+        return new DiagMark(bytes, seq, Client?.Mark() ?? 0);
+    }
+
+    /// <summary>
+    /// What happened around a failed test, so the failure can be read without running it again: the server's log since the
+    /// test started, the requests the mock model server got, and the last events the client heard.
+    /// </summary>
+    public async Task<string> DiagnoseAsync(DiagMark since)
+    {
+        var sb = new StringBuilder();
+        try
+        {
+            string log;
+            lock (_logGate)
+            {
+                using var fs = new FileStream(ServerLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                fs.Seek(Math.Min(since.ServerLogBytes, fs.Length), SeekOrigin.Begin);
+                log = new StreamReader(fs).ReadToEnd();
+            }
+            var lines = log.Split('\n');
+            sb.AppendLine($"--- server log since the test started ({lines.Length} lines, last 120)");
+            foreach (var l in lines.TakeLast(120)) sb.AppendLine(l.TrimEnd('\r'));
+        }
+        catch (Exception ex) { sb.AppendLine("--- server log unavailable: " + ex.Message); }
+        try
+        {
+            var mock = await MockLog(since.MockSeq);
+            sb.AppendLine($"--- mock model server requests since the test started ({mock.Count}, last 40)");
+            foreach (var e in mock.TakeLast(40))
+            {
+                var calls = string.Join(",", e.Arr("calls").Select(c => c.GetString()));
+                var flags = string.Concat(e.B("dropped") ? " dropped" : "", e.B("cancelled") ? " cancelled" : "", e.B("subagent") ? " subagent" : "");
+                sb.AppendLine($"#{e.L("seq")} {e.S("api")} {e.S("model")} scenario={e.S("scenario")} step={e.L("step")} status={e.L("status")}{(e.S("error") is { } err ? " error=" + err : "")}{flags} calls=[{calls}] last={e.S("lastRole")}: {Check.Show(e.S("lastText") ?? "")} ({e.L("durationMs")} ms)");
+            }
+        }
+        catch (Exception ex) { sb.AppendLine("--- mock log unavailable: " + ex.Message); }
+        try
+        {
+            var events = Client?.Since(since.ClientIndex) ?? [];
+            sb.AppendLine($"--- client events since the test started ({events.Count}, last 40)");
+            foreach (var e in events.TakeLast(40)) sb.AppendLine(Check.Show(e.ToString()));
+        }
+        catch (Exception ex) { sb.AppendLine("--- client events unavailable: " + ex.Message); }
+        return sb.ToString();
     }
 
     // ------------------------------------------------------------------ mock control
@@ -307,7 +433,7 @@ public sealed class Env : IAsyncDisposable
         {
             try { Directory.Delete(Root, recursive: true); } catch { }
         }
-        else Log($"kept {Root}");
+        else Console.WriteLine($"  kept {Root}");
     }
 }
 

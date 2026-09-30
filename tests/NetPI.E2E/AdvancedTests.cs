@@ -18,18 +18,28 @@ public static class AdvancedTests
 
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("wait + steer: a user message interrupts agent_wait; a late report arrives as an agent-result notice", async () =>
+        r.Add("subagents.wait-steer", "wait + steer: a user message interrupts agent_wait; a late report arrives as an agent-result notice", async () =>
         {
             var s = await env.NewSession(model: CoreTests.Qwen);
             var sid = s.S("id")!;
             var mark = env.Client.Mark();
-            // worker-1 needs ~2s, worker-2 ~4.5s; both hold the two qwen slots while the parent is yielded
-            var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "Two workers [s:spawn n=2 delay=2000 stagger=2500]" });
+            // worker-1 needs ~1.5 s, worker-2 ~5.5 s. The message has to meet this state: worker-1 finished and recorded, worker-2 running,
+            // both slots held by others, so the parent queues for a slot with priority. Steering at once and counting on worker-1's slot
+            // going to the parent raced the few milliseconds between a worker giving up its slot and being recorded as finished: on a
+            // loaded machine the wait reported "0 of 2 agents finished". So worker-1's slot is taken by a third chat, after it is done.
+            var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "Two workers [s:spawn n=2 delay=1500 stagger=4000]" });
             var parentId = agent.S("id")!;
             await env.Client.WaitFor(mark, e => e.Type == "agent.status" && e.D.P("agent").S("id") == parentId && e.D.P("agent").S("status") == "yielded", "parent waiting", 20_000);
+            await Wait.UntilAsync(async () => (await Children(env, parentId)).Any(k => k.S("name") == "worker-1" && k.S("status") == "completed") ? "ok" : null,
+                "worker-1 finished", 20_000);
+            var holder = (await env.NewSession(model: CoreTests.Qwen)).S("id")!;
+            var holdMark = env.Client.Mark();
+            await env.Rpc("agent.send", new { sessionId = holder, text = "hold a slot [s:slow ms=30000]" });
+            await env.Client.WaitFor(holdMark, e => e.Type == "stream.delta" && e.Sid == holder, "the third chat streams, so it holds worker-1's slot", 15_000);
             await env.Rpc("agent.send", new { sessionId = sid, text = "How is it going? [s:echo]", mode = "steer" });
-            // the wait ends at once; the parent then queues for a slot with priority (both are held by its workers)
+            // the wait ends at once; the parent then queues for a slot with priority (worker-2 and the third chat hold both)
             await env.Client.WaitFor(mark, e => e.Type == "agent.status" && e.D.P("agent").S("id") == parentId && e.D.P("agent").S("status") == "queued", "parent re-queued for a slot", 10_000);
+            Check.True((await env.Rpc("agent.abort", new { sessionId = holder })).GetBoolean(), "the third chat gives the slot back");
             var idle = await env.WaitIdle(sid, mark, agent.L("runs"), 20_000);
             var kids = await Children(env, parentId);
             Check.Equal("completed,running", string.Join(",", kids.OrderBy(k => k.S("name")).Select(k => k.S("status"))), "worker-2 still runs when the parent answered");
@@ -53,7 +63,7 @@ public static class AdvancedTests
             Check.Equal(0L, (await Pool(env, CoreTests.Qwen)).L("busy"), "slots released");
         }, 90);
 
-        r.Add("abort orchestrator: running subagents are cancelled, slots released, no notices", async () =>
+        r.Add("subagents.abort-orchestrator", "abort orchestrator: running subagents are cancelled, slots released, no notices", async () =>
         {
             var s = await env.NewSession(model: CoreTests.Qwen);
             var sid = s.S("id")!;
@@ -78,7 +88,7 @@ public static class AdvancedTests
             Check.True(wait.B("isError"), "the interrupted agent_wait is recorded as aborted");
         }, 60);
 
-        r.Add("slots: three chats on qwen (2 slots) at once → 2 run, 1 queued, all complete", async () =>
+        r.Add("slots.three-chats", "slots: three chats on qwen (2 slots) at once → 2 run, 1 queued, all complete", async () =>
         {
             await Wait.UntilAsync(async () => (await Pool(env, CoreTests.Qwen)).L("busy") == 0 ? "ok" : null, "idle qwen pool");
             await env.MockReset();
@@ -100,7 +110,7 @@ public static class AdvancedTests
             }
         }, 60);
 
-        r.Add("slots: aborting a chat that waits for a slot removes it from the queue without leaking one", async () =>
+        r.Add("slots.abort-queued", "slots: aborting a chat that waits for a slot removes it from the queue without leaking one", async () =>
         {
             await Wait.UntilAsync(async () => (await Pool(env, CoreTests.Qwen)).L("busy") == 0 ? "ok" : null, "idle qwen pool");
             var mark = env.Client.Mark();
@@ -125,7 +135,7 @@ public static class AdvancedTests
             Check.Contains(next.FinalText, "ECHO-DONE");
         }, 60);
 
-        r.Add("delete a session during a run: the run stops, nothing crashes, the server keeps working", async () =>
+        r.Add("sessions.delete-during-run", "delete a session during a run: the run stops, nothing crashes, the server keeps working", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -148,7 +158,7 @@ public static class AdvancedTests
             Check.Contains(again.FinalText, "ECHO-DONE");
         }, 60);
 
-        r.Add("delete an orchestrator session while its subagents run: everything stops, slots released", async () =>
+        r.Add("sessions.delete-orchestrator", "delete an orchestrator session while its subagents run: everything stops, slots released", async () =>
         {
             var s = await env.NewSession(model: CoreTests.Qwen);
             var sid = s.S("id")!;
@@ -170,7 +180,7 @@ public static class AdvancedTests
             Check.Contains(run.FinalText, "ECHO-DONE");
         }, 60);
 
-        r.Add("abort one subagent directly: the waiting parent gets it back as cancelled and continues", async () =>
+        r.Add("subagents.abort-one", "abort one subagent directly: the waiting parent gets it back as cancelled and continues", async () =>
         {
             var s = await env.NewSession(model: CoreTests.Qwen);
             var sid = s.S("id")!;
@@ -191,7 +201,7 @@ public static class AdvancedTests
             Check.Equal("cancelled", (await Children(env, parentId)).Single(k => k.S("name") == "worker-2").S("status"));
         }, 60);
 
-        r.Add("provider reload mid-stream: the running call finishes, the next call uses the new provider instance", async () =>
+        r.Add("reload.provider-midstream", "provider reload mid-stream: the running call finishes, the next call uses the new provider instance", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -211,7 +221,7 @@ public static class AdvancedTests
             Check.Contains(next.FinalText, "ECHO-DONE");
         }, 60);
 
-        r.Add("budgets and stopped backends: clear error notices", async () =>
+        r.Add("errors.budget-stopped", "budgets and stopped backends: clear error notices", async () =>
         {
             await env.Rpc("settings.set", new { path = "budget.providers.anthropic.dailyTokens", value = 1 });
             try
@@ -238,7 +248,7 @@ public static class AdvancedTests
             finally { await env.Rpc("settings.set", new { path = "retry.maxAttempts", value = (object?)null }); }
         }, 60);
 
-        r.Add("provider switch mid-session: qwen (responses) → claude (anthropic) → gemma (chat) keeps a valid transcript", async () =>
+        r.Add("provider.switch", "provider switch mid-session: qwen (responses) → claude (anthropic) → gemma (chat) keeps a valid transcript", async () =>
         {
             await env.Rpc("settings.set", new { path = "providers.aiproxy.models.gemma-4", value = new { transport = "chat" } });
             try
@@ -273,7 +283,7 @@ public static class AdvancedTests
             }
         }, 90);
 
-        r.Add("images: attached image reaches vision models (responses + anthropic) and is omitted for text-only models", async () =>
+        r.Add("provider.images", "images: attached image reaches vision models (responses + anthropic) and is omitted for text-only models", async () =>
         {
             async Task<string> Send(string model)
             {
@@ -294,7 +304,7 @@ public static class AdvancedTests
             Check.Contains(textOnly, "image omitted");
         });
 
-        r.Add("instructions: AGENTS.md and the working directory arrive as notices; an edit is appended, the prefix stays byte-identical", async () =>
+        r.Add("context.instructions", "instructions: AGENTS.md and the working directory arrive as notices; an edit is appended, the prefix stays byte-identical", async () =>
         {
             var p = await env.NewProject("agentsmd", d => File.WriteAllText(Path.Combine(d, "AGENTS.md"), "# Rules\nAlways run the tests. E2E-AGENTS-MARKER\n"));
             var s = await env.NewSession(projectId: p.S("id"));
@@ -333,7 +343,7 @@ public static class AdvancedTests
             Check.True(preview.L("estimatedTokens") > 1000, "preview estimate");
         });
 
-        r.Add("skills: a project's skill is announced in a notice, /skill:name loads it for the message, skills.list", async () =>
+        r.Add("skills.catalog", "skills: a project's skill is announced in a notice, /skill:name loads it for the message, skills.list", async () =>
         {
             var p = await env.NewProject("skills", d =>
             {
@@ -363,7 +373,7 @@ public static class AdvancedTests
             Check.Equal(user.L("id").ToString(), notice.P("meta").S("for"), "tied to the message");
         });
 
-        r.Add("retry: a stalled stream is abandoned after retry.stallTimeoutSeconds and retried", async () =>
+        r.Add("retry.stall", "retry: a stalled stream is abandoned after retry.stallTimeoutSeconds and retried", async () =>
         {
             await env.Rpc("settings.set", new { path = "retry.stallTimeoutSeconds", value = 1.5 });
             try
@@ -381,7 +391,7 @@ public static class AdvancedTests
             finally { await env.Rpc("settings.set", new { path = "retry.stallTimeoutSeconds", value = (object?)null }); }
         });
 
-        r.Add("retry: gives up after retry.maxAttempts with an error notice", async () =>
+        r.Add("retry.max-attempts", "retry: gives up after retry.maxAttempts with an error notice", async () =>
         {
             await env.Rpc("settings.set", new { path = "retry.maxAttempts", value = 3 });
             try
@@ -398,7 +408,7 @@ public static class AdvancedTests
             finally { await env.Rpc("settings.set", new { path = "retry.maxAttempts", value = (object?)null }); }
         });
 
-        r.Add("plugins: disabling tool repair removes its hook (textual call → nudge), re-enabling restores it", async () =>
+        r.Add("plugins.toggle-repair", "plugins: disabling tool repair removes its hook (textual call → nudge), re-enabling restores it", async () =>
         {
             await env.Rpc("plugins.setEnabled", new { id = "netpi.toolrepair", enabled = false });
             try
@@ -422,7 +432,7 @@ public static class AdvancedTests
             Check.Contains(again.FinalText, "TEXTCALL-DONE");
         });
 
-        r.Add("websocket: session-scoped events only reach subscribers; HTTP RPC fallback and auth", async () =>
+        r.Add("server.websocket-scope", "websocket: session-scoped events only reach subscribers; HTTP RPC fallback and auth", async () =>
         {
             var a = (await env.NewSession()).S("id")!;
             var b = (await env.NewSession()).S("id")!;
@@ -450,7 +460,7 @@ public static class AdvancedTests
             Check.Equal(HttpStatusCode.NotFound, (await env.Http.SendAsync(missing)).StatusCode);
         });
 
-        r.Add("settings: editing settings.json on disk applies live (settings.changed, default model)", async () =>
+        r.Add("settings.live-edit", "settings: editing settings.json on disk applies live (settings.changed, default model)", async () =>
         {
             var file = (await env.Rpc("settings.get")).S("path")!;
             var original = await File.ReadAllTextAsync(file);
@@ -476,7 +486,7 @@ public static class AdvancedTests
             Check.Equal(CoreTests.Qwen, (await env.Rpc("models.list")).S("defaultModel"));
         });
 
-        r.Add("profiles: a new chat starts with its project's default profile, else the global default, with its first message", async () =>
+        r.Add("profiles.defaults", "profiles: a new chat starts with its project's default profile, else the global default, with its first message", async () =>
         {
             await env.Rpc("settings.set", new { path = "profiles.e2e-admin", value = new { name = "E2E Admin", prompt = "You are the e2e admin." } });
             await env.Rpc("settings.set", new { path = "profiles.e2e-writer", value = new { name = "E2E Writer" } });
@@ -515,15 +525,23 @@ public static class AdvancedTests
             }
         });
 
-        r.Add("sessions: automatic title from the first message, usage summary, projects CRUD", async () =>
+        r.Add("sessions.title-usage-projects", "sessions: automatic title from the first message, usage summary, projects CRUD", async () =>
         {
+            // what this run adds to the usage summary, not the server's running total: that total only reached 10 calls when other
+            // tests had run first, so the test failed on its own (or on a shard that ran few tests before it)
+            async Task<(long Calls, long Input)> AiproxyUsage()
+            {
+                var row = (await env.Rpc("usage.summary")).Arr("providers").FirstOrDefault(p => p.S("provider") == "aiproxy");
+                return (row.L("calls"), row.L("inputTokens"));
+            }
+            var usageBefore = await AiproxyUsage();
             var s = await env.Rpc("sessions.create", new { });
             var sid = s.S("id")!;
             await env.Run(sid, "Refactor the agent scheduler\nand more details [s:echo]");
             Check.Equal("Refactor the agent scheduler", (await env.Rpc("sessions.get", new { id = sid })).S("title"));
-            var usage = await env.Rpc("usage.summary");
-            var aiproxy = usage.Arr("providers").First(p => p.S("provider") == "aiproxy");
-            Check.True(aiproxy.L("calls") > 10 && aiproxy.L("inputTokens") > 10_000, "usage recorded: " + aiproxy.GetRawText());
+            var usageAfter = await AiproxyUsage();
+            Check.True(usageAfter.Calls - usageBefore.Calls >= 1 && usageAfter.Input - usageBefore.Input > 1_000,
+                $"the run was recorded in the usage summary: calls {usageBefore.Calls} -> {usageAfter.Calls}, input tokens {usageBefore.Input} -> {usageAfter.Input}");
             var dir = env.NewProjectDir("crud");
             var p = await env.Rpc("projects.create", new { name = "crud", path = dir });
             var renamed = await env.Rpc("projects.update", new { id = p.S("id"), name = "crud2" });

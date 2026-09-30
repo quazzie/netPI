@@ -1,6 +1,95 @@
 # Faster E2E feedback: implementation plan for local agents
 
-Status: proposed; implementation has not started. Date: 2026-09-30. Inspected master baseline: `19c463a`.
+Status: A and B delivered, C and D partly, on branch `claude/e2e-feedback` (one agent, sequentially; see "Results and amendments"
+below). Date: 2026-09-30. Plan written against master `19c463a`; implemented on `66c5097`.
+
+## Results and amendments (2026-09-30)
+
+**The brief from the user:** agents spend 99 % of a task running E2E, then a small problem at the end (3+ minutes in) means a
+small fix and another full run, again and again. "2 minutes 30000 times during development is still an eternity." Agents also
+"retry" a known flaky test and tell their subagents to do the same.
+
+**Measured baselines** (16 cores, quiet machine, master `66c5097`, no other E2E running):
+
+| | before | after |
+| --- | --- | --- |
+| real-server E2E, whole suite | 126 s (64 tests; 124.7 s of test bodies, 1.3 s setup), serial | ~35 s, 4 shards |
+| one test, server start included | ~a full run | ~2 s |
+| smoke set (9 tests) | none | ~9 s |
+| one plugin edited + its tests (`-Changed`) | a full run plus a build of everything | ~9 s (incremental build 1.7 s) |
+| UI walkthrough (`npm run e2e`), whole | 144 s, **and it died at check 218 of ~300** on master (4 of 5 runs) | ~215 s, passes (278-281 checks); 3 concurrent runs: 3/3 |
+| UI walkthrough, one section | the whole walkthrough | 8–20 s |
+| unit-suite-style "is anything stale" check before a run | n/a | 0.2 s |
+
+The docs said "61 tests, about three minutes": it is 64 tests and ~2 min serially on a quiet machine. The 3-4 minutes agents see
+are that, plus a build of everything, plus the 144 s UI walkthrough, plus other agents' load. The point is not the 126 s → 35 s
+(that helps the gate); it is that **the development loop no longer contains the suite**.
+
+**What shipped** (commits on `claude/e2e-feedback`):
+
+1. `Shell: a finished process lets go of its caller's callbacks`: a real retention bug found by the flake work (below), with a
+   Tools-suite regression test that fails without the fix.
+2. `E2E runner`: stable ids (`area.name`) and tags, selection that is decided before anything starts and rejects a typo (exit 2),
+   in-process shards (a server + mock pair each, free ports, split by each test's last duration), a failure file per failed test,
+   `report.json`, `timings.json`, `failing.json`, `--repeat`, `--fresh`, `--self-test`, containment of a timed-out test, run-specific
+   screenshots, `areas.json` (changed files → tests).
+3. `scripts/e2e.ps1`: `-Changed`, `-Only`, `-Tag`, `-Smoke`, `-Failed`, `-List`, `-Repeat`, `-Fresh`, `-SelfTest`; incremental builds
+   (per-project stamps) into the dev output only.
+4. `MockLlm hold=<ms>` and the UI smoke using it; the two hidden order/timing dependencies fixed in `AdvancedTests.cs`.
+5. The UI walkthrough: sections that can be selected (`--only`, `--list`, `--with`, `--port`, `NEEDS`), `web/mock/sections.mjs` (every
+   section alone), `mock.thinkDelay` re-landed.
+6. `AGENTS.md`, `docs/TESTING.md`, `docs/UI.md`, CI `e2e` job.
+
+**How this differs from the plan above**
+
+- *In-process shards, parallel by default.* The plan kept real-server cases serial "initially". The runner isolates every shard
+  completely (own server, mock, home, ports, work folder, screenshots), two full runs and several repeat/fresh stress runs found no
+  cross-talk, and the gain is 3.6×. `--parallel auto` is the default (about one shard per 12 s of estimated work, at most
+  `min(cores/2, 4)`); `--parallel 1` gives the old serial behaviour.
+- *Containment by fresh server.* A timed-out body cannot be cancelled cooperatively (the bodies take no token), so its server is
+  stopped and the rest of its shard gets a fresh one, instead of reporting the rest as not run. `--self-test` pins it and was
+  mutation-checked.
+- *Ids live next to the test* (`r.Add("<id>", "<name>", …)`); tags and smoke membership are in `Catalog.cs`. `--self-test` fails
+  when they drift.
+- *No C# migration and no new packages.* The MockLlm knob is `hold=<ms>` (first answer only), not a global gate; the plan's C4/C5
+  (gates for overlap tests) is still open, see below.
+
+**Ideas that were not in the plan** (all implemented): failure evidence files so a failure is diagnosed without another run; the
+failing list across runs (`-Failed`); `-Repeat N -Fresh` to measure a flaky test and `-Fresh` to find order dependencies; `-Changed`
+with `areas.json` (and a self-test that every plugin folder has a rule); per-project build stamps; one rerun hint in the caller's own
+syntax; a UI section audit; the policy text in `AGENTS.md` ("never run the whole suite while you work", "never retry, measure").
+
+**Flaky and order-dependent tests that were found, root-caused and fixed (none was retried):**
+
+| test | cause | fix |
+| --- | --- | --- |
+| `reload.runtime-midrun` (deterministic after any bash call; passed only when `reload.all-plugins` had reloaded the shell plugin first) | **product bug**: a finished shell process stayed in the registry (last 50) holding the caller's live-output and exit callbacks, so the old agent-runtime load context was never collected | `ManagedProcess` drops them when done; Tools-suite test with a weak reference |
+| `sessions.title-usage-projects` (fails alone) | asserted the server's running usage total (`calls > 10`) | asserts what its own run added |
+| `subagents.wait-steer` (1 in ~60 under heavy load) | steered the moment the parent yielded and counted on the 2 s worker being recorded as done; a worker gives up its slot a few ms before it is recorded as finished | waits for worker-1 to be recorded, and holds the freed slot with a third chat so the parent still queues with priority (16/16 under the load that broke the old one) |
+| `ui.smoke` "streaming rows shown" | looked at a state that exists ~100 ms | `hold=1500` in the scenario tag; the streaming state is now in `ui-02-streaming.png` every time |
+| UI walkthrough "streaming thinking opens" (failed in 4 of 5 full runs on master, always at the same step) | **not** the short thinking window that AGENTS.md blames. The step pressed Ctrl+T and waited for `.intro`, which is already on screen when the tab you are on is an empty chat: the text was typed into the old tab's composer while the new session was still being created, and Enter then hit the new, empty one. The page sent `sessions.create` and `agents.use` and never `agent.send` (seen in the frames the page and the mock logged) | `newTab()` waits for the tab count to grow (10 call sites); `mock.thinkDelay` is re-landed too, unchanged, but it was not the cause |
+| UI walkthrough "budget" check | read the Work tab's budget line before the tab's 30 s refresh | the section refreshes the tab like a user would, then waits for the text |
+| Aux `ssh_edit: the remote write script…` (fails every time under `scripts/test.ps1`, passes from Git Bash) | Git's `bash.exe` takes the caller's PATH as it is: from PowerShell there is no Git `usrin`, so `stat` is "command not found" | the helper puts the folder of the bash it starts first on PATH |
+| the runner's own self-test (failed once, right after a full `e2e.ps1` in the same session) | `e2e.ps1` left `NETPI_E2E_RERUN` in the caller's session and the rerun-hint assertion read it | the script restores it; the self-test sets what it needs itself and has a test for the hint |
+
+**How that one was found:** it never failed when its section ran alone, and a prefix run with the sections silenced passed too. So the walkthrough now saves `FAILED.png` and `FAILED.txt` when it dies (page text, toasts that showed, the frames the page sent, the frames and clients the mock saw; `mock.wsLog` is new), and two or three full runs at once reproduced it within minutes.
+
+**Found but not fixed (product, for the owner to decide):** the Work tab does not show a changed budget limit until its next refresh
+(30 s, or a recorded call): the real host only publishes `usage.changed` after a call is recorded. Also: a worker gives up its
+slot before it is recorded as finished (harmless, but it is what made `wait-steer` racy).
+
+**Still open**
+
+- C: replace multi-second streams used only to create overlap (`slots.*`, `subagents.*`, `sessions.delete-orchestrator` 6.6 s,
+  `compaction.*` 4-5 s) with MockLlm gates; the coverage ledger. Measure first: they are already parallel, the suite is bounded by
+  `ui.smoke` (~26 s).
+- Split `ui.smoke` into a small browser round trip (join `smoke`) and the panel/steer/abort/backup parts; trim its fixed sleeps.
+- The UI walkthrough: `NEEDS` is the list of what sections build on; `npm run e2e:sections` keeps it honest (37/37 alone). Sections still
+  spend most of their time in fixed `waitForTimeout` pauses (187 of them): replacing the positive-condition ones with waits for the state
+  would cut the whole run, and is the next saving there.
+- D: the CI `e2e` job is written and unverified on a runner; a manually triggered full job and a scheduled run are not added.
+- Projects and git worktrees: the audit is in `docs/STATUS.md` ("Projects and git worktrees"): edits can land in the project's checkout when an
+  agent is told to use another worktree, and nothing warns. Nothing was changed there; it needs a decision on what the harness should do.
 
 ## Outcome
 

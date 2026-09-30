@@ -9,7 +9,7 @@ public static class HookTests
 
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("tool repair: a standalone textual <tool_call> becomes a real call that runs", async () =>
+        r.Add("repair.textual-call", "tool repair: a standalone textual <tool_call> becomes a real call that runs", async () =>
         {
             var s = await env.NewSession();
             var run = await env.Run(s.S("id")!, "Check the agents [s:textcall]");
@@ -30,7 +30,7 @@ public static class HookTests
             Check.False(run.Role("notice").Any(), "no nudge for a repaired call");
         });
 
-        r.Add("tool repair: a documented example stays text — it is not executed", async () =>
+        r.Add("repair.documented-example", "tool repair: a documented example stays text — it is not executed", async () =>
         {
             var s = await env.NewSession();
             var run = await env.Run(s.S("id")!, "Show me an example [s:doccall]");
@@ -44,7 +44,7 @@ public static class HookTests
             Check.Contains(RunResult.Text(notice), "tool call written as text");
         });
 
-        r.Add("nudge: a cut-off response (length) gets a nudge notice and the agent continues", async () =>
+        r.Add("nudge.cutoff", "nudge: a cut-off response (length) gets a nudge notice and the agent continues", async () =>
         {
             var s = await env.NewSession();
             var mockMark = await env.MockMark();
@@ -60,7 +60,7 @@ public static class HookTests
             Check.Equal("notice:nudge", log.Last().S("lastRole"), "the model saw the nudge as the last message");
         });
 
-        r.Add("retry: dropped connection → agent.notice + stream.reset, then the retried answer", async () =>
+        r.Add("retry.drop", "retry: dropped connection → agent.notice + stream.reset, then the retried answer", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -82,7 +82,7 @@ public static class HookTests
             Check.Equal(1, run.OfType("stream.start").Count(), "one stream for both attempts");
         });
 
-        r.Add("retry: HTTP 503 then success", async () =>
+        r.Add("retry.503", "retry: HTTP 503 then success", async () =>
         {
             var s = await env.NewSession();
             var mockMark = await env.MockMark();
@@ -94,7 +94,7 @@ public static class HookTests
             Check.False(run.OfType("stream.reset").Any(), "nothing to reset when no content was streamed");
         });
 
-        r.Add("errors: a rejected request ends the run with an error notice, session stays usable", async () =>
+        r.Add("errors.rejected", "errors: a rejected request ends the run with an error notice, session stays usable", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -108,7 +108,7 @@ public static class HookTests
             Check.Contains(again.FinalText, "ECHO-DONE");
         });
 
-        r.Add("errors: unknown model gives a clear error notice", async () =>
+        r.Add("errors.unknown-model", "errors: unknown model gives a clear error notice", async () =>
         {
             var s = await env.NewSession(model: "aiproxy/does-not-exist");
             var run = await env.Run(s.S("id")!, "hi");
@@ -117,7 +117,7 @@ public static class HookTests
             Check.Contains(RunResult.Text(notice), "not found");
         });
 
-        r.Add("compaction: long run on tiny-ctx compacts, summary replaces old messages, context meter drops", async () =>
+        r.Add("compaction.auto", "compaction: long run on tiny-ctx compacts, summary replaces old messages, context meter drops", async () =>
         {
             var s = await env.NewSession(model: Tiny);
             var sid = s.S("id")!;
@@ -149,7 +149,7 @@ public static class HookTests
             Check.Equal("1,2,3,4,5,6,7,8,9,10", string.Join(",", steps), "each step once");
         }, 180);
 
-        r.Add("compaction: backend overflow (window smaller than advertised) compacts and retries the call", async () =>
+        r.Add("compaction.overflow", "compaction: backend overflow (window smaller than advertised) compacts and retries the call", async () =>
         {
             // The catalog claims 50k, the backend only holds 12k (e.g. a model loaded with a smaller n_ctx than its static
             // capability entry): auto-compaction never triggers, the backend rejects the prompt, overflow recovery must cope.
@@ -185,7 +185,7 @@ public static class HookTests
             }
         }, 180);
 
-        r.Add("compaction: /compact RPC on an idle session", async () =>
+        r.Add("compaction.manual", "compaction: /compact RPC on an idle session", async () =>
         {
             var s = await env.NewSession(model: Tiny);
             var sid = s.S("id")!;

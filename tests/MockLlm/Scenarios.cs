@@ -18,6 +18,11 @@ public sealed class Plan
     public string Stop { get; set; } = "stop";
     /// <summary>Delay between two streamed chunks (before the speed factor).</summary>
     public int ChunkDelayMs { get; set; } = 8;
+    /// <summary>
+    /// Keep the stream open for this long after its first chunk (a fixed time, not scaled by --speed; <c>hold=&lt;ms&gt;</c> in the tag, first
+    /// answer of the scenario only). A test that has to look at the live state holds it instead of racing a stream that is over in 100 ms.
+    /// </summary>
+    public int HoldMs { get; set; }
     /// <summary>Drop the connection in the middle of the stream.</summary>
     public bool Drop { get; set; }
     /// <summary>Stop sending (but keep the connection open) for this long in the middle of the stream.</summary>
@@ -143,6 +148,7 @@ public sealed partial class ScenarioEngine
         }
         plan.Scenario = name;
         plan.Step = step;
+        if (step == 0) plan.HoldMs = Math.Clamp(tag.PInt("hold", 0), 0, 60_000);
         return plan;
     }
 

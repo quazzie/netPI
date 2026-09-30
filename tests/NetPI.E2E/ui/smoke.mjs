@@ -16,7 +16,9 @@ const arg = (n, d) => (argv.indexOf(n) >= 0 ? argv[argv.indexOf(n) + 1] : d);
 const BASE = arg('--url', 'http://127.0.0.1:7470');
 const TOKEN = arg('--token', 'e2e-token');
 const SESSION = arg('--session', 'UI smoke');
-const TEXT = arg('--text', 'Please edit the notes [s:tools file=notes.txt old=alpha new=ALPHA-UI]');
+// hold=1500: the mock keeps its first answer's stream open after the first chunk, so "streaming rows shown" looks at a state
+// that is there for 1.5 s instead of racing one that is over in ~100 ms (a loaded machine missed it)
+const TEXT = arg('--text', 'Please edit the notes [s:tools file=notes.txt old=alpha new=ALPHA-UI hold=1500]');
 const OUT = path.resolve(arg('--out', path.join(here, '..', 'screenshots')));
 fs.mkdirSync(OUT, { recursive: true });
 
