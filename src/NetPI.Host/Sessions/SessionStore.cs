@@ -209,7 +209,8 @@ internal sealed class SessionStore : ISessionStore
         {
             where.Add("kind <> 'subagent'");
         }
-        if (!query.IncludeArchived) where.Add("archived = 0");
+        if (query.ArchivedOnly) where.Add("archived = 1");
+        else if (!query.IncludeArchived) where.Add("archived = 0");
         if (!string.IsNullOrWhiteSpace(query.Search))
         {
             where.Add("title LIKE @search ESCAPE '\\'");

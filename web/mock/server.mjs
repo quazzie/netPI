@@ -11,7 +11,7 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
-import { store, seed, resetStore, MODELS, DEFAULT_MODEL, REPO, mkSession, pushMessage, agentFor, newId, text } from './store.mjs';
+import { store, seed, resetStore, seedMany, clearBulk, MODELS, DEFAULT_MODEL, REPO, mkSession, pushMessage, agentFor, newId, text } from './store.mjs';
 import { createAgentRuntime } from './agent.mjs';
 import { createWork } from './work.mjs';
 import { createIdeas } from './ideas.mjs';
@@ -85,7 +85,7 @@ const agent = createAgentRuntime({ publish, work, log, onFirstMessage: materiali
 const RPC_DOCS = {
   'agent.send': 'Send a message to a session\'s agent: { sessionId, text, images?, mode? } → AgentInfo',
   'agent.abort': 'Abort the current run of a session\'s agent: { sessionId } → bool',
-  'sessions.list': 'Sessions, newest first: { projectId?, search?, includeSubagents?, includeArchived?, limit?, offset? }',
+  'sessions.list': 'Sessions, newest first: { projectId?, search?, includeSubagents?, includeArchived?, archivedOnly?, limit?, offset? }',
   'sessions.messages': 'Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore }',
   'work.snapshot': 'Aggregated overview for the Work tab → { agents, runs, processes, usage, time, errors? }',
   'diag.snapshot': 'Diagnostics overview → { plugins, tools, rpc, events, logs, runtime, time }',
@@ -318,6 +318,7 @@ let procTailDelayMs = 0; // e2e test helper: delay the tail responses so the UI 
 let filesDelayMs = 0; // e2e test helper: delay the files.* responses so a workspace switch lands mid-fetch
 let offlineUntil = 0; // e2e test helper: while in effect the /ws upgrades are refused and open sockets dropped — the server keeps running, its events are just lost (the browser is offline)
 let filesCalls = []; // e2e test helper: the files.* responses served, in order, for the late-response checks
+let listCalls = []; // e2e test helper: the sessions.list calls with their params (the archived-only check)
 const handlers = {
   'app.info': () => ({ version: VERSION, os: `${os.type()} ${os.release()}`, home: os.homedir(), appDir: path.join(REPO, 'artifacts/app'), defaultWorkspace: path.join(os.homedir(), '.netpi', 'workspace'), desktop: false }),
 
@@ -356,9 +357,12 @@ const handlers = {
 
   'sessions.list': (p = {}) => {
     const q = (p.search ?? '').toLowerCase();
+    listCalls.push({ search: q || null, includeSubagents: !!p.includeSubagents, includeArchived: !!p.includeArchived, archivedOnly: !!p.archivedOnly, limit: p.limit ?? 100, offset: p.offset ?? 0 });
     let list = [...store.sessions.values()].filter((s) => {
       if ((store.messages.get(s.id) ?? []).length === 0) return false; // like the host: a session without messages is not listed
-      if (!p.includeArchived && s.archived) return false;
+      if (p.archivedOnly) {
+        if (!s.archived) return false;
+      } else if (!p.includeArchived && s.archived) return false;
       if (!p.includeSubagents && s.kind === 'subagent' && !p.parentSessionId) return false;
       if (p.projectId && s.projectId !== p.projectId) return false;
       if (p.parentSessionId && s.parentSessionId !== p.parentSessionId) return false;
@@ -720,6 +724,12 @@ const handlers = {
   'mock.filesCalls': () => filesCalls,
   // e2e test helper: how many times each session's messages were loaded (a rebuilt chat store)
   'mock.msgLoads': () => Object.fromEntries(msgLoads),
+  // e2e test helpers: a wall of recent actives behind one very old archive (the archived-filter check);
+  // the seeded ids live only in the store — mock.reset drops them with everything else
+  'mock.seedMany': (p = {}) => seedMany({ active: p.active ?? 0, archived: p.archived ?? 0, title: p.title ?? null }),
+  'mock.clearMany': () => ((clearBulk()), true),
+  // e2e test helper: the sessions.list calls made so far, with their params (was the archived section asked for?)
+  'mock.listCalls': () => listCalls,
   'guard.pending': (p = {}) => agent.pendingApprovals(p.sessionId),
   'guard.answer': (p = {}) => {
     if (agent.answerApproval(need(p, 'approvalId'), p.allow, p.scope) === 'not_found') throw new RpcError('not_found', 'No tool call waits for your OK with that id.');
@@ -887,6 +897,7 @@ const handlers = {
     filesDelayMs = 0;
     offlineUntil = 0;
     filesCalls = [];
+    listCalls = [];
     msgLoads.clear();
     for (const s of store.sessions.keys()) agent.abort(s);
     resetStore();

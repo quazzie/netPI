@@ -61,7 +61,7 @@ internal static class CoreRpc
         });
 
         // ------------------------------------------------------------ sessions
-        Add("sessions.list", "Sessions, newest first: { projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, limit?, offset? } → SessionInfo[]",
+        Add("sessions.list", "Sessions, newest first: { projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, archivedOnly? (only archived; takes precedence over includeArchived), limit?, offset? } → SessionInfo[]",
             req => k.Sessions.ListSessions(req.Bind<SessionQuery>()), readOnly: true);
 
         Add("sessions.create", "Create a session: { title?, projectId?, model?, reasoning? } → SessionInfo", req =>

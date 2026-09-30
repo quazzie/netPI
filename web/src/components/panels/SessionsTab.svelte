@@ -3,7 +3,7 @@
   import Icon from '../../lib/kit/Icon.svelte';
   import IconButton from '../../lib/kit/IconButton.svelte';
   import TimeAgo from '../../lib/kit/TimeAgo.svelte';
-  import { app, openSession, newSession, updateSession, deleteSession, sessionStatus } from '../../lib/state/app.svelte.js';
+  import { app, openSession, newSession, updateSession, deleteSession, sessionStatus, loadSessions } from '../../lib/state/app.svelte.js';
   import { confirmDialog, toast } from '../../lib/state/ui.svelte.js';
   import { rpc } from '../../lib/rpc.svelte.js';
   import { recencyBucket } from '../../lib/format.js';
@@ -14,6 +14,8 @@
   let serverHits = $state.raw(null); // SessionInfo[] from sessions.list { search }
   let showArchived = $state(false);
   let archived = $state.raw([]);
+  let archivedMore = $state(false); // the archived page was full: more archives exist ("Show more")
+  let archivedOffset = 0; // rows of archives the server has handed over (the next offset)
   let editing = $state(null);
   let editValue = $state('');
   const expanded = new SvelteSet();
@@ -33,10 +35,11 @@
   const roots = $derived.by(() => {
     const query = q.trim().toLowerCase();
     if (query) {
-      const local = app.sessions.filter((s) => !s.archived && (s.title || '').toLowerCase().includes(query));
+      // search covers the archives too: an old chat is findable by name, not only in the archived section
+      const local = app.sessions.filter((s) => (s.title || '').toLowerCase().includes(query));
       if (!serverHits) return local;
       const seen = new Set(local.map((s) => s.id));
-      return local.concat(serverHits.filter((s) => !seen.has(s.id) && !s.archived));
+      return local.concat(serverHits.filter((s) => !seen.has(s.id)));
     }
     return app.sessions.filter(
       (s) => !s.archived && (!s.parentSessionId || !app.sessionsById.has(s.parentSessionId)),
@@ -59,16 +62,27 @@
     if (!query) return;
     searchTimer = setTimeout(async () => {
       try {
-        const res = await rpc('sessions.list', { search: query, includeSubagents: true, limit: 50 });
+        const res = await rpc('sessions.list', { search: query, includeSubagents: true, includeArchived: true, limit: 50 });
         if (q.trim() === query) serverHits = res;
       } catch {}
     }, 220);
   });
 
-  async function loadArchived() {
+  // The archived section is a separate, paged query (archivedOnly): the newest active sessions cannot push an old
+  // archive out of a newest-first window. The old fetch took the newest 200 active + archived and cut out the
+  // archives locally, so 200 newer actives made every older archive "disappear".
+  const ARCHIVE_PAGE = 50;
+  async function loadArchived(offset = 0, append = false) {
     try {
-      const res = await rpc('sessions.list', { includeArchived: true, includeSubagents: false, limit: 200 });
-      archived = (res ?? []).filter((s) => s.archived);
+      const page = await rpc('sessions.list', { archivedOnly: true, includeSubagents: false, limit: ARCHIVE_PAGE, offset });
+      if (append) {
+        const seen = new Set(archived.map((s) => s.id));
+        archived = [...archived, ...(page ?? []).filter((s) => !seen.has(s.id))];
+      } else {
+        archived = page ?? [];
+      }
+      archivedOffset = offset + (page ?? []).length;
+      archivedMore = (page ?? []).length === ARCHIVE_PAGE;
     } catch (e) {
       toast(e.message, 'error');
     }
@@ -76,6 +90,11 @@
   $effect(() => {
     if (showArchived) loadArchived();
   });
+
+  // an older page of the main list: the cap is a window the user can extend, not a silent hide
+  async function loadOlder() {
+    await loadSessions(app.sessionsOffset, true);
+  }
 
   function startRename(s) {
     editing = s.id;
@@ -119,6 +138,7 @@
   <div
     class="srow"
     class:active={s.id === app.activeId}
+    class:archived={s.archived}
     class:child={depth > 0}
     role="button"
     tabindex="0"
@@ -179,7 +199,7 @@
     {#if editing !== s.id}
       <div class="actions">
         <IconButton icon="rename" title="Rename (F2)" size="sm" onclick={(e) => (e.stopPropagation(), startRename(s))} />
-        <IconButton icon="archive" title="Archive" size="sm" onclick={(e) => (e.stopPropagation(), archive(s))} />
+        <IconButton icon={s.archived ? 'refresh' : 'archive'} title={s.archived ? 'Unarchive' : 'Archive'} size="sm" onclick={(e) => (e.stopPropagation(), archive(s, !s.archived))} />
         <IconButton icon="trash" title="Delete" size="sm" onclick={(e) => (e.stopPropagation(), remove(s))} />
       </div>
     {/if}
@@ -223,6 +243,10 @@
       </div>
     {/each}
 
+    {#if !q && app.sessionsMore}
+      <button class="more np-dim" onclick={loadOlder}>Show older</button>
+    {/if}
+
     {#if showArchived}
       <div class="glabel">Archived</div>
       {#each archived as s (s.id)}
@@ -239,6 +263,9 @@
       {:else}
         <div class="np-empty">Nothing archived</div>
       {/each}
+      {#if archivedMore}
+        <button class="more np-dim" onclick={() => loadArchived(archivedOffset, true)}>Show more</button>
+      {/if}
     {/if}
   </div>
 
@@ -472,6 +499,23 @@
   }
   .archived .title {
     color: var(--fg-muted);
+  }
+  .more {
+    display: block;
+    width: 100%;
+    margin: 8px 8px 4px;
+    padding: 4px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--fg-dim);
+    font-size: var(--fs-xs);
+    text-align: center;
+    cursor: default;
+  }
+  .more:hover {
+    background: var(--bg-2);
+    color: var(--fg);
   }
   .foot {
     display: flex;

@@ -117,6 +117,8 @@ public sealed class SessionQuery
     public bool IncludeSubagents { get; set; }
     public string? ParentSessionId { get; set; }
     public bool IncludeArchived { get; set; }
+    /// <summary>Only archived sessions; takes precedence over <see cref="IncludeArchived"/>.</summary>
+    public bool ArchivedOnly { get; set; }
     public int Limit { get; set; } = 100;
     public int Offset { get; set; }
 }
