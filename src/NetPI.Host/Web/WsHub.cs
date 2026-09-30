@@ -17,6 +17,10 @@ internal sealed class WsHub : IDisposable
     /// <summary>How many WebSocket clients one app serves at once (see the refusal in WebServer.WebSocketAsync).</summary>
     public const int MaxClients = 50;
 
+    /// <summary>Largest single WebSocket message the server will read. The UI is told this in <c>app.info</c>
+    /// (<c>maxMessageBytes</c>) so it can fit what it sends into it instead of being cut off mid-sentence.</summary>
+    public const int MaxMessageBytes = 2 * 1024 * 1024;
+
     private readonly HostKernel _k;
     private readonly ILogger _log;
     private readonly ConcurrentDictionary<string, WsClient> _clients = new();
@@ -75,7 +79,7 @@ internal sealed class WsClient
     // The websocket protocol carries small JSON envelopes; a request body over the HTTP API is what needs room, and that
     // limit is set on the server (MaxRequestBodySize). Renting 64 MB per client because one message was big is a way to
     // lose the process, not a way to serve a big request.
-    private const int MaxMessageBytes = 2 * 1024 * 1024;
+    private const int MaxMessageBytes = WsHub.MaxMessageBytes;
     private const int MaxPending = 20_000;
     /// <summary>Queued bytes per client, besides the message count: a client that never reads is cut off by whichever
     /// limit it reaches first, so a few large messages cannot sit in the queue for nothing.</summary>
@@ -198,7 +202,9 @@ internal sealed class WsClient
                 {
                     if (buffer.Length >= MaxMessageBytes)
                     {
-                        await _ws.CloseAsync(WebSocketCloseStatus.MessageTooBig, "message too big", ct).ConfigureAwait(false);
+                        var reason = $"message too big: {MaxMessageBytes / (1024 * 1024)} MB per message (app.info.maxMessageBytes)";
+                        _log.LogWarning("WebSocket client {Id} sent a message over the limit; closing: {Reason}", Id, reason);
+                        await _ws.CloseAsync(WebSocketCloseStatus.MessageTooBig, reason, ct).ConfigureAwait(false);
                         return;
                     }
                     var bigger = ArrayPool<byte>.Shared.Rent(Math.Min(buffer.Length * 2, MaxMessageBytes));

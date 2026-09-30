@@ -12,6 +12,7 @@ import { notify, onNotificationClick, firstLine } from '../notify.js';
 import { loadAsks, askEvent, pendingIn, approvalIn, pruneSession } from './asks.svelte.js';
 import { recall } from '../../components/composer/ideaRecall.svelte.js';
 import { suggestions } from '../../components/composer/ideaSuggestions.svelte.js';
+import { formatBytes, payloadBytes, sendBudget } from '../images.js';
 
 const TABS_KEY = 'netpi.openTabs';
 
@@ -419,6 +420,16 @@ export async function deleteProject(id) {
 /** Send user input to the session's agent. mode: auto | steer | queue */
 export async function sendMessage(sessionId, text, images, mode = 'auto') {
   const chat = getChat(sessionId);
+  if (images?.length) {
+    // The envelope has to fit one WebSocket message. Refuse here with a reason, rather than have the host cut the
+    // socket off mid-send, which reached the user as "Send failed" (idea-8hfc3m).
+    const bytes = payloadBytes(images);
+    const budget = sendBudget(app.info?.maxMessageBytes);
+    if (bytes > budget) {
+      toast(`Images are ${formatBytes(bytes)} — a message can carry ${formatBytes(budget)}. Remove one or attach smaller images.`, 'error');
+      return false;
+    }
+  }
   const optimistic = mode === 'auto' && !isBusy(sessionId);
   if (optimistic) chat.pendingUser = { text, images: images ?? [], createdAt: new Date().toISOString() };
   try {

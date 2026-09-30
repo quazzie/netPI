@@ -86,16 +86,18 @@ export function connect() {
     }
     handle(msg);
   };
-  sock.onclose = () => {
+  sock.onclose = (e) => {
     if (ws !== sock) return;
     ws = null;
     stopPing();
-    // Calls already on the wire are lost with the socket.
+    // Calls already on the wire are lost with the socket. The host's reason is worth passing on: it is what a
+    // message over the limit gets us ("message too big: 2 MB per message").
     for (const [id, p] of pending) {
       if (!p.sent) continue;
       pending.delete(id);
       clearTimeout(p.timer);
-      p.reject(new RpcError('disconnected', 'Connection lost', p.m));
+      const why = e?.reason ? `Connection lost: ${e.reason}` : 'Connection lost';
+      p.reject(new RpcError('disconnected', why, p.m));
     }
     scheduleReconnect();
   };
