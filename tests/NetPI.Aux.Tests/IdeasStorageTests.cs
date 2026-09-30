@@ -419,6 +419,28 @@ public static class IdeasStorageTests
 
         // ---------------------------------------------------------------- the storage descriptor and the events
 
+        r.Add("ideas storage: a plugin reload - a new instance over the same tables - keeps the backlog and the cards", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var idea = await env.Call("ideas.add", new JsonObject { ["idea"] = new JsonObject { ["title"] = "Survives a reload" } });
+            var card = env.AddCard("sg_reload01", "Waiting through a reload");
+            // A reload is a swap: the new instance starts while the old one is still registered. The tables are the only
+            // thing the two share, and neither of them holds a second copy of the backlog.
+            var (db, second) = env.Second();
+            try
+            {
+                Check.Equal(1, second.All().Count, "the new instance reads what the old one wrote");
+                Check.Equal(1, second.CardCount(), "and the cards waiting for an answer");
+                second.Update(idea["id"].Str(), new JsonObject { ["status"] = "done" }, fromUi: true);
+                Check.Equal("done", env.Repo.Idea(idea["id"].Str())!["status"]!.Str(), "the old instance sees the new one's write");
+                var saved = await env.Call("ideas.resolve", new JsonObject { ["id"] = card, ["action"] = "save" });
+                Check.Equal("Waiting through a reload", saved["saved"]!["title"].Str(), "and the card the new instance sees can be answered by the old one");
+                Check.Equal(0, second.CardCount(), "the card is gone for both");
+            }
+            finally { db.Dispose(); env.Ctx.Unload(); }
+        });
+
         r.Add("ideas storage: ideas.list describes the storage instead of pretending it is a file", async () =>
         {
             var env = new Env();
