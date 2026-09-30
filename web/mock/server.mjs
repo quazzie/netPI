@@ -314,6 +314,8 @@ function uiTabs() {
 }
 
 let procTailDelayMs = 0; // e2e test helper: delay the tail responses so the UI can collapse a row inside its fetchTail() await
+let filesDelayMs = 0; // e2e test helper: delay the files.* responses so a workspace switch lands mid-fetch
+let filesCalls = []; // e2e test helper: the files.* responses served, in order, for the late-response checks
 const handlers = {
   'app.info': () => ({ version: VERSION, os: `${os.type()} ${os.release()}`, home: os.homedir(), appDir: path.join(REPO, 'artifacts/app'), defaultWorkspace: path.join(os.homedir(), '.netpi', 'workspace'), desktop: false }),
 
@@ -710,6 +712,9 @@ const handlers = {
   // test helpers: slow the process tails and observe who asks for them (the e2e leak check)
   'mock.procTailDelay': (p) => ((procTailDelayMs = p.ms ?? 0), true),
   'mock.procStats': () => work.procStats(),
+  // e2e test helpers: slow the files.* responses and observe the served order (the workspace-switch checks)
+  'mock.filesDelay': (p) => ((filesDelayMs = p.ms ?? 0), true),
+  'mock.filesCalls': () => filesCalls,
   'guard.pending': (p = {}) => agent.pendingApprovals(p.sessionId),
   'guard.answer': (p = {}) => {
     if (agent.answerApproval(need(p, 'approvalId'), p.allow, p.scope) === 'not_found') throw new RpcError('not_found', 'No tool call waits for your OK with that id.');
@@ -770,17 +775,21 @@ const handlers = {
   },
   'files.search': async (p = {}) => {
     const root = p.cwd || sessionCwd(p.sessionId);
+    if (filesDelayMs) await new Promise((r) => setTimeout(r, filesDelayMs));
     const files = await listFiles(root);
     const q = (p.query ?? '').toLowerCase().replace(/\\/g, '/');
-    return files
+    const out = files
       .map((f) => ({ f, r: rankFile(f, q) }))
       .filter((x) => x.r !== Infinity)
       .sort((a, b) => a.r - b.r)
       .slice(0, Math.min(p.limit ?? 50, 500))
       .map((x) => x.f);
+    filesCalls.push({ m: 'files.search', root });
+    return out;
   },
   'files.list': async (p = {}) => {
     const root = p.cwd || sessionCwd(p.sessionId);
+    if (filesDelayMs) await new Promise((r) => setTimeout(r, filesDelayMs));
     const dir = path.join(root, p.dir ?? '');
     let entries;
     try {
@@ -806,11 +815,13 @@ const handlers = {
         ...(IGN.has(e.name) ? { ignored: true } : {}),
       });
     }
+    filesCalls.push({ m: 'files.list', root });
     return { root, dir: p.dir ?? '', entries: out.sort((a, b) => b.isDir - a.isDir || a.name.localeCompare(b.name)) };
   },
   // scripted: the same uncommitted changes in every workspace (a binary file has no line counts)
-  'files.git': (p = {}) => {
+  'files.git': async (p = {}) => {
     const root = p.cwd || sessionCwd(p.sessionId);
+    if (filesDelayMs) await new Promise((r) => setTimeout(r, filesDelayMs));
     const files = [
       { rel: 'web/src/lib/markdown.js', status: 'modified', added: 12, deleted: 3 },
       { rel: 'web/src/lib/notify.js', status: 'new', added: 48, deleted: 0 },
@@ -818,6 +829,7 @@ const handlers = {
       { rel: 'web/public/logo.png', status: 'modified' },
     ].map((f) => ({ path: path.join(root, f.rel), ...f }));
     const sum = (k) => files.reduce((n, f) => n + (f[k] ?? 0), 0);
+    filesCalls.push({ m: 'files.git', root });
     return { repo: root, branch: 'main', ahead: 2, behind: 0, files, added: sum('added'), deleted: sum('deleted') };
   },
   'processes.list': () => work.procList(),
@@ -854,6 +866,8 @@ const handlers = {
   // test helper: back to the seeded state
   'mock.reset': () => {
     procTailDelayMs = 0;
+    filesDelayMs = 0;
+    filesCalls = [];
     for (const s of store.sessions.keys()) agent.abort(s);
     resetStore();
     seed();

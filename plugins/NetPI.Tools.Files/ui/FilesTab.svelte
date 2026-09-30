@@ -20,7 +20,7 @@
   let visible = true;
   let dirty = false;
   let gitDirty = false;
-  let scopeKey = '';
+  let scopeKey = $state(''); // workspace generation (session + project path): an answer applies only while its generation is still current
 
   const loc = () => (ctx.app.activeSessionId ? { sessionId: ctx.app.activeSessionId } : {});
   const sep = $derived(root.includes('\\') && !root.includes('/') ? '\\' : '/');
@@ -28,11 +28,13 @@
 
   // ------------------------------------------------------------------ loading
   async function loadDir(dir) {
+    const gen = scopeKey; // the workspace this request was sent for
     const s = new Set(loadingDirs);
     s.add(dir);
     loadingDirs = s;
     try {
       const res = await ctx.rpc('files.list', { ...loc(), dir });
+      if (gen !== scopeKey) return; // the workspace changed while it was in flight: this answer is for the old one
       if (dir === '') {
         if (res.root !== root) {
           // a different workspace: start over
@@ -46,6 +48,7 @@
       m.set(dir, res.entries ?? []);
       entries = m;
     } catch (e) {
+      if (gen !== scopeKey) return;
       if (dir === '') error = e?.message ?? String(e);
       else ctx.app.toast(`Cannot list ${dir}: ${e.message}`, 'error');
     } finally {
@@ -70,13 +73,14 @@
     clearTimeout(gitTimer);
     gitDirty = false;
     const seq = ++gitSeq;
+    const gen = scopeKey;
     let r = null;
     try {
       r = await ctx.rpc('files.git', loc());
     } catch {
       // git failed, or an older files plugin without files.git: no git line
     }
-    if (seq !== gitSeq) return;
+    if (seq !== gitSeq || gen !== scopeKey) return;
     git = r ?? null;
     if (!git) gitOpen = false;
   }
@@ -105,7 +109,12 @@
     const off = ctx.app.onChange(() => {
       const key = `${ctx.app.activeSessionId}|${ctx.app.activeProject?.path ?? ''}`;
       if (key === scopeKey) return;
-      scopeKey = key;
+      scopeKey = key; // new generation: the in-flight answers of the old workspace are stale
+      root = '';
+      entries = new Map();
+      expanded = new Set();
+      loadingDirs = new Set();
+      error = '';
       results = null;
       git = null;
       gitOpen = false;
@@ -125,6 +134,7 @@
   let searchTimer = 0;
   let searchSeq = 0;
   $effect(() => {
+    void scopeKey; // the workspace changed: re-run the query even when its text did not (the hits are per-workspace)
     const query = q.trim();
     clearTimeout(searchTimer);
     if (!query) {
@@ -134,14 +144,15 @@
     }
     searching = true;
     const seq = ++searchSeq;
+    const gen = scopeKey;
     searchTimer = setTimeout(async () => {
       try {
         const r = await ctx.rpc('files.search', { ...loc(), query, limit: 200 });
-        if (seq === searchSeq) results = r ?? [];
+        if (seq === searchSeq && gen === scopeKey) results = r ?? [];
       } catch (e) {
-        if (seq === searchSeq) results = [];
+        if (seq === searchSeq && gen === scopeKey) results = [];
       } finally {
-        if (seq === searchSeq) searching = false;
+        if (seq === searchSeq && gen === scopeKey) searching = false;
       }
     }, 140);
   });
