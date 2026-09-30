@@ -272,19 +272,23 @@ public sealed class CompactionService(IPluginContext ctx)
         return (FileLists.Strip(summary) + FileLists.Format(read, modified), calls, read, modified);
     }
 
-    /// <summary>The chunker's floor: a chunk is never smaller than this, so this is the room a chunk always needs.</summary>
-    private const int MinChunkChars = 2000;
-    /// <summary><see cref="MinChunkChars"/> in the same chars/4 estimate the rest of the budgeting uses.</summary>
-    private const int MinChunkTokens = MinChunkChars / 4;
+    /// <summary>The summarizer's fixed prompt parts (system prompt, conversation tags, instructions), in tokens (chars/4).</summary>
+    public const int FixedPromptTokens = 1500;
+    /// <summary>The smallest chunk a roll can use: the chunker's 2000-char floor, in tokens.</summary>
+    public const int MinChunkTokens = 500;
+    /// <summary>The chunk keeps this share of the room, so the request never runs the full window.</summary>
+    public const double HeadroomShare = 0.85;
+    /// <summary>The largest chunk a roll builds (chars); beyond it the summarizer's window is the binding limit anyway.</summary>
+    public const int MaxChunkChars = 4_000_000;
 
     /// <summary>The summarizer's window, its output allowance for this budget and the room left for a chunk (no previous summary).</summary>
     private static (int Window, int MaxOut, int BudgetChars) RollBudget(ModelInfo model, CompactionOptions o, int budget)
     {
         var window = model.ContextWindow is > 0 and var w ? w : o.DefaultContextWindow;
         var maxOut = Math.Max(256, Math.Min(Math.Min(budget, model.MaxOutputTokens is > 0 and var mo ? mo : int.MaxValue), window / 4));
-        // Room for the system prompt, instructions, the summary so far (≤ maxOut) and the answer (maxOut).
-        var budgetTokens = (long)((window - 2L * maxOut - 1500) * 0.85);
-        return (window, maxOut, (int)Math.Clamp(budgetTokens * 4, MinChunkChars, 4_000_000));
+        // Room for the fixed prompt, the summary so far (≤ maxOut) and the answer (maxOut).
+        var budgetTokens = (long)((window - 2L * maxOut - FixedPromptTokens) * HeadroomShare);
+        return (window, maxOut, (int)Math.Clamp(budgetTokens * 4, MinChunkTokens * 4, MaxChunkChars));
     }
 
     /// <summary>
@@ -301,21 +305,21 @@ public sealed class CompactionService(IPluginContext ctx)
         // The previous summary is embedded in the request in full and was written for whatever summarizer produced it,
         // so it is not bounded by this summarizer's output allowance: budget its real size.
         var priorTokens = summary is null ? 0 : ModelMessages.EstimateTokens(summary);
-        if (summary is not null && priorTokens > (long)window - maxOut - MinChunkTokens)
+        if (summary is not null && priorTokens > (long)window - maxOut - FixedPromptTokens - MinChunkTokens)
         {
-            // Too large even with the smallest chunk the chunker will produce plus the answer: condense it first, rolling
-            // over its own pieces, until it is at most what a summary so far may be.
-            var shrinkBudget = Math.Max(256, (int)(window - 2L * maxOut - MinChunkTokens));
+            // It stops fitting: even a minimal chunk plus the fixed prompt and the answer no longer do. Condense it
+            // first, rolling over its own pieces, until it is at most what a summary so far may be.
+            var shrinkBudget = Math.Max(256, (int)(window - 2L * maxOut - FixedPromptTokens - MinChunkTokens));
             var per = RollBudget(model, o, shrinkBudget).BudgetChars / 3;   // a piece must survive the chunker intact
             (summary, calls) = await RollAsync(SplitText(summary, per).Select(p =>
                 new ChatMessage { Role = MessageRole.Summary, Parts = [new TextPart { Text = p }] }).ToList(),
                 null, false, model, effort, req, o, shrinkBudget, ct).ConfigureAwait(false);
             priorTokens = ModelMessages.EstimateTokens(summary);
         }
-        // Room for the system prompt, instructions, the summary so far (its real size, ≤ maxOut after a condense) and the answer.
-        var room = (long)window - maxOut - Math.Max(priorTokens, maxOut) - 1500;
-        var budgetTokens = (long)Math.Max(0, room * 0.85);
-        var budgetChars = (int)Math.Clamp(budgetTokens * 4, MinChunkChars, 4_000_000);
+        // Room for the fixed prompt, the summary so far (its real size, ≤ maxOut after a condense) and the answer.
+        var room = (long)window - maxOut - Math.Max(priorTokens, maxOut) - FixedPromptTokens;
+        var budgetTokens = (long)Math.Max(0, room * HeadroomShare);
+        var budgetChars = (int)Math.Clamp(budgetTokens * 4, MinChunkTokens * 4, MaxChunkChars);
 
         var chunks = TranscriptSerializer.Chunk(messages.Select(TranscriptSerializer.Serialize), budgetChars);
         if (chunks.Count == 0) throw new InvalidOperationException("Nothing to summarize.");
