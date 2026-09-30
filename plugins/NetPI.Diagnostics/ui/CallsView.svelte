@@ -15,18 +15,34 @@
   let openId = $state(null);
   let detail = $state.raw(null);
 
+  // single-flight: a poll never starts while one is in flight, and the next poll is scheduled after the
+  // previous one completes — a slow diag.calls cannot stack requests on top of itself
+  let inFlight = null;
   async function load() {
-    try {
-      calls = await ctx.rpc('diag.calls', { limit: 150 });
-      error = '';
-    } catch (e) {
-      error = e.message;
-    }
+    if (inFlight) return inFlight;
+    inFlight = (async () => {
+      try {
+        calls = await ctx.rpc('diag.calls', { limit: 150 });
+        error = '';
+      } catch (e) {
+        error = e.message;
+      } finally {
+        inFlight = null;
+      }
+    })();
+    return inFlight;
+  }
+  let pollTimer = 0;
+  function poll() {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(() => {
+      if (visible) load().then(poll);
+      else poll();
+    }, 2000);
   }
   onMount(() => {
-    load();
-    const t = setInterval(() => visible && load(), 2000);
-    return () => clearInterval(t);
+    load().then(poll);
+    return () => clearTimeout(pollTimer);
   });
 
   async function toggle(c) {

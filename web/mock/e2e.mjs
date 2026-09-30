@@ -793,6 +793,24 @@ log('plugin tab: Diagnostics');
   check('diagnostics: tool changes name the cause and the plugin',
     changes.some((t) => t.includes('plugin-reload') && t.includes('netpi.tools.shell') && t.includes('bash')));
   await right.screenshot({ path: path.join(OUT, '30-diagnostics-context.png') });
+
+  // the Calls view polls diag.calls every 2 s: with a slow answer the next poll must not stack on top of the
+  // in-flight one (the mock counts in-flight requests, so a pass cannot come from a quiet server)
+  log('diagnostics: the Calls view polls single-flight');
+  {
+    await rpcCall('mock.diagCallsDelay', { ms: 2500 }); // slower than the 2 s poll interval
+    await view('Calls');
+    await page.locator('.diag .call').first().waitFor({ timeout: 6000 });
+    check('diagnostics: the Calls view lists the model calls', (await page.locator('.diag .call').count()) === 3);
+    await page.waitForTimeout(9500); // several poll cycles with the slow answer in flight
+    const stats = await rpcCall('mock.diagCallsStats');
+    await rpcCall('mock.diagCallsDelay', { ms: 0 });
+    check(
+      'diagnostics: a slow diag.calls never stacks a second request on top',
+      stats.served >= 2 && stats.maxInFlight === 1,
+      `${stats.served} polls, peak in flight ${stats.maxInFlight}`,
+    );
+  }
   await view('Plugins');
 }
 
