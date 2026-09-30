@@ -50,17 +50,30 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   applies everything that piled up. This is the one thing a worktree cannot do: the running app is a single process
   that every session shares.
 - Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
-  Agent, Aux, Host. End-to-end: `dotnet tests/NetPI.E2E/bin/<Config>/NetPI.E2E.dll` (see `docs/TESTING.md`).
+  Agent, Aux, Host. End-to-end (real server, mock model): `.\scripts\e2e.ps1` (below; `docs/TESTING.md`).
 - **The test loop: one big run, then only the failures.** `.\scripts\test.ps1` builds the five suites, runs them once
   (log in `artifacts/testlogs`), and prints the failing names as a paste-ready `-Only` command — re-run that while
   fixing (seconds, not ~90 s), and the full run again before merging. `-Suite Aux`, `-Only "settings:"` (substring,
   OR-ed), `-SkipBuild`. Never re-run the whole set to check one fix.
+- **End-to-end: pick what your change can reach; never the whole suite while you work.** `.\scripts\e2e.ps1 -Changed` runs
+  the tests your changed files can affect (`tests/NetPI.E2E/areas.json` maps them); `-Only <id|substring>`, `-Tag <area>`,
+  `-Smoke`, `-Failed` (what failed and has not passed since, across runs) and `-List` pick by hand. One test is ~2 s, one
+  edited plugin plus its tests ~9 s, the smoke set ~10 s, and it builds only the projects whose sources changed. The whole
+  suite (sharded, ~35 s) is the gate before a merge and after any change to `NetPI.Abstractions`: run it once, not as a
+  loop. A run lists *every* failure at once, each with its evidence in `artifacts/e2elogs/<run>/failures/<id>.txt` (the
+  server log, the mock model's requests and the client events since that test began): read that instead of running again
+  to see what happened, fix, then `-Failed`. A changed E2E runner is checked with `.\scripts\e2e.ps1 -SelfTest`.
 - **A test that fails sometimes is a bug, not weather.** Fix the test or the code it exercises, in the same piece of work that
   met it: a race in a test is usually the test observing a state the mock holds for milliseconds (the UI mock streams
   thinking in ~84 ms at `MOCK_SPEED=1` and ~28 ms at 3, so a `waitForSelector` on a live row can miss the whole window —
   give the mock a knob that holds the state, as `mock.procTailDelay` and `mock.filesDelay` do). Never write "re-run and see",
   never leave a red check explained as pre-existing in a report, and never merge on a run that only went green on the second
-  try. If a test cannot be fixed where you are, say so and fix it before you finish the piece.
+  try. If a test cannot be fixed where you are, say so and fix it before you finish the piece. Measure instead of retrying:
+  `.\scripts\e2e.ps1 -Only <id> -Repeat 20 -Fresh` runs it on 20 fresh servers (the rate, and the evidence of every failure),
+  and `-Fresh` alone runs every test on a server of its own, which finds a hidden order dependency (a test that only passes
+  after another has run, or that asserts a server-wide total). Do not tell a subagent to retry either: hand it the failure
+  file and this rule. The mocks have knobs that hold a state for a test to observe: `hold=<ms>` in a MockLlm scenario tag,
+  `mock.thinkDelay` / `mock.procTailDelay` / `mock.filesDelay` in the UI mock.
 - UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`. A worktree's `npm ci` can emit a cosmetically different bundle than the main checkout's `node_modules` did, so a plugin's committed `wwwroot/ui.js` (and `web/dist`) often comes out modified after a build you did not mean to change: revert those, and commit a bundle only when the *source* under `ui/` changed.
 
 ## Inspecting the running app

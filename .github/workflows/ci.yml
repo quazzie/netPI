@@ -14,7 +14,8 @@ name: CI
 # tests in mind (they need a browser, or they skip).
 #
 # No publishing, no secrets, no deployment: scripts/test.ps1 builds the five test projects (Release) into
-# artifacts/dev/app and runs each suite, exiting non-zero when any test fails.
+# artifacts/dev/app and runs each suite, exiting non-zero when any test fails. The e2e job runs the real-server suite
+# (scripts/e2e.ps1) the same way.
 on:
   push:
   pull_request:
@@ -68,3 +69,38 @@ jobs:
 
       - name: Run the mock e2e
         run: npm run e2e
+
+  e2e:
+    name: end-to-end (real server, mock model)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0'
+
+      # the inspect test runs scripts/netpi.mjs, which needs node (the browser tests are covered by the ui job and run locally)
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # scripts/e2e.ps1 builds the solution into artifacts/dev/app (nothing is published or installed), then runs the backend
+      # tests sharded, each shard with its own server and mock model server on free ports. Every failure of the run is listed at
+      # once; its evidence (server log, the mock's requests, client events) is under artifacts/e2elogs and uploaded below.
+      - name: Build and run the end-to-end suite (without the browser tests)
+        run: pwsh -File ./scripts/e2e.ps1 -NoUi
+
+      - name: Run the runner's own tests
+        run: pwsh -File ./scripts/e2e.ps1 -SelfTest -SkipBuild
+
+      - name: Keep the evidence of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: artifacts/e2elogs
+          retention-days: 7
