@@ -37,6 +37,12 @@ public static class McpTests
             Check.Throws<McpException>(()=>Schema.Validate(schema,JsonNode.Parse("""{"city":"Oslo","extra":1}""")));
             Check.Throws<McpException>(()=>Schema.Check(JsonNode.Parse("""{"type":"object","unevaluatedProperties":false}""")!.AsObject()));
             Check.Throws<McpException>(()=>Schema.Check(JsonNode.Parse("""{"type":"object","properties":{"x":{"$ref":"https://example.com"}}}""")!.AsObject()));
+            var named=JsonNode.Parse("""{"type":"object","properties":{"locks":{"type":"object","propertyNames":{"enum":["front","back"]},"additionalProperties":{"type":"string"}}}}""")!.AsObject();
+            Schema.Check(named); Schema.Validate(named,JsonNode.Parse("""{"locks":{"front":"on"}}"""));
+            Check.Throws<McpException>(()=>Schema.Validate(named,JsonNode.Parse("""{"locks":{"garage":"on"}}""")));
+            var none=JsonNode.Parse("""{"type":"object","properties":{"locks":{"type":"object"}},"propertyNames":false}""")!.AsObject();
+            Schema.Check(none); Check.Throws<McpException>(()=>Schema.Validate(none,JsonNode.Parse("""{"locks":{}}""")));
+            Check.Throws<McpException>(()=>Schema.Check(JsonNode.Parse("""{"type":"object","properties":{"x":{"type":"object","propertyNames":{"unevaluatedProperties":false}}}}""")!.AsObject()));
         });
         r.Add("mcp: result mapping retains structured data and images without leaking binary into text", () => {
             var result=ResultAdapter.Convert(JsonNode.Parse("""{"content":[{"type":"text","text":"hello"},{"type":"image","mimeType":"image/png","data":"AQID"},{"type":"audio","mimeType":"audio/wav","data":"SEVDUkVU"},{"type":"resource_link","name":"doc","uri":"https://example.com/doc"}],"structuredContent":{"ok":true},"isError":true}""")!.AsObject(),"s","t",100);

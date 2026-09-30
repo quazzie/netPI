@@ -10,7 +10,7 @@ internal static class Schema
     {
         "$schema", "$id", "$ref", "$defs", "definitions", "$comment", "title", "description", "default", "examples",
         "deprecated", "readOnly", "writeOnly", "type", "enum", "const", "properties", "required", "additionalProperties",
-        "patternProperties", "minProperties", "maxProperties", "dependentRequired", "dependencies",
+        "patternProperties", "propertyNames", "minProperties", "maxProperties", "dependentRequired", "dependencies",
         "items", "prefixItems", "additionalItems", "minItems", "maxItems", "uniqueItems",
         "minLength", "maxLength", "pattern", "format", "contentEncoding", "contentMediaType",
         "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
@@ -63,7 +63,7 @@ internal static class Schema
             if (schema[key] is JsonArray array) foreach (var child in array) Visit(child, root, depth + 1);
         if (schema["items"] is JsonArray legacyItems) foreach (var child in legacyItems) Visit(child, root, depth + 1);
         else if (schema["items"] is { } items) Visit(items, root, depth + 1);
-        foreach (var key in new[] { "additionalProperties", "additionalItems", "not", "if", "then", "else" })
+        foreach (var key in new[] { "additionalProperties", "additionalItems", "propertyNames", "not", "if", "then", "else" })
             if (schema[key] is { } child) Visit(child, root, depth + 1);
         if (schema["dependencies"] is JsonObject dependencies)
             foreach (var child in dependencies.Select(p => p.Value).Where(n => n is not JsonArray)) Visit(child, root, depth + 1);
@@ -103,6 +103,9 @@ internal static class Schema
                 foreach (var name in required) if (!obj.ContainsKey(name!.GetValue<string>())) return path + ": missing " + name.GetValue<string>();
             var props = schema["properties"] as JsonObject;
             var patterns = schema["patternProperties"] as JsonObject;
+            if (schema["propertyNames"] is { } nameSchema)
+                foreach (var key in obj.Select(p => p.Key))
+                    if (Error(nameSchema, root, JsonValue.Create(key), path + "[" + key + "]", depth + 1) is { } nameError) return nameError;
             foreach (var (key, val) in obj)
             {
                 var known = false;
