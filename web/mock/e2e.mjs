@@ -16,9 +16,52 @@ const repo = path.resolve(here, '../..');
 const argv = process.argv.slice(2);
 const argVal = (n) => (argv.indexOf(n) >= 0 ? argv[argv.indexOf(n) + 1] : null);
 const OUT = argVal('--out') ? path.resolve(argVal('--out')) : path.join(here, 'screenshots');
-const ONLY = argVal('--only') ? new Set(argVal('--only').split(',')) : null;
+// Sections: each log('name') header below starts one. --only runs just the named sections (a name, or a part of one, case-insensitive):
+// every other section is skipped with its setup, it is not merely left unreported. --list prints the names. A name that matches
+// nothing is an error (exit 2) before anything starts, so a typo cannot be a green empty run.
+const SECTIONS = [...fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').matchAll(/^(?:if \(!EXTERNAL[^\n]*\{\n  )?log\('([^'\n]+)'\);/gm)].map((m) => m[1]);
+if (argv.includes('--list')) {
+  console.log(SECTIONS.join('\n'));
+  process.exit(0);
+}
+function resolveOnly(spec) {
+  const out = new Set();
+  const bad = [];
+  // one whole name (several contain commas), or several separated by | (or by commas when none of them has one)
+  const parts = SECTIONS.includes(spec.trim()) ? [spec.trim()] : spec.includes('|') ? spec.split('|') : spec.split(',');
+  for (const raw of parts.map((s) => s.trim()).filter(Boolean)) {
+    const hits = SECTIONS.includes(raw) ? [raw] : SECTIONS.filter((s) => s.toLowerCase().includes(raw.toLowerCase()));
+    if (!hits.length) bad.push(raw);
+    for (const h of hits) out.add(h);
+  }
+  if (bad.length || !out.size) {
+    console.error(`--only: no section matches ${bad.map((b) => `'${b}'`).join(', ') || '(nothing given)'}. Sections:\n  ${SECTIONS.join('\n  ')}`);
+    process.exit(2);
+  }
+  return out;
+}
+// NEEDS: sections that build on state an earlier section leaves behind (an open chat, tabs, a project). A focused run first runs
+// those, unreported (checks and screenshots follow ONLY), then the section. Keep this list honest: `node web/mock/e2e.mjs --only <name>`
+// for every section is the audit that proves each one stands on its own plus what is listed here.
+const NEEDS = {
+  "composer popups": ["new session + agent run"],
+  "tabs": ["new session + agent run"],
+  "plugin tab: Files": ["new session + agent run"],
+  "guardrails: a tool call waits for your OK": ["new session + agent run"],
+  "plugin tab: Diagnostics": ["new session + agent run"],
+  "settings": ["new session + agent run"],
+  "images": ["new session + agent run"],
+  "projects dialog": ["new session + agent run","start screen: the project new sessions start in"],
+  "plugin tab: Ideas": ["new session + agent run","panels + plugin tabs"],
+  "budget: chat cost, Work tab, a chat stopped by the budget": ["new session + agent run"],
+  "profiles: settings, a project default, per chat": ["long session","new session + agent run"],
+};
+const ONLY = argVal('--only') ? resolveOnly(argVal('--only')) : null;
+const RUN = ONLY ? new Set(ONLY) : null;
+if (RUN) for (const n of RUN) for (const need of NEEDS[n] ?? []) RUN.add(need);
+const want = (name) => !ONLY || RUN.has(name);
 const EXTERNAL = argVal('--url');
-const PORT = 7432;
+const PORT = Number(argVal('--port') ?? 7432); // a different port per run lets focused runs go side by side
 const BASE = EXTERNAL ?? `http://127.0.0.1:${PORT}`;
 const rpcCall = (method, params = {}) =>
   fetch(`${BASE}/api/rpc/${method}`, { method: 'POST', headers: { 'X-NetPI-Token': 'dev', 'content-type': 'application/json' }, body: JSON.stringify(params) }).then((r) => r.json());
@@ -32,7 +75,7 @@ const log = (...a) => {
   console.log(...a);
 };
 const shot = async (page, name) => {
-  if (ONLY && !ONLY.has(name)) return;
+  if (ONLY && !ONLY.has(section)) return;
   await page.screenshot({ path: path.join(OUT, `${name}.png`) });
   log(`  📸 ${name}.png`);
 };
@@ -80,13 +123,31 @@ await page.waitForSelector('.welcome .np-btn-primary', { timeout: 10_000 });
 await page.waitForTimeout(300);
 await shot(page, '01-welcome');
 
+// ------------------------------------------------------------------ helpers every section uses (locators and a function: no section state)
+// the context ring: hover tooltip, and a press for the breakdown
+const ring = page.locator('.composer .ring');
+const ta = page.locator('.composer textarea');
+const handle = page.locator('.panel.right .resizer');
+const think = page.locator('.thinking .line').first();
+const edit = page.locator('.tool', { has: page.locator('.label', { hasText: 'Edit' }) }).last();
+// ------------------------------------------------------------------ built-in plugin tabs (Work, Ideas, Diagnostics, Files)
+/** Select a strip tab without toggling the panel closed when it is already the active one. */
+async function openStripTab(side, name) {
+  const t = page.locator(`.panel.${side} .strip-tab`, { hasText: name });
+  if ((await t.getAttribute('aria-selected')) !== 'true') await t.click();
+  if (!(await page.locator(`.panel.${side}.open`).count())) await t.click();
+}
+const right = page.locator('.panel.right > .body');
+const leftBody = page.locator('.panel.left > .body');
+
 // ------------------------------------------------------------------ long session: render time + pruning
+if (want('long session')) {
 log('long session');
-let t0 = Date.now();
+var t0 = Date.now();
 await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
 await page.waitForSelector('.content .item[data-kind="text"]');
-const openMs = Date.now() - t0;
-const perf = await page.evaluate(async () => {
+var openMs = Date.now() - t0;
+var perf = await page.evaluate(async () => {
   // time a full re-render of the list: switch away and back (store is cached → pure render cost)
   const t = performance.now();
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -124,12 +185,12 @@ for (let i = 0; i < 4; i++) {
   }, before.key);
   check(`load earlier #${i + 1}`, after.top != null && Math.abs(after.top - before.top) < 4, `${Math.round(renderMs)}ms (rpc + render), anchor moved ${after.top == null ? '?' : Math.round(after.top - before.top)}px, ${after.items} items in DOM`);
 }
-const hasNewer = await page.locator('.earlier button', { hasText: 'jump to latest' }).count();
+var hasNewer = await page.locator('.earlier button', { hasText: 'jump to latest' }).count();
 // render cost of the full (capped) window: switch to another session and back (the store is cached)
-const msgsInWindow = await page.locator('.content .item').count();
+var msgsInWindow = await page.locator('.content .item').count();
 await page.keyboard.press('Control+t');
 await page.waitForSelector('.intro');
-const switchMs = await page.evaluate(async () => {
+var switchMs = await page.evaluate(async () => {
   const tab = [...document.querySelectorAll('.topbar .tab')].find((t) => t.textContent.includes('Lane scheduler'));
   const t = performance.now();
   tab.click();
@@ -150,28 +211,27 @@ if (hasNewer) {
   await page.locator('.earlier button', { hasText: 'jump to latest' }).click();
   await page.waitForTimeout(400);
 }
-const domCount = await page.locator('.content .item').count();
+var domCount = await page.locator('.content .item').count();
 check('back to latest', !(await page.locator('.earlier button', { hasText: 'jump to latest' }).count()), `${domCount} items`);
 
-// the context ring: hover tooltip, and a press for the breakdown
-const ring = page.locator('.composer .ring');
-const ringLabel = await ring.getAttribute('aria-label');
+var ringLabel = await ring.getAttribute('aria-label');
 check('context ring reads the session context', /tokens? \(/.test(ringLabel), ringLabel);
 await ring.click();
 await page.waitForSelector('.popover .cx');
 await page.waitForTimeout(250);
-const cx = await page.locator('.popover .cx').innerText();
+var cx = await page.locator('.popover .cx').innerText();
 check('context breakdown popout', /Used/.test(cx) && /Window/.test(cx) && /Free/.test(cx) && /System prompt/.test(cx), cx.replace(/\n/g, ' | '));
 await shot(page, '03b-context-ring');
 await page.keyboard.press('Escape');
 await page.waitForTimeout(150);
 check('Esc closes the context popout', (await page.locator('.popover .cx').count()) === 0);
 
+}
 // ------------------------------------------------------------------ new session + streaming
+if (want('new session + agent run')) {
 log('new session + agent run');
 await page.keyboard.press('Control+t');
 await page.waitForSelector('.intro');
-const ta = page.locator('.composer textarea');
 await ta.fill('Why does the agent scheduler throw when a pool is missing? Make it fail with a clear message.');
 await ta.press('Enter');
 await page.waitForSelector('.thinking.live', { timeout: 5000 });
@@ -190,7 +250,7 @@ await ta.press('Enter');
 await ta.fill('Afterwards, write a one-line changelog entry.');
 await ta.press('Alt+Enter');
 await page.waitForSelector('.queue .chip', { timeout: 3000 }).catch(() => {});
-const chips = await page.locator('.queue .chip').count();
+var chips = await page.locator('.queue .chip').count();
 check('queue chips while running', chips >= 1, `${chips} chip(s)`);
 {
   // a subagent's report waiting for the agent is internal: never a chip you could remove
@@ -204,7 +264,7 @@ check('queue chips while running', chips >= 1, `${chips} chip(s)`);
 }
 await page.waitForSelector('.banner', { timeout: 8000 }).catch(() => {});
 await shot(page, '05-steer-queue-retry');
-const banner = await page.locator('.banner').count();
+var banner = await page.locator('.banner').count();
 check('retry banner (agent.notice)', banner > 0);
 
 // live bash output
@@ -212,7 +272,7 @@ await page.locator('.tool[data-status="running"]', { hasText: 'Bash' }).waitFor(
 await page.locator('.tool .tail').waitFor({ timeout: 3000 }).catch(() => {});
 await page.waitForTimeout(250);
 await shot(page, '06-live-bash');
-const tail = await page.locator('.tool .tail').count();
+var tail = await page.locator('.tool .tail').count();
 check('live tool output tail', tail > 0 || (await page.locator('.tool[data-status="ok"]', { hasText: 'Bash' }).count()) > 0);
 
 // wait for the run (and queued follow-up) to finish
@@ -220,43 +280,43 @@ await page.waitForFunction(() => !document.querySelector('.composer.running'), n
 await page.waitForTimeout(600);
 await shot(page, '07-run-finished');
 check('retry banner cleared after run', (await page.locator('.banner').count()) === 0);
-const pinned = await page.locator('.scroller').evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+var pinned = await page.locator('.scroller').evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
 check('stayed pinned to bottom during run', pinned < 60, `${Math.round(pinned)}px from bottom`);
-const collapsed = await page.locator('.group.collapsible').count();
+var collapsed = await page.locator('.group.collapsible').count();
 check('finished steps group collapsed', collapsed > 0, `${collapsed} group(s)`);
 
 // expand group, thinking, diff, bash
-const closedGroups = page.locator('.group.collapsible .head[aria-expanded="false"]');
+var closedGroups = page.locator('.group.collapsible .head[aria-expanded="false"]');
 for (let n = 0; n < 10 && (await closedGroups.count()); n++) await closedGroups.first().click();
 await page.waitForTimeout(150);
 for (const label of ['Edit', 'Bash']) {
   const row = page.locator('.tool .line', { hasText: label }).last();
   if (await row.count()) await row.click();
 }
-const think = page.locator('.thinking .line').first();
 if (await think.count()) await think.click();
 await page.waitForTimeout(300);
-const edit = page.locator('.tool', { has: page.locator('.label', { hasText: 'Edit' }) }).last();
 if (await edit.count()) await edit.scrollIntoViewIfNeeded();
 await page.waitForTimeout(200);
 await shot(page, '08-expanded-tools');
 check('diff view rendered', (await page.locator('.diff .dl.add').count()) > 0);
-const turnLines = await page.locator('.group .turn').allInnerTexts();
+var turnLines = await page.locator('.group .turn').allInnerTexts();
 check(
   'model turns: time to the first token and cache reuse under each turn',
   turnLines.length > 0 && turnLines.every((t) => /first token \d/.test(t) && /\d+% cached/.test(t)),
   turnLines[0],
 );
-const answerInfo = await page.locator('.assistant .foot .info').last().innerText();
+var answerInfo = await page.locator('.assistant .foot .info').last().innerText();
 check('the answer footer has its turn numbers too', /first token \d/.test(answerInfo) && /\d+% cached/.test(answerInfo), answerInfo);
 
+}
 // ------------------------------------------------------------------ showcase session (subagents, notices)
+if (want('showcase session')) {
 log('showcase session');
 await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
 await page.waitForTimeout(400);
 await page.locator('.group.collapsible .head').first().click();
 await page.waitForTimeout(150);
-const spawnRow = page.locator('.tool .line', { hasText: 'Agent' }).first();
+var spawnRow = page.locator('.tool .line', { hasText: 'Agent' }).first();
 if (await spawnRow.count()) await spawnRow.click();
 await page.locator('.srow .kids').first().click();
 await page.waitForTimeout(250);
@@ -287,7 +347,9 @@ await shot(page, '09-subagents-notices');
   await shot(page, '09c-notice-as-sent');
 }
 
+}
 // ------------------------------------------------------------------ popups: agent picker, commands, mentions
+if (want('composer popups')) {
 log('composer popups');
 {
   const sid0 = await page.evaluate(() => location.hash);
@@ -325,7 +387,7 @@ check('command popup', (await page.locator('.popup .opt').count()) >= 7);
 await ta.fill('');
 await ta.type('/skill');
 await page.waitForTimeout(300);
-const skillOpts = await page.locator('.popup .opt .cmd').allInnerTexts();
+var skillOpts = await page.locator('.popup .opt .cmd').allInnerTexts();
 check("the session's skills in the command popup, user-only ones too", skillOpts.includes('/skill:release-notes') && skillOpts.includes('/skill:handoff'), skillOpts.join(' '));
 await ta.press('Enter');
 check('accepting a skill inserts /skill:name', /^\/skill:[a-z-]+ $/.test(await ta.inputValue()), await ta.inputValue());
@@ -338,18 +400,22 @@ check('mention popup (files.search)', (await page.locator('.popup .file').count(
 await page.keyboard.press('Escape');
 await ta.fill('');
 
+}
 // ------------------------------------------------------------------ tabs
+if (want('tabs')) {
 log('tabs');
-const tabsBefore = await page.locator('.topbar .tab').count();
+var tabsBefore = await page.locator('.topbar .tab').count();
 await page.keyboard.press('Control+Tab');
 await page.waitForTimeout(150);
-const firstTab = page.locator('.topbar .tab').first();
+var firstTab = page.locator('.topbar .tab').first();
 await firstTab.click({ button: 'middle' });
 await page.waitForTimeout(150);
-const tabsAfter = await page.locator('.topbar .tab').count();
+var tabsAfter = await page.locator('.topbar .tab').count();
 check('middle-click closes tab', tabsAfter === tabsBefore - 1, `${tabsBefore} → ${tabsAfter}`);
 
+}
 // ------------------------------------------------------------------ panels + plugin tabs
+if (want('panels + plugin tabs')) {
 log('panels + plugin tabs');
 await page.locator('.panel.right .strip-tab', { hasText: 'Events' }).click();
 await page.waitForTimeout(500);
@@ -357,13 +423,12 @@ await shot(page, '13-plugin-events-tab');
 await page.locator('.panel.right .strip-tab', { hasText: 'Sample' }).click();
 await page.waitForTimeout(300);
 // resize right panel
-const handle = page.locator('.panel.right .resizer');
-const hb = await handle.boundingBox();
+var hb = await handle.boundingBox();
 await page.mouse.move(hb.x + 3, hb.y + 300);
 await page.mouse.down();
 await page.mouse.move(hb.x - 80, hb.y + 300, { steps: 5 });
 await page.mouse.up();
-const w = await page.locator('.panel.right .body').evaluate((el) => el.getBoundingClientRect().width);
+var w = await page.locator('.panel.right .body').evaluate((el) => el.getBoundingClientRect().width);
 check('resize right panel', w > 400, `${Math.round(w)}px`);
 // collapse left panel by clicking the active strip tab
 await page.locator('.panel.left .strip-tab[aria-selected="true"]').click();
@@ -374,9 +439,9 @@ await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
 await page.waitForTimeout(200);
 await shot(page, '15-projects');
 // favorites live in the + menu, not as buttons in the top bar
-const firstProject = page.locator('.panel.left .prow').first();
-const projectName = (await firstProject.locator('.pname .np-ellipsis').innerText()).trim();
-const toggleFav = async (row, title) => {
+var firstProject = page.locator('.panel.left .prow').first();
+var projectName = (await firstProject.locator('.pname .np-ellipsis').innerText()).trim();
+var toggleFav = async (row, title) => {
   await row.hover(); // the row's action buttons appear on hover
   await row.locator(`button[title^="${title}"]`).click();
 };
@@ -385,7 +450,7 @@ await toggleFav(firstProject, 'Add to favorites');
 await page.waitForTimeout(200);
 await page.locator('.topbar .quick-more').click();
 await page.waitForSelector('.np-menu .np-menu-item');
-const favItems = await page.locator('.np-menu .np-menu-item').filter({ hasText: projectName }).count();
+var favItems = await page.locator('.np-menu .np-menu-item').filter({ hasText: projectName }).count();
 check('favorites are in the + menu', favItems > 0, `${await page.locator('.np-menu .np-menu-header').innerText()}: ${projectName} (${favItems})`);
 await page.keyboard.press('Escape');
 await page.waitForTimeout(150);
@@ -393,20 +458,13 @@ await toggleFav(page.locator('.panel.left .prow').first(), 'Remove from favorite
 await page.waitForTimeout(200);
 check('no favorites → no chevron', (await page.locator('.topbar .quick-more').count()) === 0);
 
-// ------------------------------------------------------------------ built-in plugin tabs (Work, Ideas, Diagnostics, Files)
-/** Select a strip tab without toggling the panel closed when it is already the active one. */
-async function openStripTab(side, name) {
-  const t = page.locator(`.panel.${side} .strip-tab`, { hasText: name });
-  if ((await t.getAttribute('aria-selected')) !== 'true') await t.click();
-  if (!(await page.locator(`.panel.${side}.open`).count())) await t.click();
-}
-const right = page.locator('.panel.right > .body');
-const leftBody = page.locator('.panel.left > .body');
 await openStripTab('left', 'Sessions');
 await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
 await page.waitForTimeout(200);
 
+}
 // ------------------------------------------------------------------ the archived section: an archive 200 newer actives would hide
+if (want('sessions: the archived section lists what a newest-first window hides')) {
 log('sessions: the archived section lists what a newest-first window hides');
 {
   // 201 active sessions (newest, one per hour back) + 59 newer archives, then one very old archive: in the old
@@ -452,6 +510,8 @@ log('sessions: the archived section lists what a newest-first window hides');
   }
 }
 
+}
+if (want('plugin tab: Work')) {
 log('plugin tab: Work');
 {
   await openStripTab('right', 'Work');
@@ -520,6 +580,8 @@ log('plugin tab: Work');
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
 }
 
+}
+if (want('plugin tab: Ideas')) {
 log('plugin tab: Ideas');
 {
   await openStripTab('right', 'Ideas');
@@ -649,6 +711,8 @@ log('plugin tab: Ideas');
   check('ideas: refetch on ideas.changed', (await page.locator('.ideas .card', { hasText: 'Added over RPC' }).count()) > 0);
 }
 
+}
+if (want('ideas: recall on the first message (the chip above the composer)')) {
 log('ideas: recall on the first message (the chip above the composer)');
 {
   await rpcCall('ideas.add', { projectId: 'global', idea: { title: 'Nudge counter reset after a good answer', summary: 'Reset the nudge counter.' } });
@@ -680,6 +744,8 @@ log('ideas: recall on the first message (the chip above the composer)');
   await page.waitForTimeout(300);
 }
 
+}
+if (want('ideas: save on tab close (the card above the composer)')) {
 log('ideas: save on tab close (the card above the composer)');
 {
   // A chat with two user turns, told to leave a plan behind when its tab closes.
@@ -749,6 +815,8 @@ log('ideas: save on tab close (the card above the composer)');
   check('save check: and nothing is added to the backlog', ((await rpcCall('ideas.list'))?.ideas ?? []).length === before);
 }
 
+}
+if (want('plugin tab: Diagnostics')) {
 log('plugin tab: Diagnostics');
 {
   await openStripTab('right', 'Diagnostics');
@@ -814,6 +882,8 @@ log('plugin tab: Diagnostics');
   await view('Plugins');
 }
 
+}
+if (want('plugin tab: Files')) {
 log('plugin tab: Files');
 {
   await openStripTab('left', 'Files');
@@ -920,6 +990,8 @@ log('plugin tab: Files');
   await openStripTab('left', 'Sessions');
 }
 
+}
+if (want('ask_user: questions in the chat')) {
 log('ask_user: questions in the chat');
 {
   await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
@@ -953,6 +1025,8 @@ log('ask_user: questions in the chat');
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
 }
 
+}
+if (want('guardrails: a tool call waits for your OK')) {
 log('guardrails: a tool call waits for your OK');
 {
   await ta.fill('[guard] push it');
@@ -982,6 +1056,8 @@ log('guardrails: a tool call waits for your OK');
   check("guardrails: its row says it was allowed in this chat", (await page.locator('.tool .state', { hasText: 'allowed in this chat' }).count()) > 0);
 }
 
+}
+if (want('fork: a new chat from a message')) {
 log('fork: a new chat from a message');
 {
   await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
@@ -1003,6 +1079,8 @@ log('fork: a new chat from a message');
   await ta.fill('');
 }
 
+}
+if (want('narrow side panels')) {
 log('narrow side panels');
 {
   // drag both panels to ~230px (the user's layout is 230–340px) and check every tab for sideways overflow
@@ -1046,6 +1124,8 @@ log('narrow side panels');
   await page.locator('.panel.left .resizer').dblclick();
 }
 
+}
+if (want('project picker + new session project')) {
 log('project picker + new session project');
 {
   const projects = await rpcCall('projects.list');
@@ -1090,6 +1170,8 @@ log('project picker + new session project');
   await page.waitForTimeout(300);
 }
 
+}
+if (want('start screen: the project new sessions start in')) {
 log('start screen: the project new sessions start in');
 {
   const projects = await rpcCall('projects.list');
@@ -1116,6 +1198,8 @@ log('start screen: the project new sessions start in');
   check('New session starts in the chosen project', s?.projectId === idOf('website'), String(s?.projectId));
 }
 
+}
+if (want('projects dialog')) {
 log('projects dialog');
 {
   // from the top bar picker of the session just created in "website"
@@ -1170,7 +1254,9 @@ log('projects dialog');
   await page.waitForTimeout(300);
 }
 
+}
 // ------------------------------------------------------------------ settings as controls: fields, agents, budget, tools
+if (want('settings: controls, agents, budget, tools')) {
 log('settings: controls, agents, budget, tools');
 {
   await page.keyboard.press('Control+,');
@@ -1282,7 +1368,9 @@ log('settings: controls, agents, budget, tools');
   await page.waitForTimeout(200);
 }
 
+}
 // ------------------------------------------------------------------ the tools of one chat
+if (want('chat tools: switched per session')) {
 log('chat tools: switched per session');
 {
   await page.keyboard.press('Control+t');
@@ -1316,10 +1404,16 @@ log('chat tools: switched per session');
   await page.waitForTimeout(300);
 }
 
+}
 // ------------------------------------------------------------------ what chats cost, the budget
+if (want('budget: chat cost, Work tab, a chat stopped by the budget')) {
 log('budget: chat cost, Work tab, a chat stopped by the budget');
 {
-  // the seeded chat that used a paid model (with a subagent) shows what it cost
+  // the seeded chat that used a paid model (with a subagent) shows what it cost. Open it here instead of relying on the section
+  // before having left it open (the same chat: a no-op in a full run, and what lets this section run alone).
+  await rpcCall('settings.set', { path: 'budget.monthlyUsd', value: 50 }); // the limit the settings section sets, so this one can run alone
+  await openStripTab('left', 'Sessions');
+  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
   await page.waitForSelector('.composer .cost', { timeout: 3000 }).catch(() => {});
   const cost = page.locator('.composer .cost');
   check('a chat shows what it cost, with its subagents', (await cost.count()) === 1 && (await cost.innerText()) === '$0.68', (await cost.count()) ? await cost.innerText() : 'none');
@@ -1328,6 +1422,10 @@ log('budget: chat cost, Work tab, a chat stopped by the budget');
   // the Work tab: this month against the budget set above ($50)
   await openStripTab('right', 'Work');
   await page.waitForSelector('.work .usage.budget', { timeout: 5000 }).catch(() => {});
+  // A changed limit reaches this line on the tab's next refresh (every 30 s, or when a call is recorded), so a run that set it a
+  // moment ago refreshes the tab as a user would, then waits for what the check looks at (not for a pause to pass).
+  await page.locator('.work button[title^="Refresh"]').click();
+  await page.waitForFunction(() => (document.querySelector('.work .usage.budget')?.innerText ?? '').replace(/ /g, ' ').includes('$0.68 / $50'), null, { timeout: 5000 }).catch(() => {});
   const wb = page.locator('.work .usage.budget');
   check('the Work tab shows this month against the budget', (await wb.count()) === 1 && (await wb.innerText()).replace(/\u00a0/g, ' ').includes('$0.68 / $50'), (await wb.count()) ? await wb.innerText() : 'none');
 
@@ -1367,7 +1465,9 @@ log('budget: chat cost, Work tab, a chat stopped by the budget');
   await page.waitForTimeout(300);
 }
 
+}
 // ------------------------------------------------------------------ profiles
+if (want('profiles: settings, a project default, per chat')) {
 log('profiles: settings, a project default, per chat');
 {
   // a profile from the settings: a name, the instructions, tools switched off with checkboxes
@@ -1450,7 +1550,9 @@ log('profiles: settings, a project default, per chat');
   await page.waitForTimeout(300);
 }
 
+}
 // ------------------------------------------------------------------ settings + light theme
+if (want('settings')) {
 log('settings');
 await page.keyboard.press('Control+,');
 await page.waitForSelector('.dialog');
@@ -1496,7 +1598,9 @@ await page.waitForSelector('.notice', { hasText: 'Summary' }).catch(() => {});
 await page.waitForTimeout(300);
 check('/compact (server rpc command) adds a summary', (await page.locator('.notice .label', { hasText: 'Summary' }).count()) > 0);
 
+}
 // ------------------------------------------------------------------ tab drag & drop
+if (want('drag to reorder tabs')) {
 log('drag to reorder tabs');
 {
   const titles = async () => page.locator('.topbar .tab .tab-title').allTextContents();
@@ -1509,7 +1613,9 @@ log('drag to reorder tabs');
   }
 }
 
+}
 // ------------------------------------------------------------------ abort
+if (want('abort')) {
 log('abort');
 await page.keyboard.press('Control+t');
 await page.waitForSelector('.intro');
@@ -1521,11 +1627,13 @@ await page.waitForTimeout(400);
 await ta.press('Escape');
 await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 10_000 }).catch(() => {});
 await page.waitForTimeout(300);
-const aborted = (await page.locator('.status[data-reason="aborted"]').count()) + (await page.locator('.notice', { hasText: 'aborted' }).count());
+var aborted = (await page.locator('.status[data-reason="aborted"]').count()) + (await page.locator('.notice', { hasText: 'aborted' }).count());
 check('Esc aborts the run', aborted > 0);
 await shot(page, '20-aborted');
 
+}
 // ------------------------------------------------------------------ image attachments
+if (want('images')) {
 log('images');
 {
   // a 48×32 PNG (solid accent-ish color) generated on the fly
@@ -1551,7 +1659,9 @@ log('images');
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 20_000 }).catch(() => {});
 }
 
+}
 // ------------------------------------------------------------------ composer drafts
+if (want('composer drafts')) {
 log('composer drafts');
 {
   // Unsent composer state must not live in the per-chat cache (a 5-store LRU, chat.svelte.js): attach an
@@ -1607,11 +1717,18 @@ log('composer drafts');
   await page.waitForTimeout(200);
 }
 
+}
 // ------------------------------------------------------------------ web tools, todo plan, tools notice, file links
+if (want('web tools, todo plan, tools notice, file links')) {
 log('web tools, todo plan, tools notice, file links');
 {
   await page.keyboard.press('Control+t');
   await page.waitForSelector('.intro');
+  // hold the live thinking line: at MOCK_SPEED=3 the whole thinking stream is ~300 ms, and a waitForSelector
+  // whose rAF-driven polls stall under load can miss that window entirely (mock.thinkDelay stretches it).
+  // Released in a finally: a failure in this block must not leave the rest of the run streaming in slow motion.
+  await rpcCall('mock.thinkDelay', { ms: 1000 });
+  try {
   await ta.fill('[web] Why does the demo page break? Check the Svelte docs.');
   await ta.press('Enter');
   // thinking can be opened while it streams; later answers start open and their finished rows stay open
@@ -1620,6 +1737,9 @@ log('web tools, todo plan, tools notice, file links');
   await page.waitForSelector('.thinking.live .body', { timeout: 3000 }).catch(() => {});
   check('streaming thinking opens while it streams', (await page.locator('.thinking.live .body').count()) === 1);
   await shot(page, '24b-live-thinking');
+  } finally {
+  await rpcCall('mock.thinkDelay', { ms: 0 });
+  }
   await page.waitForSelector('.dock .strip', { timeout: 15_000 });
   await page.waitForTimeout(400);
   const gap = await page.locator('.scroller').evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
@@ -1674,7 +1794,9 @@ log('web tools, todo plan, tools notice, file links');
   check('web links still open in a new window', (await page.locator('.md a[target="_blank"]', { hasText: 'docs' }).count()) === 1);
 }
 
+}
 // ------------------------------------------------------------------ ssh tools (reuse the shell, read and diff views)
+if (want('ssh tools')) {
 log('ssh tools');
 {
   await page.keyboard.press('Control+t');
@@ -1704,7 +1826,9 @@ log('ssh tools');
   await shot(page, '26c-ssh-tools');
 }
 
+}
 // ------------------------------------------------------------------ fast steps: the chat never jumps while the agent works
+if (want('fast steps: layout stability')) {
 log('fast steps: layout stability');
 {
   const size = page.viewportSize();
@@ -1786,7 +1910,9 @@ log('fast steps: layout stability');
   await page.setViewportSize(size);
 }
 
+}
 // ------------------------------------------------------------------ compaction banner: kept until the model answers again
+if (want('compaction banner')) {
 log('compaction banner');
 {
   await page.keyboard.press('Control+t');
@@ -1814,7 +1940,9 @@ log('compaction banner');
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 30_000 });
 }
 
+}
 // ------------------------------------------------------------------ goals: /goal, the strip, pause, resume, achieved
+if (want('goals')) {
 log('goals');
 {
   await page.keyboard.press('Control+t');
@@ -1850,7 +1978,9 @@ log('goals');
   check('dismissing removes the strip', (await page.locator('.goal').count()) === 0);
 }
 
+}
 // ------------------------------------------------------------------ folder picker (fs.dirs) + add project
+if (want('projects: folder picker')) {
 log('projects: folder picker');
 await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
 if (!(await page.locator('.panel.left.open').count())) await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
@@ -1871,7 +2001,7 @@ await page.waitForTimeout(300);
 await page.locator('.picker .dir', { hasText: 'web' }).first().click();
 await shot(page, '22-folder-picker');
 await page.locator('.dialog .np-btn-primary', { hasText: 'Select folder' }).click();
-const picked = await page.locator('.projects-dialog .pathrow input').inputValue();
+var picked = await page.locator('.projects-dialog .pathrow input').inputValue();
 check('folder picker fills the path', picked.endsWith('/web') || picked.endsWith('\\web'), picked);
 check('the folder name becomes the project name', (await page.locator('.projects-dialog input.np-input:not(.np-mono)').inputValue()) === 'web');
 await page.locator('.projects-dialog .np-btn-primary', { hasText: 'Create project' }).click();
@@ -1879,7 +2009,9 @@ await page.waitForTimeout(300);
 check('project added', (await page.locator('.panel.left .prow .pname', { hasText: 'web' }).count()) > 0);
 check('the project dialog closed', (await page.locator('.projects-dialog').count()) === 0);
 
+}
 // ------------------------------------------------------------------ plugin hot reload + load error
+if (want('plugin tab hot reload / error')) {
 log('plugin tab hot reload / error');
 {
   await openStripTab('right', 'Sample');
@@ -1916,8 +2048,10 @@ log('plugin tab hot reload / error');
   }
 }
 
+}
 // ------------------------------------------------------------------ notifications: what the UI asks the desktop app for
 // A page of its own with a stand-in for the desktop app's bridge (chrome.webview), so no other section sees it.
+if (want('notifications')) {
 log('notifications');
 {
   const p = await page.context().newPage();
@@ -1960,8 +2094,9 @@ log('notifications');
   await p.close();
 }
 
+}
 // ------------------------------------------------------------------ reconnect
-if (!EXTERNAL) {
+if (!EXTERNAL && want('reconnect')) {
   log('reconnect');
   // a run that ends while the browser is offline: its stream.end is lost with the socket, so on reconnect the UI
   // must reconcile its transient state against the server truth (the run is done) and not keep the partial stream
@@ -2021,7 +2156,7 @@ if (!EXTERNAL) {
 }
 
 // ------------------------------------------------------------------ vite dev server (proxy + ?token=)
-if (!EXTERNAL && !argv.includes('--no-dev')) {
+if (!EXTERNAL && !argv.includes('--no-dev') && want('vite dev server')) {
   log('vite dev server');
   const vite = spawn(process.execPath, [path.join(repo, 'node_modules/vite/bin/vite.js'), '--config', 'web/vite.config.js', '--port', '5199', '--strictPort', '--host', '127.0.0.1'], {
     cwd: repo,

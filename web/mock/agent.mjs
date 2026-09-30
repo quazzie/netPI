@@ -14,6 +14,7 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
   const asks = new Map(); // callId -> { entry, resolve }: ask_user questions waiting for ask.answer
   const approvals = new Map(); // callId -> { entry, resolve }: tool calls waiting for the user's OK (guardrails)
   const allowedInChat = new Map(); // sessionId -> Set of ask rules the user allowed for the rest of that chat
+  let thinkDelayMs = 0; // e2e test helper (mock.thinkDelay): hold the live thinking line long enough to observe it
 
   const sleep = (ms, run) =>
     new Promise((resolve, reject) => {
@@ -83,7 +84,7 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
         setStatus(sid, { activity: 'thinking' });
         const tt = Date.now();
         for (const chunk of chunks(spec.thinking, 3)) {
-          await sleep(28, run);
+          await sleep(Math.max(28, thinkDelayMs), run);
           first();
           thinkingText += chunk;
           publish('stream.delta', { sessionId: sid, kind: 'thinking', text: chunk }, sid);
@@ -703,6 +704,8 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
 
   return {
     isRunning: (sid) => runs.has(sid),
+    /** Holds the live thinking line for a pollable window (an e2e waitForSelector can miss a ~300 ms stream). */
+    setThinkDelay: (ms) => { thinkDelayMs = ms ?? 0; },
     /** A harness notice in the chat (role notice, meta.kind). */
     notice: (sid, body, meta) => append(sid, 'notice', [text(body)], { meta }),
     runGoal: (sid, what) => {
