@@ -222,6 +222,81 @@ public static class WebTests
             env.Ctx.Unload();
         });
 
+        r.Add("web_fetch: two concurrent cold requests for one URL share a single upstream fetch", async () =>
+        {
+            var hits = 0;
+            await using var web = await LocalWeb.StartAsync(app =>
+            {
+                app.MapGet("/page", async () =>
+                {
+                    Interlocked.Increment(ref hits);
+                    await Task.Delay(600); // hold the response so two cold requests are in flight at once
+                    return Results.Content(DocPage, "text/html; charset=utf-8");
+                });
+            });
+            var env = new Env();
+            await env.StartAsync();
+            var url = web.Url + "/page";
+
+            var first = env.Run("web_fetch", new { url });
+            var second = env.Run("web_fetch", new { url });
+            var both = await Task.WhenAll(first, second);
+            var r1 = both[0];
+            var r2 = both[1];
+            Check.False(r1.IsError, r1.Content);
+            Check.False(r2.IsError, r2.Content);
+            Check.Contains(r1.Content, "# What are runes?");
+            Check.Contains(r2.Content, "# What are runes?");
+            Check.False(D(r1).GetProperty("fromCache").GetBoolean());
+            Check.False(D(r2).GetProperty("fromCache").GetBoolean());
+            Check.Equal(1, hits); // one upstream fetch, not one per request
+            env.Ctx.Unload();
+        });
+
+        r.Add("web_fetch: refresh bypasses the 5-minute cache, and the result carries the cache age", async () =>
+        {
+            var hits = 0;
+            await using var web = await LocalWeb.StartAsync(app =>
+            {
+                app.MapGet("/page", () =>
+                {
+                    Interlocked.Increment(ref hits);
+                    return Results.Content(DocPage, "text/html; charset=utf-8");
+                });
+            });
+            var env = new Env();
+            await env.StartAsync();
+            var url = web.Url + "/page";
+
+            var fresh = await env.Run("web_fetch", new { url });
+            Check.False(fresh.IsError, fresh.Content);
+            Check.Equal(1, hits);
+            Check.False(D(fresh).GetProperty("fromCache").GetBoolean());
+            Check.Equal(0, D(fresh).GetProperty("ageSeconds").GetInt32());
+            Check.NotContains(fresh.Content, "from cache");
+
+            // the second call is served from the cache, which says so in the text it hands the model
+            var cached = await env.Run("web_fetch", new { url });
+            Check.True(D(cached).GetProperty("fromCache").GetBoolean());
+            Check.Equal(1, hits);
+            Check.Contains(cached.Content, "from cache");
+
+            // once a second has passed, the age is visible (and the result says how old the page is)
+            await Task.Delay(1200);
+            var aged = await env.Run("web_fetch", new { url });
+            Check.True(D(aged).GetProperty("ageSeconds").GetInt32() is >= 1 and <= 60, D(aged).ToString());
+            Check.True(System.Text.RegularExpressions.Regex.IsMatch(aged.Content, @"\bfetched \ds ago\b"), aged.Content);
+
+            // refresh: true skips the cache and fetches the page again
+            var again = await env.Run("web_fetch", new { url, refresh = true });
+            Check.False(again.IsError, again.Content);
+            Check.Equal(2, hits);
+            Check.False(D(again).GetProperty("fromCache").GetBoolean());
+            Check.Equal(0, D(again).GetProperty("ageSeconds").GetInt32());
+            Check.NotContains(again.Content, "from cache");
+            env.Ctx.Unload();
+        });
+
         r.Add("web_search: SearXNG and Brave results, recency, fallback, keys from the environment, not configured", async () =>
         {
             var sx = new ConcurrentQueue<string>();

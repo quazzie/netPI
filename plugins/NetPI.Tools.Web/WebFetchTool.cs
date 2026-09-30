@@ -9,21 +9,69 @@ namespace NetPI.Tools.Web;
 
 internal sealed record FetchedPage(string Url, string FinalUrl, int Status, string ContentType, string Title, string Text, long Bytes, bool Cut, ImagePart? Image);
 
-/// <summary>Recently fetched pages (per URL and format) so paging with <c>offset</c> does not download again.</summary>
+/// <summary>Recently fetched pages (per URL and format) so paging with <c>offset</c> does not download again, and
+/// concurrent cold requests for the same page share one in-flight fetch.</summary>
 internal sealed class FetchCache
 {
     private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(5);
     private const int Max = 24;
     private readonly ConcurrentDictionary<string, (DateTimeOffset At, FetchedPage Page)> _pages = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Task<(DateTimeOffset At, FetchedPage Page)>> _flying = new(StringComparer.Ordinal);
 
-    public FetchedPage? Get(string key) =>
-        _pages.TryGetValue(key, out var e) && DateTimeOffset.UtcNow - e.At < Ttl ? e.Page : null;
-
-    public void Put(string key, FetchedPage page)
+    private void Put(string key, FetchedPage page)
     {
         _pages[key] = (DateTimeOffset.UtcNow, page);
         if (_pages.Count <= Max) return;
         foreach (var old in _pages.OrderBy(p => p.Value.At).Take(_pages.Count - Max)) _pages.TryRemove(old.Key, out _);
+    }
+
+    /// <summary>The page for <paramref name="key"/>: a fresh cache entry, a joined in-flight fetch (concurrent
+    /// requests for the same cold page share one download), or a new fetch. <paramref name="refresh"/> skips the
+    /// cache and the in-flight fetch and fetches the page again.</summary>
+    public async Task<(FetchedPage Page, bool FromCache, DateTimeOffset FetchedAt)> GetOrFetchAsync(
+        string key, bool refresh, Func<Task<FetchedPage>> fetch, Func<FetchedPage, bool> cacheable)
+    {
+        if (!refresh)
+        {
+            if (_pages.TryGetValue(key, out var hit) && DateTimeOffset.UtcNow - hit.At < Ttl)
+                return (hit.Page, true, hit.At);
+            var shared = JoinOrStart(key, fetch, cacheable);
+            var done = await shared.ConfigureAwait(false);
+            return (done.Page, false, done.At);
+        }
+        var page = await fetch().ConfigureAwait(false);
+        if (cacheable(page)) Put(key, page);
+        return (page, false, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>An in-flight fetch for <paramref name="key"/>, starting one if none is in flight. The slot is
+    /// registered before the fetch runs, so a request that arrives mid-fetch joins it instead of downloading again.</summary>
+    private Task<(DateTimeOffset At, FetchedPage Page)> JoinOrStart(string key, Func<Task<FetchedPage>> fetch, Func<FetchedPage, bool> cacheable)
+    {
+        if (_flying.TryGetValue(key, out var existing)) return existing;
+        var tcs = new TaskCompletionSource<(DateTimeOffset At, FetchedPage Page)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var taken = _flying.AddOrUpdate(key, _ => tcs.Task, (_, old) => old);
+        if (ReferenceEquals(taken, tcs.Task)) _ = FetchIntoAsync(key, fetch, cacheable, tcs);
+        return taken;
+    }
+
+    private async Task FetchIntoAsync(string key, Func<Task<FetchedPage>> fetch, Func<FetchedPage, bool> cacheable, TaskCompletionSource<(DateTimeOffset At, FetchedPage Page)> tcs)
+    {
+        try
+        {
+            var page = await fetch().ConfigureAwait(false);
+            if (cacheable(page)) Put(key, page);
+            tcs.SetResult((DateTimeOffset.UtcNow, page));
+        }
+        catch (Exception ex)
+        {
+            tcs.SetException(ex);
+        }
+        finally
+        {
+            // the slot is owned by this fetch (only the adder in JoinOrStart starts a fetch and removes it)
+            _flying.TryRemove(key, out _);
+        }
     }
 }
 
@@ -36,10 +84,12 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
         Category = "web",
         ReadOnly = true,
         SummaryArg = "url",
-        Description = "Fetch a web page as Markdown (main content only); long pages come in parts: call again with the offset it gives.",
+        Description = "Fetch a web page as Markdown (main content only); long pages come in parts: call again with the offset it gives. A page is cached for 5 minutes (per URL and format); pass refresh: true to fetch it again.",
         Help =
             "Links are absolute; navigation and scripts are removed. JSON and plain text come back as-is, images as images when " +
-            "the model can see them. format: markdown (default), text or html (the raw source).",
+            "the model can see them. format: markdown (default), text or html (the raw source). A page is cached for 5 minutes " +
+            "per URL and format: offset paging and concurrent calls share one download, and a cached result says how old it is " +
+            "(\"from cache, fetched Ns ago\"). refresh: true skips the cache and fetches the page again.",
         Parameters = new JsonObject
         {
             ["type"] = "object",
@@ -48,6 +98,7 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
                 ["url"] = new JsonObject { ["type"] = "string" },
                 ["offset"] = new JsonObject { ["type"] = "integer" },
                 ["format"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("markdown", "text", "html") },
+                ["refresh"] = new JsonObject { ["type"] = "boolean" },
             },
             ["required"] = new JsonArray("url"),
         },
@@ -69,25 +120,26 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
             _ => "markdown",
         };
         var offset = Math.Max(0, Args.Int(args, "offset", "start") ?? 0);
+        var refresh = Args.Bool(args, "refresh") ?? false;
         var o = WebOptions.Read(ctx.Settings);
 
         var key = format + " " + uri;
-        var page = cache.Get(key);
-        var fromCache = page is not null;
-        if (page is null)
+        var fromCache = false;
+        var fetchedAt = DateTimeOffset.UtcNow;
+        FetchedPage page;
+        try
         {
-            try { page = await FetchAsync(uri, format, o, context.Model, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                return ToolResult.Error($"Timed out after {o.FetchTimeoutSeconds}s fetching {uri}", new { url = uri.ToString(), error = "timeout" });
-            }
-            catch (HttpRequestException ex)
-            {
-                return ToolResult.Error($"Fetching {uri} failed: {ex.Message}", new { url = uri.ToString(), error = ex.Message });
-            }
-            // images are not cached: whether they come back as an image depends on the model that asks
-            if (!page.ContentType.StartsWith("image/", StringComparison.Ordinal) && (page.Status is >= 200 and < 300 || page.Text.Length > 0)) cache.Put(key, page);
+            (page, fromCache, fetchedAt) = await cache.GetOrFetchAsync(key, refresh, () => FetchAsync(uri, format, o, context.Model, ct), IsCacheable).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return ToolResult.Error($"Timed out after {o.FetchTimeoutSeconds}s fetching {uri}", new { url = uri.ToString(), error = "timeout" });
+        }
+        catch (HttpRequestException ex)
+        {
+            return ToolResult.Error($"Fetching {uri} failed: {ex.Message}", new { url = uri.ToString(), error = ex.Message });
+        }
+        var age = Math.Max(0, (int)(DateTimeOffset.UtcNow - fetchedAt).TotalSeconds);
 
         if (page.Image is { } img)
         {
@@ -109,6 +161,7 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
         if (page.Title.Length > 0) sb.Append(page.Title).Append('\n');
         sb.Append("URL: ").Append(page.FinalUrl);
         if (page.Status is < 200 or >= 300) sb.Append($"  (HTTP {page.Status})");
+        if (fromCache) sb.Append($"  (from cache, fetched {age}s ago)");
         sb.Append('\n');
         if (offset > 0 || more)
             sb.Append($"Characters {offset}–{end} of {total}.{(more ? $" Continue with offset={end}." : " End of page.")}\n");
@@ -130,10 +183,16 @@ internal sealed partial class WebFetchTool(IPluginContext ctx, HttpClient http, 
             end,
             nextOffset = more ? end : (int?)null,
             fromCache,
+            ageSeconds = age,
         };
         if (page.Status is >= 400 && chunk.Length == 0) return ToolResult.Error($"HTTP {page.Status} for {page.FinalUrl}", details);
         return ToolResult.Ok(sb.ToString(), details);
     }
+
+    /// <summary>What goes into the 5-minute cache: everything except images (whether they come back as an image
+    /// depends on the model that asks) and except failed pages without text to serve again.</summary>
+    private static bool IsCacheable(FetchedPage p) =>
+        !p.ContentType.StartsWith("image/", StringComparison.Ordinal) && (p.Status is >= 200 and < 300 || p.Text.Length > 0);
 
     /// <summary>End of the next part: up to <paramref name="max"/> characters, preferably at a paragraph or line break.</summary>
     internal static int CutPoint(string text, int offset, int max)

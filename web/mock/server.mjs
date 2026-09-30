@@ -318,6 +318,10 @@ let procTailDelayMs = 0; // e2e test helper: delay the tail responses so the UI 
 let filesDelayMs = 0; // e2e test helper: delay the files.* responses so a workspace switch lands mid-fetch
 let offlineUntil = 0; // e2e test helper: while in effect the /ws upgrades are refused and open sockets dropped — the server keeps running, its events are just lost (the browser is offline)
 let filesCalls = []; // e2e test helper: the files.* responses served, in order, for the late-response checks
+let diagCallsDelayMs = 0; // e2e test helper: delay the diag.calls responses so a slow poll spans the 2 s interval
+let diagCallsInFlight = 0; // e2e test helper: diag.calls requests in flight right now
+let diagCallsMaxInFlight = 0; // e2e test helper: the peak of the above (single-flight polling must never exceed 1)
+let diagCallsServed = 0; // e2e test helper: diag.calls responses served
 const handlers = {
   'app.info': () => ({ version: VERSION, os: `${os.type()} ${os.release()}`, home: os.homedir(), appDir: path.join(REPO, 'artifacts/app'), defaultWorkspace: path.join(os.homedir(), '.netpi', 'workspace'), desktop: false }),
 
@@ -670,7 +674,17 @@ const handlers = {
       reloads: [{ ids: ['netpi.tools.shell'], time: new Date(Date.now() - ago).toISOString(), kind: 'reload' }],
     };
   },
-  'diag.calls': (p = {}) => mockCalls().filter((c) => (!p.errors || c.state === 'error') && (!p.running || c.state === 'running')),
+  'diag.calls': async (p = {}) => {
+    diagCallsInFlight++;
+    diagCallsMaxInFlight = Math.max(diagCallsMaxInFlight, diagCallsInFlight);
+    try {
+      if (diagCallsDelayMs) await new Promise((r) => setTimeout(r, diagCallsDelayMs));
+      diagCallsServed++;
+      return mockCalls().filter((c) => (!p.errors || c.state === 'error') && (!p.running || c.state === 'running'));
+    } finally {
+      diagCallsInFlight--;
+    }
+  },
   'diag.call': (p) => {
     const c = mockCalls().find((x) => x.id === Number(p?.id));
     if (!c) throw new RpcError('not_found', `Call ${p?.id} is no longer in the call log`);
@@ -718,6 +732,10 @@ const handlers = {
   // e2e test helpers: slow the files.* responses and observe the served order (the workspace-switch checks)
   'mock.filesDelay': (p) => ((filesDelayMs = p.ms ?? 0), true),
   'mock.filesCalls': () => filesCalls,
+  // e2e test helpers: slow the diag.calls responses and observe the in-flight count (the single-flight polling
+  // check). The delay setter also resets the counters: a check times its window from that call.
+  'mock.diagCallsDelay': (p) => ((diagCallsDelayMs = p.ms ?? 0), (diagCallsServed = 0), (diagCallsMaxInFlight = 0), true),
+  'mock.diagCallsStats': () => ({ served: diagCallsServed, inFlight: diagCallsInFlight, maxInFlight: diagCallsMaxInFlight }),
   // e2e test helper: how many times each session's messages were loaded (a rebuilt chat store)
   'mock.msgLoads': () => Object.fromEntries(msgLoads),
   'guard.pending': (p = {}) => agent.pendingApprovals(p.sessionId),
@@ -887,6 +905,10 @@ const handlers = {
     filesDelayMs = 0;
     offlineUntil = 0;
     filesCalls = [];
+    diagCallsDelayMs = 0;
+    diagCallsInFlight = 0;
+    diagCallsMaxInFlight = 0;
+    diagCallsServed = 0;
     msgLoads.clear();
     for (const s of store.sessions.keys()) agent.abort(s);
     resetStore();
