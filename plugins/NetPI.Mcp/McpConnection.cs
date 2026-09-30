@@ -31,7 +31,9 @@ internal sealed class McpConnection : IAsyncDisposable
         }
         catch (McpException ex) when (ex.Code is -32600 or -32601 or -32602) { }
         catch (McpHttpException ex) when (ex.Status == HttpStatusCode.BadRequest) { }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested && _config.Transport == "stdio") { }
+        // A probe that runs out of time (a slow-resolving hostname, a loaded server) is not a failure: fall through to
+        // initialize. Only the caller's own cancellation stops here.
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
         if (discovery is not null)
         {
             if (discovery["supportedVersions"] is not JsonArray versions || !versions.Any(v => v?.GetValue<string>() == Protocol.Modern))

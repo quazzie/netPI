@@ -33,6 +33,22 @@ public static class McpHttpTests
             await Check.ThrowsAsync<OperationCanceledException>(()=>call);
             await signalled.Task.WaitAsync(TimeSpan.FromSeconds(5));Check.Equal(1,calls);
         });
+        r.Add("mcp http: a discovery probe that outlasts its window falls back to initialize",async ()=>{
+            int probes=0,initialized=0;
+            await using var web=await LocalWeb.StartAsync(app=>app.Run(async h=>{
+                var request=(await JsonNode.ParseAsync(h.Request.Body))!.AsObject();
+                var method=request["method"]!.GetValue<string>();
+                if(method=="server/discover"){probes++;try{await Task.Delay(TimeSpan.FromSeconds(3),h.RequestAborted);}catch(OperationCanceledException){}return;}
+                if(method=="initialize"){initialized++;await h.Response.WriteAsJsonAsync(Result(request,new JsonObject {["protocolVersion"]=Protocol.Legacy,["capabilities"]=new JsonObject {["tools"]=new JsonObject()}}));return;}
+                if(method=="notifications/initialized"){h.Response.StatusCode=202;return;}
+                h.Response.ContentType="text/event-stream";
+                await h.Response.WriteAsync(": keepalive\n\ndata: "+Result(request,new JsonObject {["content"]=new JsonArray(new JsonObject {["type"]="text",["text"]="legacy OK"})}).ToJsonString()+"\n\n");
+            }));
+            await using var c=new McpConnection(Config(web.Url),100000,_=>{});
+            await c.InitializeAsync(CancellationToken.None);
+            var result=await c.CallAsync("weather",T.Args(new {city="Oslo"}),McpTests.Tool()["inputSchema"]!.AsObject(),CancellationToken.None);
+            Check.Contains(result.ToJsonString(),"legacy OK");Check.Equal(1,probes);Check.Equal(1,initialized);Check.False(c.Modern);
+        });
         r.Add("mcp http: SSE response subscription correlation acknowledgement and cancellation",async ()=>{
             var listened=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             await using var web=await LocalWeb.StartAsync(app=>app.Run(async h=>{
