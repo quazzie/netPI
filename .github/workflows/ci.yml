@@ -44,3 +44,27 @@ jobs:
       - name: Build and run the suites
         # builds each suite (Release) and runs its runner; the full output is kept in artifacts/testlogs
         run: pwsh -File ./scripts/test.ps1
+
+  ui:
+    name: web UI end-to-end (mock server)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # The mock e2e (npm run e2e) drives the real UI against web/mock/server.mjs: 250+ checks over the composer,
+      # the chat, the plugin tabs and the dev-server proxy. It was not run anywhere, which is how it rotted — it had
+      # been dying at check ~105 of 253 for a while (a selector that predated the status grouping, and a variable
+      # left out of scope) and nobody noticed, because "it passes locally" was someone's memory.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install and build the UI
+        run: |
+          npm ci
+          npm run build
+
+      - name: Run the mock e2e
+        run: npm run e2e

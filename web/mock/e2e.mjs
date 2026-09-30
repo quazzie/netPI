@@ -468,46 +468,63 @@ log('plugin tab: Ideas');
   await page.waitForTimeout(250);
   check('ideas: expanded idea renders sections', (await cards().first().locator('.sec').count()) > 0);
   await shot(page, '27-ideas-tab');
-  // status via the pill menu
+  // status via the pill menu. The pill lives in the card's open body (idea-43oruq: a closed card is a title and
+  // nothing else), so the card has to be open before the pill exists. This step had been clicking it on a closed
+  // card, which is why the mock e2e died here: nothing in CI runs `npm run e2e`.
+  if ((await cards().nth(1).locator('.main').getAttribute('aria-expanded')) !== 'true') await cards().nth(1).locator('.main').click();
   await cards().nth(1).locator('.status').click();
   await page.locator('.np-menu .np-menu-item', { hasText: 'in-progress' }).click();
   await page.waitForTimeout(500);
   check('ideas: status change', /in-progress/.test(await cards().nth(1).locator('.status').innerText()));
-  // new idea (prepended + expanded), then add a section to it
+  // New idea, then a section on it. The list is grouped by status (in-progress, planned, open — idea-43oruq), so
+  // "on top" means first *in its own group*, and every step below names the card instead of taking cards().first():
+  // the step above just moved a card into the group that renders above open, which is what made this block rot.
+  const cardTitled = (t) => page.locator('.ideas .card', { hasText: t }).first();
   await page.locator('.ideas .scope button[title="New idea"]').click();
   await page.locator('.ideas .new input').first().fill('Keyboard shortcuts cheat sheet');
   await page.locator('.ideas .new input.tags').fill('ui, docs');
   await page.locator('.ideas .new button', { hasText: 'Add idea' }).click();
   await page.waitForTimeout(500);
-  const first = cards().first();
-  check('ideas: new idea added on top', (await first.locator('.title').innerText()) === 'Keyboard shortcuts cheat sheet');
-  if ((await first.locator('.main').getAttribute('aria-expanded')) !== 'true') await first.locator('.main').click();
-  await first.locator('.actions button[title="Add section"]').click();
-  await first.locator('.sed select').selectOption('todo');
-  await first.locator('.sed textarea').fill('- [ ] list shortcuts\n- [ ] render a table');
-  await first.locator('.sed button', { hasText: 'Add section' }).click();
+  const newCard = cardTitled('Keyboard shortcuts cheat sheet');
+  // The first card of the open group, whichever groups happen to sit above it.
+  const firstOpen = await cards().evaluateAll((els) => {
+    const open = els.find((e) => e.dataset.status === 'open');
+    return open?.querySelector('.title')?.textContent?.trim() ?? null;
+  });
+  check('ideas: new idea added on top of the open ones', (await newCard.count()) === 1 && firstOpen === 'Keyboard shortcuts cheat sheet', `first open: ${firstOpen}`);
+  // It joins the list collapsed, so filing several in a row does not push the previous one out of view (idea-qrp60h).
+  check('ideas: the new card joins the list collapsed', (await newCard.locator('.main').getAttribute('aria-expanded')) === 'false');
+  if ((await newCard.locator('.main').getAttribute('aria-expanded')) !== 'true') await newCard.locator('.main').click();
+  await newCard.locator('.actions button[title="Add section"]').click();
+  await newCard.locator('.sed select').selectOption('todo');
+  await newCard.locator('.sed textarea').fill('- [ ] list shortcuts\n- [ ] render a table');
+  await newCard.locator('.sed button', { hasText: 'Add section' }).click();
   await page.waitForTimeout(500);
-  check('ideas: section added', (await first.locator('.sec').count()) === 1);
+  check('ideas: section added', (await newCard.locator('.sec').count()) === 1);
   // reorder, then delete through the host confirm dialog (both in the ⋯ menu)
   const moreMenu = async (card, item) => {
     await card.locator('.actions button[title="More actions"]').click();
     await page.locator('.np-menu .np-menu-item', { hasText: item }).click();
   };
   // send to chat → a pointer in the composer, not the idea's text (the agent reads the idea itself)
-  await first.locator('.actions button[title^="Stage a pointer"]').click();
+  await newCard.locator('.actions button[title^="Stage a pointer"]').click();
   await page.waitForTimeout(300);
-  const ideaId = (await first.locator('.info').innerText()).trim().split(' ')[0];
+  const ideaId = (await newCard.locator('.info').innerText()).trim().split(' ')[0];
   const staged = await ta.inputValue();
   check('ideas: send to chat stages a pointer, not the idea', staged.includes(ideaId) && !staged.includes('# Keyboard shortcuts cheat sheet'), staged);
   // …and the full text is one menu item away
-  await moreMenu(first, 'Insert the full text');
+  await moreMenu(newCard, 'Insert the full text');
   await page.waitForTimeout(300);
   check('ideas: insert the full text (ideas.toPrompt)', (await ta.inputValue()).includes('# Keyboard shortcuts cheat sheet'));
   await ta.fill('');
-  await moreMenu(first, 'Move down');
+  // Move down moves within the group, so the card that was below it in the open group is now above it.
+  const openBefore = await cards().evaluateAll((els) => els.filter((e) => e.dataset.status === 'open').map((e) => e.querySelector('.title')?.textContent?.trim()));
+  await moreMenu(newCard, 'Move down');
   await page.waitForTimeout(500);
-  check('ideas: move down (ideas.reorder)', (await cards().nth(1).locator('.title').innerText()) === 'Keyboard shortcuts cheat sheet');
-  await moreMenu(cards().nth(1), 'Delete idea');
+  const openAfter = await cards().evaluateAll((els) => els.filter((e) => e.dataset.status === 'open').map((e) => e.querySelector('.title')?.textContent?.trim()));
+  check('ideas: move down (ideas.reorder)', openAfter.indexOf('Keyboard shortcuts cheat sheet') === openBefore.indexOf('Keyboard shortcuts cheat sheet') + 1,
+    `${openBefore.join(' / ')} → ${openAfter.join(' / ')}`);
+  await moreMenu(cardTitled('Keyboard shortcuts cheat sheet'), 'Delete idea');
   await page.locator('.dialog button', { hasText: /^Delete$/ }).click();
   await page.waitForTimeout(500);
   check('ideas: delete with confirm', (await page.locator('.ideas .card', { hasText: 'Keyboard shortcuts cheat sheet' }).count()) === 0);
@@ -592,8 +609,10 @@ log('ideas: save on tab close (the card above the composer)');
   const saved = list.find((i) => /Prefill: short prompts first/.test(i.title));
   check('save check: Save writes the idea with the closed chat on it', !!saved && saved.sessions?.length === 1, saved?.sessions?.[0]?.sessionId ?? 'no idea');
 
-  // The commit check's card: an idea already in the backlog, and only its status in question.
-  await rpcCall('ideas.add', { projectId, idea: { title: 'Retry: shorter notices', summary: 'One line, no ids.' } });
+  // The commit check's card: an idea already in the backlog, and only its status in question. It goes to the same
+  // project the tab is showing — the `projectId` above is scoped to that block, so resolve the name again here.
+  const netpi = (await rpcCall('projects.list')).find((p) => p.name === 'netpi')?.id;
+  await rpcCall('ideas.add', { projectId: netpi, idea: { title: 'Retry: shorter notices', summary: 'One line, no ids.' } });
   await rpcCall('mock.commitFinishesIdea', { phrase: 'Retry: shorter' });
   const doneCard = page.locator('[aria-label="An idea a commit may have finished"]');
   await doneCard.waitFor({ timeout: 5000 }).catch(() => {});
@@ -608,8 +627,9 @@ log('ideas: save on tab close (the card above the composer)');
   const closed = afterDone.find((i) => /Retry: shorter notices/.test(i.title));
   check('commit check: Mark done closes the idea and keeps it in place', closed?.status === 'done', `${closed?.status} ${closed?.id}`);
 
-  // A second chat closes with nothing to save: no card, and the backlog is untouched.
-  const before = list.length;
+  // A second chat closes with nothing to save: no card, and the backlog is untouched. Counted here rather than
+  // reused from the snapshot above: the commit-check block added an idea since then, so that count was stale.
+  const before = ((await rpcCall('ideas.list'))?.ideas ?? []).length;
   await ta.fill('thanks, that all worked out');
   await page.keyboard.press('Enter');
   await page.waitForTimeout(600);
