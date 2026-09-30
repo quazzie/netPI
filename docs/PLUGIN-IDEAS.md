@@ -9,7 +9,8 @@ A backlog of ideas, research, plans and deferred work for the user and for agent
 - Slash command: `{ name: "idea", argsHint: "<title>", rpc: "ideas.quickAdd" }`.
 - Settings: `ideas.fileName` (default `"ideas.json"`; the name the JSON backlog had — read once by the cutover and the
   default name an export is written under, no longer a live file), `ideas.recall`, `ideas.recallThreshold`,
-  `ideas.saveCheck`, `ideas.attachThreshold`, `ideas.model`, `ideas.allowPaidModel`, `ideas.closeOnCommit`,
+  `ideas.saveCheck`, `ideas.attachThreshold`, `ideas.model`, `ideas.allowPaidModel`, `ideas.checkWaitSeconds`,
+  `ideas.closeOnCommit`,
   `ideas.linkThreshold`, `ideas.doneThreshold`, `ideas.tellAgentOnCommit`, `ideas.commitNoticesPerRun`
   (docs/SETTINGS.md).
 
@@ -329,6 +330,20 @@ Both calls wait for a slot on the backend the chats use (through the agents' sch
 on a paid model unless `ideas.allowPaidModel` says so. A backlog larger than the 51 letters a decision can offer is
 ranked by what the conversation shares with each idea and asked about in bounded windows, so later ideas stay eligible.
    A `SAVE` becomes a card in `ideas_suggestions` and the `ideas.suggested` event fires.
+
+**Admission is a bound, not a courtesy.** A check that cannot get a slot within `ideas.checkWaitSeconds` (30) is
+**dropped**, never run without one — running it anyway is what let a commit sweep, a save check and a recall put three
+calls on a two-slot model. A drop is not silent and it is not lost:
+
+| Dropped work | What happens | Where you see it |
+|---|---|---|
+| save check | the check's mark stays `failed` (retryable) with the reason on it, so the next close of that conversation runs it again | `ideas.suggestions` / the checks RPC, and the log |
+| commit sweep (`close on commit`) | the cursor does not move past the commit, so the next sweep reads it again | the log, and the commit is offered later |
+| recall | no suggestion for that keystroke — the composer moves on | nothing; the answer was for a keystroke |
+
+The recall is the one interactive caller and waits 2 s, not `ideas.checkWaitSeconds`: a longer wait there is a spinner in
+the composer, not a card. A paid model is never called on a check's own initiative whatever the queue does — that is
+`ideas.allowPaidModel`, and it is a skip rather than a drop, because a retry would skip it again.
 
 Nothing reaches the backlog without a click, and a card is never an idea: it is an offer, and it stays one until it is
 answered.

@@ -543,7 +543,12 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             var name = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel;
             // The same admission as a chat's: the decision shares the backend, so it waits its turn like one.
             var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
-            using var slot = await _admission.EnterAsync(model, purpose, sessionId: null, projectId: project, ct).ConfigureAwait(false);
+            // The same admission as a chat's: the decision shares the backend, so it waits its turn like one. A drop
+            // (or a paid model the user did not allow) is "no answer", which leaves the cursor where it is: the next
+            // sweep reads this commit again instead of skipping it for good.
+            var admission = await _admission.EnterAsync(model, purpose, sessionId: null, projectId: project, ct).ConfigureAwait(false);
+            if (!admission.Admitted) return null;
+            using var slot = admission.Lease!;
             var raw = await ctx.Rpc.InvokeAsync("decide.decision", new JsonObject
             {
                 ["model"] = name,
