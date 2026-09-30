@@ -48,6 +48,7 @@ export function createWork({ publish, log, agentsView }) {
     const p = {
       info: { id, pid: 40000 + Math.floor(Math.random() * 20000), shell, command, cwd, sessionId, agentId, background, status: 'running', startedAt: iso(startedAt) },
       out: '',
+      tailCalls: 0, // e2e: how many processes.output tails this row asked for (a closed row asking again is the leak)
     };
     procs.set(id, p);
     publish('process.started', { process: procInfo(p) });
@@ -78,7 +79,12 @@ export function createWork({ publish, log, agentsView }) {
       e.code = 'not_found';
       throw e;
     }
+    p.tailCalls++;
     return p.out.split('\n').slice(-tail).join('\n');
+  }
+  function procStats() {
+    // e2e test helper: per-process processes.output tail counts
+    return Object.fromEntries([...procs.values()].map((p) => [p.info.id, { tailCalls: p.tailCalls }]));
   }
   function procKill(id) {
     const p = procs.get(id);
@@ -225,6 +231,7 @@ export function createWork({ publish, log, agentsView }) {
     procEnd,
     procList,
     procOutputTail,
+    procStats,
     procKill,
     recordUsage,
     usageSummary,

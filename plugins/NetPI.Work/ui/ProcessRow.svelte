@@ -12,6 +12,11 @@
   let off = null;
   let poll = 0;
   let lastEvent = 0;
+  // one owner for the row's live resources (the process.output subscription and the poll timer):
+  // gen advances on every collapse and destroy, so a toggle whose fetchTail() is still in flight
+  // bails out instead of installing resources nobody owns
+  let gen = 0;
+  let disposed = false;
 
   const running = $derived(proc.status === 'running');
   const tone = $derived(
@@ -44,7 +49,13 @@
     open = !open;
     if (!open) return stopLive();
     loadingOut = true;
+    const mine = ++gen;
     await fetchTail();
+    if (disposed || mine !== gen) {
+      // the row was collapsed (or destroyed) while the tail was in flight: don't take over
+      loadingOut = false;
+      return;
+    }
     loadingOut = false;
     // background processes stream process.output events; foreground ones are polled while running
     off = ctx.on('process.output', (d) => {
@@ -58,18 +69,24 @@
   }
 
   function stopLive() {
+    gen++;
     off?.();
     off = null;
     clearInterval(poll);
+    poll = 0;
   }
   $effect(() => {
-    // one last fetch when the process exits while expanded
+    // one last fetch when the process exits while expanded (stopLive advances gen, so a toggle in
+    // flight at that moment cannot resurrect the live resources; this fetch itself creates none)
     if (open && !running) {
       stopLive();
       fetchTail();
     }
   });
-  onDestroy(stopLive);
+  onDestroy(() => {
+    disposed = true;
+    stopLive();
+  });
 
   async function kill() {
     const id = proc.id; // the row moves to "Recent" (another instance) once the process exits
