@@ -474,6 +474,7 @@ question), writes their own words (`text`), or both. The result is:
 - `No answer: the question was withdrawn…` when the plugin stops. Stopping the run cancels the call like any other.
 
 Subagents can't ask (an error: nobody watches their chat). `ask.pending { sessionId? }` lists the questions that wait;
+each has an `id` of its own (`ask_…`), because a tool call id belongs to the model and two chats can hold the same one;
 the events `ask.asked` and `ask.closed` are unscoped, so every window hears of every chat's questions.
 
 ```ts

@@ -197,14 +197,14 @@
       }
     }
     if (asking && mode !== 'queue' && !images.length) {
-      const callId = asking.callId;
+      const qid = asking.id ?? asking.callId;
       chat.draft = '';
       popup = null;
       chat.saveDraft();
       tick().then(autosize);
       onsent?.();
       try {
-        await answerAsk(callId, text);
+        await answerAsk(qid, text);
       } catch (e) {
         toast(e.message, 'error');
         if (!chat.draft) {

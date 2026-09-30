@@ -11,6 +11,7 @@ public static class AskTests
         t.Add("ask_user: waits with its instance given back; the option picked is the result", AnswerWithOption);
         t.Add("ask_user: several questions, the user's own words, and what ask.answer refuses", AnswerWithText);
         t.Add("ask_user: a new message from the user ends the wait; aborting cancels it", SteerAndAbort);
+        t.Add("ask_user: two chats with the same tool call id each get their own answer", SameCallIdInTwoChats);
         t.Add("ask_user: subagents can't ask", SubagentRefused);
         t.Add("ask_user: lenient arguments, limits, and the answer the model reads", Parsing);
     }
@@ -47,6 +48,8 @@ public static class AskTests
         await h.SendAsync(s.Id, "fix the parser");
         var asked = await AskedAsync(h, s.Id);
         var callId = (string)asked["callId"]!;
+        var id = (string)asked["id"]!;
+        Check.True(id != callId, "the question has an id of its own, not the model's call id");
         Check.Equal("Which parser?", (string?)asked["questions"]![0]!["question"]);
         Check.Equal("Patch", (string?)asked["questions"]![0]!["options"]![1]!["label"]);
 
@@ -59,7 +62,8 @@ public static class AskTests
 
         var pending = (await h.Rpc.CallAsync("ask.pending", new { sessionId = s.Id }))!.AsArray();
         Check.Equal(callId, (string?)pending.Single()!["callId"]);
-        Check.Equal(true, await h.Rpc.InvokeAsync("ask.answer", new { callId, answers = new[] { new[] { "Patch" } } }));
+        Check.Equal(id, (string?)pending.Single()!["id"]);
+        Check.Equal(true, await h.Rpc.InvokeAsync("ask.answer", new { id, answers = new[] { new[] { "Patch" } } }));
         await h.IdleAsync(s.Id);
 
         var result = Result(h, s.Id);
@@ -79,21 +83,35 @@ public static class AskTests
     {
         await using var h = await StartAsync();
         var s = h.NewSession();
-        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r)
-            ? Reply.Text("ok")
-            : Reply.Tool("ask_user", new { questions = new object[] { Q("Keep the old API?", "Yes", "No"), new { question = "Which tests?", options = new[] { "unit", "e2e", "ui" }, multiple = true } } });
+        var asked = 0;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (Reply.HasToolResult(r)) return Reply.Text("ok");
+            asked++;
+            return asked == 1
+                ? Reply.Tool("ask_user", new { questions = new object[] { Q("Keep the old API?", "Yes", "No"), new { question = "Which tests?", options = new[] { "unit", "e2e", "ui" }, multiple = true } } })
+                : Reply.Tool("ask_user", new { questions = new[] { Q("And a second question?", "yes", "no") } });
+        };
         await h.SendAsync(s.Id, "go");
-        var callId = (string)(await AskedAsync(h, s.Id))["callId"]!;
+        var first = await AskedAsync(h, s.Id);
+        var id = (string)first["id"]!;
+        Check.True(id != (string)first["callId"], "the question has an id of its own");
         Check.Equal(true, (bool?)(await AskedAsync(h, s.Id))["questions"]![1]!["multiple"], "options as plain strings, several may be picked");
 
-        Check.Equal("bad_request", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { callId, text = "  " }), "an empty answer")).Code);
-        Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { callId = "call_nope", text = "hi" }), "an unknown question")).Code);
-        await h.Rpc.InvokeAsync("ask.answer", new { callId, answers = new[] { Array.Empty<string>(), new[] { "unit", "e2e" } }, text = "keep it for one release" });
+        Check.Equal("bad_request", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { id, text = "  " }), "an empty answer")).Code);
+        Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { id = "ask_nope", text = "hi" }), "an unknown question")).Code);
+        await h.Rpc.InvokeAsync("ask.answer", new { id, answers = new[] { Array.Empty<string>(), new[] { "unit", "e2e" } }, text = "keep it for one release" });
         await h.IdleAsync(s.Id);
         Check.Equal(
             "The user answered:\n1. Keep the old API?\n   → (nothing picked)\n2. Which tests?\n   → unit, e2e\nThey added: keep it for one release",
             Result(h, s.Id).Content);
-        Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { callId, text = "again" }), "answered already")).Code);
+        Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { id, text = "again" }), "answered already")).Code);
+        // An older caller that only knows the tool call's id still reaches the question, as long as it says which chat.
+        await h.SendAsync(s.Id, "one more");
+        var second = await AskedAsync(h, s.Id, 2);
+        Check.Equal(true, await h.Rpc.InvokeAsync("ask.answer", new { callId = (string)second["callId"]!, sessionId = s.Id, text = "by call id" }));
+        await h.IdleAsync(s.Id);
+        Check.Equal("The user answered in their own words: by call id", Result(h, s.Id).Content);
     }
 
     private static async Task SteerAndAbort()
@@ -126,6 +144,57 @@ public static class AskTests
         Check.Equal("cancelled", (string?)FakeBus.Data(h.Bus.OfType("ask.closed").Last())["status"]);
         Check.Equal(0, (await h.Rpc.CallAsync("ask.pending", new { }))!.AsArray().Count);
         Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { callId, text = "late" }), "the question is gone")).Code);
+    }
+
+    /// <summary>
+    /// A tool call id belongs to the model that made it, and two chats can hold the same one: an answer meant for the
+    /// first chat must not end up answering the second.
+    /// </summary>
+    private static async Task SameCallIdInTwoChats()
+    {
+        await using var h = await StartAsync();
+        var a = h.NewSession(model: "fake/solo"); // one slot: the second chat starts once the first has yielded
+        var b = h.NewSession(model: "fake/solo");
+        h.Catalog.Handler = (r, ct) =>
+        {
+            // a tool result, or the message the user wrote instead of answering, ends this chat's part
+            if (Reply.HasToolResult(r) || Reply.LastUser(r) == "never mind") return Reply.Text("done");
+            var question = r.SessionId == a.Id ? "Which one, in chat A?" : "Which one, in chat B?";
+            var pick = r.SessionId == a.Id ? "A" : "B";
+            return Reply.Stream(Reply.Message(Reply.Call("ask_user", new { questions = new[] { Q(question, pick, "other") } }, "call_same")));
+        };
+        await h.SendAsync(a.Id, "ask in A");
+        await AskedAsync(h, a.Id);
+        await Wait.Until(() => h.Runtime.GetBySession(a.Id)?.Status == AgentStatus.Yielded, "chat A gave its slot back");
+        await h.SendAsync(b.Id, "ask in B");
+        var inA = await AskedAsync(h, a.Id);
+        var inB = await AskedAsync(h, b.Id);
+        await Wait.Until(() => h.Runtime.GetBySession(b.Id)?.Status == AgentStatus.Yielded, "chat B gave its slot back");
+
+        Check.Equal("call_same", (string?)inA["callId"]);
+        Check.Equal("call_same", (string?)inB["callId"], "both models used the same call id");
+        var idA = (string)inA["id"]!;
+        var idB = (string)inB["id"]!;
+        Check.True(idA != idB, "two questions, two ids");
+        Check.Equal(2, (await h.Rpc.CallAsync("ask.pending", new { }))!.AsArray().Count, "both wait");
+
+        // answering the second one leaves the first waiting
+        Check.Equal(true, await h.Rpc.InvokeAsync("ask.answer", new { id = idB, answers = new[] { new[] { "B" } } }));
+        await h.IdleAsync(b.Id);
+        Check.Equal("The user answered: B", Result(h, b.Id).Content);
+        Check.Equal(1, (await h.Rpc.CallAsync("ask.pending", new { }))!.AsArray().Count, "chat A's question still waits");
+        Check.Equal("not_found",
+            (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { id = idB, text = "again" }), "chat B's question is gone")).Code);
+
+        // a message in chat A ends that question only
+        await h.SendAsync(a.Id, "never mind");
+        await h.IdleAsync(a.Id);
+        Check.Equal("steered", (string?)Result(h, a.Id).Details!["status"]);
+        Check.Equal(0, (await h.Rpc.CallAsync("ask.pending", new { }))!.AsArray().Count, "nothing waits any more");
+        Check.Equal("No answer: the user wrote a new message instead; it follows.", Result(h, a.Id).Content);
+        var closed = h.Bus.OfType("ask.closed").Select(FakeBus.Data).ToList();
+        Check.Equal(2, closed.Count, "each question closed on its own");
+        Check.Equal(string.Join(",", new[] { idA, idB }.Order()), string.Join(",", closed.Select(c => (string?)c["id"]!).Order()), "both questions, each with its own id");
     }
 
     private static async Task SubagentRefused()

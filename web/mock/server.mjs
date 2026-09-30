@@ -713,7 +713,7 @@ const handlers = {
   },
   'ask.pending': (p = {}) => agent.pendingAsks(p.sessionId),
   'ask.answer': (p = {}) => {
-    const r = agent.answerAsk(need(p, 'callId'), p.answers, p.text);
+    const r = agent.answerAsk(p.id ?? null, p.callId, p.answers, p.text, p.sessionId);
     if (r === 'not_found') throw new RpcError('not_found', 'No question waits with that id (it was answered, or its run ended).');
     if (r === 'empty') throw new RpcError('bad_request', 'An answer needs an option picked or some text.');
     return true;

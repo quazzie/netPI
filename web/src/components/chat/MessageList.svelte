@@ -185,7 +185,7 @@
         {:else if item.kind === 'shown'}
           <ShownImage {item} onimage={openImage} />
         {:else if item.kind === 'ask'}
-          <AskCard {item} />
+          <AskCard {item} sessionId={session.id} />
         {:else if item.kind === 'images'}
           <div class="images">
             {#each item.images as img, j (j)}

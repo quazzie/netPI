@@ -459,7 +459,7 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
       options: (q.options ?? []).map((o) => ({ label: o.label, description: o.description ?? null })),
       multiple: !!q.multiple,
     }));
-    const entry = { sessionId: sid, callId: tool.id, agentId: a.id, agentName: a.name || 'qwen', questions, askedAt: new Date().toISOString() };
+    const entry = { id: `ask_${newId('q').slice(1)}`, sessionId: sid, callId: tool.id, agentId: a.id, agentName: a.name || 'qwen', questions, askedAt: new Date().toISOString() };
     setStatus(sid, { status: 'yielded', activity: 'waiting for your answer' });
     const t0 = Date.now();
     const finish = (content, details, isError = false) => {
@@ -469,20 +469,20 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
     let outcome;
     try {
       outcome = await new Promise((resolve, reject) => {
-        asks.set(tool.id, { entry, resolve });
+        asks.set(entry.id, { entry, resolve });
         publish('ask.asked', entry);
         run.ac.signal.addEventListener('abort', () => reject(ABORT), { once: true });
       });
     } catch (e) {
-      asks.delete(tool.id);
-      publish('ask.closed', { sessionId: sid, callId: tool.id, status: 'cancelled', answers: null, text: null });
+      asks.delete(entry.id);
+      publish('ask.closed', { id: entry.id, sessionId: sid, callId: tool.id, status: 'cancelled', answers: null, text: null });
       finish('Aborted: the run was stopped.', null, true);
       throw e;
     }
-    asks.delete(tool.id);
+    asks.delete(entry.id);
     setStatus(sid, { status: 'running', activity: null });
     if (outcome.steered) {
-      publish('ask.closed', { sessionId: sid, callId: tool.id, status: 'steered', answers: null, text: null });
+      publish('ask.closed', { id: entry.id, sessionId: sid, callId: tool.id, status: 'steered', answers: null, text: null });
       finish('No answer: the user wrote a new message instead; it follows.', { questions, answers: null, text: null, status: 'steered' });
     } else {
       const picks = (i) => (outcome.answers[i]?.length ? outcome.answers[i].join(', ') : '');
@@ -743,16 +743,17 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
     },
     /** ask.pending: the questions waiting (in one chat, or all). */
     pendingAsks: (sid) => [...asks.values()].map((w) => w.entry).filter((e) => !sid || e.sessionId === sid),
-    /** ask.answer: 'not_found' | 'empty' | true */
-    answerAsk(callId, answers, text_) {
-      const w = asks.get(callId);
+    /** ask.answer: 'not_found' | 'empty' | true (by the question's id, or by the tool call's with the chat, like the plugin) */
+    answerAsk(id, callId, answers, text_, sessionId) {
+      let w = id ? asks.get(id) : null;
+      if (!w && callId) w = [...asks.values()].find((x) => x.entry.callId === callId && (!sessionId || x.entry.sessionId === sessionId));
       if (!w) return 'not_found';
       const n = w.entry.questions.length;
       const picked = Array.from({ length: n }, (_, i) => (Array.isArray(answers?.[i]) ? answers[i].filter((x) => typeof x === 'string' && x.trim()) : []));
       const t = typeof text_ === 'string' && text_.trim() ? text_.trim() : null;
       if (!t && picked.every((x) => !x.length)) return 'empty';
-      asks.delete(callId);
-      publish('ask.closed', { sessionId: w.entry.sessionId, callId, status: 'answered', answers: picked, text: t });
+      asks.delete(w.entry.id);
+      publish('ask.closed', { id: w.entry.id, sessionId: w.entry.sessionId, callId: w.entry.callId, status: 'answered', answers: picked, text: t });
       w.resolve({ answers: picked, text: t });
       return true;
     },

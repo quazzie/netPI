@@ -5,18 +5,33 @@ import { SvelteMap } from 'svelte/reactivity';
 import { rpc } from '../rpc.svelte.js';
 
 export const asks = {
-  pending: new SvelteMap(), // callId -> { sessionId, callId, agentId, agentName, questions, askedAt }
-  drafts: new SvelteMap(), // callId -> string[][]: the options picked, per question
-  closed: new SvelteMap(), // callId -> { status: answered|steered|withdrawn|cancelled, answers, text }
+  pending: new SvelteMap(), // question id -> { id, sessionId, callId, agentId, agentName, questions, askedAt }
+  drafts: new SvelteMap(), // question id -> string[][]: the options picked, per question
+  closed: new SvelteMap(), // question id -> { status: answered|steered|withdrawn|cancelled, answers, text }
   approvals: new SvelteMap(), // approvalId -> { sessionId, callId, agentId, tool, kind: command|path, subject, rule, askedAt, opinion? }
   cleared: new SvelteMap(), // [sessionId, callId] -> guard.cleared: an ask rule matched, and the second opinion let it run without asking
 };
+
+/** A question's own id. A plugin without one (an older build, hot reloaded on its own) falls back to the tool call's. */
+const qid = (a) => a?.id ?? a?.callId;
 
 /** The question waiting in a chat (the oldest, when there are several). */
 export function pendingIn(sessionId) {
   let first = null;
   for (const a of asks.pending.values()) if (a.sessionId === sessionId && (!first || a.askedAt < first.askedAt)) first = a;
   return first;
+}
+
+/** The question of this chat's tool call that waits for the user: the card knows the call, the question has the id. */
+export function pendingFor(sessionId, callId) {
+  for (const a of asks.pending.values()) if (a.sessionId === sessionId && a.callId === callId) return a;
+  return null;
+}
+
+/** The same, for a question that stopped waiting (its card shows the answer it ended with). */
+export function closedFor(sessionId, callId) {
+  for (const a of asks.closed.values()) if (a.sessionId === sessionId && a.callId === callId) return a;
+  return null;
 }
 
 /** A tool call of a chat that waits for the user's OK. */
@@ -29,20 +44,26 @@ export function approvalIn(sessionId) {
 export async function loadAsks() {
   const [questions, approvals] = await Promise.all([rpc('ask.pending', {}).catch(() => []), rpc('guard.pending', {}).catch(() => [])]);
   asks.pending.clear();
-  for (const a of questions ?? []) asks.pending.set(a.callId, a);
+  for (const a of questions ?? []) asks.pending.set(qid(a), a);
   asks.approvals.clear();
   for (const a of approvals ?? []) asks.approvals.set(a.approvalId, a);
 }
 
 /** ask.asked / ask.closed and guard.asked / guard.closed / guard.cleared (unscoped: every window hears of every chat's). */
 export function askEvent(type, d) {
+  if (type === 'ask.asked' || type === 'ask.closed') {
+    const id = qid(d);
+    if (!id) return;
+    if (type === 'ask.asked') asks.pending.set(id, d);
+    else {
+      asks.pending.delete(id);
+      asks.drafts.delete(id);
+      asks.closed.set(id, d);
+    }
+    return;
+  }
   if (!d?.callId) return;
-  if (type === 'ask.asked') asks.pending.set(d.callId, d);
-  else if (type === 'ask.closed') {
-    asks.pending.delete(d.callId);
-    asks.drafts.delete(d.callId);
-    asks.closed.set(d.callId, d);
-  } else if (type === 'guard.asked') asks.approvals.set(d.approvalId, d);
+  if (type === 'guard.asked') asks.approvals.set(d.approvalId, d);
   else if (type === 'guard.closed') asks.approvals.delete(d.approvalId);
   else if (type === 'guard.cleared') asks.cleared.set(JSON.stringify([d.sessionId, d.callId]), d);
 }
@@ -50,7 +71,7 @@ export function askEvent(type, d) {
 /** The session went: drop its closed answers and guard clears (the maps would otherwise keep one entry per closed
  * ask of a deleted chat). */
 export function pruneSession(sessionId) {
-  for (const [callId, a] of asks.closed) if (a.sessionId === sessionId) asks.closed.delete(callId);
+  for (const [id, a] of asks.closed) if (a.sessionId === sessionId) asks.closed.delete(id);
   for (const key of [...asks.cleared.keys()]) if (JSON.parse(key)[0] === sessionId) asks.cleared.delete(key);
 }
 
@@ -72,19 +93,20 @@ export function answerApproval(approvalId, allow, scope = 'once') {
 }
 
 /** Picks an option (or toggles it, when several may be picked). */
-export function pick(callId, qIndex, label, multiple) {
-  const a = asks.pending.get(callId);
+export function pick(id, qIndex, label, multiple) {
+  const a = asks.pending.get(id);
   if (!a) return;
-  const draft = (asks.drafts.get(callId) ?? a.questions.map(() => [])).map((x) => [...x]);
+  const draft = (asks.drafts.get(id) ?? a.questions.map(() => [])).map((x) => [...x]);
   const cur = draft[qIndex] ?? [];
   draft[qIndex] = multiple ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]) : cur[0] === label ? [] : [label];
-  asks.drafts.set(callId, draft);
+  asks.drafts.set(id, draft);
 }
 
-/** Sends the answer: the options picked so far, and the user's own words. */
-export function answerAsk(callId, text = '') {
-  const answers = asks.drafts.get(callId) ?? [];
-  return rpc('ask.answer', { callId, answers, ...(text.trim() ? { text: text.trim() } : {}) });
+/** Sends the answer: the options picked so far, and the user's own words. The call id rides along for an older plugin. */
+export function answerAsk(id, text = '') {
+  const answers = asks.drafts.get(id) ?? [];
+  const callId = asks.pending.get(id)?.callId;
+  return rpc('ask.answer', { id, ...(callId ? { callId } : {}), answers, ...(text.trim() ? { text: text.trim() } : {}) });
 }
 
 export function approvalFor(sessionId, callId) {
