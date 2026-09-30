@@ -26,7 +26,7 @@ public static class CoreTests
 
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("startup: all plugins running, tabs, commands and tools registered", async () =>
+        r.Add("startup.plugins", "startup: all plugins running, tabs, commands and tools registered", async () =>
         {
             var plugins = await env.Rpc("plugins.list");
             foreach (var id in PluginIds)
@@ -54,7 +54,7 @@ public static class CoreTests
             Check.Equal(Path.GetFullPath(env.Home), Path.GetFullPath(info.S("home")!), "app.info home");
         });
 
-        r.Add("models: mock catalog, default model; no agents set up, nothing running", async () =>
+        r.Add("startup.models", "models: mock catalog, default model; no agents set up, nothing running", async () =>
         {
             var list = await env.Rpc("models.list", new { refresh = true });
             var models = list.Arr("models").ToList();
@@ -79,7 +79,7 @@ public static class CoreTests
             Check.False(pools.Arr().Any(p => p.B("configured")), "the suite's settings set up no agents: " + pools.GetRawText());
         });
 
-        r.Add("chat: default model streams thinking + markdown, events in order, message persisted", async () =>
+        r.Add("chat.stream", "chat: default model streams thinking + markdown, events in order, message persisted", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -123,7 +123,7 @@ public static class CoreTests
             Check.True(log[0].L("tools") >= 10, "tools sent to the model");
         });
 
-        r.Add("fork: sessions.fork copies the chat up to a message; the fork goes on with its prompt, the original stays", async () =>
+        r.Add("chat.fork", "fork: sessions.fork copies the chat up to a message; the fork goes on with its prompt, the original stays", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -165,7 +165,7 @@ public static class CoreTests
             catch (RpcError ex) { Check.Equal("bad_request", ex.Code); }
         });
 
-        r.Add("tools: ls/read/edit/write really run in the project (CRLF kept), results persisted, paging", async () =>
+        r.Add("tools.files", "tools: ls/read/edit/write really run in the project (CRLF kept), results persisted, paging", async () =>
         {
             var p = await env.NewProject("tools", Seed);
             var dir = p.S("path")!;
@@ -228,7 +228,7 @@ public static class CoreTests
             Check.Equal(string.Join(",", seqs), string.Join(",", collected), "pages cover every message exactly once");
         });
 
-        r.Add("tools: parallel read-only calls run concurrently and all results persist", async () =>
+        r.Add("tools.parallel", "tools: parallel read-only calls run concurrently and all results persist", async () =>
         {
             var p = await env.NewProject("parallel", Seed);
             var s = await env.NewSession(projectId: p.S("id"));
@@ -242,7 +242,7 @@ public static class CoreTests
             Check.Contains(run.Parts("tool_result").First(x => x.S("name") == "grep").S("content"), "notes.txt");
         });
 
-        r.Add("bash: live tool.output, exit code and output in the result", async () =>
+        r.Add("tools.bash", "bash: live tool.output, exit code and output in the result", async () =>
         {
             var s = await env.NewSession();
             var run = await env.Run(s.S("id")!, "Run something [s:bash]");
@@ -260,7 +260,7 @@ public static class CoreTests
             Check.True(procs.Arr().Any(x => (x.S("command") ?? "").Contains("hello from bash")), "processes.list has the run");
         });
 
-        r.Add("transport: chat completions via per-model setting, reasoning effort passed through", async () =>
+        r.Add("provider.chat-transport", "transport: chat completions via per-model setting, reasoning effort passed through", async () =>
         {
             await env.Rpc("settings.set", new { path = "providers.aiproxy.models.gemma-4", value = new { transport = "chat" } });
             var p = await env.NewProject("chat", Seed);
@@ -286,7 +286,7 @@ public static class CoreTests
             await env.Rpc("settings.set", new { path = "providers.aiproxy.models.gemma-4", value = (object?)null });
         });
 
-        r.Add("anthropic: thinking with signatures replayed across tool_use turns", async () =>
+        r.Add("provider.anthropic-thinking", "anthropic: thinking with signatures replayed across tool_use turns", async () =>
         {
             var p = await env.NewProject("claude", Seed);
             var s = await env.NewSession(model: "anthropic/claude-sonnet-4-5", projectId: p.S("id"));

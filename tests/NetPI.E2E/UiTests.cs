@@ -9,7 +9,7 @@ public static class UiTests
 {
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("ui: MCP catalog controls fit narrow panels and failed saves retain edits", async () =>
+        r.Add("ui.mcp-panel", "ui: MCP catalog controls fit narrow panels and failed saves retain edits", async () =>
         {
             var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
             psi.ArgumentList.Add(Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "mcp-smoke.mjs"));
@@ -20,7 +20,7 @@ public static class UiTests
             catch { if (!proc.HasExited) proc.Kill(true); throw; }
             Check.Equal(0, proc.ExitCode, await stdout + await stderr);
         });
-        r.Add("ui: send [s:tools] in the browser, streamed text + tool rows, plugin tabs, no console errors (screenshots)", async () =>
+        r.Add("ui.smoke", "ui: send [s:tools] in the browser, streamed text + tool rows, plugin tabs, no console errors (screenshots)", async () =>
         {
             var p = await env.NewProject("ui-demo", CoreTests.Seed);
             var s = await env.NewSession(projectId: p.S("id"), title: "UI smoke");
@@ -28,7 +28,7 @@ public static class UiTests
             await env.Run(s.S("id")!, "hello [s:echo]");
             await SeedIdeas(env, p.S("id")!, s.S("id")!);
             var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "smoke.mjs");
-            var outDir = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "screenshots");
+            var outDir = env.ScreenshotDir;
             var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
             foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--session", "UI smoke", "--out", outDir })
                 psi.ArgumentList.Add(a);
@@ -44,8 +44,10 @@ public static class UiTests
             var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
             Check.True(json is not null, "smoke output: " + output + err);
             using var doc = JsonDocument.Parse(json!);
-            foreach (var c in doc.RootElement.Arr("checks"))
-                Check.True(c.B("ok"), $"ui check '{c.S("name")}' {c.S("detail")}");
+            // every failed check at once: stopping at the first made a run of ~25 s reveal one problem at a time
+            var failedChecks = doc.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
+            Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
+                + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
             Check.Equal(0, proc.ExitCode, "smoke exit code; stderr: " + err);
             Check.Equal("ALPHA-UI line\nbeta line\ngamma line\n", File.ReadAllText(Path.Combine(p.S("path")!, "notes.txt")), "the UI run edited the file");
             Env.Log($"screenshots: {outDir}");

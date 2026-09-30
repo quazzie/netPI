@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 
 namespace NetPI.E2E;
@@ -11,10 +12,19 @@ public sealed class AssertException(string message) : Exception(message);
 public static class Check
 {
     private static int _total;
+    // the test body that is running in this async flow: with shards several bodies run at once, and each owns its count
+    private static readonly AsyncLocal<int[]?> Scope = new();
 
     public static int Total => Volatile.Read(ref _total);
 
-    private static void Count() => Interlocked.Increment(ref _total);
+    /// <summary>Count this flow's checks into <paramref name="counter"/> (the runner reads it after the body).</summary>
+    public static void Attach(int[] counter) => Scope.Value = counter;
+
+    private static void Count()
+    {
+        Interlocked.Increment(ref _total);
+        if (Scope.Value is { } c) Interlocked.Increment(ref c[0]);
+    }
 
     public static void True(bool condition, string message = "expected true", [CallerArgumentExpression(nameof(condition))] string? expr = null)
     {
@@ -57,50 +67,57 @@ public static class Check
     }
 }
 
+/// <summary>One registered test. <see cref="Id"/> is stable (runs, reports and reruns name it); <see cref="Name"/> is the readable sentence.</summary>
+public sealed record TestCase(string Id, string Name, Func<Task> Body, int TimeoutSeconds, int Order)
+{
+    /// <summary>The tags of the case: its area (the id up to the first dot) plus the ones <see cref="Catalog"/> lists for it.</summary>
+    public IReadOnlyList<string> Tags => Catalog.TagsOf(Id);
+}
+
+/// <summary>The registry the <c>XTests.Register</c> methods fill. A runner is bound to one <see cref="Env"/> (or to none, to list).</summary>
 public sealed class TestRunner
 {
-    private readonly List<(string Name, Func<Task> Body, int TimeoutSeconds)> _tests = [];
+    private readonly List<TestCase> _tests = [];
 
-    public void Add(string name, Func<Task> body, int timeoutSeconds = 90) => _tests.Add((name, body, timeoutSeconds));
-
-    public IReadOnlyList<string> Names => _tests.Select(t => t.Name).ToList();
-
-    public async Task<int> RunAsync(IReadOnlyList<string> filters)
+    public void Add(string id, string name, Func<Task> body, int timeoutSeconds = 90)
     {
-        var selected = _tests.Where(t => filters.Count == 0 || filters.Any(f => t.Name.Contains(f, StringComparison.OrdinalIgnoreCase))).ToList();
-        int passed = 0, failed = 0;
-        var failures = new List<string>();
-        var total = Stopwatch.StartNew();
-        foreach (var (name, body, timeout) in selected)
-        {
-            var sw = Stopwatch.StartNew();
-            var checksBefore = Check.Total;
-            try
-            {
-                var task = Task.Run(body);
-                if (await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(timeout))) != task)
-                    throw new AssertException($"test timed out after {timeout}s");
-                await task;
-                passed++;
-                Console.WriteLine($"  PASS  {name} ({sw.ElapsedMilliseconds}ms, {Check.Total - checksBefore} checks)");
-            }
-            catch (Exception ex)
-            {
-                failed++;
-                var msg = ex is AssertException ? ex.Message : ex.ToString();
-                failures.Add($"{name}: {msg}");
-                Console.WriteLine($"  FAIL  {name} ({sw.ElapsedMilliseconds}ms)\n        {msg.Replace("\n", "\n        ")}");
-            }
-        }
-        Console.WriteLine();
-        Console.WriteLine($"{passed} passed, {failed} failed, {selected.Count} total, {Check.Total} checks in {total.Elapsed.TotalSeconds:0.0}s");
-        if (failed > 0)
-        {
-            Console.WriteLine("Failures:");
-            foreach (var f in failures) Console.WriteLine("  - " + f.Split('\n')[0]);
-        }
-        return failed == 0 ? 0 : 1;
+        if (_tests.Any(t => t.Id == id)) throw new InvalidOperationException($"duplicate test id '{id}'");
+        _tests.Add(new TestCase(id, name, body, timeoutSeconds, _tests.Count));
     }
+
+    public IReadOnlyList<TestCase> Cases => _tests;
+}
+
+/// <summary>
+/// Console output of the test body that is running in this async flow goes to that test's buffer, so that shards running at
+/// once do not interleave their lines: the runner prints a test's lines together with its result.
+/// </summary>
+public sealed class RoutedConsole(TextWriter inner) : TextWriter
+{
+    private static readonly AsyncLocal<StringBuilder?> Buffer = new();
+    private readonly Lock _gate = new();
+
+    public override Encoding Encoding => inner.Encoding;
+
+    public static void Attach(StringBuilder? buffer) => Buffer.Value = buffer;
+
+    public static void Install()
+    {
+        if (Console.Out is not RoutedConsole) Console.SetOut(new RoutedConsole(Console.Out));
+    }
+
+    public override void Write(char value) => Write(value.ToString());
+
+    public override void Write(string? value)
+    {
+        if (value is null) return;
+        if (Buffer.Value is { } b) { lock (b) b.Append(value); return; }
+        lock (_gate) { inner.Write(value); inner.Flush(); }
+    }
+
+    public override void WriteLine(string? value) => Write((value ?? "") + "\n");
+
+    public override void WriteLine() => Write("\n");
 }
 
 public static class Wait

@@ -3,7 +3,7 @@ public static class McpTests
 {
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("mcp: real server and MockLlm discover one schema and execute through gateway",async () => {
+        r.Add("mcp.gateway", "mcp: real server and MockLlm discover one schema and execute through gateway",async () => {
             string? constantTools = null, constantInstructions = null;
             foreach (var count in new[] { 10, 100, 1000 })
             {

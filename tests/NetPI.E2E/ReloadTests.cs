@@ -10,7 +10,7 @@ public static class ReloadTests
 
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("hot reload: overwriting NetPI.Nudge.dll reloads the plugin, the old context is collected, nudges still work", async () =>
+        r.Add("reload.file-change", "hot reload: overwriting NetPI.Nudge.dll reloads the plugin, the old context is collected, nudges still work", async () =>
         {
             var before = await Plugin(env, "netpi.nudge");
             var mark = env.Client.Mark();
@@ -41,7 +41,7 @@ public static class ReloadTests
             Check.Contains(run.FinalText, "NUDGE-RESUMED");
         });
 
-        r.Add("hot reload: plugins.reload of every provider/tool/hook plugin, then a full tool run still works", async () =>
+        r.Add("reload.all-plugins", "hot reload: plugins.reload of every provider/tool/hook plugin, then a full tool run still works", async () =>
         {
             var mark = env.Client.Mark();
             foreach (var id in new[] { "netpi.providers.aiproxy", "netpi.tools.files", "netpi.tools.shell", "netpi.retry", "netpi.toolrepair", "netpi.context", "netpi.agents" })
@@ -66,7 +66,7 @@ public static class ReloadTests
             Check.True(leaks.Count == 0, "all old load contexts collected, leaking: " + string.Join(", ", leaks));
         }, 150);
 
-        r.Add("hot reload: reloading the agent runtime mid-run ends the run cleanly; the session continues afterwards", async () =>
+        r.Add("reload.runtime-midrun", "hot reload: reloading the agent runtime mid-run ends the run cleanly; the session continues afterwards", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;

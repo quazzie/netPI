@@ -7,7 +7,7 @@ public static class ShutdownTests
 {
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("shutdown: SIGTERM during a run exits cleanly; restart keeps sessions, messages and projects", async () =>
+        r.Add("lifecycle.shutdown-restart", "shutdown: SIGTERM during a run exits cleanly; restart keeps sessions, messages and projects", async () =>
         {
             var sessionsBefore = (await env.Rpc("sessions.list", new { limit = 500 })).Arr().ToList();
             var projectsBefore = (await env.Rpc("projects.list")).Arr().Count();

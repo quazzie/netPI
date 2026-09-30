@@ -7,7 +7,7 @@ public static class AgentsTests
 {
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("agents: set up in settings, active while their model is loaded; a chat on an agent; switched off; a stopped backend", async () =>
+        r.Add("agents.setup", "agents: set up in settings, active while their model is loaded; a chat on an agent; switched off; a stopped backend", async () =>
         {
             const string stopped = "aiproxy/qwen38-27b-iq3s";
             await env.Rpc("settings.set", new { path = "agents.e2e-qwen", value = new { model = CoreTests.Qwen, use = "The loaded one." } });
@@ -61,7 +61,7 @@ public static class AgentsTests
             }
         }, 60);
 
-        r.Add("slots: 3 subagents on qwen (2 slots): max 2 concurrent at the backend, queueing, parent yields and resumes", async () =>
+        r.Add("slots.subagents", "slots: 3 subagents on qwen (2 slots): max 2 concurrent at the backend, queueing, parent yields and resumes", async () =>
         {
             var s = await env.NewSession(model: CoreTests.Qwen);
             var sid = s.S("id")!;
@@ -129,7 +129,7 @@ public static class AgentsTests
             Check.True(env.Client.Since(mark).Any(e => e.Type == "agents.changed"), "agents.changed events");
         }, 120);
 
-        r.Add("nested subagents: orchestrator → lead → helper (the lead's spawn waits) on a model with 2 slots, no deadlock, agent_send", async () =>
+        r.Add("subagents.nested", "nested subagents: orchestrator → lead → helper (the lead's spawn waits) on a model with 2 slots, no deadlock, agent_send", async () =>
         {
             await Wait.UntilAsync(async () => (await env.Rpc("agents.list")).Arr().FirstOrDefault(p => p.S("key") == CoreTests.Qwen).L("busy") == 0 ? "ok" : null, "idle qwen pool");
             await env.MockReset();
@@ -158,7 +158,7 @@ public static class AgentsTests
             Check.Equal(0L, (await env.Rpc("agents.list")).Arr().Where(p => p.S("key") == CoreTests.Qwen).Sum(p => p.L("busy")), "all slots released");
         }, 90);
 
-        r.Add("agent-result: a background subagent's report wakes the idle parent", async () =>
+        r.Add("subagents.report-wakes-parent", "agent-result: a background subagent's report wakes the idle parent", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -179,7 +179,7 @@ public static class AgentsTests
             Check.Equal("user,assistant,tool,assistant,notice,assistant", string.Join(",", run.Messages.Select(m => m.S("role"))));
         }, 90);
 
-        r.Add("ask_user: the question waits with its agent yielded, every window hears of it, ask.answer goes on", async () =>
+        r.Add("ask.user", "ask_user: the question waits with its agent yielded, every window hears of it, ask.answer goes on", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -219,7 +219,7 @@ public static class AgentsTests
             Check.Equal(0, (await env.Rpc("ask.pending", new { })).Arr().Count());
         });
 
-        r.Add("ideas: the ideas tool writes the backlog in the database (stamped with the project); ideas.list and ideas.changed see it", async () =>
+        r.Add("ideas.tool", "ideas: the ideas tool writes the backlog in the database (stamped with the project); ideas.list and ideas.changed see it", async () =>
         {
             var p = await env.NewProject("ideas");
             var s = await env.NewSession(projectId: p.S("id"));

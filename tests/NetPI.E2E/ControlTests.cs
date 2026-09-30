@@ -7,7 +7,7 @@ public static class ControlTests
 {
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("steer: message during a tool batch skips the remaining calls and is delivered next turn", async () =>
+        r.Add("control.steer-batch", "steer: message during a tool batch skips the remaining calls and is delivered next turn", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -41,7 +41,7 @@ public static class ControlTests
             Check.Equal(agent.L("runs"), run.Final.L("runs"), "the steer did not need a second run");
         });
 
-        r.Add("queue: follow-up sent during a run is delivered after the answer, in the same run", async () =>
+        r.Add("control.queue", "queue: follow-up sent during a run is delivered after the answer, in the same run", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -64,7 +64,7 @@ public static class ControlTests
             Check.Equal(0, (await env.Rpc("agent.queue", new { sessionId = sid })).Arr().Count());
         });
 
-        r.Add("queue: dequeue removes a pending follow-up", async () =>
+        r.Add("control.dequeue", "queue: dequeue removes a pending follow-up", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -78,7 +78,7 @@ public static class ControlTests
             Check.Equal("user,assistant", string.Join(",", run.Messages.Select(m => m.S("role"))));
         });
 
-        r.Add("abort: partial answer persisted as aborted, agent idle, model request cancelled", async () =>
+        r.Add("control.abort-stream", "abort: partial answer persisted as aborted, agent idle, model request cancelled", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -113,7 +113,7 @@ public static class ControlTests
             Check.Equal(200L, log2.Last().L("status"), "transcript with an aborted message is accepted by the model API");
         });
 
-        r.Add("abort: during a tool call kills the command and records the aborted result", async () =>
+        r.Add("control.abort-tool", "abort: during a tool call kills the command and records the aborted result", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
@@ -137,7 +137,7 @@ public static class ControlTests
             Check.Contains(next.FinalText, "ECHO-DONE");
         });
 
-        r.Add("project switch mid-session: project notice, new cwd for tools, model sees the notice, prefix unchanged", async () =>
+        r.Add("context.project-switch", "project switch mid-session: project notice, new cwd for tools, model sees the notice, prefix unchanged", async () =>
         {
             var s = await env.NewSession();
             var sid = s.S("id")!;
