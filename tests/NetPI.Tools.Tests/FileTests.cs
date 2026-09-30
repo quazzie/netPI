@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -605,6 +606,87 @@ public static class FileTests
             Check.Contains(json, "\"isDir\":");
         });
 
+        // ------------------------------------------------ fileindex: the per-root gate lifecycle
+        r.Add("fileindex: the gate table stays within the cache's bound across many roots", async () =>
+        {
+            var index = new FileIndex();
+            for (var i = 0; i < 40; i++)
+            {
+                var dir = T.TempDir("fileidx");
+                T.WriteText(dir, "note.txt", "hello\n");
+                try
+                {
+                    var hits = await index.SearchAsync(dir, "note", 10);
+                    Check.Equal(1, hits.Count, $"root {i} answers its own file");
+                    Check.Equal("note.txt", hits[0].Rel);
+                }
+                finally
+                {
+                    Directory.Delete(dir, recursive: true);
+                }
+                Check.True(GateProbe.Count(index) <= 16, $"gates bounded while growing (after {i + 1} roots)");
+            }
+            Check.True(GateProbe.Count(index) > 0, "the recent roots are still tracked");
+            Check.True(GateProbe.Count(index) <= 16, "the gate table does not grow without bound");
+        });
+
+        r.Add("fileindex: concurrent searches share one gate; a gate in use is never disposed", async () =>
+        {
+            var dir = T.TempDir("fileidx-lock");
+            T.WriteText(dir, "hello.txt", "hi\n");
+            var index = new FileIndex();
+
+            // A burst of searches on the same cold root: they must all share the single gate and none
+            // may disappear mid-run (an ObjectDisposedException would surface from Task.WhenAll).
+            var results = await Task.WhenAll(Enumerable.Repeat(0, 8).Select(_ => index.SearchAsync(dir, "hello", 10)));
+            foreach (var hits in results)
+            {
+                Check.Equal(1, hits.Count, "every concurrent search sees the file");
+                Check.Equal("hello.txt", hits[0].Rel);
+            }
+            Check.Equal(1, GateProbe.Count(index), "one gate for the one root, after the burst");
+            var held = GateProbe.Gate(index, dir)!;
+
+            // Hold the gate the way an in-flight search does, then overflow the bound: the pruner must
+            // keep it (it is in use) instead of removing and disposing it.
+            GateProbe.Enter(index, dir);
+            try
+            {
+                for (var i = 0; i < 20; i++)
+                    await StormRoot(index, $"fileidx-storm-{i}");
+                Check.True(ReferenceEquals(GateProbe.Gate(index, dir), held), "an in-use gate is neither pruned nor disposed");
+            }
+            finally
+            {
+                GateProbe.Exit(index, dir);
+            }
+
+            // Once released, the next prune retires and disposes it; a fresh search of the root gets a
+            // new gate, and the removed one refuses new users without throwing.
+            for (var i = 0; i < 20; i++)
+                await StormRoot(index, $"fileidx-storm2-{i}");
+            Check.True(GateProbe.Gate(index, dir) is null, "the idle gate was retired and removed");
+            Check.False(GateProbe.TryEnter(held), "a retired gate refuses new users without throwing");
+            index.Invalidate();
+            var fresh = await index.SearchAsync(dir, "hello", 10);
+            Check.Equal(1, fresh.Count);
+            Check.True(!ReferenceEquals(GateProbe.Gate(index, dir), held), "the root's gate is a fresh instance");
+
+            async Task StormRoot(FileIndex index, string name)
+            {
+                var d = T.TempDir(name);
+                T.WriteText(d, "other.txt", "x\n");
+                try
+                {
+                    Check.Equal(1, (await index.SearchAsync(d, "other", 10)).Count, $"storm root {name}");
+                }
+                finally
+                {
+                    Directory.Delete(d, recursive: true);
+                }
+            }
+        });
+
         r.Add("rpc: files.commits — the history newest first, only what came after a hash, null outside a repository", async () =>
         {
             var dir = T.TempDir("commits");
@@ -735,6 +817,33 @@ public static class FileTests
                 Check.True(d.Parameters["properties"] is not null, d.Name);
             }
         });
+    }
+
+    /// <summary>Reads FileIndex's private gate table; the suite has no other handle into the plugin's internals.</summary>
+    private static class GateProbe
+    {
+        private static readonly FieldInfo GatesField =
+            typeof(FileIndex).GetField("_gates", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        private static System.Collections.IDictionary Gates(FileIndex index) =>
+            (System.Collections.IDictionary)GatesField.GetValue(index)!;
+
+        public static int Count(FileIndex index) => Gates(index).Count;
+
+        public static object? Gate(FileIndex index, string root) => Gates(index)[root];
+
+        public static void Enter(FileIndex index, string root) => Touch(index, root, "TryEnter");
+
+        public static void Exit(FileIndex index, string root) => Touch(index, root, "Exit");
+
+        public static bool TryEnter(object gate) =>
+            (bool)gate.GetType().GetMethod("TryEnter", BindingFlags.Public | BindingFlags.Instance)!.Invoke(gate, null)!;
+
+        private static void Touch(FileIndex index, string root, string method)
+        {
+            var gate = Gates(index)[root] ?? throw new AssertException($"no gate for {root}");
+            gate.GetType().GetMethod(method, BindingFlags.Public | BindingFlags.Instance)!.Invoke(gate, null);
+        }
     }
 
     /// <summary>A small repository-like tree with ignore rules.</summary>
