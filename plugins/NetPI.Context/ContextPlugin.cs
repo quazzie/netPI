@@ -47,6 +47,7 @@ public sealed class ContextPlugin : INetPiPlugin
         // what reloaded: the cause of the next tool-set change (a "tools" notice names the plugin)
         context.Events.Subscribe(EventTypes.PluginsReloaded, toolNotices.OnPluginsReloaded);
         context.Events.Subscribe(EventTypes.SessionChanged, toolNotices.OnSessionChanged);
+        context.Events.Subscribe("mcp.toolsChanged", toolNotices.OnRemoteToolsChanged);
         context.Events.Subscribe(EventTypes.SessionProject, e =>
         {
             if (e.As<JsonObject>()?["sessionId"]?.GetValue<string>() is { Length: > 0 } id) notices.OnProjectChanged(id);
@@ -178,15 +179,6 @@ public sealed class ContextPlugin : INetPiPlugin
     {
         var maxDepth = 3;
         try { maxDepth = ctx.Settings.Get("agents.maxDepth", 3); } catch { }
-        var off = SessionTools.Off(session);
-        var all = ctx.Tools.All;
-        var names = all.Select(t => t.Definition.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return all.Where(t =>
-        {
-            var d = t.Definition;
-            if (agent?.ToolAllowlist is { } allow && !ToolLists.Names(allow, d.Name, names)) return false;
-            if (agent is not null && agent.Depth >= maxDepth && d.Category == "agents" && d.Name != "agent") return false;
-            return !ToolLists.Names(off, d.Name, names);
-        }).OrderBy(t => t.Definition.Name, StringComparer.Ordinal).ToList();
+        return ToolSelection.Eligible(ctx.Tools, agent, session, maxDepth).Where(t => !t.Definition.Deferred).ToList();
     }
 }

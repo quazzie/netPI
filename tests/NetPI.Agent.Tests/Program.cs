@@ -1,9 +1,11 @@
 using NetPI.Agent.Tests;
 
 // Usage: dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll [-v] [name filter...]   (exit code 0 = all passed)
+if (args.FirstOrDefault() == "--mcp-fixture") return await NetPI.Aux.Tests.McpFixture.RunAsync(args.Skip(1).ToArray());
 TestHost.Verbose = args.Contains("-v");
 var filters = args.Where(a => a != "-v").ToArray();
 var runner = new TestRunner();
+DeferredToolsTests.Register(runner);
 LoopTests.Register(runner);
 SubagentTests.Register(runner);
 SchedulerTests.Register(runner);

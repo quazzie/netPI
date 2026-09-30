@@ -293,3 +293,13 @@ and fetch pending approvals; callId-only answers fail validation. `guard.closed`
 Budget amounts include persistent reservations. `reservedOrUnsettledUsd` identifies the active/crash-left portion;
 `interruptedEstimateUsd` identifies calls whose final bill was unavailable, and `unknownCostCalls` counts unpriced
 calls. Every retry attempt gets its own ledger row. Amounts are attributed to the day the attempt started.
+
+## MCP plugin
+
+Read-only `mcp.list {}` returns `{servers:[{id,status,error,generation,toolCount,version,config}]}`; credentials remain environment references. `mcp.tools {serverId?}` returns `{tools:[{id,serverId,name,description,revision,deferred,readOnly,schema}]}`.
+
+Mutations: `mcp.save {id,config}`, `mcp.remove {id}`, `mcp.setEnabled {id,enabled}`, `mcp.reconnect {id}`, `mcp.refresh {id}`. Each returns the status snapshot. Invalid configuration is rejected before saving.
+
+`mcp.toolsChanged` publishes `{serverId,reason,added,removed,updated}` (stable registered ids). Disclosed schema changes produce targeted tools notices with `updated`, `revisions` and cause `remote-server`; `context.toolsets` retains them. `agent.tools` adds a `deferred` flag per concrete entry. `tool.start` and `tool.end` for indirect calls add `resolvedTool` and `serverId`, preserving the original call id and gateway name.
+
+`mcp.serverChanged` publishes `{serverId,status,error,generation}`. Status is connecting, reconnecting, connected, failed or disabled. `mcp.list` also returns `rejected:[{name,error}]` per server; `mcp.tools` includes the complete valid UI inventory with an `exposed` flag, including entries excluded from model selection.

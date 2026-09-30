@@ -1,0 +1,45 @@
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright-core';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const bundle = fs.readFileSync(path.join(root, 'plugins/NetPI.Mcp/wwwroot/ui.js'));
+const html = `<!doctype html><html><head><style>body {margin:0;background:#191919;color:#ddd;font-family:system-ui}</style></head><body><div id="app"></div><script type="module">
+import {mount} from '/ui.js';
+const server = {id:'fixture',status:'connected',toolCount:1,config:{enabled:true,transport:'stdio',command:'node',args:[],cwd:'C:/tools',pinned:[],readOnly:[]}};
+const tool = {id:'mcp_fixture_weather_123456789',name:'weather',description:'City weather',exposed:true,deferred:true,readOnly:false,schema:{type:'object',properties:{city:{type:'string'}}}};
+mount(document.getElementById('app'),{on:()=>()=>{},rpc:async(method,args)=>{
+  if(method==='mcp.list')return {servers:[server]};
+  if(method==='mcp.tools')return {tools:[tool]};
+  if(method==='mcp.save')throw Error('Connection failed; review configuration');
+  return {servers:[server]};
+}});
+</script></body></html>`;
+const server = http.createServer((req,res)=>{res.setHeader('Content-Type',req.url==='/ui.js'?'text/javascript':'text/html');res.end(req.url==='/ui.js'?bundle:html);});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+let browser;
+const errors=[];
+try {
+  try { browser=await chromium.launch(); }
+  catch { browser=await chromium.launch({channel:'msedge'}); }
+  const page=await browser.newPage();
+  page.on('pageerror',error=>errors.push(String(error)));
+  for(const width of [230,380,1000]) {
+    await page.setViewportSize({width,height:850});
+    await page.goto('http://127.0.0.1:'+server.address().port);
+    await page.getByRole('button',{name:'fixture',exact:false}).click();
+    await page.getByText('weather',{exact:true}).click();
+    await page.getByLabel('Expose tool').waitFor();
+    const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
+    if(overflow)throw Error('MCP tab overflows at '+width+'px');
+    await page.getByRole('button',{name:'Edit',exact:true}).click();
+    const draft=await page.getByLabel('Configuration',{exact:true}).inputValue();
+    await page.getByRole('button',{name:'Save',exact:true}).click();
+    await page.getByRole('alert').waitFor();
+    if(await page.getByLabel('Configuration',{exact:true}).inputValue()!==draft)throw Error('Failed save lost edits');
+    console.log('PASS MCP UI '+width+'px: catalog controls and failed-save draft retained');
+  }
+  if(errors.length)throw Error(errors.join('\n'));
+} finally { await browser?.close(); await new Promise(resolve=>server.close(resolve)); }

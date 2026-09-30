@@ -11,6 +11,7 @@ using NetPI.E2E;
 //     --keep          keep the temp folder (server.log, home, projects)
 //     --verbose       echo server log lines and mock requests
 //     --list          list the tests and exit
+if (args.FirstOrDefault() == "--mcp-fixture") return await NetPI.Aux.Tests.McpFixture.RunAsync(args.Skip(1).ToArray());
 var o = new E2EOptions();
 var list = false;
 for (var i = 0; i < args.Length; i++)
@@ -37,6 +38,7 @@ Env? env = null;
 var runner = new TestRunner();
 void RegisterAll(Env e)
 {
+    McpTests.Register(runner, e);
     CoreTests.Register(runner, e);
     ControlTests.Register(runner, e);
     HookTests.Register(runner, e);

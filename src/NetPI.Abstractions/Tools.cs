@@ -24,6 +24,10 @@ public sealed class ToolDefinition
     public IReadOnlyList<string>? PromptGuidelines { get; init; }
     /// <summary>Tool does not modify anything; several read-only calls may run in parallel.</summary>
     public bool ReadOnly { get; init; }
+    /// <summary>Selectable and executable, but omitted from ordinary model-visible schemas and prompt guidelines.</summary>
+    public bool Deferred { get; init; }
+    /// <summary>Stable definition revision, used by discovery and change notices.</summary>
+    public string? Revision { get; init; }
     /// <summary>files | shell | agents | ideas | general</summary>
     public string Category { get; init; } = "general";
     /// <summary>Argument name whose value best summarizes a call in the UI (e.g. "path", "command").</summary>
@@ -89,6 +93,8 @@ public sealed class ToolContext
     public required IEventBus Events { get; init; }
     /// <summary>Stream incremental output to the UI (e.g. shell output).</summary>
     public Action<string>? Output { get; init; }
+    /// <summary>Current eligible tools, supplied by the runtime; re-evaluated after policy changes.</summary>
+    public Func<IReadOnlyList<IAgentTool>>? EligibleTools { get; init; }
     /// <summary>Extra per-call state.</summary>
     public Dictionary<string, object?> Items { get; } = [];
 

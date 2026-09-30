@@ -1,6 +1,6 @@
 # MCP client plugin
 
-Status: proposed implementation plan; no implementation or deployment performed.
+Status: all four delivery stages implemented and validated in one worktree; no live deployment performed.
 Date: 2026-09-30. Reviewed NetPI baseline: 9fe2a96.
 Scope confirmed by the user: NetPI uses external MCP servers. Deferred discovery and minimal model context are requirements, not a later optimization.
 
@@ -156,3 +156,7 @@ Required cases: modern and legacy version paths; malformed/oversized frames; con
 Run the relevant suites, the normal build/test gate and the UI build when UI sources change. Build only into the worktree's artifacts/dev/app; inspect generated bundle changes and keep only source-related outputs. Document RPCs/events in docs/PROTOCOL.md, settings in docs/SETTINGS.md, result details and naming in docs/TOOLS.md, and usage/lifecycle/limits in a new docs/PLUGIN-MCP.md plus README and docs/STATUS.md. Rebuild every plugin if an additive abstraction change proves necessary.
 
 Done means a configured local and HTTP server work through ordinary agent calls; cancellation and failures are visible; catalogs and notices remain consistent; initial model context stays bounded regardless of catalog size; only task-selected schemas are disclosed; settings and tool selections persist; reload/shutdown leave no owned subprocesses or collectible-context leaks; all scoped tests pass. Live publishing, app restarts and real-server installations are separate from implementation validation.
+
+## Implementation validation
+
+Completed all four stages together in `codex/mcp-implementation`, then built and tested as requested. See [PLUGIN-MCP.md](../PLUGIN-MCP.md#validation-2026-09-30) for captured request measurements and the one unrelated Chrome regression-suite failure. All 23 scoped MCP cases pass; the live app was not published or restarted.

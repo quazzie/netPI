@@ -22,6 +22,30 @@ internal sealed class ToolChanges(IPluginContext ctx)
     public const string User = "user";
     public const string Settings = "settings";
     public const string Unknown = "unknown";
+    public const string RemoteServer = "remote-server";
+    private readonly Dictionary<string, (string Server, string Reason, DateTimeOffset Time)> _remote = new(StringComparer.Ordinal);
+    public void OnRemoteToolsChanged(BusEvent e)
+    {
+        var data = e.As<JsonObject>();
+        if (data?["serverId"] is not { } server) return;
+        lock (_gate)
+        {
+            foreach (var key in new[] { "added", "removed", "updated" })
+                foreach (var name in data[key] as JsonArray ?? [])
+                    if (name is not null) _remote[name.GetValue<string>()] = (server.GetValue<string>(), data["reason"]?.GetValue<string>() ?? "catalog-refresh", e.Time);
+            foreach (var key in _remote.Where(p => DateTimeOffset.UtcNow - p.Value.Time > Keep).Select(p => p.Key).ToArray()) _remote.Remove(key);
+            while (_remote.Count > 10000) _remote.Remove(_remote.First().Key);
+        }
+    }
+    public Change RemoteCause(IReadOnlyList<string> names)
+    {
+        lock (_gate)
+        {
+            var evidence = names.Where(_remote.ContainsKey).Select(n => _remote[n]).Where(r => DateTimeOffset.UtcNow - r.Time <= Keep).FirstOrDefault();
+            return evidence.Server is null ? Change.Unknown :
+                new Change(RemoteServer, ["netpi.mcp"], "MCP server " + evidence.Server + " " + evidence.Reason);
+        }
+    }
 
     /// <summary>A profile switch announces itself in the chat before the call that sees its tools (the profiles plugin).
     /// <c>session.changed</c> is the signal; this is the fallback for a chat whose event was missed.</summary>
@@ -156,6 +180,9 @@ internal sealed class ToolChanges(IPluginContext ctx)
         // chat that started before this plugin did has no event to read
         if (context.LastOrDefault(m => m.Role == MessageRole.Notice) is { } notice && notice.MetaString("kind") == ProfileNotice)
             return Change.Profile;
+
+        var remote = RemoteCause(added.Concat(removed).ToList());
+        if (remote.Cause != Unknown) return remote;
 
         var ids = added.Concat(removed)
             .Select(n => Owner(sessionId, n)).Where(p => p.Length > 0).Distinct(StringComparer.Ordinal).ToList();

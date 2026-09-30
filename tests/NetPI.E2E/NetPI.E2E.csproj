@@ -11,6 +11,7 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../NetPI.Aux.Tests/McpFixture.cs" Link="McpFixture.cs" />
     <ProjectReference Include="../MockLlm/MockLlm.csproj" />
   </ItemGroup>
 </Project>

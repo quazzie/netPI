@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/plugins/">
     <Project Path="plugins/NetPI.Backup/NetPI.Backup.csproj" />
+    <Project Path="plugins/NetPI.Mcp/NetPI.Mcp.csproj" />
     <Project Path="plugins/NetPI.Runtime/NetPI.Runtime.csproj" />
     <Project Path="plugins/NetPI.AgentsMd/NetPI.AgentsMd.csproj" />
     <Project Path="plugins/NetPI.Ask/NetPI.Ask.csproj" />
