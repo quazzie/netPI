@@ -32,7 +32,7 @@
 <div class="read">
   <div class="meta np-mono">
     <span class="path" title={path}>{path}</span>
-    {#if d.startLine != null}<span class="np-dim">lines {d.startLine}–{d.endLine} of {d.totalLines}</span>{/if}
+    {#if d.startLine != null}<span class="np-dim">lines {d.startLine}–{d.endLine}{d.totalLines != null ? ` of ${d.totalLines}` : ''}</span>{/if}
     {#if d.truncated}<span class="np-badge" data-tone="warn">truncated</span>{/if}
     {#if d.eol === 'crlf'}<span class="np-badge">CRLF</span>{/if}
     {#if d.encoding}<span class="np-badge">{d.encoding}</span>{/if}

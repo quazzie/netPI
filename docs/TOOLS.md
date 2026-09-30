@@ -115,10 +115,13 @@ when you change it.
 - If a single line is longer than 50KB (minified files), the start of that line is shown with a note.
 - Images (`png jpg jpeg gif webp`, ≤ 20MB) come back as an `ImagePart` when `context.Model.SupportsImages`. Otherwise the result
   is a text note. A directory gives an error that suggests `ls`, and a missing file gives an error with “Did you mean” names.
-  Files over 32MB are streamed instead of loaded.
+- Files over 32MB are streamed instead of loaded, and a page of one **stops at the end of the page**: it is not read to
+  the end to count lines. Such a page reports `totalLines: null` and says `[Showing lines 100-104; more lines follow. Use
+  offset=105 to continue.]`; a page that reaches the end of the file knows the exact total, and so does any negative offset.
+  The encoding comes from the same sample the small path decodes, so a huge UTF-16 or Latin-1 file reads like its content.
 
 ```ts
-details: { path: string /* absolute */, startLine: number, endLine: number, totalLines: number,
+details: { path: string /* absolute */, startLine: number, endLine: number, totalLines: number|null /* null: a page of a file over 32MB that did not reach the end */,
            truncated: boolean, eol: 'lf'|'crlf', bom: boolean, encoding?: 'latin1' }
 // image:  { path, image: true, mediaType, bytes }
 ```
