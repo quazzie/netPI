@@ -241,17 +241,17 @@ public sealed class IdeasRepository
     public (JsonObject Doc, long Revision) Add(JsonObject idea, bool prepend = false)
     {
         var added = _db.Transaction(_ =>
-    {
-        var doc = (JsonObject)idea.DeepClone();
-        var id = IdeaOps.Str(doc["id"]);
-        if (string.IsNullOrWhiteSpace(id)) throw new IdeaInputException("An idea needs an id.");
-        if (Find(id) is not null) throw new IdeasConflictException($"Idea {id} is already in the backlog.");
-        var ord = prepend
-            ? _db.Scalar<long?>("SELECT MIN(ord) - 1 FROM ideas_items") ?? 0
-            : _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_items") ?? 0;
-        var (stored, revision) = Insert_(doc, ord);
-        return (WithRevision(stored, revision), revision);
-    });
+        {
+            var doc = (JsonObject)idea.DeepClone();
+            var id = IdeaOps.Str(doc["id"]);
+            if (string.IsNullOrWhiteSpace(id)) throw new IdeaInputException("An idea needs an id.");
+            if (Find(id) is not null) throw new IdeasConflictException($"Idea {id} is already in the backlog.");
+            var ord = prepend
+                ? _db.Scalar<long?>("SELECT MIN(ord) - 1 FROM ideas_items") ?? 0
+                : _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_items") ?? 0;
+            var (stored, revision) = Insert_(doc, ord);
+            return (WithRevision(stored, revision), revision);
+        });
         Announce("add");
         return added;
     }
@@ -267,26 +267,26 @@ public sealed class IdeasRepository
         string id, JsonObject patch, bool fromUi, string? sessionId = null, long? expectedRevision = null, string? expectedUpdatedAt = null)
     {
         var result = _db.Transaction(_ =>
-    {
-        var current = Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
-        var storedId = IdeaOps.Str(current.Doc["id"]) ?? id;
-        if (expectedRevision is { } want && want != current.Revision)
-            throw new IdeasConflictException(
-                $"Idea {storedId} changed since you read it (it is at revision {current.Revision}, your copy is {want}). " +
-                "Reload it and apply your change again.");
-        // Kept for callers that only know the old check. It compares a second-precision timestamp, so two changes in the
-        // same second are not a conflict: prefer expectedRevision wherever it is available.
-        if (expectedRevision is null && expectedUpdatedAt is { Length: > 0 } stamp && IdeaOps.Str(current.Doc["updatedAt"]) != stamp)
-            throw new IdeasConflictException(
-                $"Idea {storedId} changed since {stamp} (it is now {IdeaOps.Str(current.Doc["updatedAt"]) ?? "untouched"}). Reload it and apply your change again.");
+        {
+            var current = Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
+            var storedId = IdeaOps.Str(current.Doc["id"]) ?? id;
+            if (expectedRevision is { } want && want != current.Revision)
+                throw new IdeasConflictException(
+                    $"Idea {storedId} changed since you read it (it is at revision {current.Revision}, your copy is {want}). " +
+                    "Reload it and apply your change again.");
+            // Kept for callers that only know the old check. It compares a second-precision timestamp, so two changes in
+            // the same second are not a conflict: prefer expectedRevision wherever it is available.
+            if (expectedRevision is null && expectedUpdatedAt is { Length: > 0 } stamp && IdeaOps.Str(current.Doc["updatedAt"]) != stamp)
+                throw new IdeasConflictException(
+                    $"Idea {storedId} changed since {stamp} (it is now {IdeaOps.Str(current.Doc["updatedAt"]) ?? "untouched"}). Reload it and apply your change again.");
 
-        var next = (JsonObject)current.Doc.DeepClone();
-        var changes = IdeaOps.ApplyPatch(next, patch, fromUi, sessionId);
-        if (changes.Count == 0) return (current.Doc, current.Revision, changes); // nothing changed: no write, no new revision
-        var revision = current.Revision + 1;
-        Save_(storedId, next, revision);
-        return (WithRevision(next, revision), revision, changes);
-    });
+            var next = (JsonObject)current.Doc.DeepClone();
+            var changes = IdeaOps.ApplyPatch(next, patch, fromUi, sessionId);
+            if (changes.Count == 0) return (current.Doc, current.Revision, changes); // nothing changed: no write, no revision
+            var revision = current.Revision + 1;
+            Save_(storedId, next, revision);
+            return (WithRevision(next, revision), revision, changes);
+        });
         if (result.Item3.Count > 0) Announce("update"); // a patch that changed nothing is not a change
         return result;
     }
@@ -294,11 +294,11 @@ public sealed class IdeasRepository
     public bool Delete(string? id)
     {
         var deleted = _db.Transaction(_ =>
-    {
-        if (Find(id) is not { } found) return false;
-        _db.Execute("DELETE FROM ideas_items WHERE id = @id", new { id = IdeaOps.Str(found.Doc["id"]) });
-        return true;
-    });
+        {
+            if (Find(id) is not { } found) return false;
+            _db.Execute("DELETE FROM ideas_items WHERE id = @id", new { id = IdeaOps.Str(found.Doc["id"]) });
+            return true;
+        });
         if (deleted) Announce("delete");
         return deleted;
     }
@@ -364,14 +364,14 @@ public sealed class IdeasRepository
     public (JsonObject Doc, long Revision) AddSession(string id, string sessionId)
     {
         var attached = _db.Transaction(_ =>
-    {
-        if (Find(id) is not { } found) throw new RpcException("not_found", $"Idea {id} not found");
-        var next = (JsonObject)found.Doc.DeepClone();
-        IdeaOps.AddSession(next, sessionId);
-        var revision = found.Revision + 1;
-        Save_(IdeaOps.Str(found.Doc["id"])!, next, revision);
-        return (WithRevision(next, revision), revision);
-    });
+        {
+            if (Find(id) is not { } found) throw new RpcException("not_found", $"Idea {id} not found");
+            var next = (JsonObject)found.Doc.DeepClone();
+            IdeaOps.AddSession(next, sessionId);
+            var revision = found.Revision + 1;
+            Save_(IdeaOps.Str(found.Doc["id"])!, next, revision);
+            return (WithRevision(next, revision), revision);
+        });
         Announce("attach");
         return attached;
     }
@@ -384,16 +384,16 @@ public sealed class IdeasRepository
     {
         var fresh = _db.Transaction(_ =>
         {
-        var fresh = new List<JsonObject>();
-        foreach (var id in ideaIds)
-        {
-            if (Find(id) is not { } found) continue;
-            var next = (JsonObject)found.Doc.DeepClone();
-            IdeaOps.AddCommitEntry(next, entry);
-            Save_(IdeaOps.Str(found.Doc["id"])!, next, found.Revision + 1);
-            fresh.Add(WithRevision(next, found.Revision + 1));
-        }
-        return fresh;
+            var written = new List<JsonObject>();
+            foreach (var id in ideaIds)
+            {
+                if (Find(id) is not { } found) continue;
+                var next = (JsonObject)found.Doc.DeepClone();
+                IdeaOps.AddCommitEntry(next, entry);
+                Save_(IdeaOps.Str(found.Doc["id"])!, next, found.Revision + 1);
+                written.Add(WithRevision(next, found.Revision + 1));
+            }
+            return written;
         });
         if (fresh.Count > 0) Announce("commits");
         return fresh;
@@ -435,36 +435,36 @@ public sealed class IdeasRepository
     public bool AddCard(JsonObject card, bool dedupe = true)
     {
         var added = _db.Transaction(_ =>
-    {
-        var doc = (JsonObject)card.DeepClone();
-        var id = IdeaOps.Str(doc["id"]);
-        if (string.IsNullOrWhiteSpace(id)) throw new IdeaInputException("A card needs an id.");
-        if (Card(id) is not null) return false;
-        var kind = IdeaOps.Str(doc["kind"]) ?? "save";
-        var ideaId = IdeaOps.Str(doc["ideaId"]);
-        var sessionId = IdeaOps.Str(doc["sessionId"]);
-        var title = IdeaOps.Str(doc["title"]) ?? "";
-        if (dedupe)
         {
-            if (ideaId is { Length: > 0 })
+            var doc = (JsonObject)card.DeepClone();
+            var id = IdeaOps.Str(doc["id"]);
+            if (string.IsNullOrWhiteSpace(id)) throw new IdeaInputException("A card needs an id.");
+            if (Card(id) is not null) return false;
+            var kind = IdeaOps.Str(doc["kind"]) ?? "save";
+            var ideaId = IdeaOps.Str(doc["ideaId"]);
+            var sessionId = IdeaOps.Str(doc["sessionId"]);
+            var title = IdeaOps.Str(doc["title"]) ?? "";
+            if (dedupe)
             {
-                if (_db.Scalar<long?>("SELECT COUNT(*) FROM ideas_suggestions WHERE idea_id = @i", new { i = ideaId }) > 0) return false;
+                if (ideaId is { Length: > 0 })
+                {
+                    if (_db.Scalar<long?>("SELECT COUNT(*) FROM ideas_suggestions WHERE idea_id = @i", new { i = ideaId }) > 0) return false;
+                }
+                else if (_db.Scalar<long?>("SELECT COUNT(*) FROM ideas_suggestions WHERE kind = 'save' AND session_id IS @s AND title = @t", new { s = (object?)sessionId, t = title }) > 0)
+                {
+                    return false;
+                }
             }
-            else if (_db.Scalar<long?>("SELECT COUNT(*) FROM ideas_suggestions WHERE kind = 'save' AND session_id IS @s AND title = @t", new { s = (object?)sessionId, t = title }) > 0)
-            {
-                return false;
-            }
-        }
-        var ord = _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_suggestions") ?? 0;
-        var project = doc["project"] as JsonObject;
-        _db.Execute(
-            "INSERT INTO ideas_suggestions (id, ord, kind, session_id, idea_id, project_id, source_rev, title, at, doc) " +
-            "VALUES (@id, @ord, @kind, @s, @i, @p, @rev, @t, @at, @doc)", new
-            {
-                id, ord, kind, s = (object?)sessionId, i = (object?)ideaId, p = (object?)IdeaOps.Str(project?["id"]),
-                rev = (object?)SourceRevision(doc), t = title, at = IdeaOps.Str(doc["at"]) ?? IdeaOps.Now(), doc = doc.ToJsonString(),
-            });
-        return true;
+            var ord = _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_suggestions") ?? 0;
+            var project = doc["project"] as JsonObject;
+            _db.Execute(
+                "INSERT INTO ideas_suggestions (id, ord, kind, session_id, idea_id, project_id, source_rev, title, at, doc) " +
+                "VALUES (@id, @ord, @kind, @s, @i, @p, @rev, @t, @at, @doc)", new
+                {
+                    id, ord, kind, s = (object?)sessionId, i = (object?)ideaId, p = (object?)IdeaOps.Str(project?["id"]),
+                    rev = (object?)SourceRevision(doc), t = title, at = IdeaOps.Str(doc["at"]) ?? IdeaOps.Now(), doc = doc.ToJsonString(),
+                });
+            return true;
         });
         if (added) Announce("card");
         return added;

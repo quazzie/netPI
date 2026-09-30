@@ -7,122 +7,163 @@ A backlog of ideas, research, plans and deferred work for the user and for agent
 - Tab: `{ id: "ideas", title: "Ideas", panel: "right", icon: "idea", order: 20, module: "ui.js" }`. The UI module goes in
   `plugins/NetPI.Ideas/wwwroot/ui.js` (source in `plugins/NetPI.Ideas/ui/`) and is served at `/plugins/netpi.ideas/ui.js`.
 - Slash command: `{ name: "idea", argsHint: "<title>", rpc: "ideas.quickAdd" }`.
-- Settings: `ideas.fileName` (default `"ideas.json"`; only the file name part is used; the file lives in `~/.netpi`),
-  `ideas.recall`, `ideas.recallThreshold`, `ideas.saveCheck`, `ideas.attachThreshold`, `ideas.model`,
-  `ideas.allowPaidModel`, `ideas.closeOnCommit`, `ideas.linkThreshold`, `ideas.doneThreshold` (docs/SETTINGS.md).
+- Settings: `ideas.fileName` (default `"ideas.json"`; the name the JSON backlog had — read once by the cutover and the
+  default name an export is written under, no longer a live file), `ideas.recall`, `ideas.recallThreshold`,
+  `ideas.saveCheck`, `ideas.attachThreshold`, `ideas.model`, `ideas.allowPaidModel`, `ideas.closeOnCommit`,
+  `ideas.linkThreshold`, `ideas.doneThreshold` (docs/SETTINGS.md).
 
 ## Where ideas are stored
 
-**One global file for everything:** `~/.netpi/<ideas.fileName>` (name: setting `ideas.fileName`, default `ideas.json`).
-There is no per-project file anymore. Every idea carries a **`project`** property — a `{ id, name }` snapshot of the
-project it belongs to, or absent when it is not bound to a project (the "global" ideas):
+**In NetPI's own database.** The backlog is plugin-owned SQLite tables in `<home>/netpi.db`, in the migration scope
+`netpi.ideas` (storage version 1), reached through `ctx.Db` and one read/write entry point (`IdeasRepository`). There
+is no ideas file: the JSON files of the earlier versions are read once by the cutover and are never written again.
 
-| Situation | File | `project` on the new idea |
-|---|---|---|
-| Agent tool, session with a project | `~/.netpi/ideas.json` | the session's project |
-| Agent tool, session without a project | `~/.netpi/ideas.json` | absent (unbound) |
-| Agent tool with a `project` argument | `~/.netpi/ideas.json` | that project (`"global"`/`"none"` → unbound) |
-| RPC `ideas.add` with `projectId` | `~/.netpi/ideas.json` | that project (a project id or name, `"global"` → unbound) |
-| RPC `ideas.add` with `sessionId` only | `~/.netpi/ideas.json` | the session's project (absent when the session has none) |
+| Table | Holds |
+|---|---|
+| `ideas_items` | one row per idea: its id, `ord` (the order the user arranged), `revision`, the columns the queries read (title, status, priority, project, created/updated) and `doc` — the complete idea JSON |
+| `ideas_suggestions` | the cards waiting for an answer |
+| `ideas_resolutions` | how a card was answered, kept after the card is gone |
+| `ideas_checks` | the per-conversation check marks, with the claim token and expiry of a running check |
+| `ideas_repos` | the last commit read per repository |
+| `ideas_imports` | the receipts of the imports (the cutover writes one per source) |
+| `ideas_metadata` | the backend marker, and the root-level fields the JSON file had |
+
+Every idea carries a **`project`** property — a `{ id, name }` snapshot of the project it belongs to, or absent when it
+is not bound to a project (the "global" ideas):
+
+| Situation | `project` on the new idea |
+|---|---|
+| Agent tool, session with a project | the session's project |
+| Agent tool, session without a project | absent (unbound) |
+| Agent tool with a `project` argument | that project (`"global"`/`"none"` → unbound) |
+| RPC `ideas.add` with `projectId` | that project (a project id or name, `"global"` → unbound) |
+| RPC `ideas.add` with `sessionId` only | the session's project (absent when the session has none) |
 
 `projectId` wins over `sessionId`. An unknown `projectId`, or an unknown `sessionId` in `ideas.add`/`ideas.quickAdd`,
-gives an RPC error `not_found`. The `~/.netpi` folder is created when needed.
+gives an RPC error `not_found`.
 
-### Migrating the old per-project files
+The columns are projections of `doc` written in the same statement, so the two cannot drift apart; and an idea is still
+only ever understood as the document it always was — sections, tags, chats, commits and every field another tool wrote
+by hand live in `doc`, which is why a save never drops anything. Every repository method is short and synchronous: the
+host serializes one connection, so a transaction is held for the length of a few statements and never across a model
+call, a file read or anything else that can block.
 
-Earlier versions kept one file per project (`<project.path>/.netpi/ideas.json`, and before that
-`<project.path>/ideas.json`). At start, the plugin migrates them into the global file, for every project in the
-session store:
+### The one-time cutover
 
-- The ideas are appended to `~/.netpi/<ideas.fileName>`, stamped with `project: { id, name }` (unless the idea already
-  has a `project` field) — an idea whose `id` already exists in the global file gets a new id.
-- A source file is deleted only after the merge has been written. While the global file is unreadable or unwritable
-  (e.g. invalid JSON), the migration is skipped (logged) and retried on the next start; the sources stay where they
-  are and are never modified.
-- The migration is idempotent: once the sources are gone, nothing happens.
+The earlier versions kept the backlog in `<home>/<ideas.fileName>` with a `ideas-pending.json` beside it, and before
+that one file per project (`<project.path>/.netpi/ideas.json`, and before that `<project.path>/ideas.json`). Those files
+are read once, at the plugin start, and only when at least one of them exists:
 
-## File format
+- **Every source is read**: the global backlog, `ideas-pending.json`, the per-project receipt `ideas-migration.json`
+  and the per-project files of every project in the session store. A source the old build's own receipt says it had
+  already merged is recorded, not merged a second time. Reading a legacy file still takes the OS lock the old build
+  used, so an import never sees half of a write by a plugin that is still running.
+- **A malformed source fails the whole import** (`invalid_file`, naming the file and what is wrong with it): an empty
+  backlog is never substituted for ideas that could not be read, and the files are left exactly as they were. A source
+  that is merely *missing* is not a problem — that is what an unused optional file looks like.
+- **Everything is written in ONE transaction**, ending with the receipts and the durable backend marker: the ideas (with
+  their ids, their order and every field they carry, stamped with the project a per-project file did not have, and given
+  a new id on a collision rather than merged into somebody's idea), the cards, the check marks, the commit cursors, the
+  root-level fields of the file, the answers that were in flight when NetPI stopped, and the record that accounts for
+  it all. A failure before that commit leaves the old files authoritative and the backlog empty; a failure after it
+  leaves SQLite authoritative, whatever housekeeping failed afterwards.
+- **Then the originals are kept**: every source is copied byte for byte into `<home>/ideas-archive/<timestamp>/` — a
+  `manifest.json` with each file's sha256, and the file itself under `originals/` — and moved out of the place the old
+  build read it from. An older NetPI started afterwards therefore starts with an empty backlog instead of quietly
+  writing JSON that nothing reads. Nothing is deleted.
+- **Restarting does not import again**: the marker in `ideas_metadata` says the backend is SQLite. A file that
+  reappears afterwards is reported as `orphanedSources` by `ideas.migration`, and is only taken in on purpose, with
+  `ideas.migrate { confirm: true, force: true }` — never merged silently into a backlog that has moved on.
+
+## The idea document
+
+One idea is one JSON object — the `doc` column of its `ideas_items` row, and what an import reads and an export writes:
 
 ```jsonc
 {
-  "version": 1,
-  "ideas": [
-    {
-      "id": "idea-k3x9q2",                 // "idea-" + 6 chars [0-9a-z], unique in the file
-      "title": "Cache model list",
-      "summary": "Avoid refetching /v1/models on every session switch.",
-      "status": "open",                    // open | parked | planned | in-progress | done | rejected
-      "priority": "medium",                 // low | medium | high
-      "tags": ["perf"],
-      "project": {                          // absent = not bound to a project ("global")
-        "id": "proj_abc123",
-        "name": "NetPI"                    // a snapshot; refreshed when the idea is written with a known project
-      },
-      "createdAt": "2026-09-23T20:15:00Z", // ISO 8601 UTC, second precision
-      "updatedAt": "2026-09-23T20:15:00Z",
-      "createdBy": "user",                 // "user" | "agent:<agentId>"
-      "sections": [
-        { "id": "sec-4f0a", "kind": "research", "title": "Findings", "content": "markdown…", "updatedAt": "…" }
-      ],
-      "sessionIds": ["ses_…"],            // sessions that created or updated the idea
-      "sessions": [                        // sessions that worked on the idea (phase 2, below)
-        { "sessionId": "ses_…", "title": "…", "at": "2026-09-28T10:00:00Z", "seq": 42, "note": "…", "seen": false }
-      ],
-      "commits": [                         // commits recorded on the idea (phase 3, below)
-        { "hash": "…", "short": "abc1234", "subject": "…", "at": "2026-09-28T11:00:00Z" }
-      ]
-    }
+  "id": "idea-k3x9q2",                 // "idea-" + 6 chars [0-9a-z], unique in the backlog
+  "title": "Cache model list",
+  "summary": "Avoid refetching /v1/models on every session switch.",
+  "status": "open",                    // open | parked | planned | in-progress | done | rejected
+  "priority": "medium",                 // low | medium | high
+  "tags": ["perf"],
+  "project": {                          // absent = not bound to a project ("global")
+    "id": "proj_abc123",
+    "name": "NetPI"                    // a snapshot; refreshed when the idea is written with a known project
+  },
+  "createdAt": "2026-09-23T20:15:00Z", // ISO 8601 UTC, second precision
+  "updatedAt": "2026-09-23T20:15:00Z",
+  "createdBy": "user",                 // "user" | "agent:<agentId>"
+  "sections": [
+    { "id": "sec-4f0a", "kind": "research", "title": "Findings", "content": "markdown…", "updatedAt": "…" }
+  ],
+  "sessionIds": ["ses_…"],            // sessions that created or updated the idea
+  "sessions": [                        // sessions that worked on the idea (phase 2, below)
+    { "sessionId": "ses_…", "title": "…", "at": "2026-09-28T10:00:00Z", "seq": 42, "note": "…", "seen": false }
+  ],
+  "commits": [                         // commits recorded on the idea (phase 3, below)
+    { "hash": "…", "short": "abc1234", "subject": "…", "at": "2026-09-28T11:00:00Z" }
   ]
 }
 ```
 
+A snapshot export wraps that in a versioned document (`{ "version": 1, "format": "netpi.ideas.export", "ideas": [ … ],
+"cards": [ … ], … }`), and an export is not a live file: editing it changes nothing in the backlog, and nothing is
+re-imported because a file changed.
+
+This is the `doc` of an `ideas_items` row, and it is the format an import reads and an export writes — a document this
+build does not fully understand can be carried through it. `revision` is **not** in it: the revision is a column, and
+it is added to the copy a caller reads (so the document that is stored and the document an editor submits back are the
+same thing without a field of its own).
+
 - Section `kind`: `note | research | plan | requirements | design | decision | blocker | links | todo`. Common synonyms
   are mapped (`spec` → `requirements`, `tasks` → `todo`, …). Anything else becomes `note`. `title` is optional.
-- Idea ids are unique within the file, and section ids are unique within their idea.
-- The file is the source of truth. It is read on every request, so manual edits and `git checkout` show up right away.
-- What a save preserves:
-  - Unknown fields at every level (root, idea, section).
-  - Line endings: CRLF when most of the file's line breaks are CRLF, else LF. New files use LF.
-  - A UTF-8 BOM, if the file has one.
-  - The indentation of the first indented line (tabs or 1–8 spaces). New files use 2 spaces.
-  - What a save does **not** preserve: `//` comments and trailing commas. They are accepted when reading but dropped when
-    the file is written.
-- Writes are atomic: a temp file `.ideas.json.<rand>.tmp` in the same folder is renamed over the file. **There is no
-  in-place fallback**: a rename that still fails after a few tries is reported (`io_error`) and the last valid file
-  stays exactly as it was, because an interrupted in-place write truncates it.
-- Every read and write happens while an OS lock on `.<file>.lock` is held (opened without sharing). A per-plugin
-  semaphore is not enough: a hot reload is a *swap*, so two plugin instances with two sets of locks are briefly live on
-  the same file and their read-modify-write can interleave and lose an idea. The lock is released by the handle, so a
-  crash cannot leave it held.
-- An editor that ignores the lock is not coordinated — writes stay atomic (such an editor can lose its change to a
-  rename, never the other way round), and content that really conflicts is caught by the revision check below rather
-  than by the lock.
-- A file that is not valid JSON is **never overwritten**. Tools return an error, and RPCs fail with code `invalid_file`.
-  A bare top-level array is accepted and wrapped into `{ version, ideas }` on the next save.
+- Idea ids are unique within the backlog, and section ids are unique within their idea. A legacy id that is not of our
+  making is stored and found exactly as it is; only an id that *collides* with an idea already here is given a new one.
+- The database is the source of truth, and there is no second copy of it in memory to go stale: a patch is read,
+  validated and applied to a detached copy of the current row **inside the transaction that writes it**. A patch that
+  fails validation (an empty title, an unknown status) therefore leaves nothing behind — not in the database, and not in
+  the copy a later write starts from.
+- A write is a transaction: either the whole change is stored or none of it is, and a patch that changes nothing is not
+  written at all (no new `revision`, no event). A hot reload is a swap, so two instances of this plugin are briefly live
+  against the same tables; the database serializes them, which is why there is no lock file and no watcher any more.
+- What a save preserves: **unknown fields at every level of the idea** (the idea, its sections, a card, an imported
+  state). The root-level fields of the old JSON file are kept whole in `ideas_metadata` and come back in an export's
+  `root`; the import does not have to understand them to preserve them.
+- `//` comments and trailing commas are accepted when a legacy file is read and not carried into the database. An
+  exported file is plain JSON (LF, two-space indent).
 
 ## Event
 
 | type | scoped | data |
 |---|---|---|
-| `ideas.changed` | no (broadcast) | `{ file: string }`: absolute path, the same string as `ideas.list().file` |
+| `ideas.changed` | no (broadcast) | the `ideas.list` `storage` descriptor — `{ backend: "sqlite", database, scope, schemaVersion, editableFile, importExport }` — plus `file` (the legacy name, kept for older listeners) and `reason?` — which write it was (`add`, `update`, `answer`, …) |
 | `ideas.suggested` | no (broadcast) | `{ suggestion }`: a card a closed chat left waiting. Fires when the save check makes one; the cards also survive a restart, so a window reads them with `ideas.suggestions` on start |
 
-The event fires after any change to the file, whether it came from this plugin (tools or RPC) or from an external
-editor. Changes are debounced by 250 ms, so a burst of writes produces one event. The file is watched from startup.
+The event fires after every write that committed, whether it came from a tool, from an RPC or from another window, and
+never for one that rolled back. It is a **notification, not exactly-once delivery**: a window that missed one (it was
+closed, or it was reconnecting) gets the same state from the next read, and a reconnecting window re-reads canonical
+state rather than trusting what it kept.
 
-**UI:** on `ideas.changed`, call `ideas.list` again. (There is one file, so no file comparison is needed.)
+**UI:** on `ideas.changed`, call `ideas.list` again — it is the canonical read, so a missed event costs a refresh, not
+a stale view.
 
 ## RPC methods
 
-There is one file, so the location parameters of earlier versions are gone: `ideas.list` takes no parameters, and the
-other methods are addressed by `id` alone (ids are unique in the file). `ideas.add` keeps `sessionId`/`projectId` to
-decide the new idea's `project` stamp. Results are plain JSON: ideas are returned exactly as stored, including
-unknown fields.
+There is one backlog, so the location parameters of earlier versions are gone: `ideas.list` takes no parameters, and
+the other methods are addressed by `id` alone (ids are unique in the backlog). `ideas.add` keeps `sessionId`/`projectId`
+to decide the new idea's `project` stamp. Results are plain JSON: an idea is returned exactly as it is stored, including
+unknown fields, plus the `revision` it is at.
+
+Every idea carries an integer **`revision`**, raised by every stored change. `ideas.list`, `ideas.get`, `ideas.add` and
+`ideas.update` all return it, and `ideas.update` takes it back as `expectedRevision` — that is how a stale window is
+turned into a `conflict` instead of a silent overwrite.
 
 Error codes: `bad_request` (invalid input: the message says what is wrong, for example the list of valid statuses or
-projects), `not_found` (idea, session or project), `conflict` (an edit whose `expectedUpdatedAt` is stale, or a card
-another window is answering), `invalid_file` (a file we cannot read or do not understand — it is left alone, never
-replaced), `io_error` (a write that could not complete — the previous file is unchanged).
+projects), `not_found` (idea, session or project — also a card that is gone), `conflict` (an edit whose
+`expectedRevision`/`expectedUpdatedAt` is stale, an id that is already in the backlog, or a cutover that already
+happened), `invalid_file` (a legacy file we cannot read or do not understand — it is left alone, never replaced),
+`io_error` (a file write that could not complete, an export for example).
 
 ### `ideas.list`
 
@@ -130,22 +171,33 @@ replaced), `io_error` (a write that could not complete — the previous file is 
 
 ```ts
 {
-  file: string;                 // absolute path of the (global) ideas file
-  fileName: string;             // "ideas.json"
-  exists: boolean;              // false until the first idea is written
-  ideas: Idea[];                // file order (= the user's manual order)
+  storage: {
+    backend: 'sqlite';          // there is no editable file behind the backlog
+    database: string;           // "netpi.db"
+    scope: 'netpi.ideas';
+    schemaVersion: 1;
+    editableFile: false;
+    importExport: 'json';
+  };
+  ideas: Idea[];                // the user's manual order
+  file: string;                 // deprecated: where the legacy file is, not a live file
+  fileName: string;             // deprecated: the legacy name ("ideas.json")
+  exists: boolean;              // deprecated: true once the backlog holds an idea
 }
 ```
 
-No filtering happens on the server. The tab filters by project, status and tag client-side.
+`file`, `fileName` and `exists` are kept only so an older UI has something to show; `storage` is the answer now, and
+nothing in the plugin writes the file they name. No filtering happens on the server. The tab filters by project, status
+and tag client-side.
 
 ### `ideas.get`
 
-`{ id }` → `Idea`. The id is matched exactly, then case-insensitively, then with an `idea-` prefix added.
+`{ id }` → `Idea` (with its `revision`). The id is matched exactly, then case-insensitively, then with an `idea-`
+prefix added.
 
 ### `ideas.add`
 
-`{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections?, …extra }, prepend?: boolean }` → the created `Idea`
+`{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections?, …extra }, prepend?: boolean }` → the created `Idea` (at `revision: 1`)
 
 - `title` is required. Defaults: `status: "open"`, `priority: "medium"`, `tags: []`, `sections: []`.
 - `tags` may be an array or a comma-separated string. A leading `#` is stripped and duplicates are removed
@@ -159,7 +211,7 @@ No filtering happens on the server. The tab filters by project, status and tag c
 
 ### `ideas.update`
 
-`{ id, patch }` → the updated `Idea`
+`{ id, patch, expectedRevision?, expectedUpdatedAt? }` → the updated `Idea` (at the next `revision`)
 
 `patch` fields (all optional):
 
@@ -171,14 +223,16 @@ No filtering happens on the server. The tab filters by project, status and tag c
 | `priority` | `low` / `medium` / `high` |
 | `tags` | replaces the tags |
 | `project` | rebind the idea: a project id or name, or `{ id, name? }` (a bare reference is resolved, the name snapshot refreshed); `null`, `""`, `"global"` or `"none"` unbinds it |
-| `expectedUpdatedAt` | (a parameter, not a patch field) what the editor read: the update is refused with `conflict` when the idea changed since, so a stale window or a card left open cannot silently overwrite newer content |
+| `expectedRevision` | (a parameter, not a patch field) the revision the editor read: the update is refused with `conflict` when the idea is at a newer one, so a stale window or a card left open cannot silently overwrite newer content |
+| `expectedUpdatedAt` | (a parameter, deprecated) the older form of the same check, still accepted for callers that only have the timestamp. It compares a second-precision value, so two changes in the same second are not a conflict — send `expectedRevision` wherever you can |
 | `sections` | **replaces all sections**, in the given order. An entry whose `id` matches an existing section updates that section: `title`, `content` and `kind`, plus any extra fields the entry carries (`null` removes one). The section's other stored fields are kept. Entries without a known id become new sections. Use this for drag-reordering and inline editing. |
 | `addSections` | `{ kind?, title?, content }[]`, appended |
 | `updateSections` | `{ id, title?, content?, kind? }[]` |
 | `removeSectionIds` | `string[]` |
 | any other field | set to the given value. `null` **removes** the field. `id`, `createdAt`, `createdBy`, `updatedAt` and `sessionIds` are protected. |
 
-`updatedAt` changes only when something actually changed.
+`updatedAt` changes only when something actually changed, and so does `revision`: a patch that changes nothing is
+neither written nor announced.
 
 ### `ideas.delete`
 
@@ -196,7 +250,7 @@ the full id list after a drag-and-drop (reordering a filtered view is safe: the 
 `{ id }` → `string`: markdown for the composer (`ctx.app.insertText(text)`), for example:
 
 ```md
-Implement the following idea from the ideas backlog (`idea-k3x9q2` in ~/.netpi/ideas.json).
+Implement the following idea from the ideas backlog (`idea-k3x9q2` in the ideas backlog).
 Its sections contain earlier research, plans and decisions — use them. Keep the idea up to date with the ideas tool (action update): set the status to "in-progress" when you start and "done" when finished, and add a note section for anything important you learn.
 
 # Cache model list
@@ -249,10 +303,13 @@ the check waits for the run), `already` (this conversation revision was claimed 
 the skips: `no_session`, `subagent`, `short` (fewer than two user turns), `unfinished` (the last turn ended `aborted`,
 `error`, `length` or `content_filter`), `off` (`ideas.saveCheck` is false).
 
-Whether the check may run is recorded per **conversation revision** (the messages the chat has now) with a state:
-`running` is a claim in flight, `done` is the only permanent one, and `failed` — with the reason — may be tried again a
-few times. A check that *ran* and found nothing is `done`, not failed: "nothing worth keeping" is an answer. An old
-aborted turn does not exclude the chat, and a check interrupted by a reload is finished at the next start.
+Whether the check may run is recorded in `ideas_checks`, per **conversation revision** (the messages the chat has now),
+with a state: `running` is a claim in flight — it carries a token and an expiry, so a second close of an unchanged chat
+sees the claim instead of starting a second check, and a claim nobody owns any more (NetPI was stopped mid-check)
+becomes retryable at the next start. `done` is the only permanent state, and `failed` — with the reason — may be tried
+again a few times. A check that *ran* and found nothing is `done`, not failed: "nothing worth keeping" is an answer. An
+old aborted turn does not exclude the chat, and a check whose claim was taken over cannot report over the newer
+outcome.
 
 What runs in the background, in this order:
 
@@ -270,37 +327,67 @@ What runs in the background, in this order:
 Both calls wait for a slot on the backend the chats use (through the agents' scheduler, behind them), and neither runs
 on a paid model unless `ideas.allowPaidModel` says so. A backlog larger than the 51 letters a decision can offer is
 ranked by what the conversation shares with each idea and asked about in bounded windows, so later ideas stay eligible.
-   A `SAVE` becomes a card in `~/.netpi/ideas-pending.json` and the `ideas.suggested` event fires.
+   A `SAVE` becomes a card in `ideas_suggestions` and the `ideas.suggested` event fires.
 
-Nothing reaches the backlog without a click, and the pending file is never an idea: a card is an offer.
+Nothing reaches the backlog without a click, and a card is never an idea: it is an offer, and it stays one until it is
+answered.
 
 ### `ideas.suggestions` and `ideas.resolve`
 
 `ideas.suggestions` takes no arguments → `{ suggestions: [{ id, kind, … }] }`, oldest first. It is a plain read:
-listing the cards never rewrites the file they live in. Two kinds: `save` (a plan a
-closed chat left unsaved — `{ kind: "save", sessionId, sessionTitle, title, summary, at, project }`) and `done` (an idea a
-commit may have finished — `{ kind: "done", ideaId, title, commits: string[], at, project }`). The file is
-`~/.netpi/ideas-pending.json`; it is written atomically and holds the per-chat check marks under `checked` (kept 30 days)
-and, since the commit check, the last commit read per repository under `repos` (kept 60 days).
+listing the cards writes nothing. Two kinds: `save` (a plan a closed chat left unsaved — `{ kind: "save", sessionId,
+sessionTitle, title, summary, at, project }`) and `done` (an idea a commit may have finished — `{ kind: "done", ideaId,
+ideaRevision, title, commits: string[], at, project }`). The cards are rows in `ideas_suggestions`; the check marks are in
+`ideas_checks` (kept 30 days) and the last commit read per repository in `ideas_repos` (kept 60 days). The same chat and
+the same plan make one card however often the check runs, and a `done` card is one per idea.
 
 `ideas.resolve { id, action: "save" | "done" | "discard", edit?: { title?, summary? } }` → `{ saved: idea | null,
-discarded, marked? }`.
+discarded, action, alreadyResolved }`.
 `save` writes the idea (stamped with the card's project, its own `sessions` entry for the chat it came from, and the
 user's `edit` when given); `done` marks the existing idea the card named as `done` and leaves its `commits` where they
-are; `discard` drops the card. The action is checked against the card's kind before the card is consumed.
+are; `discard` drops the card. The action is checked against the card's kind first, so answering a `save` card with
+`done` is a `bad_request` and the card stays.
 
-The two files are updated as one operation: the answer is written to a journal (`ops`) in the pending file *before* the
-backlog is touched and taken out *after*, and an unfinished journal entry is replayed at the next start — so a crash, a
-failed write or a reload in between cannot lose the card and cannot save the idea twice. One window answers a card at a
-time; a second answer is `conflict`. Either way the card leaves `ideas-pending.json`, so a later answer is `not_found`,
-and `ideas.resolved { id, action, card }` tells every other window to drop it. The UI shows the cards above the composer
-and as a "waiting for you" line in the Ideas tab; both re-read the file on reconnect and when they become visible.
+**Answering a card is one transaction**: check the action against the card, write the idea (or mark it done), record the
+resolution in `ideas_resolutions` and take the card out — all of it or none of it. A second window answering the same
+card, or the same call retried after a timeout, reads the recorded answer back with `alreadyResolved: true` and the idea
+it produced, instead of saving a second idea. A card that is gone and has no recorded answer is `not_found`. There is **no
+answer journal any more**: the resolution row is the journal, and it is in the same transaction as its effect, so
+nothing has to be replayed at the next start. `ideas.resolved { id, action, card }` tells every other window to drop the
+card. The UI shows the cards above the composer and as a "waiting for you" line in the Ideas tab; both re-read them
+with `ideas.suggestions` on reconnect and when they become visible.
+
+### `ideas.migration`, `ideas.migrate`, `ideas.export`, `ideas.import`
+
+The cutover runs by itself at the plugin start when there is a legacy file to read. These four are for looking at that,
+doing it on purpose, and moving the backlog between machines.
+
+- **`ideas.migration` `{ }`** → `{ backend: "sqlite", storage, cutover?, sources: [...], imports: [...],
+  orphanedSources? }`. Read-only, and it writes nothing: every resolved source path with its sha256 and its counts
+  (ideas, cards, check marks, cursors, answers in flight), the duplicate or unnamed ids of a source, a source that could
+  not be parsed (`error`, and the file is not touched), the receipts already written, the backend marker, and — after
+  the cutover — a legacy file that reappeared afterwards (`orphanedSources`).
+- **`ideas.migrate` `{ confirm: true, force? }`** → `{ backend, cutover, counts, diagnostics, archive }`. Deliberate:
+  without `confirm: true` it is a `bad_request`, because an automatic import would be the one operation that must never
+  happen because nobody asked. It refuses with `conflict` when the cutover already happened — unless `force: true`,
+  which is how a file an older build wrote afterwards is taken in (merged into what is here, not over it). Everything is
+  written in one transaction or not at all; the archive follows the commit, and a housekeeping failure does not unmake
+  it.
+- **`ideas.export` `{ path?, json? }`** → `{ json, file? }`: a portable snapshot — `format: "netpi.ideas.export"`,
+  `version`, `exportedAt`, the ideas with their ids and the user's order, the cards, the answers already given, the
+  check marks, the repository cursors, and the preserved root-level fields under `root`. With a `path` it is written
+  there too and the absolute path comes back; without one, nothing touches the disk.
+- **`ideas.import` `{ json | path, mode?: "merge" (default) | "replace" | "validate" }`** → `{ ideas, cards, conflicts,
+  unknownFields, imported?, mode }`. `validate` is the preview: the counts, the ids that are already here (a conflict),
+  and whatever in the document this build does not understand. `merge` adds what is not here yet and never overwrites
+  what is; `replace` empties the backlog and the cards first, which is why it has to be named. This is the deliberate
+  transfer, separate from the cutover: an exported file is never re-read because it changed on disk.
 
 ### Close on commit (phase 3)
 
 Every project with a git repository is watched (the git directories the Files plugin resolves — in a worktree `.git` is
 a *file* — debounced 250 ms, and swept every two minutes whether or not a watcher could be created). The last commit
-read per repository is kept in `ideas-pending.json`; a repository is anchored at HEAD only when nothing is remembered
+read per repository is kept in `ideas_repos`; a repository is anchored at HEAD only when nothing is remembered
 for it, so commits made while NetPI was closed are read rather than skipped. The commits themselves are read through the
 Files plugin's `files.commits` — a plugin cannot run `git`.
 
@@ -326,12 +413,14 @@ there is nothing to read and the check does nothing at all.
 
 ## The agent tool: `ideas` (category `ideas`)
 
-One tool with an `action`, so a single schema goes with every request. It works on the single global file. New ideas
-are stamped with the session's project by default; the `project` argument changes that (it is the agent's way to
-reach other projects' backlogs, and `update` can move an idea between projects). Its prompt guideline: *"Record
+One tool with an `action`, so a single schema goes with every request. It works on the one backlog in the database.
+New ideas are stamped with the session's project by default; the `project` argument changes that (it is the agent's way
+to reach other projects' backlogs, and `update` can move an idea between projects). Its prompt guideline: *"Record
 research and plans that are deferred, out of scope or not feasible now in the ideas backlog (ideas, action add), and
 look at the open ideas (action list) before larger work. When you finish the work an idea describes, set it to done
-(action update)."*
+(action update). Title the idea so it makes sense on its own on one line: the user scans titles, not summaries."* The
+help it is asked for on demand starts the same way: the backlog is *"kept in NetPI's own database"*, and deleting is
+up to the user.
 
 | action | args | notes |
 |---|---|---|
@@ -343,16 +432,20 @@ look at the open ideas (action list) before larger work. When you finish the wor
 Deleting is left to the user (the tab): `delete` returns an error that suggests `done` or `rejected` instead. There is
 no parent or merge field, so consolidating ideas means folding each one's text into **sections** of one keeper idea
 (`addSections`, the absorbed idea named in the section title so its id still finds its content) and setting the
-absorbed ones to `done` with a short "Merged into idea-…" note; the file keeps one flat list. The action
+absorbed ones to `done` with a short "Merged into idea-…" note; the backlog keeps one flat list. The action
 is read leniently: synonyms (`create`, `show`, `edit`, `search`…), `close` / `done` / `complete` set the status to done,
 and without an action the arguments decide (an id with changes: update; an id alone: get; a title: add; else list).
-Every result has `details: { file, project?, idea? }`. Invalid input comes back as an `isError` result with a hint (for
-example `Unknown project 'nope'. Known projects: NetPI, aiproxy.`).
+Every result has `details: { project, idea }`; the `idea` is the whole document, `revision` included. A tool update
+sends no `expectedRevision`, so the agent's write is last-writer-wins by design: a chat that means to be careful reads
+the idea (`get`) and works from what it read. Invalid input comes back as an `isError` result with a hint (for example
+`Unknown project 'nope'. Known projects: NetPI, aiproxy.`).
 
 ## UI
 
 - Header: the project filter (the active project's name by default, following the active project until the user picks
-  another; *All projects*, *Global (unbound)*, and every known project), the file path and a **+** button.
+  another; *All projects*, *Global (unbound)*, and every known project), a storage mark and a **+** button. The mark
+  says where the backlog is — *"The ideas backlog lives in the netpi.db database (netpi.ideas, version 1) — it is not a
+  file you can edit"*, from `ideas.list().storage` — because there is no path to open any more.
 - Filters: search over title, summary, tags and sections; the project filter above; a status menu (**Active** = open,
   planned, in-progress; **All**; or one status) with counts; and a **#** tag menu (multi-select). Selected tags show as
   removable chips below the filters.
@@ -363,7 +456,7 @@ example `Unknown project 'nope'. Known projects: NetPI, aiproxy.`).
   `patch.sections` or `updateSections`).
 - The list is grouped by status: **in-progress, planned, open** (the order the work wants them read) each under a
   header with a count, then **parked, done, rejected** collapsed to one line per status (`name  count`, click to
-  expand). Grouping is presentation only — the file order is still the user's, and a status change moves the card
+  expand). Grouping is presentation only — the stored order is still the user's, and a status change moves the card
   (a drag or *Move up/down* orders within the rendered list).
 - New idea: title, summary, priority, a project picker (default: the active project; *Global* for unbound; any other
   project) and tags. The title has to carry the idea on its own — the `ideas` tool help and prompt guideline say so.
@@ -372,5 +465,48 @@ example `Unknown project 'nope'. Known projects: NetPI, aiproxy.`).
 - Actions: "Send to chat" (stages a pointer to the idea in the composer — it never changes the status), "Insert the full text"
   (`ideas.toPrompt` → `ctx.app.insertText`), Delete (with a confirm) and drag to reorder
   (`ideas.reorder`).
-- Refresh on the `ideas.changed` event (the single file, so always) and follow the active project on
-  `ctx.app.onChange`.
+- **Conflicts are shown, not swallowed.** An edit sends the `revision` the card had when it was opened, so a change
+  made elsewhere while it was open is refused with `conflict`: the editor keeps what was typed, a toast says the idea
+  changed somewhere else, and a line at the foot of the tab names the idea — reopen it to see the other version and
+  apply the change again. Nothing is overwritten and nothing typed is lost.
+- Refresh on the `ideas.changed` event (it arrives after every committed write, from this window too) and follow the
+  active project on `ctx.app.onChange`. The list is a plain read: a missed event costs one more `ideas.list`, never a
+  stale card, and the footer line says how many of the ideas are shown and which database they are in.
+
+## Upgrading and going back
+
+The backlog moved out of JSON files once, and the files are still readable afterwards. What each side does with them is
+deliberate, because a storage version is not something to find out by trying to write it.
+
+**A database from a newer NetPI is refused.** The tables carry a storage version (1 now). A build that finds a higher
+one logs an error and registers neither the tab nor the tool, rather than reading a shape it would mangle on the next
+write. Nothing is written, the backlog stays exactly as the newer build left it, and the answer is "update NetPI" —
+that is the only supported direction of travel.
+
+**The marker cannot stop an old build.** The backend marker in `ideas_metadata` is a promise *this* build keeps. A
+NetPI that has already shipped does not read it: started against the same home, an old build finds an empty backlog and
+would write `ideas.json` that nothing reads. What actually protects you is the archive — after the cutover the
+originals are moved out of the place the old build read them from, so it has nothing to read and starts empty rather
+than half-right. There is no bridge release, and nothing here claims an old binary is safe against a database it does
+not know about: a pre-cutover build is protected from the *files*, not from the tables.
+
+**Going back, on purpose**, with the app **stopped**:
+
+- **Move the archived originals back.** Every cutover left a copy of each source and, under `originals/`, the file
+  itself; `<home>/ideas-archive/<timestamp>/manifest.json` says which path each one came from. Put them back and the
+  old build sees the backlog as it was at the cutover — and only that: everything changed since lives in the database
+  and nowhere else, so this loses it. Take an `ideas.export` first if that matters.
+- **Or transfer deliberately**: `ideas.export` gives a snapshot document, `ideas.import` takes one in (`merge` by
+  default). This is how ideas move to another machine, and it is the only way back that can carry the work done since
+  the cutover.
+
+**Rolling the database back is a different thing.** The ideas tables live in the shared `netpi.db` beside the sessions,
+messages, projects, agents and usage. Restoring a copy of that database from before the cutover therefore also rolls
+back every chat, and it drops the ideas tables with their data — a whole-home decision, not an Ideas one. The Ideas-only
+paths are the export and the archive above.
+
+**A backup is enough.** A snapshot is now `netpi.db` and `settings.json`, so the ideas, their cards, the answers given,
+the check marks and the cursors travel inside the consistent database copy: a backup needs no Ideas plugin and cannot
+be a snapshot that quietly left the backlog out (docs/BACKUPS.md). An older snapshot that still carries the JSON files
+verifies and restores too — restore it into a new home and the plugin imports those files at the first start, which is
+the cutover again, from a copy of the originals rather than from your live ones.

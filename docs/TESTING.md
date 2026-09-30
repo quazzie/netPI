@@ -46,10 +46,16 @@ dotnet tests/NetPI.Providers.Tests/bin/Debug/NetPI.Providers.Tests.dll   # AiPro
 dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll           # read/write/edit/grep/find/ls, bash/pwsh, processes, files.open, files.git
 dotnet tests/NetPI.Agent.Tests/bin/Debug/NetPI.Agent.Tests.dll           # agent loop, steering/queue/abort, subagents, agents, persistence, context notices, goals, skills
 dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll               # retry, nudge, tool repair, compaction, ideas, work, diagnostics, todo, web, media, ssh
-dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll ideas        # the ideas flow only: tools and RPC, storage failures (IdeasStorageTests),
-                                                                         # the chat checks (IdeasCheckTests), commit tracking (IdeasCommitTests)
-                                                                         # (its load tests load the built plugins from artifacts/app, or from NETPI_APP_DIR)
+dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll ideas        # the ideas flow only: tools and RPC (IdeasTests), the storage and the
+                                                                         # answer transaction (IdeasStorageTests, ReviewStorageTests), the cutover,
+                                                                         # export and import (IdeasMigrationTests), the chat checks (IdeasCheckTests),
+                                                                         # commit tracking (IdeasCommitTests). They run against a real temporary
+                                                                         # SQLite database, not a fake; the load tests load the built plugins from
+                                                                         # artifacts/dev/app (what a plain build makes), or from NETPI_APP_DIR
 tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests                        # kernel: SQLite, settings, bus, registries, sessions, catalog, server, plugins
+dotnet tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests.dll backup  # the snapshot: the WAL copy, retention, manifest verification, an offline restore
+                                                    # into a new home, and the SQLite-backed ideas backlog travelling in it and coming
+                                                    # back (BackupTests, ReviewBackupTests)
 ```
 
 Every runner takes optional name filters (`… NetPI.Agent.Tests.dll abort scheduler`) and exits with 0 when all selected
@@ -59,11 +65,15 @@ The web tool tests serve pages and fake SearXNG / Brave endpoints from a local K
 config or `BRAVE_API_KEY`. The `screenshot` test drives a real headless Edge/Chrome/Chromium; without one installed it
 checks everything except the page screenshots and says so.
 
-The ideas suites inject the failures the happy paths cannot show: a file an editor holds, a backlog that cannot be
-written, two stores on one file (a reload swap), a card answered twice, an interrupted answer replayed at the next
-start, a decision that does not answer, a burst of 45 commits, a rewritten history and a worktree. The commit tests
-drive the check directly through `IdeaCommitCheck.SweepNowAsync` against a fake repository that behaves like
-`git log since..until`, so each case is exact and needs no git.
+The ideas suites inject the failures the happy paths cannot show, and they need a **real database** to show them: the
+aux harness opens an actual SQLite file in a temporary home (it references `NetPI.Host` for the real `Database`), so a
+rejected patch leaving no trace, two plugin instances keeping each other's write, a rolled-back transaction, a revision
+that survives a restart and one effect for two answers of a card are what is actually verified — an in-memory fake
+proves none of them. On top of that: a malformed legacy file fails the whole cutover and leaves the originals untouched,
+a cutover that already happened is refused, a restart after the commit does not import again, a check claim nobody owns
+any more is retryable, a decision that does not answer, a burst of 45 commits, a rewritten history and a worktree. The
+commit tests drive the check directly through `IdeaCommitCheck.SweepNowAsync` against a fake repository that behaves
+like `git log since..until`, so each case is exact and needs no git.
 
 The SSH tool tests use a fake launcher (no ssh runs). With `NETPI_SSH_TEST_HOSTS=nuc,server` the `ssh live` test also
 runs against those aliases of your `~/.ssh/config` (Linux hosts whose keys are set up): quoting, write/read/edit
@@ -218,8 +228,9 @@ Coverage (run `--list` for the names):
   orchestrator → lead → helper (the lead's spawn waits) without deadlock, `agent` `send`; three top-level chats on one model.
 - **skills**: a project's `.agents/skills` skill in `skills.list`, the `skills` catalog notice and `/skill:name` with the
   skill's instructions sent to the model (not in the system prompt), the notice tied to its message.
-- **ideas**: the `ideas` tool (add) writes the global `~/.netpi/ideas.json` stamped with the session's project,
-  `ideas.list`, `ideas.changed`, `ideas.add`.
+- **ideas**: the `ideas` tool (add) writes the backlog in the app's own database, stamped with the session's project —
+  `ideas.list` says so (`storage.backend` is `sqlite`, `storage.scope` is `netpi.ideas`) — and no `ideas.json` is written
+  to the home; `ideas.changed` carries the same payload, `ideas.add` appends.
 - **hot reload**: overwriting `NetPI.Nudge.dll` → `plugins.changed`, reload, `plugins.unloaded { collected: true }`, still
   works; `plugins.reload` of providers/tools/hooks/agents/context; reloading the agent runtime mid-run; reloading the provider
   while a stream is open.

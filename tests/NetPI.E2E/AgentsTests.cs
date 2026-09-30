@@ -214,7 +214,7 @@ public static class AgentsTests
             Check.Equal(0, (await env.Rpc("ask.pending", new { })).Arr().Count());
         });
 
-        r.Add("ideas: the ideas tool writes the global ~/.netpi/ideas.json (stamped with the project); ideas.list and ideas.changed see it", async () =>
+        r.Add("ideas: the ideas tool writes the backlog in the database (stamped with the project); ideas.list and ideas.changed see it", async () =>
         {
             var p = await env.NewProject("ideas");
             var s = await env.NewSession(projectId: p.S("id"));
@@ -222,25 +222,29 @@ public static class AgentsTests
             var mark = env.Client.Mark();
             var run = await env.Run(sid, "Remember this [s:ideas title=\"Cache the model list\"]");
             Check.Contains(run.FinalText, "IDEAS-DONE");
-            var file = Path.Combine(env.Home, "ideas.json");
-            Check.True(File.Exists(file), "the global ideas file");
-            using var doc = JsonDocument.Parse(File.ReadAllText(file));
-            var idea = doc.RootElement.Arr("ideas").Single();
+
+            // The backlog is in NetPI's own database, where ideas.list says it is.
+            var list = await env.Rpc("ideas.list", new { });
+            Check.Equal("sqlite", list.P("storage").S("backend"));
+            Check.Equal("netpi.ideas", list.P("storage").S("scope"));
+            var idea = list.Arr("ideas").Single();
             Check.Equal("Cache the model list", idea.S("title"));
             Check.Equal("high", idea.S("priority"));
             Check.True((idea.S("createdBy") ?? "").StartsWith("agent:"), "createdBy agent");
             Check.Equal("research", idea.Arr("sections").Single().S("kind"));
             Check.Equal(p.S("id"), idea.P("project").S("id"), "stamped with the session's project");
             Check.Equal(p.S("name"), idea.P("project").S("name"));
-            var list = await env.Rpc("ideas.list", new { });
-            Check.Equal(file, list.S("file"));
-            Check.Equal(idea.S("id"), list.Arr("ideas").Single().S("id"));
-            var ev = await env.Client.WaitFor(mark, e => e.Type == "ideas.changed" && e.D.S("file") == file, "ideas.changed", 5000);
+            Check.True(idea.S("revision") is not null, "and it carries the revision an editor submits back");
+
+            var ev = await env.Client.WaitFor(mark, e => e.Type == "ideas.changed" && e.D.S("backend") == "sqlite", "ideas.changed", 5000);
             Check.True(ev is not null);
-            // the RPC side writes the same file
+
+            // The RPC side writes the same backlog.
             await env.Rpc("ideas.add", new { projectId = p.S("id"), idea = new { title = "From the UI", tags = "ui, e2e" } });
-            using var doc2 = JsonDocument.Parse(File.ReadAllText(file));
-            Check.Equal(2, doc2.RootElement.Arr("ideas").Count());
+            var after = await env.Rpc("ideas.list", new { });
+            Check.Equal(2, after.Arr("ideas").Count());
+            Check.Equal("From the UI", after.Arr("ideas").Last().S("title"), "appended where the user expects it");
+            Check.False(File.Exists(Path.Combine(env.Home, "ideas.json")), "no ideas file is written any more");
         });
     }
 }

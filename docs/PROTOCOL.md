@@ -170,7 +170,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `processes.output` | netpi.tools.shell | `{ id, tail? }` → `string` |
 | `processes.kill` | netpi.tools.shell | `{ id }` → `bool` |
 | `decide.decision` | netpi.decide | `{ messages, branches: [{ id?, content, labels }], model?, share_state? }` → NInfer's `/v1/decision` answer through the same server (`{ branches: [{ id, probabilities, mass, … }], usage, … }` plus `ms`); thinking off unless the caller sets it. The `messages` are the shared state NInfer caches across requests. Errors keep the server's code and request id |
-| `ideas.list` `ideas.get` `ideas.add` `ideas.update` `ideas.delete` `ideas.reorder` `ideas.toPrompt` `ideas.quickAdd` `ideas.recall` `ideas.attach` `ideas.closed` `ideas.suggestions` `ideas.resolve` | netpi.ideas | see `docs/PLUGIN-IDEAS.md` |
+| `ideas.list` `ideas.get` `ideas.add` `ideas.update` `ideas.delete` `ideas.reorder` `ideas.toPrompt` `ideas.quickAdd` `ideas.recall` `ideas.attach` `ideas.closed` `ideas.suggestions` `ideas.resolve` `ideas.migration` `ideas.migrate` `ideas.export` `ideas.import` | netpi.ideas | the backlog lives in the app's database; every idea carries a `revision`, and `ideas.list` describes where: see `docs/PLUGIN-IDEAS.md` |
 | `work.snapshot` | netpi.work | → `{ agents, runs, processes, usage, time, errors? }` (each part `null` when unavailable; see `docs/PLUGIN-WORK.md`) |
 | `diag.overview` | netpi.diagnostics | → `{ time, app, process, plugins, models, agents, runs, calls: { running, last15m }, tools, processes, problems, more }`: start here (see `docs/DEBUGGING.md`) |
 | `diag.problems` | netpi.diagnostics | → `{ severity: 'error'|'warn'|'info', area, message, hint? }[]`, worst first |
@@ -231,9 +231,9 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `usage.recorded` | no | `{ provider, model, usage }` (agent turns) |
 | `usage.changed` | no | `BudgetStatus`, after model calls were recorded (debounced) |
 | `process.started` / `process.exited` | no | `{ process: ProcessInfo }` |
-| `ideas.changed` | no | `{ file }` |
+| `ideas.changed` | no | `{ backend: 'sqlite', database, scope, schemaVersion, file, reason? }` – after every write that committed (never one that rolled back), so every window re-reads canonical state; `file` is the legacy name, `reason` what wrote it. A notification, not exactly-once delivery |
 | `ideas.suggested` | no | `{ suggestion }` – a card a closed chat (or a commit sweep) left waiting for the user |
-| `ideas.resolved` | no | `{ id, action?, card? }` – a card left `ideas-pending.json`: answered, discarded, or finished after a restart. A window that still shows the card drops it; both the composer and the Ideas tab re-read the file on reconnect and when they become visible |
+| `ideas.resolved` | no | `{ id, action?, card? }` – a card was answered, discarded, or finished. A window that still shows the card drops it; both the composer and the Ideas tab re-read the cards with `ideas.suggestions` on reconnect and when they become visible |
 
 ## Plugin UI tabs
 

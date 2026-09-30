@@ -56,15 +56,16 @@ headless for any browser.
 - **Skills** ([Agent Skills](https://agentskills.io) standard): folders with a `SKILL.md` in the project
   (`.agents/skills`, `.netpi/skills`) or globally (`~/.agents/skills`, `~/.netpi/skills`). Agents get the catalog as a
   notice and load a skill with the `skill` tool when a task matches; `/skill:name` loads one for your message.
-- **Ideas backlog:** agents and you park research, plans and requirements in one global `~/.netpi/ideas.json` (each idea
-  carries its project; the `ideas` tool + the Ideas tab); "send to chat" when it's time to implement, and the agent
-  closes it when done. Cards a closed chat leaves, and the per-repository commit cursors, live next to it in
-  `~/.netpi/ideas-pending.json`, and a backup carries both.
+- **Ideas backlog:** agents and you park research, plans and requirements in one backlog, kept in NetPI's own database
+  beside your chats (each idea carries its project; the `ideas` tool + the Ideas tab); "send to chat" when it's time to
+  implement, and the agent closes it when done. The cards a closed chat leaves and the per-repository commit cursors are
+  tables in that same database, so a backup carries the whole backlog without the Ideas plugin. A backlog from before
+  the move is imported once at the first start, and its files are archived instead of written again.
 - **UI:** left and right panels with vertical, pluggable tabs (Sessions, Projects, Files | Work, Ideas,
   Diagnostics), collapsible thinking/tool blocks, diffs, live shell output, pruned chat history with "load earlier",
   slash commands and `@` file mentions. Window size and position are remembered.
-- **Backups:** automatic database/settings snapshots, manual backup and verification in Settings → Data & backups,
-  plus [restore into a new home](docs/BACKUPS.md).
+- **Backups:** automatic database/settings snapshots (the ideas backlog travels inside the database copy), manual backup
+  and verification in Settings → Data & backups, plus [restore into a new home](docs/BACKUPS.md).
 - **SQLite** storage (the OS's own SQLite: no native packages to ship).
 
 ## Quick start (Windows)
@@ -123,7 +124,7 @@ web/ (Svelte 5): the UI + plugin tab kit        │   NetPI.Ideas · NetPI.Work 
                                                 └─ ~/.netpi/plugins/ (your own)
 ```
 
-Data: `~/.netpi/` — `settings.json`, `netpi.db` (sessions, messages, projects, agents, usage), `AGENTS.md`, `skills/`,
+Data: `~/.netpi/` — `settings.json`, `netpi.db` (sessions, messages, projects, agents, usage, the ideas backlog), `AGENTS.md`, `skills/`,
 `logs/`, `webview/`, `window.json`, `workspace/` (cwd of sessions without a project).
 
 ## Develop

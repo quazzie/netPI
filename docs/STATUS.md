@@ -34,8 +34,9 @@ output; these changes have not been installed into the user's running app by thi
 
 - Reservations estimate provider billing; they are not a guaranteed dollar ceiling. Missing final bills retain a
   conservative estimate. The UI identifies those amounts; there is no automatic provider-invoice reconciliation.
-- Backups capture the database and settings sequentially. Project files, global ideas/instructions, skills,
-  plugins and external credentials need separate backup. Copies on the same disk do not protect against disk loss.
+- Backups capture the database and settings sequentially. Project files, global instruction files, skills, plugins and
+  external credentials need separate backup; the ideas backlog is plugin-owned tables in that database, so it travels
+  inside the database copy. Copies on the same disk do not protect against disk loss.
 - Guardrails are pattern/path checks, not an OS sandbox. Arbitrary code and trusted plugins retain user privileges.
 - Reloading the agents plugin can temporarily exceed configured execution slots for already-running agents;
   persistent budget reservations are still shared across the old and new plugin instances.

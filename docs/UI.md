@@ -493,11 +493,14 @@ open or closed state of each section is remembered (`storageKey`).
   `work.snapshot` (250ms; 400ms after `usage.recorded` and `usage.changed`) reconciles them. A 30s timer refreshes the snapshot
   while the tab is visible; while it is hidden, events only mark it dirty and it refreshes on show.
 
-**Ideas** (`netpi.ideas`, right). Shows the single global backlog (`~/.netpi/ideas.json`, every idea carrying a
-`project`) with `ideas.list` (no parameters) and `projects.list` for the filter.
+**Ideas** (`netpi.ideas`, right). Shows the one backlog, which lives in NetPI's own database (every idea carrying a
+`project`), with `ideas.list` (no parameters) and `projects.list` for the filter.
 
 - The header shows the project filter (the active project by default, following the active project until the user
-  picks *All projects*, *Global (unbound)* or another project), the file path and a **+** button.
+  picks *All projects*, *Global (unbound)* or another project), a **storage mark** and a **+** button. The mark comes
+  from `ideas.list().storage` and says which database and scope the backlog is in ("… lives in the netpi.db database
+  (netpi.ideas, version 1) — it is not a file you can edit"): there is no path to open any more, so it is a fact, not
+  a link. The footer line says how many of the ideas are shown and names the database.
 - Filters: search over title, summary, tags and sections; the project filter above; a status menu (**Active** = open,
   planned, in-progress; **All**; or one status), each with counts; and a **#** tag menu (multi-select; an idea matches
   when it has any of the selected tags). Selected tags show as removable chips below the filters.
@@ -510,7 +513,13 @@ open or closed state of each section is remembered (`storageKey`).
 - Reordering uses the grip (shown on hover; HTML5 drag with a drop indicator) or **Move up / Move down** in the
   ⋯ menu, and sends the full id order to `ideas.reorder`. Delete is in the ⋯ menu too.
 - **Send to chat** calls `ideas.toPrompt` and `ctx.app.insertText`.
-- The list refetches on `ideas.changed` (one file, so always) and the default filter follows the active project on
+- **Edits carry a revision.** An update sends the `revision` the idea had when its card was opened
+  (`expectedRevision`), so a change made elsewhere in the meantime comes back as a `conflict` instead of overwriting
+  it. The editor keeps what was typed, a toast says the idea changed somewhere else, and a line at the foot of the tab
+  names it — reopen the card, see the other version, apply the change again. Nothing typed is thrown away.
+- The list refetches on `ideas.changed`, which now arrives after every committed write (from this window too, and from
+  the agent). It is a notification rather than a guarantee, so the tab treats `ideas.list` as the canonical read: a
+  missed event costs one more refetch, never a stale card. The default filter follows the active project on
   `ctx.app.onChange`.
 
 **Diagnostics** (`netpi.diagnostics`, right). `diag.snapshot { events: 300 }` plus a runtime line (pid, working
@@ -746,4 +755,6 @@ names or an inline `<svg …>` string.
 - A `UiTabInfo.panel` sent as a number (enum without a string converter) is accepted: `0` is left, `1` is right.
 - The Work tab reads `usage.summary` providers' `budgetTokens` and `budgetUsed` (input + output + cache write),
   `AgentSlots.status`/`available`/`unavailable`/`disabled`, `SlotHolder.label`/`since`, and `ProcessInfo.outputBytes`/`background`/`agentId`.
-- The Ideas tab expects `ideas.changed { file }` after every write, including writes made by agents.
+- The Ideas tab expects `ideas.changed { backend: 'sqlite', database, scope, schemaVersion, file, reason? }` after every
+  committed write, including writes made by agents, and reads `ideas.list().storage` for where the backlog lives. It
+  sends `expectedRevision` on an edit and shows a refused one as a conflict instead of losing the text.

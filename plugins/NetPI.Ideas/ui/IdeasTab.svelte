@@ -7,7 +7,7 @@
 
   let { ctx } = $props();
 
-  let list = $state.raw(null); // ideas.list result (the single global file)
+  let list = $state.raw(null); // ideas.list result (the backlog in NetPI's database)
   let projects = $state.raw([]); // projects.list
   let error = $state('');
   let loading = $state(true);
@@ -32,6 +32,7 @@
   let unsaved = $state.raw([]);
   let showUnsaved = $state(false);
   let busy = $state(null);
+  let conflict = $state.raw(null); // { id, message } for the idea an update was refused for
 
   async function loadUnsaved() {
     try {
@@ -52,7 +53,7 @@
       unsaved = unsaved.filter((s) => s.id !== id);
       await load();
     } catch (e) {
-      // Answered somewhere else: the card is gone from the file, not an error to keep on screen.
+      // Answered somewhere else: the card is answered already, not an error to keep on screen.
       if (/not_found|no longer|gone|conflict/i.test(e?.message ?? '')) await loadUnsaved();
       else error = e?.message ?? String(e);
     } finally {
@@ -95,7 +96,7 @@
     const offCards = ctx.on('ideas.suggested', () => {
       if (visible) loadUnsaved();
     });
-    // A card answered in the composer or in another window leaves the file: drop it here too.
+    // A card answered in the composer or in another window is gone: drop it here too.
     const offResolved = ctx.on('ideas.resolved', (d) => {
       unsaved = unsaved.filter((s) => s.id !== d?.id);
     });
@@ -109,6 +110,9 @@
 
   // ------------------------------------------------------------------ filtering
   const ideas = $derived(list?.ideas ?? []);
+  // Where the backlog lives, as ideas.list describes it. A hint, not a file to open: the ideas are tables in the
+  // database, and the JSON files of the earlier versions are read once by the cutover.
+  const storage = $derived(list?.storage ?? null);
   const effProject = (i) => i.project?.id ?? null;
   const counts = $derived.by(() => {
     const c = { all: ideas.length, active: 0 };
@@ -189,8 +193,25 @@
   }
 
   const api = {
-    update: async (id, patch) => {
-      const r = await call('ideas.update', { id, patch });
+    // The revision the card had when it was opened: another window (or the agent) changing the idea in the meantime is
+    // a conflict, not something to overwrite. The editor keeps what was typed and says what happened.
+    update: async (id, patch, revision) => {
+      const params = { id, patch };
+      const had = revision ?? list?.ideas?.find((i) => i.id === id)?.revision;
+      if (had != null) params.expectedRevision = had;
+      let r = null;
+      try {
+        r = await ctx.rpc('ideas.update', params);
+      } catch (e) {
+        if (/conflict|changed since/i.test(e?.message ?? '')) {
+          conflict = { id, message: e.message };
+          ctx.app.toast('This idea changed somewhere else - your text is still here. Reload it and apply your change again.', 'error');
+          return null;
+        }
+        ctx.app.toast(`ideas.update: ${e.message}`, 'error');
+        return null;
+      }
+      conflict = null;
       if (r) replaceIdea(r);
       return r;
     },
@@ -315,8 +336,8 @@
         </button>
       {/snippet}
     </Menu>
-    {#if list?.file}
-      <span class="file" title={list.file}><Icon name="file" size={12} /></span>
+    {#if storage}
+      <span class="file" title="The ideas backlog lives in the {storage.database} database ({storage.scope}, version {storage.schemaVersion}) - it is not a file you can edit"><Icon name="archive" size={12} /></span>
     {/if}
     <IconButton icon="plus" title="New idea" size="sm" pressed={adding} onclick={() => (adding = !adding)} />
   </div>
@@ -449,9 +470,12 @@
       {/each}
     {/if}
   </div>
+  {#if conflict}
+    <div class="np-dim conflict" role="status">Someone else changed “{conflict.id}”. Your edit is still on screen - reopen the idea to see their version, then save again.</div>
+  {/if}
   {#if list}
     <div class="foot np-dim">
-      {shown.length} of {ideas.length} · {basename(list.file)}{list.exists ? '' : ' (not created yet)'}
+      {shown.length} of {ideas.length}{#if storage}&nbsp;· {storage.database}{/if}
     </div>
   {/if}
 </div>

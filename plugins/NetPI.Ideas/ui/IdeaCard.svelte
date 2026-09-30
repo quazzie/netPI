@@ -53,7 +53,7 @@
     const id = idea.id; // the card can be gone (list refetched) by the time the dialog resolves
     const ok = await confirm({
       title: 'Delete idea?',
-      message: `“${idea.title}” and its ${idea.sections?.length ?? 0} section(s) will be removed from the ideas file. Consider setting the status to done or rejected instead.`,
+      message: `“${idea.title}” and its ${idea.sections?.length ?? 0} section(s) will be removed from the backlog. Consider setting the status to done or rejected instead.`,
       confirmLabel: 'Delete',
       danger: true,
     });
