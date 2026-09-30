@@ -204,10 +204,28 @@ public sealed class ModelErrorDecision
 }
 
 /// <summary>
+/// Watches every model call without deciding anything: metering, diagnostics. Register implementations with
+/// <c>context.Services.Register&lt;IAgentCallObserver&gt;(...)</c>; they run in ascending <see cref="Order"/> after the
+/// hooks, on the message the run goes on with.
+/// <para>
+/// An <see cref="IAgentHook"/> that only counts or records belongs here instead: hook dispatch ends at the first
+/// non-null decision, so a hook placed after the first decision-maker (tool repair, nudge, loops) would never see the
+/// calls that one decided, and a budget it keeps would undercount what the run really cost.
+/// </para>
+/// </summary>
+public interface IAgentCallObserver
+{
+    int Order => 0;
+    /// <summary>After each model call, whatever the hooks decided (the message is already persisted).</summary>
+    ValueTask OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant) => ValueTask.CompletedTask;
+}
+
+/// <summary>
 /// Agent lifecycle hooks (pi-style extension points). Register implementations with
 /// <c>context.Services.Register&lt;IAgentHook&gt;(...)</c>. Hooks run in ascending <see cref="Order"/>.
 /// For decision hooks the first non-null decision wins, except <see cref="OnBeforeToolCallAsync"/>: every hook sees the
-/// call, with the arguments the hooks before it changed, and a block ends it.
+/// call, with the arguments the hooks before it changed, and a block ends it. Work that must happen whatever the hooks
+/// decide belongs in an <see cref="IAgentCallObserver"/>.
 /// </summary>
 public interface IAgentHook
 {

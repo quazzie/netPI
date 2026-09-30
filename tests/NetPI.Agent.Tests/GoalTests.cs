@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 using NetPI.Goal;
+using NetPI.Nudge;
 
 namespace NetPI.Agent.Tests;
 
@@ -14,6 +15,7 @@ public static class GoalTests
         t.Add("goal: stopping the run pauses it; resume starts again with a resumed notice", StopAndResume);
         t.Add("goal: a failed run pauses it with the error", FailedRun);
         t.Add("goal: goal.maxContinuations and the token budget pause it", Limits);
+        t.Add("goal: a call a hook decided (nudge) is metered too, with the nudge plugin running", NudgedCallsCounted);
         t.Add("goal: blocked by the model stops the loop; goal_set is refused while a goal is open", BlockedAndSetRefused);
         t.Add("goal: paused by the user mid-run, the model hears it at its next call and no run follows", PausedMidRun);
         t.Add("goal: goal_set on the user's request starts the loop", SetByModel);
@@ -198,6 +200,37 @@ public static class GoalTests
         var set = await h.Rpc.CallAsync("goal.set", new { sessionId = d.Id, objective = "Default budget" });
         Check.Equal(5000L, long.Parse(set!["tokenBudget"]!.ToJsonString()));
         await SettledAsync(h, d.Id, "complete");
+    }
+
+    /// <summary>
+    /// The token budget is what the run cost, not what the calls the goal's own hook happened to see cost: a call that
+    /// another hook decided (here: nudge, on a textual tool call) ends the hook chain before a metering hook, so the
+    /// goal must be metered where nothing can skip it.
+    /// </summary>
+    private static async Task NudgedCallsCounted()
+    {
+        var h = await TestHost.StartAsync();
+        await using var _h = h;
+        await h.StartPluginAsync(new GoalPlugin());
+        await h.StartPluginAsync(new NudgePlugin());
+        var step = 0;
+        h.Catalog.Handler = (r, ct) => ++step switch
+        {
+            // the first answer is a tool call written as text: the nudge hook decides that call, and the run goes on
+            1 => Reply.Text("<tool_call>\n<function=read>\n<parameter=path>a</parameter>\n</function>\n</tool_call>"),
+            2 => Reply.Tool("goal_update", new { status = "complete", summary = "Done." }),
+            _ => Reply.Text("All done."),
+        };
+        var s = h.NewSession();
+        await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Meter every call", tokenBudget = 1000 });
+        await SettledAsync(h, s.Id, "complete");
+
+        Check.True(h.Messages(s.Id).Any(m => m.Role == MessageRole.Notice && m.MetaString("kind") == "nudge"), "the nudge hook decided the first call");
+        var assistants = h.Messages(s.Id).Where(m => m.Role == MessageRole.Assistant && m.Usage is not null).ToList();
+        Check.Equal(3, assistants.Count, "three model calls: the nudged one, the one that completed the goal, the answer");
+        var spent = assistants.Sum(m => m.Usage!.InputTokens + m.Usage.CacheWriteTokens + m.Usage.OutputTokens);
+        Check.Equal(3 * 110L, spent, "110 tokens per call");
+        Check.Equal(spent, IntOf(h, s.Id, "tokensUsed"), "the goal is metered every call, not only the ones its hook saw");
     }
 
     private static async Task BlockedAndSetRefused()
