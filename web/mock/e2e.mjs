@@ -789,6 +789,64 @@ log('plugin tab: Files');
   check('files: search (files.search)', (await page.locator('.files .frow', { hasText: 'chatItems.js' }).count()) > 0);
   await page.locator('.files .np-search input').fill('');
   await ta.fill('');
+
+  // A workspace switch mid-fetch: the old workspace's late answers must not apply, and an open search must rerun
+  log('files: a workspace switch drops late answers from the old workspace');
+  {
+    // a second, real workspace: the mock's own folder as a project (its top level is not the repo root's)
+    const ALT = path.join(repo, 'web', 'mock');
+    const alt = await rpcCall('projects.create', { name: 'altws', path: ALT });
+    const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+    const norm = (p) => p.toLowerCase().replaceAll('\\', '/');
+    const calls = () => rpcCall('mock.filesCalls');
+    const lastIdx = async (m, root) => (await calls()).reduce((i, c, j) => (c.m === m && norm(c.root) === norm(root) ? j : i), -1);
+    const row = (name) => page.locator('.files .frow .fname', { hasText: new RegExp(`^${name.replace(/\./g, '\\.')}$`) });
+    const flatRow = (name) => page.locator('.files .frow.flat .fname', { hasText: new RegExp(`^${name.replace(/\./g, '\\.')}$`) });
+    try {
+      // (1) the old workspace's listing is in flight when the tab switches; its answer arrives last
+      await rpcCall('mock.filesDelay', { ms: 2500 });
+      await page.locator('.files .head button[title="Refresh"]').click();
+      await page.waitForTimeout(300); // inside the 2500 ms window
+      await rpcCall('mock.filesDelay', { ms: 100 }); // read when the new workspace's requests are handled
+      await rpcCall('sessions.setProject', { id: sid, projectId: alt.id }); // the tab's workspace → web/mock
+      const n0 = (await calls()).length;
+      for (let i = 0; i < 60; i++) {
+        if ((await calls()).slice(n0).some((c) => c.m === 'files.list' && norm(c.root) === norm(repo))) break; // the late answer was served
+        await page.waitForTimeout(100);
+      }
+      await page.waitForTimeout(400); // the UI has had the late answer in hand
+      const iAlt = await lastIdx('files.list', ALT);
+      const iRepo = await lastIdx('files.list', repo);
+      const rootShown = norm(await page.locator('.files .head .rpath').innerText());
+      check(
+        'files: the late old-workspace listing is not applied',
+        rootShown === norm(ALT) && (await row('e2e.mjs').count()) > 0 && (await row('fake-openai.mjs').count()) > 0 && (await row('AGENTS.md').count()) === 0,
+        `root now: ${rootShown || '∅'}`,
+      );
+      check("files: the old workspace's late answer really arrived, after the new one's",
+        iRepo > iAlt >= 0, `served: new @${iAlt}, late old @${iRepo} of ${(await calls()).length}`);
+      // (2) the search the user left open: a workspace switch reruns it for the new workspace, not drops it
+      await rpcCall('mock.filesDelay', { ms: 0 });
+      await page.locator('.files .np-search input').fill('readme');
+      await page.waitForTimeout(700); // debounce + the search in this workspace: no hits here
+      const n1 = (await calls()).length;
+      const netpi = (await rpcCall('projects.list')).find((p) => p.name === 'netpi');
+      await rpcCall('sessions.setProject', { id: sid, projectId: netpi.id }); // the same query, the other workspace
+      await page
+        .waitForFunction(() => [...document.querySelectorAll('.files .frow.flat .fname')].some((e) => e.textContent === 'README.md'), null, { timeout: 5000 })
+        .catch(() => {});
+      const reruns = (await calls()).slice(n1).filter((c) => c.m === 'files.search');
+      check(
+        'files: a workspace switch reruns the open search for the new workspace',
+        (await flatRow('README.md').count()) > 0 && reruns.some((c) => norm(c.root) === norm(repo)),
+        `searches after the switch: ${reruns.map((c) => (norm(c.root) === norm(repo) ? 'repo' : 'alt')).join(', ') || 'none'}`,
+      );
+      await page.locator('.files .np-search input').fill('');
+    } finally {
+      await rpcCall('mock.filesDelay', { ms: 0 });
+    }
+    await rpcCall('projects.delete', { id: alt.id }); // keep the later project sections on the seeded state
+  }
   await openStripTab('left', 'Sessions');
 }
 
