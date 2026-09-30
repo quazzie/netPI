@@ -92,7 +92,14 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
         if (total == 0) return ToolResult.Ok("(empty file)", Details(0, 0, false));
 
         var offset = offsetArg ?? 1;
-        if (offset < 0 && total is { } known) offset = Math.Max(1, known + offset + 1); // -100 = last 100 lines
+        // A negative offset is counted from the end, so it needs the total. A streamed page that did not reach the end
+        // does not have one: that combination is not reachable today (ReadLarge resolves a negative offset itself, and
+        // only then calls here), and an error is the right answer if a future caller ever passes it.
+        if (offset < 0)
+        {
+            if (total is not { } fromEnd) return ToolResult.Error($"offset {offset} counts from the end, which a page of this file cannot answer without reading it; use a positive offset.", Details(0, 0, false));
+            offset = Math.Max(1, fromEnd + offset + 1); // -100 = last 100 lines
+        }
         if (offset == 0) offset = 1;
         if (total is { } t && offset > t)
             return ToolResult.Error($"offset {offset} is past the end of the file: {Rel(ctx, full)} has {t} line{(t == 1 ? "" : "s")}.", Details(0, 0, false));
