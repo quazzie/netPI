@@ -272,24 +272,49 @@ public sealed class CompactionService(IPluginContext ctx)
         return (FileLists.Strip(summary) + FileLists.Format(read, modified), calls, read, modified);
     }
 
+    /// <summary>The summarizer's window, its output allowance for this budget and the room left for a chunk (no previous summary).</summary>
+    private static (int Window, int MaxOut, int BudgetChars) RollBudget(ModelInfo model, CompactionOptions o, int budget)
+    {
+        var window = model.ContextWindow is > 0 and var w ? w : o.DefaultContextWindow;
+        var maxOut = Math.Max(256, Math.Min(Math.Min(budget, model.MaxOutputTokens is > 0 and var mo ? mo : int.MaxValue), window / 4));
+        // Room for the system prompt, instructions, the summary so far (≤ maxOut) and the answer (maxOut).
+        var budgetTokens = (long)((window - 2L * maxOut - 1500) * 0.85);
+        return (window, maxOut, (int)Math.Clamp(budgetTokens * 4, 2000, 4_000_000));
+    }
+
     /// <summary>
     /// Summarize messages in one call, or in rolling parts when they do not fit the summarizer's window (each part merged
-    /// into the summary so far). A summary cut off at the output limit is refused: the context stays as it was.
+    /// into the summary so far). A previous summary larger than this summarizer can carry is condensed first; a summary
+    /// cut off at the output limit is refused: the context stays as it was.
     /// </summary>
     private async Task<(string Summary, int Calls)> RollAsync(List<ChatMessage> messages, string? previousSummary, bool turnPrefix,
         ModelInfo model, string? effort, CompactionRequest req, CompactionOptions o, int budget, CancellationToken ct)
     {
-        var window = model.ContextWindow is > 0 and var w ? w : o.DefaultContextWindow;
-        var maxOut = Math.Min(budget, model.MaxOutputTokens is > 0 and var mo ? mo : int.MaxValue);
-        maxOut = Math.Max(256, Math.Min(maxOut, window / 4));
-        // Room for the system prompt, instructions, the summary so far (≤ maxOut) and the answer (maxOut).
-        var budgetTokens = (long)((window - 2L * maxOut - 1500) * 0.85);
+        var (window, maxOut, _) = RollBudget(model, o, budget);
+        string? summary = previousSummary;
+        int calls = 0;
+        // The previous summary is embedded in the request in full and was written for whatever summarizer produced it,
+        // so it is not bounded by this summarizer's output allowance: budget its real size.
+        var priorTokens = summary is null ? 0 : ModelMessages.EstimateTokens(summary);
+        if (summary is not null && priorTokens > (long)window - maxOut - 2000)
+        {
+            // Too large even with a minimal chunk (2000 chars) plus the answer: condense it first, rolling over its own
+            // pieces, until it is at most what a summary so far may be.
+            var shrinkBudget = Math.Max(256, (int)(window - 2L * maxOut - 2000));
+            var per = RollBudget(model, o, shrinkBudget).BudgetChars / 3;   // a piece must survive the chunker intact
+            (summary, calls) = await RollAsync(SplitText(summary, per).Select(p =>
+                new ChatMessage { Role = MessageRole.Summary, Parts = [new TextPart { Text = p }] }).ToList(),
+                null, false, model, effort, req, o, shrinkBudget, ct).ConfigureAwait(false);
+            priorTokens = ModelMessages.EstimateTokens(summary);
+        }
+        // Room for the system prompt, instructions, the summary so far (its real size, ≤ maxOut after a condense) and the answer.
+        var room = (long)window - maxOut - Math.Max(priorTokens, maxOut) - 1500;
+        var budgetTokens = (long)Math.Max(0, room * 0.85);
         var budgetChars = (int)Math.Clamp(budgetTokens * 4, 2000, 4_000_000);
 
         var chunks = TranscriptSerializer.Chunk(messages.Select(TranscriptSerializer.Serialize), budgetChars);
         if (chunks.Count == 0) throw new InvalidOperationException("Nothing to summarize.");
 
-        var summary = previousSummary;
         foreach (var chunk in chunks)
         {
             var request = new ModelRequest
@@ -311,7 +336,22 @@ public sealed class CompactionService(IPluginContext ctx)
                 throw new InvalidOperationException($"The summarizer ({model.Ref}) returned an empty response (stop reason: {response.StopReason ?? "?"}).");
             summary = text;
         }
-        return (summary!, chunks.Count);
+        return (summary!, chunks.Count + calls);
+    }
+
+    /// <summary>Text in pieces small enough to survive the chunker, which truncates an entry longer than the budget.</summary>
+    private static List<string> SplitText(string text, int max)
+    {
+        var pieces = new List<string>();
+        while (text.Length > max)
+        {
+            var cut = text.LastIndexOf('\n', max);
+            if (cut <= 0) cut = max;   // no line boundary: a hard cut
+            pieces.Add(text[..cut]);
+            text = text[cut..];
+        }
+        if (text.Length > 0) pieces.Add(text);
+        return pieces;
     }
 
     /// <summary>
