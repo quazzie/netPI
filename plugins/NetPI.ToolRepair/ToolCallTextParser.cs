@@ -45,6 +45,44 @@ public static partial class ToolCallTextParser
 
     public static bool ContainsMarkup(string? text) => !string.IsNullOrEmpty(text) && AnyMarkup().IsMatch(text);
 
+    /// <summary>
+    /// True when <paramref name="text"/> is <i>only</i> tool-call markup: the calls it parses cover everything but
+    /// whitespace, optionally wrapped in a single code fence. Prose around the markup (an explanation, quoted source, a
+    /// documentation example) is not an envelope, so it stays text and is never executed.
+    /// </summary>
+    public static bool IsCallEnvelope(string? text)
+    {
+        if (!ContainsMarkup(text)) return false;
+        var t = UnwrapFence(text!.Trim());
+        if (t is null) return false;
+        var calls = Parse(t);
+        if (calls.Count == 0) return false;
+        var pos = 0;
+        foreach (var call in calls.OrderBy(c => c.Start))
+        {
+            if (call.Start > pos && !IsBlank(t[pos..call.Start])) return false;
+            if (call.End > call.Start) pos = Math.Max(pos, call.End);
+        }
+        return IsBlank(t[pos..]);
+    }
+
+    /// <summary>The content of a single code fence wrapping the whole text, or null when the text is not one fence.</summary>
+    private static string? UnwrapFence(string text)
+    {
+        if (!text.StartsWith("```", StringComparison.Ordinal)) return text;
+        var nl = text.IndexOf('\n');
+        if (nl < 0 || !text.EndsWith("```", StringComparison.Ordinal) || text.Length < nl + 6) return null;
+        var inner = text[(nl + 1)..^3].Trim();
+        return inner.Length == 0 ? null : inner;
+    }
+
+    private static bool IsBlank(string s)
+    {
+        foreach (var c in s)
+            if (!char.IsWhiteSpace(c)) return false;
+        return true;
+    }
+
     /// <summary>All tool calls in <paramref name="text"/>, in order.</summary>
     public static List<TextToolCall> Parse(string text)
     {

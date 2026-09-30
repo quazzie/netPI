@@ -112,6 +112,7 @@ public sealed partial class ScenarioEngine
                 "bash" => Bash(step, after),
                 "where" => Where(tag, step, after),
                 "textcall" => TextCall(step, after),
+                "doccall" => DocCall(step, after),
                 "cutoff" => Cutoff(step),
                 "drop" => Drop(req, tag),
                 "stall" => Stall(req, tag),
@@ -257,16 +258,28 @@ public sealed partial class ScenarioEngine
 
     private static Plan TextCall(int step, List<NMsg> after)
     {
+        // A standalone envelope: the whole message is the call, which is what repair accepts.
         if (step == 0)
             return new Plan
             {
                 Thinking = "I should check the agents.",
-                Text = "I'll check the agents first.\n<tool_call>\n<function=agent_choices>\n</function>\n</tool_call>",
+                Text = "<tool_call>\n<function=agent_choices>\n</function>\n</tool_call>",
             };
         var result = ToolResults(after).LastOrDefault();
         return result is null
             ? Final("The tool call was not repaired. TEXTCALL-NOT-REPAIRED")
             : Final("Repaired call worked: " + FirstLine(result.Text) + "\n\nTEXTCALL-DONE");
+    }
+
+    private static Plan DocCall(int step, List<NMsg> after)
+    {
+        // A documentation example: prose around a fenced call. Repair must leave it as text, and the nudge asks again.
+        if (step == 0)
+            return new Plan
+            {
+                Text = "Here is an example of a tool call, and I am not running it:\n\n```xml\n<tool_call>\n<function=agent_choices>\n</function>\n</tool_call>\n```",
+            };
+        return Final("The example above is documentation, not a call. DOCCALL-STILL-TEXT");
     }
 
     private static Plan Cutoff(int step) => new()

@@ -126,7 +126,8 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:where file=]` | `bash pwd` + `write file`, answers `PWD=<output>` |
 | `[s:slow ms=6000]` | thinking + text streamed slowly over `ms` (steering, queue, abort) |
 | `[s:slowtools]` | three sequential `bash` calls, the first sleeps 2 s (steering mid-batch, abort during a tool) |
-| `[s:textcall]` | a Qwen-style textual `<tool_call><function=agent_choices>` in the text (tool-call repair) |
+| `[s:textcall]` | a Qwen-style textual `<tool_call><function=agent_choices>` as the whole message (tool-call repair) |
+| `[s:doccall]` | the same markup as a documentation example: prose around a fenced call (never repaired, nudged) |
 | `[s:cutoff]` | only thinking, then `incomplete` / `length` / `max_tokens` (nudge) |
 | `[s:empty]` | an empty answer (nudge) |
 | `[s:thinktags]` | `<think>…</think>` inline in the text, as Qwen without a reasoning parser |
@@ -208,7 +209,7 @@ Coverage (run `--list` for the names):
   (process tree killed, the rest of the batch never starts), project switch (notice, new cwd, the model sees the notice,
   request prefix byte-identical),
   deleting a session (or an orchestrator with running subagents) during a run.
-- **hooks / middleware**: textual tool-call repair, nudge after `length` and after an empty answer, retry after a dropped
+- **hooks / middleware**: textual tool-call repair (a standalone envelope runs, a documented example does not), nudge after `length` and after an empty answer, retry after a dropped
   connection, HTTP 503, a stalled stream and in-stream errors on all three APIs (`agent.notice` + `stream.reset`), giving
   up after `retry.maxAttempts`, non-retryable errors, unknown model, budgets, a stopped backend; auto-compaction on
   `tiny-ctx` (summary, `compacted` flags, `messages.compacted`, context meter drops), overflow recovery when the backend's

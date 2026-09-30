@@ -9,7 +9,7 @@ public static class HookTests
 
     public static void Register(TestRunner r, Env env)
     {
-        r.Add("tool repair: a textual <tool_call> becomes a real call that runs", async () =>
+        r.Add("tool repair: a standalone textual <tool_call> becomes a real call that runs", async () =>
         {
             var s = await env.NewSession();
             var run = await env.Run(s.S("id")!, "Check the agents [s:textcall]");
@@ -20,7 +20,7 @@ public static class HookTests
             var call = repaired.Arr("parts").Single(p => p.S("type") == "tool_call");
             Check.Equal("agent_choices", call.S("name"));
             Check.NotContains(RunResult.Text(repaired), "<tool_call>");
-            Check.Contains(RunResult.Text(repaired), "check the agents");
+            Check.Equal("", RunResult.Text(repaired).Trim()); // a standalone envelope leaves no prose behind
             var result = run.Parts("tool_result").Single();
             Check.Equal(call.S("id"), result.S("callId"));
             Check.False(result.B("isError"));
@@ -28,6 +28,20 @@ public static class HookTests
             Check.True(run.OfType("message.updated").Any(e => e.D.P("message").P("meta").B("repaired")), "message.updated with the repaired message");
             Check.True(run.OfType("tool.start").Any(e => e.D.S("name") == "agent_choices"), "tool.start for the repaired call");
             Check.False(run.Role("notice").Any(), "no nudge for a repaired call");
+        });
+
+        r.Add("tool repair: a documented example stays text — it is not executed", async () =>
+        {
+            var s = await env.NewSession();
+            var run = await env.Run(s.S("id")!, "Show me an example [s:doccall]");
+            var answered = run.Role("assistant").First();
+            Check.False(answered.P("meta").B("repaired"), "not repaired");
+            Check.True(answered.S("stopReason") != "tool_use", "a plain answer, not a tool use: " + answered.S("stopReason"));
+            Check.Contains(RunResult.Text(answered), "<tool_call>", "the example is still visible as text");
+            Check.False(run.OfType("tool.start").Any(), "no tool ran");
+            var notice = run.Role("notice").Single();
+            Check.Equal("nudge", notice.P("meta").S("kind"));
+            Check.Contains(RunResult.Text(notice), "tool call written as text");
         });
 
         r.Add("nudge: a cut-off response (length) gets a nudge notice and the agent continues", async () =>
