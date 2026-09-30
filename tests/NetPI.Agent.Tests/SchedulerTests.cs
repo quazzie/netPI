@@ -10,6 +10,7 @@ public static class SchedulerTests
         t.Add("scheduler: a model with 2 slots → the third run queues", ThirdQueues);
         t.Add("agents: listed always with their state (instances, switched off, model not loaded); other model calls while busy", AgentsListed);
         t.Add("agents: agents on one local model share its slots; the choice for a chat; switched off refuses at once", SharedModelSlots);
+        t.Add("agents: a removed agent takes no new work, and its running calls still count on the shared model", AgentRemoved);
         t.Add("agents: chats run on their agent (taken, agents.use, agents.setEnabled); an inactive agent stops the chat at once", ChatsOnAgents);
         t.Add("agents: the lanes of earlier versions become agents, once", Upgrade);
         t.Add("scheduler: priority, FIFO, cancellation, idempotent release", PriorityAndCancel);
@@ -152,6 +153,52 @@ public static class SchedulerTests
         a1.Dispose();
         la2.Dispose();
         Check.Equal(0, s.Snapshot().Sum(p => p.Busy + p.Queued));
+    }
+
+    private static async Task AgentRemoved()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 1 }"""));
+            x.Settings.SetQuiet("agents.b", J("""{ "model": "fake/local", "instances": 1 }"""));
+            x.Settings.SetQuiet("agents.c", J("""{ "model": "fake/local", "instances": 1 }"""));
+        }, plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
+        Check.Equal("a", s.Resolve(TestHost.LocalModel(), "a"));
+
+        // "a" runs one call, and a second one waits for its single instance
+        var a1 = await s.AcquireAsync(Req("a", "A1"), CancellationToken.None);
+        var a2 = s.AcquireAsync(Req("a", "A2"), CancellationToken.None).AsTask();
+        await Task.Delay(50);
+        Check.False(a2.IsCompleted, "the second run waits for the instance");
+
+        // the agent is removed while its call is running and a waiter is queued for it
+        h.Settings.Set("agents.a", null);
+        await h.Bus.DrainAsync();
+        var pool = s.Snapshot().Single(p => p.Key == "a");
+        Check.Equal(1, pool.Busy, "the running call is still counted");
+        Check.Equal(0, pool.Queued, "the waiter was told, not left in the queue");
+        Check.False(pool.Configured);
+        Check.False(pool.Available);
+        Check.Equal("removed", pool.Unavailable);
+        Check.Equal("retiring", pool.Status);
+        Check.Equal("fake/local", pool.Model, "the model stays while the run finishes");
+        try { await a2.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected AgentUnavailableException"); }
+        catch (AgentUnavailableException ex) { Check.Contains(ex.Message, "The agent \"a\" was removed"); }
+        try { await s.AcquireAsync(Req("a", "A3"), CancellationToken.None); throw new AssertException("expected AgentUnavailableException"); }
+        catch (AgentUnavailableException) { }
+        Check.False(s.TryAcquire(Req("a", "A4"), out _), "no new work on a removed agent");
+
+        // The model serves two at once, and the removed agent's call is one of them: "b" has a free instance, "c"
+        // does not get a third concurrent call on a two-slot model.
+        var b1 = await s.AcquireAsync(Req("b", "B1"), CancellationToken.None);
+        Check.False(s.TryAcquire(Req("c", "C1"), out _), "the removed agent's running call still counts on the model");
+
+        // the call finishes, and the retired pool leaves with it
+        a1.Dispose();
+        b1.Dispose();
+        await Wait.Until(() => s.Snapshot().All(p => p.Key != "a"), "the retired pool is gone once its last owner released");
+        Check.False(s.Snapshot().Single(p => p.Key == "b").Available is false, "the other agents are untouched");
     }
 
     private static async Task ChatsOnAgents()

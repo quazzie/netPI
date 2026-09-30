@@ -12,6 +12,7 @@
   const agent = $derived(!!pool.configured);
   const look = $derived.by(() => {
     if (pool.disabled) return { dot: 'cancelled', chip: 'off', tone: 'dim' };
+    if (pool.unavailable === 'removed') return { dot: 'cancelled', chip: 'removed', tone: 'dim' };
     if (pool.available === false) return { dot: 'unloaded', chip: /isn't loaded/.test(pool.unavailable ?? '') ? 'not loaded' : 'inactive', tone: 'warn' };
     if (pool.queued) return { dot: 'queued', chip: 'queued', tone: 'warn' };
     if (pool.busy >= pool.capacity) return { dot: 'running', chip: 'full', tone: 'accent' };
