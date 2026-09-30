@@ -329,6 +329,14 @@ internal sealed class ProcessLauncher : ISshLauncher
     public async Task<SshExec> RunAsync(string exe, IReadOnlyList<string> args, byte[]? stdin, string? workDir, Action<string>? onStdout,
         Action<string>? onStderr, TimeSpan timeout, CancellationToken ct)
     {
+        // One deadline for the whole call — the process start, the transmission of stdin and the wait for exit:
+        // a child that never reads its stdin blocks the write in the pipe, so the timeout must bound the
+        // transmission, not start after it.
+        var timedOut = false;
+        var aborted = false;
+        using var timer = new CancellationTokenSource(timeout);
+        using var both = CancellationTokenSource.CreateLinkedTokenSource(timer.Token, ct);
+
         var psi = new ProcessStartInfo(exe)
         {
             UseShellExecute = false,
@@ -350,16 +358,12 @@ internal sealed class ProcessLauncher : ISshLauncher
         var readErr = Pump(process.StandardError, stderr, onStderr);
         try
         {
-            if (stdin is { Length: > 0 }) await process.StandardInput.BaseStream.WriteAsync(stdin, ct).ConfigureAwait(false);
+            if (stdin is { Length: > 0 }) await process.StandardInput.BaseStream.WriteAsync(stdin, both.Token).ConfigureAwait(false);
             process.StandardInput.Close();
         }
         catch (IOException) { } // the process exited early (e.g. ssh failed to connect)
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { } // the timeout or the caller gave up: the wait below kills the process and says which
 
-        var timedOut = false;
-        var aborted = false;
-        using var timer = new CancellationTokenSource(timeout);
-        using var both = CancellationTokenSource.CreateLinkedTokenSource(timer.Token, ct);
         try { await process.WaitForExitAsync(both.Token).ConfigureAwait(false); }
         catch (OperationCanceledException)
         {

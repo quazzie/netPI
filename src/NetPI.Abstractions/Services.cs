@@ -101,6 +101,19 @@ public interface IRpcRegistry
     bool Exists(string method);
 }
 
+/// <summary>One way to say "this method only reads", so the claim is made the same way everywhere.</summary>
+public static class RpcRegistryExtensions
+{
+    /// <summary>
+    /// Register a method that only reads, so the read-only paths (<c>scripts/netpi.mjs</c>, the <c>diag</c> tool's rpc
+    /// action) may call it: they trust <c>rpc.list</c>'s <c>readOnly</c> flag and nothing else, so a read surface that
+    /// is not marked here is a read surface a tool cannot reach (idea-o934y1).
+    /// <para>It is a claim, not a check: if the handler writes anything, do not use it.</para>
+    /// </summary>
+    public static IDisposable RegisterReadOnly(this IRpcRegistry rpc, string method, RpcHandler handler, string? description = null) =>
+        rpc.Register(method, handler, description, readOnly: true);
+}
+
 // ---------------------------------------------------------------- HTTP
 
 /// <summary>Plugin HTTP endpoints, served under <c>/api/p/{pluginId}/{path}</c>.</summary>

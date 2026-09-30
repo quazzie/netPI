@@ -24,7 +24,7 @@ public sealed class AskPlugin : INetPiPlugin
     {
         var pending = _pending = new PendingAsks(context);
         context.Tools.Register(new AskUserTool(pending));
-        context.Rpc.Register("ask.pending", (req, _) => Task.FromResult<object?>(pending.List(req.Str("sessionId"))),
+        context.Rpc.RegisterReadOnly("ask.pending", (req, _) => Task.FromResult<object?>(pending.List(req.Str("sessionId"))),
             "Questions waiting for the user: { sessionId? } → { id, sessionId, callId, agentId, agentName, questions, askedAt }[]");
         context.Rpc.Register("ask.answer", (req, _) => Task.FromResult<object?>(pending.Answer(req)),
             "Answer a waiting question: { id, answers?: string[][] (the options picked, per question), text? } → true (id, or callId + sessionId for an older caller)");

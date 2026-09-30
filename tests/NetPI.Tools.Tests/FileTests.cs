@@ -13,6 +13,17 @@ public static class FileTests
 
     public static void Register(TestRunner r)
     {
+        // ------------------------------------------------ rpc metadata
+        r.Add("rpc: the files read surfaces are read-only; files.open is not (it hands the path to the OS)", async () =>
+        {
+            var ctx = new FakePluginContext(T.TempDir("files-rpc"));
+            await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
+            var flags = ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
+            foreach (var m in new[] { "files.list", "files.search", "files.git", "files.commits" })
+                Check.True(flags.TryGetValue(m, out var ro) && ro, $"{m} only reads, so it is marked read-only");
+            Check.True(flags.TryGetValue("files.open", out var open) && !open, "files.open opens the file or folder, so it stays unmarked");
+        });
+
         // ------------------------------------------------ codec
         r.Add("codec: EOL detection (majority, tie, none)", () =>
         {

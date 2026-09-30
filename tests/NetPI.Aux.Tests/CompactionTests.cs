@@ -569,6 +569,45 @@ public static class CompactionTests
             Check.Equal(result.Summary!.Id, ctxMsgs[0].Id);
         });
 
+        // Audit case (idea-ckqma4): the previous summary (48k chars ≈ 12k tokens) was written by a larger summarizer;
+        // rolling it in with an 8k summarizer built a request of ≈58k chars the summarizer cannot even read.
+        r.Add("compaction: a previous summary too large for the summarizer is condensed before the roll", async () =>
+        {
+            var env = new Env();
+            var small = T.Model("small", 8_192, "test");
+            env.Ctx.ModelsFake.Models.Add(small);
+            var scheduler = new FakeAgentScheduler();
+            env.Ctx.ServicesFake.Register<IAgentScheduler>(scheduler);
+
+            // First compaction (by the big model) leaves a 48k-char summary in the context; the chat continues.
+            var big = "## Task\nOLD " + new string('S', 47_994);
+            env.Ctx.ModelsFake.Responder = req => new ChatMessage
+            {
+                Role = MessageRole.Assistant, StopReason = "stop",
+                Parts = [new TextPart { Text = req.Model.Id == "small" ? "## Task\nCONDENSED" : big }],
+            };
+            env.Conversation(13, "A");
+            await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            env.Conversation(2, "B");
+
+            // Second compaction now runs on the 8k summarizer: every request it receives must fit its window.
+            env.Ctx.SettingsFake.Set("compaction.model", "test/small");
+            var result = await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            Check.True(result.Compacted, result.Message);
+
+            var reqs = env.Ctx.ModelsFake.Requests.Skip(1).ToList();
+            Check.True(reqs.All(r => r.Model.Id == "small"), "all by the small summarizer");
+            foreach (var r in reqs)
+                Check.True(ModelMessages.EstimateTokens(r.Messages[0].Text) < 8_192, $"fits the summarizer window: {ModelMessages.EstimateTokens(r.Messages[0].Text)} tokens");
+            Check.True(reqs.Count >= 3, $"{reqs.Count} calls: the oversized summary is condensed in its own calls");
+            Check.NotContains(reqs[0].Messages[0].Text, "<previous-summary>", "the first condense call has no summary yet");
+            Check.Contains(reqs[^1].Messages[0].Text, "<previous-summary>\n## Task\nCONDENSED\n</previous-summary>", "the roll starts from the condensed summary");
+            Check.True(reqs.Any(r => r.Messages[0].Text.Contains("Reading file 8")), "and the new messages are rolled in");
+            Check.True(result.Summary!.Text.StartsWith("## Task\nCONDENSED"), result.Summary.Text);
+            Check.Equal(reqs.Count, result.SummarizerCalls, "the condense calls count too");
+            Check.Equal("test/small", scheduler.Acquired.Last().Key);
+        });
+
         r.Add("compaction: the summary at the chat's reasoning effort; token formatting", () =>
         {
             Check.Equal("high", CompactionService.EffortFor(T.Model(efforts: ["low", "high"]), "high"));

@@ -34,13 +34,13 @@ public sealed class FilesPlugin : INetPiPlugin
         foreach (var tool in CreateTools(context.Settings))
             context.Tools.Register(tool);
 
-        context.Rpc.Register("files.search", async (req, token) =>
+        context.Rpc.RegisterReadOnly("files.search", async (req, token) =>
         {
             var root = ResolveRoot(context, req);
             return await _index.SearchAsync(root, req.Str("query") ?? req.Str("q"), req.Int("limit") ?? 50, token).ConfigureAwait(false);
         }, "Fuzzy file-name search for @ mentions: { sessionId?, cwd?, query, limit? } → { path, rel, isDir }[]");
 
-        context.Rpc.Register("files.list", (req, token) =>
+        context.Rpc.RegisterReadOnly("files.list", (req, token) =>
         {
             var root = ResolveRoot(context, req);
             return Task.FromResult<object?>(_index.List(root, req.Str("dir")));
@@ -53,18 +53,18 @@ public sealed class FilesPlugin : INetPiPlugin
             return Task.FromResult<object?>(new { path, action });
         }, "Open a path with the operating system (files in their default app, folders in the file manager, scripts for editing, executables only revealed): { path, sessionId?, cwd? } → { path, action }");
 
-        context.Rpc.Register("files.git", async (req, token) =>
+        context.Rpc.RegisterReadOnly("files.git", async (req, token) =>
             await GitStatus.ReadAsync(ResolveRoot(context, req), token).ConfigureAwait(false),
             "The workspace's changes since the last commit, for the Files tab: { sessionId?, cwd? } → { repo, branch, ahead, behind, files: { path, rel, status, added?, deleted? }[], added, deleted } | null (not a git repository)");
 
-        context.Rpc.Register("files.commits", async (req, token) =>
+        context.Rpc.RegisterReadOnly("files.commits", async (req, token) =>
         {
             var since = req.Str("since");
             var until = req.Str("until");
             var limit = Math.Clamp(req.Int("limit") ?? 20, 1, 200);
             return await GitStatus.CommitsAsync(ResolveRoot(context, req), since, until, limit, token).ConfigureAwait(false);
         }, "The repository's commits, newest first: { sessionId?, cwd?, since? (a hash: only what came after it), until? (a hash: only what came before it), " +
-           "limit? (20, max 200) } → { repo, gitDir, commonDir, reachable, commits: { hash, short, subject, author, at }[] } | null (not a git repository)", readOnly: true);
+           "limit? (20, max 200) } → { repo, gitDir, commonDir, reachable, commits: { hash, short, subject, author, at }[] } | null (not a git repository)");
 
         // Left-panel file tree of the active session's workspace (UI in ui/main.js → wwwroot/ui.js).
         context.Ui.AddTab(new UiTabInfo { Id = "files", Title = "Files", Panel = UiPanel.Left, Icon = "files", Order = 30, Module = "ui.js" });

@@ -64,7 +64,7 @@ public sealed class AgentsPlugin : INetPiPlugin
         context.Tools.Register(new AgentChoicesTool(scheduler, usage));
         context.Services.Register<IPromptSection>(new AgentsPromptSection());
 
-        context.Rpc.Register("agents.list", (_, _) => Task.FromResult<object?>(scheduler.Snapshot()),
+        context.Rpc.RegisterReadOnly("agents.list", (_, _) => Task.FromResult<object?>(scheduler.Snapshot()),
             "The agents (always) and other model calls in progress, with instances, owners, waiters, state, price and today's spend → AgentSlots[]");
         context.Rpc.Register("agents.use", (r, _) =>
         {
@@ -90,11 +90,11 @@ public sealed class AgentsPlugin : INetPiPlugin
             scheduler.Refresh();
             return Task.FromResult<object?>(scheduler.Snapshot());
         }, "Switch an agent on or off: { id, enabled } → AgentSlots[] (agents.<id>.disabled; runs on it finish, new ones are refused)");
-        context.Rpc.Register("usage.summary", (_, _) => Task.FromResult<object?>(usage.Summary()),
+        context.Rpc.RegisterReadOnly("usage.summary", (_, _) => Task.FromResult<object?>(usage.Summary()),
             "Today's tokens per provider, the budget, this period's calls per model → { day, providers, budget, models }");
-        context.Rpc.Register("usage.session", (r, _) => Task.FromResult<object?>(usage.SessionCost(r.Required("sessionId"))),
+        context.Rpc.RegisterReadOnly("usage.session", (r, _) => Task.FromResult<object?>(usage.SessionCost(r.Required("sessionId"))),
             "What a chat cost: { sessionId } → { costUsd, calls, withSubagentsUsd, withSubagentsCalls }");
-        context.Rpc.Register("budget.status", (_, _) => Task.FromResult<object?>(usage.BudgetStatus()),
+        context.Rpc.RegisterReadOnly("budget.status", (_, _) => Task.FromResult<object?>(usage.BudgetStatus()),
             "The budget: { monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, warning, exhausted }");
         context.Rpc.Register("budget.allow", async (r, token) =>
         {

@@ -24,38 +24,38 @@ public sealed class DiagnosticsPlugin : INetPiPlugin
         var reloads = new Reloads(context);
         context.Events.Subscribe(EventTypes.PluginsReloaded, reloads.OnEvent);
         var inspect = new Inspector(context, recorder, reloads);
-        context.Rpc.Register("diag.overview", async (_, rpcCt) => await inspect.OverviewAsync(rpcCt).ConfigureAwait(false),
+        context.Rpc.RegisterReadOnly("diag.overview", async (_, rpcCt) => await inspect.OverviewAsync(rpcCt).ConfigureAwait(false),
             "Start here: app, process, plugins, models, agents with holders and waiters, active runs, model calls, running tools and processes, problems, the other diag methods");
-        context.Rpc.Register("diag.problems", async (_, rpcCt) => await inspect.ProblemsAsync(rpcCt).ConfigureAwait(false),
+        context.Rpc.RegisterReadOnly("diag.problems", async (_, rpcCt) => await inspect.ProblemsAsync(rpcCt).ConfigureAwait(false),
             "What looks wrong now, worst first → { severity: error|warn|info, area, message, hint }[]");
-        context.Rpc.Register("diag.calls", (req, _) => Task.FromResult<object?>(inspect.Calls(req)),
+        context.Rpc.RegisterReadOnly("diag.calls", (req, _) => Task.FromResult<object?>(inspect.Calls(req)),
             "Model calls, newest first (running ones too): { limit? (50), sessionId?, runId?, agent?, errors?, running?, detail? } → { id, startedAt, state, model, purpose, agent, sessionId, runId, firstTokenMs, durationMs, attempts, tokens, stopReason, error }[]");
-        context.Rpc.Register("diag.call", (req, _) => Task.FromResult<object?>(inspect.Call(req)),
+        context.Rpc.RegisterReadOnly("diag.call", (req, _) => Task.FromResult<object?>(inspect.Call(req)),
             "One model call in detail: { id } → the diag.calls fields plus the request's size, the response, retries, notices and the error's type/status");
-        context.Rpc.Register("diag.tools", (req, _) => Task.FromResult<object?>(inspect.Tools(req)),
+        context.Rpc.RegisterReadOnly("diag.tools", (req, _) => Task.FromResult<object?>(inspect.Tools(req)),
             "Tool calls, newest first: { limit? (50), sessionId?, name?, errors?, running? } → { callId, name, sessionId, runId, startedAt, state, durationMs, arguments, result (preview) }[]");
-        context.Rpc.Register("diag.tool", (req, _) => Task.FromResult<object?>(inspect.Tool(req)),
+        context.Rpc.RegisterReadOnly("diag.tool", (req, _) => Task.FromResult<object?>(inspect.Tool(req)),
             "One tool call in full: { callId, sessionId? } → { callId, name, sessionId, state, durationMs, arguments (parsed), isError, result (the text the model got), images, details }");
-        context.Rpc.Register("diag.journal", (req, _) => Task.FromResult<object?>(inspect.Journal(req)),
+        context.Rpc.RegisterReadOnly("diag.journal", (req, _) => Task.FromResult<object?>(inspect.Journal(req)),
             "The events that matter as a timeline, oldest first (no per-token events): { limit? (100), type? (prefix), sessionId?, sinceSeq? } → { seq, time, type, sessionId, source, data }[]");
-        context.Rpc.Register("diag.run", async (req, rpcCt) => await inspect.RunAsync(req, rpcCt).ConfigureAwait(false),
+        context.Rpc.RegisterReadOnly("diag.run", async (req, rpcCt) => await inspect.RunAsync(req, rpcCt).ConfigureAwait(false),
             "One run in depth: { sessionId | agentId } → { run, statusSince, session, slot, queue, children, calls, tools, journal, messages }");
-        context.Rpc.Register("diag.settings", async (_, rpcCt) => await inspect.SettingsAsync(rpcCt).ConfigureAwait(false),
+        context.Rpc.RegisterReadOnly("diag.settings", async (_, rpcCt) => await inspect.SettingsAsync(rpcCt).ConfigureAwait(false),
             "The settings document without secrets → { file, settings }");
-        context.Rpc.Register("diag.logs", async (req, rpcCt) => await inspect.LogsAsync(req, rpcCt).ConfigureAwait(false),
+        context.Rpc.RegisterReadOnly("diag.logs", async (req, rpcCt) => await inspect.LogsAsync(req, rpcCt).ConfigureAwait(false),
             "Log entries, oldest first: { limit? (200), level? (debug|info|warn|error: at least), category?, contains?, sinceMinutes? } → { time, level, category, message, exception }[]");
-        context.Rpc.Register("diag.failures", (req, _) => Task.FromResult<object?>(inspect.Failures(req)),
+        context.Rpc.RegisterReadOnly("diag.failures", (req, _) => Task.FromResult<object?>(inspect.Failures(req)),
             "Failed requests the providers saved (logs/failed-requests), newest first: { limit? (20) } → { name, time, bytes, provider, model, sessionId, transport, requestId, responseId, error }[]");
-        context.Rpc.Register("diag.failure", (req, _) => Task.FromResult<object?>(inspect.Failure(req)),
+        context.Rpc.RegisterReadOnly("diag.failure", (req, _) => Task.FromResult<object?>(inspect.Failure(req)),
             "One saved failed request with its body: { name, maxChars? (200000) } → { name, bytes, truncated, content }");
-        context.Rpc.Register("diag.toolsets", async (req, rpcCt) => await inspect.ToolSetsAsync(req.Required("sessionId"), rpcCt).ConfigureAwait(false),
+        context.Rpc.RegisterReadOnly("diag.toolsets", async (req, rpcCt) => await inspect.ToolSetsAsync(req.Required("sessionId"), rpcCt).ConfigureAwait(false),
             "A session's tools now and every change with its cause (the context plugin's context.toolsets): { sessionId } → { sessionId, tools, baseline, changes: [{ seq, time, added, removed, cause, plugins }], reloads }");
 
         var diag = new DiagnosticsService(context);
         context.Tools.Register(new DiagTool(context));
-        context.Rpc.Register("diag.snapshot", async (req, rpcCt) => await diag.SnapshotAsync(req.Int("events") ?? 200, rpcCt).ConfigureAwait(false),
+        context.Rpc.RegisterReadOnly("diag.snapshot", async (req, rpcCt) => await diag.SnapshotAsync(req.Int("events") ?? 200, rpcCt).ConfigureAwait(false),
             "Diagnostics overview → { plugins, tools, rpc, events, logs, runtime, time }");
-        context.Rpc.Register("diag.event", (req, _) => Task.FromResult<object?>(diag.Event(ParseSeq(req))),
+        context.Rpc.RegisterReadOnly("diag.event", (req, _) => Task.FromResult<object?>(diag.Event(ParseSeq(req))),
             "Full data of a recent bus event: { seq } → { seq, type, sessionId, time, source, ui, data }");
         context.Rpc.Register("diag.reload", async (req, rpcCt) => await diag.ReloadAsync(req.Str("args") ?? req.Str("id"), rpcCt).ConfigureAwait(false),
             "/reload command: { args?: pluginId } → status text (no id = all plugins; the diag tool cannot call this)");
