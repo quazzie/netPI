@@ -254,6 +254,70 @@ public static class SessionStoreTests
 
         // The host only stores the switch and publishes session.project; the conversation is appended to by plugins (the
         // context plugin's project notice), so the host never writes model-facing text.
+        r.Add("sessions: the context cache stays warm across an append, and only a real change drops it", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo());
+            for (var i = 1; i <= 5; i++) f.Store.AppendMessage(s.Id, ChatMessage.UserText("m" + i));
+
+            // The first read is the only one out of the database.
+            Check.Equal("m1,m2,m3,m4,m5", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)));
+            var (hits0, reads0) = f.Store.ContextCache;
+            Check.Equal(0L, hits0);
+            Check.Equal(1L, reads0);
+
+            // A turn appends its own messages; the next read must not pay for the history again.
+            f.Store.AppendMessage(s.Id, new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "a1" }] });
+            f.Store.AppendMessage(s.Id, new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = "m6" }] });
+            Check.Equal("m1,m2,m3,m4,m5,a1,m6", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)));
+            var (hits1, reads1) = f.Store.ContextCache;
+            Check.Equal(1L, hits1, "the append extended the cached context");
+            Check.Equal(1L, reads1, "and nothing was read from the database again");
+
+            // The caller's list is its own: the cache hands out a copy, in database order.
+            var mine = f.Store.GetContextMessages(s.Id).ToList();
+            mine.Reverse();
+            mine.Clear();
+            Check.Equal("m1,m2,m3,m4,m5,a1,m6", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)),
+                "reordering or emptying the returned list changes nothing");
+
+            // A message edited in place: the cached copy would be stale, so the entry goes.
+            var edited = f.Store.GetMessages(s.Id).First(m => m.Text == "m3");
+            edited.Parts = [new TextPart { Text = "m3 edited" }];
+            f.Store.UpdateMessage(edited);
+            var (hits2, reads2) = f.Store.ContextCache;
+            Check.Equal("m1,m2,m3 edited,m4,m5,a1,m6", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)));
+            Check.Equal(hits2, f.Store.ContextCache.Hits, "the read after an edit is a read, not a hit");
+            Check.Equal(reads2 + 1, f.Store.ContextCache.Reads);
+
+            // Compaction: the context changes shape, so the cache goes too.
+            f.Store.AppendMessage(s.Id, new ChatMessage { Role = MessageRole.Summary, Parts = [new TextPart { Text = "summary" }] });
+            f.Store.GetContextMessages(s.Id);
+            f.Store.MarkCompacted(s.Id, 4);
+            var reads3 = f.Store.ContextCache.Reads;
+            Check.Equal("summary,m5,a1,m6", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)));
+            Check.Equal(reads3 + 1, f.Store.ContextCache.Reads, "compaction drops the cached context");
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("m8"));
+            Check.Equal("summary,m5,a1,m6,m8", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)), "and it is warm again after the next append");
+            Check.Equal(reads3 + 1, f.Store.ContextCache.Reads, "which cost no read");
+        });
+
+        r.Add("sessions: an out-of-order append drops the cached context instead of corrupting its order", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo());
+            for (var i = 1; i <= 4; i++) f.Store.AppendMessage(s.Id, ChatMessage.UserText("m" + i));
+            Check.Equal("m1,m2,m3,m4", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)));
+
+            // A message whose seq the cached context has already passed cannot be appended in order, so the entry is
+            // dropped and the next read rebuilds it from the database (where the order is the truth). Appends to one
+            // of appends can commit in either order, and a cache that is ahead of the database must not be trusted.
+            f.Db.Execute("DELETE FROM messages WHERE session_id = @id AND seq > 2", new { id = s.Id });
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("m3 again"));
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("m4 again"));
+            Check.Equal("m1,m2,m3 again,m4 again", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)));
+        });
+
         r.Add("sessions: project attach/detach publishes session.project with the new cwd; no message from the host", async () =>
         {
             await using var f = new Fixture();
