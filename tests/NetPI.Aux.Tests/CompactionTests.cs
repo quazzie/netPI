@@ -182,9 +182,28 @@ public static class CompactionTests
             var u = T.User("look");
             u.Parts.Add(new ImagePart { Data = "AAAA" });
             Check.Contains(TranscriptSerializer.Serialize(u), "[1 image(s) attached]");
-            var chunks = TranscriptSerializer.Chunk([new string('a', 600), new string('b', 3000), new string('c', 600)], 1000);
-            Check.True(chunks.Count == 3 && chunks.All(c => c.Length <= 1000), string.Join("|", chunks.Select(c => c.Length)));
+            // A normal conversation packs exactly as before: two entries make one chunk, three small ones make one.
             Check.Equal(1, TranscriptSerializer.Chunk(["aa", "bb", "cc"], 1000).Count);
+
+            // An entry too long for a chunk is split, not truncated (idea-marq9s): everything reaches the summarizer.
+            // Letters x/y/z, so counting them is not confused by the " (part i/n)" marker.
+            var long1 = TranscriptSerializer.Chunk([new string('x', 600), new string('y', 3000), new string('z', 600)], 1000);
+            Check.True(long1.All(c => c.Length <= 1000), string.Join("|", long1.Select(c => c.Length)));
+            Check.Equal(3000, long1.Sum(c => c.Count(ch => ch == 'y')), "every y survives");
+            Check.Equal(600, long1.Sum(c => c.Count(ch => ch == 'x')), "every x survives");
+            Check.Equal(600, long1.Sum(c => c.Count(ch => ch == 'z')), "every z survives");
+            Check.Equal(1, long1.Count(c => c.Contains('x')), "the x entry is intact in one chunk");
+            Check.Equal(1, long1.Count(c => c.Contains('z')), "the z entry is intact in one chunk");
+
+            // A message with a role tag keeps it on every piece, numbered, so the summarizer sees one message in parts.
+            var message = TranscriptSerializer.Chunk([TranscriptSerializer.Serialize(T.User(string.Join('\n', Enumerable.Range(0, 400).Select(i => $"line {i}"))))], 1000);
+            Check.True(message.Count >= 3, $"{message.Count} chunks for one huge message");
+            Check.True(message.All(c => c.StartsWith("[User] (part ")), string.Join(" | ", message.Select(c => c[..Math.Min(24, c.Length)])));
+            Check.Contains(string.Join("\n\n", message), "line 0\n");
+            Check.Contains(string.Join("\n\n", message), $"line 399", "the last line is not dropped");
+            Check.True(!string.Join("", message).Contains("chars omitted"), "nothing is truncated away");
+            // Line boundaries are preferred, so no piece starts mid-word.
+            Check.True(message.All(c => c.Split('\n').Skip(1).All(l => l.Length == 0 || l.StartsWith("line "))), "pieces break on line boundaries");
         });
 
         r.Add("compaction: auto-compaction before a model call", async () =>
@@ -606,6 +625,40 @@ public static class CompactionTests
             Check.True(result.Summary!.Text.StartsWith("## Task\nCONDENSED"), result.Summary.Text);
             Check.Equal(reqs.Count, result.SummarizerCalls, "the condense calls count too");
             Check.Equal("test/small", scheduler.Acquired.Last().Key);
+        });
+
+        r.Add("compaction: the fake model can be strict about the output budget", async () =>
+        {
+            // idea-12wuj4: without the flag a test can script a 48k-char answer for a 100-token budget and never notice
+            // that a real provider would have cut it off with stop reason "length".
+            var env = new Env();
+            var request = new ModelRequest
+            {
+                Model = env.Model, Messages = [ChatMessage.UserText("hi")], MaxOutputTokens = 100, Purpose = "test",
+            };
+            await env.Ctx.ModelsFake.CompleteAsync(request, CancellationToken.None);
+
+            env.Ctx.ModelsFake.StrictOutput = true;
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage
+            {
+                Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = new string('x', 4000) }],
+            };
+            var ex = await Check.ThrowsAsync<AssertException>(() => env.Ctx.ModelsFake.CompleteAsync(request, CancellationToken.None));
+            Check.Contains(ex.Message, "allows 100");
+            Check.Contains(ex.Message, "length");
+
+            // A response inside the budget is fine, and the flag is opt-in: off, the same answer passes as before.
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage
+            {
+                Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "## Task\nOK" }],
+            };
+            await env.Ctx.ModelsFake.CompleteAsync(request, CancellationToken.None);
+            env.Ctx.ModelsFake.StrictOutput = false;
+            env.Ctx.ModelsFake.Responder = _ => new ChatMessage
+            {
+                Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = new string('x', 4000) }],
+            };
+            await env.Ctx.ModelsFake.CompleteAsync(request, CancellationToken.None);
         });
 
         // The condense boundary (idea-8t4amp): a prior summary that still leaves room for a minimal chunk plus the

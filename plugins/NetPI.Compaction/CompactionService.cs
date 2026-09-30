@@ -308,11 +308,10 @@ public sealed class CompactionService(IPluginContext ctx)
         if (summary is not null && priorTokens > (long)window - maxOut - FixedPromptTokens - MinChunkTokens)
         {
             // It stops fitting: even a minimal chunk plus the fixed prompt and the answer no longer do. Condense it
-            // first, rolling over its own pieces, until it is at most what a summary so far may be.
+            // first, rolling over it as one message (Chunk splits an entry that does not fit), until it is at most what
+            // a summary so far may be.
             var shrinkBudget = Math.Max(256, (int)(window - 2L * maxOut - FixedPromptTokens - MinChunkTokens));
-            var per = RollBudget(model, o, shrinkBudget).BudgetChars / 3;   // a piece must survive the chunker intact
-            (summary, calls) = await RollAsync(SplitText(summary, per).Select(p =>
-                new ChatMessage { Role = MessageRole.Summary, Parts = [new TextPart { Text = p }] }).ToList(),
+            (summary, calls) = await RollAsync([new ChatMessage { Role = MessageRole.Summary, Parts = [new TextPart { Text = summary }] }],
                 null, false, model, effort, req, o, shrinkBudget, ct).ConfigureAwait(false);
             priorTokens = ModelMessages.EstimateTokens(summary);
         }
@@ -346,21 +345,6 @@ public sealed class CompactionService(IPluginContext ctx)
             summary = text;
         }
         return (summary!, chunks.Count + calls);
-    }
-
-    /// <summary>Text in pieces small enough to survive the chunker, which truncates an entry longer than the budget.</summary>
-    private static List<string> SplitText(string text, int max)
-    {
-        var pieces = new List<string>();
-        while (text.Length > max)
-        {
-            var cut = text.LastIndexOf('\n', max);
-            if (cut <= 0) cut = max;   // no line boundary: a hard cut
-            pieces.Add(text[..cut]);
-            text = text[cut..];
-        }
-        if (text.Length > 0) pieces.Add(text);
-        return pieces;
     }
 
     /// <summary>

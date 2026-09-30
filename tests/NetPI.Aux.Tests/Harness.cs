@@ -427,6 +427,10 @@ public sealed class FakeModelCatalog : IModelCatalog
         Role = MessageRole.Assistant, Parts = [new TextPart { Text = "## Task\nSUMMARY" }], StopReason = "stop",
     };
     public string? DefaultModelRef { get; set; }
+    /// <summary>Fail the test when a scripted response is longer than the request's output allowance. Off by default:
+    /// several tests script over-budget answers on purpose (building an oversized prior summary, for one), and a real
+    /// provider would cut them off with stop reason "length" instead (idea-12wuj4).</summary>
+    public bool StrictOutput { get; set; }
 
     public Task<IReadOnlyList<ModelInfo>> ListAsync(bool refresh = false, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<ModelInfo>>(Models);
     public Task<ModelInfo?> FindAsync(string modelRef, CancellationToken ct = default) =>
@@ -438,7 +442,15 @@ public sealed class FakeModelCatalog : IModelCatalog
     public Task<ChatMessage> CompleteAsync(ModelRequest request, CancellationToken ct)
     {
         Requests.Enqueue(request);
-        return Task.FromResult(Responder(request));
+        var response = Responder(request);
+        if (StrictOutput && request.MaxOutputTokens is > 0 and var max)
+        {
+            var tokens = response.Parts.OfType<TextPart>().Sum(p => ModelMessages.EstimateTokens(p.Text));
+            if (tokens > max)
+                throw new AssertException(
+                    $"the scripted response is {tokens} tokens but the request allows {max} (model {request.Model.Ref}); a real provider would stop at the cap with reason \"length\"");
+        }
+        return Task.FromResult(response);
     }
 }
 
