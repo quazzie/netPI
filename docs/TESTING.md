@@ -291,3 +291,7 @@ Regression coverage added:
 - Real-server UI smoke: Settings → Data & backups creates and verifies a snapshot.
 
 Fresh suite results are recorded in STATUS.md. Live paid billing and Linux/macOS were not exercised.
+
+## MCP fixtures
+
+MCP tests run in the existing Aux, Agent, Host and E2E suites. The shared `McpFixture.cs` mode launches a protocol-only stdio child via `--mcp-fixture`. HTTP fixtures bind local ephemeral ports. Run the scoped cases with filters `mcp`, `deferred:` and `mcp host:`; the E2E filter `mcp` includes actual Responses request captures and the narrow-panel UI check. The standalone UI check is `node tests/NetPI.E2E/ui/mcp-smoke.mjs`. All fixtures use isolated homes/processes and never install into the running app.

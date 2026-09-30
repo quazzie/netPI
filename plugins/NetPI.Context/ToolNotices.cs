@@ -39,8 +39,11 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
             return;
         }
         var known = Known(baseline, turn.Messages);
-        if (known.SetEquals(names)) return;
-        if (Announce(sessionId, turn.Tools, baseline, changed)) await turn.ReloadMessagesAsync().ConfigureAwait(false);
+        bool announced;
+        lock (_gates.GetOrAdd(sessionId, _ => new object()))
+            announced = DefinitionNotices.Announce(ctx, store, _changes, turn, changed);
+        announced |= !known.SetEquals(names) && Announce(sessionId, turn.Tools, baseline, changed);
+        if (announced) await turn.ReloadMessagesAsync().ConfigureAwait(false);
     }
 
     /// <summary>Appends a notice when the tools differ from what the context says, under a per-session lock.</summary>
@@ -61,6 +64,7 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
             notice.Meta!["added"] = new JsonArray(added.Select(n => (JsonNode?)n).ToArray());
             notice.Meta["removed"] = new JsonArray(removed.Select(n => (JsonNode?)n).ToArray());
             notice.Meta["cause"] = cause.Cause;
+            if (removed.Count > 0) notice.Meta["revisions"] = new JsonObject(removed.Select(n => new KeyValuePair<string, JsonNode?>(n, JsonValue.Create("unavailable"))));
             if (cause.Plugins.Count > 0) notice.Meta["plugins"] = new JsonArray(cause.Plugins.Select(p => (JsonNode?)p).ToArray());
             ctx.Sessions.AppendMessage(sessionId, notice);
             return true;
@@ -75,6 +79,7 @@ internal sealed class ToolNotices(IPluginContext ctx, PromptStore store) : IAgen
 
     /// <summary>Receives <c>session.changed</c>: the meta keys the user changed (the profile, the tools off for this chat).</summary>
     internal void OnSessionChanged(BusEvent e) => _changes.OnSessionChanged(e);
+    internal void OnRemoteToolsChanged(BusEvent e) => _changes.OnRemoteToolsChanged(e);
 
     /// <summary>A deleted session: nothing left to remember its tools for.</summary>
     internal void Forget(string sessionId) => _changes.Forget(sessionId);

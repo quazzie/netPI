@@ -176,19 +176,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// </summary>
     internal List<IAgentTool> ToolsFor(AgentInfo? agent, SessionInfo? session, bool includeOff = false)
     {
-        var maxDepth = IntSetting("agents.maxDepth", 3);
-        var off = includeOff ? [] : SessionTools.Off(session);
-        List<IAgentTool> all;
-        try { all = [.. Ctx.Tools.All]; } catch { all = []; }
-        var names = all.Select(t => t.Definition.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return all.Where(t =>
-        {
-            var d = t.Definition;
-            // lists may name a tool with actions by the tool of one of its actions (ssh_run for ssh): ToolLists
-            if (agent?.ToolAllowlist is { } allow && !ToolLists.Names(allow, d.Name, names)) return false;
-            if (agent is not null && agent.Depth >= maxDepth && d.Category == "agents" && d.Name != "agent") return false;
-            return !ToolLists.Names(off, d.Name, names);
-        }).OrderBy(t => t.Definition.Name, StringComparer.Ordinal).ToList();
+        return ToolSelection.Eligible(Ctx.Tools, agent, session, IntSetting("agents.maxDepth", 3), includeOff);
     }
 
     // ---------------------------------------------------------------- registry

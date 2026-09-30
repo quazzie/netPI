@@ -68,6 +68,8 @@ internal static class ToolSets
                     ["time"] = m.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
                     ["added"] = Strings(m, "added"),
                     ["removed"] = Strings(m, "removed"),
+                    ["updated"] = Strings(m, "updated"),
+                    ["revisions"] = m.Meta?["revisions"]?.DeepClone(),
                     ["cause"] = m.MetaString("cause") ?? ToolChanges.Unknown,
                     ["plugins"] = Strings(m, "plugins"),
                     ["text"] = m.Text,

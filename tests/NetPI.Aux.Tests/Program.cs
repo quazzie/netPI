@@ -1,7 +1,11 @@
 using NetPI.Aux.Tests;
 
 // Usage: dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll [name filter…]   (exit code 0 = all passed)
+if (args.FirstOrDefault() == "--mcp-fixture") return await McpFixture.RunAsync(args.Skip(1).ToArray());
 var runner = new TestRunner();
+McpTests.Register(runner);
+McpHttpTests.Register(runner);
+McpLifecycleTests.Register(runner);
 RetryTests.Register(runner);
 NudgeTests.Register(runner);
 ToolRepairTests.Register(runner);

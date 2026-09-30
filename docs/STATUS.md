@@ -50,3 +50,7 @@ output; these changes have not been installed into the user's running app by thi
 Language-server diagnostics, PDF/Office reading and scheduled runs remain backlog items. MCP, partial rollback
 and worktree automation were deliberately deferred or dropped in the earlier harness plan; they are not accidental
 omissions. See [the archived harness decisions](archive/2026-09-26-harness-gaps.md).
+
+## MCP implementation (2026-09-30)
+
+All four delivery stages are implemented in the MCP task worktree: stdio/deferred dispatch, disclosure lifecycle and targeted notices, Streamable HTTP, and server-management UI. The solution and UI build pass, as do all MCP transport, runtime, lifecycle, mocked end-to-end and narrow-panel UI cases. The broader gate has one existing failure in the unchanged Chrome attachment test (`user.HasExited`); the agent regressions exposed during implementation were fixed. Native provider adapters, OAuth, prompts/resources and legacy HTTP+SSE remain follow-ups; see [PLUGIN-MCP.md](PLUGIN-MCP.md).

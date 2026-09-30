@@ -177,7 +177,7 @@ internal sealed class PromptStore(IPluginContext ctx)
     {
         var toolsJson = new JsonArray([.. tools.Select(t => (JsonNode?)new JsonObject
         {
-            ["name"] = t.Name, ["description"] = t.Description, ["parameters"] = t.Parameters.DeepClone(),
+            ["name"] = t.Name, ["description"] = t.Description, ["parameters"] = t.Parameters.DeepClone(), ["revision"] = t.Revision,
         })]).ToJsonString();
         var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
         if (_db is null)

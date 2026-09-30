@@ -157,3 +157,5 @@ swaps under a running chat while you work.
 | [docs/AIPROXY-AGENT-GUIDE.md](docs/AIPROXY-AGENT-GUIDE.md) | the local AiProxy server |
 | [docs/HANDOFF.md](docs/HANDOFF.md), [docs/STATUS.md](docs/STATUS.md) | current state, decisions and next steps; what is verified, known limitations |
 | [docs/archive/](docs/archive/) | records of completed plans |
+
+External MCP servers: [configuration, deferred discovery and lifecycle](docs/PLUGIN-MCP.md).

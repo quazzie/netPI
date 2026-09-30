@@ -57,8 +57,8 @@ public sealed class Env : IAsyncDisposable
         var root = Path.Combine(Path.GetTempPath(), "netpi-e2e", DateTime.Now.ToString("MMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..4]);
         Directory.CreateDirectory(root);
         var env = new Env { Options = o, RepoRoot = repo, Root = root };
-        await env.StartCoreAsync();
-        return env;
+        try { await env.StartCoreAsync(); return env; }
+        catch { await env.DisposeAsync(); throw; }
     }
 
     private async Task StartCoreAsync()
