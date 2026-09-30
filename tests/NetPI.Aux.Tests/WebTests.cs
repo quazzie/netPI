@@ -546,9 +546,12 @@ public static class WebTests
                 Check.Contains(left.Content, "Left the tab open for the user in their Chrome: details — " + web.Url + "/shop");
                 Check.True((await env.Run("browser", new { action = "snapshot" })).IsError);
                 env.Ctx.Unload();
-                // the user's browser still runs, with the tab left for the user
+                // the user's browser still runs, with the tab left for the user. The process the test started may
+                // already have exited with code 0: Edge's launcher can hand the browser to another process (the same
+                // convention HeadlessBrowser relies on), and the browser itself is checked alive below through its
+                // DevTools port. A non-zero exit is a crashed or closed browser.
                 await Task.Delay(500);
-                Check.False(user.HasExited, "the user's browser was closed");
+                Check.False(user.HasExited && user.ExitCode != 0, "the user's browser was closed");
                 var port = File.ReadAllLines(Path.Combine(userData, "DevToolsActivePort"))[0];
                 using var http = new HttpClient();
                 var list = await http.GetStringAsync($"http://127.0.0.1:{port}/json/list");
