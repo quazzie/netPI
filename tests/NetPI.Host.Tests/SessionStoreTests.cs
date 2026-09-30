@@ -254,6 +254,37 @@ public static class SessionStoreTests
 
         // The host only stores the switch and publishes session.project; the conversation is appended to by plugins (the
         // context plugin's project notice), so the host never writes model-facing text.
+        r.Add("sessions: a read that races an append never caches a view without it", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo());
+            // Big enough that a read (a query plus a parse of the whole history) is still running when the append lands.
+            var text = string.Join("\n", Enumerable.Range(0, 40).Select(i => new string((char)('a' + i % 26), 80)));
+            for (var i = 0; i < 1200; i++) f.Store.AppendMessage(s.Id, new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = $"m{i} {text}" }] });
+
+            // A reader that started before the append may (correctly) miss it; a reader that starts after must not, and
+            // no later read may serve a cache that is missing a message the database already has. Whether the race is hit
+            // depends on the timing - the guard is the second read (MAX(seq)) in ContextRows - so the assertion is the
+            // invariant, which holds either way.
+            var readers = 4;
+            var started = new TaskCompletionSource();
+            var reading = Enumerable.Range(0, readers).Select(_ => Task.Run(() =>
+            {
+                started.Task.Wait();
+                return f.Store.GetContextMessages(s.Id).Count;
+            })).ToArray();
+            started.SetResult();
+            await Task.Delay(5);
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("the one that raced"));
+            var counts = await Task.WhenAll(reading);
+
+            Check.Equal(1201, f.Store.GetContextMessages(s.Id).Count, "the read after the append sees every message");
+            Check.True(counts.All(c => c is 1200 or 1201), "a reader that raced sees a view from before or after the append, never a torn one: " + string.Join(",", counts));
+            var reads = f.Store.ContextCache.Reads;
+            Check.Equal(1201, f.Store.GetContextMessages(s.Id).Count);
+            Check.True(f.Store.ContextCache.Reads >= reads, "and the next read is served from the cache or re-read, never a stale fill");
+        });
+
         r.Add("sessions: the context cache stays warm across an append, and only a real change drops it", async () =>
         {
             await using var f = new Fixture();

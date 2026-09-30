@@ -535,9 +535,10 @@ internal sealed class SessionStore : ISessionStore
 
     public IReadOnlyList<ChatMessage> GetContextMessages(string sessionId)
     {
-        // One copy, taken under the cache lock: it is a reference copy, and it is what the read costs now (before this,
+        // The copy is taken under the cache lock — a reference copy, and it is what a warm read costs now (before this,
         // a turn re-read the whole history out of SQLite and re-parsed its JSON — ~30 ms and megabytes of garbage for a
-        // 1,500-message chat, every turn).
+        // 1,500-message chat, every turn). The read that fills the cache happens OUTSIDE it, so one session's cold read
+        // (a query plus a parse of the whole history) does not hold up another session's warm read or any append.
         List<ChatMessage> list;
         lock (_contextLock)
         {
@@ -545,11 +546,17 @@ internal sealed class SessionStore : ISessionStore
             {
                 Interlocked.Increment(ref _contextHits);
                 TouchContextLocked(sessionId);
-                list = [.. cached.Rows];
+                return Ordered(cached.Rows);
             }
-            else list = ContextRowsLocked(sessionId);
         }
-        // Summaries are appended after the retained tail; the model must see the latest one first.
+        list = ContextRows(sessionId);
+        return Ordered(list);
+    }
+
+    /// <summary>The caller's own copy, with the latest summary first (it is appended after the retained tail).</summary>
+    private static List<ChatMessage> Ordered(List<ChatMessage> rows)
+    {
+        var list = new List<ChatMessage>(rows);
         var idx = list.FindLastIndex(m => m.Role == MessageRole.Summary);
         if (idx > 0)
         {
@@ -561,22 +568,32 @@ internal sealed class SessionStore : ISessionStore
     }
 
     /// <summary>
-    /// The session's uncompacted messages in database order: the cached list, or one read that fills the cache. Caller
-    /// holds <see cref="_contextLock"/>; the returned list is the cache's own, so it must not be handed out.
+    /// The session's uncompacted messages in database order, read once and put in the cache when the cache may hold
+    /// them. The read also asks for the newest uncompacted seq and only caches when that is the seq it read: a message
+    /// that committed while this read was running would otherwise be missing from the cache with nothing left to drop it
+    /// (an append that finds no entry has nothing to extend), and the staleness would last until the next write.
     /// </summary>
-    private List<ChatMessage> ContextRowsLocked(string sessionId)
+    private List<ChatMessage> ContextRows(string sessionId)
     {
         Interlocked.Increment(ref _contextReads);
         var rows = _db.Query($"SELECT {MessageColumns} FROM messages WHERE session_id = @sessionId AND compacted = 0 ORDER BY seq",
             new { sessionId }, ReadMessage).ToList();
-        if (rows.Count <= ContextCacheMaxMessages)
+        var newest = _db.Scalar<long?>("SELECT MAX(seq) FROM messages WHERE session_id = @sessionId AND compacted = 0",
+            new { sessionId }) ?? 0;
+        if (rows.Count > ContextCacheMaxMessages) return rows;      // too big to be worth retaining
+        if (rows.Count > 0 && rows[^1].Seq != newest) return rows;  // a message landed during the read: do not cache a view without it
+        lock (_contextLock)
         {
-            _context[sessionId] = new ContextEntry(rows, rows.Count == 0 ? 0 : rows[^1].Seq);
-            _contextLru.AddLast(sessionId);
-            while (_contextLru.Count > ContextCacheSessions)
+            // Only fill an empty slot: if an append extended the cache while this read ran, that entry knows more.
+            if (!_context.ContainsKey(sessionId))
             {
-                _context.Remove(_contextLru.First!.Value);
-                _contextLru.RemoveFirst();
+                _context[sessionId] = new ContextEntry(rows, newest);
+                _contextLru.AddLast(sessionId);
+                while (_contextLru.Count > ContextCacheSessions)
+                {
+                    _context.Remove(_contextLru.First!.Value);
+                    _contextLru.RemoveFirst();
+                }
             }
         }
         return rows;
