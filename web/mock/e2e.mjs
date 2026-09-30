@@ -119,12 +119,36 @@ await fetch(`${BASE}/api/rpc/mock.reset`, { method: 'POST', headers: { 'X-NetPI-
 const { browser, page, errors } = await openApp({ url: `${BASE}/?token=dev` });
 // When the run dies on an exception (a wait that timed out), leave what the page looked like: a failure that only shows up late in a
 // long run has to be readable without running it again. FAILED.png and FAILED.txt (the section, the page's text, console errors).
+// what the page itself did, for that file: the rpc frames it sent and when its socket closed (Playwright sees both), and every toast
+// that showed (an error toast is gone long before the failure screenshot is taken)
+const pageWs = [];
+const stamp = () => new Date().toISOString().slice(11, 23);
+page.on('websocket', (ws) => {
+  pageWs.push(`${stamp()} socket opened ${ws.url()}`);
+  ws.on('framesent', (f) => {
+    const p = String(f.payload);
+    if (p.includes('"t":"rpc"')) { try { const m = JSON.parse(p); pageWs.push(`${stamp()} sent rpc ${m.id} ${m.m}`); } catch {} }
+  });
+  ws.on('close', () => pageWs.push(`${stamp()} socket closed`));
+  ws.on('socketerror', (e) => pageWs.push(`${stamp()} socket error ${e}`));
+});
+await page.addInitScript(() => {
+  window.__toasts = [];
+  new MutationObserver((records) => {
+    for (const r of records) for (const n of r.addedNodes) {
+      const t = n.nodeType === 1 ? (n.matches?.('.toast') ? n : n.querySelector?.('.toast')) : null;
+      if (t) window.__toasts.push(`${new Date().toISOString().slice(11, 23)} ${t.innerText}`);
+    }
+  }).observe(document, { childList: true, subtree: true });
+});
 process.on('uncaughtException', async (e) => {
   console.error(e);
   try {
     await page.screenshot({ path: path.join(OUT, 'FAILED.png') });
     const text = await page.locator('body').innerText().catch(() => '');
-    fs.writeFileSync(path.join(OUT, 'FAILED.txt'), `${e?.stack ?? e}\n\nsection: ${section}\nurl: ${page.url()}\ntabs: ${await page.locator('.topbar .tab').allInnerTexts().then((t) => t.join(' | ')).catch(() => '?')}\n\nconsole errors:\n${errors.join('\n')}\n\npage text:\n${text}\n`);
+    // what the mock saw: the last rpc frames it received and its clients, so a frame that never arrived shows
+    const frames = await rpcCall('mock.wsLog').then((r) => JSON.stringify(r)).catch(() => '(mock.wsLog unavailable)');
+    fs.writeFileSync(path.join(OUT, 'FAILED.txt'), `${e?.stack ?? e}\n\nsection: ${section}\nurl: ${page.url()}\ntabs: ${await page.locator('.topbar .tab').allInnerTexts().then((t) => t.join(' | ')).catch(() => '?')}\n\nconsole errors:\n${errors.join('\n')}\n\ntoasts shown:\n${(await page.evaluate(() => window.__toasts ?? []).catch(() => [])).join('\n')}\n\nthe page's rpc frames (last 40) and socket events:\n${pageWs.slice(-40).join('\n')}\n\nmock rpc frames and clients:\n${frames}\n\npage text:\n${text}\n`);
     console.error(`evidence: ${path.join(OUT, 'FAILED.png')} and FAILED.txt`);
   } catch {}
   process.exit(1);
@@ -148,6 +172,18 @@ async function openStripTab(side, name) {
   const t = page.locator(`.panel.${side} .strip-tab`, { hasText: name });
   if ((await t.getAttribute('aria-selected')) !== 'true') await t.click();
   if (!(await page.locator(`.panel.${side}.open`).count())) await t.click();
+}
+/**
+ * Open a new chat tab (Ctrl+T) and wait until it is the one showing. Waiting for `.intro` alone passes at once when the tab we were on is
+ * itself an empty chat: the next fill then lands in the OLD tab's composer while the new session is still being created, and the Enter
+ * that follows hits the new, empty one, so the message is never sent (what killed the live-thinking step of "web tools" after certain
+ * earlier sections: the page sent sessions.create and agents.use, and no agent.send).
+ */
+async function newTab() {
+  const before = await page.locator('.topbar .tab').count();
+  await page.keyboard.press('Control+t');
+  await page.waitForFunction((n) => document.querySelectorAll('.topbar .tab').length > n, before, { timeout: 10_000 });
+  await page.waitForSelector('.intro');
 }
 const right = page.locator('.panel.right > .body');
 const leftBody = page.locator('.panel.left > .body');
@@ -200,8 +236,7 @@ for (let i = 0; i < 4; i++) {
 var hasNewer = await page.locator('.earlier button', { hasText: 'jump to latest' }).count();
 // render cost of the full (capped) window: switch to another session and back (the store is cached)
 var msgsInWindow = await page.locator('.content .item').count();
-await page.keyboard.press('Control+t');
-await page.waitForSelector('.intro');
+await newTab();
 var switchMs = await page.evaluate(async () => {
   const tab = [...document.querySelectorAll('.topbar .tab')].find((t) => t.textContent.includes('Lane scheduler'));
   const t = performance.now();
@@ -242,8 +277,7 @@ check('Esc closes the context popout', (await page.locator('.popover .cx').count
 // ------------------------------------------------------------------ new session + streaming
 if (want('new session + agent run')) {
 log('new session + agent run');
-await page.keyboard.press('Control+t');
-await page.waitForSelector('.intro');
+await newTab();
 await ta.fill('Why does the agent scheduler throw when a pool is missing? Make it fail with a clear message.');
 await ta.press('Enter');
 await page.waitForSelector('.thinking.live', { timeout: 5000 });
@@ -1629,8 +1663,7 @@ log('drag to reorder tabs');
 // ------------------------------------------------------------------ abort
 if (want('abort')) {
 log('abort');
-await page.keyboard.press('Control+t');
-await page.waitForSelector('.intro');
+await newTab();
 await ta.fill('Why does the agent scheduler throw when a pool is missing?');
 await ta.press('Enter');
 await page.waitForSelector('.composer.running', { timeout: 5000 });
@@ -1680,8 +1713,7 @@ log('composer drafts');
   // image, open five more chats so this session's store is evicted, come back — the chip must still be
   // there. The mock's sessions.messages counter proves the store was rebuilt on return, so a pass cannot
   // come from a still-live store.
-  await page.keyboard.press('Control+t');
-  await page.waitForSelector('.intro');
+  await newTab();
   const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
   const loads = async () => ((await rpcCall('mock.msgLoads')) ?? {})[sid] ?? 0;
   for (let i = 0; i < 20 && !(await loads()); i++) await sleep(100); // the new chat's first page
@@ -1734,8 +1766,7 @@ log('composer drafts');
 if (want('web tools, todo plan, tools notice, file links')) {
 log('web tools, todo plan, tools notice, file links');
 {
-  await page.keyboard.press('Control+t');
-  await page.waitForSelector('.intro');
+  await newTab();
   // hold the live thinking line: at MOCK_SPEED=3 the whole thinking stream is ~300 ms, and a waitForSelector
   // whose rAF-driven polls stall under load can miss that window entirely (mock.thinkDelay stretches it).
   // Released in a finally: a failure in this block must not leave the rest of the run streaming in slow motion.
@@ -1811,8 +1842,7 @@ log('web tools, todo plan, tools notice, file links');
 if (want('ssh tools')) {
 log('ssh tools');
 {
-  await page.keyboard.press('Control+t');
-  await page.waitForSelector('.intro');
+  await newTab();
   await ta.fill('[ssh] Make the demo site on nuc listen on 8080.');
   await ta.press('Enter');
   await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
@@ -1845,8 +1875,7 @@ log('fast steps: layout stability');
 {
   const size = page.viewportSize();
   await page.setViewportSize({ width: 1280, height: 560 });
-  await page.keyboard.press('Control+t');
-  await page.waitForSelector('.intro');
+  await newTab();
   // the new user message's position every frame: pinned to the bottom, it may only move up while the chat grows
   const runFast = async (text) => {
     await ta.fill(text);
@@ -1927,8 +1956,7 @@ log('fast steps: layout stability');
 if (want('compaction banner')) {
 log('compaction banner');
 {
-  await page.keyboard.press('Control+t');
-  await page.waitForSelector('.intro');
+  await newTab();
   await ta.fill('hi');
   await ta.press('Enter');
   await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
@@ -1957,8 +1985,7 @@ log('compaction banner');
 if (want('goals')) {
 log('goals');
 {
-  await page.keyboard.press('Control+t');
-  await page.waitForSelector('.intro');
+  await newTab();
   await ta.fill('/goal Make the demo page render again');
   await ta.press('Enter');
   await page.waitForSelector('.goal[data-status="active"]', { timeout: 5000 });
@@ -2113,8 +2140,7 @@ if (!EXTERNAL && want('reconnect')) {
   // a run that ends while the browser is offline: its stream.end is lost with the socket, so on reconnect the UI
   // must reconcile its transient state against the server truth (the run is done) and not keep the partial stream
   {
-    await page.keyboard.press('Control+t');
-    await page.waitForSelector('.intro');
+    await newTab();
     await ta.fill('Why does the agent scheduler throw when a pool is missing? Make it fail with a clear message.');
     await ta.press('Enter');
     // drop the link as soon as the answer is streaming: between stream.start and message.added the partial stream
