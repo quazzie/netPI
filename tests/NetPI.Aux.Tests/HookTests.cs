@@ -276,9 +276,9 @@ public static class ToolRepairTests
 
         r.Add("toolrepair: bare <function=…> and name=\"…\" variants", () =>
         {
-            var m = Repair("Running it.\n<function=bash>\n<parameter=command>\nls -la\n</parameter>\n</function>");
+            var m = Repair("<function=bash>\n<parameter=command>\nls -la\n</parameter>\n</function>");
             Check.Equal("ls -la", Args(m.ToolCalls.Single())["command"].Str());
-            Check.Equal("Running it.", m.Text);
+            Check.Equal("", m.Text);
 
             var m2 = Repair("<function name=\"read\"><parameter name=\"path\">q.txt</parameter></function>");
             Check.Equal("q.txt", Args(m2.ToolCalls.Single())["path"].Str());
@@ -295,9 +295,9 @@ public static class ToolRepairTests
 
         r.Add("toolrepair: missing closing tags at the end of the message", () =>
         {
-            var m = Repair("Let me look.\n<tool_call>\n<function=read>\n<parameter=path>\nsrc/a.cs\n");
+            var m = Repair("<tool_call>\n<function=read>\n<parameter=path>\nsrc/a.cs\n");
             Check.Equal("src/a.cs", Args(m.ToolCalls.Single())["path"].Str());
-            Check.Equal("Let me look.", m.Text);
+            Check.Equal("", m.Text);
 
             var m2 = Repair("<tool_call>\n<function=read>\n<parameter=path>\nsrc/a.cs\n</parameter>\n");
             Check.Equal("src/a.cs", Args(m2.ToolCalls.Single())["path"].Str());
@@ -315,16 +315,16 @@ public static class ToolRepairTests
             Check.Equal("b", Args(m4.ToolCalls.Last())["path"].Str());
         });
 
-        r.Add("toolrepair: several calls, text around them is kept", () =>
+        r.Add("toolrepair: several calls in one envelope are all converted", () =>
         {
-            var text = "I'll read both files.\n\n<tool_call>\n<function=read>\n<parameter=path>\na.cs\n</parameter>\n</function>\n</tool_call>\n" +
-                       "<tool_call>\n<function=read>\n<parameter=path>\nb.cs\n</parameter>\n</function>\n</tool_call>\n\nThen I'll compare them.";
+            var text = "<tool_call>\n<function=read>\n<parameter=path>\na.cs\n</parameter>\n</function>\n</tool_call>\n" +
+                       "<tool_call>\n<function=read>\n<parameter=path>\nb.cs\n</parameter>\n</function>\n</tool_call>";
             var m = Repair(text);
             Check.Equal(2, m.ToolCalls.Count());
-            Check.Equal("I'll read both files.\n\nThen I'll compare them.", m.Text);
+            Check.Equal("", m.Text);
             Check.True(m.ToolCalls.Select(c => c.Id).Distinct().Count() == 2, "unique ids");
-            // Tool calls come after the text parts.
-            Check.True(m.Parts[0] is TextPart && m.Parts[1] is ToolCallPart);
+            // The markup is gone, so the message is nothing but the two calls.
+            Check.True(m.Parts.All(p => p is ToolCallPart));
         });
 
         r.Add("toolrepair: parameter values may contain </function> and markup-like text", () =>
@@ -385,7 +385,7 @@ public static class ToolRepairTests
             Check.Equal(0, ToolCallTextParser.Parse("nothing here").Count);
         });
 
-        r.Add("toolrepair: fences emptied by the removal disappear, thinking is kept", () =>
+        r.Add("toolrepair: a whole-message fence is an envelope, thinking and usage are kept", () =>
         {
             var msg = new ChatMessage
             {
@@ -393,16 +393,56 @@ public static class ToolRepairTests
                 Parts =
                 [
                     new ThinkingPart { Text = "need to read", Signature = "sig" },
-                    new TextPart { Text = "Reading:\n```xml\n<tool_call>\n<function=read>\n<parameter=path>\na\n</parameter>\n</function>\n</tool_call>\n```" },
+                    new TextPart { Text = "```xml\n<tool_call>\n<function=read>\n<parameter=path>\na\n</parameter>\n</function>\n</tool_call>\n```" },
                 ],
                 Usage = new Usage { InputTokens = 10, OutputTokens = 5 },
             };
             var m = ToolCallRepair.Repair(msg, Tools)!;
             Check.True(m.Parts[0] is ThinkingPart { Signature: "sig" });
-            Check.Equal("Reading:", m.Text);
+            Check.Equal("read", m.ToolCalls.Single().Name);
+            Check.Equal("", m.Text); // the emptied fence disappears with the markup
             Check.Equal("x", m.MetaString("kind"));
             Check.Equal(10L, m.Usage!.InputTokens);
             Check.True(msg.Meta!["repaired"] is null, "original message untouched");
+        });
+
+        r.Add("toolrepair: documentation examples are not executed", () =>
+        {
+            // A normal answer that shows a call as an example, in a fence.
+            var doc = "Here is an example; do not run it:\n\n```xml\n<tool_call>\n<function=write>\n" +
+                      "<parameter=path>\nx.txt\n</parameter>\n<parameter=content>\nhello\n</parameter>\n</function>\n</tool_call>\n```";
+            Check.True(ToolCallRepair.Repair(T.Assistant(doc), Tools) is null, "example inside a fence");
+
+            // Quoted source: prose that quotes the markup, with a destructive call in it.
+            var quoted = "The repair hook recognises markup like this:\n<tool_call><function=bash><parameter=command>rm -rf /</parameter></function></tool_call>\nThat is the whole rule.";
+            Check.True(ToolCallRepair.Repair(T.Assistant(quoted), Tools) is null, "quoted source");
+
+            // Prose and markup in the same answer: the explanation wins, nothing is executed.
+            var both = "I will write the file now.\n<function=write><parameter=path>x.txt</parameter><parameter=content>hi</parameter></function>";
+            Check.True(ToolCallRepair.Repair(T.Assistant(both), Tools) is null, "prose plus markup");
+
+            // A complete envelope followed by a comment is still an explanation.
+            var tail = "<tool_call><function=read><parameter=path>a</parameter></function></tool_call>\n(as shown in the docs)";
+            Check.True(ToolCallRepair.Repair(T.Assistant(tail), Tools) is null, "trailing comment");
+
+            // A plain prose part next to a call part is an answer, not a call.
+            var parts = new ChatMessage
+            {
+                Role = MessageRole.Assistant,
+                Parts = [new TextPart { Text = "Reading the file." }, new TextPart { Text = "<function=read><parameter=path>a</parameter></function>" }],
+            };
+            Check.True(ToolCallRepair.Repair(parts, Tools) is null, "prose part next to a call part");
+        });
+
+        r.Add("toolrepair: a call envelope is markup only, prose is not", () =>
+        {
+            Check.True(ToolCallTextParser.IsCallEnvelope("<function=read><parameter=path>a</parameter></function>"));
+            Check.True(ToolCallTextParser.IsCallEnvelope("```xml\n<tool_call>\n<function=read>\n</function>\n</tool_call>\n```"));
+            Check.True(ToolCallTextParser.IsCallEnvelope("<function=a></function>\n\n<function=b></function>"));
+            Check.True(!ToolCallTextParser.IsCallEnvelope("Run this:\n<function=read></function>"));
+            Check.True(!ToolCallTextParser.IsCallEnvelope("no markup at all"));
+            Check.True(!ToolCallTextParser.IsCallEnvelope("```xml\n<function=read></function>\n```\nand then it writes the file"));
+            Check.True(!ToolCallTextParser.IsCallEnvelope("```xml\n```"));
         });
 
         r.Add("toolrepair: parser spans cover the whole markup", () =>

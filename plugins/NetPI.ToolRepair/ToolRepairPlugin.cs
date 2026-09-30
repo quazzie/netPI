@@ -26,8 +26,10 @@ public sealed class ToolRepairPlugin : INetPiPlugin
 }
 
 /// <summary>
-/// When an assistant message has no native tool calls but its text contains tool-call markup, replace it with a
-/// copy whose markup is removed and whose calls are real <see cref="ToolCallPart"/>s (runs before the nudge hook).
+/// When an assistant message has no native tool calls but its text <i>is</i> tool-call markup, replace it with a copy
+/// whose markup is removed and whose calls are real <see cref="ToolCallPart"/>s (runs before the nudge hook).
+/// Only a standalone envelope is converted: an answer that also explains, documents or quotes the markup is left as
+/// text, because "here is an example" is not an instruction to run it. The nudge hook then asks for a real call.
 /// </summary>
 public sealed class ToolRepairHook(Func<ISettings?> settings, ILogger? logger = null) : IAgentHook
 {
@@ -52,13 +54,17 @@ public static class ToolCallRepair
 {
     /// <summary>
     /// Returns a repaired copy of <paramref name="message"/> or null when there is nothing to repair
-    /// (native tool calls present, aborted/error, no markup, or no call names an active tool).
+    /// (native tool calls present, aborted/error, no markup, markup mixed with prose, or no call names an active tool).
     /// </summary>
     public static ChatMessage? Repair(ChatMessage message, IReadOnlyList<ToolDefinition> tools)
     {
         if (message.Role != MessageRole.Assistant || message.ToolCalls.Any()) return null;
         if (message.StopReason is "aborted" or "error") return null;
-        if (!message.Parts.OfType<TextPart>().Any(t => ToolCallTextParser.ContainsMarkup(t.Text))) return null;
+        var textParts = message.Parts.OfType<TextPart>().ToList();
+        if (!textParts.Any(t => ToolCallTextParser.ContainsMarkup(t.Text))) return null;
+        // Every text part has to be a standalone call envelope: one part of prose, a comment or a quoted example
+        // makes the whole answer documentation, and documentation is not run.
+        if (textParts.Any(t => !ToolCallTextParser.IsCallEnvelope(t.Text))) return null;
 
         var newParts = new List<MessagePart>(message.Parts.Count + 2);
         var calls = new List<ToolCallPart>();
