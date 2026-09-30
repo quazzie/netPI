@@ -434,6 +434,24 @@ log('plugin tab: Work');
   check('work: process output tail + live chunks', len0 > 0 && len1 > len0, `${len0} → ${len1} chars`);
   await right.screenshot({ path: path.join(OUT, '26-work-process.png') });
   await proc.locator('.row').click();
+  // collapse a row while its first processes.output tail is still in flight: the abandoned open must
+  // not leave a live subscription + 2 s poll timer behind (a closed row kept asking for tails)
+  const emb = ((await rpcCall('processes.list')) ?? []).find((p) => p.command?.includes('embed.py'));
+  const tailCalls = async () => ((await rpcCall('mock.procStats')) ?? {})[emb?.id]?.tailCalls ?? 0;
+  await rpcCall('mock.procTailDelay', { ms: 1000 });
+  try {
+    const base = await tailCalls();
+    await proc.locator('.row').click(); // open: the tail starts, delayed 1000 ms
+    await page.waitForTimeout(200); // inside the fetchTail() await window
+    await proc.locator('.row').click(); // collapse
+    await page.waitForTimeout(1500); // the in-flight tail settles (its one request is expected)
+    const calls0 = await tailCalls();
+    await page.waitForTimeout(3000); // a leaked 2 s poll would add another tail request in here
+    const calls1 = await tailCalls();
+    check('work: a collapse mid-fetch leaves no tail polling behind', !!emb && calls0 - base >= 1 && calls1 === calls0, `${base} → ${calls0} → ${calls1} processes.output calls${emb ? '' : ' (embed.py not found)'}`);
+  } finally {
+    await rpcCall('mock.procTailDelay', { ms: 0 });
+  }
   // kill the background dev server (two-step confirm button)
   const dev = page.locator('.work .proc', { hasText: 'npm run dev' }).first();
   const kill = dev.locator('button[aria-label="Kill process tree"]');

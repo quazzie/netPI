@@ -313,6 +313,7 @@ function uiTabs() {
   return tabs;
 }
 
+let procTailDelayMs = 0; // e2e test helper: delay the tail responses so the UI can collapse a row inside its fetchTail() await
 const handlers = {
   'app.info': () => ({ version: VERSION, os: `${os.type()} ${os.release()}`, home: os.homedir(), appDir: path.join(REPO, 'artifacts/app'), defaultWorkspace: path.join(os.homedir(), '.netpi', 'workspace'), desktop: false }),
 
@@ -706,6 +707,9 @@ const handlers = {
   'mock.closeLeavesPlan': (p = {}) => ideas.closeLeavesPlan(need(p, 'phrase'), p.title),
   // test helper: offer the commit check's card for the idea whose title contains this phrase
   'mock.commitFinishesIdea': (p = {}) => ideas.commitFinishesIdea(need(p, 'phrase')),
+  // test helpers: slow the process tails and observe who asks for them (the e2e leak check)
+  'mock.procTailDelay': (p) => ((procTailDelayMs = p.ms ?? 0), true),
+  'mock.procStats': () => work.procStats(),
   'guard.pending': (p = {}) => agent.pendingApprovals(p.sessionId),
   'guard.answer': (p = {}) => {
     if (agent.answerApproval(need(p, 'approvalId'), p.allow, p.scope) === 'not_found') throw new RpcError('not_found', 'No tool call waits for your OK with that id.');
@@ -817,7 +821,10 @@ const handlers = {
     return { repo: root, branch: 'main', ahead: 2, behind: 0, files, added: sum('added'), deleted: sum('deleted') };
   },
   'processes.list': () => work.procList(),
-  'processes.output': (p) => work.procOutputTail(need(p, 'id'), p.tail ?? 500),
+  'processes.output': async (p) => {
+    if (procTailDelayMs) await new Promise((r) => setTimeout(r, procTailDelayMs));
+    return work.procOutputTail(need(p, 'id'), p.tail ?? 500);
+  },
   'processes.kill': (p) => work.procKill(need(p, 'id')),
   'agents.list': () => agentPools(),
   'agents.use': (p) => {
@@ -846,6 +853,7 @@ const handlers = {
   'logs.recent': (p = {}) => logs.slice(-(p.max ?? 200)),
   // test helper: back to the seeded state
   'mock.reset': () => {
+    procTailDelayMs = 0;
     for (const s of store.sessions.keys()) agent.abort(s);
     resetStore();
     seed();
