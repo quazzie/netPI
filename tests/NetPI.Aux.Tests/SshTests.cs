@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -469,6 +470,32 @@ public static class SshTests
 
             Directory.CreateDirectory(Path.Combine(env.Dir, "folder"));
             Check.Contains((await env.Run("ssh_copy", new { host = "nuc", direction = "upload", from = "folder", to = "/tmp/" })).Content, "set recursive");
+        });
+
+        r.Add("ssh launcher: the timeout covers the stdin transmission (a child that never reads stdin is stopped, not hung)", async () =>
+        {
+            // A child that never reads its stdin blocks the launcher's write of 8 MiB in the pipe, so the only thing
+            // that can end the call is the timeout — which has to start before the transmission, not after it.
+            var (exe, args) = OperatingSystem.IsWindows()
+                ? ("ping", new[] { "-n", "61", "127.0.0.1" })
+                : ("sleep", new[] { "60" });
+            var sw = Stopwatch.StartNew();
+            var call = new ProcessLauncher().RunAsync(exe, args, new byte[8 * 1024 * 1024], null, null, null, TimeSpan.FromMilliseconds(500), CancellationToken.None);
+            var done = await Task.WhenAny(call, Task.Delay(TimeSpan.FromSeconds(10)));
+            Check.True(ReferenceEquals(done, call), $"the call gave up at the timeout, in {sw.Elapsed}");
+            var r = await call;
+            Check.True(sw.Elapsed < TimeSpan.FromSeconds(8), $"returned in {sw.Elapsed}");
+            Check.True(r.TimedOut, $"TimedOut={r.TimedOut} Aborted={r.Aborted} ExitCode={r.ExitCode}");
+            Check.False(r.Aborted, $"Aborted={r.Aborted} TimedOut={r.TimedOut}");
+
+            // And the normal case is untouched: a child that exits promptly still finishes normally.
+            var (fast, fastArgs) = OperatingSystem.IsWindows()
+                ? ("ping", new[] { "-n", "1", "127.0.0.1" })
+                : ("true", Array.Empty<string>());
+            var ok = await new ProcessLauncher().RunAsync(fast, fastArgs, new byte[] { 1, 2, 3 }, null, null, null, TimeSpan.FromSeconds(10), CancellationToken.None);
+            Check.False(ok.TimedOut, $"TimedOut={ok.TimedOut} Aborted={ok.Aborted}");
+            Check.False(ok.Aborted, $"TimedOut={ok.TimedOut} Aborted={ok.Aborted}");
+            Check.Equal(0, ok.ExitCode, "exit code of a child that exits on its own");
         });
 
         r.Add("ssh live (NETPI_SSH_TEST_HOSTS): quoting, files, copy, cwd, timeout and abort end the remote processes", async () =>
