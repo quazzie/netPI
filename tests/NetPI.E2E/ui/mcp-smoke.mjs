@@ -29,12 +29,23 @@ try {
   for(const width of [230,380,1000]) {
     await page.setViewportSize({width,height:850});
     await page.goto('http://127.0.0.1:'+server.address().port);
-    await page.getByRole('button',{name:'fixture',exact:false}).click();
+    await page.locator('button.server').click();
     await page.getByText('weather',{exact:true}).click();
     await page.getByLabel('Expose tool').waitFor();
     const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
     if(overflow)throw Error('MCP tab overflows at '+width+'px');
-    await page.getByRole('button',{name:'Edit',exact:true}).click();
+    // The per-server actions are one menu now (idea-pii7hv): it opens, holds all five, and closes on Escape.
+    const menu=page.getByRole('button',{name:'Actions for fixture'});
+    if(!(await menu.isVisible()))throw Error('the server action menu button is missing');
+    if(await page.getByRole('menuitem').count())throw Error('the action menu is open before it was clicked');
+    await menu.click();
+    const items=await page.getByRole('menuitem').allInnerTexts();
+    if(items.length!==5)throw Error('expected 5 actions in the menu, got '+items.length);
+    if(!items.join(' ').includes('Remove'))throw Error('Remove is missing from the menu: '+items.join(', '));
+    await page.keyboard.press('Escape');
+    if(await page.getByRole('menuitem').count())throw Error('Escape did not close the action menu');
+    await menu.click();
+    await page.getByRole('menuitem',{name:/Edit/}).click();
     const draft=await page.getByLabel('Configuration',{exact:true}).inputValue();
     await page.getByRole('button',{name:'Save',exact:true}).click();
     await page.getByRole('alert').waitFor();
