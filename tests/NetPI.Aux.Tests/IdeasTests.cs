@@ -79,13 +79,71 @@ public static class IdeasTests
             var guideline = string.Join(" ", env.Tool("ideas").Definition.PromptGuidelines!);
             Check.Contains(guideline, "(ideas, action add)");
             Check.Contains(guideline, "When you finish the work an idea describes, set it to done");
-            foreach (var m in new[] { "ideas.list", "ideas.get", "ideas.add", "ideas.update", "ideas.delete", "ideas.reorder", "ideas.toPrompt", "ideas.quickAdd" })
+            foreach (var m in new[] { "ideas.list", "ideas.get", "ideas.add", "ideas.update", "ideas.delete", "ideas.reorder", "ideas.toPrompt", "ideas.quickAdd", "ideas.addImage", "ideas.removeImage", "ideas.image" })
                 Check.True(env.Ctx.RpcFake.Exists(m), m);
             var tab = env.Ctx.UiFake.TabList.Single();
             Check.True(tab is { Id: "ideas", Title: "Ideas", Panel: UiPanel.Right, Icon: "idea", Order: 20, Module: "ui.js" });
             var cmd = env.Ctx.UiFake.CommandList.Single();
             Check.True(cmd is { Name: "idea", ArgsHint: "<title>", Rpc: "ideas.quickAdd" });
             env.Ctx.Unload();
+        });
+
+        r.Add("ideas: images attach to an idea, come back for the card, and go when it does", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var png = Convert.ToBase64String(new byte[] { 0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4 });   // the bytes do not have to be a real image
+
+            // 1. stored under the home, referenced home-relative, and reported back with the same bytes
+            var shot = await env.Rpc("ideas.addImage", new JsonObject { ["data"] = png, ["mediaType"] = "image/png", ["name"] = "shot.png" });
+            Check.Equal("shot.png", shot["name"].Str());
+            Check.True(shot["path"].Str()!.StartsWith(IdeaImages.Dir + "/"), shot["path"].Str());
+            var file = Path.Combine(env.Ctx.Paths.Home, shot["path"].Str()!.Replace('/', Path.DirectorySeparatorChar));
+            Check.True(File.Exists(file), file);
+            Check.Equal(png, Convert.ToBase64String(File.ReadAllBytes(file)));
+            var back = await env.Rpc("ideas.image", new JsonObject { ["path"] = shot["path"].Str() });
+            Check.Equal(png, back["data"].Str());
+
+            // 2. the idea carries the reference, and the prompt hands the path to whoever works on it
+            var added = await env.Rpc("ideas.add", new JsonObject
+            {
+                ["idea"] = new JsonObject { ["title"] = "Composer is cramped", ["images"] = new JsonArray { shot.DeepClone() } },
+            });
+            var stored = await env.Ideas();
+            Check.Equal(1, stored.Count);
+            Check.Equal(shot["path"].Str(), ((JsonArray)stored[0]["images"]!)[0]!.AsObject()["path"].Str());
+            var prompt = (await env.Ctx.RpcFake.Call("ideas.toPrompt", new JsonObject { ["id"] = added["id"].Str() }))!.ToString()!;
+            Check.Contains(prompt, "## Images");
+            Check.Contains(prompt, file);
+
+            // 3. only files this host wrote are readable or removable
+            foreach (var outside in new[] { "C:/Windows/win.ini", "../../secrets.txt", "ideas.json" })
+            {
+                var bad = await Check.ThrowsAsync<RpcException>(() => env.Rpc("ideas.image", new JsonObject { ["path"] = outside }));
+                Check.Contains(bad.Message, "not a stored idea image");
+            }
+            Check.True(File.Exists(file), "a refused path deleted nothing");
+
+            // 4. a type that is not an image, and one over the cap, are refused before anything is written
+            var notImage = await Check.ThrowsAsync<RpcException>(() => env.Rpc("ideas.addImage", new JsonObject { ["data"] = png, ["mediaType"] = "application/pdf" }));
+            Check.Equal("bad_request", notImage.Code);
+            var huge = new string('A', IdeaImages.MaxBytes * 2);
+            var tooBig = await Check.ThrowsAsync<RpcException>(() => env.Rpc("ideas.addImage", new JsonObject { ["data"] = huge, ["mediaType"] = "image/png" }));
+            Check.Contains(tooBig.Message, "larger than");
+            Check.Equal(1, Directory.GetFiles(Path.Combine(env.Ctx.Paths.Home, IdeaImages.Dir)).Length, "only the one image is on disk");
+
+            // 5. removing it takes the file with it
+            await env.Ctx.RpcFake.Call("ideas.removeImage", new JsonObject { ["path"] = shot["path"].Str() });
+            Check.False(File.Exists(file), "the file is gone");
+            // …and deleting the idea takes whatever it still carried
+            var again = await env.Rpc("ideas.addImage", new JsonObject { ["data"] = png, ["mediaType"] = "image/png" });
+            await env.Rpc("ideas.add", new JsonObject
+            {
+                ["idea"] = new JsonObject { ["title"] = "With a shot", ["images"] = new JsonArray { again.DeepClone() } },
+            });
+            var second = (await env.Ideas()).Single(i => i["title"].Str() == "With a shot");
+            await env.Ctx.RpcFake.Call("ideas.delete", new JsonObject { ["id"] = second["id"].Str() });
+            Check.False(File.Exists(Path.Combine(env.Ctx.Paths.Home, again["path"].Str()!.Replace('/', Path.DirectorySeparatorChar))), "deleting the idea deleted its image");
         });
 
         r.Add("ideas: a commit is recorded on the idea it works on, and only a clear 'finished' offers the card", async () =>

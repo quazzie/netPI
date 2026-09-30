@@ -96,7 +96,7 @@ public sealed class IdeasPlugin : INetPiPlugin
 
         context.Tools.Register(new IdeasTool(repo, locator));
 
-        var rpc = new IdeasRpc(repo, locator, events, migration);
+        var rpc = new IdeasRpc(repo, locator, events, migration, context.Paths.Home);
         rpc.Register(context.Rpc);
         new IdeaRecall(context, repo, locator).Register(context.Rpc);
         var saveCheck = new IdeaSaveCheck(context, repo);
@@ -136,18 +136,26 @@ public sealed class IdeasEvents(IPluginContext ctx, IdeasRepository repo, IdeasL
 }
 
 /// <summary>ideas.* RPC handlers (see docs/PLUGIN-IDEAS.md).</summary>
-public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEvents events, IdeasMigration migration)
+public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEvents events, IdeasMigration migration, string home)
 {
     private readonly IdeasRepository _repo = repo;
     private readonly IdeasLocator _locator = locator;
     private readonly IdeasEvents _events = events;
     private readonly IdeasMigration _migration = migration;
+    private readonly string _home = home;
 
     public void Register(IRpcRegistry rpc)
     {
         rpc.Register("ideas.list", List, "The ideas backlog: { } → { storage: { backend: \"sqlite\", database, scope, schemaVersion }, ideas: [...], file?, fileName? (legacy hints) }");
         rpc.Register("ideas.get", Get, "{ id } → idea (with its revision)");
-        rpc.Register("ideas.add", Add, "{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections? }, prepend? } → idea; stamped with projectId (a project id or name, \"global\" for unbound), else the session's project");
+        rpc.Register("ideas.add", Add, "{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections?, images? }, prepend? } → idea; stamped with projectId (a project id or name, \"global\" for unbound), else the session's project");
+        rpc.Register("ideas.addImage", Attach,
+            "Store an image for an idea and return its reference: { data (base64), mediaType, name? } → { path, name, mediaType, bytes }. " +
+            $"The file lands in {IdeaImages.Dir} under the home and the idea keeps the reference; at most {IdeaImages.MaxPerIdea} per idea, {IdeaImages.MaxBytes / (1024 * 1024)} MB each");
+        rpc.Register("ideas.removeImage", Detach, "Delete a stored idea image: { path } → true (only files this host wrote)");
+        rpc.Register("ideas.image", Image,
+            "Read a stored idea image back for display: { path } → { path, name, mediaType, bytes, data (base64) }. Only files under " +
+            $"{IdeaImages.Dir}; the card fetches one when it opens, so a backlog of ideas carries no image bytes");
         rpc.Register("ideas.update", Update,
             "{ id, patch, expectedRevision?, expectedUpdatedAt? } → idea; patch.project: a project id/name or { id, name? } rebinds, null (or \"global\") unbinds; " +
             "expectedRevision: refused with \"conflict\" when the idea changed since it was read (expectedUpdatedAt is the older, second-precision form of the same check)");
@@ -239,8 +247,41 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
     public Task<object?> Delete(RpcRequest req, CancellationToken ct) => Guard(() =>
     {
         ct.ThrowIfCancellationRequested();
-        if (!_repo.Delete(req.Required("id"))) throw new RpcException("not_found", $"Idea {req.Str("id")} not found");
+        var id = req.Required("id");
+        // The idea's images belong to it: deleting the idea takes the files with it, so nothing is left behind.
+        if (_repo.Find(id) is { } found) IdeaImages.DeleteAll(_home, found.Doc);
+        if (!_repo.Delete(id)) throw new RpcException("not_found", $"Idea {req.Str("id")} not found");
         return Task.FromResult<object?>(true);
+    });
+
+    public Task<object?> Attach(RpcRequest req, CancellationToken ct) => Guard(() =>
+    {
+        ct.ThrowIfCancellationRequested();
+        var data = req.Required("data");
+        var mediaType = req.Required("mediaType");
+        return Task.FromResult<object?>(IdeaImages.Attach(_home, data, mediaType, req.Str("name")));
+    });
+
+    public Task<object?> Detach(RpcRequest req, CancellationToken ct) => Guard(() =>
+    {
+        ct.ThrowIfCancellationRequested();
+        IdeaImages.Delete(_home, req.Required("path"));
+        return Task.FromResult<object?>(true);
+    });
+
+    public Task<object?> Image(RpcRequest req, CancellationToken ct) => Guard(() =>
+    {
+        ct.ThrowIfCancellationRequested();
+        var rel = req.Required("path");
+        var file = IdeaImages.Absolute(_home, rel) ?? throw new RpcException("bad_request", "That is not a stored idea image.");
+        if (!File.Exists(file)) throw new RpcException("not_found", "The image is gone from disk.");
+        return Task.FromResult<object?>(new JsonObject
+        {
+            ["path"] = rel,
+            ["mediaType"] = IdeaImages.TypeFor(file),
+            ["bytes"] = new FileInfo(file).Length,
+            ["data"] = Convert.ToBase64String(File.ReadAllBytes(file)),
+        });
     });
 
     public Task<object?> Reorder(RpcRequest req, CancellationToken ct) => Guard(() =>
@@ -258,7 +299,9 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
         ct.ThrowIfCancellationRequested();
         var id = req.Required("id");
         var idea = _repo.Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
-        return Task.FromResult<object?>(IdeaOps.ToPrompt(idea.Doc, "the ideas backlog"));
+        var sb = new System.Text.StringBuilder(IdeaOps.ToPrompt(idea.Doc, "the ideas backlog"));
+        IdeaImages.AppendTo(sb, _home, idea.Doc);
+        return Task.FromResult<object?>(sb.ToString().TrimEnd());
     });
 
     public Task<object?> QuickAdd(RpcRequest req, CancellationToken ct) => Guard(() =>

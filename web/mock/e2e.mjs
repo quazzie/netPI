@@ -483,8 +483,35 @@ log('plugin tab: Ideas');
   await page.locator('.ideas .scope button[title="New idea"]').click();
   await page.locator('.ideas .new input').first().fill('Keyboard shortcuts cheat sheet');
   await page.locator('.ideas .new input.tags').fill('ui, docs');
+  // An image attached while filing: pasted, shrunk to fit, stored by the host, and kept on the idea (idea-hai71q).
+  const ref = await rpcCall('ideas.addImage', { data: 'aGVsbG8=', mediaType: 'image/png', name: 'tiny.png' });
+  check('ideas: the host stores an image and returns a reference', /idea-images\/img-/.test(ref?.path ?? ''), JSON.stringify(ref));
+  await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1200;
+    canvas.height = 900;
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(canvas.width, canvas.height);
+    for (let i = 0; i < img.data.length; i += 4) {
+      img.data[i] = Math.random() * 256;
+      img.data[i + 1] = Math.random() * 256;
+      img.data[i + 2] = Math.random() * 256;
+      img.data[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas.toBlob((blob) => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([blob], 'shot.png', { type: 'image/png' }));
+      document.querySelector('.ideas .new textarea').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, 'image/png');
+  });
+  const thumb = await page.waitForSelector('.ideas .new .thumbs img', { timeout: 15_000 }).catch(() => null);
+  // An attach that refuses says so in the form (a note) or as a toast; both are the diagnosis when this fails.
+  const note = await page.locator('.ideas .new .note').allInnerTexts().catch(() => []);
+  const attachToast = await page.locator('.np-toasts .np-toast, .toasts .toast').allInnerTexts().catch(() => []);
+  check('ideas: a pasted image is attached while filing', !!thumb, [...note, ...attachToast].join('; '));
   await page.locator('.ideas .new button', { hasText: 'Add idea' }).click();
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(600);
   const newCard = cardTitled('Keyboard shortcuts cheat sheet');
   // The first card of the open group, whichever groups happen to sit above it.
   const firstOpen = await cards().evaluateAll((els) => {
@@ -495,6 +522,15 @@ log('plugin tab: Ideas');
   // It joins the list collapsed, so filing several in a row does not push the previous one out of view (idea-qrp60h).
   check('ideas: the new card joins the list collapsed', (await newCard.locator('.main').getAttribute('aria-expanded')) === 'false');
   if ((await newCard.locator('.main').getAttribute('aria-expanded')) !== 'true') await newCard.locator('.main').click();
+  // Open now, so the card's body (and its images) exist.
+  check('ideas: the card shows the attached image once open', (await newCard.locator('.shots img').count()) === 1);
+  const shotSrc = (await newCard.locator('.shots img').getAttribute('src').catch(() => '')) ?? '';
+  check('ideas: the image is fetched back from the host, not kept in the list', shotSrc.startsWith('data:image/'), shotSrc.slice(0, 24));
+  const prompt = await rpcCall('ideas.toPrompt', { id: (await newCard.locator('.info').innerText()).trim().split(' ')[0] });
+  check('ideas: the full text hands the image to whoever works on it', /idea-images\/img-/.test(prompt), prompt?.split('\n').find((l) => l.startsWith('- ')) ?? 'no image line');
+  await newCard.locator('.shots button[title="Remove image"]').click();
+  await page.waitForTimeout(400);
+  check('ideas: removing the image takes it off the card', (await newCard.locator('.shots').count()) === 0);
   await newCard.locator('.actions button[title="Add section"]').click();
   await newCard.locator('.sed select').selectOption('todo');
   await newCard.locator('.sed textarea').fill('- [ ] list shortcuts\n- [ ] render a table');
