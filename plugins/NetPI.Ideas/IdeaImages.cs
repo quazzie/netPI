@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -91,7 +92,7 @@ public static class IdeaImages
     };
 
     /// <summary>Home-relative paths, with the separators Windows and the rest of the world both understand.</summary>
-    private static bool IsInside(string? rel) =>
+    private static bool IsInside([NotNullWhen(true)] string? rel) =>
         rel is { Length: > 0 } && rel.Replace('\\', '/').StartsWith(Dir + "/", StringComparison.Ordinal);
 
     /// <summary>Absolute path of a stored image, or null when the reference is not one of ours.</summary>
