@@ -1,0 +1,46 @@
+name: CI
+
+# Build and run the five unit suites (Providers, Tools, Agent, Aux, Host) on every push and pull request.
+#
+# The suites run on windows-latest on purpose:
+#   - the Aux suite drives a real browser (the screenshot test renders a page in a headless Edge/Chrome, and the
+#     browser tests attach to one through its DevTools port). The Windows runner has Edge; a runner without a
+#     browser skips those checks (it prints "attach skipped" and takes no screenshots), but the full behaviour is
+#     only exercised on a machine with a browser, so that is where the suite runs.
+#   - the shell tests run pwsh and bash, and the desktop shell (net10.0-windows, WebView2) is Windows-only.
+#
+# The repo also builds on Linux/macOS (./build.sh builds everything except the Windows desktop shell), but the
+# unit suites are not run there yet: add a Linux job once the suites are green there, keeping the Aux browser
+# tests in mind (they need a browser, or they skip).
+#
+# No publishing, no secrets, no deployment: scripts/test.ps1 builds the five test projects (Release) into
+# artifacts/dev/app and runs each suite, exiting non-zero when any test fails.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: build + unit suites (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        # every project targets net10.0 (Directory.Build.props); there is no global.json pin
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0'
+
+      - name: Restore the five test projects
+        # the test projects pull in the plugins they exercise; the desktop shell is not in their graph
+        run: |
+          foreach ($suite in 'Providers', 'Tools', 'Agent', 'Aux', 'Host') {
+            dotnet restore "tests/NetPI.$suite.Tests/NetPI.$suite.Tests.csproj"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Build and run the suites
+        # builds each suite (Release) and runs its runner; the full output is kept in artifacts/testlogs
+        run: pwsh -File ./scripts/test.ps1
