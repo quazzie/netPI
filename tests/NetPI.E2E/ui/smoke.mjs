@@ -103,6 +103,43 @@ try {
     check('project picker closed (Esc)', (await page.locator('.popover').count()) === 0);
   }
 
+  // A pasted image larger than one WebSocket message is shrunk to fit instead of being cut off mid-send
+  // (idea-8hfc3m): a noise PNG of ~4 MB used to be attached as it was, and the send then died on the 2 MB limit.
+  const pasted = await page.evaluate(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1600;
+    canvas.height = 1200;
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(canvas.width, canvas.height);
+    for (let i = 0; i < img.data.length; i += 4) {           // real noise: a pattern would compress away
+      img.data[i] = Math.random() * 256;
+      img.data[i + 1] = Math.random() * 256;
+      img.data[i + 2] = Math.random() * 256;
+      img.data[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], 'pasted.png', { type: 'image/png' }));
+    document.querySelector('.composer textarea').dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+    );
+    return blob.size;
+  });
+  const thumb = await page.waitForSelector('.composer .thumbs .thumb img', { timeout: 20_000 }).catch(() => null);
+  check('a pasted image is attached', !!thumb);
+  if (thumb) {
+    const src = (await thumb.getAttribute('src')) ?? '';
+    const kb = Math.round(src.length / 1024);
+    check(`the attached image fits one message (${kb} KB of ${Math.round(pasted / 1024)} KB pasted)`, src.length < 1.2 * 1024 * 1024);
+    check(`the attached image was shrunk (${Math.round(pasted / 1024)} KB → ${kb} KB)`, src.length < pasted);
+    const toast = await page.locator('.toasts .toast', { hasText: 'shrunk' }).count().catch(() => 0);
+    check('the composer says it shrank the image', toast > 0);
+    await shot(page, 'ui-01b-image');
+    await page.locator('.composer .thumbs .thumb-x').first().click();   // leave the composer as the rest of the run expects it
+    check('the attachment can be removed again', (await page.locator('.composer .thumbs .thumb').count()) === 0);
+  }
+
   await ta.fill(TEXT);
   await ta.press('Enter');
   // the streamed answer is drawn as the chat's own rows while it streams (web/src/lib/chatItems.js withStream)
