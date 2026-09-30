@@ -41,6 +41,19 @@ Publishing while NetPI runs hot-reloads the changed plugins, which every chat ho
 
 ## Unit suites
 
+The loop that is fast: **one big run, then only what failed.** `scripts/test.ps1` builds the five suites, runs them
+once, keeps the whole output in `artifacts/testlogs/<timestamp>.txt`, and finishes with the failing test names as a
+ready-to-paste `-Only` command. Re-running that while fixing takes seconds instead of the ~90 s of the full set; the
+full run belongs at the end, before a merge.
+
+```powershell
+.\scripts\test.ps1                                   # build + run all five, print a re-run command for the failures
+.\scripts\test.ps1 -Only "settings:", "goal:"        # just tests whose name contains these (substring, OR-ed)
+.\scripts\test.ps1 -Suite Aux -SkipBuild             # one suite, reusing the build (nothing changed)
+```
+
+Each suite can also be run directly, which is what the script does:
+
 ```bash
 dotnet tests/NetPI.Providers.Tests/bin/Debug/NetPI.Providers.Tests.dll   # AiProxy (Responses/Chat), Anthropic, OpenRouter against a scripted HTTP mock
 dotnet tests/NetPI.Tools.Tests/bin/Debug/NetPI.Tools.Tests.dll           # read/write/edit/grep/find/ls, bash/pwsh, processes, files.open, files.git
