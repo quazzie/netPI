@@ -23,6 +23,7 @@ LoopTests.Register(runner);
 SshTests.Register(runner);
 PanelTests.Register(runner);
 InspectTests.Register(runner);
+RpcReadOnlyTests.Register(runner);
 LoadTests.Register(runner);
 ReviewStorageTests.Register(runner);
 var code = await runner.RunAsync(args);

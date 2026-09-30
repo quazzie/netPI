@@ -44,7 +44,7 @@ public sealed class GoalPlugin : INetPiPlugin
 
         long? Budget(RpcRequest r) => r.Prop("tokenBudget") is { ValueKind: JsonValueKind.Number } b && b.TryGetInt64(out var n) ? n : null;
 
-        ctx.Rpc.Register("goal.get", (r, _) => Result(goals.Get(r.Required("sessionId"))),
+        ctx.Rpc.RegisterReadOnly("goal.get", (r, _) => Result(goals.Get(r.Required("sessionId"))),
             "The session's goal: { sessionId } → { id, objective, status, reason, tokenBudget, tokensUsed, continuations, … } | null");
         ctx.Rpc.Register("goal.set", (r, _) => Run(() => goals.Set(r.Required("sessionId"), r.Str("objective"), Budget(r) ?? 0, byModel: false)),
             "Set a new goal (replaces the current one) and start working on it: { sessionId, objective, tokenBudget? }");
