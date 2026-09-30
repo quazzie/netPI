@@ -117,6 +117,18 @@ process.on('exit', () => server?.kill());
 // start from the seeded mock state and a clean UI state
 await fetch(`${BASE}/api/rpc/mock.reset`, { method: 'POST', headers: { 'X-NetPI-Token': 'dev' }, body: '{}' });
 const { browser, page, errors } = await openApp({ url: `${BASE}/?token=dev` });
+// When the run dies on an exception (a wait that timed out), leave what the page looked like: a failure that only shows up late in a
+// long run has to be readable without running it again. FAILED.png and FAILED.txt (the section, the page's text, console errors).
+process.on('uncaughtException', async (e) => {
+  console.error(e);
+  try {
+    await page.screenshot({ path: path.join(OUT, 'FAILED.png') });
+    const text = await page.locator('body').innerText().catch(() => '');
+    fs.writeFileSync(path.join(OUT, 'FAILED.txt'), `${e?.stack ?? e}\n\nsection: ${section}\nurl: ${page.url()}\ntabs: ${await page.locator('.topbar .tab').allInnerTexts().then((t) => t.join(' | ')).catch(() => '?')}\n\nconsole errors:\n${errors.join('\n')}\n\npage text:\n${text}\n`);
+    console.error(`evidence: ${path.join(OUT, 'FAILED.png')} and FAILED.txt`);
+  } catch {}
+  process.exit(1);
+});
 await page.evaluate(() => localStorage.clear());
 await page.goto(`${BASE}/`);
 await page.waitForSelector('.welcome .np-btn-primary', { timeout: 10_000 });

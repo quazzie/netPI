@@ -113,7 +113,7 @@ public sealed class Orchestrator
         catch (Exception ex) { Console.WriteLine($"  could not write report.json: {ex.Message}"); }
         Timings.Save(Options.StateDir, timings, results);
         FailingState.Update(Options.StateDir, results, Path.GetFileName(Options.OutDir));
-        PruneRunDirs(Options.OutDir);
+        PruneRunDirs(Options.OutDir, Options.StateDir);
         return report;
     }
 
@@ -387,13 +387,15 @@ public sealed class Orchestrator
         catch { return "unknown"; }
     }
 
-    /// <summary>Keeps the 20 newest run folders next to this run's; touches nothing else.</summary>
-    private static void PruneRunDirs(string outDir)
+    /// <summary>Keeps the 20 newest run folders in the state dir and touches nothing else: a run that was told to write somewhere
+    /// of its own (<c>--out</c>) never has its neighbours deleted.</summary>
+    private static void PruneRunDirs(string outDir, string stateDir)
     {
         try
         {
             var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(outDir));
-            if (parent is null || !Directory.Exists(parent)) return;
+            if (stateDir.Length == 0 || parent is null || !Directory.Exists(parent)) return;
+            if (!string.Equals(Path.GetFullPath(parent), Path.GetFullPath(stateDir), StringComparison.OrdinalIgnoreCase)) return;
             var runs = Directory.GetDirectories(parent).Where(d => System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(d), @"^\d{8}-\d{6}-[0-9a-f]{4}$"))
                 .OrderByDescending(d => Path.GetFileName(d), StringComparer.Ordinal).Skip(20);
             foreach (var d in runs) try { Directory.Delete(d, recursive: true); } catch { }
