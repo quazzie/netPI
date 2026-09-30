@@ -408,6 +408,22 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
     public const int MaxLines = 2000;
     public const int MaxChars = 50 * 1024;
     private const string StatMarker = "__netpi_stat=";
+    private const string HashMarker = "__netpi_hash=";
+
+    /// <summary>
+    /// Sets <c>$h</c> to the content hash of <c>$p</c>, computed on the host with the first command of this chain that
+    /// exists: <c>sha256sum</c> (expected — the GNU coreutils the <c>stat -c</c> in the same script already assumes),
+    /// then <c>shasum</c> (macOS), then <c>openssl</c>, then <c>cksum</c> as a last resort (weak: 32 bits, but still
+    /// better than no check). The value carries the algorithm name, so a host whose tooling changes between the read
+    /// and the write can never produce a false match; both calls run this same chain on the same host, so they always
+    /// pick the same tool. The hash is of the whole file; for the files <see cref="Fetch"/> accepts (it refuses the rest
+    /// as over the cap) that is exactly the content the caller reads back.
+    /// </summary>
+    internal const string HashScript =
+        "if command -v sha256sum >/dev/null 2>&1; then h=\"sha256 $(sha256sum < \"$p\" | cut -d ' ' -f 1)\"; " +
+        "elif command -v shasum >/dev/null 2>&1; then h=\"sha256 $(shasum -a 256 < \"$p\" | cut -d ' ' -f 1)\"; " +
+        "elif command -v openssl >/dev/null 2>&1; then h=\"sha256 $(openssl dgst -sha256 -r < \"$p\" | cut -d ' ' -f 1)\"; " +
+        "else h=\"cksum $(cksum < \"$p\" | cut -d ' ' -f 1)\"; fi";
 
     public override ToolDefinition Definition { get; } = new()
     {
@@ -470,23 +486,30 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
     private static object Details(SshHost host, string path, int start, int end, int total, bool truncated, long size) =>
         new { host = host.Alias, path = Where(host, path), startLine = start, endLine = end, totalLines = total, truncated, bytes = size };
 
-    internal sealed record Fetched(string? Text, long Size, string Stat, bool Cut, string? Error);
+    internal sealed record Fetched(string? Text, long Size, string Stat, string Hash, bool Cut, string? Error);
 
-    /// <summary>The file's text (up to <see cref="SshToolBase.MaxReadBytes"/>) and its <c>size mtime</c> stat.</summary>
+    /// <summary>
+    /// The file's text (up to <see cref="SshToolBase.MaxReadBytes"/>), its <c>size mtime</c> stat, and the file's content
+    /// hash (<see cref="HashScript"/>). The hash is what <c>ssh_edit</c> re-checks before it writes back.
+    /// </summary>
     internal async Task<Fetched> Fetch(SshOptions o, SshHost host, string path, string? cwd, CancellationToken ct)
     {
         var remote = Sh.Cd(cwd) + $"p={Sh.Path(path)}; if [ ! -e \"$p\" ]; then echo \"No such file: $p\" >&2; exit 2; fi; " +
                      "if [ -d \"$p\" ]; then echo \"$p is a directory\" >&2; exit 3; fi; " +
-                     $"stat -c '{StatMarker}%s %Y' -- \"$p\" && head -c {MaxReadBytes} -- \"$p\"";
+                     $"stat -c '{StatMarker}%s %Y' -- \"$p\" && {HashScript} && echo \"{HashMarker}$h\" && head -c {MaxReadBytes} -- \"$p\"";
         var r = await Ssh(o, host, remote, null, TimeSpan.FromSeconds(Math.Max(60, o.Timeout)), ct).ConfigureAwait(false);
-        if (r.ExitCode == 255) return new Fetched(null, 0, "", false, Failure(host, r));
-        if (r.ExitCode == 125) return new Fetched(null, 0, "", false, $"The working directory {cwd} does not exist on {host.Alias}.");
-        if (r.ExitCode != 0) return new Fetched(null, 0, "", false, r.Stderr.Trim() is { Length: > 0 } e ? $"{host.Alias}: {e}" : $"Reading {Where(host, path)} failed (exit {r.ExitCode}).");
+        if (r.ExitCode == 255) return new Fetched(null, 0, "", "", false, Failure(host, r));
+        if (r.ExitCode == 125) return new Fetched(null, 0, "", "", false, $"The working directory {cwd} does not exist on {host.Alias}.");
+        if (r.ExitCode != 0) return new Fetched(null, 0, "", "", false, r.Stderr.Trim() is { Length: > 0 } e ? $"{host.Alias}: {e}" : $"Reading {Where(host, path)} failed (exit {r.ExitCode}).");
         var nl = r.Stdout.IndexOf('\n');
-        if (!r.Stdout.StartsWith(StatMarker, StringComparison.Ordinal) || nl < 0) return new Fetched(null, 0, "", false, $"Unexpected reply reading {Where(host, path)}.");
+        if (!r.Stdout.StartsWith(StatMarker, StringComparison.Ordinal) || nl < 0) return new Fetched(null, 0, "", "", false, $"Unexpected reply reading {Where(host, path)}.");
         var stat = r.Stdout[StatMarker.Length..nl].Trim();
+        var rest = r.Stdout[(nl + 1)..];
+        var nl2 = rest.IndexOf('\n');
+        if (!rest.StartsWith(HashMarker, StringComparison.Ordinal) || nl2 < 0) return new Fetched(null, 0, stat, "", false, $"Unexpected reply reading {Where(host, path)}.");
+        var hash = rest[HashMarker.Length..nl2].Trim();
         long.TryParse(stat.Split(' ')[0], out var size);
-        return new Fetched(r.Stdout[(nl + 1)..], size, stat, size > MaxReadBytes, null);
+        return new Fetched(rest[(nl2 + 1)..], size, stat, hash, size > MaxReadBytes, null);
     }
 }
 
@@ -602,12 +625,27 @@ internal sealed class SshEditTool(IPluginContext ctx, ISshLauncher launcher) : S
         try { outcome = TextEdits.Apply(file.Text, edits, path); }
         catch (EditException ex) { return ToolResult.Error(ex.Message); }
 
-        // write back only if the file is still what was read (size and mtime)
-        var remote = Sh.Cd(cwd) + $"p={Sh.Path(path)}; s=$(stat -c '%s %Y' -- \"$p\") || exit 2; " +
-                     $"[ \"$s\" = {Sh.Quote(file.Stat)} ] || {{ echo \"changed: $s\" >&2; exit 3; }}; cat >\"$p\"";
+        // Write back only if the file is still what was read. The marker is the content hash the read recorded, not
+        // size plus whole-second mtime: a same-size edit inside one second changed neither and was clobbered. The new
+        // text goes to a temporary file in the target's own directory and is put in place with an atomic rename (the
+        // target's mode copied over), so a failure or an interruption before the rename leaves the old content exactly
+        // as it was — the target is never truncated. What this does not close: an external writer that rewrites the
+        // same file between the check and the rename still wins; an arbitrary writer takes no locks, and a hash alone
+        // cannot guard a check-then-act gap against it. Writers that must coexist with this tool need coordination —
+        // a lock, or editing through ssh_edit itself.
+        var remote = Sh.Cd(cwd) + $"p={Sh.Path(path)}; " +
+                     "if [ ! -e \"$p\" ]; then echo \"file is gone: $p\" >&2; exit 2; fi; " +
+                     SshReadTool.HashScript + "; " +
+                     $"[ \"$h\" = {Sh.Quote(file.Hash)} ] || {{ echo \"changed: $h\" >&2; exit 3; }}; " +
+                     "t=$(mktemp -- \"${p}.netpi.XXXXXX\") || exit 4; " +
+                     "cat >\"$t\" || { echo \"writing the temporary copy failed\" >&2; rm -f -- \"$t\"; exit 5; }; " +
+                     "chmod -- \"$(stat -c '%a' -- \"$p\")\" \"$t\" || { echo \"restoring the mode failed\" >&2; rm -f -- \"$t\"; exit 6; }; " +
+                     "mv -f -- \"$t\" \"$p\" || { echo \"renaming into place failed\" >&2; rm -f -- \"$t\"; exit 7; }";
         var r = await Ssh(o, host, remote, Encoding.UTF8.GetBytes(outcome.Text), TimeSpan.FromSeconds(Math.Max(60, o.Timeout)), ct).ConfigureAwait(false);
         if (r.ExitCode == 255) return ToolResult.Error(Failure(host, r));
+        if (r.ExitCode == 125) return ToolResult.Error($"The working directory {cwd} does not exist on {host.Alias}.");
         if (r.ExitCode == 3) return ToolResult.Error($"{Where(host, path)} changed on the host while it was being edited; nothing was written. Read it again and redo the edit.");
+        if (r.ExitCode == 2) return ToolResult.Error($"{Where(host, path)} was removed on the host before the write; nothing was written. Read it again.");
         if (r.ExitCode != 0) return ToolResult.Error($"Writing {Where(host, path)} failed: {r.Stderr.Trim()}");
 
         return ToolResult.Ok($"Applied {outcome.Replacements} edit{(outcome.Replacements == 1 ? "" : "s")} to {Where(host, path)} (+{outcome.Added} −{outcome.Removed})",

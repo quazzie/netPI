@@ -230,16 +230,17 @@ public static class SshTests
             await env.Run("ssh_write", new { host = "nuc", path = "log", content = "more\n", append = true });
             Check.Contains(Remote(env.Fake.Calls[^1].Args), "cat >>\"$p\"");
 
-            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_stat=18 1700000000\nalpha\nbeta\ngamma\n", "", false, false);
+            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_stat=18 1700000000\n__netpi_hash=sha256 f4f5\nalpha\nbeta\ngamma\n", "", false, false);
             var read = await env.Run("ssh_read", new { host = "nuc", path = "/etc/demo" });
             Check.Equal("alpha\nbeta\ngamma", read.Content);
             Check.Equal(3, D(read).GetProperty("totalLines").GetInt32());
-            Check.Contains(Remote(env.Fake.Calls[^1].Args), "stat -c '__netpi_stat=%s %Y' -- \"$p\" && head -c ");
+            Check.Contains(Remote(env.Fake.Calls[^1].Args), "stat -c '__netpi_stat=%s %Y' -- \"$p\" && if command -v sha256sum");
+            Check.Contains(Remote(env.Fake.Calls[^1].Args), "echo \"__netpi_hash=$h\" && head -c ");
             var paged = await env.Run("ssh_read", new { host = "nuc", path = "/etc/demo", offset = 2, limit = 1 });
             Check.Equal("beta\n\n[Showing lines 2-2 of 3. Use offset=3 to continue.]", paged.Content);
             Check.Equal("gamma", (await env.Run("ssh_read", new { host = "nuc", path = "/etc/demo", offset = -1 })).Content);
 
-            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_stat=4 1\nab\0c", "", false, false);
+            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_stat=4 1\n__netpi_hash=sha256 0\nab\0c", "", false, false);
             Check.Contains((await env.Run("ssh_read", new { host = "nuc", path = "bin" })).Content, "appears to be a binary file");
             env.Fake.Reply = (_, _) => new SshExec(2, "", "No such file: /x\n", false, false);
             Check.Equal("nuc: No such file: /x", (await env.Run("ssh_read", new { host = "nuc", path = "/x" })).Content);
@@ -249,15 +250,25 @@ public static class SshTests
         {
             var env = new Env();
             var file = "one\r\ntwo\r\nthree\r\n";
+            const string hash = "sha256 4567ab4567ab4567ab4567ab4567ab4567ab4567ab4567ab4567ab4567ab45";
             env.Fake.Reply = (args, stdin) => Remote(args).Contains("head -c")
-                ? new SshExec(0, "__netpi_stat=16 1700000000\n" + file, "", false, false)
+                ? new SshExec(0, "__netpi_stat=17 1700000000\n__netpi_hash=" + hash + "\n" + file, "", false, false)
                 : new SshExec(0, "", "", false, false);
             var res = await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", edits = new[] { new { oldText = "two", newText = "TWO\nextra" } } });
             Check.False(res.IsError, res.Content);
             Check.Equal("Applied 1 edit to nuc:/srv/a.txt (+2 −1)", res.Content);
             var write = env.Fake.Calls[^1];
             Check.Equal("one\r\nTWO\r\nextra\r\nthree\r\n", Utf8(write.Stdin));
-            Check.Contains(Remote(write.Args), "[ \"$s\" = '16 1700000000' ] || { echo \"changed: $s\" >&2; exit 3; }; cat >\"$p\"");
+            // the marker is the content hash the read recorded, not size + mtime
+            Check.Contains(Remote(write.Args), $"[ \"$h\" = '{hash}' ] || {{ echo \"changed: $h\" >&2; exit 3; }}");
+            Check.NotContains(Remote(write.Args), "%s %Y");
+            // the new content goes to a temporary file in the same directory, in place by an atomic rename
+            Check.Contains(Remote(write.Args), "t=$(mktemp -- \"${p}.netpi.XXXXXX\") || exit 4");
+            Check.Contains(Remote(write.Args), "cat >\"$t\"");
+            Check.Contains(Remote(write.Args), "chmod -- \"$(stat -c '%a' -- \"$p\")\" \"$t\"");
+            Check.Contains(Remote(write.Args), "mv -f -- \"$t\" \"$p\"");
+            Check.NotContains(Remote(write.Args), "cat >\"$p\"");
+            Check.Contains(Remote(env.Fake.Calls[0].Args), "echo \"__netpi_hash=$h\"");
             Check.Contains(D(res).GetProperty("diff").GetString()!, "@@ -1,3 +1,4 @@\n one\n-two\n+TWO\n+extra\n three\n");
             Check.Equal("crlf", D(res).GetProperty("eol").GetString());
 
@@ -266,9 +277,96 @@ public static class SshTests
             Check.Equal(calls + 1, env.Fake.Calls.Count); // read only, nothing written
 
             env.Fake.Reply = (args, _) => Remote(args).Contains("head -c")
-                ? new SshExec(0, "__netpi_stat=16 1700000000\n" + file, "", false, false)
-                : new SshExec(3, "", "changed: 20 1700000009\n", false, false);
+                ? new SshExec(0, "__netpi_stat=17 1700000000\n__netpi_hash=" + hash + "\n" + file, "", false, false)
+                : new SshExec(3, "", "changed: sha256 deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n", false, false);
             Check.Contains((await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", oldText = "one", newText = "1" })).Content, "changed on the host");
+        });
+
+        r.Add("ssh_edit: a same-size change inside one second is refused (different hash, same stat)", async () =>
+        {
+            var env = new Env();
+            var original = "aaaa\nbbbb\n"; // 10 bytes
+            const string h1 = "sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+            const string h2 = "sha256 fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba";
+            // the read records size 10, whole-second mtime 1700000000 and the content's hash
+            env.Fake.Reply = (args, stdin) => Remote(args).Contains("head -c")
+                ? new SshExec(0, "__netpi_stat=10 1700000000\n__netpi_hash=" + h1 + "\n" + original, "", false, false)
+                // a concurrent writer made a same-size edit in the same second: the old marker would still read
+                // "10 1700000000", but the hash has moved, so the remote refuses
+                : new SshExec(3, "", "changed: " + h2 + "\n", false, false);
+            var res = await env.Run("ssh_edit", new { host = "nuc", path = "/srv/a.txt", edits = new[] { new { oldText = "bbbb", newText = "BBBB" } } });
+            Check.True(res.IsError, res.Content);
+            Check.Contains(res.Content, "changed on the host while it was being edited; nothing was written");
+            // the write's marker is the hash: no size/mtime comparison anywhere in it
+            var write = env.Fake.Calls[^1];
+            Check.Contains(Remote(write.Args), $"[ \"$h\" = '{h1}' ]");
+            Check.NotContains(Remote(write.Args), "%s %Y");
+            Check.NotContains(Remote(write.Args), "\"$s\" =");
+            // the read is what recorded the hash
+            Check.Contains(Remote(env.Fake.Calls[0].Args), "echo \"__netpi_hash=$h\"");
+        });
+
+        r.Add("ssh_edit: the remote write script, run in a local bash (matching hash renames over the target, stale hash refused, an interrupted write leaves the original intact)", async () =>
+        {
+            var bash = FindBash();
+            if (bash is null)
+            {
+                Console.WriteLine("    (no local bash found; the remote script is not run)");
+                return;
+            }
+            var env = new Env();
+            var dir = T.TempDir("sshedit");
+            var target = Path.Combine(dir, "doc.txt");
+            File.WriteAllText(target, "aaaa\nbbbb\n");
+            var posix = PosixPath(target);
+            var chmodWorks = ChmodWorks(bash);
+            if (chmodWorks) RunRemote(bash, $"chmod 0640 '{posix}'", null);
+            // the read script the tool would send, run against the real file
+            env.Fake.Reply = (_, _) => new SshExec(0, "", "", false, false);
+            await env.Run("ssh_read", new { host = "nuc", path = posix });
+            var readScript = Remote(env.Fake.Calls[^1].Args);
+            var (rex, rout, rerr) = RunRemote(bash, readScript, null);
+            Check.Equal(0, rex, "the read script runs in a POSIX shell: " + rerr);
+            Check.True(rout.StartsWith("__netpi_stat=10 "), "stat line first: " + Check.Show(rout));
+            Check.Contains(rout, "__netpi_hash=");
+            // feed that real reply back into the tool so the write script carries the real hash
+            env.Fake.Reply = (_, _) => new SshExec(0, rout, "", false, false);
+            var edit = await env.Run("ssh_edit", new { host = "nuc", path = posix, edits = new[] { new { oldText = "bbbb", newText = "BBBB" } } });
+            Check.False(edit.IsError, edit.Content);
+            var writeScript = Remote(env.Fake.Calls[^1].Args);
+            var newContent = env.Fake.Calls[^1].Stdin!;
+            string[] Leftovers() => Directory.GetFiles(dir).Where(f => Path.GetFileName(f) != "doc.txt").ToArray();
+            Check.Equal(0, Leftovers().Length);
+
+            // a matching hash: the temp file is renamed over the target, the mode is kept, nothing is left behind
+            var (wex, _, werr) = RunRemote(bash, writeScript, newContent);
+            Check.Equal(0, wex, "a matching hash writes: " + werr);
+            Check.Equal("aaaa\nBBBB\n", File.ReadAllText(target), "the target now holds the new content");
+            if (chmodWorks) Check.Equal("640", RunRemote(bash, $"stat -c '%a' '{posix}'", null).Out.Trim(), "the mode is preserved");
+            Check.Equal(0, Leftovers().Length, "no temp file left behind");
+
+            // a same-size rewrite by a concurrent writer: the hash has moved, the write is refused, the file untouched
+            File.WriteAllText(target, "cccc\nbbbb\n");
+            var (sex, _, serr) = RunRemote(bash, writeScript, newContent);
+            Check.Equal(3, sex, "a stale hash is refused even at the same size within the same second: " + serr);
+            Check.True(serr.TrimStart().StartsWith("changed: "), "the refusal says what changed: " + serr);
+            Check.Equal("cccc\nbbbb\n", File.ReadAllText(target), "the file is untouched");
+            Check.Equal(0, Leftovers().Length);
+
+            // a write that fails before the rename: the original stays exactly as it was, the temp is removed
+            var (rex2, rout2, rerr2) = RunRemote(bash, readScript, null);
+            Check.Equal(0, rex2, rerr2);
+            env.Fake.Reply = (_, _) => new SshExec(0, rout2, "", false, false);
+            await env.Run("ssh_edit", new { host = "nuc", path = posix, edits = new[] { new { oldText = "bbbb", newText = "BBBB" } } });
+            var freshScript = Remote(env.Fake.Calls[^1].Args);
+            var freshContent = env.Fake.Calls[^1].Stdin!;
+            const string prelude = "fb=$(mktemp -d); printf '#!/bin/sh\\necho \"fake cat: simulated write failure\" >&2\\nexit 1\\n' > \"$fb/cat\"; chmod +x \"$fb/cat\"; export PATH=\"$fb:$PATH\"";
+            var (iex, _, ierr) = RunRemote(bash, freshScript, freshContent, prelude);
+            Check.True(iex != 0, "a failed write exits non-zero (exit " + iex + ")");
+            Check.Contains(ierr, "simulated write failure");
+            Check.Contains(ierr, "writing the temporary copy failed");
+            Check.Equal("cccc\nbbbb\n", File.ReadAllText(target), "the original is intact");
+            Check.Equal(0, Leftovers().Length, "the temp was removed");
         });
 
         // What a client that can multiplex answers when the probe asks about a socket that is not there yet.
@@ -508,6 +606,61 @@ public static class SshTests
             }
             foreach (var host in hosts) await Live(host);
         });
+    }
+
+    /// <summary>A local bash to run the generated remote scripts in (Git Bash on Windows, /bin/bash elsewhere).</summary>
+    private static string? FindBash()
+    {
+        if (!OperatingSystem.IsWindows()) return File.Exists("/bin/bash") ? "/bin/bash" : null;
+        foreach (var c in new[]
+        {
+            @"C:\Program Files\Git\usr\bin\bash.exe",
+            @"C:\Program Files\Git\bin\bash.exe",
+        })
+            if (File.Exists(c)) return c;
+        return null;
+    }
+
+    /// <summary>C:\Users\x → /c/Users/x (how the Git Bash shell sees a Windows path).</summary>
+    private static string PosixPath(string win)
+    {
+        var s = win.Replace('\\', '/');
+        if (s.Length >= 3 && char.IsLetter(s[0]) && s[1] == ':') s = char.ToLowerInvariant(s[0]) + s[2..];
+        return "/" + s;
+    }
+
+    /// <summary>Runs a generated remote script in a local bash the way the ssh login shell would: -c script, stdin in, exit out.</summary>
+    private static (int Exit, string Out, string Err) RunRemote(string bash, string script, byte[]? stdin, string prelude = "")
+    {
+        var body = (prelude.Length > 0 ? prelude + "; " : "") + script;
+        var psi = new ProcessStartInfo(bash)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false),
+        };
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add(body);
+        using var p = Process.Start(psi)!;
+        var outT = p.StandardOutput.ReadToEndAsync();
+        var errT = p.StandardError.ReadToEndAsync();
+        if (stdin is not null)
+        {
+            try { p.StandardInput.BaseStream.Write(stdin, 0, stdin.Length); } catch (IOException) { }
+        }
+        try { p.StandardInput.Close(); } catch (IOException) { } // the child may have exited before it read it
+        if (!p.WaitForExit(30_000)) { try { p.Kill(true); } catch { } throw new AssertException("the remote script did not finish within 30s"); }
+        return (p.ExitCode, outT.GetAwaiter().GetResult(), errT.GetAwaiter().GetResult());
+    }
+
+    /// <summary>Whether chmod actually changes modes on this machine (it does not in every Git Bash).</summary>
+    private static bool ChmodWorks(string bash)
+    {
+        var dir = T.TempDir("chmodprobe");
+        var f = PosixPath(Path.Combine(dir, "probe"));
+        File.WriteAllText(Path.Combine(dir, "probe"), "x");
+        var r = RunRemote(bash, $"chmod 0604 '{f}' && stat -c '%a' '{f}'", null);
+        return r.Exit == 0 && r.Out.Trim() == "604";
     }
 
     private static async Task Live(string host)
