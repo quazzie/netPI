@@ -69,13 +69,10 @@
   }
 
   onMount(() => {
-    // captured, not re-read later: by the time the teardown (or setText) runs the session may be gone, and the
-    // chat prop then answers null — the draft belongs to the store instance, so write it there
-    const store = chat;
     composer.insertText = insertText;
     composer.focus = () => ta?.focus();
     composer.setText = (t) => {
-      store.draft = t;
+      chat.draft = t;
       tick().then(autosize);
     };
     autosize();
@@ -86,7 +83,7 @@
         composer.focus = null;
         composer.setText = null;
       }
-      store.saveDraft();
+      chat.saveDraft();
     };
   });
 

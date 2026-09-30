@@ -8,7 +8,7 @@
   import Welcome from './components/Welcome.svelte';
   import Toasts from './components/Toasts.svelte';
   import Modals from './components/modals/Modals.svelte';
-  import { app, startApp, activate, closeTab, cycleTab, newSession, abortAgent, isBusy, goneSessions } from './lib/state/app.svelte.js';
+  import { app, startApp, activate, closeTab, cycleTab, newSession, abortAgent, isBusy } from './lib/state/app.svelte.js';
   import { getChat } from './lib/state/chat.svelte.js';
   import { modals, togglePanel, applyTheme } from './lib/state/ui.svelte.js';
   import { registerCoreTab } from './lib/state/tabs.svelte.js';
@@ -17,16 +17,7 @@
   registerCoreTab({ key: 'core/sessions', title: 'Sessions', icon: 'sessions', panel: 'left', order: 0, component: SessionsTab });
   registerCoreTab({ key: 'core/projects', title: 'Projects', icon: 'folder', panel: 'left', order: 10, component: ProjectsTab });
 
-  // The store of the active chat — but only while that session's tab is still open and the session is not gone:
-  // when a chat is deleted or its tab closed, activeId flips to another tab (or null) in the same flush, and
-  // during that window a Svelte teardown can still answer reactive reads with the just-closed id (from its
-  // rollback map). The goneSessions check is a plain, non-reactive read, so it is the only one the teardown
-  // cannot answer stale: materializing a store for the gone session would leave a zombie in the LRU (evicting
-  // a real tab), and a tab that is gone is never rendered, so nothing is lost by not materializing it.
-  const chat = $derived.by(() => {
-    const id = app.activeId;
-    return id && !goneSessions.has(id) && app.openTabs.includes(id) ? getChat(id) : null;
-  });
+  const chat = $derived(app.activeId ? getChat(app.activeId) : null);
 
   // Plugin ctx.app.onChange(): fire when the active session / its project changes.
   $effect(() => {

@@ -4,11 +4,7 @@
 // (MOCK_SPEED=3) so it can also test reconnects; pass --url to use a running server instead.
 //
 //   npm run build && npm run e2e
-//   node web/mock/e2e.mjs [--list] [--only <case>,<case>] [--out dir] [--url http://127.0.0.1:7431]
-//
-// The walkthrough is a list of named cases (see --list). A full run executes them all in order;
-// --only <case>,… runs just the selected cases (the rest are skipped, not merely unreported) and
-// fails before any setup on unknown names, so a typo cannot produce a green empty run.
+//   node web/mock/e2e.mjs [--out dir] [--only <section>,<section>] [--url http://127.0.0.1:7431] [--no-dev]
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -20,25 +16,29 @@ const repo = path.resolve(here, '../..');
 const argv = process.argv.slice(2);
 const argVal = (n) => (argv.indexOf(n) >= 0 ? argv[argv.indexOf(n) + 1] : null);
 const OUT = argVal('--out') ? path.resolve(argVal('--out')) : path.join(here, 'screenshots');
+const ONLY = argVal('--only') ? new Set(argVal('--only').split(',')) : null;
 const EXTERNAL = argVal('--url');
 const PORT = 7432;
 const BASE = EXTERNAL ?? `http://127.0.0.1:${PORT}`;
 const rpcCall = (method, params = {}) =>
   fetch(`${BASE}/api/rpc/${method}`, { method: 'POST', headers: { 'X-NetPI-Token': 'dev', 'content-type': 'application/json' }, body: JSON.stringify(params) }).then((r) => r.json());
+fs.mkdirSync(OUT, { recursive: true });
 
 const results = [];
-let section = ''; // the current case header, recorded per check
+let section = ''; // the current section header: what --only gates the checks by
 const log = (...a) => {
   // a top-level single-string header names the section; the "  ✓ …" and "  📸 …" lines and the final summary don't
   if (a.length === 1 && typeof a[0] === 'string' && !a[0].startsWith(' ') && !a[0].startsWith('\n')) section = a[0];
   console.log(...a);
 };
 const shot = async (page, name) => {
+  if (ONLY && !ONLY.has(name)) return;
   await page.screenshot({ path: path.join(OUT, `${name}.png`) });
   log(`  📸 ${name}.png`);
 };
 function check(name, ok, detail = '') {
-  results.push({ name, ok, detail, section });
+  if (ONLY && !ONLY.has(section)) return; // --only: report the chosen sections' checks only
+  results.push({ name, ok, detail });
   log(`  ${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`);
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -62,20 +62,25 @@ async function stopServer() {
   s.kill();
   await new Promise((r) => s.once('exit', r));
 }
-
-// shared by the cases
-/** Select a strip tab without toggling the panel closed when it is already the active one. */
-async function openStripTab(side, name) {
-  const t = page.locator(`.panel.${side} .strip-tab`, { hasText: name });
-  if ((await t.getAttribute('aria-selected')) !== 'true') await t.click();
-  if (!(await page.locator(`.panel.${side}.open`).count())) await t.click();
+if (!EXTERNAL) {
+  if (!fs.existsSync(path.join(repo, 'web/mock/sample-plugin/wwwroot/ui.js'))) {
+    log('building the sample plugin…');
+    await new Promise((r) => spawn(process.execPath, [path.join(repo, 'web/scripts/build-plugins.mjs'), '--only', 'web/mock/sample-plugin'], { cwd: repo, stdio: 'inherit' }).on('exit', r));
+  }
+  await startServer();
 }
+process.on('exit', () => server?.kill());
 
+// start from the seeded mock state and a clean UI state
+await fetch(`${BASE}/api/rpc/mock.reset`, { method: 'POST', headers: { 'X-NetPI-Token': 'dev' }, body: '{}' });
+const { browser, page, errors } = await openApp({ url: `${BASE}/?token=dev` });
+await page.evaluate(() => localStorage.clear());
+await page.goto(`${BASE}/`);
+await page.waitForSelector('.welcome .np-btn-primary', { timeout: 10_000 });
+await page.waitForTimeout(300);
+await shot(page, '01-welcome');
 
 // ------------------------------------------------------------------ long session: render time + pruning
-const case_01 = {
-  name: 'long session',
-  run: async () => {
 log('long session');
 let t0 = Date.now();
 await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
@@ -161,16 +166,12 @@ await shot(page, '03b-context-ring');
 await page.keyboard.press('Escape');
 await page.waitForTimeout(150);
 check('Esc closes the context popout', (await page.locator('.popover .cx').count()) === 0);
-  },
-};
 
 // ------------------------------------------------------------------ new session + streaming
-const case_02 = {
-  name: 'new session + agent run',
-  run: async () => {
 log('new session + agent run');
 await page.keyboard.press('Control+t');
 await page.waitForSelector('.intro');
+const ta = page.locator('.composer textarea');
 await ta.fill('Why does the agent scheduler throw when a pool is missing? Make it fail with a clear message.');
 await ta.press('Enter');
 await page.waitForSelector('.thinking.live', { timeout: 5000 });
@@ -248,13 +249,8 @@ check(
 );
 const answerInfo = await page.locator('.assistant .foot .info').last().innerText();
 check('the answer footer has its turn numbers too', /first token \d/.test(answerInfo) && /\d+% cached/.test(answerInfo), answerInfo);
-  },
-};
 
 // ------------------------------------------------------------------ showcase session (subagents, notices)
-const case_03 = {
-  name: 'showcase session',
-  run: async () => {
 log('showcase session');
 await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
 await page.waitForTimeout(400);
@@ -290,13 +286,8 @@ await shot(page, '09-subagents-notices');
   check('…and as sent on request', (await report.locator('.sent .raw').innerText()).startsWith('<system-notice kind="agent-result">'));
   await shot(page, '09c-notice-as-sent');
 }
-  },
-};
 
 // ------------------------------------------------------------------ popups: agent picker, commands, mentions
-const case_04 = {
-  name: 'composer popups',
-  run: async () => {
 log('composer popups');
 {
   const sid0 = await page.evaluate(() => location.hash);
@@ -346,13 +337,8 @@ await shot(page, '12-mentions');
 check('mention popup (files.search)', (await page.locator('.popup .file').count()) > 0);
 await page.keyboard.press('Escape');
 await ta.fill('');
-  },
-};
 
 // ------------------------------------------------------------------ tabs
-const case_05 = {
-  name: 'tabs',
-  run: async () => {
 log('tabs');
 const tabsBefore = await page.locator('.topbar .tab').count();
 await page.keyboard.press('Control+Tab');
@@ -362,13 +348,8 @@ await firstTab.click({ button: 'middle' });
 await page.waitForTimeout(150);
 const tabsAfter = await page.locator('.topbar .tab').count();
 check('middle-click closes tab', tabsAfter === tabsBefore - 1, `${tabsBefore} → ${tabsAfter}`);
-  },
-};
 
 // ------------------------------------------------------------------ panels + plugin tabs
-const case_06 = {
-  name: 'panels + plugin tabs',
-  run: async () => {
 log('panels + plugin tabs');
 await page.locator('.panel.right .strip-tab', { hasText: 'Events' }).click();
 await page.waitForTimeout(500);
@@ -413,16 +394,19 @@ await page.waitForTimeout(200);
 check('no favorites → no chevron', (await page.locator('.topbar .quick-more').count()) === 0);
 
 // ------------------------------------------------------------------ built-in plugin tabs (Work, Ideas, Diagnostics, Files)
+/** Select a strip tab without toggling the panel closed when it is already the active one. */
+async function openStripTab(side, name) {
+  const t = page.locator(`.panel.${side} .strip-tab`, { hasText: name });
+  if ((await t.getAttribute('aria-selected')) !== 'true') await t.click();
+  if (!(await page.locator(`.panel.${side}.open`).count())) await t.click();
+}
+const right = page.locator('.panel.right > .body');
+const leftBody = page.locator('.panel.left > .body');
 await openStripTab('left', 'Sessions');
 await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
 await page.waitForTimeout(200);
-  },
-};
 
 // ------------------------------------------------------------------ the archived section: an archive 200 newer actives would hide
-const case_07 = {
-  name: 'sessions: the archived section lists what a newest-first window hides',
-  run: async () => {
 log('sessions: the archived section lists what a newest-first window hides');
 {
   // 201 active sessions (newest, one per hour back) + 59 newer archives, then one very old archive: in the old
@@ -467,12 +451,7 @@ log('sessions: the archived section lists what a newest-first window hides');
     await rpcCall('mock.clearMany');
   }
 }
-  },
-};
 
-const case_08 = {
-  name: 'plugin tab: Work',
-  run: async () => {
 log('plugin tab: Work');
 {
   await openStripTab('right', 'Work');
@@ -540,12 +519,7 @@ log('plugin tab: Work');
   check('work: agent click opens its session', (await page.locator('.topbar .tab.active[data-tab="ses_bg_explore"]').count()) > 0, await page.locator('.topbar .tab.active').innerText().catch(() => ''));
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
 }
-  },
-};
 
-const case_09 = {
-  name: 'plugin tab: Ideas',
-  run: async () => {
 log('plugin tab: Ideas');
 {
   await openStripTab('right', 'Ideas');
@@ -674,12 +648,7 @@ log('plugin tab: Ideas');
   await page.waitForSelector('.ideas .card:has-text("Added over RPC")', { timeout: 3000 }).catch(() => {});
   check('ideas: refetch on ideas.changed', (await page.locator('.ideas .card', { hasText: 'Added over RPC' }).count()) > 0);
 }
-  },
-};
 
-const case_10 = {
-  name: 'ideas: recall on the first message (the chip above the composer)',
-  run: async () => {
 log('ideas: recall on the first message (the chip above the composer)');
 {
   await rpcCall('ideas.add', { projectId: 'global', idea: { title: 'Nudge counter reset after a good answer', summary: 'Reset the nudge counter.' } });
@@ -710,12 +679,7 @@ log('ideas: recall on the first message (the chip above the composer)');
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
   await page.waitForTimeout(300);
 }
-  },
-};
 
-const case_11 = {
-  name: 'ideas: save on tab close (the card above the composer)',
-  run: async () => {
 log('ideas: save on tab close (the card above the composer)');
 {
   // A chat with two user turns, told to leave a plan behind when its tab closes.
@@ -784,12 +748,7 @@ log('ideas: save on tab close (the card above the composer)');
   check('save check: a chat with nothing unsaved leaves no card', (await card.count()) === 0);
   check('save check: and nothing is added to the backlog', ((await rpcCall('ideas.list'))?.ideas ?? []).length === before);
 }
-  },
-};
 
-const case_12 = {
-  name: 'plugin tab: Diagnostics',
-  run: async () => {
 log('plugin tab: Diagnostics');
 {
   await openStripTab('right', 'Diagnostics');
@@ -854,12 +813,7 @@ log('plugin tab: Diagnostics');
   }
   await view('Plugins');
 }
-  },
-};
 
-const case_13 = {
-  name: 'plugin tab: Files',
-  run: async () => {
 log('plugin tab: Files');
 {
   await openStripTab('left', 'Files');
@@ -965,12 +919,7 @@ log('plugin tab: Files');
   }
   await openStripTab('left', 'Sessions');
 }
-  },
-};
 
-const case_14 = {
-  name: 'ask_user: questions in the chat',
-  run: async () => {
 log('ask_user: questions in the chat');
 {
   await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
@@ -1003,12 +952,7 @@ log('ask_user: questions in the chat');
   );
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
 }
-  },
-};
 
-const case_15 = {
-  name: 'guardrails: a tool call waits for your OK',
-  run: async () => {
 log('guardrails: a tool call waits for your OK');
 {
   await ta.fill('[guard] push it');
@@ -1037,12 +981,7 @@ log('guardrails: a tool call waits for your OK');
   check('guardrails: allowed in this chat, the next push does not ask', asksBefore === 0 && (await page.locator('.tool .approve').count()) === 0);
   check("guardrails: its row says it was allowed in this chat", (await page.locator('.tool .state', { hasText: 'allowed in this chat' }).count()) > 0);
 }
-  },
-};
 
-const case_16 = {
-  name: 'fork: a new chat from a message',
-  run: async () => {
 log('fork: a new chat from a message');
 {
   await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
@@ -1063,12 +1002,7 @@ log('fork: a new chat from a message');
   check('fork: before a user message, its text waits in the new chat\'s box', (await ta.inputValue()).startsWith('After a reconnect'));
   await ta.fill('');
 }
-  },
-};
 
-const case_17 = {
-  name: 'narrow side panels',
-  run: async () => {
 log('narrow side panels');
 {
   // drag both panels to ~230px (the user's layout is 230–340px) and check every tab for sideways overflow
@@ -1111,12 +1045,7 @@ log('narrow side panels');
   await page.locator('.panel.right .resizer').dblclick();
   await page.locator('.panel.left .resizer').dblclick();
 }
-  },
-};
 
-const case_18 = {
-  name: 'project picker + new session project',
-  run: async () => {
 log('project picker + new session project');
 {
   const projects = await rpcCall('projects.list');
@@ -1160,12 +1089,7 @@ log('project picker + new session project');
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
   await page.waitForTimeout(300);
 }
-  },
-};
 
-const case_19 = {
-  name: 'start screen: the project new sessions start in',
-  run: async () => {
 log('start screen: the project new sessions start in');
 {
   const projects = await rpcCall('projects.list');
@@ -1191,12 +1115,7 @@ log('start screen: the project new sessions start in');
   const s = id ? await rpcCall('sessions.get', { id }) : null;
   check('New session starts in the chosen project', s?.projectId === idOf('website'), String(s?.projectId));
 }
-  },
-};
 
-const case_20 = {
-  name: 'projects dialog',
-  run: async () => {
 log('projects dialog');
 {
   // from the top bar picker of the session just created in "website"
@@ -1250,13 +1169,8 @@ log('projects dialog');
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
   await page.waitForTimeout(300);
 }
-  },
-};
 
 // ------------------------------------------------------------------ settings as controls: fields, agents, budget, tools
-const case_21 = {
-  name: 'settings: controls, agents, budget, tools',
-  run: async () => {
 log('settings: controls, agents, budget, tools');
 {
   await page.keyboard.press('Control+,');
@@ -1367,13 +1281,8 @@ log('settings: controls, agents, budget, tools');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
 }
-  },
-};
 
 // ------------------------------------------------------------------ the tools of one chat
-const case_22 = {
-  name: 'chat tools: switched per session',
-  run: async () => {
 log('chat tools: switched per session');
 {
   await page.keyboard.press('Control+t');
@@ -1406,13 +1315,8 @@ log('chat tools: switched per session');
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
   await page.waitForTimeout(300);
 }
-  },
-};
 
 // ------------------------------------------------------------------ what chats cost, the budget
-const case_23 = {
-  name: 'budget: chat cost, Work tab, a chat stopped by the budget',
-  run: async () => {
 log('budget: chat cost, Work tab, a chat stopped by the budget');
 {
   // the seeded chat that used a paid model (with a subagent) shows what it cost
@@ -1462,13 +1366,8 @@ log('budget: chat cost, Work tab, a chat stopped by the budget');
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
   await page.waitForTimeout(300);
 }
-  },
-};
 
 // ------------------------------------------------------------------ profiles
-const case_24 = {
-  name: 'profiles: settings, a project default, per chat',
-  run: async () => {
 log('profiles: settings, a project default, per chat');
 {
   // a profile from the settings: a name, the instructions, tools switched off with checkboxes
@@ -1550,13 +1449,8 @@ log('profiles: settings, a project default, per chat');
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
   await page.waitForTimeout(300);
 }
-  },
-};
 
 // ------------------------------------------------------------------ settings + light theme
-const case_25 = {
-  name: 'settings',
-  run: async () => {
 log('settings');
 await page.keyboard.press('Control+,');
 await page.waitForSelector('.dialog');
@@ -1601,13 +1495,8 @@ if ((await ta.inputValue()).startsWith('/compact')) await ta.press('Enter');
 await page.waitForSelector('.notice', { hasText: 'Summary' }).catch(() => {});
 await page.waitForTimeout(300);
 check('/compact (server rpc command) adds a summary', (await page.locator('.notice .label', { hasText: 'Summary' }).count()) > 0);
-  },
-};
 
 // ------------------------------------------------------------------ tab drag & drop
-const case_26 = {
-  name: 'drag to reorder tabs',
-  run: async () => {
 log('drag to reorder tabs');
 {
   const titles = async () => page.locator('.topbar .tab .tab-title').allTextContents();
@@ -1619,13 +1508,8 @@ log('drag to reorder tabs');
     check('drag reorders tabs', after[0] === before[1], `${before.join(' | ')} → ${after.join(' | ')}`);
   }
 }
-  },
-};
 
 // ------------------------------------------------------------------ abort
-const case_27 = {
-  name: 'abort',
-  run: async () => {
 log('abort');
 await page.keyboard.press('Control+t');
 await page.waitForSelector('.intro');
@@ -1640,13 +1524,8 @@ await page.waitForTimeout(300);
 const aborted = (await page.locator('.status[data-reason="aborted"]').count()) + (await page.locator('.notice', { hasText: 'aborted' }).count());
 check('Esc aborts the run', aborted > 0);
 await shot(page, '20-aborted');
-  },
-};
 
 // ------------------------------------------------------------------ image attachments
-const case_28 = {
-  name: 'images',
-  run: async () => {
 log('images');
 {
   // a 48×32 PNG (solid accent-ish color) generated on the fly
@@ -1671,13 +1550,8 @@ log('images');
   check('user message shows the image', (await page.locator('.user .img img').count()) > 0);
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 20_000 }).catch(() => {});
 }
-  },
-};
 
 // ------------------------------------------------------------------ composer drafts
-const case_29 = {
-  name: 'composer drafts',
-  run: async () => {
 log('composer drafts');
 {
   // Unsent composer state must not live in the per-chat cache (a 5-store LRU, chat.svelte.js): attach an
@@ -1732,22 +1606,12 @@ log('composer drafts');
   for (const id of evictors) await page.locator(`.topbar .tab[data-tab="${id}"] .tab-close`).click();
   await page.waitForTimeout(200);
 }
-  },
-};
 
 // ------------------------------------------------------------------ web tools, todo plan, tools notice, file links
-const case_30 = {
-  name: 'web tools, todo plan, tools notice, file links',
-  run: async () => {
 log('web tools, todo plan, tools notice, file links');
 {
   await page.keyboard.press('Control+t');
   await page.waitForSelector('.intro');
-  // hold the live thinking line: at MOCK_SPEED=3 the whole thinking stream is ~300 ms, and a waitForSelector
-  // whose rAF-driven polls stall under load can miss that window entirely (mock.thinkDelay stretches it).
-  // Released in a finally: a failure in this block must not leave the rest of the run streaming in slow motion.
-  await rpcCall('mock.thinkDelay', { ms: 1000 });
-  try {
   await ta.fill('[web] Why does the demo page break? Check the Svelte docs.');
   await ta.press('Enter');
   // thinking can be opened while it streams; later answers start open and their finished rows stay open
@@ -1756,9 +1620,6 @@ log('web tools, todo plan, tools notice, file links');
   await page.waitForSelector('.thinking.live .body', { timeout: 3000 }).catch(() => {});
   check('streaming thinking opens while it streams', (await page.locator('.thinking.live .body').count()) === 1);
   await shot(page, '24b-live-thinking');
-  } finally {
-  await rpcCall('mock.thinkDelay', { ms: 0 });
-  }
   await page.waitForSelector('.dock .strip', { timeout: 15_000 });
   await page.waitForTimeout(400);
   const gap = await page.locator('.scroller').evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
@@ -1812,13 +1673,8 @@ log('web tools, todo plan, tools notice, file links');
   check('the app does not navigate away', page.url() === before && (await page.locator('.composer textarea').count()) === 1);
   check('web links still open in a new window', (await page.locator('.md a[target="_blank"]', { hasText: 'docs' }).count()) === 1);
 }
-  },
-};
 
 // ------------------------------------------------------------------ ssh tools (reuse the shell, read and diff views)
-const case_31 = {
-  name: 'ssh tools',
-  run: async () => {
 log('ssh tools');
 {
   await page.keyboard.press('Control+t');
@@ -1847,13 +1703,8 @@ log('ssh tools');
   await page.locator('.tool', { has: page.locator('.label', { hasText: /^SSH edit$/ }) }).last().scrollIntoViewIfNeeded();
   await shot(page, '26c-ssh-tools');
 }
-  },
-};
 
 // ------------------------------------------------------------------ fast steps: the chat never jumps while the agent works
-const case_32 = {
-  name: 'fast steps: layout stability',
-  run: async () => {
 log('fast steps: layout stability');
 {
   const size = page.viewportSize();
@@ -1934,13 +1785,8 @@ log('fast steps: layout stability');
   await page.waitForTimeout(200);
   await page.setViewportSize(size);
 }
-  },
-};
 
 // ------------------------------------------------------------------ compaction banner: kept until the model answers again
-const case_33 = {
-  name: 'compaction banner',
-  run: async () => {
 log('compaction banner');
 {
   await page.keyboard.press('Control+t');
@@ -1967,13 +1813,8 @@ log('compaction banner');
   check('compaction banner: gone once the model answers', !after.includes('Context compacted'), after);
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 30_000 });
 }
-  },
-};
 
 // ------------------------------------------------------------------ goals: /goal, the strip, pause, resume, achieved
-const case_34 = {
-  name: 'goals',
-  run: async () => {
 log('goals');
 {
   await page.keyboard.press('Control+t');
@@ -2008,13 +1849,8 @@ log('goals');
   await page.waitForTimeout(300);
   check('dismissing removes the strip', (await page.locator('.goal').count()) === 0);
 }
-  },
-};
 
 // ------------------------------------------------------------------ folder picker (fs.dirs) + add project
-const case_35 = {
-  name: 'projects: folder picker',
-  run: async () => {
 log('projects: folder picker');
 await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
 if (!(await page.locator('.panel.left.open').count())) await page.locator('.panel.left .strip-tab', { hasText: 'Projects' }).click();
@@ -2042,13 +1878,8 @@ await page.locator('.projects-dialog .np-btn-primary', { hasText: 'Create projec
 await page.waitForTimeout(300);
 check('project added', (await page.locator('.panel.left .prow .pname', { hasText: 'web' }).count()) > 0);
 check('the project dialog closed', (await page.locator('.projects-dialog').count()) === 0);
-  },
-};
 
 // ------------------------------------------------------------------ plugin hot reload + load error
-const case_36 = {
-  name: 'plugin tab hot reload / error',
-  run: async () => {
 log('plugin tab hot reload / error');
 {
   await openStripTab('right', 'Sample');
@@ -2087,11 +1918,6 @@ log('plugin tab hot reload / error');
 
 // ------------------------------------------------------------------ notifications: what the UI asks the desktop app for
 // A page of its own with a stand-in for the desktop app's bridge (chrome.webview), so no other section sees it.
-  },
-};
-const case_37 = {
-  name: 'notifications',
-  run: async () => {
 log('notifications');
 {
   const p = await page.context().newPage();
@@ -2225,271 +2051,6 @@ if (!EXTERNAL && !argv.includes('--no-dev')) {
   }
 }
 
-  },
-};
-
-// ------------------------------------------------------------------ client caches: bounded and pruned per session
-const case_38 = {
-  name: 'client caches: bounded and pruned per session',
-  run: async () => {
-log('client caches: bounded and pruned per session');
-{
-  // An app left open for weeks: the client-side maps must stay bounded. The app reports what it holds to
-  // the mock (window.__netpiProbe, installed when the server's hello identifies itself as the mock); the
-  // checks read that back through mock.caches and seed traffic server-side (exact counts), so a pass means
-  // the app really held bounded state — a size that was only ever small because the traffic never arrived
-  // cannot pass: every read is gated on the traffic having been processed (the askSeen counters) or on a
-  // report newer than the action (the report's at).
-  const probe = await page.waitForFunction(() => window.__netpiProbe, null, { timeout: 10_000 }).then(() =>
-    page.evaluate(() => window.__netpiProbe.caches()),
-  ).catch(() => null);
-  check('setup: the app reports its cache state to the mock', !!probe, probe ? `client ${probe.clientId}` : 'no probe');
-  // a report from this page, optionally newer than `after` (Date.now() just before the action)
-  const caches = async (after = null) => {
-    const t0 = Date.now();
-    for (;;) {
-      const l = (await rpcCall('mock.caches')).last;
-      if (l && l.clientId === probe.clientId && (after == null || l.at > after)) return l;
-      if (Date.now() - t0 > 10_000) throw new Error('no fresh cache report from the app');
-      await sleep(200);
-    }
-  };
-  // wait until the app has processed `extra` more ask.closed / guard.cleared events than `base` saw
-  const waitSeen = async (base, extra) => {
-    const t0 = Date.now();
-    for (;;) {
-      const s = await caches();
-      if (s.askSeen.closed >= base.askSeen.closed + extra.closed && s.askSeen.cleared >= base.askSeen.cleared + extra.cleared) return s;
-      if (Date.now() - t0 > 15_000)
-        throw new Error(`the app did not process the seeded traffic (closed ${s.askSeen.closed - base.askSeen.closed}/${extra.closed}, cleared ${s.askSeen.cleared - base.askSeen.cleared}/${extra.cleared})`);
-      await sleep(100);
-    }
-  };
-  // wait until the app's state satisfies want()
-  const waitUntil = async (want, what, detail) => {
-    const t0 = Date.now();
-    for (;;) {
-      const s = await caches();
-      if (want(s)) return s;
-      if (Date.now() - t0 > 10_000) throw new Error(`timeout: ${what} — last: ${detail(s)}`);
-      await sleep(100);
-    }
-  };
-
-  // one dedicated chat: the open ask and all the traffic below are its
-  await page.keyboard.press('Control+t');
-  await page.waitForSelector('.intro');
-  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
-  const base = await caches();
-
-  // an open ask, the real way: a run that ends yielded on the question
-  await ta.fill('[ask] which fix');
-  await ta.press('Enter');
-  const card = page.locator('.item[data-kind="ask"] .card').last();
-  await card.waitFor({ timeout: 15_000 });
-
-  // a long life of traffic for this one chat: closed asks, second-opinion clears, and tool output for call
-  // ids the app never saw start (a reconnect lost the tool.start)
-  await rpcCall('mock.asks.closed', { sessionId: sid, count: 900 });
-  await rpcCall('mock.guard.cleared', { sessionId: sid, count: 2500 });
-  await rpcCall('mock.tools.outputBurst', { sessionId: sid, count: 150 });
-  const s1 = await waitSeen(base, { closed: 900, cleared: 2500 });
-  check('ask.closed: 900 closes for one chat stay under the cap', s1.asksClosed <= 500, `${s1.asksClosed} held`);
-  check('guard.cleared: 2500 clears for one chat stay under the cap', s1.asksCleared <= 2000, `${s1.asksCleared} held`);
-  check('tool.output: 150 unknown call ids stay under the live cap', (s1.live[sid] ?? 0) <= 60, `${s1.live[sid] ?? 0} LiveTools`);
-  const pend = await rpcCall('ask.pending', { sessionId: sid });
-  check('an open ask keeps its entry while the caps are enforced', pend.length === 1 && (await card.count()) === 1,
-    `pending ${pend.length}, card ${await card.count()}`);
-
-  // the open ask still resolves after the pruning: the answer round-trips and is recorded
-  await card.locator('.opt', { hasText: 'Retry the request' }).click();
-  const line = page.locator('.item[data-kind="ask"] button.line').last();
-  await line.waitFor({ timeout: 15_000 });
-  check('an open ask still resolves after the pruning', (await line.innerText()).includes('Retry the request'), (await line.innerText()));
-  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 30_000 });
-  const s2 = await caches();
-  check('its answer is recorded, still under the cap', (await rpcCall('ask.pending', { sessionId: sid })).length === 0 && s2.asksClosed <= 500, `closed ${s2.asksClosed}`);
-
-  // the notification suppression entries (saidJustNow): one per notified session, each worth 10 s
-  const ticked = await rpcCall('mock.asks.tick', { count: 70 });
-  const s3 = await waitSeen(s1, { closed: 70, cleared: 0 });
-  check('saidJustNow: a flood of notifications stays under the cap', s3.saidJustNow.size <= 64, `${s3.saidJustNow.size} held`);
-  await sleep(11_000); // past the 10 s suppression window
-  await rpcCall('mock.asks.tick', { count: 1 });
-  const s4 = await waitSeen(s3, { closed: 1, cleared: 0 });
-  check('saidJustNow: past the window, the old ones are gone', s4.saidJustNow.sids.filter((x) => ticked.includes(x)).length === 0,
-    `${s4.saidJustNow.size} held: ${s4.saidJustNow.sids.join(', ')}`);
-  check('saidJustNow: the fresh one still suppresses', s4.saidJustNow.sids.length > 0, s4.saidJustNow.sids.join(', '));
-
-  // the session goes: its per-session entries drop with it (session.deleted → removeSessionLocal) —
-  // while its chat store is still in the LRU, so the live check is not confused with an LRU eviction
-  await sleep(700);
-  const beforeDel = await caches();
-  check('setup: the chat\u2019s per-session entries exist', beforeDel.recall.sids.includes(sid) && (beforeDel.live[sid] ?? 0) > 0,
-    `recall ${beforeDel.recall.sids.includes(sid)}, live ${beforeDel.live[sid] ?? 0}`);
-  await rpcCall('sessions.delete', { id: sid });
-  const s6 = await waitUntil(
-    (s) => s.asksClosed < beforeDel.asksClosed && s.asksCleared < beforeDel.asksCleared && !s.recall.sids.includes(sid) && s.live[sid] == null,
-    'the app did not drop the deleted session\u2019s entries',
-    (s) => JSON.stringify({ closed: s.asksClosed, cleared: s.asksCleared, recall: s.recall.sids, live: s.live, before: { closed: beforeDel.asksClosed, cleared: beforeDel.asksCleared } }),
-  );
-  check('session.deleted: its closed asks are dropped', s6.asksClosed < beforeDel.asksClosed, `${beforeDel.asksClosed} → ${s6.asksClosed}`);
-  check('session.deleted: its guard clears are dropped', s6.asksCleared < beforeDel.asksCleared, `${beforeDel.asksCleared} → ${s6.asksCleared}`);
-  check('session.deleted: its recall entry is dropped', !s6.recall.sids.includes(sid));
-  check('session.deleted: its chat store (live tools) is dropped', s6.live[sid] == null);
-
-  // per-session state: a ChatRecall per opened chat, skills fetched per session (TTL 10 s). Six real chats
-  // through the UI (the / popup fetches the session's skills), the rest at unit speed through the probe
-  // (the same function the popup calls)
-  const uiSids = [];
-  for (let i = 0; i < 6; i++) {
-    await page.keyboard.press('Control+t');
-    await page.waitForSelector('.intro');
-    uiSids.push(await page.locator('.topbar .tab.active').getAttribute('data-tab'));
-  }
-  for (const u of uiSids) {
-    await page.locator(`.topbar .tab[data-tab="${u}"]`).click();
-    await page.waitForTimeout(150);
-    await ta.fill('');
-    await ta.type('/');
-    await page.waitForTimeout(250);
-    await page.keyboard.press('Escape');
-  }
-  const t5 = Date.now();
-  const probeSids = await page.evaluate(() => {
-    const out = [];
-    for (let i = 0; i < 50; i++) {
-      const id = `cacheprobe_${i}`;
-      window.__netpiProbe.touchRecall(id);
-      if (i < 30) window.__netpiProbe.touchSkills(id);
-      out.push(id);
-    }
-    return out;
-  });
-  const s5 = await caches(t5);
-  check('recall: one ChatRecall per opened session stays under the cap', s5.recall.size <= 48, `${s5.recall.size} held`);
-  check('recall: the session just touched is kept', s5.recall.sids.includes(probeSids[49]), `last: ${probeSids[49]}`);
-  check('skills: fresh entries past the cap drop the oldest', s5.skills.size <= 16, `${s5.skills.size} held`);
-  check('skills: the session just touched is kept', s5.skills.sids.includes(probeSids[29]), `last: ${probeSids[29]}`);
-
-  // events for a session that is already gone: the app absorbs them and keeps running
-  await rpcCall('mock.asks.closed', { sessionId: sid, count: 3 });
-  await rpcCall('mock.guard.cleared', { sessionId: sid, count: 20 });
-  await rpcCall('mock.tools.outputBurst', { sessionId: sid, count: 25 });
-  const s7 = await caches();
-  await sleep(700);
-  const s8 = await caches();
-  check('events for a deleted session are absorbed', s8.asksClosed <= 500 && s8.asksCleared <= 2000, `closed ${s8.asksClosed}, cleared ${s8.asksCleared}`);
-  check('the app keeps reporting after gone-session traffic', s8.at > s7.at);
-}
-  },
-};
-
-const CASES = [case_01, case_02, case_03, case_04, case_05, case_06, case_07, case_08, case_09, case_10, case_11, case_12, case_13, case_14, case_15, case_16, case_17, case_18, case_19, case_20, case_21, case_22, case_23, case_24, case_25, case_26, case_27, case_28, case_29, case_30, case_31, case_32, case_33, case_34, case_35, case_36, case_37, case_38];
-
-// --list: print the cases and exit without launching a server or a browser
-if (argv.includes('--list')) {
-  for (const c of CASES) console.log(c.name);
-  process.exit(0);
-}
-// selection: --only takes case names (the section headers), comma-separated; a name that contains a comma must be
-// quoted, and the flag can be repeated. Unknown or empty selections fail before any setup, so a typo cannot
-// produce a green empty run.
-let SELECTED = CASES;
-{
-  const vals = [];
-  for (let i = 0; i < argv.length; i++) if (argv[i] === '--only' && argv[i + 1] !== undefined) vals.push(argv[++i]);
-  if (vals.length) {
-    const want = new Set();
-    for (const v of vals) {
-      const q = v.match(/^[\'"](.*)[\'\"]$/);
-      const names = (q ? [q[1]] : v.split(',')).map((s) => s.trim()).filter(Boolean);
-      if (q && q[1] === '') continue;
-      if (!names.length) {
-        console.error(`empty --only value: ${v}`);
-        process.exit(1);
-      }
-      for (const n of names) want.add(n);
-    }
-    const unknown = [...want].filter((n) => !CASES.some((c) => c.name === n));
-    if (unknown.length) {
-      console.error(`unknown --only name${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`);
-      console.error('available cases (see --list): ' + CASES.map((c) => JSON.stringify(c.name)).join(' '));
-      process.exit(1);
-    }
-    SELECTED = CASES.filter((c) => want.has(c.name));
-  }
-}
-
-// ---------------------------------------------------------------- bootstrap (always runs, before the selected cases)
-fs.mkdirSync(OUT, { recursive: true });
-if (!EXTERNAL) {
-  if (!fs.existsSync(path.join(repo, 'web/mock/sample-plugin/wwwroot/ui.js'))) {
-    log('building the sample plugin…');
-    await new Promise((r) => spawn(process.execPath, [path.join(repo, 'web/scripts/build-plugins.mjs'), '--only', 'web/mock/sample-plugin'], { cwd: repo, stdio: 'inherit' }).on('exit', r));
-  }
-  await startServer();
-}
-process.on('exit', () => server?.kill());
-
-// start from the seeded mock state and a clean UI state
-await fetch(`${BASE}/api/rpc/mock.reset`, { method: 'POST', headers: { 'X-NetPI-Token': 'dev' }, body: '{}' });
-const { browser, page, errors } = await openApp({ url: `${BASE}/?token=dev` });
-await page.evaluate(() => localStorage.clear());
-await page.goto(`${BASE}/`);
-await page.waitForSelector('.welcome .np-btn-primary', { timeout: 10_000 });
-await page.waitForTimeout(300);
-await shot(page, '01-welcome');
-// shared locators the cases use (the composer and both panel bodies are on the chat view)
-const ta = page.locator('.composer textarea');
-const right = page.locator('.panel.right > .body');
-const leftBody = page.locator('.panel.left > .body');
-
-// run the selected cases in walkthrough order: skipped cases do not run at all, so a pass can
-// never come from a quiet section and their actions cannot leak into the cases that do run
-const caseReport = [];
-for (const c of SELECTED) {
-  const n0 = results.length;
-  const t = Date.now();
-  try {
-    await c.run();
-  } catch (e) {
-    // forensics before bailing: what the mock server last saw, and what the app still shows (a failed wait is
-    // usually a send that never left the composer or a stream the client was not subscribed to)
-    let app = null;
-    try {
-      app = await page.evaluate(() => ({
-        url: location.href,
-        composer: document.querySelector('.composer textarea')?.value ?? null,
-        conn: document.querySelector('.topbar .conn')?.dataset.status ?? null,
-        toasts: [...document.querySelectorAll('.toasts .toast')].map((x) => x.textContent),
-        tabs: [...document.querySelectorAll('.topbar .tab')].map((x) => `${x.textContent}${x.classList.contains('active') ? '*' : ''}`),
-        thinkingRows: document.querySelectorAll('.thinking').length,
-      }));
-    } catch {}
-    let events = [];
-    try { events = await rpcCall('events.recent', { max: 30 }); } catch {}
-    let subs = [];
-    try { subs = await rpcCall('mock.subLog', { max: 15 }); } catch {}
-    let wsFrames = [];
-    try { wsFrames = await rpcCall('mock.wsLog', { max: 25 }); } catch {}
-    console.error(`\ncase "${c.name}" failed: ${String(e?.message ?? e).split('\n')[0]}`);
-    if (app) console.error(`app at failure: ${JSON.stringify(app)}`);
-    if (wsFrames.length) {
-      console.error('last frames the server received:\n  ' + wsFrames.map((x) => `${new Date(x.ts).toISOString().slice(11, 23)} c${x.id}: ${x.m}`).join('\n  '));
-    }
-    if (subs.length) {
-      console.error('last subscription frames:\n  ' + subs.map((x) => `${new Date(x.ts).toISOString().slice(11, 23)}: [${x.sessions.join(' ')}]`).join('\n  '));
-    }
-    if (events.length) {
-      console.error('last mock events (newest last):\n  ' + events.map((x) => `#${x.seq} ${new Date(x.ts).toISOString().slice(11, 23)} ${x.type}${x.sid ? ` [${x.sid}]` : ''}`).join('\n  '));
-    }
-    throw e;
-  }
-  const done = results.slice(n0);
-  caseReport.push({ name: c.name, checks: done.length, failed: done.filter((r) => !r.ok).length, ms: Date.now() - t });
-}
-
 // ------------------------------------------------------------------ summary
 // expected noise from the deliberate plugin 500 and the server restart
 const EXPECTED = /favicon|Failed to fetch dynamically imported module|failed to load tab|status of 500|WebSocket connection to|ERR_CONNECTION_REFUSED/;
@@ -2498,8 +2059,5 @@ check('no console errors', bad.length === 0, bad.slice(0, 5).join(' | '));
 await browser.close();
 await stopServer();
 const failed = results.filter((r) => !r.ok);
-for (const r of caseReport) log(`  ${r.failed ? '✗' : '✓'} ${r.name} — ${r.checks} checks, ${r.ms}ms`);
-if (SELECTED.length < CASES.length) log(`${CASES.length - SELECTED.length} of ${CASES.length} cases skipped by --only`);
 log(`\n${results.length - failed.length}/${results.length} checks passed`);
 process.exit(failed.length ? 1 : 0);
-

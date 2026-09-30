@@ -12,27 +12,8 @@ export const asks = {
   cleared: new SvelteMap(), // [sessionId, callId] -> guard.cleared: an ask rule matched, and the second opinion let it run without asking
 };
 
-// Cumulative event counts (e2e): how many ask.closed / guard.cleared events the app has processed. A check
-// waits on these before reading the sizes below, so a burst seeded by the mock cannot be read mid-flight.
-export const askSeen = { closed: 0, cleared: 0 };
-
 /** A question's own id. A plugin without one (an older build, hot reloaded on its own) falls back to the tool call's. */
 const qid = (a) => a?.id ?? a?.callId;
-
-// The closed maps are what a card shows after the fact (the answer a question ended with, a second opinion that
-// let a tool run). A window left open for weeks would otherwise keep one entry per closed ask / cleared guard of
-// every chat it ever saw: both are capped, and entries older than a week are dropped when a new one lands.
-const WEEK = 7 * 24 * 3600 * 1000;
-const CLOSED_MAX = 500; // a question's outcome is history once its tool result is in: the oldest drops first
-const CLEARED_MAX = 2000; // a guard clear is one line in a tool row: the oldest drops first
-
-/** Insert into a closed map under its cap: stale entries first, then the oldest (insertion order is the age). */
-function bound(map, id, d, max) {
-  const now = Date.now();
-  for (const k of [...map.keys()]) if (now - map.get(k).__at > WEEK) map.delete(k);
-  while (map.size >= max) map.delete(map.keys().next().value);
-  map.set(id, { ...d, __at: now });
-}
 
 /** The question waiting in a chat (the oldest, when there are several). */
 export function pendingIn(sessionId) {
@@ -77,18 +58,14 @@ export function askEvent(type, d) {
     else {
       asks.pending.delete(id);
       asks.drafts.delete(id);
-      bound(asks.closed, id, d, CLOSED_MAX);
-      askSeen.closed++;
+      asks.closed.set(id, d);
     }
     return;
   }
   if (!d?.callId) return;
   if (type === 'guard.asked') asks.approvals.set(d.approvalId, d);
   else if (type === 'guard.closed') asks.approvals.delete(d.approvalId);
-  else if (type === 'guard.cleared') {
-    bound(asks.cleared, JSON.stringify([d.sessionId, d.callId]), d, CLEARED_MAX);
-    askSeen.cleared++;
-  }
+  else if (type === 'guard.cleared') asks.cleared.set(JSON.stringify([d.sessionId, d.callId]), d);
 }
 
 /** The session went: drop its closed answers and guard clears (the maps would otherwise keep one entry per closed

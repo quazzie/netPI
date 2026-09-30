@@ -8,10 +8,8 @@ import { renderMarkdown, highlight, installCodeCopy, copyText } from './lib/mark
 import { installFileLinks } from './lib/openFile.js';
 import { confirmDialog } from './lib/state/ui.svelte.js';
 import App from './App.svelte';
-import { installCacheProbe } from './lib/cacheProbe.js';
 
 initToken();
-installCacheProbe();
 
 // Services shared with plugin bundles through @netpi/kit (see lib/kit/host.js).
 globalThis.__netpiHost = Object.freeze({
