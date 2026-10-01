@@ -12,6 +12,7 @@ public static class BudgetTests
         t.Add("budget: a spent monthly budget stops paid calls, not local ones; \"ask\" lets a chat go over and continues it", MonthlyBudget);
         t.Add("agents: agent_choices shows the budget, state, price, spend and note; agent_spawn needs an active agent; an agent's daily cap", AgentsAndCap);
         t.Add("budget: the period starts on budget.resetDay", Period);
+        t.Add("budget: settings changes refresh usage without a model call, including file reloads", SettingsRefresh);
     }
 
     /// <summary>cloud/big costs $3 / $15 per million tokens (the catalog's pricing, as OpenRouter lists it).</summary>
@@ -32,6 +33,53 @@ public static class BudgetTests
     private static JsonNode Summary(TestHost h) => h.Rpc.CallAsync("usage.summary").GetAwaiter().GetResult()!;
 
     private static double Num(JsonNode? n) => double.Parse(n!.ToJsonString(), System.Globalization.CultureInfo.InvariantCulture);
+
+    private static async Task SettingsRefresh()
+    {
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Agents);
+        await h.Bus.DrainAsync();
+
+        async Task<JsonObject> Changed(Action edit)
+        {
+            var before = h.Bus.OfType("usage.changed").Count;
+            edit();
+            await h.Bus.DrainAsync();
+            var events = h.Bus.OfType("usage.changed");
+            Check.Equal(before + 1, events.Count, "one fresh budget event, without waiting for recorded usage");
+            var status = FakeBus.Data(events[^1]);
+            Check.Equal((await h.Rpc.CallAsync("budget.status"))!.ToJsonString(), status.ToJsonString(), "the event is the current budget snapshot");
+            return status;
+        }
+
+        var status = await Changed(() => h.Settings.Set("budget.monthlyUsd", JsonValue.Create(50.0)));
+        Check.Equal(50.0, Num(status["monthlyUsd"]));
+        status = await Changed(() => h.Settings.Set("budget.dailyUsd", JsonValue.Create(5.0)));
+        Check.Equal(5.0, Num(status["dailyUsd"]));
+        status = await Changed(() => h.Settings.Set("budget.monthlyUsd", null));
+        Check.True(status["monthlyUsd"] is null, "removing a cap is visible too");
+
+        status = await Changed(() => h.Settings.Set("budget", JsonNode.Parse("""{ "monthlyUsd": 25, "warnPercent": 60, "resetDay": 15, "onLimit": "ask" }""")));
+        Check.Equal(25.0, Num(status["monthlyUsd"]));
+        Check.Equal(60, status["warnPercent"]!.GetValue<int>());
+        Check.Equal(15, status["resetDay"]!.GetValue<int>());
+        Check.Equal("ask", status["onLimit"]!.GetValue<string>());
+        Check.True(status["dailyUsd"] is null);
+
+        // A whole-file reload/replacement carries no path: budget changes must still reach an already open tab.
+        status = await Changed(() => h.Settings.Replace(JsonNode.Parse("""{ "budget": { "monthlyUsd": 75, "dailyUsd": 7 } }""")!.AsObject()));
+        Check.Equal(75.0, Num(status["monthlyUsd"]));
+        Check.Equal(7.0, Num(status["dailyUsd"]));
+        Check.Equal(0, h.Catalog.Calls, "no model activity was needed to publish any refresh");
+
+        var count = h.Bus.OfType("usage.changed").Count;
+        h.Settings.Set("models.localSlots", JsonValue.Create(3));
+        await h.Bus.DrainAsync();
+        Check.Equal(count, h.Bus.OfType("usage.changed").Count, "an unrelated setting does not refresh usage");
+        await h.StopPluginAsync("netpi.agents");
+        h.Settings.Set("budget.monthlyUsd", JsonValue.Create(100));
+        await h.Bus.DrainAsync();
+        Check.Equal(count, h.Bus.OfType("usage.changed").Count, "unloading removes the settings listener");
+    }
 
     private static async Task Ledger()
     {

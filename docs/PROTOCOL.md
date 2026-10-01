@@ -244,10 +244,11 @@ interface ProcessInfo { id; pid; shell: 'bash'|'pwsh'; command; cwd; sessionId?;
 | `context.prompt` | yes | `{ sessionId, version, afterSeq }` – the session was sent a new system prompt (its first model call, or after `context.reset`); `context.prompts` has it |
 | `session.context` | no | `{ sessionId, used, window }` |
 | `agents.changed` | no | `{ agents: AgentSlots[] }` – what `agents.list` returns, whenever a run takes or frees an instance or an agent's state changes |
-| `models.changed`, `plugins.changed`, `ui.changed`, `settings.changed` | no | `{}` |
+| `models.changed`, `plugins.changed`, `ui.changed` | no | `{}` |
+| `settings.changed` | no | `{ path?: string, source?: "file" }`; a whole-file reload/replacement has no path |
 | `plugins.reloaded` | no | `{ ids: string[], kind: 'reload'\|'reload-failed'\|'deferred'\|'enabled'\|'disabled' }` – which plugins the host reloaded, enabled or disabled (every `/reload`, hot reload from the build, and a `plugins.disabled` change). A reload is a **swap**: the new version starts while the old one still serves, so its tools are never absent and a chat gets no "tools changed" notice; `reload-failed` means the new version did not start and the running one was kept; `deferred` means `plugins.quiet` is on and nothing was applied. What changed, not just that something did: the context plugin names it in the next "tools" notice, the diagnostics plugin lists it in `diag.overview`/`diag.problems`, and `IPluginManager.Deferred()` (and `diag.overview`'s `deferred`) says what is waiting |
 | `usage.recorded` | no | `{ provider, model, usage }` (agent turns) |
-| `usage.changed` | no | `BudgetStatus`, after model calls were recorded (debounced) |
+| `usage.changed` | no | `BudgetStatus`, after model calls were recorded (debounced), or immediately after a `budget` / `budget.*` setting change or whole-file settings reload/replacement |
 | `process.started` / `process.exited` | no | `{ process: ProcessInfo }` |
 | `ideas.changed` | no | `{ backend: 'sqlite', database, scope, schemaVersion, file, reason? }` – after every write that committed (never one that rolled back), so every window re-reads canonical state; `file` is the legacy name, `reason` what wrote it. A notification, not exactly-once delivery |
 | `ideas.suggested` | no | `{ suggestion }` – a card a closed chat (or a commit sweep) left waiting for the user |

@@ -501,8 +501,9 @@ const handlers = {
     for (const k of keys.slice(0, -1)) o = o[k] ??= {};
     if (p.value == null) delete o[keys.at(-1)]; // null removes the key: the default applies again
     else o[keys.at(-1)] = p.value;
-    publish('settings.changed', {});
+    publish('settings.changed', { path: p.path });
     work.agentsChanged(); // like the host: lanes follow the settings
+    if (p.path === 'budget' || p.path.startsWith('budget.')) publish('usage.changed', budgetStatus());
     return true;
   },
   'settings.replace': (p) => {
@@ -511,6 +512,7 @@ const handlers = {
     store.settings = s;
     publish('settings.changed', {});
     work.agentsChanged();
+    publish('usage.changed', budgetStatus());
     return true;
   },
 
