@@ -21,7 +21,7 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
         var capturedRevision = SessionPrompt.Revision(context.Session);
         if (prompts.GetCompatible(context.Session) is { } frozen) return frozen;
         // a fork's first call: the prompt the original had at the fork point (session.forked copies it too, but may come later)
-        if (!prompts.WasReset(sessionId) && PromptStore.ForkedFrom(context.Session) is { } fork)
+        if (SessionPrompt.Fallback(context.Session) is null && !prompts.WasReset(sessionId) && PromptStore.ForkedFrom(context.Session) is { } fork)
         {
             prompts.Fork(fork.SessionId, sessionId, fork.Seq);
             if (prompts.Get(sessionId) is { } copied) return copied;
@@ -277,14 +277,16 @@ internal sealed class PromptStore(IPluginContext ctx)
     public void Fork(string from, string to, long upToSeq)
     {
         if (ctx.Sessions.GetSession(to)?.Meta?[SessionPrompt.ForkResetKey]?.GetValue<bool>() == true) return;
+        // Runtime history spans gaps when Context was absent; retain any available Context tool/history records too.
+        var inherited = ctx.Sessions.GetSession(to) is { } target ? SessionPrompt.Fallback(target) : null;
         var all = Sent(from);
         var sent = all.Where(p => p.AfterSeq <= upToSeq).ToList();
-        string prompt;
+        string? prompt = inherited;
         ToolBaseline? tools = null;
         if (sent.Count > 0)
         {
             var v = sent[^1];
-            prompt = v.Prompt;
+            prompt ??= v.Prompt;
             try
             {
                 var names = (JsonNode.Parse(v.ToolsJson) as JsonArray)?.Select(t => t?["name"]?.GetValue<string>()).OfType<string>().ToList();
@@ -295,10 +297,10 @@ internal sealed class PromptStore(IPluginContext ctx)
         else if (all.Count == 0 && Get(from) is { } current)
         {
             // a session from before the prompts it was sent were kept: its prompt, and its baseline when it predates the fork
-            prompt = current;
+            prompt ??= current;
             if (GetTools(from) is { } b && b.SinceSeq <= upToSeq) tools = b;
         }
-        else return;
+        if (prompt is null) return;
 
         Freeze(to, prompt);
         if (tools is not null) FreezeTools(to, tools.Names, tools.SinceSeq);

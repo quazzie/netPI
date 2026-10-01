@@ -21,6 +21,27 @@ public static class RegistryTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("resources: lifecycle snapshots survive cancellation without freeing capacity", async () =>
+        {
+            await using var bus = new NetPI.Host.Events.EventBus(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+            var resources = new NetPI.Host.Registries.ResourceLeases(bus);
+            var request = new AgentSlotRequest { Key = "model", AgentId = "run", ExecutorGeneration = "old" };
+            Check.True(resources.TryAcquire("local:model", 1, request, 1, out var lease));
+            var id = ((IResourceLease)lease!).Id;
+            resources.Update(id, new ResourceLeaseUpdate { BeginCall = true, CorrelationId = "call", Purpose = "agent" });
+            var before = resources.Snapshot().Single().Holder;
+            resources.Update(id, new ResourceLeaseUpdate { Retiring = true, CancellationRequested = true });
+            Check.False(before.Retiring, "snapshots own their values");
+            var pending = resources.Snapshot().Single().Holder;
+            Check.True(pending.Retiring && pending.CancellationRequestedAt is not null && pending.ProviderReturnedAt is null);
+            Check.False(resources.TryAcquire("local:model", 1, request, 1, out _));
+            resources.Update(id, new ResourceLeaseUpdate { ProviderReturned = true });
+            Check.True(resources.Snapshot().Single().Holder.ProviderReturnedAt is not null);
+            Check.False(resources.TryAcquire("local:model", 1, request, 1, out _), "acknowledgement alone does not release the run");
+            lease!.Dispose();
+            resources.Update(id, new ResourceLeaseUpdate { Retiring = true });
+            Check.Equal(0, resources.Snapshot().Count);
+        });
         r.Add("services: priority wins, ties go to the latest, disposal restores", () =>
         {
             var reg = new ServiceRegistry();

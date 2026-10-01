@@ -183,6 +183,8 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             ChatMessage assistant;
             try
             {
+                var afterSeq = Ctx.Sessions.GetMessages(SessionId, null, 1).LastOrDefault()?.Seq ?? 0;
+                Ctx.Sessions.UpdateSession(SessionId, s => SessionPrompt.RecordSent(s, turn.SystemPrompt, promptRevision, afterSeq));
                 assistant = await CallModelAsync(turn, model, session, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -482,6 +484,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         var request = new ModelRequest
         {
             CaptureDecisionContext = Ctx.Settings.Get("loops.contextChecks", false) || Ctx.Settings.Get("todo.checkCommits", false),
+            CorrelationId = Guid.NewGuid().ToString("N"),
             Model = model,
             SystemPrompt = turn.SystemPrompt,
             // the first turn's notices before the first user message (ContextOrder); hooks see the stored order
@@ -494,6 +497,14 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             Purpose = "agent",
         };
         turn.SentRequest = request;
+        var physical = Ctx.Services.Get<IResourceLeases>();
+        var leaseId = run.Lease?.LeaseId;
+        if (leaseId is not null) physical?.Update(leaseId, new ResourceLeaseUpdate { BeginCall = true, CorrelationId = request.CorrelationId, Purpose = request.Purpose });
+        using var cancellation = ct.Register(() =>
+        {
+            if (leaseId is not null) physical?.Update(leaseId, new ResourceLeaseUpdate { CancellationRequested = true });
+        });
+        using var acknowledgement = new ProviderAcknowledgement(physical, leaseId);
         var partial = new PartialMessage();
         var sw = Stopwatch.StartNew();
         long? thinkStart = null, thinkEnd = null;
@@ -705,6 +716,14 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             return calls.IsReadOnly(doc.RootElement);
         }
         catch (JsonException) { return false; }
+    }
+
+    private sealed class ProviderAcknowledgement(IResourceLeases? physical, string? leaseId) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (leaseId is not null) physical?.Update(leaseId, new ResourceLeaseUpdate { ProviderReturned = true });
+        }
     }
 
     private async Task ExecuteToolsAsync(ChatMessage assistant, AgentTurnContext turn, List<ToolCallPart> calls, List<IAgentTool> tools, CancellationToken ct)

@@ -493,6 +493,7 @@ public sealed class FakeCatalog(IServiceRegistry services) : IModelCatalog
     {
         var normalized = new ModelRequest
         {
+            CorrelationId = request.CorrelationId,
             Model = request.Model,
             SystemPrompt = request.SystemPrompt,
             Messages = ModelMessages.Normalize(request.Messages),

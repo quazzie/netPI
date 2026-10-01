@@ -4,6 +4,7 @@ namespace NetPI;
 public sealed class ResourceLeaseSlot(IDisposable held, AgentSlotRequest request) : IAgentSlot
 {
     private int _released;
+    public string? LeaseId => (held as IResourceLease)?.Id;
     public string Key => request.Key;
     public string AgentId => request.AgentId;
     public DateTimeOffset AcquiredAt { get; } = DateTimeOffset.UtcNow;
@@ -27,6 +28,20 @@ public interface IResourceLeases
 {
     bool TryAcquire(string resource, int capacity, AgentSlotRequest request, int instances, out IDisposable? lease);
     IReadOnlyList<ResourceLeaseInfo> Snapshot();
+    void Update(string leaseId, ResourceLeaseUpdate update) { }
+}
+
+public interface IResourceLease : IDisposable { string Id { get; } }
+
+/// <summary>Lifecycle updates contain only primitive data, never callbacks or collectible plugin objects.</summary>
+public sealed class ResourceLeaseUpdate
+{
+    public string? CorrelationId { get; init; }
+    public string? Purpose { get; init; }
+    public bool BeginCall { get; init; }
+    public bool CancellationRequested { get; init; }
+    public bool ProviderReturned { get; init; }
+    public bool Retiring { get; init; }
 }
 
 public sealed class ResourceLeaseInfo

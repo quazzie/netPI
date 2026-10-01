@@ -52,6 +52,7 @@ public sealed class Recorder
         var record = new CallRecord
         {
             Id = Interlocked.Increment(ref _callSeq),
+            CorrelationId = request.CorrelationId,
             StartedAt = DateTimeOffset.UtcNow,
             Provider = request.Model.Provider,
             Model = request.Model.Id,
@@ -386,6 +387,7 @@ public sealed class CallRecord
 {
     private readonly Lock _gate = new();
     public long Id { get; init; }
+    public string? CorrelationId { get; init; }
     public DateTimeOffset StartedAt { get; init; }
     public string Provider { get; init; } = "";
     public string Model { get; init; } = "";
@@ -489,6 +491,7 @@ public sealed class CallRecord
             var o = new JsonObject
             {
                 ["id"] = Id,
+                ["correlationId"] = CorrelationId,
                 ["startedAt"] = StartedAt.ToString("O"),
                 ["state"] = State,
                 ["model"] = $"{Provider}/{Model}",

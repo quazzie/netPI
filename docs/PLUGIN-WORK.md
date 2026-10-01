@@ -70,3 +70,5 @@ Useful actions from the tab (other plugins' RPCs):
 - `ctx.app.openSession(agent.sessionId)`: jump to an agent's or subagent's session.
 
 Pause the event-driven updates while the tab is hidden (`onHide`) and take a fresh snapshot on `onShow`.
+
+Physical owners remain visible through executor replacement, including provider cancellation acknowledgement that exceeds the shutdown timeout. Work shows acquisition time and retirement/cancellation state and can inspect the correlated model call. A returned provider may still belong to a run holding its admission lease.

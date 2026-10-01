@@ -203,6 +203,26 @@ public static class SessionStoreTests
             Check.Equal("summary B,m9", string.Join(",", f.Store.GetContextMessages(s.Id).Select(m => m.Text)), "the original is untouched");
         });
 
+        r.Add("sessions: sent-prefix history survives a store restart and trims historical forks", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo());
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("first"));
+            f.Store.UpdateSession(s.Id, x => SessionPrompt.RecordSent(x, "prefix A", 0, 1));
+            f.Store.AppendMessage(s.Id, Assistant("first response"));
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("second"));
+            f.Store.UpdateSession(s.Id, x => { SessionPrompt.Invalidate(x); SessionPrompt.RecordSent(x, "prefix B", 1, 3); });
+            using var freshDb = new Database(Path.Combine(f.Dir, "netpi.db"));
+            var fresh = new SessionStore(freshDb, f.Bus, Path.Combine(f.Dir, "workspace"));
+            var current = fresh.GetSession(s.Id)!;
+            var early = fresh.ForkSession(s.Id, 2, SessionFork.Template(current, 2, 0));
+            Check.Equal("prefix A", SessionPrompt.Fallback(fresh.GetSession(early.Id)!));
+            Check.Equal(1, ((JsonArray)early.Meta![SessionPrompt.HistoryKey]!).Count);
+            Check.Equal("prefix B", SessionPrompt.Fallback(current), "original unchanged");
+            var before = SessionFork.Template(current, 0, 0);
+            Check.True(SessionPrompt.Fallback(before) is null);
+        });
+
         r.Add("sessions: what a fork takes along (setup yes, run state no), its title and its context size", () =>
         {
             var from = new SessionInfo

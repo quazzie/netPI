@@ -35,6 +35,8 @@ public sealed class ModelInfo
 public sealed class ModelRequest
 {
     /// <summary>Opt-in provider-owned snapshot of the actual prompt in decision chat format. Plain JSON only.</summary>
+    /// <summary>Stable caller-generated diagnostic correlation; never sent to the provider.</summary>
+    public string? CorrelationId { get; init; }
     public bool CaptureDecisionContext { get; set; }
     public JsonObject? DecisionContext { get; set; }
     public required ModelInfo Model { get; init; }

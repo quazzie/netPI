@@ -37,6 +37,7 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
             ["plugins"] = PluginFacts(),
             ["models"] = ModelFacts(),
             ["agents"] = AgentFacts(),
+            ["physicalOwners"] = NetPiJson.ToNode(ctx.Services.Get<IResourceLeases>()?.Snapshot()),
             ["runs"] = new JsonArray([.. ActiveRuns().Select(r => (JsonNode?)r)]),
             ["calls"] = new JsonObject
             {
@@ -319,6 +320,9 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
 
     public JsonObject Call(RpcRequest r)
     {
+        if (r.Str("correlationId") is { } correlation)
+            return recorder.Calls().FirstOrDefault(c => c.CorrelationId == correlation)?.ToJson(detail: true)
+                ?? throw new RpcException("not_found", "The correlated call is unavailable in this Diagnostics instance (it may predate a reload).");
         var id = long.TryParse(r.Required("id"), out var n) ? n : throw new RpcException("bad_request", "'id' must be a number");
         return recorder.Call(id)?.ToJson(detail: true) ?? throw new RpcException("not_found", $"Call {id} is no longer in the call log (it keeps the last {Recorder.CallCapacity}).");
     }

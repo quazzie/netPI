@@ -7,6 +7,7 @@ public static class AgentReworkTests
 {
     public static void Register(TestRunner t)
     {
+        t.Add("agent rework: historical fallback forks survive Runtime and Context replacement", HistoricalFallbackFork);
         t.Add("agent rework: reload keeps a physical lease until its real owner releases it", ReloadLease);
         t.Add("agent rework: cancellation and grants leave no waiters or physical leases", Cancellation);
         t.Add("agent rework: profile identity works without Context and survives its return", ProfilesWithoutContext);
@@ -15,6 +16,45 @@ public static class AgentReworkTests
         t.Add("agent rework: identity changed during rendering takes effect before any request", () => PromptRevisionRace(false));
         t.Add("agent rework: Context renders the current numeric revision after an identity race", () => PromptRevisionRace(true));
         t.Add("agent rework: a reset fork cannot resurrect its old prefix after Context reload", ForkReset);
+    }
+
+    private static async Task HistoricalFallbackFork()
+    {
+        using var db = TestSqlite.TryCreate();
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Runtime, db: db);
+        var origin = h.NewSession();
+        h.Sessions.UpdateSession(origin.Id, s => { s.Meta = new JsonObject { [SessionIdentity.MetaKey] = "Identity A" }; });
+        await h.SendAsync(origin.Id, "first"); await h.IdleAsync(origin.Id);
+        var prefixA = h.Catalog.Requests.Last().SystemPrompt;
+        var seqA = h.Messages(origin.Id).Last().Seq;
+        // Context sees only the later portion of history; that must not override Runtime's historical prefix.
+        await h.StartPluginAsync(new NetPI.Context.ContextPlugin());
+        h.Sessions.UpdateSession(origin.Id, s => { s.Meta![SessionIdentity.MetaKey] = "Identity B"; SessionPrompt.Invalidate(s); });
+        await h.SendAsync(origin.Id, "second"); await h.IdleAsync(origin.Id);
+        var prefixB = h.Catalog.Requests.Last().SystemPrompt;
+        var latest = h.Sessions.GetSession(origin.Id)!;
+        SessionInfo Fork(long seq) => ((ISessionStore)h.Sessions).ForkSession(origin.Id, seq,
+            NetPI.Host.Sessions.SessionFork.Template(latest, seq, 0));
+        var early = Fork(seqA);
+        var late = Fork(h.Messages(origin.Id).Last().Seq);
+        var before = Fork(0);
+        await h.StopPluginAsync("netpi.runtime");
+        await h.StartPluginAsync(new RuntimePlugin());
+        await h.StopPluginAsync("netpi.context");
+        await h.SendAsync(early.Id, "continue early"); await h.IdleAsync(early.Id);
+        Check.Equal(prefixA, h.Catalog.Requests.Last().SystemPrompt);
+        Check.Equal(1, ((JsonArray)h.Sessions.GetSession(early.Id)!.Meta![SessionPrompt.HistoryKey]!).Count);
+        await h.SendAsync(late.Id, "continue late"); await h.IdleAsync(late.Id);
+        Check.Equal(prefixB, h.Catalog.Requests.Last().SystemPrompt);
+        await h.SendAsync(before.Id, "new beginning"); await h.IdleAsync(before.Id);
+        Check.Contains(h.Catalog.Requests.Last().SystemPrompt, "Identity B", "before a sent prefix, render current setup");
+        await h.StartPluginAsync(new NetPI.Context.ContextPlugin());
+        await h.SendAsync(early.Id, "Context returns"); await h.IdleAsync(early.Id);
+        Check.Equal(prefixA, h.Catalog.Requests.Last().SystemPrompt);
+        h.Sessions.UpdateSession(early.Id, s => { s.Meta![SessionIdentity.MetaKey] = "Identity C"; SessionPrompt.Invalidate(s); });
+        await h.SendAsync(early.Id, "explicit reset"); await h.IdleAsync(early.Id);
+        Check.Contains(h.Catalog.Requests.Last().SystemPrompt, "Identity C");
+        Check.NotContains(h.Catalog.Requests.Last().SystemPrompt, "Identity A");
     }
 
     private static AgentSlotRequest Request(string id) => new() { Key = "fake/solo", AgentId = id, Provider = "fake" };
@@ -145,7 +185,15 @@ public static class AgentReworkTests
         try
         {
             await h.StopPluginAsync("netpi.runtime");
-            Check.Equal(1, h.Services.Get<IResourceLeases>()!.Snapshot().Count, "timed-out shutdown still owns its actual inference");
+            var owner = h.Services.Get<IResourceLeases>()!.Snapshot().Single().Holder;
+            Check.True(owner.Retiring);
+            Check.True(owner.CancellationRequestedAt is not null);
+            Check.True(owner.ProviderReturnedAt is null, "cancellation requested is not provider acknowledgement");
+            Check.True(owner.LeaseId is not null && owner.ExecutorGeneration is not null);
+            Check.Equal(h.Catalog.Requests.Last().CorrelationId, owner.CorrelationId);
+            await h.StartPluginAsync(new RuntimePlugin());
+            Check.Equal(owner.LeaseId, h.Services.Get<IResourceLeases>()!.Snapshot().Single().Holder.LeaseId,
+                "retiring ownership survives replacement");
             var waiting = h.Scheduler!.AcquireAsync(Request("next"), CancellationToken.None).AsTask();
             Check.False(waiting.IsCompleted);
             finish.TrySetResult();

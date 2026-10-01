@@ -213,3 +213,5 @@ of applying them, so nothing moves under a running chat at all until you switch 
 is applied in start order.
 
 `/reload [pluginId]` in the chat, or the Diagnostics tab, reloads plugins on demand.
+
+Runtime records distinct sent system prefixes in durable session metadata (`sentPromptHistory`) at the model-call boundary. Fork templates trim this history to `upToSeq` and inherit that prefix even when Context was absent. Current profile setup is retained; an explicit profile switch or prompt reset in the fork renders the current identity. A fork before any recorded call renders fresh. Legacy sessions without sent history keep their known fallback; historic prefixes cannot be reconstructed retroactively.

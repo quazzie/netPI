@@ -14,7 +14,7 @@ public sealed class WorkPlugin : INetPiPlugin
     {
         var rpc = context.Rpc;
         var logger = context.Logger;
-        context.Rpc.RegisterReadOnly("work.snapshot", async (_, rpcCt) => await SnapshotAsync(rpc, logger, rpcCt).ConfigureAwait(false),
+        context.Rpc.RegisterReadOnly("work.snapshot", async (_, rpcCt) => await SnapshotAsync(rpc, logger, rpcCt, context.Services.Get<IResourceLeases>()).ConfigureAwait(false),
             "Aggregated overview for the Work tab → { agents, runs, processes, usage, time, errors? }");
         context.Ui.AddTab(new UiTabInfo { Id = "work", Title = "Work", Panel = UiPanel.Right, Icon = "work", Order = 10, Module = "ui.js" });
         return Task.CompletedTask;
@@ -31,7 +31,7 @@ public sealed class WorkPlugin : INetPiPlugin
         ("usage", "usage.summary", null),
     ];
 
-    public static async Task<JsonObject> SnapshotAsync(IRpcRegistry rpc, ILogger? logger, CancellationToken ct)
+    public static async Task<JsonObject> SnapshotAsync(IRpcRegistry rpc, ILogger? logger, CancellationToken ct, IResourceLeases? physical = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
@@ -60,6 +60,7 @@ public sealed class WorkPlugin : INetPiPlugin
             snapshot[key] = value;
             if (error is not null) (errors ??= [])[key] = error;
         }
+        snapshot["physicalOwners"] = NetPiJson.ToNode(physical?.Snapshot());
         snapshot["time"] = DateTimeOffset.UtcNow.ToString("O");
         if (errors is not null) snapshot["errors"] = errors;
         return snapshot;

@@ -129,6 +129,7 @@ internal sealed class AgentScheduler : IAgentScheduler
 
     internal sealed class Lease(AgentScheduler owner, AgentSlotRequest request, string? localModel, IDisposable? physical) : IAgentSlot
     {
+        public string? LeaseId => (physical as IResourceLease)?.Id;
         private int _released;
         public string Key { get; } = request.Key;
         public string AgentId { get; } = request.AgentId;

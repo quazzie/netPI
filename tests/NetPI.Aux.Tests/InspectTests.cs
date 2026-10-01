@@ -201,6 +201,12 @@ public static class InspectTests
         Check.Equal(40L, (long)ok["outputTokens"]!);
         Check.Equal("tool_use", ok["stopReason"].Str());
         var detail = (JsonObject)(await ctx.RpcFake.Call("diag.call", new JsonObject { ["id"] = (long)ok["id"]! }))!;
+        var correlated = Request();
+        correlated = new ModelRequest { Model = correlated.Model, Messages = correlated.Messages, CorrelationId = "physical-call-123" };
+        await Drain(mw.InvokeAsync(correlated, (_, c) => Stream([Yield(new StreamCompleted(done))], c), CancellationToken.None));
+        var found = (JsonObject)(await ctx.RpcFake.Call("diag.call", new JsonObject { ["correlationId"] = "physical-call-123" }))!;
+        Check.Equal("physical-call-123", found["correlationId"].Str());
+        Check.Equal("ok", found["state"].Str());
         Check.Equal(5, (int)detail["response"]!["textChars"]!);
         Check.Equal("read", detail["response"]!["toolCalls"]![0].Str());
         Check.Contains(detail["resets"]![0].Str(), "connection lost");

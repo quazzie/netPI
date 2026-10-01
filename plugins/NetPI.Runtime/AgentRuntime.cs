@@ -24,6 +24,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     private readonly Dictionary<string, string> _bySession = new(StringComparer.Ordinal);
     private volatile bool _stopping;
     private int _spawnCounter;
+    internal string Generation { get; } = Guid.NewGuid().ToString("N");
 
     public AgentRuntime(IPluginContext ctx)
     {
@@ -718,7 +719,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 {
                     var capacity = model.Concurrency is > 0 ? model.Concurrency.Value : Math.Max(1, IntSetting("models.localSlots", 2));
                     if (!physical.TryAcquire("local:" + model.Ref, capacity, new AgentSlotRequest
-                        { Key = model.Ref, AgentId = s.Info.Id, SessionId = s.Info.SessionId, Label = s.Info.Name, Priority = priority, Provider = model.Provider }, capacity, out var held))
+                        { Key = model.Ref, AgentId = s.Info.Id, SessionId = s.Info.SessionId, Label = s.Info.Name, ExecutorGeneration = Generation, Priority = priority, Provider = model.Provider }, capacity, out var held))
                     {
                         SetStatus(s, AgentStatus.Queued, "waiting for model capacity");
                         await Task.Delay(50, ct).ConfigureAwait(false);
@@ -742,6 +743,7 @@ internal sealed class AgentRuntime : IAgentRuntime
                 AgentId = s.Info.Id,
                 SessionId = s.Info.SessionId,
                 Label = s.Info.Name,
+                ExecutorGeneration = Generation,
                 Priority = priority,
                 Provider = model.Provider,
             };
@@ -770,6 +772,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     // ---------------------------------------------------------------- spawn / wait / message / abort
     private sealed class PhysicalSlot(IDisposable held, string key, string agentId) : IAgentSlot
     {
+        public string? LeaseId => (held as IResourceLease)?.Id;
         private int _released;
         public string Key => key;
         public string AgentId => agentId;
@@ -1239,6 +1242,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
         foreach (var r in runs)
         {
+            if (r.Lease?.LeaseId is { } leaseId) Ctx.Services.Get<IResourceLeases>()?.Update(leaseId, new ResourceLeaseUpdate { Retiring = true, CancellationRequested = true });
             try { r.Cts.Cancel(); } catch { }
         }
         try

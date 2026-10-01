@@ -24,6 +24,7 @@ public static class SessionFork
     {
         var meta = from.Meta?.DeepClone() as JsonObject ?? [];
         foreach (var key in RunState) meta.Remove(key);
+        SessionPrompt.Fork(meta, upToSeq);
         meta["forkedFrom"] = new JsonObject { ["sessionId"] = from.Id, ["title"] = from.Title, ["seq"] = upToSeq };
         return new SessionInfo
         {

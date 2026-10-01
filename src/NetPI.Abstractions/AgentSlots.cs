@@ -35,10 +35,12 @@ public sealed class AgentSlotRequest
     /// <summary>Higher runs first. Agents resuming after a yield use a high priority.</summary>
     public int Priority { get; init; }
     public string? Provider { get; init; }
+    public string? ExecutorGeneration { get; init; }
 }
 
 public interface IAgentSlot : IDisposable
 {
+    string? LeaseId => null;
     string Key { get; }
     string AgentId { get; }
     DateTimeOffset AcquiredAt { get; }
@@ -47,6 +49,13 @@ public interface IAgentSlot : IDisposable
 
 public sealed class SlotHolder
 {
+    public string? LeaseId { get; set; }
+    public string? ExecutorGeneration { get; set; }
+    public string? CorrelationId { get; set; }
+    public string? Purpose { get; set; }
+    public bool Retiring { get; set; }
+    public DateTimeOffset? CancellationRequestedAt { get; set; }
+    public DateTimeOffset? ProviderReturnedAt { get; set; }
     public int Priority { get; set; }
     public string? WaitingFor { get; set; }
     public string AgentId { get; set; } = "";

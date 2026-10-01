@@ -673,6 +673,11 @@ log('plugin tab: Work');
   const physical = page.locator('.work [data-resource="local:aiproxy/qwen3.8-27b"]');
   check('work: physical model capacity appears once', await physical.count() === 1 && (await physical.innerText()).includes('2/2'));
   check('work: dropped background checks show their reason', (await page.locator('.work [data-background-work="mock-verifier-dropped"]').innerText()).includes('Model capacity did not open before the deadline'));
+  const retiring = page.locator('.work [data-lease="mock-retiring"]');
+  check('work: retiring inference explains pending provider cancellation', (await retiring.innerText()).includes('Retiring executor') && (await retiring.innerText()).includes('waiting for provider'));
+  await retiring.getByRole('button', { name: 'Inspect model call' }).click();
+  await page.locator('.work [role="status"]').filter({ hasText: '30000 ms' }).waitFor();
+  check('work: physical owner resolves its stable model call', (await page.locator('.work [role="status"]').innerText()).includes('running'));
   const ownerNames = await qwen.locator('.owner .name').allInnerTexts();
   check('work: a top-level lane owner shows its session title, not "main"',
     ownerNames.includes('Index docs for semantic search') && !ownerNames.includes('main') && ownerNames.includes('surveyor'), ownerNames.join(' | '));

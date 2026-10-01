@@ -621,6 +621,7 @@ const handlers = {
   // like the Work plugin: agents.list and usage.summary
   'work.snapshot': () => ({
     agents: agentPools(),
+    physicalOwners: [{ resource: 'local:aiproxy/qwen3.8-27b', key: 'qwen', holder: { leaseId: 'mock-retiring', agentId: 'old-run', label: 'Reloaded worker', since: new Date(Date.now() - 30_000).toISOString(), executorGeneration: 'previous', correlationId: 'mock-held-call', purpose: 'agent', retiring: true, cancellationRequestedAt: new Date().toISOString(), providerReturnedAt: null } }],
     resources: [{ key: 'local:aiproxy/qwen3.8-27b', model: 'aiproxy/qwen3.8-27b', capacity: 2, busy: 2, queued: 1, available: true, owners: [] }],
     ideasWork: [{ id: 'mock-verifier-dropped', purpose: 'Verify idea completion', model: 'aiproxy/qwen3.8-27b', status: 'dropped', reason: 'Model capacity did not open before the deadline', finishedAt: new Date().toISOString() }],
     runs: [...store.agents.values()],
@@ -698,6 +699,7 @@ const handlers = {
     }
   },
   'diag.call': (p) => {
+    if (p?.correlationId === 'mock-held-call') return { id: 100, correlationId: p.correlationId, model: 'aiproxy/qwen3.8-27b', state: 'running', durationMs: 30000 };
     const c = mockCalls().find((x) => x.id === Number(p?.id));
     if (!c) throw new RpcError('not_found', `Call ${p?.id} is no longer in the call log`);
     return {

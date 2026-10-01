@@ -12,6 +12,8 @@
 
   let slots = $state.raw(null); // the agents with their instances (agents.list)
   let resources = $state.raw(null);
+  let physicalOwners = $state.raw(null);
+  let ownerCall = $state(null);
   let ideasWork = $state.raw(null);
   let disposed = false;
   let agents = $state.raw(null);
@@ -40,6 +42,7 @@
         if (disposed) return;
         slots = s?.agents ?? null;
         resources = s?.resources ?? null;
+        physicalOwners = s?.physicalOwners ?? null;
         ideasWork = s?.ideasWork ?? null;
         agents = s?.runs ?? null;
         processes = s?.processes ?? null;
@@ -66,6 +69,13 @@
     }
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(refresh, ms);
+  }
+
+  async function inspectOwner(owner) {
+    try {
+      const call = await ctx.rpc('diag.call', { correlationId: owner.correlationId });
+      if (!disposed) ownerCall = `${call.model} · ${call.state} · ${call.durationMs} ms${call.error ? ` · ${call.error}` : ''}`;
+    } catch (e) { if (!disposed) ownerCall = e?.message ?? String(e); }
   }
 
   async function loadTitles() {
@@ -100,6 +110,8 @@
         if (Array.isArray(d?.agents)) slots = d.agents;
         if (Array.isArray(d?.resources)) resources = d.resources;
       }),
+      ctx.on('resources.changed', () => scheduleRefresh()),
+      ctx.on('resources.released', () => scheduleRefresh()),
       ctx.on('ideas.workChanged', (d) => { if (visible) ideasWork = d?.work ?? []; else dirty = true; }),
       ctx.on('rpc.changed', () => scheduleRefresh(600)),
       ctx.on('services.changed', () => scheduleRefresh(600)),
@@ -203,6 +215,22 @@
         </div>
       {:else}<div class="na">{resources ? 'No model calls' : 'Capacity unavailable'}</div>{/each}
     </Section>
+    {#if physicalOwners?.length}
+      <Section title="Physical owners" count={physicalOwners.length} collapsible storageKey="work.owners">
+        {#each physicalOwners as entry (entry.holder.leaseId)}
+          {@const owner = entry.holder}
+          <div class="usage" data-lease={owner.leaseId}>
+            <button class="link" onclick={() => owner.sessionId && ctx.app.openSession(owner.sessionId)}>{titles.get(owner.sessionId) ?? owner.label ?? owner.agentId}</button>
+            <div class="na">{entry.resource.replace(/^local:/, '')} · held since {new Date(owner.since).toLocaleTimeString()}</div>
+            <div class="na">{owner.retiring ? 'Retiring executor · ' : ''}{owner.cancellationRequestedAt && !owner.providerReturnedAt ? 'Cancellation requested; waiting for provider' : owner.providerReturnedAt ? 'Provider returned; run still owns capacity' : owner.correlationId ? 'Inference active' : 'Run owns capacity'}</div>
+            {#if owner.correlationId && ctx.hasRpc?.('diag.call') !== false}
+              <button class="link" onclick={() => inspectOwner(owner)}>Inspect model call</button>
+            {/if}
+          </div>
+        {/each}
+        {#if ownerCall}<div class="na" role="status">{ownerCall}</div>{/if}
+      </Section>
+    {/if}
     <Section title="Agents" count={setUp.length ? `${busySlots}/${activeCapacity} instances` : null} collapsible storageKey="work.agentSlots">
       {#if !slots}
         <div class="na">Agents not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
