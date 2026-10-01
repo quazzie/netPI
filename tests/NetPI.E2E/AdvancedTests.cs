@@ -470,7 +470,7 @@ public static class AdvancedTests
             try
             {
                 await File.WriteAllTextAsync(file, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-                await env.Client.WaitFor(mark, e => e.Type == "settings.changed", "settings.changed after an external edit", 10_000);
+                await env.Client.WaitFor(mark, e => e.Type == "settings.changed" && e.D.S("source") == "file", "settings.changed after an external edit", 10_000);
                 Check.Equal("aiproxy/gemma-4", (await env.Rpc("models.list")).S("defaultModel"));
                 var s = await env.NewSession();
                 var mockMark = await env.MockMark();
@@ -481,7 +481,7 @@ public static class AdvancedTests
             {
                 var mark2 = env.Client.Mark();
                 await File.WriteAllTextAsync(file, original);
-                await env.Client.WaitFor(mark2, e => e.Type == "settings.changed", "settings restored", 10_000);
+                await env.Client.WaitFor(mark2, e => e.Type == "settings.changed" && e.D.S("source") == "file", "settings restored", 10_000);
             }
             Check.Equal(CoreTests.Qwen, (await env.Rpc("models.list")).S("defaultModel"));
         });

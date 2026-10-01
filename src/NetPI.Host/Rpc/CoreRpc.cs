@@ -241,6 +241,12 @@ internal static class CoreRpc
 
         Add("services.list", "Registered services (diagnostics)", _ => k.Services.List(), readOnly: true);
 
+        AddAsync("events.flush", "Wait until every event published before this call has been delivered: its answer follows them on the same socket → true", async (_, ct) =>
+        {
+            await k.Bus.FlushAsync().WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
+            return true;
+        }, readOnly: true);
+
         Add("events.recent", "Recent bus events: { max? } → { type, sid, d, seq, ts, source }[]", req =>
         {
             var max = Math.Clamp(req.Int("max") ?? 200, 1, 500);

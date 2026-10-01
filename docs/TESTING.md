@@ -271,7 +271,10 @@ stopping what will not) before the next test begins. Anything that was still run
 line under the test and in the summary, `leak` in `report.json`. It is a warning, not a failure, but a leak is a race waiting for the
 next test: a worker still running makes its model requests inside the next test's window (`provider.anthropic-thinking` failed once
 because `chat.fork` returned while a background worker's report was about to wake its parent). Wait for the final idle, as
-`subagents.report-wakes-parent` does. A leak that will not stop also costs the shard its server.
+`subagents.report-wakes-parent` does. A leak that will not stop also costs the shard its server. The settle step also asks `events.flush` first: an RPC answers before
+its own events are delivered (`settings.set` returns before its `settings.changed`), and an event still on its way lands in the *next*
+test's window and satisfies its first wait for "an event of that type" (`settings.live-edit` failed that way); the flush answers behind
+every earlier event on the socket, so the event log is complete when the next test marks its start.
 
 **Finding flakes: run it loaded.** An idle machine hides the races a busy one (another agent building, a browser test) shows, and a
 suite that is green idle can still fail one run in ten. Start CPU burners and loop the whole suite, in a worktree of its own so that
