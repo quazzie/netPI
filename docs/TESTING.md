@@ -273,6 +273,21 @@ next test: a worker still running makes its model requests inside the next test'
 because `chat.fork` returned while a background worker's report was about to wake its parent). Wait for the final idle, as
 `subagents.report-wakes-parent` does. A leak that will not stop also costs the shard its server.
 
+**Finding flakes: run it loaded.** An idle machine hides the races a busy one (another agent building, a browser test) shows, and a
+suite that is green idle can still fail one run in ten. Start CPU burners and loop the whole suite, in a worktree of its own so that
+building in yours cannot change the app copy the runs start from:
+
+```powershell
+$jobs = 1..12 | ForEach-Object { Start-Job { $end = [DateTime]::Now.AddMinutes(20); while ([DateTime]::Now -lt $end) { [math]::Sqrt(12345.678) | Out-Null } } }
+1..10 | ForEach-Object { .\scripts\e2e.ps1 -SkipBuild }      # every failure of every run has its failure file
+$jobs | Stop-Job; $jobs | Remove-Job -Force
+```
+
+(About 12 burners on a 16-core machine doubles a run's time; many more, with several browser tests at once, starve the runner itself, and
+the verdict then says so.) Read each failure file before changing anything, then measure the fix the same way: `-Only <id> -Repeat 15
+-Fresh` under the burners, before and after. This found a lost update in the settings store, three test races and a leak in one
+afternoon (2026-10-01); a unit test that fails sometimes is run the same way (`dotnet <Suite>.dll "<filter>"` in a loop).
+
 **Ids and tags.** An id is `area.name` (`retry.drop`); the area is also a tag. `tests/NetPI.E2E/Catalog.cs` holds the other tags.
 `smoke` is one representative test per boundary: startup, chat and a real file tool, the Responses/Chat/Anthropic adapters, abort
 and slot scheduling, persistence across a restart and a reload while active (the `lifecycle` tag is the wider group of those). The
