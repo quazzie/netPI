@@ -55,6 +55,12 @@ public static class McpResourceTests
             Check.Contains(found.Content, "\"kind\":\"resource\"");
             // A skill document is reachable by its own name too.
             Check.Contains((await search.ExecuteAsync(Context(ctx), T.Args(new { query = "SKILL.md read before acting" }), CancellationToken.None)).Content, "skill://demo/SKILL.md");
+            // Tools and resources are ranked in one pool: a document named after the query beats a tool that merely
+            // mentions the same word, instead of tools winning by virtue of being the larger pool.
+            var ranked = JsonNode.Parse((await search.ExecuteAsync(Context(ctx),
+                T.Args(new { query = "patterns" }), CancellationToken.None)).Content)!["results"]!.AsArray();
+            Check.Equal("resource", ranked[0]!["kind"]!.GetValue<string>());
+            Check.Equal("skill://demo/references/patterns.md", ranked[0]!["uri"]!.GetValue<string>());
 
             var read = await resource.ExecuteAsync(Context(ctx), T.Args(new { uri = "skill://demo/SKILL.md" }), CancellationToken.None);
             Check.Contains(read.Content, "Consult skill://demo/SKILL.md");
