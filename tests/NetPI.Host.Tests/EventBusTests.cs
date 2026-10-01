@@ -129,6 +129,41 @@ public static class EventBusTests
             await WaitFor(() => log.Has("thread pool is running work again"), "its recovery is reported: " + log.Dump());
         });
 
+        r.Add("watchdog: a gate that a thread holds and never releases is reported, and so is its release", async () =>
+        {
+            var log = new CapturingLogger();
+            await using var bus = new EventBus(NullLogger.Instance);
+            var gate = new object();
+            using var dog = new StallWatchdog(bus, log, TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(30), work => work(), gate);
+            // a thread that holds the gate: a deadlocked statement looks like this from outside
+            var release = new ManualResetEventSlim();
+            var holding = new ManualResetEventSlim();
+            var holder = new Thread(() => { lock (gate) { holding.Set(); release.Wait(20_000); } }) { IsBackground = true };
+            holder.Start();
+            Check.True(holding.Wait(5000), "the thread holds the gate");
+            await WaitFor(() => log.Has("The database gate has not been free for"), "the held gate is reported: " + log.Dump());
+            Check.True(log.Has("a thread holds it and is not coming back"), "with what it means: " + log.Dump());
+            release.Set();
+            holder.Join(5000);
+            await WaitFor(() => log.Has("The database gate is free again"), "its release is reported: " + log.Dump());
+            Check.Equal(1, log.Lines.Count(l => l.Contains("has not been free for")), "one report for the episode: " + log.Dump());
+        });
+
+        r.Add("watchdog: a gate that is taken and released all the time is not reported", async () =>
+        {
+            var log = new CapturingLogger();
+            await using var bus = new EventBus(NullLogger.Instance);
+            var gate = new object();
+            using var dog = new StallWatchdog(bus, log, TimeSpan.FromMilliseconds(400), TimeSpan.FromMilliseconds(20), work => work(), gate);
+            var stop = new CancellationTokenSource();
+            // busy, never held for long: statements of a loaded server
+            var worker = Task.Run(() => { while (!stop.IsCancellationRequested) { lock (gate) Thread.SpinWait(2000); Thread.Yield(); } });
+            await Task.Delay(700);
+            stop.Cancel();
+            await worker;
+            Check.Equal(0, log.Lines.Count, "no stall to report: " + log.Dump());
+        });
+
         r.Add("bus: ring buffer keeps the last 500 events", async () =>
         {
             await using var bus = new EventBus(NullLogger.Instance);

@@ -102,7 +102,15 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
 
     /// <summary>Sessions with no messages: in memory only, until the first message materializes them (AppendMessage).</summary>
     private readonly Dictionary<string, SessionInfo> _transient = new();
-    private readonly object _transientLock = new();
+    /// <summary>
+    /// Guards <see cref="_transient"/>, and it is the DATABASE'S gate. It used to be a lock of its own, and that is a deadlock: the first
+    /// message of a session took it and then the database gate (to store the session), while any transaction — which holds the database
+    /// gate — reads a session, and reading one looks the transient sessions up under it. A thread in each order waits for the other for
+    /// good, and every database call of the process with it (a subagent's first message racing any other append did exactly that:
+    /// /api/health still answered, nothing that reads the database did, the CPU idle). One lock cannot be taken in two orders. The gate
+    /// is re-entrant, and a stand-in database without one gets a lock of its own.
+    /// </summary>
+    private readonly object _transientLock;
 
     // The deserialized context of the sessions being worked on. Without it every turn re-reads and re-parses the whole
     // history (measured: ~30 ms and megabytes of garbage for a 1,500-message chat), and does so again for every hook
@@ -129,6 +137,7 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
 
     public SessionStore(IDatabase db, IEventBus bus, string defaultWorkspace)
     {
+        _transientLock = db is Data.Database real ? real.Gate : new object();
         _db = db;
         _bus = bus;
         _defaultWorkspace = defaultWorkspace;

@@ -413,6 +413,10 @@ public sealed class Env : IAsyncDisposable
         var quietPolls = 0;
         try
         {
+            // The events the test's last RPCs published (settings.set answers before its settings.changed is delivered) are still on
+            // their way: left alone they land in the next test's window and satisfy its first wait for "an event of that type".
+            // events.flush answers behind every earlier event on this socket, so after it the event log holds all of them.
+            await Client.Rpc("events.flush", null, 10_000);
             List<JsonElement> busy;
             while (true)
             {

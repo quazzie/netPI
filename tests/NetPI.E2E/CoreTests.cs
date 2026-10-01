@@ -129,8 +129,8 @@ public static class CoreTests
             var sid = s.S("id")!;
             await env.Run(sid, "First question, please echo.");
             await env.Run(sid, "Second question, please echo.");
-            List<JsonElement> Messages(string id) => env.Rpc("sessions.messages", new { id, limit = 200 }).GetAwaiter().GetResult().Arr("messages").ToList();
-            var original = Messages(sid);
+            async Task<List<JsonElement>> Messages(string id) => (await env.Rpc("sessions.messages", new { id, limit = 200 })).Arr("messages").ToList();
+            var original = await Messages(sid);
             var firstAnswer = original.First(m => m.S("role") == "assistant").L("seq");
 
             var mark = env.Client.Mark();
@@ -139,15 +139,15 @@ public static class CoreTests
             Check.Equal("e2e (fork)", fork.S("title"));
             Check.Equal(sid, fork.P("meta").P("forkedFrom").S("sessionId"));
             Check.Equal(firstAnswer, fork.P("meta").P("forkedFrom").L("seq"));
-            var copied = Messages(fid);
+            var copied = await Messages(fid);
             Check.Equal(string.Join(",", original.Where(m => m.L("seq") <= firstAnswer).Select(m => m.L("seq"))), string.Join(",", copied.Select(m => m.L("seq"))), "the same seqs");
-            Check.Equal(original.Count, Messages(sid).Count, "the original stays");
+            Check.Equal(original.Count, (await Messages(sid)).Count, "the original stays");
             var forked = await env.Client.WaitFor(mark, e => e.Type == "session.forked" && e.D.S("sessionId") == fid, "session.forked", 5000);
             Check.Equal(sid, forked.D.S("fromSessionId"));
 
             // the prompt the original was sent goes on in the fork (the context plugin copies it on session.forked)
             var originalPrompt = (await env.Rpc("context.prompts", new { sessionId = sid })).Arr("prompts").First().S("systemPrompt");
-            await Wait.Until(() => env.Rpc("context.prompts", new { sessionId = fid }).GetAwaiter().GetResult().Arr("prompts").Any(), "the fork's prompt", 5000);
+            await Wait.UntilAsync(async () => (await env.Rpc("context.prompts", new { sessionId = fid })).Arr("prompts").Any() ? "ok" : null, "the fork's prompt", 5000);
             Check.Equal(originalPrompt, (await env.Rpc("context.prompts", new { sessionId = fid })).Arr("prompts").Single().S("systemPrompt"));
             var run = await env.Run(fid, "Third question, in the fork, please echo.");
             Check.Contains(run.FinalText, "ECHO-DONE");

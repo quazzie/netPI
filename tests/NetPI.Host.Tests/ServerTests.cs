@@ -462,7 +462,7 @@ public static class ServerTests
             foreach (var m in new[] { "app.info", "projects.list", "projects.create", "projects.update", "projects.delete", "sessions.list", "sessions.create",
                          "sessions.get", "sessions.update", "sessions.delete", "sessions.setProject", "sessions.messages", "models.list", "ui.tabs",
                          "ui.commands", "ui.state.get", "ui.state.set", "plugins.list", "plugins.reload", "plugins.setEnabled", "plugins.rescan",
-                         "settings.get", "settings.set", "settings.replace", "settings.schema", "fs.dirs", "tools.list", "rpc.list", "events.recent", "logs.recent" })
+                         "settings.get", "settings.set", "settings.replace", "settings.schema", "fs.dirs", "tools.list", "rpc.list", "events.recent", "events.flush", "logs.recent" })
                 Check.True(rpcs.Contains(m), "rpc " + m);
 
             // settings.schema: the host's section first, plugins' sections while they are registered
@@ -491,6 +491,23 @@ public static class ServerTests
             Check.True((await Call("sessions.delete", new { id = sid }))!.GetValue<bool>());
             Check.True((await Call("projects.delete", new { id = pid }))!.GetValue<bool>());
             Check.Equal(1, (await Call("projects.list"))!.AsArray().Count);
+        });
+
+        r.Add("server: events.flush answers only after every earlier event was delivered, ahead of it on the same socket", async () =>
+        {
+            await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"), CreateWebRoot());
+            await using var ws = await WsTestClient.ConnectAsync(server);
+            // a window that listens to everything, and a burst of events published just before the call
+            await ws.SendAsync(new { t = "sub", sessions = "*" });
+            // a slow subscriber keeps the bus busy for about half a second, so an answer that did not wait for it would come first
+            using var slow = server.Events.Subscribe("e2e.burst", _ => Thread.Sleep(5));
+            const int burst = 100;
+            for (var i = 0; i < burst; i++) server.Events.Publish("e2e.burst", new { i });
+            var res = await ws.RpcAsync("events.flush");
+            Check.True(res["e"] is null && res["r"]!.GetValue<bool>(), "flush answered");
+            int seen;
+            lock (ws.Received) seen = ws.Received.Count(n => n["t"]?.GetValue<string>() == "ev" && n["type"]?.GetValue<string>() == "e2e.burst");
+            Check.Equal(burst, seen, "every event published before the call had reached the client when the answer did");
         });
 
         r.Add("server: a busy port falls back to a random free port; server.json says where; stop is idempotent", async () =>
