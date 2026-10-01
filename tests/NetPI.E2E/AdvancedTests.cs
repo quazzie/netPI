@@ -496,9 +496,7 @@ public static class AdvancedTests
                 // session.updated with a later updatedAt carries it, which is why the UI keeps the newer copy
                 async Task<string?> ProfileOf(string id)
                 {
-                    string? profile = null;
-                    await Wait.Until(() => (profile = env.Rpc("sessions.get", new { id }).GetAwaiter().GetResult().P("meta").S("profile")) is not null, "the default profile");
-                    return profile;
+                    return await Wait.UntilAsync(async () => (await env.Rpc("sessions.get", new { id })).P("meta").S("profile"), "the default profile");
                 }
                 var p = await env.NewProject("profiled");
                 await env.Rpc("projects.update", new { id = p.S("id"), meta = new { profile = "e2e-admin" } });
