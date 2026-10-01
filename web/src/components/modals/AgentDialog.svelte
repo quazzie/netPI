@@ -14,18 +14,19 @@
   import { agentState, cleanAgentId } from '../../lib/agents.js';
   import { tokens, usd } from '../../lib/format.js';
 
-  let { id, agent, info = null, taken = [], onrename, onclose } = $props();
+  let { id, agent, info = null, localSlots = 2, taken = [], onrename, onclose } = $props();
 
   const m = $derived(agent?.model ? app.modelsByRef.get(agent.model) : null);
   const override = $derived(agent?.cost && typeof agent.cost === 'object' ? agent.cost : null);
   const st = $derived(agentState(info));
-  const defaultInstances = $derived(m?.isLocal ? (m.concurrency ?? 1) : 1);
+  const modelCapacity = $derived(info?.resourceCapacity ?? (m?.concurrency > 0 ? m.concurrency : Math.max(1, localSlots)));
+  const defaultInstances = $derived(m?.isLocal ? modelCapacity : 1);
   // agents on one local model share its slots: warn when their instances add up to more than it serves
   const sharing = $derived.by(() => {
-    if (!m?.isLocal || !m.concurrency) return null;
+    if (!m?.isLocal) return null;
     const on = app.slots.filter((p) => p.configured && p.model === agent?.model && !p.disabled);
     const total = on.reduce((n, p) => n + (p.key === id ? (agent?.instances ?? p.capacity) : p.capacity), 0);
-    return total > m.concurrency ? { total, slots: m.concurrency, names: on.map((p) => p.key) } : null;
+    return total > modelCapacity ? { total, slots: modelCapacity, names: on.map((p) => p.key) } : null;
   });
 
   const num = (text) => {
@@ -109,7 +110,7 @@
           aria-label="Instances"
           onchange={(e) => setNum(`agents.${id}.instances`, e.currentTarget.value, { int: true, min: 1 })}
         />
-        <span class="np-dim">runs at once{m?.isLocal && m.concurrency ? ` (the model serves ${m.concurrency})` : ''}</span>
+        <span class="np-dim">runs at once{m?.isLocal ? ` (shared model capacity: ${modelCapacity})` : ''}</span>
       </div>
       {#if sharing}
         <span></span>

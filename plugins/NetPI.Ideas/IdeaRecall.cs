@@ -65,7 +65,7 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
 
         if (open.Count == 0) return Result("none");
         if (text.Length < MinLength) return Result("short");
-        if (!ctx.Rpc.Exists("decide.decision")) return Result("unavailable");
+        if (!DecisionCapabilities.Available(ctx.Services, ctx.Rpc, "decide.decision")) return Result("unavailable");
 
         // One window while the user types (latency is the whole point here); a backlog larger than the letters is
         // ranked by what the message shares with each idea, so the ideas past the 51st are still eligible.
@@ -87,16 +87,17 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
             // Typed-ahead background work: it waits for the backend's slot, briefly, and never for a paid model. A drop
             // here is a keystroke without a suggestion, not a failure to report: the composer moves on.
             var admission = new IdeaAdmission(ctx);
-            var admit = await admission.EnterAsync(await ctx.Models.FindAsync(name, ct).ConfigureAwait(false),
+            var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
+            var admit = await admission.EnterAsync(model,
                 "recall", sessionId, project?.Id, ct, IdeaAdmission.InteractiveWait).ConfigureAwait(false);
             if (!admit.Admitted) return Result(admit.Retryable ? "no_slot" : "skipped", error: admit.Reason);
             using var slot = admit.Lease!;
-            answer = await ctx.Rpc.InvokeAsync("decide.decision", new JsonObject
+            answer = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.decision", new JsonObject
             {
                 ["model"] = name,
                 ["messages"] = new JsonArray(new JsonObject { ["role"] = "system", ["content"] = system }),
                 ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["content"] = question, ["labels"] = labels }),
-            }, cts.Token).ConfigureAwait(false);
+            }, cts.Token, admit.Slot, model?.Ref, IdeaAdmission.Priority).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -112,7 +113,7 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
         var pick = IdeaMatch.Answer(answer as JsonNode ?? JsonSerializer.SerializeToNode(answer), window.Count);
         if (pick is null) return Result("error", error: "the decision returned no usable probabilities");
         var threshold = Math.Clamp(Setting("ideas.recallThreshold", DefaultThreshold), 0.3, 0.99);
-        return pick.P >= threshold && pick.P > pick.None
+        return pick.Clear(threshold)
             ? Result("model", MatchOf(window[pick.Index], pick.P))
             : Result("none");
     }

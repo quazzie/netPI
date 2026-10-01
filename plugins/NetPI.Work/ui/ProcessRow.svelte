@@ -117,7 +117,7 @@
     </span>
     {#if !running && proc.endedAt}<TimeAgo time={proc.endedAt} class="when" />{/if}
   </div>
-  {#if running}
+  {#if running && ctx.hasRpc?.('processes.kill') !== false}
     <span class="np-hover-actions"><ConfirmButton icon="kill" title="Kill process tree" confirmLabel="Kill?" onconfirm={kill} /></span>
   {/if}
   {#if open}

@@ -50,7 +50,7 @@
           class="q">{agent.queuedMessages} queued</span
         >{/if}{#if agent.agent && shortModel(agent.agent) !== shortModel(agent.model)}<span>agent {agent.agent}</span>{/if}
     </div>
-    <span class="np-hover-actions"><IconButton icon="stop" title="Stop ({agent.name})" size="sm" disabled={stopping} onclick={abort} /></span>
+    <span class="np-hover-actions"><IconButton icon="stop" title="Stop ({agent.name})" size="sm" disabled={stopping || ctx.hasRpc?.('agent.abort') === false} onclick={abort} /></span>
   </div>
   {#if kids.length}
     <div class="kids">

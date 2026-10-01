@@ -13,6 +13,7 @@ WorkspaceStoreTests.Register(runner);
 ModelCatalogTests.Register(runner);
 ServerTests.Register(runner);
 PluginTests.Register(runner);
+PluginIndependenceTests.Register(runner);
 BackupTests.Register(runner);
 BuildTests.Register(runner);
 ReviewBackupTests.Register(runner);

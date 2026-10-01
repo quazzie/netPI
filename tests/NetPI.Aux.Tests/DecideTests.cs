@@ -57,6 +57,32 @@ public static class DecideTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("decide: shared admission is reused by a same-model caller; explicit bulk model is used only for batches", async () =>
+        {
+            var seen = new List<JsonObject>();
+            await using var endpoint = await FakeKev(seen);
+            var env = new Env(); await env.StartAsync(endpoint.Url);
+            var model = new ModelInfo { Provider = "fake", Id = "local", IsLocal = true };
+            env.Ctx.ModelsFake.Models.Add(model);
+            var scheduler = new FakeAgentScheduler(); env.Ctx.ServicesFake.Register<IAgentScheduler>(scheduler);
+            using var held = await scheduler.AcquireAsync(new AgentSlotRequest { Key = model.Ref, AgentId = "caller" }, CancellationToken.None);
+            var service = env.Ctx.Services.Get<IDecisionService>()!;
+            var answer = await service.EvaluateAsync(new DecisionRequest
+            {
+                Model = model.Ref, HeldModel = model.Ref, ExistingLease = held,
+                Body = new JsonObject { ["state"] = "ERR", ["questions"] = new JsonObject { ["error"] = new JsonObject { ["type"] = "yes_no", ["question"] = "Is this an error?" } } },
+            }, CancellationToken.None);
+            Check.Equal(1, scheduler.Acquired.Count, "no second slot acquisition");
+            Check.False(held.IsReleased, "the caller still owns its slot");
+            Check.Equal("local", seen.Single()["model"]!.Str(), "wire model uses the backend ID");
+            Check.True(answer["error"]!["noul"]!.GetValue<double>() > 0.9);
+            env.Ctx.SettingsFake.Set("decide.bulkModel", JsonValue.Create("bulk"));
+            env.Ctx.SettingsFake.Set("decide.bulkThreshold", JsonValue.Create(2));
+            await env.Run(new { items = new[] { "a", "b" }, questions = new { error = "Is this an error?" } });
+            Check.True(seen.Skip(1).All(b => b["model"]!.Str() == "bulk"));
+            await env.Run(new { model = "explicit", items = new[] { "a", "b" }, questions = new { error = "Is this an error?" } });
+            Check.True(seen.TakeLast(2).All(b => b["model"]!.Str() == "explicit"));
+        });
         r.Add("decide: a file's lines each get every question; friendly questions become TypeSafe's; unsure lines are listed", async () =>
         {
             var seen = new List<JsonObject>();

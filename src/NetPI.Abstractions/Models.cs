@@ -34,6 +34,9 @@ public sealed class ModelInfo
 /// <summary>A request to a model. Messages are provider-neutral; providers convert them.</summary>
 public sealed class ModelRequest
 {
+    /// <summary>Opt-in provider-owned snapshot of the actual prompt in decision chat format. Plain JSON only.</summary>
+    public bool CaptureDecisionContext { get; set; }
+    public JsonObject? DecisionContext { get; set; }
     public required ModelInfo Model { get; init; }
     public string? SystemPrompt { get; set; }
     public required IReadOnlyList<ChatMessage> Messages { get; set; }

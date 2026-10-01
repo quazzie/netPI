@@ -41,6 +41,7 @@
             ? { text: `${info.busy}/${info.capacity} busy`, tone: 'ok' }
             : null,
       { text: `${n} instance${n === 1 ? '' : 's'}` },
+      m?.isLocal && info?.resourceCapacity ? { text: `${info.resourceCapacity} shared model slots` } : null,
       info?.free
         ? { text: 'free', tone: 'ok' }
         : info?.priceInput != null
@@ -83,6 +84,7 @@
     id={openId}
     agent={doc?.agents?.[openId]}
     info={infoOf(openId)}
+    localSlots={doc?.models?.localSlots ?? 2}
     taken={Object.keys(doc?.agents ?? {})}
     onrename={(id) => (openId = id)}
     onclose={() => (openId = null)}

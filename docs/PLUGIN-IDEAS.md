@@ -1,5 +1,7 @@
 # Ideas plugin (`netpi.ideas`)
 
+Agent rework update (2026-10-01): automatic save/completion proposals require a separate low-priority verifier. Work and `ideas.work` expose waiting, dropped, rejected and verified outcomes with reasons. Completion evidence includes bounded complete patches; revision and project activity are checked again before writing. `ideas.applyVerifiedUpdates` defaults true, applying verified unchanged completion without a card; false retains a verified review card. `ideas.verifyUpdate` checks explicit proposed patches against supplied evidence and rejects stale revisions. Basic backlog CRUD remains independent of optional model/decision/history capabilities. See SETTINGS.md and PROTOCOL.md for the new contracts.
+
 A backlog of ideas, research, plans and deferred work for the user and for agents. Agents work with it through the
 `ideas` tool. The user works with it in the **Ideas** tab (right panel) and through `/idea <title>`.
 

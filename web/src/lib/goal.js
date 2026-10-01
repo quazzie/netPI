@@ -10,7 +10,7 @@ export function goalOf(session) {
   return g && g.status !== 'cleared' ? g : null;
 }
 
-const open = (g) => g && (g.status === 'active' || g.status === 'paused' || g.status === 'blocked');
+const open = (g) => g && ['active', 'paused', 'blocked', 'execution-unavailable'].includes(g.status);
 
 async function call(method, params) {
   try {

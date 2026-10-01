@@ -9,6 +9,10 @@ The work itself is in the ideas backlog, one idea per thread: **`idea-0m4hml`** 
 
 ## Where things stand
 
+NetPI consumer update (2026-10-01): captured full-context checks, finished/ask-user hints, optional routing/skill hints, commit-to-todo suggestions, configured bulk routing and conservative probability/margin checks are implemented and functionally tested. IDecisionService provides shared admission and trusted same-model lease reuse. Ideas proposals require a separate read-only low-priority verifier; verified unchanged completion can apply automatically. See [the implementation pass](plans/2026-10-01-agent-rework-pass.md) and SETTINGS.md for opt-ins.
+
+This pass does not revalidate historical performance numbers on the current engine. Responses-to-chat conversion preserves supported conversation content but does not prove identical tokenization or encrypted/opaque reasoning cache equivalence. Re-measure cached_tokens, next-turn cache survival, latency and hint quality in an explicitly available idle window before claiming benefits or enabling consumers by default. idea-0m4hml remains in progress for that measurement.
+
 | piece | where | state |
 |---|---|---|
 | NInfer `POST /v1/decision` | `C:\AI\Projects\ninfer-windows`, branch `local/main` (`docs/decision.md` there) | deployed. The loaded qwen3.8-27b answers multiple-choice questions from the prefill logits: ~35 ms per question once the shared state is cached, ~190 ms cold. Questions run **one after another** in one slot (an endpoint mutex); nothing is batched on the GPU yet. |

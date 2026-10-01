@@ -354,6 +354,25 @@ await t.Run("responses: replayReasoning replays reasoning items (live settings)"
     }
 });
 
+await t.Run("decision context: provider snapshot keeps the exact chat prefix, tools and resolved effort", async () =>
+{
+    apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
+    apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", true);
+    try
+    {
+        var request = Req(Cat("qwen3.8-27b"), Conversation("aiproxy"), "low");
+        request.CaptureDecisionContext = true;
+        await Collect(aiproxy, request);
+        var sent = mock.Last("/v1/chat/completions").Json;
+        t.Eq(sent["messages"]!.ToJsonString(), request.DecisionContext!["messages"]!.ToJsonString(), "same full prefix including reasoning, tool calls and results");
+        t.Eq(sent["tools"]!.ToJsonString(), request.DecisionContext["tools"]!.ToJsonString(), "same tool schemas");
+        t.Eq(sent["reasoning_effort"]!.GetValue<string>(), request.DecisionContext["reasoning_effort"]!.GetValue<string>(), "same effort");
+        apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", false);
+        t.Check(request.DecisionContext["messages"]!.ToJsonString().Contains("reasoning_content"), "later settings cannot mutate the captured prefix");
+    }
+    finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); apCtx.SettingsImpl.Set("providers.aiproxy.replayReasoning", null); }
+});
+
 await t.Run("responses: reasoning is replayed by default (standard stateless usage), chat does not replay it", async () =>
 {
     await Collect(aiproxy, Req(Cat("qwen3.8-27b"), Conversation("aiproxy")));

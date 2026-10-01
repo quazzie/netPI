@@ -82,6 +82,7 @@ public interface IAgentTool
 
 public sealed class ToolContext
 {
+    public IAgentSlot? AdmissionLease { get; init; }
     public required string SessionId { get; init; }
     public required string AgentId { get; init; }
     public required string CallId { get; init; }

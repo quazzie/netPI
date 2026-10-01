@@ -1,9 +1,17 @@
 # Plugin independence and optional enhancement plan
 
 Date: 2026-10-01
-Status: proposed; source review only, implementation and runtime validation pending.
+Status: implemented in the coordinated agent rework pass; validation linked below.
 Reviewed snapshot: master at 792fd70, in the isolated `codex/plugin-dependencies` worktree.
 Scope: all 30 projects under `plugins/`, their source UIs, shared contracts, host registries, app UI integration, and existing relevant tests.
+
+## Implementation — 2026-10-01
+
+The user requested one implementation pass followed by testing/fixing, superseding the original six-commit sequence. All six steps are implemented: build-reference and isolated startup/stop gates for all 30 plugins; independent Runtime prompt composition; durable prompt revisions and reset-fork intent; executor-dependent tool/goal availability; typed decision/Git capabilities with shared admission; and capability-aware app, Work and Diagnostics views. The existing shared SessionModel resolver delegates configured-agent lookup through the scheduler snapshot with a no-Agents settings fallback.
+
+Owning regressions cover profile changes without Context, Context return, identity races during rendering, persisted fork reset across Context reload, executor return without autonomous restart, inference surviving Runtime shutdown timeout, cancellation/grant races, same-model decision lease reuse, alternate decision providers, verified updates with concurrent edits and verifier cancellation acknowledgement. All 30 plugins started and stopped independently in the real host gate. Final gate results are recorded in [the implementation pass](2026-10-01-agent-rework-pass.md).
+
+The findings below preserve the original review snapshot; the inventory describes current ownership. External endpoint health and actual cache performance are separate from registry presence and functional independence.
 
 ## Goal and architectural rule
 
@@ -40,38 +48,38 @@ The acceptance baseline is the host plus the plugin under test, with mock capabi
 
 Names below omit the `NetPI.` prefix. "Executor" means IAgentRuntime, "scheduler" means IAgentScheduler, and "prompt builder" means ISystemPromptBuilder. These are shared contracts, not references to concrete plugin assemblies.
 
-| Plugin | Cross-plugin capability or enhancement | Behavior without it / planned action |
+| Plugin | Cross-plugin capability or enhancement | Behavior without it / ownership |
 | --- | --- | --- |
-| Agents | Model providers through host model catalog; optional executor for names and budget continuation; contributes middleware and prompt section | Scheduling/ledger still load; run names and automatic continuation are optional. Make continuation availability explicit; preserve contributions without Context. |
-| AgentsMd | Runtime-compatible hook consumer; Context-compatible prompt-section consumer | Instruction discovery and notices are owned here. Its prompt guidance currently needs Context; fix the Runtime fallback consumer. |
+| Agents | Model providers; optional executor; shared prompt section and physical leases | Scheduling/ledger load independently. Budget continuation reports availability; Runtime fallback consumes guidance. Host admission survives replacement. |
+| AgentsMd | Hook and shared prompt-section consumers | Owns instruction discovery/notices; Runtime fallback and Context both consume guidance. |
 | Ask | Optional executor for subagent identity and yielded waiting | Uses ordinary cancellable waiting without executor. Preserve and test both waiting modes. |
 | Backup | Host database and settings only | Independent. Full database backup includes inactive plugins' tables. Preserve this storage-neutral boundary. |
 | Compaction | Any model provider; optional scheduler and executor snapshot | Summarization uses host model catalog; no scheduler means no acquired lease. Manual compaction works without Runtime. Test admission and model-resolution behavior. |
-| Context | IPromptSection contributors; optional executor snapshot; subscribes to MCP tool-change event | Builds/previews without Runtime. Keep caching, previews and notice enrichment here; make prompt invalidation a shared durable contract. |
-| Decide | External decision endpoint; optional inherited AiProxy URL setting | Makes its own HTTP requests, works without AiProxy plugin. Document explicit endpoint precedence; offer a shared decision capability. |
-| Diagnostics | Optional executor, scheduler, Context, AgentsMd, Skills, Work and other RPC views | General diagnostics work independently. Some specialized operations require their capability and already return unavailable. Give partial views consistent availability reasons. |
-| Goal | Executor for starting/continuing; hooks and call observations for progress | Stores goals independently. Replace silent missing-executor returns with an explicit unavailable/paused execution state and reason. |
+| Context | IPromptSection contributors; optional executor snapshot; MCP tool-change event | Builds/previews without Runtime; owns cache/previews/notices. Compares durable revisions and adopts compatible Runtime prefixes. |
+| Decide | External endpoint; optional URL setting, scheduler/catalog/physical leases | Works without AiProxy. IDecisionService and RPC adapters share bounded admission; trusted same-model callers reuse actual leases. |
+| Diagnostics | Optional executor, scheduler, Context, AgentsMd, Skills, Work and RPC views | Retains partial data with explicit missing-component reasons; diag.capabilities separates registrations from endpoint health. |
+| Goal | Executor for starting/continuing; hooks/observations | Stores goals independently; executor loss saves execution-unavailable. Return requires explicit resume. |
 | Guardrails | Hook consumer; optional executor for yield; optional Decide second opinion | Rules and approval waiting retain their base behavior. Keep missing/failed opinion on the approval path. Test replacement and cancellation. |
-| Ideas | Optional Files git-history RPC, Decide RPCs, model providers, scheduler, run-end hooks and shared session data | CRUD and manual use are independent. Commit sweep stops without Files; recall reports unavailable without Decide; generative save suggestions use model catalog separately. Report these per enhancement. |
-| Loops | Hook consumer; optional Decide RPC | Deterministic checks remain active. Missing/failed decision model skips only model-based checks. Preserve. |
+| Ideas | Optional IGitHistory, IDecisionService/RPC, models, scheduler, hooks and session data | CRUD remains independent; capabilities RPC reports optional presence. Background outcomes expose wait/drop reasons; save/completion proposals require verification and revision/activity checks. |
+| Loops | Hook consumer; optional IDecisionService/RPC | Deterministic checks remain active. Full-context/routing/skill checks are opt-in hints; unavailable decisions skip only model checks. |
 | Mcp | Shared ToolSelection, tool-call dispatcher; optional executor snapshot; Context observes its change event | Catalog/connection management and search load independently. mcp_call explicitly requires a compatible dispatcher. Preserve eligibility/revision guards and check alternate consumer behavior. |
 | Nudge | IAgentHook consumer | Independent extension; inert until a compatible executor invokes hooks. No concrete peer required. |
-| Profiles | Shared SessionIdentity/SessionTools metadata; context.reset RPC; hook consumer | Storage and switches load independently. Identity is ignored by Runtime fallback today; replace concrete reset coupling and fix prompt composition. |
+| Profiles | Shared SessionIdentity/SessionTools/SessionPrompt metadata; hooks | Persists identity, tools and prompt revision together; no Context RPC required. Both prompt consumers honor durable intent. |
 | Providers.AiProxy | Host model catalog and middleware contracts | Independent provider including extra configured endpoints. No Anthropic/OpenRouter dependency. |
 | Providers.Anthropic | Host model catalog and middleware contracts | Independent provider. No AiProxy/OpenRouter dependency. |
 | Providers.OpenRouter | Host model catalog and middleware contracts | Independent provider. No AiProxy/Anthropic dependency. |
 | Retry | IModelMiddleware consumer | Independent. Applies to any caller through the host model catalog, including background model calls. |
-| Runtime | Any suitable model provider; optional scheduler, prompt builder, hooks and observers; Agents model setting | Existing no-Agents path works. Fix fallback composition and expose capability availability; document or delegate configured-agent model resolution. |
+| Runtime | Any suitable provider; optional scheduler, prompt builder, hooks/observers; shared SessionModel | Runs without Agents or Context. Fallback freezes identity/contributions/guidance, appends environment changes; physical admission survives shutdown timeout. |
 | Skills | Hook consumer and shared tool/session state | Owns catalog/load notices and skill tool. No Context or file-tools RPC requirement. Preserve. |
-| Todo | Hook consumer; shared session metadata and messages | Owns checklist and fork restoration. No Goal dependency. Preserve. |
+| Todo | Hooks/session data; optional decisions | Owns checklist/fork restoration without Goal. Opt-in commit checks suggest checklist updates to the agent. |
 | ToolRepair | Hook consumer and shared tool-call contracts | Independent extension. No dependency on a particular provider or tool plugin. Preserve. |
-| Tools.Agents | Executor; optional scheduler for configured choices/status | All agent operations require executor capability and currently return error when absent. Gate availability dynamically; retain unscheduled delegation via model refs. |
-| Tools.Files | Host sessions/projects; external Git for Git features | Independent file tools and Files tab. Git-history capability can optionally enhance Ideas. |
+| Tools.Agents | Executor; optional scheduler for choices/status | Registrations follow executor availability; invocation checks removal races. Unscheduled model-ref delegation remains available. |
+| Tools.Files | Sessions/projects; external Git | Independent file tools/tab; IGitHistory and files.commits expose bounded patch evidence. |
 | Tools.Media | Host ToolContext and image-result contract | Independent image tool; runtime renders results through shared contracts. No Web or Files plugin call. |
 | Tools.Shell | Host event bus and tool/output contracts; installed shells | Independent process registry and tools. Work optionally displays/control its processes. Shell availability is an external dependency. |
 | Tools.Ssh | Host ToolContext; external ssh/configuration | Independent SSH tools; no Shell or Files plugin invocation. Guardrails can enhance tool execution through hooks. |
 | Tools.Web | Host ToolContext; external HTTP/browser/search backends; desktop.capture RPC for app screenshots | Browser/fetch/search are independent of peer tool plugins. App-window screenshots require the desktop capability, which is a shell feature rather than another plugin. Preserve specific unavailable error. |
-| Work | Optional agents.list, runs.list, processes.list, usage.summary; host session titles | Already a good optional aggregator. Preserve independent sections and clear stale controls when capabilities disappear. |
+| Work | Optional agents.list/resources, runs.list, processes.list, usage.summary, ideas.work; titles | Independent sections show instances, physical capacity and background outcomes. Actions follow availability; disposed state rejects late responses. |
 
 ## Target design
 
@@ -176,5 +184,5 @@ Completion means:
 
 ## Review limitations
 
-This is a static review of the committed snapshot. No build, tests, running-app changes or plugin toggles were performed. Source evidence establishes the existing call paths; reload, cached-prompt return and UI race scenarios above are proposed regression cases to verify during implementation. External executables/services (Git, shells, SSH, browsers, API endpoints) are tracked separately from plugin dependencies.
+The original findings were static. The implementation pass builds/tests in an isolated worktree, including real-host per-plugin startup/stop and mock-provider/browser scenarios. It does not deploy, toggle the running app, benchmark the real model, or establish endpoint health. External executables/services remain separate from plugin dependencies.
 

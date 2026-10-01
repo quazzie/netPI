@@ -59,6 +59,7 @@ public static class IdeasCommitTests
         public Env(string? home = null, Repo? repo = null)
         {
             Ctx = new FakePluginContext(home ?? T.TempDir("ideas-home"));
+            Ctx.ModelsFake.VerifierResponder = _ => new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "{\"verified\":false,\"confidence\":0.95,\"reason\":\"These test commits advance the idea; they do not finish the plan\"}" }] };
             // The checks decide on a model that has to exist: admission is what the sweep goes through, and a sweep with
             // no model in the catalog has nothing to ask.
             Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
@@ -68,6 +69,7 @@ public static class IdeasCommitTests
             Session = Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "s", ProjectId = Project.Id });
             Ctx.RpcFake.Register("files.commits", (req, _) =>
             {
+                if (req.Str("hash") is { } patchHash) return Task.FromResult<object?>(new JsonObject { ["hash"] = patchHash, ["patch"] = "diff --git a/fix b/fix\n+scripted completed implementation", ["truncated"] = false });
                 var (commits, reachable) = Repo.Read(req.Str("since"), req.Str("until"), req.Int("limit") ?? 20);
                 var list = new JsonArray();
                 foreach (var (hash, subject) in commits)
@@ -169,6 +171,23 @@ public static class IdeasCommitTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("ideas commits: complete verified patches mark an idle idea done without a card", async () =>
+        {
+            var env = new Env();
+            env.Ctx.SettingsFake.Set("ideas.applyVerifiedUpdates", true);
+            env.Ctx.ModelsFake.VerifierResponder = _ => new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart
+                { Text = "{\"verified\":true,\"confidence\":0.95,\"reason\":\"The complete patch and tests satisfy the whole plan\"}" }] };
+            await env.StartAsync();
+            var id = await env.AddIdea("Finish the full implementation");
+            env.Repo.Commit($"implement {id}");
+            await env.Check!.SweepNowAsync();
+            var idea = await env.Rpc("ideas.get", new JsonObject { ["id"] = id });
+            Check.Equal("done", idea["status"].Str());
+            Check.Equal(0, await env.Cards());
+            Check.True(env.Ctx.ModelsFake.Requests.Any(q => q.SystemPrompt.StartsWith("Independently verify")));
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas commits: defer while a project run is active and re-read what the agent closed", async () =>
         {
             var env = new Env();
@@ -379,8 +398,7 @@ public static class IdeasCommitTests
             env.Link = labels =>
             {
                 if (labels.Count > 2) decided.Add((JsonArray)labels.DeepClone()); // the link question, not the done one
-                // The first option and the second both clear the threshold: the distribution is mutually exclusive, so
-                // only the winner is linked (an old flow linked everything above 0.7).
+                // Nearly tied ideas must not authorize a link, even when each clears the absolute threshold.
                 var probs = new Dictionary<string, double> { [labels[0]!.Str()!] = 0.72, [labels[1]!.Str()!] = 0.71, [labels[^1]!.Str()!] = 0.02 };
                 return probs;
             };
@@ -394,8 +412,13 @@ public static class IdeasCommitTests
             env.Repo.Commit("more work on the indexer");
             await env.Check.SweepNowAsync();
             Check.Equal(1, decided.Count, "an unnamed commit is asked about");
-            Check.Equal(2, (await env.CommitsOn(first)).Count, "the named commit, and this one (only the best option)");
-            Check.Equal(1, (await env.CommitsOn(second)).Count, "not the idea that merely cleared the threshold");
+            Check.Equal(1, (await env.CommitsOn(first)).Count, "a near tie links neither idea");
+            Check.Equal(1, (await env.CommitsOn(second)).Count, "the runner-up is not linked");
+            env.Link = labels => new() { [labels[0]!.Str()!] = 0.9, [labels[1]!.Str()!] = 0.07, [labels[^1]!.Str()!] = 0.03 };
+            env.Repo.Commit("finish the rewrite specifically");
+            await env.Check.SweepNowAsync();
+            Check.Equal(2, (await env.CommitsOn(first)).Count, "a clear winner links only the best idea");
+            Check.Equal(1, (await env.CommitsOn(second)).Count);
             env.Ctx.Unload();
         });
 

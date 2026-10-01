@@ -18,7 +18,7 @@ public static class SessionFork
     /// Meta a fork starts without: a goal would run on by itself, the checklist is the original's latest (the todo plugin
     /// sets it from the copy), the budget allowance is a decision per chat, the rest belongs to subagents.
     /// </summary>
-    public static readonly IReadOnlyList<string> RunState = ["goal", "todo", "budgetAllowedFrom", "guardrailsAllowed", "agentId", "parentAgentId", "agentInstructions", "forkedFrom"];
+    public static readonly IReadOnlyList<string> RunState = ["goal", "todo", "budgetAllowedFrom", "guardrailsAllowed", "agentId", "parentAgentId", "agentInstructions", "forkedFrom", SessionPrompt.ForkResetKey, "runtimeEnvironment"];
 
     public static SessionInfo Template(SessionInfo from, long upToSeq, long contextTokens, IReadOnlySet<string>? taken = null)
     {

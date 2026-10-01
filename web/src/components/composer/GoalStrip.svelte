@@ -5,7 +5,7 @@
    */
   import Icon from '../../lib/kit/Icon.svelte';
   import { goalOf, editGoal, pauseGoal, resumeGoal, clearGoal } from '../../lib/goal.js';
-  import { isBusy } from '../../lib/state/app.svelte.js';
+  import { isBusy, hasRpc } from '../../lib/state/app.svelte.js';
   import { tokens } from '../../lib/format.js';
   let { session } = $props();
 
@@ -21,7 +21,7 @@
     return () => clearTimeout(t);
   });
   const label = $derived(
-    !g ? '' : g.status === 'active' ? 'Goal' : g.status === 'paused' ? 'Paused' : g.status === 'blocked' ? 'Needs you' : 'Achieved',
+    !g ? '' : g.status === 'execution-unavailable' ? 'Execution unavailable' : g.status === 'active' ? 'Goal' : g.status === 'paused' ? 'Paused' : g.status === 'blocked' ? 'Needs you' : 'Achieved',
   );
   const used = $derived(
     g?.tokensUsed ? `${tokens(g.tokensUsed)}${g.tokenBudget ? ` / ${tokens(g.tokenBudget)}` : ''} tok` : '',
@@ -52,7 +52,7 @@
           ><Icon name="pause" size={12} /></button
         >
       {:else if g.status !== 'complete'}
-        <button class="act" title="Resume" onclick={() => resumeGoal(session.id)}><Icon name="play" size={12} /></button>
+        <button class="act" title={hasRpc('agent.send') ? 'Resume' : 'Enable Runtime to resume'} disabled={!hasRpc('agent.send')} onclick={() => resumeGoal(session.id)}><Icon name="play" size={12} /></button>
       {/if}
       {#if g.status !== 'complete'}
         <button class="act" title="Edit the goal" onclick={() => editGoal(session.id)}><Icon name="pencil" size={12} /></button>

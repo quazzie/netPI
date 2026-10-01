@@ -24,6 +24,11 @@ public sealed class GoalPlugin : INetPiPlugin
             ],
         });
         var goals = new Goals(context);
+        context.Events.Subscribe("services.changed", e =>
+        {
+            if (e.As<JsonObject>()?["contract"]?.GetValue<string>() == typeof(IAgentRuntime).FullName) goals.ExecutorChanged();
+        });
+        context.Events.Subscribe(EventTypes.PluginsChanged, _ => goals.ExecutorChanged());
         context.Tools.Register(new GoalUpdateTool(goals));
         context.Tools.Register(new GoalSetTool(goals));
         context.Services.Register<IAgentHook>(new GoalHook(goals));

@@ -13,6 +13,8 @@
   let error = $state('');
   let loading = $state(false);
   let full = $state(false);
+  let disposed = false;
+  const optional = (method, params) => ctx.hasRpc?.(method) === false ? Promise.resolve(null) : ctx.rpc(method, params);
 
   async function load() {
     sid = ctx.app.activeSessionId;
@@ -23,12 +25,12 @@
     loading = true;
     const id = sid;
     const [p, f, k, ts] = await Promise.allSettled([
-      ctx.rpc('context.preview', { sessionId: id }),
-      ctx.rpc('agentsmd.list', { sessionId: id }),
-      ctx.rpc('skills.list', { sessionId: id }),
-      ctx.rpc('diag.toolsets', { sessionId: id }),
+      optional('context.preview', { sessionId: id }),
+      optional('agentsmd.list', { sessionId: id }),
+      optional('skills.list', { sessionId: id }),
+      optional('diag.toolsets', { sessionId: id }),
     ]);
-    if (id !== sid) return;
+    if (disposed || id !== ctx.app.activeSessionId) return;
     preview = p.status === 'fulfilled' ? p.value : null;
     files = f.status === 'fulfilled' ? f.value : null;
     skills = k.status === 'fulfilled' ? k.value : null;
@@ -39,9 +41,11 @@
 
   onMount(() => {
     load();
-    return ctx.app.onChange(() => {
+    const off = ctx.app.onChange(() => {
       if (ctx.app.activeSessionId !== sid) load();
     });
+    const changes = ctx.on('rpc.changed', () => load());
+    return () => { disposed = true; off(); changes(); };
   });
 
   const session = $derived(sid ? ctx.app.activeSession : null);
@@ -56,16 +60,17 @@
     <div class="title np-ellipsis">{session?.title || 'Session'}</div>
     <IconButton icon="refresh" title="Refresh" size="sm" disabled={loading} onclick={load} />
   </div>
-  {#if error && !preview}
-    <Empty icon="alert">context.preview unavailable: {error}</Empty>
-  {:else if !preview}
+  {#if loading && !preview}
     <Empty><span class="np-spinner"></span></Empty>
   {:else}
+    {#if !preview}<div class="np-dim np-small">Context preview unavailable{error ? `: ${error}` : ''}</div>{/if}
+    {#if preview}
     <div class="stats">
       <div class="stat" title="Estimated context tokens (system prompt + tools + messages)"><b>≈{tokens(preview.estimatedTokens)}</b><span>context</span></div>
       <div class="stat" title="System prompt tokens (estimate)"><b>{tokens(promptTokens)}</b><span>prompt</span></div>
       <div class="stat" title="Tools sent to the model"><b>{preview.tools?.length ?? 0}</b><span>tools</span></div>
     </div>
+    {/if}
 
     <Section title="AGENTS.md" count={files?.length ?? null} collapsible storageKey="diag.ctx.agentsmd">
       {#each files ?? [] as f (f.path)}
@@ -79,7 +84,7 @@
           </span>
         </div>
       {:else}
-        <div class="np-dim np-small">No instruction files apply to this session.</div>
+        <div class="np-dim np-small">{files ? 'No instruction files apply to this session.' : 'Instruction discovery unavailable.'}</div>
       {/each}
     </Section>
 
@@ -106,7 +111,7 @@
       </Section>
     {/if}
 
-    <Section title="System prompt" collapsible storageKey="diag.ctx.prompt">
+    {#if preview}<Section title="System prompt" collapsible storageKey="diag.ctx.prompt">
       {#snippet actions()}
         <IconButton icon="copy" title="Copy system prompt" size="sm" onclick={() => copyText(preview.systemPrompt)} />
         <IconButton icon="expand" title={full ? 'Collapse' : 'Show all'} size="sm" pressed={full} onclick={() => (full = !full)} />
@@ -120,6 +125,7 @@
       {/each}
     </Section>
 
+    {/if}
     {#if toolSets}
       <!-- why the tools are what they are: the baseline and every change with its cause, as the model was told -->
       <Section

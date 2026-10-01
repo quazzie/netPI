@@ -4,7 +4,11 @@ using System.Text.Json.Nodes;
 namespace NetPI.Ideas;
 
 /// <summary>What a pick-one decision answered: the winning option, how sure it was, and how sure "none" was.</summary>
-internal sealed record IdeaPick(int Index, double P, double None);
+internal sealed record IdeaPick(int Index, double P, double None)
+{
+    public double RunnerUp { get; init; }
+    public bool Clear(double threshold) => DecisionConfidence.Probability(None) && DecisionConfidence.Probability(RunnerUp) && DecisionConfidence.Clear(P, Math.Max(None, RunnerUp), threshold);
+}
 
 /// <summary>
 /// The one place where "which of the user's open ideas is this about?" is asked and answered. Recall (while the first
@@ -70,7 +74,8 @@ internal static class IdeaMatch
             if (best < 0 || P(Letters[k].ToString()) > P(Letters[best].ToString())) best = k;
         }
         if (best < 0) return null;
-        return new IdeaPick(best, P(Letters[best].ToString()), P(Letters[options].ToString()));
+        return new IdeaPick(best, P(Letters[best].ToString()), P(Letters[options].ToString()))
+        { RunnerUp = Enumerable.Range(0, options).Where(k => k != best).Select(k => P(Letters[k].ToString())).DefaultIfEmpty(0).Max() };
     }
 
     /// <summary>The same reading, for an answer that has already been turned into label → probability.</summary>
@@ -84,7 +89,8 @@ internal static class IdeaMatch
             if (best < 0 || probs[labels[k]] > probs[labels[best]]) best = k;
         }
         if (best < 0) return null;
-        return new IdeaPick(best, probs[labels[best]], probs.GetValueOrDefault(labels[^1]));
+        return new IdeaPick(best, probs[labels[best]], probs.GetValueOrDefault(labels[^1]))
+        { RunnerUp = Enumerable.Range(0, labels.Count - 1).Where(k => k != best).Select(k => probs.GetValueOrDefault(labels[k])).DefaultIfEmpty(0).Max() };
     }
 
     /// <summary>

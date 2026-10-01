@@ -15,6 +15,7 @@ internal sealed class Goal
 {
     public const string MetaKey = "goal";
     public const string Active = "active", Paused = "paused", Blocked = "blocked", Complete = "complete", Cleared = "cleared";
+    public const string ExecutionUnavailable = "execution-unavailable";
 
     public string Id { get; set; } = Ids.New("goal");
     public string Objective { get; set; } = "";
@@ -33,7 +34,7 @@ internal sealed class Goal
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
-    public bool Open => Status is Active or Paused or Blocked;
+    public bool Open => Status is Active or Paused or Blocked or ExecutionUnavailable;
 
     public JsonObject ToJson() => new()
     {
@@ -224,7 +225,7 @@ internal sealed class Goals(IPluginContext ctx)
         {
             // an active goal with an idle agent (a user-started run that failed before its first turn): start it again
             if (g is { Status: Goal.Active } && !busy) return g;
-            if (g is not { Status: Goal.Paused or Goal.Blocked }) throw new GoalException(g is { Status: Goal.Active } ? "The goal is already active." : "There is no paused goal.");
+            if (g is not { Status: Goal.Paused or Goal.Blocked or Goal.ExecutionUnavailable }) throw new GoalException(g is { Status: Goal.Active } ? "The goal is already active." : "There is no paused goal.");
             g.Status = Goal.Active;
             g.Reason = null;
             g.Continuations = 0;
@@ -346,9 +347,28 @@ internal sealed class Goals(IPluginContext ctx)
     private void Kick(string sessionId, Goal goal, string what)
     {
         var rt = ctx.Services.Get<IAgentRuntime>();
-        if (rt is null) return;
+        if (rt is null) { Unavailable(sessionId, goal); return; }
         if (rt.GetBySession(sessionId) is { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded }) return;
         _ = SendNoticeAsync(rt, sessionId, goal, ActiveNotice(goal, what), auto: false);
+    }
+
+    private void Unavailable(string sessionId, Goal goal)
+    {
+        goal.Status = Goal.ExecutionUnavailable;
+        goal.Reason = "No executor capability is available. The goal is saved; resume explicitly after an executor returns.";
+        Update(sessionId, g => g?.Id == goal.Id && g.Status == Goal.Active ? goal : g);
+    }
+
+    public void ExecutorChanged()
+    {
+        if (ctx.Services.Get<IAgentRuntime>() is not null) return; // capability return never resumes autonomous work
+        for (var offset = 0; ; offset += 100)
+        {
+            var sessions = ctx.Sessions.ListSessions(new SessionQuery { IncludeArchived = true, Offset = offset, Limit = 100 });
+            foreach (var session in sessions)
+                if (Get(session.Id) is { Status: Goal.Active } goal) Unavailable(session.Id, goal);
+            if (sessions.Count < 100) break;
+        }
     }
 
     private async Task SendNoticeAsync(IAgentRuntime rt, string sessionId, Goal goal, string text, bool auto)
@@ -428,6 +448,12 @@ internal sealed class Goals(IPluginContext ctx)
         var goal = Get(sid);
         if (goal is not { Status: Goal.Active }) return;
 
+        if (run.CancelReason == "plugin reloaded" || ctx.Services.Get<IAgentRuntime>() is null)
+        {
+            Unavailable(sid, goal);
+            return;
+        }
+
         if (run.Outcome == "aborted")
         {
             PauseQuietly(sid, goal.Id, "Stopped.");
@@ -465,7 +491,7 @@ internal sealed class Goals(IPluginContext ctx)
         if (stop is not null) return;
 
         var rt = ctx.Services.Get<IAgentRuntime>();
-        if (rt is null) return;
+        if (rt is null) { Unavailable(sid, goal); return; }
         // queued input starts the next run by itself, and a running subagent's report does too: their ends decide again
         if (rt.GetQueue(sid).Count > 0) return;
         if (run.Agent.Children.Any(id => rt.Get(id) is { Status: AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded })) return;

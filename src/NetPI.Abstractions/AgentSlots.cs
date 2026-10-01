@@ -23,6 +23,7 @@ public interface IAgentScheduler
     /// <summary>Wait for a slot (FIFO within priority). Throws <see cref="BudgetExceededException"/> if the provider is over budget.</summary>
     ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct);
     bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease);
+    IReadOnlyList<ModelResourceSlots> Resources() => [];
 }
 
 public sealed class AgentSlotRequest
@@ -46,6 +47,8 @@ public interface IAgentSlot : IDisposable
 
 public sealed class SlotHolder
 {
+    public int Priority { get; set; }
+    public string? WaitingFor { get; set; }
     public string AgentId { get; set; } = "";
     public string? SessionId { get; set; }
     public string? Label { get; set; }
@@ -54,6 +57,10 @@ public sealed class SlotHolder
 
 public sealed class AgentSlots
 {
+    public string? Resource { get; set; }
+    public int? ResourceCapacity { get; set; }
+    public int? ResourceBusy { get; set; }
+    public int? ResourceQueued { get; set; }
     public string Key { get; set; } = "";
     public string? Provider { get; set; }
     public int Capacity { get; set; }

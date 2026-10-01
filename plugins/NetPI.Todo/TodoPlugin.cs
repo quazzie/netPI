@@ -15,6 +15,13 @@ public sealed class TodoPlugin : INetPiPlugin
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
         context.Tools.Register(new TodoWriteTool(context));
+        context.Services.Register(new SettingsSection
+        {
+            Id = "todo", Title = "Todo", Group = "Agents", Order = 33,
+            Settings = [SettingInfo.Bool("todo.checkCommits", "Check todo completion after commits", false,
+                "After a successful commit, use the provider-captured conversation to suggest completed checklist items. Clear answers become a hint to the agent; they never check off unsupported work.")],
+        });
+        context.Services.Register<IAgentHook>(new TodoCommitCheck(context));
         context.Services.Register<IAgentHook>(new TodoNotices(context));
         context.Events.Subscribe(EventTypes.SessionForked, e =>
         {

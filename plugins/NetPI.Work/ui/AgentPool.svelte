@@ -61,7 +61,7 @@
         type="checkbox"
         class="np-switch"
         checked={!pool.disabled}
-        disabled={busy}
+        disabled={busy || ctx.hasRpc?.('agents.setEnabled') === false}
         onchange={toggle}
         aria-label="Agent {pool.key} on"
         title={pool.disabled ? 'Switched off: switch it on to let chats and subagents run on it' : 'Switch off: runs on it finish, new ones are refused'}
@@ -69,9 +69,10 @@
     {/if}
   </div>
   <div class="cap np-line">
-    <span class="nums np-mono">{pool.busy}/{pool.capacity}</span>
+    <span class="nums np-mono">{pool.busy}/{pool.capacity} instances</span>
     {#if second}<span class="second np-mono np-grow" title={agent ? pool.model : pool.provider}>{second}</span>{/if}
   </div>
+  {#if pool.resourceCapacity != null}<div class="shared np-dim np-small">Model: {pool.resourceBusy}/{pool.resourceCapacity} total busy</div>{/if}
   {#if agent && pool.available === false && !pool.disabled && pool.unavailable}
     <div class="why">{pool.unavailable}</div>
   {/if}
@@ -86,11 +87,11 @@
     </button>
   {/each}
   {#each pool.waiters ?? [] as w (w.agentId + w.since)}
-    <button class="owner waiting np-line" title="{who(w)} is waiting for a free instance (open session)" onclick={() => w.sessionId && ctx.app.openSession(w.sessionId)}>
+    <button class="owner waiting np-line" title="{who(w)} is waiting for {w.waitingFor ?? 'a free instance'} (open session)" onclick={() => w.sessionId && ctx.app.openSession(w.sessionId)}>
       <span class="slot"></span>
       <span class="text np-line np-baseline np-grow">
         <span class="name">{who(w)}</span>
-        <span class="label np-grow">waiting</span>
+        <span class="label np-grow">{w.waitingFor ?? 'waiting'}</span>
         <Elapsed since={w.since} class="np-mono el" />
       </span>
     </button>

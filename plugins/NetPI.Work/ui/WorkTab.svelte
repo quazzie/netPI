@@ -11,6 +11,9 @@
   let { ctx } = $props();
 
   let slots = $state.raw(null); // the agents with their instances (agents.list)
+  let resources = $state.raw(null);
+  let ideasWork = $state.raw(null);
+  let disposed = false;
   let agents = $state.raw(null);
   let processes = $state.raw(null);
   let usage = $state.raw(null);
@@ -34,7 +37,10 @@
     inflight = (async () => {
       try {
         const s = await ctx.rpc('work.snapshot');
+        if (disposed) return;
         slots = s?.agents ?? null;
+        resources = s?.resources ?? null;
+        ideasWork = s?.ideasWork ?? null;
         agents = s?.runs ?? null;
         processes = s?.processes ?? null;
         usage = s?.usage ?? null;
@@ -53,6 +59,7 @@
   }
 
   function scheduleRefresh(ms = 250) {
+    if (disposed) return;
     if (!visible) {
       dirty = true;
       return;
@@ -91,7 +98,11 @@
       ctx.on('agents.changed', (d) => {
         if (!visible) return void (dirty = true);
         if (Array.isArray(d?.agents)) slots = d.agents;
+        if (Array.isArray(d?.resources)) resources = d.resources;
       }),
+      ctx.on('ideas.workChanged', (d) => { if (visible) ideasWork = d?.work ?? []; else dirty = true; }),
+      ctx.on('rpc.changed', () => scheduleRefresh(600)),
+      ctx.on('services.changed', () => scheduleRefresh(600)),
       ctx.on('process.started', (d) => {
         if (!visible) return void (dirty = true);
         processes = upsert(processes, d?.process);
@@ -110,6 +121,7 @@
     // safety net: a slow full refresh while visible (elapsed labels tick on their own)
     const slow = setInterval(() => visible && refresh(), 30_000);
     return () => {
+      disposed = true;
       offs.forEach((off) => off());
       clearInterval(slow);
       clearTimeout(refreshTimer);
@@ -180,7 +192,18 @@
     <Empty><span class="np-spinner"></span></Empty>
   {:else}
     <!-- ---------------------------------------------------------------- agents (the ones the user set up) -->
-    <Section title="Agents" count={setUp.length ? `${busySlots}/${activeCapacity}` : null} collapsible storageKey="work.agentSlots">
+    <Section title="Model capacity" count={resources?.length || null} collapsible storageKey="work.resources">
+      {#each resources ?? [] as r (r.key)}
+        <div class="usage" data-resource={r.key}>
+          <div class="np-line"><span class="np-grow np-mono">{r.model ?? r.key}</span><b>{r.busy}/{r.capacity}</b></div>
+          <div class="na">{r.queued || 0} waiting{r.available === false ? ` · ${r.unavailable ?? 'unavailable'}` : ''}</div>
+          {#each r.owners ?? [] as owner}
+            <button class="link" onclick={() => owner.sessionId && ctx.app.openSession(owner.sessionId)}>{titles.get(owner.sessionId) ?? owner.label ?? owner.agentId}</button>
+          {/each}
+        </div>
+      {:else}<div class="na">{resources ? 'No model calls' : 'Capacity unavailable'}</div>{/each}
+    </Section>
+    <Section title="Agents" count={setUp.length ? `${busySlots}/${activeCapacity} instances` : null} collapsible storageKey="work.agentSlots">
       {#if !slots}
         <div class="na">Agents not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
       {:else}
@@ -225,6 +248,13 @@
       {/if}
     </Section>
 
+    <Section title="Idea checks" count={ideasWork?.filter((w) => !w.finishedAt).length || null} collapsible storageKey="work.ideas">
+      {#each (ideasWork ?? []).toReversed() as work (work.id)}
+        <div class="usage" data-background-work={work.id}><div class="np-line"><span class="np-grow">{work.purpose}</span><span>{work.status}</span></div>
+          <div class="na">{work.reason ?? work.model ?? ''}</div>
+        </div>
+      {:else}<div class="na">{ideasWork ? 'No background checks' : 'Ideas checks unavailable'}</div>{/each}
+    </Section>
     <!-- ---------------------------------------------------------------- processes -->
     <Section title="Processes" count={processes ? (running.length ? `${running.length} running` : processes.length || null) : null} collapsible storageKey="work.processes">
       {#if !processes}

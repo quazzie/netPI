@@ -20,6 +20,7 @@ public sealed class Disposer(Action action) : IDisposable
 
 public sealed class FakeServices : IServiceRegistry
 {
+    public Action<Type>? Changed { get; set; }
     private readonly Lock _gate = new();
     private readonly List<(object Instance, int Priority, long Seq)> _items = [];
     private long _seq;
@@ -28,7 +29,8 @@ public sealed class FakeServices : IServiceRegistry
     {
         var entry = (Instance: (object)instance, Priority: priority, Seq: Interlocked.Increment(ref _seq));
         lock (_gate) _items.Add(entry);
-        return new Disposer(() => { lock (_gate) _items.Remove(entry); });
+        Changed?.Invoke(typeof(T));
+        return new Disposer(() => { lock (_gate) _items.Remove(entry); Changed?.Invoke(typeof(T)); });
     }
 
     public T? Get<T>() where T : class => GetAll<T>().FirstOrDefault();
@@ -36,7 +38,7 @@ public sealed class FakeServices : IServiceRegistry
     public IReadOnlyList<T> GetAll<T>() where T : class
     {
         lock (_gate)
-            return _items.Where(i => i.Instance is T).OrderByDescending(i => i.Priority).ThenBy(i => i.Seq).Select(i => (T)i.Instance).ToList();
+            return _items.Where(i => i.Instance is T).OrderByDescending(i => i.Priority).ThenByDescending(i => i.Seq).Select(i => (T)i.Instance).ToList();
     }
 }
 

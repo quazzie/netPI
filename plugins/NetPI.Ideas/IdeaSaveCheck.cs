@@ -191,7 +191,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
         try
         {
             var open = OpenAsync(project?.Id, ct);
-            if (open.Count > 0 && ctx.Rpc.Exists("decide.decision"))
+            if (open.Count > 0 && DecisionCapabilities.Available(ctx.Services, ctx.Rpc, "decide.decision"))
                 await AttachAsync(open, session, digest, ct).ConfigureAwait(false);
 
             if (!ctx.Models.Cached.Any()) await ctx.Models.ListAsync(ct: ct).ConfigureAwait(false);
@@ -209,6 +209,10 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
                 string.Equals(IdeaOps.Str(i["title"])?.Trim(), draft.Value.Title.Trim(), StringComparison.OrdinalIgnoreCase));
             if (alreadySaved) { FinishAsync(session.Id, token, ct, null); return; }
 
+            var verdict = await new IdeaVerifier(ctx).VerifyAsync($"Save plan: {draft.Value.Title}\n{draft.Value.Summary}", digest, session.Id, project?.Id, ct).ConfigureAwait(false);
+            if (!verdict.Verified) { FinishAsync(session.Id, token, ct, verdict.Retryable ? verdict.Reason : null); return; }
+            if (IdeaRuns.SessionBusy(ctx, session.Id) || Revision(ctx.Sessions.GetMessages(session.Id)) != Revision(messages)) { GiveUpAsync(session.Id, token, ct); return; }
+
             var suggestion = new JsonObject
             {
                 ["id"] = "sg_" + Guid.NewGuid().ToString("N")[..10],
@@ -219,6 +223,8 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
                 ["summary"] = draft.Value.Summary,
                 ["at"] = IdeaOps.Now(),
                 ["seen"] = false,
+                ["verified"] = true,
+                ["verification"] = verdict.Reason,
             };
             if (project is not null) suggestion["project"] = new JsonObject { ["id"] = project.Id, ["name"] = project.Name };
             else suggestion["project"] = null;
@@ -293,8 +299,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
             if (best.P > 0.5 || answer.None >= best.P) break; // decided (or nothing in this window): no further windows
         }
         if (best is null || bestWindow is null) return;
-        if (best.P < Math.Clamp(Setting("ideas.attachThreshold", DefaultAttachThreshold), 0.3, 0.99)
-            || best.P <= best.None) return;
+        if (!best.Clear(Math.Clamp(Setting("ideas.attachThreshold", DefaultAttachThreshold), 0.3, 0.99))) return;
         if (IdeaOps.Str(bestWindow[best.Index]["id"]) is not { Length: > 0 } chosenId) return;
         RecordAsync(chosenId, session, ct);
     }
@@ -383,12 +388,12 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
             var admission = await _admission.EnterAsync(model, "an ideas decision", sessionId: null, projectId: null, ct).ConfigureAwait(false);
             if (!admission.Admitted) throw new InvalidOperationException($"no decision: {admission.Reason}");
             using var slot = admission.Lease!;
-            var raw = await ctx.Rpc.InvokeAsync("decide.decision", new JsonObject
+            var raw = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.decision", new JsonObject
             {
                 ["model"] = name,
                 ["messages"] = new JsonArray(system),
                 ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["content"] = question, ["labels"] = labels }),
-            }, cts.Token).ConfigureAwait(false);
+            }, cts.Token, admission.Slot, model?.Ref, IdeaAdmission.Priority).ConfigureAwait(false);
             // Read the answer once, in one place: only the letters we offered count, and "none" is never an idea.
             return IdeaMatch.Answer(raw as JsonNode ?? JsonSerializer.SerializeToNode(raw), labels.Count - 1);
         }

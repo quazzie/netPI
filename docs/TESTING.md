@@ -1,5 +1,7 @@
 # Testing NetPI
 
+The Host plugin-independence gate scans all 30 plugin projects and current shared/imported build declarations for peer dependencies, then starts/stops each plugin alone. Agent regressions cover reload admission, shutdown timeout, waiter cancellation, prompt races, profiles without Context and reset forks after Context reload. Aux tests cover shared decision admission, alternate providers, verifier cancellation acknowledgement and optimistic verified updates. `web/mock/e2e.mjs --only 'plugin tab: Work|capability removal and recovery' --no-dev` exercises physical capacity/background outcomes and executor/Context UI recovery. The mock-only capability scenario creates its own session and does not run against an external server.
+
 Three layers, all without NuGet packages (console runners, no test framework):
 
 | layer | where | what it needs |

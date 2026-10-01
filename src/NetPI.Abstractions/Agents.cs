@@ -150,6 +150,7 @@ public interface IAgentRuntime
 /// <summary>State of one agent run (from input until the agent stops).</summary>
 public sealed class AgentRunContext
 {
+    public IAgentSlot? AdmissionLease { get; set; }
     public required AgentInfo Agent { get; init; }
     public required SessionInfo Session { get; set; }
     public ProjectInfo? Project { get; set; }
@@ -171,12 +172,16 @@ public sealed class AgentRunContext
     public Dictionary<string, object?> Items { get; } = [];
     /// <summary>Set when the run ends: completed | aborted | failed.</summary>
     public string? Outcome { get; set; }
+    /// <summary>Reason for an aborted run, including executor removal versus a user stop.</summary>
+    public string? CancelReason { get; set; }
     public Exception? Error { get; set; }
 }
 
 /// <summary>State of one model call inside a run.</summary>
 public sealed class AgentTurnContext
 {
+    public ModelRequest? SentRequest { get; set; }
+    public ChatMessage? LatestAssistant { get; set; }
     public required AgentRunContext Run { get; init; }
     public int TurnIndex { get; init; }
     public required string SystemPrompt { get; set; }

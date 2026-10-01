@@ -1,7 +1,7 @@
 // The `ctx` object handed to plugin tab modules: mount(el, ctx). See docs/PROTOCOL.md and docs/UI.md.
 import { rpc } from './rpc.svelte.js';
 import { bus } from './bus.js';
-import { app, openSession, newSession } from './state/app.svelte.js';
+import { app, openSession, newSession, hasRpc } from './state/app.svelte.js';
 import { composer, toast, modals } from './state/ui.svelte.js';
 import { openPanelTab } from './state/tabs.svelte.js';
 
@@ -37,6 +37,7 @@ export function createPluginCtx(tab) {
     pluginId: tab.pluginId,
     tabId: tab.id,
     rpc: (method, params) => rpc(method, params ?? {}),
+    hasRpc,
     on: (pattern, handler) => track(bus.on(pattern, handler)),
     app: Object.freeze({
       get activeSessionId() {

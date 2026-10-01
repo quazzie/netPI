@@ -29,6 +29,29 @@ public static class TodoTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("todo: commit decisions reuse the captured prefix and never silently check off a list", async () =>
+        {
+            var env = new Env(); await env.StartAsync();
+            env.Ctx.SettingsFake.Set("todo.checkCommits", true);
+            await env.Run(T.Args(new { items = new[] { new { text = "Fix the bug", status = "pending" } } }));
+            var model = new ModelInfo { Provider = "fake", Id = "local", IsLocal = true };
+            var turn = T.Turn(T.Run(env.Ctx, model, env.Session));
+            var captured = new JsonObject { ["messages"] = new JsonArray(new JsonObject { ["role"] = "system", ["content"] = "Frozen prefix" }), ["tools"] = new JsonArray(), ["reasoning_effort"] = "none" };
+            turn.SentRequest = new ModelRequest { Model = model, Messages = [], DecisionContext = captured };
+            env.Ctx.RpcFake.Register("decide.decision", (req, _) =>
+            {
+                Check.Equal("Frozen prefix", req.Params.GetProperty("messages")[0].GetProperty("content").GetString());
+                return Task.FromResult<object?>(new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "todo_0", ["probabilities"] = new JsonObject { ["YES"] = 0.95, ["NO"] = 0.05 } }) });
+            });
+            var hook = env.Ctx.Services.GetAll<IAgentHook>().Single(h => h.Order == 180);
+            await hook.OnAfterToolCallAsync(turn, new ToolCallPart { Id = "commit", Name = "bash", Arguments = "{\"command\":\"git commit -m fix\"}" },
+                new ToolResultPart { CallId = "commit", Name = "bash", Content = "Committed the fix", Details = new JsonObject { ["exitCode"] = 0 } });
+            Check.Equal("pending", Statuses(env.Stored));
+            Check.True(env.Ctx.SessionsFake.GetMessages(env.Session.Id).Any(m => m.Text.Contains("commit check suggests")));
+            Check.Equal("Frozen prefix", captured["messages"]![0]!["content"]!.GetValue<string>());
+            env.Ctx.Unload();
+        });
+
         r.Add("todo: todo_write stores the list in the session meta and echoes it", async () =>
         {
             var env = new Env();

@@ -27,6 +27,13 @@ internal static class GitStatus
     /// <summary>What <c>files.commits</c> answers: the repository (with the git directories that hold its refs and log), and
     /// its commits newest first (null outside a repository).</summary>
     public sealed record CommitsResult(string Repo, string GitDir, string CommonDir, IReadOnlyList<Commit> Commits, bool Reachable);
+    public static async Task<System.Text.Json.Nodes.JsonObject?> PatchAsync(string root, string hash, CancellationToken ct)
+    {
+        if (hash.Length is < 7 or > 64 || !hash.All(Uri.IsHexDigit)) return null;
+        var patch = await GitAsync(root, ct, "show", "--format=fuller", "--stat", "--patch", "--no-ext-diff", "--no-textconv", hash, "--").ConfigureAwait(false);
+        if (patch is null) return null;
+        return new System.Text.Json.Nodes.JsonObject { ["hash"] = hash, ["patch"] = patch[..Math.Min(64000, patch.Length)], ["truncated"] = patch.Length > 64000 };
+    }
 
     public sealed record Result(string Repo, string Root, string? WorkspaceId, string? Branch, int Ahead, int Behind, IReadOnlyList<Change> Files, int Added, int Deleted);
 
@@ -193,9 +200,10 @@ internal static class GitStatus
             timeout.CancelAfter(Timeout);
             try
             {
-                var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
-                _ = process.StandardError.ReadToEndAsync(timeout.Token);
+                var output = ReadBoundedAsync(process.StandardOutput, args[0] == "show" ? 64001 : int.MaxValue, timeout.Token);
+                var errors = ReadBoundedAsync(process.StandardError, 0, timeout.Token);
                 await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                await errors.ConfigureAwait(false);
                 return process.ExitCode == 0 ? await output.ConfigureAwait(false) : null;
             }
             catch (OperationCanceledException)
@@ -205,5 +213,15 @@ internal static class GitStatus
                 return null;
             }
         }
+    }
+
+    private static async Task<string> ReadBoundedAsync(StreamReader reader, int limit, CancellationToken ct)
+    {
+        var text = new StringBuilder();
+        var buffer = new char[4096];
+        int count;
+        while ((count = await reader.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false)) > 0)
+            if (text.Length < limit) text.Append(buffer, 0, Math.Min(count, limit - text.Length));
+        return text.ToString();
     }
 }

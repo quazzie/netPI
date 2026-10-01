@@ -20,6 +20,7 @@ internal sealed class AgentScheduler : IAgentScheduler
 
     private readonly IPluginContext _ctx;
     private readonly Ledger? _usage;
+    private readonly IResourceLeases? _resources;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Pool> _pools = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Every model we have seen (catalog cache + models passed to <see cref="Resolve(ModelInfo)"/>), by ref.</summary>
@@ -33,6 +34,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     {
         _ctx = ctx;
         _usage = usage;
+        _resources = ctx.Services.Get<IResourceLeases>(); // host-owned, lifetime of this host
     }
 
     /// <summary>Delay used to coalesce <c>agents.changed</c> events.</summary>
@@ -125,7 +127,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         public CancellationTokenSource? WaitTimeout { get; set; }
     }
 
-    internal sealed class Lease(AgentScheduler owner, AgentSlotRequest request, string? localModel) : IAgentSlot
+    internal sealed class Lease(AgentScheduler owner, AgentSlotRequest request, string? localModel, IDisposable? physical) : IAgentSlot
     {
         private int _released;
         public string Key { get; } = request.Key;
@@ -142,7 +144,9 @@ internal sealed class AgentScheduler : IAgentScheduler
 
         public void Dispose()
         {
-            if (MarkReleased()) owner.Release(this);
+            if (!MarkReleased()) return;
+            physical?.Dispose();
+            owner.Release(this);
         }
     }
 
@@ -222,13 +226,27 @@ internal sealed class AgentScheduler : IAgentScheduler
     private int? ModelSlots(string? localModel) =>
         localModel is not null && _models.TryGetValue(localModel, out var m) ? LocalCapacity(m) : null;
 
-    private int BusyOn(string localModel) => _pools.Values.Sum(p => p.Owners.Count(o =>
-        string.Equals(o.LocalModel, localModel, StringComparison.OrdinalIgnoreCase)));
+    private int BusyOn(string localModel) => _resources is { } shared
+        ? shared.Snapshot().Count(x => string.Equals(x.Resource, "local:" + localModel, StringComparison.OrdinalIgnoreCase))
+        : _pools.Values.Sum(p => p.Owners.Count(o => string.Equals(o.LocalModel, localModel, StringComparison.OrdinalIgnoreCase)));
+
+    private string ResourceOf(Pool pool) => LocalModelOf(pool) is { } model ? "local:" + model
+        : pool.Configured ? "agent:" + pool.Key : "provider:" + (pool.Provider ?? pool.Key);
+    private int ResourceCapacity(Pool pool) => ModelSlots(LocalModelOf(pool)) ?? pool.Capacity;
+    private int PoolBusy(Pool pool) => _resources is { } shared
+        ? shared.Snapshot().Count(x => string.Equals(x.Key, pool.Key, StringComparison.OrdinalIgnoreCase)) : pool.Owners.Count;
+
+    private Lease? NewLease(Pool pool, AgentSlotRequest request)
+    {
+        IDisposable? physical = null;
+        if (_resources is { } shared && !shared.TryAcquire(ResourceOf(pool), ResourceCapacity(pool), request, pool.Capacity, out physical)) return null;
+        return new Lease(this, request, LocalModelOf(pool), physical);
+    }
 
     /// <summary>A free slot in the pool, and on its model. Caller holds <see cref="_gate"/>.</summary>
     private bool CanGrant(Pool pool)
     {
-        if (pool.Owners.Count >= pool.Capacity) return false;
+        if (PoolBusy(pool) >= pool.Capacity) return false;
         var model = LocalModelOf(pool);
         return ModelSlots(model) is not { } slots || BusyOn(model!) < slots;
     }
@@ -394,6 +412,36 @@ internal sealed class AgentScheduler : IAgentScheduler
     }
 
     /// <summary>The agents (always) and the other slots while they are busy.</summary>
+    public IReadOnlyList<ModelResourceSlots> Resources()
+    {
+        lock (_gate)
+        {
+            var held = _resources?.Snapshot() ?? [];
+            var grouped = _pools.Values.GroupBy(ResourceOf, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in held)
+                if (!grouped.ContainsKey(entry.Resource)) grouped[entry.Resource] = [];
+            return grouped.Select(g =>
+            {
+                var pool = g.Value.FirstOrDefault();
+                var model = g.Key.StartsWith("local:", StringComparison.OrdinalIgnoreCase) ? g.Key[6..] : pool?.Model;
+                var modelInfo = _models.GetValueOrDefault(model ?? "");
+                var canTakeWork = g.Value.Any(p => AvailabilityOf(p).Available)
+                    || pool is null && modelInfo is { Status: null or "loaded" };
+                var unavailable = canTakeWork ? null : pool is null ? "Model is unavailable" : AvailabilityOf(pool).Reason;
+                var owners = _resources is null
+                    ? g.Value.SelectMany(p => p.Owners).Select(o => new SlotHolder { AgentId = o.AgentId, SessionId = o.SessionId, Label = o.Label, Since = o.AcquiredAt }).ToList()
+                    : held.Where(x => string.Equals(x.Resource, g.Key, StringComparison.OrdinalIgnoreCase)).Select(x => x.Holder).ToList();
+                return new ModelResourceSlots
+                {
+                    Key = g.Key, Model = model, Capacity = pool is not null ? ResourceCapacity(pool) : ModelSlots(model) ?? DefaultLocalCapacity,
+                    Busy = owners.Count, Queued = g.Value.Sum(p => p.Waiters.Count), Owners = owners,
+                    Available = canTakeWork,
+                    Unavailable = unavailable,
+                };
+            }).OrderBy(r => r.Key, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+    }
+
     public IReadOnlyList<AgentSlots> Snapshot()
     {
         IReadOnlyList<ModelInfo> cached;
@@ -406,23 +454,32 @@ internal sealed class AgentScheduler : IAgentScheduler
         List<AgentSlots> list;
         lock (_gate)
         {
+            var held = _resources?.Snapshot();
+            var resources = Resources().ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
             list = _pools.Values
-                .Where(p => p.Configured || p.Owners.Count > 0 || p.Waiters.Count > 0)
+                .Where(p => p.Configured || PoolBusy(p) > 0 || p.Waiters.Count > 0)
                 .OrderBy(p => p.Configured ? 0 : 1)
                 .ThenBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
                 .Select(p =>
                 {
                     var (available, reason) = AvailabilityOf(p);
+                    var resource = resources.GetValueOrDefault(ResourceOf(p));
                     var info = new AgentSlots
                     {
+                        Resource = resource?.Key,
+                        ResourceCapacity = resource?.Capacity,
+                        ResourceBusy = resource?.Busy,
+                        ResourceQueued = resource?.Queued,
                         Key = p.Key,
                         Provider = p.Provider,
                         Capacity = p.Capacity,
-                        Busy = p.Owners.Count,
+                        Busy = PoolBusy(p),
                         Queued = p.Waiters.Count,
                         Models = [.. p.Models],
-                        Owners = p.Owners.Select(o => new SlotHolder { AgentId = o.AgentId, SessionId = o.SessionId, Label = o.Label, Since = o.AcquiredAt }).ToList(),
-                        Waiters = p.Waiters.Select(w => new SlotHolder { AgentId = w.Request.AgentId, SessionId = w.Request.SessionId, Label = w.Request.Label, Since = w.Since }).ToList(),
+                        Owners = held is null ? p.Owners.Select(o => new SlotHolder { AgentId = o.AgentId, SessionId = o.SessionId, Label = o.Label, Since = o.AcquiredAt }).ToList()
+                            : held.Where(x => string.Equals(x.Key, p.Key, StringComparison.OrdinalIgnoreCase)).Select(x => x.Holder).ToList(),
+                        Waiters = p.Waiters.Select(w => new SlotHolder { AgentId = w.Request.AgentId, SessionId = w.Request.SessionId, Label = w.Request.Label, Since = w.Since, Priority = w.Request.Priority,
+                            WaitingFor = p.Configured && PoolBusy(p) >= p.Capacity ? "agent instances" : resource?.Busy >= resource?.Capacity ? "model capacity" : "earlier queued work" }).ToList(),
                         Source = p.Source,
                         Status = StatusOf(p, available),
                         Configured = p.Configured,
@@ -456,12 +513,13 @@ internal sealed class AgentScheduler : IAgentScheduler
         return list;
     }
 
-    private static string StatusOf(Pool p, bool available)
+    private string StatusOf(Pool p, bool available)
     {
-        if (p.Retired) return p.Owners.Count > 0 ? "retiring" : "retired";
+        var busy = PoolBusy(p);
+        if (p.Retired) return busy > 0 ? "retiring" : "retired";
         if (p.Waiters.Count > 0) return "queued";
-        if (p.Owners.Count >= p.Capacity) return "full";
-        if (p.Owners.Count > 0) return "busy";
+        if (busy >= p.Capacity) return "full";
+        if (busy > 0) return "busy";
         if (p.Disabled) return "disabled";
         return available ? "idle" : "unavailable";
     }
@@ -476,7 +534,8 @@ internal sealed class AgentScheduler : IAgentScheduler
             var pool = GetOrCreate(request.Key, request.Provider);
             Pump();
             if (!AvailabilityOf(pool).Available || pool.Waiters.Count > 0 || !CanGrant(pool)) return false;
-            var l = new Lease(this, request, LocalModelOf(pool));
+            var l = NewLease(pool, request);
+            if (l is null) return false;
             pool.Owners.Add(l);
             lease = l;
         }
@@ -517,10 +576,13 @@ internal sealed class AgentScheduler : IAgentScheduler
             Pump();
             if (pool.Waiters.Count == 0 && CanGrant(pool))
             {
-                var lease = new Lease(this, request, LocalModelOf(pool));
-                pool.Owners.Add(lease);
-                SchedulePublish();
-                return ValueTask.FromResult<IAgentSlot>(lease);
+                var lease = NewLease(pool, request);
+                if (lease is not null)
+                {
+                    pool.Owners.Add(lease);
+                    SchedulePublish();
+                    return ValueTask.FromResult<IAgentSlot>(lease);
+                }
             }
             if (pool.Waiters.Count >= maxWaiters)
                 throw new AgentUnavailableException(QueueFull(pool, maxWaiters));
@@ -528,9 +590,15 @@ internal sealed class AgentScheduler : IAgentScheduler
             // priority desc, then FIFO
             var index = pool.Waiters.FindIndex(w => w.Request.Priority < request.Priority);
             if (index < 0) pool.Waiters.Add(waiter); else pool.Waiters.Insert(index, waiter);
+            AttachWaiter(waiter, ct);
         }
-        if (ct.CanBeCanceled)
-            waiter.Registration = ct.Register(() => Cancel(waiter, ct));
+        SchedulePublish();
+        return new ValueTask<IAgentSlot>(waiter.Tcs.Task);
+    }
+
+    // Queue publication and cleanup attachment share the gate; no terminal path can race a late attachment.
+    private void AttachWaiter(Waiter waiter, CancellationToken ct)
+    {
         var queueTimeout = QueueTimeoutSeconds();
         if (queueTimeout is > 0)
         {
@@ -548,12 +616,17 @@ internal sealed class AgentScheduler : IAgentScheduler
                     StopWaitTimeout(w);
                     w.Registration.Unregister();
                     tcs.TrySetException(new AgentUnavailableException(QueueTimedOut(w.Request.Key, queueTimeout)));
+                    SchedulePublish();
                 }
                 // No ExecuteSynchronously: this runs on the pool, so a Cancel from a path holding _gate cannot deadlock.
             }, TaskScheduler.Default);
         }
-        SchedulePublish();
-        return new ValueTask<IAgentSlot>(waiter.Tcs.Task);
+        if (ct.CanBeCanceled)
+        {
+            waiter.Registration = ct.Register(() => Cancel(waiter, ct));
+            // An already-cancelled token invokes Cancel inline, before Register returns its handle.
+            if (waiter.Tcs.Task.IsCompleted) waiter.Registration.Unregister();
+        }
     }
 
     private string? ProviderOf(string poolKey)
@@ -576,6 +649,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         }
         if (removed)
         {
+            waiter.Registration.Unregister();
             StopWaitTimeout(waiter);
             waiter.Tcs.TrySetCanceled(ct);
             SchedulePublish();
@@ -587,7 +661,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         lock (_gate)
         {
             if (!_pools.TryGetValue(lease.Key, out var pool) || !pool.Owners.Remove(lease)) return;
-            Pump();
+            if (!_stopped) Pump();
             if (!pool.Configured && pool.Owners.Count == 0 && pool.Waiters.Count == 0) _pools.Remove(pool.Key);
         }
         SchedulePublish();
@@ -606,14 +680,15 @@ internal sealed class AgentScheduler : IAgentScheduler
             if (pool is null) return;
             var w = pool.Waiters[0];
             pool.Waiters.RemoveAt(0);
+            var lease = NewLease(pool, w.Request);
+            if (lease is null) { pool.Waiters.Insert(0, w); return; }
             w.Registration.Unregister(); // never Dispose under the lock: it would wait for a running callback
             StopWaitTimeout(w);
-            var lease = new Lease(this, w.Request, LocalModelOf(pool));
             pool.Owners.Add(lease);
             if (!w.Tcs.TrySetResult(lease))
             {
                 pool.Owners.Remove(lease);
-                lease.MarkReleased();
+                lease.Dispose();
             }
         }
     }
@@ -633,7 +708,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         cts.Dispose();
     }
 
-    /// <summary>Plugin stop: fail all waiters and forget all leases (their owners re-acquire from the next scheduler).</summary>
+    /// <summary>Fail waiters; active calls keep their host leases until their owners dispose them.</summary>
     public void Stop()
     {
         List<Waiter> waiters = [];
@@ -644,8 +719,6 @@ internal sealed class AgentScheduler : IAgentScheduler
             {
                 waiters.AddRange(pool.Waiters);
                 pool.Waiters.Clear();
-                foreach (var o in pool.Owners) o.MarkReleased();
-                pool.Owners.Clear();
             }
         }
         foreach (var w in waiters)
@@ -674,7 +747,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         try
         {
             var pools = Snapshot();
-            _ctx.Events.Publish(EventTypes.AgentsChanged, new JsonObject { ["agents"] = NetPiJson.ToNode(pools) });
+            _ctx.Events.Publish(EventTypes.AgentsChanged, new JsonObject { ["agents"] = NetPiJson.ToNode(pools), ["resources"] = NetPiJson.ToNode(Resources()) });
         }
         catch (Exception ex)
         {

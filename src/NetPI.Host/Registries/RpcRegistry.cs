@@ -12,6 +12,7 @@ internal sealed class RpcRegistry : IRpcRegistry
 
     private readonly Lock _gate = new();
     private readonly Dictionary<string, List<Entry>> _methods = new(StringComparer.Ordinal);
+    public event Action<string>? Changed;
 
     public IDisposable Register(string method, RpcHandler handler, string? description = null) =>
         Register(method, handler, description, "host", false);
@@ -29,6 +30,7 @@ internal sealed class RpcRegistry : IRpcRegistry
             if (!_methods.TryGetValue(entry.Method, out var stack)) _methods[entry.Method] = stack = [];
             stack.Add(entry);
         }
+        Changed?.Invoke(entry.Method);
         return new Registration(() =>
         {
             lock (_gate)
@@ -37,6 +39,7 @@ internal sealed class RpcRegistry : IRpcRegistry
                 stack.Remove(entry);
                 if (stack.Count == 0) _methods.Remove(entry.Method);
             }
+            Changed?.Invoke(entry.Method);
         });
     }
 

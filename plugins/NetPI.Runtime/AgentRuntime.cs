@@ -573,6 +573,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         if (rc is not null)
         {
             rc.Outcome = outcome;
+            rc.CancelReason = run.CancelReason;
             rc.Error = error;
             foreach (var hook in Hooks())
             {
@@ -713,6 +714,20 @@ internal sealed class AgentRuntime : IAgentRuntime
             var scheduler = Ctx.Services.Get<IAgentScheduler>();
             if (scheduler is null)
             {
+                if (model.IsLocal && Ctx.Services.Get<IResourceLeases>() is { } physical)
+                {
+                    var capacity = model.Concurrency is > 0 ? model.Concurrency.Value : Math.Max(1, IntSetting("models.localSlots", 2));
+                    if (!physical.TryAcquire("local:" + model.Ref, capacity, new AgentSlotRequest
+                        { Key = model.Ref, AgentId = s.Info.Id, SessionId = s.Info.SessionId, Label = s.Info.Name, Priority = priority, Provider = model.Provider }, capacity, out var held))
+                    {
+                        SetStatus(s, AgentStatus.Queued, "waiting for model capacity");
+                        await Task.Delay(50, ct).ConfigureAwait(false);
+                        continue; // Also re-resolve a scheduler that returned during the gap.
+                    }
+                    run.Model = model;
+                    SetStatus(s, AgentStatus.Running, null, keepActivity: true);
+                    return new PhysicalSlot(held!, model.Ref, s.Info.Id);
+                }
                 Update(s, i => i.Agent = null);
                 run.Model = model;
                 SetStatus(s, AgentStatus.Running, null, keepActivity: true);
@@ -753,6 +768,15 @@ internal sealed class AgentRuntime : IAgentRuntime
     }
 
     // ---------------------------------------------------------------- spawn / wait / message / abort
+    private sealed class PhysicalSlot(IDisposable held, string key, string agentId) : IAgentSlot
+    {
+        private int _released;
+        public string Key => key;
+        public string AgentId => agentId;
+        public DateTimeOffset AcquiredAt { get; } = DateTimeOffset.UtcNow;
+        public bool IsReleased => Volatile.Read(ref _released) != 0;
+        public void Dispose() { if (Interlocked.Exchange(ref _released, 1) == 0) held.Dispose(); }
+    }
 
     public async Task<AgentInfo> SpawnAsync(SpawnRequest request, CancellationToken ct = default)
     {
@@ -1225,9 +1249,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         {
             Ctx.Logger.LogWarning(ex, "Some agent runs did not stop in time");
         }
-        foreach (var r in runs)
-        {
-            try { r.Lease?.Dispose(); } catch { }
-        }
+        // EndRunAsync releases admission after the provider has actually returned. A shutdown
+        // timeout cannot make a still-running call disappear from the host's physical count.
     }
 }

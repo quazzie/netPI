@@ -138,6 +138,8 @@ internal sealed class HostKernel : IAsyncDisposable
         }));
         _subscriptions.Add(Bus.Subscribe(EventTypes.ModelsChanged, Models.OnModelsChanged));
         Services.Changed += Models.OnServiceChanged;
+        Services.Changed += type => Bus.Publish("services.changed", new { contract = type.FullName });
+        Rpc.Changed += method => Bus.Publish("rpc.changed", new { method });
 
         // Host services, also reachable through IServiceRegistry (e.g. from a ToolContext).
         _subscriptions.Add(Services.Register<IPluginManager>(Plugins));
@@ -147,6 +149,7 @@ internal sealed class HostKernel : IAsyncDisposable
         _subscriptions.Add(Services.Register<ISettings>(Settings));
         _subscriptions.Add(Services.Register<IDatabase>(Db));
         _subscriptions.Add(Services.Register<IEventBus>(Bus));
+        _subscriptions.Add(Services.Register<IResourceLeases>(new ResourceLeases(Bus)));
         _subscriptions.Add(Services.Register<IToolRegistry>(Tools));
         _subscriptions.Add(Services.Register<IRpcRegistry>(Rpc));
         _subscriptions.Add(Services.Register<IUiRegistry>(Ui));

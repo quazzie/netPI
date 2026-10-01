@@ -53,6 +53,7 @@ seed();
 // ------------------------------------------------------------------------------------------ event bus
 const clients = new Set();
 const wsLog = []; // the last rpc frames clients sent (mock.wsLog), so a frame that never arrived is visible in a failed e2e run
+let missingMethods = new Set();
 let seq = 0;
 const recent = [];
 
@@ -533,7 +534,8 @@ const handlers = {
   },
 
   'tools.list': () => toolRows(),
-  'rpc.list': () => Object.keys(handlers).map((method) => ({ method, description: '', pluginId: 'mock' })),
+  'rpc.list': () => Object.keys(handlers).filter((method) => !missingMethods.has(method)).map((method) => ({ method, description: '', pluginId: 'mock' })),
+  'mock.capabilities': (p = {}) => { missingMethods = new Set(p.missing ?? []); publish('rpc.changed', {}); return true; },
   'events.recent': (p = {}) => recent.slice(-(p.max ?? 100)),
 
   // --- agent plugin
@@ -619,6 +621,8 @@ const handlers = {
   // like the Work plugin: agents.list and usage.summary
   'work.snapshot': () => ({
     agents: agentPools(),
+    resources: [{ key: 'local:aiproxy/qwen3.8-27b', model: 'aiproxy/qwen3.8-27b', capacity: 2, busy: 2, queued: 1, available: true, owners: [] }],
+    ideasWork: [{ id: 'mock-verifier-dropped', purpose: 'Verify idea completion', model: 'aiproxy/qwen3.8-27b', status: 'dropped', reason: 'Model capacity did not open before the deadline', finishedAt: new Date().toISOString() }],
     runs: [...store.agents.values()],
     processes: work.procList(),
     usage: { ...work.usageSummary(), budget: budgetStatus(), models: MOCK_SPEND },
@@ -960,7 +964,7 @@ const handlers = {
 
 async function dispatch(m, p) {
   const h = handlers[m];
-  if (!h) throw new RpcError('method_not_found', `Unknown method: ${m}`);
+  if (!h || missingMethods.has(m)) throw new RpcError('method_not_found', `Unknown method: ${m}`);
   return await h(p ?? {});
 }
 

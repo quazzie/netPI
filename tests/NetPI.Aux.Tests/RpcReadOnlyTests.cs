@@ -20,7 +20,7 @@ public static class RpcReadOnlyTests
 
             var views = flags.Keys.Where(m => m.StartsWith("diag.", StringComparison.Ordinal)).OrderBy(m => m, StringComparer.Ordinal).ToArray();
             // Every method the plugin registers is accounted for here, so a new one cannot slip in unmarked.
-            Check.Equal(16, views.Length, "diag.* methods registered");
+            Check.Equal(17, views.Length, "diag.* methods registered");
             foreach (var m in views.Where(m => m != "diag.reload"))
                 Check.True(flags[m], $"{m} only reads, so it is marked read-only");
             Check.False(flags["diag.reload"], "diag.reload reloads plugins — it changes the app, so the tools may not call it");

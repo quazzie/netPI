@@ -17,7 +17,26 @@ public sealed class AgentToolsPlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
-        foreach (var tool in CreateTools(context)) context.Tools.Register(tool);
+        var gate = new object();
+        var registrations = new List<IDisposable>();
+        void Refresh()
+        {
+            lock (gate)
+            {
+                if (context.Stopping.IsCancellationRequested) return;
+                var available = context.Services.Get<IAgentRuntime>() is not null;
+                if (available && registrations.Count == 0)
+                    foreach (var tool in CreateTools(context)) registrations.Add(context.Tools.Register(tool));
+                else if (!available && registrations.Count > 0)
+                {
+                    foreach (var registration in registrations) registration.Dispose();
+                    registrations.Clear();
+                }
+            }
+        }
+        context.Events.Subscribe("services.changed", _ => Refresh());
+        context.Events.Subscribe(EventTypes.PluginsChanged, _ => Refresh());
+        Refresh();
         return Task.CompletedTask;
     }
 }
