@@ -18,6 +18,7 @@ public static class SubagentTests
         t.Add("subagents: failed subagent reports failure", FailedChild);
         t.Add("subagents: agent tools list / result / cancel / agent_choices", ToolsMisc);
         t.Add("subagents: a chat on a local agent spawns onto an agent on another provider; the subagent keeps that agent", SpawnOntoConfiguredPool);
+        t.Add("subagents: inherit the parent's effective named-agent model and reasoning", InheritEffectiveModel);
         t.Add("subagents: one agent_spawn starts several together; waiting frees the caller's instance for one of them", BatchSpawn);
         t.Add("subagents: a batch with a bad entry starts none of them", BatchRefused);
         t.Add("subagents: agent_wait without ids also returns a report that arrived while the parent was busy, once", ReportBeforeWait);
@@ -416,6 +417,42 @@ public static class SubagentTests
         Check.Equal("main", SessionAgent.Of(h.Sessions.GetSession(parent.Id)));
         await Wait.Until(() => h.Messages(parent.Id).Any(m => m.Role == MessageRole.Assistant && m.Text == "thanks"), "the parent got the report");
         Check.Equal("fake/local", h.Catalog.Requests.First(r => r.SessionId == parent.Id).Model.Ref);
+    }
+
+    private static async Task InheritEffectiveModel()
+    {
+        foreach (var defaultRef in new string?[] { "fake/local", null })
+        {
+            await using var h = await TestHost.StartAsync(x =>
+            {
+                x.Settings.SetQuiet("agents.main", JsonNode.Parse("""{ "model": "fake/local" }"""));
+                x.Settings.SetQuiet("agents.stealth", JsonNode.Parse("""{ "model": "cloud/big", "instances": 2 }"""));
+                x.Catalog.DefaultModelRef = defaultRef;
+            });
+            var parent = h.Sessions.CreateSession(new SessionInfo
+            {
+                Title = "named agent", Reasoning = "high", Meta = new JsonObject { [SessionAgent.MetaKey] = "stealth" },
+            });
+            h.Catalog.Handler = (r, ct) => Reply.Text("done");
+            await h.SendAsync(parent.Id, "hello");
+            var p = await h.IdleAsync(parent.Id);
+            Check.Equal("cloud/big", h.Catalog.Requests.First().Model.Ref);
+            Check.True(h.Sessions.GetSession(parent.Id)!.Model is null, "selection remains in meta.agent");
+            var child = await h.Runtime.SpawnAsync(new SpawnRequest { Task = "inherited", ParentAgentId = p.Id, NotifyParent = false });
+            await h.StatusAsync(child.Id, AgentStatus.Completed);
+            var request = h.Catalog.Requests.Single(r => r.SessionId == child.SessionId);
+            Check.Equal("cloud/big", request.Model.Ref);
+            Check.Equal("high", request.ReasoningEffort);
+
+            // A bare id naming the same model inherits effort; an explicit different model does not.
+            var same = await h.Runtime.SpawnAsync(new SpawnRequest { Task = "same", Model = "big", ParentAgentId = p.Id, NotifyParent = false });
+            await h.StatusAsync(same.Id, AgentStatus.Completed);
+            Check.Equal("high", h.Catalog.Requests.Single(r => r.SessionId == same.SessionId).ReasoningEffort);
+            var other = await h.Runtime.SpawnAsync(new SpawnRequest { Task = "other", Model = "fake/local", Reasoning = "low", ParentAgentId = p.Id, NotifyParent = false });
+            await h.StatusAsync(other.Id, AgentStatus.Completed);
+            Check.Equal("fake/local", h.Catalog.Requests.Single(r => r.SessionId == other.SessionId).Model.Ref);
+            Check.Equal("low", h.Catalog.Requests.Single(r => r.SessionId == other.SessionId).ReasoningEffort);
+        }
     }
 
     private static async Task SpawnOptions()

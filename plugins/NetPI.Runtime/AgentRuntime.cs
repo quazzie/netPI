@@ -784,7 +784,10 @@ internal sealed class AgentRuntime : IAgentRuntime
             throw new ArgumentException($"Unknown agent '{request.Agent}'. agent_choices lists the agents.");
         else
             modelRef = await ResolveSpawnModelAsync(request.Model, parentSession, ct).ConfigureAwait(false);
-        var reasoning = request.Reasoning ?? (string.Equals(modelRef, parentSession?.Model, StringComparison.OrdinalIgnoreCase) ? parentSession?.Reasoning : null);
+        var parentRef = parentSession is null ? null : await SessionModel.ResolveRefAsync(parentSession, Ctx.Models,
+            Ctx.Settings, Ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
+        var parentModel = parentRef is null ? null : await Ctx.Models.FindAsync(parentRef, ct).ConfigureAwait(false);
+        var reasoning = request.Reasoning ?? (string.Equals(modelRef, parentModel?.Ref, StringComparison.OrdinalIgnoreCase) ? parentSession?.Reasoning : null);
 
         var id = Ids.New("agt");
         var n = Interlocked.Increment(ref _spawnCounter);
@@ -927,7 +930,13 @@ internal sealed class AgentRuntime : IAgentRuntime
 
     private async Task<string?> ResolveSpawnModelAsync(string? requested, SessionInfo? parentSession, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(requested)) return parentSession?.Model;
+        if (string.IsNullOrWhiteSpace(requested))
+        {
+            var inherited = await SessionModel.ResolveRefAsync(parentSession, Ctx.Models, Ctx.Settings,
+                Ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
+            if (inherited is null) return null;
+            return (await Ctx.Models.FindAsync(inherited, ct).ConfigureAwait(false))?.Ref ?? inherited;
+        }
         requested = requested.Trim();
         ModelInfo? found = null;
         try { found = await Ctx.Models.FindAsync(requested, ct).ConfigureAwait(false); } catch (Exception ex) when (ex is not OperationCanceledException) { }
@@ -937,7 +946,8 @@ internal sealed class AgentRuntime : IAgentRuntime
             .FirstOrDefault(p => string.Equals(p.Key, requested, StringComparison.OrdinalIgnoreCase));
         if (pool is { Models.Count: > 0 })
         {
-            var parentRef = parentSession?.Model ?? Ctx.Models.DefaultModelRef;
+            var parentRef = await SessionModel.ResolveRefAsync(parentSession, Ctx.Models, Ctx.Settings,
+                Ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
             if (parentRef is not null && pool.Models.Contains(parentRef, StringComparer.OrdinalIgnoreCase)) return parentRef;
             var cached = Ctx.Models.Cached;
             var best = pool.Models

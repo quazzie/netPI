@@ -90,6 +90,31 @@ public static class CompactionTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("compaction: resolve the effective named-agent model without silently switching models", async () =>
+        {
+            var e = new Env();
+            var selected = T.Model("selected", 80_000, "test", "high");
+            e.Ctx.ModelsFake.Models.Add(selected);
+            e.Ctx.Settings.Set("agents.research.model", JsonValue.Create(selected.Ref));
+            e.Session.Model = null;
+            e.Session.Meta = new JsonObject { [SessionAgent.MetaKey] = "research" };
+            Check.Equal(selected.Ref, (await e.Service.ResolveSessionModelAsync(e.Session, default))?.Ref);
+            e.Ctx.ModelsFake.DefaultModelRef = null;
+            Check.Equal(selected.Ref, (await e.Service.ResolveSessionModelAsync(e.Session, default))?.Ref);
+            e.Session.Model = e.Model.Ref;
+            Check.Equal(e.Model.Ref, (await e.Service.ResolveSessionModelAsync(e.Session, default))?.Ref, "stored model wins");
+            e.Session.Model = "missing/model";
+            Check.True(await e.Service.ResolveSessionModelAsync(e.Session, default) is null, "unavailable selection is not another model");
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            try
+            {
+                await e.Service.ResolveSessionModelAsync(e.Session, cancelled.Token);
+                throw new AssertException("expected cancellation");
+            }
+            catch (OperationCanceledException) { }
+        });
+
         r.Add("compaction: planner never splits tool calls from their results (randomized)", () =>
         {
             var rnd = new Random(1234);
