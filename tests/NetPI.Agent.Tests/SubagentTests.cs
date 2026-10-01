@@ -31,13 +31,17 @@ public static class SubagentTests
     private static async Task ReportBeforeWait()
     {
         await using var h = await TestHost.StartAsync();
+        // The parent keeps thinking while both children run. With only two slots, starting the slow child first
+        // would block the quick child, while the parent waits for quick before releasing slow: a test deadlock.
+        h.Catalog.Cached.Single(m => m.Ref == "fake/local").Concurrency = 3;
         var slowGate = new TaskCompletionSource();
+        var quickGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var seen = new List<string>();
         h.Catalog.Handler = (r, ct) =>
         {
             if (IsChild(r))
                 return Reply.LastUser(r).Contains("quick")
-                    ? Reply.Text("QUICK REPORT", async _ => { await Task.Yield(); })
+                    ? Reply.Text("QUICK REPORT", c => quickGate.Task.WaitAsync(c))
                     : Reply.Text("SLOW REPORT", c => slowGate.Task.WaitAsync(c));
             var transcript = string.Join("\n", r.Messages.Select(m => string.Join("\n", m.ToolResults.Select(x => x.Content).Prepend(m.Text))));
             lock (seen) seen.Add(transcript);
@@ -48,8 +52,10 @@ public static class SubagentTests
                 // the parent thinks until the quick one is done, then waits
                 return Reply.Stream(Reply.Message([Reply.Call("agent", new { action = "wait" })]), async c =>
                 {
-                    while (!h.Runtime.List(true).Any(a => a.Name == "quick" && a.Status == AgentStatus.Completed)) await Task.Delay(10, c);
-                    await Task.Delay(100, c);
+                    // Hold quick until this model call is in flight, so its notification cannot have been
+                    // consumed before the state this test is meant to exercise.
+                    quickGate.TrySetResult();
+                    while (!h.Runtime.GetQueue(r.SessionId!).Any(i => i.Text.Contains("QUICK REPORT"))) await Task.Delay(10, c);
                     slowGate.TrySetResult();
                 });
             return Reply.Text("both in");
