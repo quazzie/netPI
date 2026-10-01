@@ -17,8 +17,10 @@ internal sealed class ServerManager : IAsyncDisposable
         public bool Disconnected;
         public bool Retiring;
         public List<JsonObject> RawCatalog = [];
+        public List<JsonObject> RawResources = [];
         public JsonArray Rejected = [];
         public Dictionary<string, (RemoteTool Tool, IDisposable Handle)> Catalog = new(StringComparer.Ordinal);
+        public Dictionary<string, RemoteResource> Resources = new(StringComparer.Ordinal);
         public readonly CancellationTokenSource Stop = new();
         public readonly Channel<Command> Commands = Channel.CreateBounded<Command>(new BoundedChannelOptions(16) { FullMode = BoundedChannelFullMode.Wait });
         public Task Worker = Task.CompletedTask;
@@ -92,9 +94,9 @@ internal sealed class ServerManager : IAsyncDisposable
                 if (old is not null && JsonNode.DeepEquals(old.Config.Json(), config.Json())) continue;
                 var next = new State(config);
                 // Keep the known catalog during an outage, including updated local exposure/pin policy.
-                List<JsonObject>? known = null;
-                lock (_gate) if (old is not null) { old.Retiring = true; known = old.RawCatalog; }
-                if (known is not null && config.Enabled) Apply(next, known, "configuration");
+                List<JsonObject>? known = null; List<JsonObject>? knownResources = null;
+                lock (_gate) if (old is not null) { old.Retiring = true; known = old.RawCatalog; knownResources = old.RawResources; }
+                if (known is not null && config.Enabled) Apply(next, known, knownResources ?? [], "configuration");
                 if (config.Enabled)
                 {
                     try { await ConnectAsync(next, "configuration", ct).ConfigureAwait(false); }
@@ -131,7 +133,8 @@ internal sealed class ServerManager : IAsyncDisposable
             line => _ctx.Logger.LogDebug("MCP {Server}: {Line}", state.Config.Id, line));
         candidate.Transport.Notification += m =>
         {
-            if (m["method"]?.GetValue<string>() == "notifications/tools/list_changed")
+            // Both notifications mean the same thing to us: re-read the catalogs.
+            if (m["method"]?.GetValue<string>() is "notifications/tools/list_changed" or "notifications/resources/list_changed")
                 state.Commands.Writer.TryWrite(new Command("catalog-refresh", false));
         };
         candidate.Transport.Closed += _ =>
@@ -147,15 +150,17 @@ internal sealed class ServerManager : IAsyncDisposable
             await candidate.InitializeAsync(timeout.Token).ConfigureAwait(false);
             var raw = await candidate.ListAsync(Limit("mcp.maxCatalogTools", 10000, 1, 10000),
                 Limit("mcp.maxCatalogChars", 8_000_000, 4096, 32_000_000), timeout.Token).ConfigureAwait(false);
+            var resources = await candidate.ListResourcesAsync(Limit("mcp.maxResourceEntries", 2000, 1, 20000),
+                Limit("mcp.maxResourceCatalogChars", 2_000_000, 4096, 16_000_000), timeout.Token).ConfigureAwait(false);
             var old = state.Connection;
             state.Connection = candidate; state.Disconnected = false; state.Generation++;
-            Apply(state, raw, reason);
+            Apply(state, raw, resources, reason);
             SetStatus(state, "connected", null);
             if (old is not null) await old.DisposeAsync().ConfigureAwait(false);
         }
         catch { await candidate.DisposeAsync().ConfigureAwait(false); throw; }
     }
-    private void Apply(State state, List<JsonObject> raw, string reason)
+    private void Apply(State state, List<JsonObject> raw, List<JsonObject> rawResources, string reason)
     {
         var replacements = new Dictionary<string, RemoteTool>(StringComparer.Ordinal);
         var rejected = new JsonArray();
@@ -179,7 +184,7 @@ internal sealed class ServerManager : IAsyncDisposable
         lock (_gate)
         {
             if (state.Retiring) return;
-            state.RawCatalog = raw; state.Rejected = rejected;
+            state.RawCatalog = raw; state.RawResources = rawResources; state.Rejected = rejected;
             foreach (var (id, tool) in replacements)
             {
                 if (state.Catalog.TryGetValue(id, out var current) && current.Tool.Definition.Revision == tool.Definition.Revision) continue;
@@ -198,6 +203,27 @@ internal sealed class ServerManager : IAsyncDisposable
             {
                 state.Catalog[id].Handle.Dispose(); state.Catalog.Remove(id); removed.Add(id);
             }
+            // Resources carry no registration handle: the catalog is what mcp_search and mcp_resource read.
+            var exposed = new Dictionary<string, RemoteResource>(StringComparer.Ordinal);
+            foreach (var value in rawResources)
+            {
+                RemoteResource resource;
+                try
+                {
+                    var uri = value["uri"]?.GetValue<string>() ?? "";
+                    if (!state.Config.ExposesResource(uri)) continue;
+                    resource = new RemoteResource(state.Config, value);
+                }
+                catch (Exception ex)
+                {
+                    var error = state.Config.Redact(ex.Message);
+                    rejected.Add(new JsonObject { ["name"] = value["uri"]?.ToJsonString() ?? "resource", ["error"] = error });
+                    _ctx.Logger.LogWarning("MCP {Server}: rejected resource {Uri}: {Reason}", state.Config.Id, value["uri"]?.ToJsonString(), error);
+                    continue;
+                }
+                exposed[resource.Uri] = resource;
+            }
+            state.Resources = exposed;
         }
         if (added.Count + removed.Count + updated.Count > 0)
             _ctx.Events.Publish("mcp.toolsChanged", new JsonObject
@@ -213,6 +239,7 @@ internal sealed class ServerManager : IAsyncDisposable
             removed = state.Catalog.Keys.ToArray();
             foreach (var entry in state.Catalog.Values) entry.Handle.Dispose();
             state.Catalog.Clear();
+            state.Resources.Clear();
         }
         if (removed.Length > 0) _ctx.Events.Publish("mcp.toolsChanged", new JsonObject { ["serverId"] = state.Config.Id,
             ["reason"] = reason, ["generation"] = state.Generation, ["added"] = new JsonArray(), ["updated"] = new JsonArray(), ["removed"] = ServerConfig.Array(removed) });
@@ -256,7 +283,9 @@ internal sealed class ServerManager : IAsyncDisposable
                         refresh.CancelAfter(state.Config.ConnectTimeoutMs);
                         var raw = await state.Connection.ListAsync(Limit("mcp.maxCatalogTools", 10000, 1, 10000),
                             Limit("mcp.maxCatalogChars", 8_000_000, 4096, 32_000_000), refresh.Token).ConfigureAwait(false);
-                        Apply(state, raw, command.Reason);
+                        var resources = await state.Connection.ListResourcesAsync(Limit("mcp.maxResourceEntries", 2000, 1, 20000),
+                            Limit("mcp.maxResourceCatalogChars", 2_000_000, 4096, 16_000_000), refresh.Token).ConfigureAwait(false);
+                        Apply(state, raw, resources, command.Reason);
                     }
                     backoff = 1; command.Done?.TrySetResult();
                 }
@@ -302,6 +331,11 @@ internal sealed class ServerManager : IAsyncDisposable
     {
         lock (_gate) return _states.Values.SelectMany(s => s.Catalog.Values.Select(e => e.Tool)).OrderBy(t => t.Definition.Name, StringComparer.Ordinal).ToList();
     }
+    public IReadOnlyList<RemoteResource> Resources(string? server)
+    {
+        lock (_gate) return _states.Values.Where(s => server is null || s.Config.Id == server)
+            .SelectMany(s => s.Resources.Values).OrderBy(r => r.Uri, StringComparer.Ordinal).ToList();
+    }
     public IReadOnlyList<RemoteTool> Inventory(string? server)
     {
         lock (_gate)
@@ -316,12 +350,17 @@ internal sealed class ServerManager : IAsyncDisposable
     public bool Exposed(RemoteTool tool) { lock (_gate) return _states.GetValueOrDefault(tool.ServerId)?.Catalog.ContainsKey(tool.Definition.Name) == true; }
     public bool Available(string server) { lock (_gate) return _states.TryGetValue(server, out var s) && s.Status == "connected" && !s.Disconnected; }
     public RemoteTool? Find(string id) { lock (_gate) return _states.Values.Select(s => s.Catalog.GetValueOrDefault(id).Tool).FirstOrDefault(t => t is not null); }
+    public RemoteResource? FindResource(string uri, string? server)
+    {
+        lock (_gate) return _states.Values.Where(s => server is null || s.Config.Id == server)
+            .Select(s => s.Resources.GetValueOrDefault(uri)).FirstOrDefault(r => r is not null);
+    }
     public JsonObject Snapshot()
     {
         lock (_gate) return new JsonObject { ["servers"] = new JsonArray(_states.Values.OrderBy(s => s.Config.Id, StringComparer.Ordinal).Select(s => (JsonNode)new JsonObject
         {
             ["id"] = s.Config.Id, ["status"] = s.Status, ["error"] = s.Error, ["generation"] = s.Generation,
-            ["toolCount"] = s.Catalog.Count, ["rejected"] = s.Rejected.DeepClone(), ["version"] = s.Connection?.Transport.Version, ["config"] = s.Config.Json(),
+            ["toolCount"] = s.Catalog.Count, ["resourceCount"] = s.Resources.Count, ["rejected"] = s.Rejected.DeepClone(), ["version"] = s.Connection?.Transport.Version, ["config"] = s.Config.Json(),
         }).Concat(_invalid.Select(p => (JsonNode)new JsonObject { ["id"] = p.Key, ["status"] = "invalid", ["error"] = p.Value })).ToArray()) };
     }
     public async Task<ToolResult> CallAsync(RemoteTool tool, JsonElement args, CancellationToken ct)
@@ -347,6 +386,37 @@ internal sealed class ServerManager : IAsyncDisposable
         { return ToolResult.Error("MCP call timed out or the server stopped. Its side effect may have happened; the call was not replayed."); }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { return ToolResult.Error("MCP " + tool.ServerId + "/" + tool.RemoteName + ": " + state.Config.Redact(ex.Message)); }
+        finally { lock (_gate) if (--state.Calls == 0) state.Idle.TrySetResult(); }
+    }
+    /// <summary>
+    /// Reads one advertised resource. The URI is the gate: a resource the server did not list is never requested, so
+    /// a link that merely appears in a tool result is not fetched, and a per-server allow-list removes it upstream of
+    /// here. Binary contents stay out of model text, exactly as in a tool result.
+    /// </summary>
+    public async Task<ToolResult> ReadResourceAsync(RemoteResource resource, CancellationToken ct)
+    {
+        State state; McpConnection connection;
+        lock (_gate)
+        {
+            state = _states.GetValueOrDefault(resource.ServerId) ?? throw new McpException("MCP server was removed.");
+            if (!state.Config.Enabled || state.Status != "connected" || state.Disconnected || state.Connection is null)
+                throw new McpException("MCP server " + resource.ServerId + " is unavailable. Reconnect before retrying.");
+            if (!state.Resources.ContainsKey(resource.Uri)) throw new McpException("MCP resource " + resource.Uri + " is no longer advertised. Search again.");
+            connection = state.Connection;
+            if (state.Calls++ == 0) state.Idle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, _stop.Token, state.Stop.Token);
+        timeout.CancelAfter(state.Config.CallTimeoutMs);
+        try
+        {
+            var result = await connection.ReadResourceAsync(resource.Uri, timeout.Token).ConfigureAwait(false);
+            return ResourceReader.Convert(result, resource, Limit("mcp.maxResourceChars", 20000, 1024, 200000),
+                Limit("mcp.maxBinaryBytes", 2_000_000, 1024, 8_000_000), _ctx.Paths.TempDir);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        { return ToolResult.Error("MCP resource read timed out or the server stopped."); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { return ToolResult.Error("MCP " + resource.ServerId + " " + resource.Uri + ": " + state.Config.Redact(ex.Message)); }
         finally { lock (_gate) if (--state.Calls == 0) state.Idle.TrySetResult(); }
     }
     private async Task RetireAsync(State state)

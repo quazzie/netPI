@@ -323,7 +323,7 @@ calls. Every retry attempt gets its own ledger row. Amounts are attributed to th
 
 ## MCP plugin
 
-Read-only `mcp.list {}` returns `{servers:[{id,status,error,generation,toolCount,version,config}]}`; credentials remain environment references. `mcp.tools {serverId?}` returns `{tools:[{id,serverId,name,description,revision,deferred,readOnly,schema}]}`.
+Read-only `mcp.list {}` returns `{servers:[{id,status,error,generation,toolCount,resourceCount,version,config}]}`; credentials remain environment references. `mcp.tools {serverId?}` returns `{tools:[{id,serverId,name,description,revision,deferred,readOnly,schema}]}`. `mcp.resources {serverId?}` returns `{resources:[{kind,uri,server,name,description,mimeType,available}]}` — what `mcp_search` can surface, including entries hidden from the model by a server's `resources` allow-list.
 
 Mutations: `mcp.save {id,config}`, `mcp.remove {id}`, `mcp.setEnabled {id,enabled}`, `mcp.reconnect {id}`, `mcp.refresh {id}`. Each returns the status snapshot. Invalid configuration is rejected before saving.
 

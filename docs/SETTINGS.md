@@ -399,7 +399,7 @@ milliseconds; anything unexpected answers "not supported", so a call never fails
 
 ## MCP servers
 
-`mcp.servers` is an object keyed by stable server id. Each entry accepts `enabled`, `transport` (stdio/http), `command`, `args`, absolute `cwd`, `url`, `env`, `headerEnv`, `tools`, `pinned`, `readOnly`, `synonyms`, `connectTimeoutMs` (5000) and `callTimeoutMs` (60000). env/headerEnv values name source environment variables. tools/pinned/readOnly contain raw remote tool names. Details and examples: [PLUGIN-MCP.md](PLUGIN-MCP.md).
+`mcp.servers` is an object keyed by stable server id. Each entry accepts `enabled`, `transport` (stdio/http), `command`, `args`, absolute `cwd`, `url`, `env`, `headerEnv`, `tools`, `resources`, `pinned`, `readOnly`, `synonyms`, `connectTimeoutMs` (5000) and `callTimeoutMs` (60000). env/headerEnv values name source environment variables. tools/pinned/readOnly contain raw remote tool names; resources holds resource URIs (exact, or a prefix ending in `*`). Details and examples: [PLUGIN-MCP.md](PLUGIN-MCP.md).
 
 | Setting | Default | Purpose |
 | --- | ---: | --- |
@@ -407,5 +407,8 @@ milliseconds; anything unexpected answers "not supported", so a call never fails
 | mcp.maxMessageChars | 4000000 | Protocol frame/SSE event limit |
 | mcp.maxCatalogTools | 10000 | Tools per server |
 | mcp.maxCatalogChars | 8000000 | Catalog data per server |
+| mcp.maxResourceEntries | 2000 | Resources per server |
+| mcp.maxResourceCatalogChars | 2000000 | Resource catalog data per server |
+| mcp.maxResourceChars | 20000 | Characters per resource read; a larger one is written to a file |
 | mcp.maxBinaryBytes | 2000000 | Decoded image limit |
 | mcp.refreshSeconds | 60 | Polling fallback |

@@ -24,6 +24,7 @@ public sealed class McpPlugin : INetPiPlugin
         await manager.StartAsync(healthy, ct).ConfigureAwait(false);
         ctx.Tools.Register(new McpSearchTool(ctx, manager));
         ctx.Tools.Register(new McpCallTool(ctx, manager));
+        ctx.Tools.Register(new McpResourceTool(ctx, manager));
         ctx.Services.Register(new SettingsSection
         {
             Id = "mcp", Title = "MCP", Group = "Tools", Order = 80,
@@ -33,6 +34,9 @@ public sealed class McpPlugin : INetPiPlugin
                 SettingInfo.Int("mcp.maxMessageChars", "Largest protocol message", 4_000_000, "Reject oversized frames and SSE events.", 4096, 16_000_000, "chars"),
                 SettingInfo.Int("mcp.maxCatalogTools", "Largest tool catalog", 10000, "Maximum tools discovered per server.", 1, 10000, "tools"),
                 SettingInfo.Int("mcp.maxCatalogChars", "Largest tool catalog data", 8_000_000, "Bound discovery memory per server.", 4096, 32_000_000, "chars"),
+                SettingInfo.Int("mcp.maxResourceEntries", "Largest resource catalog", 2000, "Maximum resources discovered per server.", 1, 20000, "resources"),
+                SettingInfo.Int("mcp.maxResourceCatalogChars", "Largest resource catalog data", 2_000_000, "Bound resource discovery memory per server.", 4096, 16_000_000, "chars"),
+                SettingInfo.Int("mcp.maxResourceChars", "Largest resource read", 20000, "Characters per resource read; a larger one is written to a file.", 1024, 200000, "chars"),
                 SettingInfo.Int("mcp.maxBinaryBytes", "Largest image", 2_000_000, "Maximum decoded image size.", 1024, 8_000_000, "bytes"),
                 SettingInfo.Int("mcp.refreshSeconds", "Catalog refresh", 60, "Refresh even when a server does not support change notifications.", 5, 3600, "seconds"),
             ],
@@ -46,6 +50,12 @@ public sealed class McpPlugin : INetPiPlugin
                     ["description"] = t.Definition.Description, ["revision"] = t.Definition.Revision, ["deferred"] = t.Definition.Deferred,
                     ["readOnly"] = t.Definition.ReadOnly, ["exposed"] = manager.Exposed(t), ["schema"] = t.Definition.Parameters.DeepClone() }).ToArray()) });
         }, "MCP tools for a server (UI catalog, not model context)", readOnly: true);
+        ctx.Rpc.Register("mcp.resources", (req, _) =>
+        {
+            var id = req.Str("serverId");
+            return Task.FromResult<object?>(new JsonObject { ["resources"] = new JsonArray(manager.Resources(id)
+                .Select(r => (JsonNode)r.Summary(manager.Available(r.ServerId))).ToArray()) });
+        }, "MCP resources advertised by a server (what mcp_search can surface)", readOnly: true);
         async Task<object?> Write(RpcRequest req, Action<JsonObject> edit, CancellationToken token)
         {
             await _settings.WaitAsync(token).ConfigureAwait(false);

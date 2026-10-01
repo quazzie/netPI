@@ -4,6 +4,7 @@ using NetPI.Aux.Tests;
 if (args.FirstOrDefault() == "--mcp-fixture") return await McpFixture.RunAsync(args.Skip(1).ToArray());
 var runner = new TestRunner();
 McpTests.Register(runner);
+McpResourceTests.Register(runner);
 McpHttpTests.Register(runner);
 McpLifecycleTests.Register(runner);
 RetryTests.Register(runner);

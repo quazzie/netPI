@@ -32,8 +32,13 @@ internal static class McpFixture
             if (request["id"] is null) continue;
             if (method == "server/discover")
             {
-                if (mode == "legacy") await Send(new JsonObject { ["jsonrpc"]="2.0", ["id"]=request["id"]!.DeepClone(), ["error"]=new JsonObject { ["code"]=-32601, ["message"]="Unknown method" } });
-                else await Send(Reply(request, new JsonObject { ["supportedVersions"]=new JsonArray("2026-07-28"), ["capabilities"]=new JsonObject { ["tools"]=new JsonObject { ["listChanged"]=mode=="subscribe" } }, ["instructions"]="UNTRUSTED_SERVER_INSTRUCTIONS" }));
+                if (mode == "legacy") await Send(new JsonObject { ["jsonrpc"]="2.0", ["id"]=request["id"]?.DeepClone(), ["error"]=new JsonObject { ["code"]=-32601, ["message"]="Unknown method" } });
+                else await Send(Reply(request, new JsonObject { ["supportedVersions"]=new JsonArray("2026-07-28"),
+                    ["capabilities"]=ResourcesOnly(mode)
+                        ? new JsonObject { ["resources"]=new JsonObject { ["subscribe"]=false, ["listChanged"]=mode=="resources-subscribe" } }
+                        : new JsonObject { ["tools"]=new JsonObject { ["listChanged"]=mode=="subscribe" },
+                                           ["resources"]=new JsonObject { ["subscribe"]=false, ["listChanged"]=mode=="resources-subscribe" } },
+                    ["instructions"]="UNTRUSTED_SERVER_INSTRUCTIONS" }));
             }
             else if (method == "initialize") await Send(Reply(request, new JsonObject { ["protocolVersion"]="2025-11-25", ["capabilities"]=new JsonObject { ["tools"]=new JsonObject() } }));
             else if (method == "tools/list")
@@ -43,14 +48,64 @@ internal static class McpFixture
                 for (var i=0; i<count; i++) tools.Add(mode == "typed" && i == 0 ? Typed() : new JsonObject { ["name"]=i==0 ? "weather" : "weather_"+i, ["description"]=changed ? "Get UPDATED city weather" : "Get city weather", ["inputSchema"]=JsonNode.Parse("""{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}""") });
                 await Send(Reply(request, new JsonObject { ["tools"]=tools }));
             }
+            else if (method == "resources/list")
+            {
+                // Two pages, so the cursor loop is exercised, and a name that changes on notification.
+                var page = new JsonArray();
+                var listed = new JsonObject();
+                if (request["params"]?["cursor"] is null)
+                {
+                    page.Add(Resource("SKILL.md", "skill://demo/SKILL.md", "Read before acting", "text/markdown"));
+                    listed["nextCursor"] = "page2";
+                }
+                else
+                {
+                    page.Add(Resource(changed ? "UPDATED.md" : "references/patterns.md", "skill://demo/references/patterns.md", "Patterns and anti-patterns", "text/markdown"));
+                    page.Add(Resource("logo.png", "skill://demo/logo.png", "A logo", "image/png"));
+                    page.Add(Resource("large.md", "skill://demo/large.md", "A long reference document", "text/markdown"));
+                }
+                listed["resources"] = page;
+                await Send(Reply(request, listed));
+            }
+            else if (method == "resources/read")
+            {
+                var uri = request["params"]?["uri"]?.GetValue<string>() ?? "";
+                var known = uri == "skill://demo/SKILL.md" || uri == "skill://demo/references/patterns.md"
+                    || uri == "skill://demo/UPDATED.md" || uri == "skill://demo/logo.png" || uri == "skill://demo/large.md";
+                if (!known)
+                {
+                    var failure = new JsonObject();
+                    failure["code"] = -32002;
+                    failure["message"] = "Resource not found";
+                    var errored = new JsonObject();
+                    errored["jsonrpc"] = "2.0";
+                    errored["id"] = request["id"]?.DeepClone();
+                    errored["error"] = failure;
+                    await Send(errored);
+                }
+                else
+                {
+                    var content = new JsonObject();
+                    content["uri"] = uri;
+                    if (uri == "skill://demo/logo.png") { content["mimeType"] = "image/png"; content["blob"] = "AAECAwQFBgc="; }
+                    else if (uri == "skill://demo/large.md") content["text"] = new string('x', 5000);
+                    else { content["mimeType"] = "text/markdown"; content["text"] = "Consult " + uri + " before acting."; }
+                    var entries = new JsonArray();
+                    entries.Add(content);
+                    var read = new JsonObject();
+                    read["contents"] = entries;
+                    await Send(Reply(request, read));
+                }
+            }
             else if (method == "subscriptions/listen")
             {
+                var notice = mode == "resources-subscribe" ? "notifications/resources/list_changed" : "notifications/tools/list_changed";
                 JsonObject Notice(string name, JsonNode id) => new() { ["jsonrpc"]="2.0", ["method"]=name, ["params"]=new JsonObject { ["notifications"]=new JsonObject { ["toolsListChanged"]=true }, ["_meta"]=new JsonObject { ["io.modelcontextprotocol/subscriptionId"]=id.DeepClone() } } };
                 await Send(Notice("notifications/subscriptions/acknowledged",request["id"]!));
-                await Send(Notice("notifications/tools/list_changed",JsonValue.Create(9999)!));
+                await Send(Notice(notice,JsonValue.Create(9999)!));
                 changed=true;
-                await Send(Notice("notifications/tools/list_changed",request["id"]!));
-                await Send(Notice("notifications/tools/list_changed",request["id"]!));
+                await Send(Notice(notice,request["id"]!));
+                await Send(Notice(notice,request["id"]!));
             }
             else if (method == "tools/call")
             {
@@ -70,4 +125,8 @@ internal static class McpFixture
         }
         await Task.WhenAll(jobs); return 0;
     }
+    // A mode whose server publishes resources and no tools at all.
+    private static bool ResourcesOnly(string mode) => mode.StartsWith("resources", StringComparison.Ordinal);
+    private static JsonNode Resource(string name, string uri, string description, string mimeType) =>
+        new JsonObject { ["uri"]=uri, ["name"]=name, ["description"]=description, ["mimeType"]=mimeType };
 }

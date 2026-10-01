@@ -9,6 +9,11 @@ internal sealed class McpConnection : IAsyncDisposable
     public IMcpTransport Transport { get; }
     public bool Modern => Transport.Version == Protocol.Modern;
     public bool ListChanged { get; private set; }
+    public bool HasTools { get; private set; }
+    public bool HasResources { get; private set; }
+    public bool ResourceListChanged { get; private set; }
+    /// <summary>The server offers resource subscriptions, which need a server-&gt;client request path NetPI does not open.</summary>
+    public bool ResourceSubscribe { get; private set; }
     private readonly ServerConfig _config;
     public McpConnection(ServerConfig config, int limit, Action<string> log)
     {
@@ -54,10 +59,22 @@ internal sealed class McpConnection : IAsyncDisposable
     }
     private void SetCapabilities(JsonObject response)
     {
-        if (response["capabilities"]?["tools"] is not JsonObject tools) throw new McpException("MCP server does not advertise tools.");
-        ListChanged = tools["listChanged"]?.GetValue<bool>() == true;
+        // Tools are not required: a server may publish only resources (a skills library, documents).
+        var capabilities = response["capabilities"] as JsonObject ?? new JsonObject();
+        var tools = capabilities["tools"] as JsonObject;
+        var resources = capabilities["resources"] as JsonObject;
+        HasTools = tools is not null;
+        ListChanged = tools?["listChanged"]?.GetValue<bool>() == true;
+        HasResources = resources is not null;
+        ResourceListChanged = resources?["listChanged"]?.GetValue<bool>() == true;
+        ResourceSubscribe = resources?["subscribe"]?.GetValue<bool>() == true;
+        if (!HasTools && !HasResources) throw new McpException("MCP server advertises neither tools nor resources.");
     }
-    public async Task<List<JsonObject>> ListAsync(int maxTools, int maxChars, CancellationToken ct)
+    public Task<List<JsonObject>> ListAsync(int maxTools, int maxChars, CancellationToken ct) =>
+        HasTools ? PageAsync("tools/list", "tools", maxTools, maxChars, "tool", ct) : Task.FromResult(new List<JsonObject>());
+    public Task<List<JsonObject>> ListResourcesAsync(int maxResources, int maxChars, CancellationToken ct) =>
+        HasResources ? PageAsync("resources/list", "resources", maxResources, maxChars, "resource", ct) : Task.FromResult(new List<JsonObject>());
+    private async Task<List<JsonObject>> PageAsync(string method, string key, int maxEntries, int maxChars, string noun, CancellationToken ct)
     {
         var list = new List<JsonObject>();
         var names = new HashSet<string>(StringComparer.Ordinal);
@@ -66,21 +83,27 @@ internal sealed class McpConnection : IAsyncDisposable
         var chars = 0;
         do
         {
-            var page = await Transport.RequestAsync("tools/list", cursor is null ? null : new JsonObject { ["cursor"] = cursor }, ct).ConfigureAwait(false);
-            if (page["tools"] is not JsonArray tools) throw new McpException("MCP tools/list response is missing its tools array.");
-            foreach (var node in tools)
+            var page = await Transport.RequestAsync(method, cursor is null ? null : new JsonObject { ["cursor"] = cursor }, ct).ConfigureAwait(false);
+            if (page[key] is not JsonArray entries) throw new McpException("MCP " + method + " response is missing its " + key + " array.");
+            foreach (var node in entries)
             {
-                if (node is not JsonObject tool || tool["name"] is not JsonValue n || !n.TryGetValue<string>(out var name) || string.IsNullOrWhiteSpace(name) || name.Length > 128)
-                    throw new McpException("MCP catalog contains an invalid tool name.");
-                if (!names.Add(name)) throw new McpException("MCP catalog contains duplicate tool names.");
-                chars += tool.ToJsonString().Length;
-                if (list.Count >= maxTools || chars > maxChars) throw new McpException("MCP catalog exceeds its configured limit.");
-                list.Add(tool);
+                if (node is not JsonObject entry || entry["name"] is not JsonValue n || !n.TryGetValue<string>(out var name) || string.IsNullOrWhiteSpace(name) || name.Length > 128)
+                    throw new McpException("MCP catalog contains an invalid " + noun + " name.");
+                if (!names.Add(name)) throw new McpException("MCP catalog contains duplicate " + noun + " names.");
+                chars += entry.ToJsonString().Length;
+                if (list.Count >= maxEntries || chars > maxChars) throw new McpException("MCP catalog exceeds its configured limit.");
+                list.Add(entry);
             }
             cursor = page["nextCursor"]?.GetValue<string>();
             if (cursor is not null && (!cursors.Add(cursor) || cursor.Length > 4096)) throw new McpException("MCP catalog returned a repeated or oversized cursor.");
         } while (cursor is not null);
         return list;
+    }
+    /// <summary>Reads one resource the server advertises. Nothing else is ever read: an unlisted URI is not fetched.</summary>
+    public Task<JsonObject> ReadResourceAsync(string uri, CancellationToken ct)
+    {
+        if (!HasResources) throw new McpException("MCP server does not advertise resources.");
+        return Transport.RequestAsync("resources/read", new JsonObject { ["uri"] = uri }, ct);
     }
     public Task<JsonObject> CallAsync(string name, JsonElement args, JsonObject schema, CancellationToken ct)
     {
