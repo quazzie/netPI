@@ -40,6 +40,8 @@ public static class RunnerSelfTests
             ("setup failure: the shard's tests are reported as not run, exit 3", SetupFailure_IsNotRun),
             ("repeat: a test that fails sometimes is reported as flaky, with its failure file per attempt", Repeat_FindsFlaky),
             ("failing list: a failure is remembered until it passes; a rerun of others does not forget it", FailingList_Persists),
+            ("flake ledger: a rate accumulates across runs, a clean test never earns a row, and a pass marks it quiet", FlakeLedger_KeepsRates),
+            ("flake ledger: a run writes only the ledger it was given, so a self-test cannot touch the committed one", FlakeLedger_FollowsItsPath),
             ("areas.json: every tag, id and path it names exists, and every plugin folder is mapped", Areas_AreConsistent),
         };
         var failed = 0;
@@ -507,5 +509,79 @@ public static class RunnerSelfTests
         FailingState.Update(state, [R("b.y", Outcome.TimedOut)], "run4");
         Check.Equal("run4", FailingState.Load(state)["b.y"].Run, "a repeated failure points at the latest run");
         return Task.CompletedTask;
+    }
+
+    private static Task FlakeLedger_KeepsRates()
+    {
+        var path = Path.Combine(TempDir(), "flakes.json");
+        TestResult R(string id, Outcome o, string? server = null) => new()
+        { Id = id, Name = id, Outcome = o, Message = "boom " + id, Server = server };
+
+        // A clean run must not write a row: the ledger is about tests that have actually failed.
+        FlakeLedger.Update(path, [R("clean.x", Outcome.Passed)], "run1");
+        Check.Equal(0, FlakeLedger.Load(path).Count, "a test that has never failed gets no row");
+
+        FlakeLedger.Update(path, [R("a.x", Outcome.Failed, "the database path is blocked")], "run2");
+        var a = FlakeLedger.Load(path).Single(e => e.Id == "a.x");
+        Check.Equal(1, a.Failures, "the failure is counted");
+        Check.Equal(1, a.Runs, "the run is counted");
+        Check.Equal(1.0, Math.Round(a.Rate, 3), "one run, one failure: a rate of 1 until more runs say otherwise");
+        Check.Contains(a.Cause!, "the database path is blocked", "the runner's own verdict is the cause");
+        Check.Contains(a.Cause!, "boom a.x", "the test's own message is kept with it");
+        Check.Equal("run2", a.LastFailure, "the failing run is named");
+
+        // Eighteen passes and one more failure: the number that decides which fix a flake needs. The runner diagnoses
+        // every failure it sees, so the second one carries its own verdict too.
+        for (var i = 3; i <= 21; i++)
+            FlakeLedger.Update(path, [R("a.x", i == 21 ? Outcome.Failed : Outcome.Passed, i == 21 ? "the database path is blocked" : null)], "run" + i);
+        a = FlakeLedger.Load(path).Single(e => e.Id == "a.x");
+        Check.Equal(2, a.Failures, "two failures in twenty runs");
+        Check.Equal(20, a.Runs, "twenty runs counted");
+        Check.Equal(0.1, Math.Round(a.Rate, 2), "a 1-in-10 flake, not a broken test");
+        Check.Equal("run2", a.FirstSeen, "the first failure is remembered");
+
+        // A pass after a failure quiets the row instead of deleting it: "it flaked, 2/20" is the useful part.
+        FlakeLedger.Update(path, [R("a.x", Outcome.Passed)], "run22");
+        a = FlakeLedger.Load(path).Single(e => e.Id == "a.x");
+        Check.True(a.Quiet, "a later pass marks the entry quiet");
+        Check.Equal(2, a.Failures, "the rate survives the quiet pass");
+        Check.Contains(a.Cause!, "blocked", "the cause stays after it went quiet");
+
+        // A test that only ever passed stays absent, and one that only ever failed reads as FAILING.
+        FlakeLedger.Update(path, [R("b.y", Outcome.TimedOut, "process gone")], "run23");
+        var b = FlakeLedger.Load(path).Single(e => e.Id == "b.y");
+        Check.Equal(1.0, b.Rate, "a test that never passes is at 1.0");
+        Check.False(b.Quiet, "and it is not quiet");
+        Check.Equal(0, FlakeLedger.Load(path).Count(e => e.Id == "clean.x"), "the clean test is still absent");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// The ledger is committed, so a run must only ever write the file it was pointed at. The first version resolved the
+    /// path from the repository inside the orchestrator, and every self-test that ran a shard quietly added its fake
+    /// ids to the real ledger.
+    /// </summary>
+    private static async Task FlakeLedger_FollowsItsPath()
+    {
+        var ledger = Path.Combine(TempDir(), "ledger.json");
+        ShardContext Failing(string id)
+        {
+            var r = new TestRunner();
+            r.Add(id, "fails", () => throw new AssertException("deliberate"));
+            return Shard(r);
+        }
+        var (report, _, _, _) = await Run(Cases(("fake.bad", "fails")), _ => Task.FromResult(Failing("fake.bad")),
+            o => o.LedgerPath = ledger);
+        Check.Equal(1, report.ExitCode, "the run failed as asked");
+        Check.True(FlakeLedger.Load(ledger).Any(e => e.Id == "fake.bad"), "the ledger it was given has the failure");
+        // And the committed one is untouched: nothing in a self-test may write there.
+        var committed = FlakeLedger.PathFor(Env.FindRepoRoot());
+        Check.False(File.Exists(committed) && FlakeLedger.Load(committed).Any(e => e.Id.StartsWith("fake.", StringComparison.Ordinal)),
+            "no self-test id reached the committed ledger");
+
+        // An empty path means nowhere, which is what keeps a self-test's own shard runs out of the committed file.
+        await Run(Cases(("fake.bad2", "fails")), _ => Task.FromResult(Failing("fake.bad2")), o => o.LedgerPath = "");
+        Check.False(File.Exists(committed) && FlakeLedger.Load(committed).Any(e => e.Id == "fake.bad2"),
+            "an unnamed ledger writes nothing at all");
     }
 }

@@ -278,6 +278,20 @@ its own events are delivered (`settings.set` returns before its `settings.change
 test's window and satisfies its first wait for "an event of that type" (`settings.live-edit` failed that way); the flush answers behind
 every earlier event on the socket, so the event log is complete when the next test marks its start.
 
+**The flake ledger.** `tests/NetPI.E2E/flakes.json` is the suite's health across runs, committed beside the test list so that
+pruning `artifacts/e2elogs` cannot take it and a reader sees the rates without running anything. Every run folds its results in: a
+test that has failed at least once gets a row with how many times it ran and failed, when it first and last failed, and the cause
+the runner's own diagnosis gave (the server verdict first, the test's message beside it). A later pass marks the row `quiet` rather
+than deleting it — "it flaked 2 in 20" is the part worth keeping — and a test that has never failed gets no row at all.
+
+```powershell
+.\scripts\e2e.ps1 -Flakes
+```
+
+`-Failed` answers "what is failing right now" and forgets a test the moment it passes; the ledger answers "how often", which is the
+number that decides whether a test needs a fix or a re-run. When a flake is fixed, quote the before/after rate in the commit message
+and the ledger keeps the history.
+
 **Finding flakes: run it loaded.** An idle machine hides the races a busy one (another agent building, a browser test) shows, and a
 suite that is green idle can still fail one run in ten. Start CPU burners and loop the whole suite, in a worktree of its own so that
 building in yours cannot change the app copy the runs start from:
