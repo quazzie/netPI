@@ -164,7 +164,7 @@ Each final answer contains an upper-case marker (`TOOLS-DONE`, `SLOW-DONE`, …)
 | `[s:midfail n=1]` | an error inside the stream: `response.failed` / error chunk / Anthropic `overloaded_error` |
 | `[s:error status=503 n=1]` | the first `n` attempts fail with an HTTP error |
 | `[s:fail]` | HTTP 400 (non-retryable) |
-| `[s:spawn n=3 delay=1500 stagger=0 model=]` | `agent_spawn background` × n (workers run `[s:sub]` for `delay + (i-1)·stagger` ms) → `agent` `wait` → summary of the reports |
+| `[s:spawn n=3 delay=1500 stagger=0 model= workerhold=0]` | `agent_spawn background` × n (workers run `[s:sub]` for `delay + (i-1)·stagger` ms, plus a fixed `workerhold` stream hold independent of mock speed) → `agent` `wait` → summary of the reports |
 | `[s:spawnbg delay=]` | one background worker, the parent ends its turn; the report arrives later as an `agent-result` notice |
 | `[s:nest delay=]` | orchestrator → `lead` (`[s:subspawn]`: `agent` `send` to the parent, `agent_spawn` of a `helper`, which waits for it) |
 | `[s:sub i= delay=]` | subagent: thinks for `delay` ms, reports `Report from <name>: i squared is i²` (also the default for subagents) |

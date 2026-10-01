@@ -223,16 +223,17 @@ try {
   await openStripTab('left', 'Sessions');
 
   await openStripTab('right', 'Work');
-  await send('Square 1..3 in parallel [s:spawn n=3 delay=2500]');
-  const workers = await page.waitForFunction(() => {
+  // Keep worker streams open independently of mock speed, then capture the panel text in the
+  // same browser evaluation that observes both workers and a full pool. Screenshots can outlast
+  // a live state; never read the assertion's evidence only after taking one.
+  await send('Square 1..3 in parallel [s:spawn n=3 delay=2500 workerhold=3000]');
+  const workText = await page.waitForFunction(() => {
     const t = document.querySelector('.panel.right > .body')?.innerText ?? '';
-    return t.includes('worker-1') && t.includes('worker-3');
-  }, null, { timeout: 15_000 }).then(() => true).catch(() => false);
-  await page.waitForTimeout(700);
-  await shot(page, 'ui-10-subagents-running');
-  const workText = await page.locator('.panel.right > .body').innerText().catch(() => '');
-  check('work tab lists the running workers', workers, workText.slice(0, 160).replace(/\s+/g, ' '));
+    return t.includes('worker-1') && t.includes('worker-3') && /2\s*\/\s*2/.test(t) ? t : null;
+  }, null, { timeout: 15_000 }).then((handle) => handle.jsonValue()).catch(() => '');
+  check('work tab lists the running workers', workText.includes('worker-1') && workText.includes('worker-3'), workText.slice(0, 160).replace(/\s+/g, ' '));
   check('work tab shows the qwen pool full (2/2)', /2\s*\/\s*2/.test(workText));
+  await shot(page, 'ui-10-subagents-running');
   check('subagent run finished', await idle());
   await page.waitForTimeout(500);
   check('orchestrator summary rendered', (await contentNow()).includes('SPAWN-DONE'));

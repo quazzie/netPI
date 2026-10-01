@@ -414,7 +414,7 @@ public sealed partial class ScenarioEngine
                 var plan = new Plan { Thinking = $"This splits into {n} independent parts; I'll delegate them.", Text = $"Delegating to {n} workers." };
                 for (var i = 1; i <= n; i++)
                 {
-                    var args = Obj(("task", $"Worker task #{i}: square the number {i} and report the result. [s:sub i={i} delay={delay + (i - 1) * stagger}]"), ("name", $"worker-{i}"), ("background", true));
+                    var args = Obj(("task", $"Worker task #{i}: square the number {i} and report the result. [s:sub i={i} delay={delay + (i - 1) * stagger} hold={tag.PInt("workerhold", 0)}]"), ("name", $"worker-{i}"), ("background", true));
                     if (model is not null) args["model"] = model;
                     plan.Call("agent_spawn", args);
                 }
