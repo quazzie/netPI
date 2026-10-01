@@ -66,6 +66,14 @@ public static class EventTypes
     /// not the plugin that happens to write them. A change outside <c>meta</c> (title, model, project…) does not fire it:
     /// that is <see cref="SessionUpdated"/>.</summary>
     public const string SessionChanged = "session.changed";
+    /// <summary>A session was bound to a workspace (or unbound): <c>{ sessionId, workspaceId, cwd, binding }</c>. The binding is
+    /// the resolved <c>WorkspaceBinding</c> (null when unbound), so a consumer does not have to resolve it again and cannot
+    /// end up with a different root than the one the switch announced.</summary>
+    public const string SessionWorkspace = "session.workspace";
+    public const string WorkspaceCreated = "workspace.created";
+    public const string WorkspaceUpdated = "workspace.updated";
+    /// <summary>A workspace record was removed: <c>{ id }</c>. The checkout itself is untouched (cleanup is explicit).</summary>
+    public const string WorkspaceDeleted = "workspace.deleted";
     public const string ProjectCreated = "project.created";
     public const string ProjectUpdated = "project.updated";
     public const string ProjectDeleted = "project.deleted";

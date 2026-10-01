@@ -111,6 +111,23 @@ internal static class CoreRpc
         Add("sessions.setProject", "Attach/detach a project: { id, projectId: string|null } → SessionInfo (publishes session.project)",
             req => k.Sessions.SetSessionProject(req.Required("id"), req.Str("projectId")));
 
+        // ------------------------------------------------------------ workspaces
+        Add("workspaces.list", "Workspaces, newest first: { projectId? } → WorkspaceInfo[]", req => k.Sessions.ListWorkspaces(req.Str("projectId")), readOnly: true);
+
+        Add("workspaces.get", "One workspace: { id } → WorkspaceInfo", req =>
+        {
+            var id = req.Required("id");
+            return k.Sessions.GetWorkspace(id) ?? throw new RpcException("not_found", $"Workspace {id} not found");
+        }, readOnly: true);
+
+        Add("sessions.setWorkspace", "Bind/unbind a session's workspace: { id, workspaceId: string|null } → SessionInfo (publishes session.workspace). " +
+           "A bound workspace that is missing is an error, never a fall back to the project checkout.",
+            req =>
+            {
+                k.Sessions.SetSessionWorkspace(req.Required("id"), req.Str("workspaceId"));
+                return k.Sessions.GetSession(req.Required("id"));
+            });
+
         Add("sessions.messages", "Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore } ascending by seq", req =>
         {
             var id = req.Required("id");

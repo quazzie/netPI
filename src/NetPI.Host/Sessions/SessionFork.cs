@@ -5,9 +5,12 @@ using System.Text.RegularExpressions;
 namespace NetPI.Host.Sessions;
 
 /// <summary>
+/// <summary>
 /// What a fork of a chat takes along (<c>sessions.fork</c>): its setup (project, model, reasoning, and meta such as the
 /// profile, its identity, the tools switched off, the agent), not where it is in its work. Plugins with state of their
 /// own act on <c>session.forked</c> (the context plugin copies the system prompt in effect, the todo plugin the checklist).
+/// <para>A fork is a new writer, so it takes no workspace: it starts on the project's path and the user (or a spawned
+/// worker) binds one. Inheriting the original writer's worktree would put two writers in one checkout.</para>
 /// </summary>
 public static class SessionFork
 {
@@ -26,6 +29,7 @@ public static class SessionFork
         {
             Title = Title(from.Title, taken),
             ProjectId = from.ProjectId,
+            WorkspaceId = null,   // a fork is a new writer: it does not inherit the original's checkout
             Model = from.Model,
             Reasoning = from.Reasoning,
             Kind = "chat",

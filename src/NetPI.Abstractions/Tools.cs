@@ -88,6 +88,10 @@ public sealed class ToolContext
     /// <summary>Working directory (project folder or default workspace). Relative paths resolve against it.</summary>
     public required string Cwd { get; init; }
     public ProjectInfo? Project { get; init; }
+    /// <summary>The session's workspace, when it is bound to one. Null is the pre-workspace behavior: relative paths
+    /// resolve in the project checkout and nothing is refused. A tool that mutates should ask
+    /// <see cref="WorkspacePaths.CheckMutation"/> rather than compare paths itself.</summary>
+    public WorkspaceBinding? Workspace { get; init; }
     public ModelInfo? Model { get; init; }
     public required IServiceRegistry Services { get; init; }
     public required IEventBus Events { get; init; }

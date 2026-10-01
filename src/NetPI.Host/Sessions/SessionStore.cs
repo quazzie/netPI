@@ -8,7 +8,7 @@ namespace NetPI.Host.Sessions;
 /// (broadcast) and <c>message.*</c> / <c>messages.compacted</c> (session scoped) events. A session with no messages is
 /// transient: it lives in memory until its first message materializes it, so an abandoned empty chat leaves nothing.
 /// </summary>
-internal sealed class SessionStore : ISessionStore
+internal sealed class SessionStore : ISessionStore, IWorkspaceStore
 {
     public const string DefaultTitle = "New session";
     private const int MaxTitleLength = 60;
@@ -65,10 +65,34 @@ internal sealed class SessionStore : ISessionStore
         """,
         // per-project data other parts keep (e.g. the default profile of new sessions)
         "ALTER TABLE projects ADD COLUMN meta TEXT;",
+        // workspaces: the actual checkout a session works in (its project stays the shared identity). The record is
+        // host data; provisioning, ownership and cleanup belong to the workspace plugin.
+        """
+        CREATE TABLE workspaces (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            path TEXT NOT NULL,
+            project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            kind TEXT NOT NULL DEFAULT 'folder',
+            branch TEXT,
+            base_commit TEXT,
+            repo_common_dir TEXT,
+            owner_session_id TEXT,
+            owner_agent_id TEXT,
+            managed INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            meta TEXT
+        );
+        CREATE INDEX ix_workspaces_project ON workspaces(project_id, updated_at DESC);
+        CREATE INDEX ix_workspaces_owner ON workspaces(owner_session_id);
+        """,
+        // the checkout a session is bound to; null (every existing row) keeps its project's path
+        "ALTER TABLE sessions ADD COLUMN workspace_id TEXT;",
     ];
 
     private const string SessionColumns =
-        "id, title, project_id, parent_session_id, kind, model, reasoning, created_at, updated_at, archived, message_count, context_tokens, meta";
+        "id, title, project_id, parent_session_id, kind, model, reasoning, created_at, updated_at, archived, message_count, context_tokens, meta, workspace_id";
     private const string MessageColumns =
         "id, session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta";
 
@@ -247,7 +271,7 @@ internal sealed class SessionStore : ISessionStore
 
     private static SessionInfo CopySession(SessionInfo s) => new()
     {
-        Id = s.Id, Title = s.Title, ProjectId = s.ProjectId, ParentSessionId = s.ParentSessionId, Kind = s.Kind,
+        Id = s.Id, Title = s.Title, ProjectId = s.ProjectId, WorkspaceId = s.WorkspaceId, ParentSessionId = s.ParentSessionId, Kind = s.Kind,
         Model = s.Model, Reasoning = s.Reasoning, CreatedAt = s.CreatedAt, UpdatedAt = s.UpdatedAt, Archived = s.Archived,
         MessageCount = s.MessageCount, ContextTokens = s.ContextTokens, Meta = s.Meta?.DeepClone() as JsonObject,
     };
@@ -261,6 +285,7 @@ internal sealed class SessionStore : ISessionStore
             Id = string.IsNullOrWhiteSpace(template.Id) ? Ids.New("ses") : template.Id,
             Title = string.IsNullOrWhiteSpace(template.Title) ? DefaultTitle : template.Title.Trim(),
             ProjectId = string.IsNullOrWhiteSpace(template.ProjectId) ? null : template.ProjectId,
+            WorkspaceId = string.IsNullOrWhiteSpace(template.WorkspaceId) ? null : template.WorkspaceId,
             ParentSessionId = string.IsNullOrWhiteSpace(template.ParentSessionId) ? null : template.ParentSessionId,
             Kind = string.IsNullOrWhiteSpace(template.Kind) ? "chat" : template.Kind,
             Model = template.Model,
@@ -273,6 +298,7 @@ internal sealed class SessionStore : ISessionStore
             Meta = template.Meta?.DeepClone() as JsonObject,
         };
         if (s.ProjectId is not null && GetProject(s.ProjectId) is null) throw new KeyNotFoundException($"Project {s.ProjectId} not found");
+        if (s.WorkspaceId is not null && GetWorkspace(s.WorkspaceId) is null) throw new KeyNotFoundException($"Workspace {s.WorkspaceId} not found");
         // No row, no session.created, no project last_used_at: the first message materializes the session (AppendMessage).
         lock (_transientLock) _transient[s.Id] = s;
         return s;
@@ -308,7 +334,7 @@ internal sealed class SessionStore : ISessionStore
             s.UpdatedAt = Now();
             if (string.IsNullOrWhiteSpace(s.Kind)) s.Kind = "chat";
             _db.Execute("""
-                UPDATE sessions SET title = @Title, project_id = @ProjectId, parent_session_id = @ParentSessionId, kind = @Kind,
+                UPDATE sessions SET title = @Title, project_id = @ProjectId, workspace_id = @WorkspaceId, parent_session_id = @ParentSessionId, kind = @Kind,
                     model = @Model, reasoning = @Reasoning, updated_at = @UpdatedAt, archived = @Archived,
                     message_count = @MessageCount, context_tokens = @ContextTokens, meta = @Meta
                 WHERE id = @Id
@@ -412,9 +438,137 @@ internal sealed class SessionStore : ISessionStore
     public string GetCwd(SessionInfo session)
     {
         ArgumentNullException.ThrowIfNull(session);
+        if (session.WorkspaceId is { } id && GetWorkspace(id) is { } w && !string.IsNullOrWhiteSpace(w.Path)) return w.Path;
         if (session.ProjectId is not null && GetProject(session.ProjectId) is { } p && !string.IsNullOrWhiteSpace(p.Path)) return p.Path;
         return _defaultWorkspace;
     }
+
+    // ------------------------------------------------------------------ workspaces
+
+    public IReadOnlyList<WorkspaceInfo> ListWorkspaces(string? projectId = null) =>
+        projectId is null
+            ? _db.Query("SELECT * FROM workspaces ORDER BY updated_at DESC", null, ReadWorkspace)
+            : _db.Query("SELECT * FROM workspaces WHERE project_id = @projectId ORDER BY updated_at DESC", new { projectId }, ReadWorkspace);
+
+    public WorkspaceInfo? GetWorkspace(string id) =>
+        _db.QuerySingle("SELECT * FROM workspaces WHERE id = @id", new { id }, ReadWorkspace);
+
+    public WorkspaceInfo CreateWorkspace(WorkspaceInfo template)
+    {
+        ArgumentNullException.ThrowIfNull(template);
+        ArgumentException.ThrowIfNullOrWhiteSpace(template.Path);
+        var now = Now();
+        var w = new WorkspaceInfo
+        {
+            Id = string.IsNullOrWhiteSpace(template.Id) ? Ids.New("wsp") : template.Id,
+            Name = template.Name?.Trim() ?? "",
+            Path = PathUtil.Normalize(template.Path),
+            ProjectId = string.IsNullOrWhiteSpace(template.ProjectId) ? null : template.ProjectId,
+            Kind = string.IsNullOrWhiteSpace(template.Kind) ? "folder" : template.Kind.Trim(),
+            Branch = template.Branch,
+            BaseCommit = template.BaseCommit,
+            RepoCommonDir = template.RepoCommonDir,
+            OwnerSessionId = template.OwnerSessionId,
+            OwnerAgentId = template.OwnerAgentId,
+            Managed = template.Managed,
+            CreatedAt = now,
+            UpdatedAt = now,
+            Meta = template.Meta?.DeepClone() as JsonObject,
+        };
+        if (w.ProjectId is not null && GetProject(w.ProjectId) is null) throw new KeyNotFoundException($"Project {w.ProjectId} not found");
+        _db.Execute("""
+            INSERT INTO workspaces(id, name, path, project_id, kind, branch, base_commit, repo_common_dir, owner_session_id,
+                owner_agent_id, managed, created_at, updated_at, meta)
+            VALUES(@Id, @Name, @Path, @ProjectId, @Kind, @Branch, @BaseCommit, @RepoCommonDir, @OwnerSessionId, @OwnerAgentId, @Managed, @CreatedAt, @UpdatedAt, @Meta)
+            """, w);
+        Publish(EventTypes.WorkspaceCreated, new { workspace = w });
+        return w;
+    }
+
+    public WorkspaceInfo UpdateWorkspace(string id, Action<WorkspaceInfo> mutate)
+    {
+        ArgumentNullException.ThrowIfNull(mutate);
+        var w = _db.Transaction(_ =>
+        {
+            var current = GetWorkspace(id) ?? throw new KeyNotFoundException($"Workspace {id} not found");
+            mutate(current);
+            current.UpdatedAt = Now();
+            _db.Execute("""
+                UPDATE workspaces SET name = @Name, path = @Path, project_id = @ProjectId, kind = @Kind, branch = @Branch,
+                    base_commit = @BaseCommit, repo_common_dir = @RepoCommonDir, owner_session_id = @OwnerSessionId,
+                    owner_agent_id = @OwnerAgentId, managed = @Managed, updated_at = @UpdatedAt, meta = @Meta
+                WHERE id = @Id
+                """, current);
+            return current;
+        });
+        Publish(EventTypes.WorkspaceUpdated, new { workspace = w });
+        return w;
+    }
+
+    public bool DeleteWorkspace(string id)
+    {
+        var detached = _db.Query($"SELECT {SessionColumns} FROM sessions WHERE workspace_id = @id", new { id }, ReadSession);
+        var n = _db.Execute("DELETE FROM workspaces WHERE id = @id", new { id });
+        if (n == 0) return false;
+        Publish(EventTypes.WorkspaceDeleted, new { id });
+        foreach (var s in detached)
+        {
+            s.WorkspaceId = null;
+            Publish(EventTypes.SessionUpdated, new { session = s });
+            Publish(EventTypes.SessionWorkspace, new { sessionId = s.Id, workspaceId = (string?)null, cwd = GetCwd(s), binding = (object?)null });
+        }
+        return true;
+    }
+
+    public WorkspaceInfo? GetSessionWorkspace(string sessionId) =>
+        GetSession(sessionId)?.WorkspaceId is { } id && id.Length > 0 ? GetWorkspace(id) : null;
+
+    public void SetSessionWorkspace(string sessionId, string? workspaceId)
+    {
+        if (!string.IsNullOrWhiteSpace(workspaceId)) workspaceId = workspaceId.Trim();
+        else workspaceId = null;
+        if (workspaceId is not null && GetWorkspace(workspaceId) is null)
+            throw new KeyNotFoundException($"Workspace {workspaceId} not found");
+        var session = _db.Transaction(_ =>
+        {
+            var s = GetSession(sessionId) ?? throw new KeyNotFoundException($"Session {sessionId} not found");
+            if (s.WorkspaceId == workspaceId) return s;
+            s.WorkspaceId = workspaceId;
+            s.UpdatedAt = Now();
+            _db.Execute("UPDATE sessions SET workspace_id = @workspace_id, updated_at = @updated_at WHERE id = @id", s);
+            return GetSession(sessionId) ?? s;
+        });
+        Publish(EventTypes.SessionUpdated, new { session });
+        Publish(EventTypes.SessionWorkspace, new
+        {
+            sessionId,
+            workspaceId,
+            cwd = GetCwd(session),
+            binding = workspaceId is null ? null : (object?)BindingOf(GetWorkspace(workspaceId)),
+        });
+    }
+
+    /// <summary>The resolved binding of a workspace record: its root plus what git says about it (filled in by the plugin).</summary>
+    private static WorkspaceBinding BindingOf(WorkspaceInfo? w) =>
+        w is null ? null! : new WorkspaceBinding(w.Id, w.Path, w.Branch, w.BaseCommit, w.RepoCommonDir, w.Kind, w.OwnerSessionId, w.OwnerAgentId, w.Managed);
+
+    private static WorkspaceInfo ReadWorkspace(IDbRow r) => new()
+    {
+        Id = r.GetString("id"),
+        Name = r.GetString("name"),
+        Path = r.GetString("path"),
+        ProjectId = r.GetStringOrNull("project_id"),
+        Kind = r.GetString("kind"),
+        Branch = r.GetStringOrNull("branch"),
+        BaseCommit = r.GetStringOrNull("base_commit"),
+        RepoCommonDir = r.GetStringOrNull("repo_common_dir"),
+        OwnerSessionId = r.GetStringOrNull("owner_session_id"),
+        OwnerAgentId = r.GetStringOrNull("owner_agent_id"),
+        Managed = r.GetInt64("managed") != 0,
+        CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64("created_at")),
+        UpdatedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64("updated_at")),
+        Meta = ParseObject(r.GetStringOrNull("meta")),
+    };
 
     // ------------------------------------------------------------------ messages
 
@@ -455,7 +609,7 @@ internal sealed class SessionStore : ISessionStore
                 }
                 _db.Execute($"""
                     INSERT INTO sessions({SessionColumns})
-                    VALUES(@Id, @Title, @ProjectId, @ParentSessionId, @Kind, @Model, @Reasoning, @CreatedAt, @UpdatedAt, @Archived, @MessageCount, @ContextTokens, @Meta)
+                    VALUES(@Id, @Title, @ProjectId, @ParentSessionId, @Kind, @Model, @Reasoning, @CreatedAt, @UpdatedAt, @Archived, @MessageCount, @ContextTokens, @Meta, @WorkspaceId)
                     """, transient);
                 _transient.Remove(sessionId);
                 AppendMessageCore(sessionId, message, out session);
@@ -671,6 +825,7 @@ internal sealed class SessionStore : ISessionStore
             Id = string.IsNullOrWhiteSpace(template.Id) ? Ids.New("ses") : template.Id,
             Title = string.IsNullOrWhiteSpace(template.Title) ? DefaultTitle : template.Title.Trim(),
             ProjectId = string.IsNullOrWhiteSpace(template.ProjectId) ? null : template.ProjectId,
+            WorkspaceId = string.IsNullOrWhiteSpace(template.WorkspaceId) ? null : template.WorkspaceId,
             ParentSessionId = string.IsNullOrWhiteSpace(template.ParentSessionId) ? null : template.ParentSessionId,
             Kind = string.IsNullOrWhiteSpace(template.Kind) ? "chat" : template.Kind,
             Model = template.Model,
@@ -697,7 +852,7 @@ internal sealed class SessionStore : ISessionStore
             }
             _db.Execute($"""
                 INSERT INTO sessions({SessionColumns})
-                VALUES(@Id, @Title, @ProjectId, @ParentSessionId, @Kind, @Model, @Reasoning, @CreatedAt, @UpdatedAt, @Archived, @MessageCount, @ContextTokens, @Meta)
+                VALUES(@Id, @Title, @ProjectId, @ParentSessionId, @Kind, @Model, @Reasoning, @CreatedAt, @UpdatedAt, @Archived, @MessageCount, @ContextTokens, @Meta, @WorkspaceId)
                 """, fork);
             fork.MessageCount = _db.Execute("""
                 INSERT INTO messages(session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta)
@@ -831,6 +986,7 @@ internal sealed class SessionStore : ISessionStore
         Id = r.GetString("id"),
         Title = r.GetString("title"),
         ProjectId = r.GetStringOrNull("project_id"),
+        WorkspaceId = r.GetStringOrNull("workspace_id"),
         ParentSessionId = r.GetStringOrNull("parent_session_id"),
         Kind = r.GetString("kind"),
         Model = r.GetStringOrNull("model"),

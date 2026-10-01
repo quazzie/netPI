@@ -21,6 +21,9 @@ public sealed class SessionInfo
     public string Id { get; set; } = "";
     public string Title { get; set; } = "";
     public string? ProjectId { get; set; }
+    /// <summary>The checkout this conversation works in (<c>sessions.workspace_id</c>), or null to use the project's path.
+    /// Binding is per worker: two sessions of one project may be bound to different workspaces.</summary>
+    public string? WorkspaceId { get; set; }
     public string? ParentSessionId { get; set; }
     /// <summary>chat | subagent</summary>
     public string Kind { get; set; } = "chat";
@@ -140,7 +143,7 @@ public interface ISessionStore
     void DeleteSession(string id);
     /// <summary>Change the session's project and append a notice so the agent learns about it.</summary>
     SessionInfo SetSessionProject(string sessionId, string? projectId);
-    /// <summary>Working directory for a session: its project folder or the default workspace.</summary>
+    /// <summary>Working directory for a session: its workspace root when it is bound to one, else its project folder or the default workspace.</summary>
     string GetCwd(SessionInfo session);
 
     // Messages

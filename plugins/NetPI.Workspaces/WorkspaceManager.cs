@@ -1,0 +1,94 @@
+namespace NetPI.Workspaces;
+
+/// <summary>
+/// What the agent runtime and the spawn tool ask for, without knowing that git exists: "before this worker starts, make
+/// sure it has a workspace, and tell me which one." Kept separate from <see cref="WorkspaceProvisioner"/> (which knows
+/// about git and worktrees) so the pieces that only need a workspace do not grow a git dependency, and so a project
+/// that is not a repository never goes near one.
+/// </summary>
+public sealed class WorkspaceManager(
+    IPluginContext ctx,
+    IWorkspaceStore store,
+    WorkspaceResolver resolver,
+    WorkspaceProvisioner provisioner,
+    GitProbe git)
+{
+    /// <summary>The workspace an already-running session uses, without validating it (for display).</summary>
+    public WorkspaceBinding? Of(SessionInfo? session) => resolver.ResolveLenient(session);
+
+    /// <summary>
+    /// The workspace a child worker should start in: the one that was named (and must exist), the parent's (so a reader
+    /// sees what its boss sees), or a fresh one provisioned for it. Every outcome is either a binding or a refusal —
+    /// there is no "start it in the parent's checkout anyway".
+    /// </summary>
+    public async Task<WorkspaceOutcome> ForChildAsync(SpawnRequest request, SessionInfo? parentSession, string childSessionId, string childName, CancellationToken ct)
+    {
+        var named = request.WorkspaceId;
+        if (named is { Length: > 0 } && !string.Equals(named, "new", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(named, "own", StringComparison.OrdinalIgnoreCase) && !request.Isolated)
+        {
+            var found = Find(named);
+            if (found is null) return new WorkspaceOutcome(null, NoWorkspace(named));
+            if (parentSession?.ProjectId is { } parentProject && found.ProjectId is not null && found.ProjectId != parentProject)
+                return new WorkspaceOutcome(null, $"Workspace \"{found.Name}\" belongs to another project than this one; a worker of a project works in one of its workspaces.");
+            if (!Directory.Exists(found.Path))
+                return new WorkspaceOutcome(null, NoWorkspace(named));
+            return new WorkspaceOutcome(resolver.Bind(found), null);
+        }
+
+        var projectId = request.ProjectId ?? parentSession?.ProjectId;
+        if (projectId is not { Length: > 0 })
+        {
+            // No project: there is nothing to branch from, and a folder workspace of nowhere is just the default
+            // workspace the child already has. Say so rather than inventing a checkout.
+            return new WorkspaceOutcome(null, null);
+        }
+        if (request.ProjectId is not null && parentSession?.ProjectId is { } pp && request.ProjectId != pp)
+        {
+            // A project switch is a user decision (the sessions.setProject RPC); a spawn asks for a workspace, not for a
+            // different project. Refusing keeps one conversation's backlog out of another project's checkout.
+            if (ctx.Sessions.GetProject(request.ProjectId) is null)
+                return new WorkspaceOutcome(null, NoProject(request.ProjectId));
+            return new WorkspaceOutcome(null,
+                $"A subagent works in its parent's project; pass workspace (one of that project's workspaces) instead of switching project. Project {pp} stays.");
+        }
+
+        return await provisioner.ProvisionAsync(new WorkspaceRequest(
+            projectId,
+            string.IsNullOrWhiteSpace(request.WorkspaceName) ? childName : request.WorkspaceName.Trim(),
+            request.WorkspaceOwnerSessionId ?? childSessionId,
+            request.ParentAgentId,
+            Isolated: request.Isolated,
+            Base: request.WorkspaceBase), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>A workspace by id, then by name, then by path (case-insensitively). Null when none of them is it.</summary>
+    public WorkspaceInfo? Find(string idOrNameOrPath)
+    {
+        var all = store.ListWorkspaces();
+        return all.FirstOrDefault(w => string.Equals(w.Id, idOrNameOrPath, StringComparison.Ordinal))
+            ?? all.FirstOrDefault(w => string.Equals(w.Name, idOrNameOrPath, StringComparison.OrdinalIgnoreCase))
+            ?? all.FirstOrDefault(w => WorkspacePaths.Comparer.Equals(WorkspacePaths.Canonical(w.Path), WorkspacePaths.Canonical(idOrNameOrPath)));
+    }
+
+    /// <summary>
+    /// The workspaces of a project that belong to one owner: a worker keeps its own checkout across assignments, rather
+    /// than getting a fresh one every time it is asked to work.
+    /// </summary>
+    public WorkspaceInfo? OwnedBy(string projectId, string ownerSessionId, string name) =>
+        store.ListWorkspaces(projectId).FirstOrDefault(w =>
+            string.Equals(w.OwnerSessionId, ownerSessionId, StringComparison.Ordinal) &&
+            string.Equals(w.Name, name, StringComparison.OrdinalIgnoreCase) &&
+            Directory.Exists(w.Path));
+
+    /// <summary>Bind a session to a workspace (the only way a session's working directory changes).</summary>
+    public void Bind(string sessionId, string? workspaceId) => store.SetSessionWorkspace(sessionId, workspaceId);
+
+    public GitProbe Git => git;
+    public WorkspaceResolver Resolver => resolver;
+
+    private static string NoWorkspace(string id) =>
+        $"No workspace \"{id}\". List them with workspaces.listForProject, or pass isolated: true to get a new worktree for this worker.";
+
+    private static string NoProject(string id) => $"No project {id}.";
+}
