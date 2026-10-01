@@ -18,14 +18,20 @@
   // single-flight: a poll never starts while one is in flight, and the next poll is scheduled after the
   // previous one completes — a slow diag.calls cannot stack requests on top of itself
   let inFlight = null;
+  // set when the view is destroyed: an answer that arrives after that must neither be applied nor schedule another poll
+  // (clearing the timer alone is not enough: a pending request's continuation arms a new one, and the chain, and the
+  // destroyed view it holds, lives on)
+  let disposed = false;
   async function load() {
     if (inFlight) return inFlight;
     inFlight = (async () => {
       try {
-        calls = await ctx.rpc('diag.calls', { limit: 150 });
+        const answer = await ctx.rpc('diag.calls', { limit: 150 });
+        if (disposed) return;
+        calls = answer;
         error = '';
       } catch (e) {
-        error = e.message;
+        if (!disposed) error = e.message;
       } finally {
         inFlight = null;
       }
@@ -34,15 +40,20 @@
   }
   let pollTimer = 0;
   function poll() {
+    if (disposed) return;
     clearTimeout(pollTimer);
     pollTimer = setTimeout(() => {
+      if (disposed) return;
       if (visible) load().then(poll);
       else poll();
     }, 2000);
   }
   onMount(() => {
     load().then(poll);
-    return () => clearTimeout(pollTimer);
+    return () => {
+      disposed = true;
+      clearTimeout(pollTimer);
+    };
   });
 
   async function toggle(c) {

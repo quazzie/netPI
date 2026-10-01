@@ -24,6 +24,10 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     public static readonly TimeSpan HandlerTimeout = TimeSpan.FromSeconds(30);
     /// <summary>Backlog past which the bus says so. It never drops events; the log is the signal, not a lossy queue.</summary>
     public const int BacklogWarnAt = 1000;
+    /// <summary>A handler call longer than this is slow: delivery is serial, so every event behind it (the UI's included) waited as long.</summary>
+    public static readonly TimeSpan SlowHandler = TimeSpan.FromMilliseconds(250);
+    /// <summary>How often one subscriber's slowness is reported (a handler that is slow every time would otherwise log every event).</summary>
+    public static readonly TimeSpan SlowReportEvery = TimeSpan.FromSeconds(30);
 
     private readonly Channel<object> _queue = Channel.CreateUnbounded<object>(new UnboundedChannelOptions { SingleReader = true });
     private readonly ILogger _log;
@@ -41,10 +45,23 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     private long _inSince;
     private string? _inType, _inPattern;
     private long _delivered;
+    // Slow handler calls per subscription pattern, since it was last reported. Touched by the dispatcher only.
+    private readonly Dictionary<string, SlowStat> _slow = new(StringComparer.Ordinal);
+    private readonly TimeSpan _slowAfter, _slowEvery;
 
-    public EventBus(ILogger log)
+    private sealed class SlowStat
+    {
+        public int Calls;
+        public TimeSpan Slowest;
+        public string SlowestType = "";
+        public long LastReport;   // Stopwatch timestamp; 0 = never
+    }
+
+    public EventBus(ILogger log, TimeSpan? slowHandler = null, TimeSpan? slowReportEvery = null)
     {
         _log = log;
+        _slowAfter = slowHandler ?? SlowHandler;
+        _slowEvery = slowReportEvery ?? SlowReportEvery;
         _dispatcher = Task.Run(DispatchLoopAsync);
     }
 
@@ -207,9 +224,31 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
             {
                 _log.LogError(ex, "Event handler '{Pattern}' failed on '{Type}'", s.Pattern, evt.Type);
             }
-            finally { Volatile.Write(ref _inSince, 0); }
+            finally
+            {
+                var since = Volatile.Read(ref _inSince);
+                Volatile.Write(ref _inSince, 0);
+                if (since != 0) NoteDuration(s.Pattern, evt.Type, Stopwatch.GetElapsedTime(since));
+            }
         }
         Interlocked.Increment(ref _delivered);
+    }
+
+    /// <summary>Counts a slow call and, at most once per <c>_slowEvery</c> per subscription, says how slow and how often.</summary>
+    private void NoteDuration(string pattern, string type, TimeSpan took)
+    {
+        if (took < _slowAfter) return;
+        if (!_slow.TryGetValue(pattern, out var stat)) _slow[pattern] = stat = new SlowStat();
+        stat.Calls++;
+        if (took > stat.Slowest) { stat.Slowest = took; stat.SlowestType = type; }
+        var now = Stopwatch.GetTimestamp();
+        if (stat.LastReport != 0 && Stopwatch.GetElapsedTime(stat.LastReport, now) < _slowEvery) return;
+        _log.LogWarning("Event handler '{Pattern}' is slow: {Calls} call(s) took over {Limit} ms since the last report, the slowest {Took} ms on '{Type}'. " +
+                        "Delivery is one event at a time, so everything behind it (the UI included) waited that long each time",
+            pattern, stat.Calls, (int)_slowAfter.TotalMilliseconds, (int)stat.Slowest.TotalMilliseconds, stat.SlowestType);
+        stat.Calls = 0;
+        stat.Slowest = TimeSpan.Zero;
+        stat.LastReport = now;
     }
 
     private void AddToRing(BusEvent evt)

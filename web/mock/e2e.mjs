@@ -910,7 +910,7 @@ log('plugin tab: Diagnostics');
 
   // the Calls view polls diag.calls every 2 s: with a slow answer the next poll must not stack on top of the
   // in-flight one (the mock counts in-flight requests, so a pass cannot come from a quiet server)
-  log('diagnostics: the Calls view polls single-flight');
+  log('  diagnostics: the Calls view polls single-flight'); // indented: a sub-header must not start a new section (--only would drop the checks after it)
   {
     await rpcCall('mock.diagCallsDelay', { ms: 2500 }); // slower than the 2 s poll interval
     await view('Calls');
@@ -923,6 +923,25 @@ log('plugin tab: Diagnostics');
       'diagnostics: a slow diag.calls never stacks a second request on top',
       stats.served >= 2 && stats.maxInFlight === 1,
       `${stats.served} polls, peak in flight ${stats.maxInFlight}`,
+    );
+  }
+  // leaving the view while a diag.calls is still pending: its answer must not start another poll (the destroyed
+  // view's timer chain used to live on, polling for a view nobody sees)
+  log('  diagnostics: a destroyed Calls view stops polling');
+  {
+    await rpcCall('mock.diagCallsDelay', { ms: 2500 });
+    await view('Calls');
+    for (let i = 0; i < 40 && (await rpcCall('mock.diagCallsStats')).inFlight < 1; i++) await page.waitForTimeout(50);
+    check('diagnostics: the Calls view has a diag.calls in flight', (await rpcCall('mock.diagCallsStats')).inFlight === 1);
+    await view('Plugins'); // destroys the Calls view with the request still pending
+    const before = await rpcCall('mock.diagCallsStats');
+    await page.waitForTimeout(9000); // the pending answer lands, then two poll intervals and a slow answer would have passed
+    const after = await rpcCall('mock.diagCallsStats');
+    await rpcCall('mock.diagCallsDelay', { ms: 0 });
+    check(
+      'diagnostics: a destroyed Calls view starts no further diag.calls',
+      after.served - before.served <= 1 && after.inFlight === 0,
+      `${after.served - before.served} answers after leaving (the pending one is allowed), ${after.inFlight} in flight`,
     );
   }
   await view('Plugins');
