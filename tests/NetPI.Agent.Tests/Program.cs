@@ -10,6 +10,7 @@ LoopTests.Register(runner);
 SubagentTests.Register(runner);
 SubagentWorkspaceTests.Register(runner);
 SchedulerTests.Register(runner);
+ResourceSchedulerTests.Register(runner);
 ContextTests.Register(runner);
 PersistenceTests.Register(runner);
 UnloadTests.Register(runner);

@@ -7,7 +7,8 @@ namespace NetPI.Agents;
 /// Parallel slots (a pool of them per key in the code). The agents the user sets up are pools: <c>agents.&lt;id&gt; = { model,
 /// instances, use, disabled, budget, cost }</c>, one slot per instance; chats and subagents run on them. An agent takes
 /// work only while it is not disabled and its model is loaded (local: AiProxy's status) or reachable (cloud); NetPI never
-/// loads a model. Agents on one local model share its slots (the catalog's <see cref="ModelInfo.Concurrency"/>): no more
+/// loads a model. Agents on one local model share its slots (valid catalog <see cref="ModelInfo.Concurrency"/>, otherwise
+/// <c>models.localSlots</c>, clamped to one): no more
 /// runs on the model than it serves. Model calls without an agent (a separate summarizer, and every call while no agent
 /// is set up) get a slot per model while they run: a local model by its concurrency (<c>models.localSlots</c>),
 /// a cloud provider's models together (<c>models.cloudSlots</c>). Waiters are served by priority (desc), then FIFO.
@@ -124,7 +125,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         public CancellationTokenSource? WaitTimeout { get; set; }
     }
 
-    internal sealed class Lease(AgentScheduler owner, AgentSlotRequest request) : IAgentSlot
+    internal sealed class Lease(AgentScheduler owner, AgentSlotRequest request, string? localModel) : IAgentSlot
     {
         private int _released;
         public string Key { get; } = request.Key;
@@ -133,6 +134,8 @@ internal sealed class AgentScheduler : IAgentScheduler
         public string? Label { get; } = request.Label;
         public DateTimeOffset AcquiredAt { get; } = DateTimeOffset.UtcNow;
         public bool IsReleased => Volatile.Read(ref _released) != 0;
+        // The admitted call stays on this resource even if its agent is rebound while it runs.
+        public string? LocalModel { get; } = localModel;
 
         /// <summary>Mark released without granting anything (scheduler stopped).</summary>
         internal bool MarkReleased() => Interlocked.Exchange(ref _released, 1) == 0;
@@ -174,13 +177,24 @@ internal sealed class AgentScheduler : IAgentScheduler
     /// <summary>The slot key of a model call without an agent: the local model, or the cloud provider.</summary>
     private static string ModelKey(ModelInfo model) => model.IsLocal ? model.Ref : model.Provider;
 
+    private int LocalCapacity(ModelInfo model) => Math.Max(1,
+        model.Concurrency is > 0 ? model.Concurrency.Value : Setting("models.localSlots", DefaultLocalCapacity));
+
     private int ModelKeyCapacity(ModelInfo model) => model.IsLocal
-        ? model.Concurrency ?? Setting("models.localSlots", DefaultLocalCapacity)
+        ? LocalCapacity(model)
         : Setting("models.cloudSlots", DefaultCloudCapacity);
 
     /// <summary>Default instances of an agent: a local model's slots, 1 on a cloud model (it may cost money).</summary>
     internal int DefaultInstances(ModelInfo? model) =>
-        model is { IsLocal: true } ? model.Concurrency ?? Setting("models.localSlots", DefaultLocalCapacity) : 1;
+        model is { IsLocal: true } ? LocalCapacity(model) : 1;
+
+    private void ApplyModelPool(Pool pool, ModelInfo model)
+    {
+        pool.Provider = model.Provider;
+        pool.Capacity = Math.Max(1, ModelKeyCapacity(model));
+        pool.Source = model.IsLocal && model.Concurrency is > 0 ? "catalog" : "default";
+        if (!pool.Models.Contains(model.Ref, StringComparer.OrdinalIgnoreCase)) pool.Models.Add(model.Ref);
+    }
 
     private void ApplyAgent(Pool pool, AgentConfig a)
     {
@@ -204,11 +218,12 @@ internal sealed class AgentScheduler : IAgentScheduler
         return modelRef is not null && _models.TryGetValue(modelRef, out var m) && m.IsLocal ? m.Ref : null;
     }
 
-    /// <summary>The model's own slots (local models with a known concurrency), shared by every pool on it.</summary>
+    /// <summary>One physical limit for a local model: valid catalog concurrency, otherwise the clamped fallback.</summary>
     private int? ModelSlots(string? localModel) =>
-        localModel is not null && _models.TryGetValue(localModel, out var m) ? m.Concurrency : null;
+        localModel is not null && _models.TryGetValue(localModel, out var m) ? LocalCapacity(m) : null;
 
-    private int BusyOn(string localModel) => _pools.Values.Where(p => LocalModelOf(p) == localModel).Sum(p => p.Owners.Count);
+    private int BusyOn(string localModel) => _pools.Values.Sum(p => p.Owners.Count(o =>
+        string.Equals(o.LocalModel, localModel, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>A free slot in the pool, and on its model. Caller holds <see cref="_gate"/>.</summary>
     private bool CanGrant(Pool pool)
@@ -246,13 +261,8 @@ internal sealed class AgentScheduler : IAgentScheduler
             _models[model.Ref] = model;
             var pool = GetOrCreate(key);
             if (!pool.Configured)
-            {
-                pool.Provider = model.Provider;
-                pool.Capacity = Math.Max(1, ModelKeyCapacity(model));
-                pool.Source = model.IsLocal && model.Concurrency is not null ? "catalog" : "default";
-                if (!pool.Models.Contains(model.Ref, StringComparer.OrdinalIgnoreCase)) pool.Models.Add(model.Ref);
-            }
-            Pump(pool);
+                ApplyModelPool(pool, model);
+            Pump();
         }
         return key;
     }
@@ -288,7 +298,7 @@ internal sealed class AgentScheduler : IAgentScheduler
             _models[model.Ref] = model;
             var pool = GetOrCreate(a.Id);
             ApplyAgent(pool, a);
-            Pump(pool);
+            Pump();
         }
         return a.Id;
     }
@@ -318,6 +328,9 @@ internal sealed class AgentScheduler : IAgentScheduler
                     pool.Retired = true;
                 }
                 if (!pool.Configured && pool.Owners.Count == 0 && pool.Waiters.Count == 0) { _pools.Remove(pool.Key); continue; }
+                if (!pool.Configured && !pool.Retired && pool.Models.Count > 0
+                    && _models.TryGetValue(pool.Models[0], out var model))
+                    ApplyModelPool(pool, model);
                 var (available, reason) = AvailabilityOf(pool);
                 if (!available)
                 {
@@ -326,8 +339,9 @@ internal sealed class AgentScheduler : IAgentScheduler
                     pool.Waiters.Clear();
                     continue;
                 }
-                Pump(pool);
             }
+            // Finish every removal/disable/capacity change before choosing work across the shared resources.
+            Pump();
         }
         foreach (var (w, reason) in refused)
         {
@@ -346,7 +360,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     {
         lock (_gate)
             return string.Join('\n', _pools.Values.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(p => $"{p.Key}|{p.Capacity}|{p.Disabled}|{AvailabilityOf(p).Available}|{p.Use}|{p.Model}"));
+                .Select(p => $"{p.Key}|{p.Capacity}|{p.Disabled}|{AvailabilityOf(p).Available}|{p.Use}|{p.Model}|{ModelSlots(LocalModelOf(p))}|{p.Source}"));
     }
 
     internal static string UnavailableMessage(string agent, string reason) => reason switch
@@ -364,10 +378,17 @@ internal sealed class AgentScheduler : IAgentScheduler
     {
         if (_pools.TryGetValue(key, out var pool)) return pool;
         pool = new Pool(key) { Provider = provider };
-        // A pool we have never resolved: guess by the key shape ("provider/model" = local model, else cloud provider).
-        pool.Capacity = key.Contains('/')
-            ? Math.Max(1, Setting("models.localSlots", DefaultLocalCapacity))
-            : Math.Max(1, Setting("models.cloudSlots", DefaultCloudCapacity));
+        // Refresh can remove an idle plain pool between Resolve and Acquire. Its key still names
+        // the model we resolved: restore the resource association before admitting the call.
+        if (_models.TryGetValue(key, out var model))
+            ApplyModelPool(pool, model);
+        else
+        {
+            // A pool we have never resolved: guess by the key shape ("provider/model" = local model, else cloud provider).
+            pool.Capacity = key.Contains('/')
+                ? Math.Max(1, Setting("models.localSlots", DefaultLocalCapacity))
+                : Math.Max(1, Setting("models.cloudSlots", DefaultCloudCapacity));
+        }
         _pools[key] = pool;
         return pool;
     }
@@ -453,8 +474,9 @@ internal sealed class AgentScheduler : IAgentScheduler
         {
             if (_stopped) return false;
             var pool = GetOrCreate(request.Key, request.Provider);
+            Pump();
             if (!AvailabilityOf(pool).Available || pool.Waiters.Count > 0 || !CanGrant(pool)) return false;
-            var l = new Lease(this, request);
+            var l = new Lease(this, request, LocalModelOf(pool));
             pool.Owners.Add(l);
             lease = l;
         }
@@ -492,9 +514,10 @@ internal sealed class AgentScheduler : IAgentScheduler
             var pool = GetOrCreate(request.Key, request.Provider);
             var (available, reason) = AvailabilityOf(pool);
             if (!available) throw new AgentUnavailableException(UnavailableMessage(pool.Key, reason!));
+            Pump();
             if (pool.Waiters.Count == 0 && CanGrant(pool))
             {
-                var lease = new Lease(this, request);
+                var lease = new Lease(this, request, LocalModelOf(pool));
                 pool.Owners.Add(lease);
                 SchedulePublish();
                 return ValueTask.FromResult<IAgentSlot>(lease);
@@ -564,25 +587,28 @@ internal sealed class AgentScheduler : IAgentScheduler
         lock (_gate)
         {
             if (!_pools.TryGetValue(lease.Key, out var pool) || !pool.Owners.Remove(lease)) return;
-            Pump(pool);
-            // a slot on a shared local model: the other pools on it may go on
-            if (LocalModelOf(pool) is { } model)
-                foreach (var other in _pools.Values.Where(p => p != pool && LocalModelOf(p) == model).ToList()) Pump(other);
+            Pump();
             if (!pool.Configured && pool.Owners.Count == 0 && pool.Waiters.Count == 0) _pools.Remove(pool.Key);
         }
         SchedulePublish();
     }
 
-    /// <summary>Grant free slots to waiters. Caller holds <see cref="_gate"/>.</summary>
-    private void Pump(Pool pool)
+    /// <summary>Choose eligible work across pools by priority then arrival, skipping pools at their own cap.</summary>
+    private void Pump()
     {
-        while (pool.Waiters.Count > 0 && CanGrant(pool) && AvailabilityOf(pool).Available)
+        while (true)
         {
+            var pool = _pools.Values
+                .Where(p => p.Waiters.Count > 0 && CanGrant(p) && AvailabilityOf(p).Available)
+                .OrderByDescending(p => p.Waiters[0].Request.Priority)
+                .ThenBy(p => p.Waiters[0].Seq)
+                .FirstOrDefault();
+            if (pool is null) return;
             var w = pool.Waiters[0];
             pool.Waiters.RemoveAt(0);
             w.Registration.Unregister(); // never Dispose under the lock: it would wait for a running callback
             StopWaitTimeout(w);
-            var lease = new Lease(this, w.Request);
+            var lease = new Lease(this, w.Request, LocalModelOf(pool));
             pool.Owners.Add(lease);
             if (!w.Tcs.TrySetResult(lease))
             {

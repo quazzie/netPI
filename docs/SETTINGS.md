@@ -158,16 +158,22 @@ where a chat runs, the profile who it is.
   the agents follow within `models.refreshSeconds`), a cloud agent while its provider answers, and neither while
   switched off. An inactive agent stays listed with the reason; a chat on it stops at once with a notice, and waiting
   runs are told too. Runs already going finish.
-- **Instances:** default the model's slots for a local model (its `concurrency`), 1 for a cloud one. Agents on one local
-  model share its slots: NetPI never runs more on the model than it serves (the agent dialog warns when their
-  instances add up to more).
+- **Instances:** default the model's slots for a local model, 1 for a cloud one. A local model's shared capacity is its
+  positive catalog `concurrency`, otherwise `models.localSlots`, clamped to at least 1. Every named agent and plain
+  model call on that model shares this limit; each agent's instances are an additional limit. Increasing instances
+  does not create more model capacity. Different model refs have separate limits.
+  Settings/catalog changes refresh existing queues. Reducing capacity lets active calls finish before more start;
+  changing an agent's model keeps its active calls counted against their original model until they finish.
 - **A chat without an agent** takes an agent on its model (a free one first) and keeps it; with no agent on its model it
   stops with a notice. New chats start on the agent chosen last.
 - **Waiting:** a run whose agent is full waits in the agent's queue, which is capped and timed (`agents.queueMax`,
   `agents.queueTimeoutSeconds`): a burst past the cap is refused at once, and a run that waits longer than the cap
-  fails with a clear error — neither parks forever.
+  fails with a clear error — neither parks forever. Eligible queued calls across pools are admitted by priority,
+  then arrival order; a pool at its own instance limit does not hold up another eligible pool. A parent resuming
+  after a wait retains its higher priority. FIFO applies within a priority class; active calls are not preempted.
 - **With no agents at all** (a settings file without any) every model call gets a slot per model:
-  `models.localSlots` (1, when the catalog doesn't say) per local model, `models.cloudSlots` (4) per
+  positive catalog concurrency, otherwise `models.localSlots` (1, clamped to at least 1), per local model;
+  `models.cloudSlots` (4) per
   cloud provider. The same slots serve model calls without an agent (a `compaction.model` on another model).
 - **Upgrade:** settings from before agents (lanes) move once: the lanes you set up (`lanes.<id>`, `capacity` →
   `instances`) become agents, plus one for `defaultModel` when none runs it; `lanes.localDefaultCapacity` →
