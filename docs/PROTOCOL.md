@@ -1,5 +1,13 @@
 # NetPI UI ⇄ Server protocol
 
+Agent rework additions (2026-10-01): `agents.resources` returns distinct resource rows `{key,model,capacity,busy,queued,available,unavailable,owners}`; `agents.list` adds `resource`, `resourceCapacity`, `resourceBusy`, `resourceQueued`, and waiter `priority`/`waitingFor`. `agents.changed` includes both `agents` and `resources`. Instance counts are per agent; resource counts are shared across names and plugin versions.
+
+`ideas.work` returns background work rows `{id,purpose,model,sessionId,projectId,status,reason,since,finishedAt}`; `ideas.workChanged` carries `{work}`. `ideas.capabilities` reports optional decision/history/catalog presence. `ideas.verifyUpdate {id,expectedRevision,patch,evidence}` verifies a proposed update and returns `{applied,reason,idea?}`; revision conflicts fail rather than overwrite. Verified suggestions add `verified` and `verification`.
+
+`files.commits {sessionId?,cwd?,hash}` additionally reads bounded patch evidence `{hash,patch,truncated}` or null. `diag.capabilities` reports plugin registrations and optional feature presence, which is separate from endpoint health. `work.snapshot` adds independent `resources` and `ideasWork` parts. `budget.allow` adds `executionAvailable` and `continuationReason` when continuation cannot start. Goals add status `execution-unavailable`, requiring explicit resume after executor return.
+
+Host registry events `services.changed {contract}` and `rpc.changed {method}` contain strings only. `resources.released {resource}` wakes replacement schedulers. Plugin UI contexts add `hasRpc(method)`; app discovery refreshes on registry/plugin changes and reconnect. Unknown discovery on older hosts remains compatible.
+
 The server (NetPI.Host, ASP.NET Core/Kestrel on `127.0.0.1`) serves the Svelte app from `wwwroot`,
 plugin UI bundles from `/plugins/{pluginId}/…`, and a single WebSocket at `/ws`.
 

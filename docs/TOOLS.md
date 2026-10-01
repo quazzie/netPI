@@ -1,5 +1,7 @@
 # NetPI tool plugins
 
+Agent choices now expose separate shared model resource totals in `Details.resources` alongside per-agent limits, holders and waiters. Delegation tools are registered while an executor capability exists; `agent_choices` remains usable for scheduling and budget inspection when execution is unavailable. Decide marks near-tied answers unsure and routes batches only to an explicitly configured bulk model, preserving per-call model overrides.
+
 These plugins provide the built-in general tools (the agent tools are described in `docs/PLUGINS.md`, the `ideas` tool
 in `docs/PLUGIN-IDEAS.md`):
 

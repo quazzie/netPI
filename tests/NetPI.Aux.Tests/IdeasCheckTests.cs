@@ -22,6 +22,7 @@ public static class IdeasCheckTests
         public Env()
         {
             Ctx = new FakePluginContext(T.TempDir("ideas-home"));
+            Ctx.ModelsFake.VerifierResponder = _ => new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "{\"verified\":true,\"confidence\":0.95,\"reason\":\"The scripted conversation contains this unfinished plan\"}" }] };
             ProjectDir = T.TempDir("ideas-proj");
             Project = Ctx.SessionsFake.CreateProject("Demo", ProjectDir);
             Session = Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "s", ProjectId = Project.Id });
@@ -462,7 +463,7 @@ public static class IdeasCheckTests
             Check.Equal(1, (await env.Cards()).Count, "no card from a check that never ran");
             Check.Equal(0, env.Scheduler.Taken, "and it never held a slot");
             Check.Contains(string.Join("|", env.Ctx.Log.Lines), "was dropped", "the log names the work and the reason");
-            Check.Equal(0, env.Ctx.ModelsFake.Requests.Count - 1, "only the first check called the model");
+            Check.Equal(2, env.Ctx.ModelsFake.Requests.Count, "only the first draft and its verifier called the model");
 
             // The queue opens again: the next close of the same conversation runs the check for real.
             env.Scheduler.Busy = 1;

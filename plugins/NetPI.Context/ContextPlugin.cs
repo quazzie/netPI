@@ -77,7 +77,9 @@ public sealed class ContextPlugin : INetPiPlugin
         // a profile switch: the next model call renders the prompt again and takes a new tool baseline (one full re-read)
         context.Rpc.Register("context.reset", (req, _) =>
         {
-            prompts.Reset(req.Required("sessionId"));
+            var id = req.Required("sessionId");
+            context.Sessions.UpdateSession(id, SessionPrompt.Invalidate);
+            prompts.Reset(id);
             return Task.FromResult<object?>(true);
         }, "Forget a session's frozen system prompt and tool baseline; its next model call renders them again: { sessionId } → true");
 

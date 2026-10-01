@@ -26,10 +26,13 @@ public sealed class DecidePlugin : INetPiPlugin
                 SettingInfo.Str("decide.model", "Decision model", "qwen3.8-27b", "qwen3.8-27b: the NInfer chat model, the best without training and no extra memory; it shares the 5090 with the agents. laya-logs: the four log questions on the nuc. kev-9b: the nuc, load it from AiHub first (it takes the whole 4070)."),
                 SettingInfo.Int("decide.maxItems", "Most items per call", 500, null, 1, 5000),
                 SettingInfo.Int("decide.parallel", "Requests at once", 4, null, 1, 16),
+                SettingInfo.Str("decide.bulkModel", "Bulk decision model", "", "Explicit model for multi-item work; empty keeps the caller's choice. Does not load models."),
+                SettingInfo.Int("decide.bulkThreshold", "Items before bulk routing", 8, null, 2, 5000),
             ],
         });
         var http = context.Track(new HttpClient { Timeout = TimeSpan.FromSeconds(120) });
         var client = new DecisionClient(context, http);
+        context.Services.Register<IDecisionService>(client);
         context.Tools.Register(new DecideTool(context, client));
         context.Rpc.Register("decide.ask", async (r, rct) =>
         {
@@ -37,8 +40,8 @@ public sealed class DecidePlugin : INetPiPlugin
             var state = r.Prop("state") ?? throw new RpcException("bad_request", "Missing parameter 'state'");
             try
             {
-                var answer = await client.AskAsync(r.Str("model"), state, DecideTool.NormalizeQuestions(questions), rct).ConfigureAwait(false);
-                return answer.Answers;
+                return await client.EvaluateAsync(new DecisionRequest { Model = r.Str("model"), Body = new JsonObject
+                    { ["state"] = JsonNode.Parse(state.GetRawText()), ["questions"] = JsonNode.Parse(questions.GetRawText()) } }, rct).ConfigureAwait(false);
             }
             catch (DecisionException ex) { throw new RpcException(ex.Code, ex.Message); }
         }, "Ask a decision model typed questions about one state: { state, questions, model? } → answers (TypeSafe shape)");
@@ -48,7 +51,8 @@ public sealed class DecidePlugin : INetPiPlugin
             var branches = r.Prop("branches") ?? throw new RpcException("bad_request", "Missing parameter 'branches'");
             var body = new JsonObject { ["messages"] = JsonNode.Parse(messages.GetRawText()), ["branches"] = JsonNode.Parse(branches.GetRawText()) };
             if (r.Bool("share_state") is { } share) body["share_state"] = share;
-            try { return await client.DecisionAsync(r.Str("model"), body, rct).ConfigureAwait(false); }
+            if (r.Str("reasoning_effort") is { } effort) body["reasoning_effort"] = effort;
+            try { return await client.EvaluateAsync(new DecisionRequest { Model = r.Str("model"), Body = body, Conversation = true }, rct).ConfigureAwait(false); }
             catch (DecisionException ex) { throw new RpcException(ex.Code, ex.Message); }
         }, "NInfer's /v1/decision through the same server: { messages, branches: [{ id, content, labels }], model?, share_state? } → { branches: [{ id, probabilities, mass }], usage, ms }; the messages are the shared state (NInfer caches them across requests)");
         return Task.CompletedTask;
@@ -63,8 +67,51 @@ internal sealed class DecisionException(string code, string message) : Exception
 internal sealed record DecisionAnswer(JsonObject Answers, string Model, double Ms);
 
 /// <summary>POST /v1/systemone through the configured server; errors keep the server's code and request id.</summary>
-internal sealed class DecisionClient(IPluginContext ctx, HttpClient http)
+internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDecisionService
 {
+    private readonly SemaphoreSlim _requests = new(Math.Clamp(ctx.Settings.Get("decide.parallel", 4), 1, 16));
+    private readonly SemaphoreSlim _reuse = new(1, 1);
+
+    public async Task<JsonObject> EvaluateAsync(DecisionRequest request, CancellationToken ct)
+    {
+        var id = Model(request.Model);
+        var model = await ctx.Models.FindAsync(id, ct).ConfigureAwait(false);
+        var wireModel = model?.Id ?? id;
+        // A decision on the caller's live model reuses admission and serializes; it cannot take its own slot twice.
+        var reuse = request.ExistingLease is { IsReleased: false } && model is not null
+            && string.Equals(request.HeldModel, model.Ref, StringComparison.OrdinalIgnoreCase);
+        IDisposable? slot = null;
+        if (reuse) await _reuse.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (!reuse && model is not null)
+            {
+                var scheduler = ctx.Services.Get<IAgentScheduler>();
+                var admission = new AgentSlotRequest
+                {
+                    Key = scheduler?.Resolve(model) ?? model.Ref, AgentId = "decide", Provider = model.Provider, Priority = request.Priority, Label = "decision check",
+                };
+                slot = scheduler is not null ? await scheduler.AcquireAsync(admission, ct).ConfigureAwait(false)
+                    : await ResourceLeaseSlot.AcquireAsync(ctx.Services, ctx.Settings, model, admission, ct).ConfigureAwait(false);
+            }
+            await _requests.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                var body = (JsonObject)request.Body.DeepClone();
+                body.Remove("model");
+                if (request.Conversation)
+                {
+                    if (request.ReasoningEffort is not null) body["reasoning_effort"] = request.ReasoningEffort;
+                    return await DecisionAsync(wireModel, body, ct).ConfigureAwait(false);
+                }
+                var state = body["state"] ?? throw new DecisionException("bad_request", "Missing state");
+                var questions = body["questions"] ?? throw new DecisionException("bad_request", "Missing questions");
+                return (await AskAsync(wireModel, NetPiJson.ToElement(state), DecideTool.NormalizeQuestions(NetPiJson.ToElement(questions)), ct).ConfigureAwait(false)).Answers;
+            }
+            finally { _requests.Release(); }
+        }
+        finally { slot?.Dispose(); if (reuse) _reuse.Release(); }
+    }
     public string Model(string? model) => string.IsNullOrWhiteSpace(model) ? ctx.Settings.Get("decide.model", "qwen3.8-27b") ?? "qwen3.8-27b" : model.Trim();
 
     public string Root()

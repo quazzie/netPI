@@ -69,14 +69,14 @@ internal sealed class SecondOpinion(IPluginContext ctx)
     /// risk questions alone cleared 20 of their 39 read-only commands and no risky one.
     /// </summary>
     public static bool IsHarmless(IReadOnlyDictionary<string, double> p, double threshold) =>
-        Risks.All(r => p.TryGetValue(r, out var v) && v < threshold);
+        Risks.All(r => p.TryGetValue(r, out var v) && DecisionConfidence.Probability(v) && v < threshold && DecisionConfidence.Clear(1 - v, v, 1 - threshold));
 
     /// <summary>Null when switched off; otherwise the model's answer, or an <see cref="Opinion.Error"/> when there is none.</summary>
-    public async Task<Opinion?> AskAsync(string tool, string command, string? cwd, string? host, CancellationToken ct)
+    public async Task<Opinion?> AskAsync(string tool, string command, string? cwd, string? host, CancellationToken ct, AgentRunContext? run = null)
     {
         if (!Enabled()) return null;
         var model = Model();
-        if (!ctx.Rpc.Exists("decide.ask")) return new Opinion(model, false, new Dictionary<string, double>(), 0, "the Decide plugin is not loaded");
+        if (!DecisionCapabilities.Available(ctx.Services, ctx.Rpc, "decide.ask")) return new Opinion(model, false, new Dictionary<string, double>(), 0, "the decision capability is unavailable");
         var state = new JsonObject
         {
             ["context"] = "a shell command an AI coding agent is about to run on a Windows developer machine (Git Bash or PowerShell) or on a Linux host over ssh",
@@ -91,7 +91,7 @@ internal sealed class SecondOpinion(IPluginContext ctx)
         cts.CancelAfter(Timeout);
         try
         {
-            var result = await ctx.Rpc.InvokeAsync("decide.ask", new JsonObject { ["state"] = state, ["questions"] = Questions(), ["model"] = model }, cts.Token).ConfigureAwait(false);
+            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.ask", new JsonObject { ["state"] = state, ["questions"] = Questions(), ["model"] = model }, cts.Token, run?.AdmissionLease, run?.Model.Ref).ConfigureAwait(false);
             var answers = result as JsonObject ?? JsonSerializer.SerializeToNode(result) as JsonObject;
             var p = new Dictionary<string, double>(StringComparer.Ordinal);
             foreach (var key in Questions().Select(q => q.Key))

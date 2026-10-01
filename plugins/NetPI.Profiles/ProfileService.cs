@@ -70,22 +70,22 @@ internal sealed class ProfileService(IPluginContext ctx)
     }
 
     /// <summary>Give a chat a profile (null: none). In a started chat its prompt is rendered again at the next call.</summary>
-    public async Task<SessionInfo> ApplyAsync(string sessionId, string? profileId, CancellationToken ct)
+    public Task<SessionInfo> ApplyAsync(string sessionId, string? profileId, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var session = ctx.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
         if (session.Kind != "chat") throw new RpcException("bad_request", "Subagents don't use profiles: the agent that starts one chooses its tools.");
         var profile = profileId is null ? null : Get(profileId) ?? throw new RpcException("not_found", $"No profile \"{profileId}\"");
         SessionInfo updated;
         lock (_gate) updated = Write(sessionId, profile);
-        if (session.MessageCount == 0) return updated;
+        if (session.MessageCount == 0) return Task.FromResult(updated);
 
-        // started: the system prompt and the tools lead every request, so the next call is a full re-read either way
-        try { await ctx.Rpc.InvokeAsync("context.reset", new { sessionId }, ct).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is not OperationCanceledException) { ctx.Logger.LogDebug(ex, "context.reset failed for {Session}", sessionId); }
+        // The durable revision works with Context absent, replaced, or supplied by another prompt builder.
+        ct.ThrowIfCancellationRequested();
         ctx.Sessions.AppendMessage(sessionId, ChatMessage.NoticeText(profile is null
             ? "The user took this chat's profile away: your system prompt and tools are the default ones now."
             : $"The user switched this chat to the profile \"{profile.Name}\": your system prompt and tools have changed.", NoticeKind));
-        return ctx.Sessions.GetSession(sessionId) ?? updated;
+        return Task.FromResult(ctx.Sessions.GetSession(sessionId) ?? updated);
     }
 
     /// <summary>The chat's profile, the opening of its prompt and its tool switches, all from the profile.</summary>
@@ -93,6 +93,7 @@ internal sealed class ProfileService(IPluginContext ctx)
         ctx.Sessions.UpdateSession(sessionId, s =>
         {
             s.Meta ??= new JsonObject();
+            SessionPrompt.Invalidate(s);
             s.Meta[MetaKey] = profile?.Id;
             if (profile?.Prompt is { } prompt) s.Meta[SessionIdentity.MetaKey] = prompt;
             else s.Meta.Remove(SessionIdentity.MetaKey);

@@ -147,9 +147,11 @@ public sealed class TestHost : IAsyncDisposable
         Sessions = new FakeSessionStore(Bus, Workspace);
         Catalog = new FakeCatalog(Services);
         Db = db ?? new NullDatabase();
+        Services.Changed = type => ((IEventBus)Bus).Publish("services.changed", new { contract = type.FullName });
         // the host registers its core services too
         Services.Register<ISessionStore>(Sessions);
         Services.Register<IModelCatalog>(Catalog);
+        Services.Register<IResourceLeases>(new NetPI.Host.Registries.ResourceLeases(Bus));
     }
 
     /// <summary>Which plugins <see cref="StartAsync"/> loads.</summary>

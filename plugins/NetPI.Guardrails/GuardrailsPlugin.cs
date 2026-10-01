@@ -212,7 +212,7 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             Opinion? opinion = null;
             if (RuleSet.CommandOf(call.Name, args) is { Length: > 0 } command)
             {
-                opinion = await secondOpinion.AskAsync(call.Name, command, run.Cwd, RuleSet.HostOf(args), ct).ConfigureAwait(false);
+                opinion = await secondOpinion.AskAsync(call.Name, command, run.Cwd, RuleSet.HostOf(args), ct, run).ConfigureAwait(false);
                 if (opinion is { Harmless: true })
                 {
                     ctx.Events.Publish("guard.cleared", new JsonObject

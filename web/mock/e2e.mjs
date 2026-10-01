@@ -567,6 +567,9 @@ log('plugin tab: Work');
   const nums = (await qwen.locator('.nums').innerText().catch(() => '')).replace(/\s+/g, '');
   check('work: qwen pool 2/2 busy', nums.includes('2/2'), nums);
   check('work: pool shows queued waiter', (await qwen.locator('.owner.waiting').count()) > 0);
+  const physical = page.locator('.work [data-resource="local:aiproxy/qwen3.8-27b"]');
+  check('work: physical model capacity appears once', await physical.count() === 1 && (await physical.innerText()).includes('2/2'));
+  check('work: dropped background checks show their reason', (await page.locator('.work [data-background-work="mock-verifier-dropped"]').innerText()).includes('Model capacity did not open before the deadline'));
   const ownerNames = await qwen.locator('.owner .name').allInnerTexts();
   check('work: a top-level lane owner shows its session title, not "main"',
     ownerNames.includes('Index docs for semantic search') && !ownerNames.includes('main') && ownerNames.includes('surveyor'), ownerNames.join(' | '));
@@ -2254,6 +2257,26 @@ if (!EXTERNAL && !argv.includes('--no-dev') && want('vite dev server')) {
   } finally {
     vite.kill();
   }
+}
+
+if (!EXTERNAL && want('capability removal and recovery')) {
+log('capability removal and recovery');
+  await newTab();
+  const draft = 'Keep this draft while the executor is unavailable.';
+  await ta.fill(draft);
+  try {
+    await rpcCall('mock.capabilities', { missing: ['agent.send', 'runs.list', 'context.preview'] });
+    await page.getByText('Execution unavailable — enable Runtime to send. Your draft is kept.').waitFor();
+    check('composer keeps the draft when execution disappears', await ta.inputValue() === draft);
+    check('sending is disabled without an executor', await page.locator('.composer button.send').isDisabled());
+    await openStripTab('right', 'Diagnostics');
+    await page.locator('.plugin-root').getByRole('button', { name: 'Context', exact: true }).click();
+    await page.locator('.plugin-root').getByText('Context preview unavailable', { exact: false }).waitFor();
+    check('diagnostics keeps instruction discovery without context preview', await page.locator('.plugin-root').getByText('AGENTS.md', { exact: true }).count() > 0);
+    await rpcCall('mock.capabilities', { missing: [] });
+    await page.waitForFunction(() => !document.querySelector('.composer button.send')?.disabled);
+    check('execution recovery keeps the draft and restores Send', await ta.inputValue() === draft);
+  } finally { await rpcCall('mock.capabilities', { missing: [] }); }
 }
 
 // ------------------------------------------------------------------ summary

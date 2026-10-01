@@ -23,6 +23,15 @@ public sealed class IdeasPlugin : INetPiPlugin
 
     public async Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        var work = new IdeaWork(context);
+        context.Services.Register<IBackgroundWork>(work);
+        context.Rpc.RegisterReadOnly("ideas.work", (_, _) => Task.FromResult<object?>(work.Snapshot()), "Background idea checks: waits, running work and recent outcomes with reasons");
+        context.Rpc.RegisterReadOnly("ideas.capabilities", (_, _) => Task.FromResult<object?>(new
+        {
+            decisions = DecisionCapabilities.Available(context.Services, context.Rpc, "decide.decision"),
+            history = context.Services.Get<IGitHistory>() is not null || context.Rpc.Exists("files.commits"),
+            models = context.Models.Cached.Count > 0,
+        }), "Availability of optional Ideas enhancements, independently of backlog storage");
         context.Services.Register(new SettingsSection
         {
             Id = "ideas", Title = "Ideas", Group = "Tools", Order = 60,
@@ -36,6 +45,9 @@ public sealed class IdeasPlugin : INetPiPlugin
                     "The decision's probability an idea needs before it is suggested. 0.8 gave no false suggestion on 56 unrelated messages (docs/DECISION-MODELS.md).", 0.3, 0.99),
                 SettingInfo.Bool("ideas.saveCheck", "Offer unsaved plans when a chat closes", true,
                     "When a chat tab is closed, the model says whether it leaves a plan nobody built or wrote down. A new plan gets a card to save or discard; work on an open idea is attached to it instead."),
+                SettingInfo.Bool("ideas.verify", "Verify automatic proposals", true, "A read-only low-priority worker verifies proposals before they are shown or applied. Disabling this stops automatic proposals."),
+                SettingInfo.Str("ideas.verifyModel", "Verifier model", "", "Empty uses ideas.model. The verifier yields to higher-priority queued work after its provider acknowledges cancellation."),
+                SettingInfo.Bool("ideas.applyVerifiedUpdates", "Apply verified completion updates", true, "Mark an idea done after independent verification, only if its revision is unchanged and its project is idle."),
                 SettingInfo.Number("ideas.attachThreshold", "Attach threshold", IdeaSaveCheck.DefaultAttachThreshold,
                     "The probability a closed chat has to be about an open idea before the chat is attached to it. 0.8 was right on 5 of 6 (docs/DECISION-MODELS.md).", 0.3, 0.99),
                 SettingInfo.Str("ideas.model", "Model for the idea checks", IdeaRecall.DefaultModel,
@@ -104,6 +116,21 @@ public sealed class IdeasPlugin : INetPiPlugin
 
         var rpc = new IdeasRpc(repo, locator, events, migration, context.Paths.Home);
         rpc.Register(context.Rpc);
+        context.Rpc.Register("ideas.verifyUpdate", async (request, token) =>
+        {
+            var id = request.Required("id");
+            var current = repo.Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
+            var body = NetPiJson.ToNode(request.Params) as JsonObject ?? new();
+            if (body["expectedRevision"]?.GetValue<long>() != current.Revision) throw new IdeasConflictException("Read the current idea and supply its expectedRevision");
+            var patch = body["patch"] as JsonObject ?? throw new RpcException("bad_request", "Supply a patch");
+            var evidence = request.Required("evidence");
+            var projectId = current.Doc["project"]?["id"]?.GetValue<string>();
+            if (IdeaRuns.ProjectBusy(context, projectId)) return new { applied = false, reason = "Project has active work" };
+            var verdict = await new IdeaVerifier(context).VerifyAsync("Idea:\n" + IdeaOps.RenderMarkdown(current.Doc) + "\nProposed update:\n" + patch.ToJsonString(), evidence, null, projectId, token).ConfigureAwait(false);
+            if (!verdict.Verified || IdeaRuns.ProjectBusy(context, projectId)) return new { applied = false, reason = verdict.Verified ? "Project became busy" : verdict.Reason };
+            var changed = repo.Update(id, patch, fromUi: true, expectedRevision: current.Revision);
+            return new { applied = true, reason = verdict.Reason, idea = changed.Doc };
+        }, "Verify a proposed update against evidence and apply only to the captured revision: {id,expectedRevision,patch,evidence}; conflicting or unverifiable updates remain unapplied");
         new IdeaRecall(context, repo, locator).Register(context.Rpc);
         var saveCheck = new IdeaSaveCheck(context, repo);
         saveCheck.Register(context.Rpc);

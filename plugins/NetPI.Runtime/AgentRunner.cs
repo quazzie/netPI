@@ -150,12 +150,15 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             }
 
             // 3. steering input → transcript
+            _rc.AdmissionLease = run.Lease;
             DrainSteering();
 
             // 4. turn context + hooks
+            var promptRevision = SessionPrompt.Revision(session);
             var tools = ActiveTools(session);
             var defs = ToolSelection.Visible(tools);
             var prompt = await BuildPromptAsync(session, project, cwd, model, defs, ct).ConfigureAwait(false);
+            if (Ctx.Sessions.GetSession(SessionId) is { } afterPrompt && SessionPrompt.Revision(afterPrompt) != promptRevision) continue;
             AgentTurnContext turn = null!;
             turn = new AgentTurnContext
             {
@@ -176,6 +179,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             ct.ThrowIfCancellationRequested();
 
             // 5. model call
+            if (Ctx.Sessions.GetSession(SessionId) is { } beforeCall && SessionPrompt.Revision(beforeCall) != promptRevision) continue;
             ChatMessage assistant;
             try
             {
@@ -218,6 +222,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             _rc.TurnCount++;
 
             // 6. after-call hooks: first non-null decision wins
+            turn.LatestAssistant = assistant;
             TurnDecision? after = null;
             foreach (var hook in rt.Hooks())
             {
@@ -227,6 +232,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             }
             if (after is { Action: TurnAction.Replace, Replacement: { } replacement })
                 assistant = ReplaceAssistant(assistant, replacement);
+            turn.LatestAssistant = assistant;
 
             // metering and diagnostics see every call, whoever decided it (a hook that only counts would sit behind
             // the first decision and miss those calls: the goal's token budget is the case that bit us)
@@ -332,6 +338,9 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         var scheduler = Ctx.Services.Get<IAgentScheduler>();
         if (scheduler is null)
         {
+            if (run.Lease is { IsReleased: false } && run.Model?.Ref == model.Ref) return;
+            run.Lease?.Dispose();
+            run.Lease = await rt.AcquireSlotAsync(state, run, model, 0, ct).ConfigureAwait(false);
             run.Model = model;
             if (Info.Status != AgentStatus.Running) rt.SetStatus(state, AgentStatus.Running, null, keepActivity: true);
             return;
@@ -357,6 +366,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
     private async Task<string> BuildPromptAsync(SessionInfo session, ProjectInfo? project, string cwd, ModelInfo model,
         IReadOnlyList<ToolDefinition> defs, CancellationToken ct)
     {
+        var capturedRevision = SessionPrompt.Revision(session);
         var pc = new PromptContext
         {
             Session = session,
@@ -378,7 +388,46 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex) { Ctx.Logger.LogWarning(ex, "System prompt builder failed; using the built-in prompt"); }
         }
-        return FallbackPrompt(pc);
+        var environment = $"Working directory: {cwd}\nProject: {project?.Name ?? "none"}\nModel: {model.Ref}";
+        if (session.Meta?["runtimeEnvironment"]?.GetValue<string>() != environment)
+        {
+            Ctx.Sessions.AppendMessage(session.Id, ChatMessage.NoticeText(environment, "environment"));
+            Ctx.Sessions.UpdateSession(session.Id, s => { s.Meta ??= new JsonObject(); s.Meta["runtimeEnvironment"] = environment; });
+        }
+        if (SessionPrompt.Fallback(session) is { } frozen) return frozen;
+        var sections = Ctx.Services.GetAll<IPromptSection>().OrderBy(s => s.Order).ToList();
+        var parts = new List<string>();
+        var identity = SessionIdentity.Of(session);
+        if (identity is not null) parts.Add(identity);
+        var renderedSections = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var section in sections)
+        {
+            if (identity is not null && section.Id == "identity") continue;
+            try
+            {
+                var text = await section.RenderAsync(pc, ct).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(text)) { parts.Add(text.Trim()); renderedSections.Add(section.Id); }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { Ctx.Logger.LogWarning(ex, "Prompt section {Section} failed", section.Id); }
+        }
+        if (identity is null && !renderedSections.Contains("identity")) parts.Insert(0,
+            Ctx.Settings.Get("context.customPrompt", "") is { Length: > 0 } custom ? custom : FallbackPrompt(pc));
+        if (!renderedSections.Contains("tools"))
+        {
+            var guidelines = defs.SelectMany(t => t.PromptGuidelines ?? []).Where(g => !string.IsNullOrWhiteSpace(g)).Select(g => g.Trim()).Distinct(StringComparer.Ordinal);
+            parts.Add(string.Join("\n", guidelines.Select(g => "- " + g)));
+        }
+        if (!renderedSections.Contains("subagent") && !string.IsNullOrWhiteSpace(pc.Instructions)) parts.Add("# Your role\n" + pc.Instructions.Trim());
+        var rendered = string.Join("\n\n", parts.Where(p => !string.IsNullOrWhiteSpace(p)));
+        Ctx.Sessions.UpdateSession(session.Id, s =>
+        {
+            if (SessionPrompt.Revision(s) != capturedRevision) return;
+            s.Meta ??= new JsonObject();
+            s.Meta[SessionPrompt.FallbackKey] = rendered;
+            s.Meta[SessionPrompt.FallbackRevisionKey] = capturedRevision;
+        });
+        return rendered;
     }
 
     internal static string FallbackPrompt(PromptContext pc)
@@ -392,7 +441,6 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         sb.Append("Working directory: ").Append(pc.Cwd).Append('\n');
         sb.Append("Project: ").Append(pc.Project is { } p ? $"{p.Name} ({p.Path})" : "none").Append('\n');
         sb.Append("Model: ").Append(pc.Model.Ref);
-        if (!string.IsNullOrWhiteSpace(pc.Instructions)) sb.Append("\n\n").Append(pc.Instructions.Trim());
         return sb.ToString();
     }
 
@@ -433,6 +481,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
     {
         var request = new ModelRequest
         {
+            CaptureDecisionContext = Ctx.Settings.Get("loops.contextChecks", false) || Ctx.Settings.Get("todo.checkCommits", false),
             Model = model,
             SystemPrompt = turn.SystemPrompt,
             // the first turn's notices before the first user message (ContextOrder); hooks see the stored order
@@ -444,7 +493,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             AgentId = AgentId,
             Purpose = "agent",
         };
-
+        turn.SentRequest = request;
         var partial = new PartialMessage();
         var sw = Stopwatch.StartNew();
         long? thinkStart = null, thinkEnd = null;
@@ -741,6 +790,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
     private ToolContext CallContext(string callId, Action<string>? output = null) => new()
     {
+        AdmissionLease = _rc?.AdmissionLease,
         SessionId = SessionId, AgentId = AgentId, CallId = callId,
         Cwd = _rc!.Cwd, Project = _rc.Project, Workspace = _rc.Workspace, Model = _rc.Model,
         Services = Ctx.Services, Events = Ctx.Events, Output = output,

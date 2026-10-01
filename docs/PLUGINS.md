@@ -1,5 +1,11 @@
 # Writing plugins
 
+The agent rework introduces shared `IDecisionService`, `IGitHistory`, `IResourceLeases` and `IBackgroundWork` contracts. Resolve plugin-owned capabilities per operation; a caller may retain one only while that operation runs. Decide and Files implement decision/Git capabilities and preserve their RPC adapters. Ideas, Loops and Guardrails keep their base behavior without optional decision/history providers. Decision admission belongs at the capability boundary; a trusted caller can supply its actual same-model lease. External RPC callers always obtain their own admission.
+
+Profiles writes `SessionPrompt.RevisionKey` alongside identity/tool metadata for explicit switches. Context and Runtime fallback honor it; missing revision is zero for legacy sessions. Ordinary settings, model and project changes keep the sent prefix. The host's resource store retains only host/shared DTOs and host-owned lease handles, so an old scheduler's running requests stay counted without retaining its queues or delegates in a host registry.
+
+The full plugin base/optional/operation-required matrix is in [the independence plan](plans/2026-10-01-plugin-independence.md). The test gate scans all plugin and imported build declarations for peer dependencies and starts/stops every plugin with no peers. Executor-dependent actions explicitly report unavailable; optional UI sections remain independently usable. `diag.capabilities` reports base registrations and optional presence without claiming network endpoints are healthy.
+
 Everything in NetPI except the small host kernel is a plugin: providers, tools, the agent loop, agents, compaction,
 the right-panel tabs. A plugin is a .NET assembly in its own folder under `<app>/plugins/` (or `~/.netpi/plugins/`),
 loaded into a collectible `AssemblyLoadContext`. When its DLL changes the host **hot-reloads** it: everything it

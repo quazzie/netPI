@@ -9,6 +9,7 @@
   import { bus } from '../../lib/bus.js';
   import { toast } from '../../lib/state/ui.svelte.js';
   import { tokens } from '../../lib/format.js';
+  import { hasRpc } from '../../lib/state/app.svelte.js';
 
   let { session, open = $bindable(false) } = $props();
   let btn = $state();
@@ -43,7 +44,7 @@
 </script>
 
 {#if profiles.length && session.kind !== 'subagent'}
-  <button class="pick" class:none={!current} bind:this={btn} onclick={() => (open = !open)} title="Profile: {currentName}" aria-label="Profile">
+  <button class="pick" disabled={!hasRpc('profiles.apply')} class:none={!current} bind:this={btn} onclick={() => (open = !open)} title="Profile: {currentName}" aria-label="Profile">
     <Icon name="user" size={13} />
     <span class="np-ellipsis">{currentName}</span>
   </button>

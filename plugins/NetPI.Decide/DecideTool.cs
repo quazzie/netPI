@@ -82,6 +82,8 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
 
         var minConf = args.TryGetProperty("min_confidence", out var mc) && mc.ValueKind == JsonValueKind.Number ? Math.Clamp(mc.GetDouble(), 0, 1) : 0.5;
         var model = args.TryGetProperty("model", out var me) && me.ValueKind == JsonValueKind.String ? me.GetString() : null;
+        if (string.IsNullOrWhiteSpace(model) && items.Count >= Math.Max(2, ctx.Settings.Get("decide.bulkThreshold", 8)))
+            model = ctx.Settings.Get("decide.bulkModel", "") is { Length: > 0 } bulk ? bulk : null;
 
         var results = new DecisionAnswer?[items.Count];
         using var gate = new SemaphoreSlim(Math.Clamp(ctx.Settings.Get("decide.parallel", 4), 1, 16));
@@ -93,7 +95,13 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
             try
             {
                 if (failure is not null) return;
-                results[i] = await client.AskAsync(model, JsonSerializer.SerializeToElement(text), questions, ct).ConfigureAwait(false);
+                var startedItem = System.Diagnostics.Stopwatch.StartNew();
+                var answers = await client.EvaluateAsync(new DecisionRequest
+                {
+                    Model = model, Body = new JsonObject { ["state"] = text, ["questions"] = questions.DeepClone() },
+                    ExistingLease = context.AdmissionLease, HeldModel = context.Model?.Ref,
+                }, ct).ConfigureAwait(false);
+                results[i] = new DecisionAnswer(answers, client.Model(model), startedItem.Elapsed.TotalMilliseconds);
             }
             catch (DecisionException ex) { failure ??= ex; }
             finally { gate.Release(); }
@@ -183,7 +191,7 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
                 var a = r.Answers[qid] as JsonObject;
                 var (label, conf) = Read(qdef!["type"]!.GetValue<string>(), a);
                 cells[qid] = new { answer = label, confidence = Math.Round(conf, 3) };
-                if (conf < minConf) isUnsure = true;
+                if (!DecisionConfidence.Clear(conf, 1 - conf, minConf)) isUnsure = true;
                 var c = counts[qid];
                 c[label] = c.GetValueOrDefault(label) + 1;
                 if (a?["score"] is JsonValue sv && sv.TryGetValue<double>(out var s))

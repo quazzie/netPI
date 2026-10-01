@@ -18,15 +18,18 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
     public async ValueTask<string> BuildAsync(PromptContext context, CancellationToken ct)
     {
         var sessionId = context.Session.Id;
-        if (prompts.Get(sessionId) is { } frozen) return frozen;
+        var capturedRevision = SessionPrompt.Revision(context.Session);
+        if (prompts.GetCompatible(context.Session) is { } frozen) return frozen;
         // a fork's first call: the prompt the original had at the fork point (session.forked copies it too, but may come later)
-        if (PromptStore.ForkedFrom(context.Session) is { } fork)
+        if (!prompts.WasReset(sessionId) && PromptStore.ForkedFrom(context.Session) is { } fork)
         {
             prompts.Fork(fork.SessionId, sessionId, fork.Seq);
             if (prompts.Get(sessionId) is { } copied) return copied;
         }
-        var rendered = await RenderAsync(context, ct).ConfigureAwait(false);
-        var stored = prompts.Freeze(sessionId, rendered);
+        var rendered = SessionPrompt.Fallback(context.Session) ?? await RenderAsync(context, ct).ConfigureAwait(false);
+        if (ctx.Sessions.GetSession(sessionId) is { } current && SessionPrompt.Revision(current) != capturedRevision)
+            throw new InvalidOperationException("The session identity changed while its prompt was rendered; render the current revision.");
+        var stored = prompts.Freeze(sessionId, rendered, capturedRevision);
         if (ReferenceEquals(stored, rendered))
         {
             // this call sends a new prompt: keep it with the tools it goes with, for the chat to show (context.prompts)
@@ -44,7 +47,7 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
 
     /// <summary>What a session is sent: its stored prompt, or (before its first model call) a fresh render that is not stored.</summary>
     public async ValueTask<(string Prompt, bool Frozen)> PreviewAsync(PromptContext context, CancellationToken ct) =>
-        prompts.Get(context.Session.Id) is { } frozen ? (frozen, true) : (await RenderAsync(context, ct).ConfigureAwait(false), false);
+        prompts.GetCompatible(context.Session) is { } frozen ? (frozen, true) : (await RenderAsync(context, ct).ConfigureAwait(false), false);
 
     public async ValueTask<string> RenderAsync(PromptContext context, CancellationToken ct)
     {
@@ -78,6 +81,9 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
 internal sealed class PromptStore(IPluginContext ctx)
 {
     private readonly ConcurrentDictionary<string, string> _cache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _revisions = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _reset = new(StringComparer.Ordinal);
+    public bool WasReset(string sessionId) => _reset.ContainsKey(sessionId);
     private readonly ConcurrentDictionary<string, ToolBaseline> _tools = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, List<SentPrompt>> _sent = new(StringComparer.Ordinal); // without a database
     private IDatabase? _db;
@@ -95,13 +101,27 @@ internal sealed class PromptStore(IPluginContext ctx)
                 "ALTER TABLE context_tools ADD COLUMN since_seq INTEGER NOT NULL DEFAULT 0",
                 // every prompt a session was sent (the first, and one after each context.reset) with its tool definitions
                 "CREATE TABLE IF NOT EXISTS context_sent (session_id TEXT NOT NULL, version INTEGER NOT NULL, after_seq INTEGER NOT NULL, " +
-                "prompt TEXT NOT NULL, tools TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (session_id, version))");
+                    "prompt TEXT NOT NULL, tools TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (session_id, version))",
+                "ALTER TABLE context_prompts ADD COLUMN prompt_revision INTEGER NOT NULL DEFAULT 0");
             _db = db;
         }
         catch (Exception ex)
         {
             ctx.Logger.LogWarning(ex, "Session prompts table unavailable; frozen prompts are kept in memory only");
         }
+    }
+
+    public string? GetCompatible(SessionInfo session)
+    {
+        if (Get(session.Id) is not { } prompt) return null;
+        try
+        {
+            var stored = _revisions.GetOrAdd(session.Id, id => _db?.Scalar<long?>("SELECT prompt_revision FROM context_prompts WHERE session_id = @id", new { id }) ?? 0);
+            if (stored == SessionPrompt.Revision(session)) return prompt;
+            Reset(session.Id);
+        }
+        catch (Exception ex) { ctx.Logger.LogWarning(ex, "Reading prompt revision failed for {Session}", session.Id); }
+        return null;
     }
 
     public string? Get(string sessionId)
@@ -118,14 +138,16 @@ internal sealed class PromptStore(IPluginContext ctx)
     }
 
     /// <summary>Store a session's first prompt; when another call stored one first, that one is returned.</summary>
-    public string Freeze(string sessionId, string prompt)
+    public string Freeze(string sessionId, string prompt, long? capturedRevision = null)
     {
         var stored = _cache.GetOrAdd(sessionId, prompt);
+        var revision = capturedRevision ?? (ctx.Sessions.GetSession(sessionId) is { } session ? SessionPrompt.Revision(session) : 0);
+        _revisions.TryAdd(sessionId, revision);
         if (!ReferenceEquals(stored, prompt) || _db is null) return stored;
         try
         {
-            _db.Execute("INSERT OR IGNORE INTO context_prompts (session_id, prompt, created_at) VALUES (@sessionId, @prompt, @now)",
-                new { sessionId, prompt, now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) });
+            _db.Execute("INSERT OR IGNORE INTO context_prompts (session_id, prompt, created_at, prompt_revision) VALUES (@sessionId, @prompt, @now, @revision)",
+                new { sessionId, prompt, revision, now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) });
         }
         catch (Exception ex) { ctx.Logger.LogWarning(ex, "Storing the prompt of {Session} failed", sessionId); }
         return stored;
@@ -227,7 +249,9 @@ internal sealed class PromptStore(IPluginContext ctx)
     /// <summary><c>context.reset</c>: forget the session's current prompt and tool baseline; the next call renders them again.</summary>
     public void Reset(string sessionId)
     {
+        _reset[sessionId] = 0;
         _cache.TryRemove(sessionId, out _);
+        _revisions.TryRemove(sessionId, out _);
         _tools.TryRemove(sessionId, out _);
         if (_db is null) return;
         try
@@ -252,6 +276,7 @@ internal sealed class PromptStore(IPluginContext ctx)
     /// </summary>
     public void Fork(string from, string to, long upToSeq)
     {
+        if (ctx.Sessions.GetSession(to)?.Meta?[SessionPrompt.ForkResetKey]?.GetValue<bool>() == true) return;
         var all = Sent(from);
         var sent = all.Where(p => p.AfterSeq <= upToSeq).ToList();
         string prompt;

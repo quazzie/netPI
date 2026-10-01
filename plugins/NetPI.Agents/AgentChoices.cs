@@ -34,6 +34,10 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         string Who(SlotHolder o) => (names.TryGetValue(o.AgentId, out var n) ? n : o.Label ?? "?") + (o.AgentId == context.AgentId ? " (you)" : "");
 
         var sb = new StringBuilder(ledger.BudgetLine()).Append("\n\n");
+        if (runtime is null) sb.Append("Delegation unavailable: no executor capability is registered. Scheduling and budgets remain available.\n\n");
+        sb.Append("Shared model capacity (several agent names share these totals):\n");
+        foreach (var resource in scheduler.Resources())
+            sb.Append("- ").Append(resource.Model ?? resource.Key).Append(": ").Append(resource.Capacity).Append(" total, ").Append(resource.Busy).Append(" running, ").Append(resource.Queued).Append(" queued\n");
         var agents = pools.Where(p => p.Configured)
             .OrderBy(p => p.Available ? 0 : 1)
             .ThenBy(p => p.Free ? 0 : p.PriceInput is null ? 2 : 1)
@@ -43,7 +47,7 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         var others = pools.Where(p => !p.Configured && (p.Busy > 0 || p.Queued > 0)).ToList();
         if (agents.Count > 0)
         {
-            sb.Append("Agents (pass the id to agent_spawn):\n");
+            sb.Append(runtime is null ? "Configured agents (execution unavailable):\n" : "Agents (pass the id to agent_spawn):\n");
             foreach (var p in agents) Line(sb, p, withModels: false, Who, context.AgentId);
             if (others.Count > 0)
             {
@@ -53,7 +57,7 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         }
         else
         {
-            sb.Append("No agents are set up: a subagent runs on your model unless you pass agent_spawn a model ref.\n");
+            sb.Append(runtime is null ? "No agents are set up.\n" : "No agents are set up: a subagent runs on your model unless you pass agent_spawn a model ref.\n");
             if (others.Count > 0) sb.Append("Model calls in progress (busy/slots):\n");
             foreach (var p in others) Line(sb, p, withModels: true, Who, context.AgentId);
         }
@@ -61,6 +65,7 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         return Task.FromResult(ToolResult.Ok(sb.ToString().TrimEnd(), new JsonObject
         {
             ["agents"] = NetPiJson.ToNode(pools),
+            ["resources"] = NetPiJson.ToNode(scheduler.Resources()),
             ["budget"] = ledger.BudgetStatus(),
         }));
     }
@@ -115,6 +120,8 @@ internal sealed class AgentsPromptSection : IPromptSection
         return ValueTask.FromResult<string?>("# Agents\n- " +
             (Has("agent_choices") ? "Before you delegate, look at agent_choices and choose" : "Choose") +
             " an active agent by its note and cost: prefer free ones; a paid agent spends the user's money, so use it only " +
-            "when the task needs what it is good at, and above the budget's warning level only when the user asked.");
+            "when the task needs what it is good at, and above the budget's warning level only when the user asked.\n" +
+            "- With two local slots: everyday work is you plus one independent helper. For a batch, spawn two workers and wait so you yield your slot; you resume with priority. An explicitly chosen cloud coordinator may supervise both local workers. More agent names or instances do not add physical model capacity. Busy work queues; active inference is not preempted. Never change model or spend money just because local slots are busy.\n" +
+            "- Give each child a self-contained goal, relevant paths/evidence, constraints and file ownership. A writing child uses an isolated workspace; use bounded independent assignments, wait for reports, and integrate commits deliberately. Request a final report with results, changed paths, validation and blockers. Fresh context is the default; tools are chosen by the parent, profiles and budget overrides are not inherited. Background work is useful when you have independent work to do; otherwise wait and release capacity.");
     }
 }

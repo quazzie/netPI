@@ -44,6 +44,8 @@ internal sealed class IdeaAdmission(IPluginContext ctx)
     /// </summary>
     internal sealed record Admission(IDisposable? Lease, string? Reason, string Kind)
     {
+        public IAgentSlot? Slot => Lease is Leased held ? held.Slot : Lease as IAgentSlot;
+        public void Report(string status, string? reason = null) { if (Lease is Leased held) held.Report(status, reason); }
         public const string HeldKind = "held";
         public const string SkipKind = "skip";
         public const string DropKind = "drop";
@@ -63,14 +65,36 @@ internal sealed class IdeaAdmission(IPluginContext ctx)
     public async Task<Admission> EnterAsync(ModelInfo? model, string purpose, string? sessionId, string? projectId,
         CancellationToken ct, TimeSpan? wait = null)
     {
-        if (model is null) return Admission.Skip("no model");
+        var work = ctx.Services.Get<IBackgroundWork>();
+        var workId = work?.Begin(purpose, model?.Ref, sessionId, projectId);
+        if (model is null) { if (workId is not null) work!.Set(workId, "skipped", "no model"); return Admission.Skip("no model"); }
         if (!model.IsLocal && !PaidIsAllowed())
         {
             ctx.Logger.LogWarning("Ideas: {Purpose} did not run: {Model} is a paid model and ideas.allowPaidModel is off", purpose, model.Ref);
-            return Admission.Skip($"{model.Ref} is a paid model and ideas.allowPaidModel is off");
+            var reason = $"{model.Ref} is a paid model and ideas.allowPaidModel is off";
+            if (workId is not null) work!.Set(workId, "skipped", reason);
+            return Admission.Skip(reason);
         }
         var scheduler = ctx.Services.Get<IAgentScheduler>();
-        if (scheduler is null) return Admission.Held(new Noop());
+        if (scheduler is null)
+        {
+            using var fallbackBound = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            fallbackBound.CancelAfter(wait ?? TimeSpan.FromSeconds(Math.Clamp(WaitSeconds(), 1, 300)));
+            try
+            {
+                IDisposable lease = await ResourceLeaseSlot.AcquireAsync(ctx.Services, ctx.Settings, model, new AgentSlotRequest
+                    { Key = model.Ref, AgentId = AgentId, SessionId = sessionId, Label = purpose, Priority = Priority, Provider = model.Provider }, fallbackBound.Token).ConfigureAwait(false) ?? (IDisposable)new Noop();
+                if (workId is not null) work!.Set(workId, "running", "Scheduler unavailable; shared physical admission is used when the host supports it");
+                return Admission.Held(new Leased(lease, ctx, purpose, model.Ref, Stopwatch.StartNew(), work, workId));
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                if (workId is not null) work!.Set(workId, "dropped", "Physical capacity did not open before the deadline");
+                return Admission.Dropped("Physical capacity did not open before the deadline");
+            }
+            catch (OperationCanceledException) { if (workId is not null) work!.Set(workId, "cancelled", "The check was cancelled"); throw; }
+            catch (Exception ex) { if (workId is not null) work!.Set(workId, "failed", ex.Message); throw; }
+        }
 
         var bound = wait ?? TimeSpan.FromSeconds(Math.Clamp(WaitSeconds(), 1, 300));
         var sw = Stopwatch.StartNew();
@@ -89,7 +113,8 @@ internal sealed class IdeaAdmission(IPluginContext ctx)
                 Priority = Priority,
             }, bounded.Token).ConfigureAwait(false);
             ctx.Logger.LogDebug("Ideas: {Purpose} took the {Key} slot after {Ms} ms of queueing", purpose, key, sw.ElapsedMilliseconds);
-            return Admission.Held(new Leased(lease, ctx, purpose, key, sw));
+            if (workId is not null) work!.Set(workId, "running");
+            return Admission.Held(new Leased(lease, ctx, purpose, key, sw, work, workId));
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -97,9 +122,25 @@ internal sealed class IdeaAdmission(IPluginContext ctx)
             // already serving its slots, so the work is dropped and says so: the check stays retryable, the commit
             // sweep keeps its cursor, and the log names the work and the reason.
             var reason = $"{key} was full for {bound.TotalSeconds:0} s";
+            if (workId is not null) work!.Set(workId, "dropped", reason);
             ctx.Logger.LogWarning("Ideas: {Purpose} was dropped after {Ms} ms of queueing ({Reason}): the model is serving its slots and this work did not fit. It runs again on the next sweep or the next close of that chat.",
                 purpose, sw.ElapsedMilliseconds, reason);
             return Admission.Dropped(reason);
+        }
+        catch (AgentUnavailableException ex)
+        {
+            if (workId is not null) work!.Set(workId, "dropped", ex.Message);
+            return Admission.Dropped(ex.Message);
+        }
+        catch (OperationCanceledException)
+        {
+            if (workId is not null) work!.Set(workId, "cancelled", "The check was cancelled");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (workId is not null) work!.Set(workId, "failed", ex.Message);
+            throw;
         }
     }
 
@@ -112,13 +153,21 @@ internal sealed class IdeaAdmission(IPluginContext ctx)
         try { return ctx.Settings.Get(path, fallback) ?? fallback; } catch { return fallback; }
     }
 
-    private sealed class Leased(IAgentSlot lease, IPluginContext ctx, string purpose, string key, Stopwatch sw) : IDisposable
+    private sealed class Leased(IDisposable lease, IPluginContext ctx, string purpose, string key, Stopwatch sw, IBackgroundWork? work, string? workId) : IDisposable
     {
+        public IAgentSlot? Slot => lease as IAgentSlot;
         private int _done;
+        private bool _reported;
+        public void Report(string status, string? reason)
+        {
+            _reported = status is not ("running" or "waiting" or "yielding");
+            if (workId is not null) work?.Set(workId, status, reason);
+        }
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _done, 1) != 0) return;
             lease.Dispose();
+            if (workId is not null && !_reported) work?.Set(workId, "finished");
             ctx.Logger.LogDebug("Ideas: {Purpose} held the {Key} slot for {Ms} ms", purpose, key, sw.ElapsedMilliseconds);
         }
     }

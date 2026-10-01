@@ -17,6 +17,7 @@ import { formatBytes, payloadBytes, sendBudget } from '../images.js';
 const TABS_KEY = 'netpi.openTabs';
 
 class AppState {
+  rpcMethods = $state.raw(null);
   ready = $state(false);
   info = $state.raw(null);
   projects = $state.raw([]);
@@ -51,6 +52,15 @@ class AppState {
 }
 
 export const app = new AppState();
+export const hasRpc = (method) => app.rpcMethods === null || app.rpcMethods.has(method);
+
+async function loadCapabilities() {
+  try {
+    const methods = await rpc('rpc.list', {}, { timeout: 8000 });
+    if (Array.isArray(methods)) app.rpcMethods = new Set(methods.map((m) => typeof m === 'string' ? m : m.method ?? m.name));
+    if (!hasRpc('agent.send')) app.agents.clear();
+  } catch { /* Older hosts keep availability unknown. */ }
+}
 
 // Sessions deleted while this window was open (removeSessionLocal); see there for why it is a plain Set.
 export const goneSessions = new Set();
@@ -222,6 +232,7 @@ async function loadAgents() {
     return new Map((list ?? []).map((a) => [a.sessionId, a]));
   } catch {
     /* agent plugin missing */
+    app.agents.clear();
     return null;
   }
 }
@@ -257,6 +268,7 @@ async function loadAll({ reconnect }) {
       loadAgents(),
       loadTools(),
       loadAsks(),
+      loadCapabilities(),
     ]);
     app.info = info;
     agentsNow = now;
@@ -488,6 +500,10 @@ export async function deleteProject(id) {
 
 /** Send user input to the session's agent. mode: auto | steer | queue */
 export async function sendMessage(sessionId, text, images, mode = 'auto') {
+  if (!hasRpc('agent.send')) {
+    toast('Execution unavailable: enable the Runtime plugin to send. Your draft is kept.', 'warn');
+    return false;
+  }
   const chat = getChat(sessionId);
   if (images?.length) {
     // The envelope has to fit one WebSocket message. Refuse here with a reason, rather than have the host cut the
@@ -710,11 +726,15 @@ function onEvent(d, env) {
       break;
     case 'ui.changed':
     case 'plugins.changed':
+    case 'plugins.reloaded':
+    case 'rpc.changed':
+    case 'services.changed':
       clearTimeout(uiReloadTimer);
       uiReloadTimer = setTimeout(() => {
         loadUiRegistry();
         loadTools();
         loadPools();
+        loadCapabilities();
       }, 150);
       break;
     case 'settings.changed':

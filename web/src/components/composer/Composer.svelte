@@ -14,7 +14,7 @@
   import GoalStrip from './GoalStrip.svelte';
   import IdeaChip from './IdeaChip.svelte';
   import IdeaCards from './IdeaCards.svelte';
-  import { app, isBusy, modelFor, sendMessage, abortAgent } from '../../lib/state/app.svelte.js';
+  import { app, isBusy, modelFor, sendMessage, abortAgent, hasRpc } from '../../lib/state/app.svelte.js';
   import { pendingIn, answerAsk } from '../../lib/state/asks.svelte.js';
   import { DRAFT_IMAGES_MAX } from '../../lib/state/drafts.svelte.js';
   import { composer, modals, prefs, toast } from '../../lib/state/ui.svelte.js';
@@ -39,7 +39,8 @@
   const ctxInfo = $derived(app.context.get(session.id));
   const used = $derived(ctxInfo?.used ?? session.contextTokens ?? 0);
   const win = $derived(ctxInfo?.window ?? model?.contextWindow ?? 0);
-  const canSend = $derived(!!chat.draft.trim() || chat.images.length > 0);
+  const executionAvailable = $derived(hasRpc('agent.send'));
+  const canSend = $derived(executionAvailable && (!!chat.draft.trim() || chat.images.length > 0));
   const acceptsImages = $derived(!model || (model.inputModalities ?? ['text']).includes('image'));
 
   // ------------------------------------------------------------------ autosize
@@ -347,6 +348,7 @@
     {/if}
     {#if chat.ownQueue.length}<QueueChips {chat} />{/if}
     <GoalStrip {session} />
+    {#if !executionAvailable}<div class="banner" data-level="warn" role="status">Execution unavailable — enable Runtime to send. Your draft is kept.</div>{/if}
     <TodoStrip {session} />
     <IdeaChip {chat} {session} />
     <IdeaCards />

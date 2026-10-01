@@ -24,6 +24,20 @@ public sealed class DiagnosticsPlugin : INetPiPlugin
         var reloads = new Reloads(context);
         context.Events.Subscribe(EventTypes.PluginsReloaded, reloads.OnEvent);
         var inspect = new Inspector(context, recorder, reloads);
+        context.Rpc.RegisterReadOnly("diag.capabilities", (_, _) => Task.FromResult<object?>(new
+        {
+            plugins = context.Services.Get<IPluginManager>()?.List().Select(p => new { p.Id, p.State, p.Error,
+                methods = context.Rpc.List().Where(m => m.PluginId == p.Id).Select(m => m.Method).ToArray(),
+                tools = context.Tools.Registrations.Where(t => t.PluginId == p.Id).Select(t => t.Tool.Definition.Name).ToArray() }).ToArray(),
+            features = new[]
+            {
+                new { feature = "execution", available = context.Services.Get<IAgentRuntime>() is not null, reason = "Requires an executor capability" },
+                new { feature = "scheduling", available = context.Services.Get<IAgentScheduler>() is not null, reason = "Requires a scheduler capability" },
+                new { feature = "decisions", available = DecisionCapabilities.Available(context.Services, context.Rpc, "decide.decision"), reason = "Requires a decision capability and a reachable endpoint" },
+                new { feature = "gitHistory", available = context.Services.Get<IGitHistory>() is not null || context.Rpc.Exists("files.commits"), reason = "Requires a Git history capability and a repository" },
+                new { feature = "contextPreview", available = context.Rpc.Exists("context.preview"), reason = "Requires a context preview provider" },
+            },
+        }), "Plugin base registrations and optional capability availability; registry presence does not prove endpoint health");
         context.Rpc.RegisterReadOnly("diag.overview", async (_, rpcCt) => await inspect.OverviewAsync(rpcCt).ConfigureAwait(false),
             "Start here: app, process, plugins, models, agents with holders and waiters, active runs, model calls, running tools and processes, problems, the other diag methods");
         context.Rpc.RegisterReadOnly("diag.problems", async (_, rpcCt) => await inspect.ProblemsAsync(rpcCt).ConfigureAwait(false),

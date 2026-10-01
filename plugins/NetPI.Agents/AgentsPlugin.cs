@@ -66,6 +66,8 @@ public sealed class AgentsPlugin : INetPiPlugin
 
         context.Rpc.RegisterReadOnly("agents.list", (_, _) => Task.FromResult<object?>(scheduler.Snapshot()),
             "The agents (always) and other model calls in progress, with instances, owners, waiters, state, price and today's spend → AgentSlots[]");
+        context.Rpc.RegisterReadOnly("agents.resources", (_, _) => Task.FromResult<object?>(scheduler.Resources()),
+            "Shared model resources, including calls admitted before a scheduler replacement → ModelResourceSlots[]");
         context.Rpc.Register("agents.use", (r, _) =>
         {
             var sid = r.Required("sessionId");
@@ -111,7 +113,10 @@ public sealed class AgentsPlugin : INetPiPlugin
                     NoticeKind = "budget",
                     Source = "system",
                 }, DeliveryMode.Auto, token).ConfigureAwait(false);
-            return usage.BudgetStatus();
+            var status = usage.BudgetStatus();
+            status["executionAvailable"] = rt is not null;
+            if (rt is null) status["continuationReason"] = "No executor capability is available; the allowance is saved. Continue explicitly when execution is available.";
+            return status;
         }, "Let a chat go over the budget until the period ends and continue it: { sessionId } (budget.onLimit \"ask\")");
 
         context.Events.Subscribe(EventTypes.SettingsChanged, e =>
@@ -124,6 +129,7 @@ public sealed class AgentsPlugin : INetPiPlugin
         });
         // model states (loaded, unloaded, offline) switch local agents on and off
         context.Events.Subscribe(EventTypes.ModelsChanged, _ => scheduler.Refresh());
+        context.Events.Subscribe("resources.released", _ => scheduler.Refresh());
 
         // Agents follow the model catalog: list it soon after startup so their states are known.
         _ = Task.Run(async () =>

@@ -20,6 +20,8 @@ public static class IdeasTests
         public Env()
         {
             Ctx = new FakePluginContext(T.TempDir("ideas-home"));
+            Ctx.ModelsFake.VerifierResponder = _ => new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "{\"verified\":true,\"confidence\":0.95,\"reason\":\"The scripted evidence supports this proposal\"}" }] };
+            Ctx.SettingsFake.Set("ideas.applyVerifiedUpdates", false); // These cases exercise verified review cards.
             // The checks decide on a model that has to exist, and the commit sweep and the recall both go through
             // admission before they ask, so the catalog needs one.
             Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
@@ -58,7 +60,7 @@ public static class IdeasTests
                 Cwd = project?.Path ?? Path.GetTempPath(), Project = project, Services = Ctx.Services, Events = Ctx.Events,
             }, T.Args(args), CancellationToken.None);
 
-        public async Task<JsonObject> Rpc(string method, JsonObject p) => (JsonObject)(await Ctx.RpcFake.Call(method, p))!;
+        public async Task<JsonObject> Rpc(string method, JsonObject p) => (JsonObject)NetPiJson.ToNode(await Ctx.RpcFake.Call(method, p))!;
     }
 
     private static void Ok(ToolResult r) { if (r.IsError) throw new AssertException("tool error: " + r.Content); }
@@ -72,6 +74,31 @@ public static class IdeasTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("ideas: verified updates apply without a card and preserve concurrent edits", async () =>
+        {
+            var env = new Env(); await env.StartAsync();
+            var idea = await env.Rpc("ideas.add", new JsonObject { ["idea"] = new JsonObject { ["title"] = "Finish the whole plan" } });
+            var id = idea["id"]!.GetValue<string>();
+            var current = env.Repo.Find(id)!;
+            JsonObject Request() => new() { ["id"] = id, ["expectedRevision"] = env.Repo.Find(id)!.Revision,
+                ["patch"] = new JsonObject { ["status"] = "done" }, ["evidence"] = "Implementation and successful tests for every requirement" };
+            env.Ctx.ModelsFake.VerifierResponder = _ => new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "{\"verified\":false,\"confidence\":0.95,\"reason\":\"Missing requirement\"}" }] };
+            Check.False((await env.Rpc("ideas.verifyUpdate", Request()))["applied"]!.GetValue<bool>());
+            Check.Equal(current.Revision, env.Repo.Find(id)!.Revision);
+            env.Ctx.ModelsFake.VerifierResponder = _ =>
+            {
+                env.Repo.Update(id, new JsonObject { ["summary"] = "Concurrent user edit" }, fromUi: true, expectedRevision: env.Repo.Find(id)!.Revision);
+                return new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "{\"verified\":true,\"confidence\":0.95,\"reason\":\"Everything checked\"}" }] };
+            };
+            await Check.ThrowsAsync<IdeasConflictException>(() => env.Rpc("ideas.verifyUpdate", Request()));
+            Check.Equal("Concurrent user edit", env.Repo.Find(id)!.Doc["summary"].Str());
+            Check.Equal("open", env.Repo.Find(id)!.Doc["status"].Str());
+            env.Ctx.ModelsFake.VerifierResponder = _ => new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "{\"verified\":true,\"confidence\":0.95,\"reason\":\"Everything checked\"}" }] };
+            Check.True((await env.Rpc("ideas.verifyUpdate", Request()))["applied"]!.GetValue<bool>());
+            Check.Equal("done", env.Repo.Find(id)!.Doc["status"].Str());
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas: plugin registers one tool, RPC, tab and /idea command", async () =>
         {
             var env = new Env();
@@ -159,6 +186,7 @@ public static class IdeasTests
             var calls = 0;
             env.Ctx.RpcFake.Register("files.commits", (req, _) =>
             {
+                if (req.Str("hash") is { } hash) return Task.FromResult<object?>(new JsonObject { ["hash"] = hash, ["patch"] = "diff --git a/fix b/fix\n+scripted completed implementation", ["truncated"] = false });
                 Interlocked.Increment(ref calls);
                 var cwd = req.Str("cwd") ?? env.ProjectDir;
                 var since = req.Str("since");

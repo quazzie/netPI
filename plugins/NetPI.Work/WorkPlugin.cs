@@ -14,7 +14,7 @@ public sealed class WorkPlugin : INetPiPlugin
     {
         var rpc = context.Rpc;
         var logger = context.Logger;
-        context.Rpc.Register("work.snapshot", async (_, rpcCt) => await SnapshotAsync(rpc, logger, rpcCt).ConfigureAwait(false),
+        context.Rpc.RegisterReadOnly("work.snapshot", async (_, rpcCt) => await SnapshotAsync(rpc, logger, rpcCt).ConfigureAwait(false),
             "Aggregated overview for the Work tab → { agents, runs, processes, usage, time, errors? }");
         context.Ui.AddTab(new UiTabInfo { Id = "work", Title = "Work", Panel = UiPanel.Right, Icon = "work", Order = 10, Module = "ui.js" });
         return Task.CompletedTask;
@@ -24,6 +24,8 @@ public sealed class WorkPlugin : INetPiPlugin
     public static readonly (string Key, string Method, object? Params)[] Parts =
     [
         ("agents", "agents.list", null),
+        ("resources", "agents.resources", null),
+        ("ideasWork", "ideas.work", null),
         ("runs", "runs.list", new JsonObject { ["includeFinished"] = true }),
         ("processes", "processes.list", null),
         ("usage", "usage.summary", null),

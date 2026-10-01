@@ -77,20 +77,28 @@ public sealed class FilesPlugin : INetPiPlugin
             });
         }, "Identity and version of what the Files tab is showing: { sessionId?, cwd? } → { sessionId, root, workspaceId?, branch?, isolated, identity?, version }");
 
-        context.Rpc.RegisterReadOnly("files.commits", async (req, token) =>
+        var history = new GitHistory(context);
+        context.Services.Register<IGitHistory>(history);
+        context.Rpc.RegisterReadOnly("files.commits", async (req, token) => await history.ReadAsync(NetPiJson.ToNode(req.Params) as System.Text.Json.Nodes.JsonObject ?? new(), token).ConfigureAwait(false),
+            "Repository history: { sessionId?, cwd?, since?, until?, limit? } → { repo, gitDir, commonDir, reachable, commits } | null");
+
+        // Left-panel file tree of the active session's workspace.
+        context.Ui.AddTab(new UiTabInfo { Id = "files", Title = "Files", Panel = UiPanel.Left, Icon = "files", Order = 30, Module = "ui.js" });
+        context.Logger.LogDebug("File tools registered");
+        return Task.CompletedTask;
+    }
+
+    private sealed class GitHistory(IPluginContext context) : IGitHistory
+    {
+        public async Task<System.Text.Json.Nodes.JsonObject?> ReadAsync(System.Text.Json.Nodes.JsonObject request, CancellationToken token)
         {
+            var req = new RpcRequest { Method = "files.commits", Params = NetPiJson.ToElement(request) };
+            if (req.Str("hash") is { Length: > 0 } hash) return await GitStatus.PatchAsync(ResolveRoot(context, req), hash, token).ConfigureAwait(false);
             var since = req.Str("since");
             var until = req.Str("until");
             var limit = Math.Clamp(req.Int("limit") ?? 20, 1, 200);
-            return await GitStatus.CommitsAsync(ResolveRoot(context, req), since, until, limit, token).ConfigureAwait(false);
-        }, "The repository's commits, newest first: { sessionId?, cwd?, since? (a hash: only what came after it), until? (a hash: only what came before it), " +
-           "limit? (20, max 200) } → { repo, gitDir, commonDir, reachable, commits: { hash, short, subject, author, at }[] } | null (not a git repository)");
-
-        // Left-panel file tree of the active session's workspace (UI in ui/main.js → wwwroot/ui.js).
-        context.Ui.AddTab(new UiTabInfo { Id = "files", Title = "Files", Panel = UiPanel.Left, Icon = "files", Order = 30, Module = "ui.js" });
-
-        context.Logger.LogDebug("File tools registered");
-        return Task.CompletedTask;
+            return NetPiJson.ToNode(await GitStatus.CommitsAsync(ResolveRoot(context, req), since, until, limit, token).ConfigureAwait(false)) as System.Text.Json.Nodes.JsonObject;
+        }
     }
 
     /// <summary>

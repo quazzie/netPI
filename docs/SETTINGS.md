@@ -1,5 +1,9 @@
 # Settings reference
 
+Agent rework additions (2026-10-01): `decide.bulkModel` (empty) selects an explicitly configured model for batches at `decide.bulkThreshold` (8); an explicit per-call model wins. `ideas.verify` (true) requires independent verification before automatic proposals appear; switching it off stops those proposals. `ideas.verifyModel` (empty) inherits `ideas.model`; `ideas.applyVerifiedUpdates` (true) applies verified completion only to an unchanged idea in an idle project. Verification respects paid-model policy and queue deadlines.
+
+`loops.contextChecks` (false) enables provider-captured conversation checks. `loops.routingHints` and `loops.skillHints` (false) add advisory checks to that flow. `todo.checkCommits` (false) suggests completed checklist items after successful commits. These opt-in consumers do not automatically change models, tools, spending permission or goal status; cache performance remains endpoint-dependent.
+
 All settings live in `~/.netpi/settings.json` (Windows: `%USERPROFILE%\.netpi\settings.json`; override the folder
 with `NETPI_HOME`). The file is created with sensible defaults on first start, accepts `//` comments and trailing
 commas, and is watched: edits apply live. Keys are shown as dotted paths — `providers.aiproxy.baseUrl` means

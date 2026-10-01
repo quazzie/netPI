@@ -1,9 +1,13 @@
 # Agents: two local slots plus cloud workers
 
-Status: in progress; first scheduler slice implemented and tested. No deployment performed.
+Status: A–D implemented and validated; optional E remains deferred. No deployment performed.
 Date: 2026-09-29. Reviewed source baseline: 3ee1c22.
 
 ## Progress — 2026-10-01
+
+The coordinated follow-up completes A–C and owning integration checks: host-owned physical leases survive scheduler overlap and Runtime shutdown timeouts; cancellation/deadline attachment is protected by the gate; distinct snapshots show physical capacity once, instance limits and wait reasons; Work/settings use those values; delegation guidance covers all three operating modes. Associated Ideas wait/drop visibility, the independent verifier and plugin independence are implemented. See [implementation and evidence](2026-10-01-agent-rework-pass.md). Full-context decisions are opt-in; live cache/performance measurement remains pending under idea-0m4hml.
+
+The following records the earlier slice; its remaining-work notes are superseded by the follow-up above.
 
 A2–A3 are implemented with eight deterministic owning-suite regressions: positive catalog concurrency or the
 clamped localSlots fallback is shared across named/plain calls; eligible queues use priority then FIFO across pools;

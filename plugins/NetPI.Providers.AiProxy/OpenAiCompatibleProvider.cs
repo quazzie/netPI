@@ -330,6 +330,13 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         var allowImages = !_imageSupport.TryGetValue(request.Model.Id, out var img) || img;
         var chat = mo.Transport == OpenAiTransport.Chat;
         var body = chat ? ChatTransport.BuildBody(request, mo, allowImages) : ResponsesTransport.BuildBody(request, mo, allowImages);
+        if (request.CaptureDecisionContext)
+        {
+            var snapshot = ChatTransport.BuildBody(request, mo, allowImages);
+            foreach (var key in new[] { "model", "stream", "stream_options", "max_tokens", "temperature" }) snapshot.Remove(key);
+            snapshot["reasoning_effort"] = EffortMap.Resolve(request.ReasoningEffort, request.Model.Reasoning) ?? "none";
+            request.DecisionContext = snapshot;
+        }
         var url = o.Root + (chat ? ChatTransport.Path : ResponsesTransport.Path);
         call.Url = url;
         call.Transport = chat ? "chat" : "responses";

@@ -34,8 +34,8 @@ public static class SchedulerTests
         await Wait.Until(() =>
         {
             var st = sessions.Select(s => h.Runtime.GetBySession(s.Id)!.Status).ToList();
-            return st.Count(x => x == AgentStatus.Running) == 2 && st.Count(x => x == AgentStatus.Queued) == 1;
-        }, "two running, one queued");
+            return h.Catalog.Calls == 2 && st.Count(x => x == AgentStatus.Running) == 2 && st.Count(x => x == AgentStatus.Queued) == 1;
+        }, "two calls entered the held provider, one queued");
         var queued = sessions.Select(s => h.Runtime.GetBySession(s.Id)!).Single(a => a.Status == AgentStatus.Queued);
         Check.Equal("waiting for a slot on fake/local", queued.Activity);
         Check.Equal(2, h.Catalog.Calls, "queued agent has not called the model");
@@ -426,9 +426,11 @@ public static class SchedulerTests
         try { await extra; throw new AssertException("expected cancellation"); } catch (OperationCanceledException) { }
 
         await h.StartPluginAsync(new AgentsPlugin());
-        // the queued agent re-resolved the scheduler (or ran without it during the gap) and gets to run
-        await Wait.Until(() => h.Catalog.Calls == 2, "second run got a slot after the reload");
+        // The old physical call still occupies the model after reload, including any scheduler gap.
+        Check.Equal(1, h.Catalog.Calls);
+        Check.Equal(1, h.Scheduler!.Resources().Single(r => r.Model == "fake/solo").Busy);
         gate.SetResult();
+        await Wait.Until(() => h.Catalog.Calls == 2, "second run got a slot after the old call ended");
         await h.IdleAsync(s1.Id);
         await h.IdleAsync(s2.Id);
         Check.Equal(0, h.Scheduler!.Snapshot().Sum(p => p.Busy + p.Queued));

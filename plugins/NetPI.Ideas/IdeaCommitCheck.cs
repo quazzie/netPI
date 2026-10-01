@@ -13,15 +13,14 @@ namespace NetPI.Ideas;
 /// (docs/DECISION-MODELS.md, "Ideas: … close on commit"):
 /// <list type="number">
 /// <item><b>which idea is this commit about?</b> A commit message that names an idea id is the match without a model.
-/// Otherwise one pick-one decision over the ideas open at that moment, linking every option that clears
-/// <c>ideas.linkThreshold</c> (0 wrong at 0.7, 2/187 unrelated commits) — a commit can finish two ideas, so it is not
-/// forced to pick one. The commit is recorded on the idea as a <c>commits</c> entry, beside its text, never inside it.</item>
+/// Otherwise one pick-one decision links only a clear winner above <c>ideas.linkThreshold</c> with a margin over
+/// other ideas and none. Named ids can link several ideas. Commit entries are stored beside the idea's text.</item>
 /// <item><b>is the idea done?</b> Asked with the idea's full text (its plan and what is left) <em>and all its linked
 /// commits</em>, not from one commit and a summary: 4/5 finished ideas offered, no offer on a commit that only advanced
-/// its idea. On a clear margin (<c>ideas.doneThreshold</c>, 0.8) a card asks the user. One offer per idea.</item>
+/// its idea. A clear decision is independently verified against bounded complete patches and unchanged revision/activity.</item>
 /// </list>
-/// The card is an offer, never an action: nothing is marked done without a click, and a commit that only advances an
-/// idea never closes it.
+/// Verified unchanged completion applies when ideas.applyVerifiedUpdates is enabled; otherwise one verified card is
+/// offered. A partial, uncertain or unverifiable proposal never closes an idea.
 /// </summary>
 public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, IdeaSaveCheck save) : IDisposable
 {
@@ -132,7 +131,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                 _rescanQueued = false;
                 if (_stopped) break;
                 if (!Setting("ideas.closeOnCommit", true)) break;
-                if (!ctx.Rpc.Exists("files.commits")) break;   // no Files plugin: nothing can read the commits
+                if (!(ctx.Services.Get<IGitHistory>() is not null || ctx.Rpc.Exists("files.commits"))) break;   // no Files plugin: nothing can read the commits
                 var projects = ctx.Sessions.ListProjects();
                 foreach (var project in projects)
                 {
@@ -274,7 +273,9 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         var request = new JsonObject { ["cwd"] = path, ["limit"] = limit };
         if (since is { Length: > 0 }) request["since"] = since;
         if (until is { Length: > 0 }) request["until"] = until;
-        return await ctx.Rpc.InvokeAsync("files.commits", request).ConfigureAwait(false);
+        if (ctx.Services.Get<IGitHistory>() is { } history)
+            return await history.ReadAsync(request, ctx.Stopping).ConfigureAwait(false);
+        return await ctx.Rpc.InvokeAsync("files.commits", request, ctx.Stopping).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -451,7 +452,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// </summary>
     private async Task<(List<JsonObject> Picks, bool Decided)> LinkAsync(List<JsonObject> open, JsonObject commit, string? projectId, CancellationToken ct)
     {
-        if (!ctx.Rpc.Exists("decide.decision")) return ([], true);
+        if (!DecisionCapabilities.Available(ctx.Services, ctx.Rpc, "decide.decision")) return ([], true);
         var subject = IdeaOps.Str(commit["subject"]) ?? "";
         var author = IdeaOps.Str(commit["author"]) ?? "";
         var threshold = Math.Clamp(Setting("ideas.linkThreshold", DefaultLinkThreshold), 0.3, 0.99);
@@ -469,7 +470,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                $"or fixes it), pick it even when it only advances the idea. Pick {none} when it is about something else.",
                 labels, "the link question", projectId, ct).ConfigureAwait(false);
             if (answer is null) return ([], false);
-            if (answer.P < threshold || answer.P <= answer.None) break;   // nothing here, or "none" wins
+            if (!answer.Clear(threshold)) break;   // no clear winner
             best = [window[answer.Index]];
             break;                                                          // one commit, one idea
         }
@@ -483,7 +484,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// </summary>
     private async Task<bool?> OfferDoneAsync(Watch watch, JsonObject idea, JsonObject commit, List<string> committed, CancellationToken ct)
     {
-        if (!ctx.Rpc.Exists("decide.decision")) return false;
+        if (!DecisionCapabilities.Available(ctx.Services, ctx.Rpc, "decide.decision")) return false;
         var id = IdeaOps.Str(idea["id"]);
         if (id is not { Length: > 0 }) return false;
         if (IdeaRuns.ProjectBusy(ctx, watch.ProjectId)) return null;
@@ -507,12 +508,43 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             new JsonArray("DONE", "MORE"), "the done question", watch.ProjectId, ct).ConfigureAwait(false);
         if (probs is null) return false;
         var threshold = Math.Clamp(Setting("ideas.doneThreshold", DefaultDoneThreshold), 0.3, 0.99);
-        if ((probs.TryGetValue("DONE", out var done) ? done : 0) < threshold) return false;
-        if ((probs.TryGetValue("DONE", out var d) ? d : 0) <= (probs.TryGetValue("MORE", out var m) ? m : 0)) return false;
+        if (!DecisionConfidence.Clear(probs.GetValueOrDefault("DONE"), probs.GetValueOrDefault("MORE"), threshold)) return false;
         // The result judges this exact snapshot. A later revision must be judged again, never stamped onto old text.
         var current = _repo.Find(id);
         if (current is null || IdeaOps.Str(current.Doc["status"]) is not ("open" or "planned" or "in-progress" or "parked")) return false;
         if (IdeaRuns.ProjectBusy(ctx, watch.ProjectId) || current.Revision != revision) return null;
+
+        var patches = new StringBuilder();
+        var hashes = (idea["commits"] as JsonArray ?? []).OfType<JsonObject>().Select(c => IdeaOps.Str(c["hash"])).OfType<string>().Distinct().ToList();
+        if (hashes.Count is 0 or > 10)
+        {
+            var work = ctx.Services.Get<IBackgroundWork>();
+            var skipped = work?.Begin("Completion verification", null, null, watch.ProjectId);
+            if (skipped is not null) work!.Set(skipped, "skipped", "Complete evidence exceeds the automatic verification bound; review this idea manually");
+            return false;
+        }
+        foreach (var hash in hashes)
+        {
+            var request = new JsonObject { ["cwd"] = watch.Path, ["hash"] = hash };
+            var raw = ctx.Services.Get<IGitHistory>() is { } history ? await history.ReadAsync(request, ct).ConfigureAwait(false)
+                : NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("files.commits", request, ct).ConfigureAwait(false)) as JsonObject;
+            if (raw?["patch"]?.GetValue<string>() is not { Length: > 0 } patch) return null;
+            if (raw["truncated"]?.GetValue<bool>() == true) { ReportEvidenceBound(); return false; }
+            patches.AppendLine(patch);
+            if (patches.Length > 64000) { ReportEvidenceBound(); return false; }
+        }
+        var verdict = await new IdeaVerifier(ctx).VerifyAsync("Mark the following idea done:\n" + text,
+            "Linked commits:\n" + string.Join('\n', linked) + "\n\nCommit patches:\n" + patches, null, watch.ProjectId, ct).ConfigureAwait(false);
+        if (!verdict.Verified) return verdict.Retryable ? null : false;
+        current = _repo.Find(id);
+        if (current is null || IdeaRuns.ProjectBusy(ctx, watch.ProjectId) || current.Revision != revision) return null;
+        if (Setting("ideas.applyVerifiedUpdates", true))
+        {
+            _repo.Update(id, new JsonObject { ["status"] = "done", ["addSections"] = new JsonArray(new JsonObject
+                { ["kind"] = "research", ["title"] = "Completion verification", ["content"] = verdict.Reason + "\n\n" + string.Join('\n', linked) }) },
+                fromUi: true, expectedRevision: revision);
+            return true;
+        }
 
         var suggestion = new JsonObject
         {
@@ -524,12 +556,21 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             ["commits"] = new JsonArray(linked.Select(c => (JsonNode)c!).ToArray()),
             ["at"] = IdeaOps.Now(),
             ["seen"] = false,
+            ["verified"] = true,
+            ["verification"] = verdict.Reason,
             ["project"] = watch.ProjectId is { Length: > 0 } pid
                 ? new JsonObject { ["id"] = pid, ["name"] = watch.ProjectName }
                 : null,
         };
         // One offer per idea: a second commit that also finishes it changes nothing the user has not answered.
         return save.Offer(suggestion);
+
+        void ReportEvidenceBound()
+        {
+            var work = ctx.Services.Get<IBackgroundWork>();
+            var skipped = work?.Begin("Completion verification", null, null, watch.ProjectId);
+            if (skipped is not null) work!.Set(skipped, "skipped", "Commit patches exceed the automatic verification bound; review this idea manually");
+        }
     }
 
     // ------------------------------------------------------------------ the decisions
@@ -565,7 +606,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             var admission = await _admission.EnterAsync(model, purpose, sessionId: null, projectId: project, ct).ConfigureAwait(false);
             if (!admission.Admitted) return null;
             using var slot = admission.Lease!;
-            var raw = await ctx.Rpc.InvokeAsync("decide.decision", new JsonObject
+            var raw = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.decision", new JsonObject
             {
                 ["model"] = name,
                 ["messages"] = new JsonArray(system),
@@ -575,7 +616,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                     ["content"] = question,
                     ["labels"] = labels,
                 }),
-            }, cts.Token).ConfigureAwait(false);
+            }, cts.Token, admission.Slot, model?.Ref, IdeaAdmission.Priority).ConfigureAwait(false);
             var answer = raw as JsonObject ?? JsonSerializer.SerializeToNode(raw) as JsonObject;
             if (answer?["branches"] is not JsonArray { Count: > 0 } branches || branches[0]?["probabilities"] is not JsonObject probs) return null;
             var outp = new Dictionary<string, double>(StringComparer.Ordinal);
