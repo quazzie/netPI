@@ -794,17 +794,6 @@ internal sealed class AgentRuntime : IAgentRuntime
         // usable, and a writing worker gets its worktree provisioned here, so a failure means no child at all rather
         // than a runnable child sitting in the parent's checkout. Without the workspace plugin nothing changes.
         var workspaceBinding = await ProvisionWorkspaceAsync(request, parentSession, id, name, ct).ConfigureAwait(false);
-        if (workspaceBinding is not null && !string.IsNullOrWhiteSpace(workspaceBinding.OwnerSessionId))
-        {
-            // A workspace provisioned for this batch before it started has no owner yet; the owner is the worker, and
-            // the worker is this session — not the agent, and not the slot it runs on.
-            Ctx.Services.Get<IWorkspaceStore>()?.UpdateWorkspace(workspaceBinding.WorkspaceId, w =>
-            {
-                w.OwnerSessionId = id;
-                w.OwnerAgentId ??= id;
-            });
-            workspaceBinding = workspaceBinding with { OwnerSessionId = id, OwnerAgentId = id };
-        }
 
         // The owner chooses a subagent's tools: the ones it names (tools it does not have itself included: a limited
         // orchestrator can dispatch an agent with other tools), or by default its own (its allowlist, and the tools
@@ -854,6 +843,17 @@ internal sealed class AgentRuntime : IAgentRuntime
             Instructions = instructions,
             NotifyParent = request.NotifyParent,
         };
+        // Ownership is the worker's, and the worker is this session (its own, new) — not the agent, and not the slot it
+        // runs on. A workspace provisioned for a batch before it started has no owner yet.
+        if (workspaceBinding is not null && string.IsNullOrEmpty(workspaceBinding.OwnerSessionId))
+        {
+            Ctx.Services.Get<IWorkspaceStore>()?.UpdateWorkspace(workspaceBinding.WorkspaceId, w =>
+            {
+                w.OwnerSessionId = session.Id;
+                w.OwnerAgentId = id;
+            });
+        }
+
         Register(state);
 
         if (parent is not null)

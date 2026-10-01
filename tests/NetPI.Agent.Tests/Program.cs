@@ -8,6 +8,7 @@ var runner = new TestRunner();
 DeferredToolsTests.Register(runner);
 LoopTests.Register(runner);
 SubagentTests.Register(runner);
+SubagentWorkspaceTests.Register(runner);
 SchedulerTests.Register(runner);
 ContextTests.Register(runner);
 PersistenceTests.Register(runner);

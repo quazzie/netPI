@@ -30,5 +30,6 @@
     <ProjectReference Include="../../plugins/NetPI.Nudge/NetPI.Nudge.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Profiles/NetPI.Profiles.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Skills/NetPI.Skills.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Workspaces/NetPI.Workspaces.csproj" />
   </ItemGroup>
 </Project>

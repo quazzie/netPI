@@ -31,6 +31,12 @@ public static class Check
             throw new AssertException($"{message ?? "not equal"}\n      expected: {Show(expected)}\n      actual:   {Show(actual)}");
     }
 
+    public static void Differs<T>(T unexpected, T actual, string? message = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(unexpected, actual))
+            throw new AssertException($"{message ?? "values are equal"}: {Show(actual)}");
+    }
+
     public static void Contains(string? haystack, string needle, string? message = null)
     {
         if (haystack is null || !haystack.Contains(needle, StringComparison.Ordinal))
@@ -367,7 +373,16 @@ public sealed class FakeSessionStore : ISessionStore
     }
     public void DeleteSession(string id) => Sessions.RemoveAll(s => s.Id == id);
     public SessionInfo SetSessionProject(string sessionId, string? projectId) => UpdateSession(sessionId, s => s.ProjectId = projectId);
-    public string GetCwd(SessionInfo session) => session.ProjectId is { } p && GetProject(p) is { } proj ? proj.Path : Path.GetTempPath();
+    /// <summary>The workspace root when the session is bound to one, else its project path — as the real store answers it.
+    /// (The workspace records themselves live in the host store; the tests that bind sessions use a
+    /// <c>MemoryWorkspaceStore</c> and pass the binding explicitly where the root matters.)</summary>
+    public string GetCwd(SessionInfo session) =>
+        session.WorkspaceId is { Length: > 0 } && WorkspaceRoots.TryGetValue(session.WorkspaceId, out var root)
+            ? root
+            : session.ProjectId is { } p && GetProject(p) is { } proj ? proj.Path : Path.GetTempPath();
+
+    /// <summary>Workspace root by id, for tests that bind a session to one of their own workspaces.</summary>
+    public Dictionary<string, string> WorkspaceRoots { get; } = new(StringComparer.Ordinal);
 
     public ChatMessage AppendMessage(string sessionId, ChatMessage message)
     {

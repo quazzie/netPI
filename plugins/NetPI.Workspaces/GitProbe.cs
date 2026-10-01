@@ -163,7 +163,8 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
 
     private string? Ask(string path, params string[] args)
     {
-        var dir = WorkspacePaths.Canonical(path);
+        var dir = DirectoryFor(path);
+        if (dir is null) return null;
         var key = string.Join(' ', args) + " " + dir;
         lock (_gate)
             if (_cache.TryGetValue(key, out var hit) && DateTime.UtcNow - hit.At < _cacheFor) return hit.Value;
@@ -176,6 +177,24 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
             if (_cache.Count > 512) _cache.Clear();
         }
         return value;
+    }
+
+    /// <summary>
+    /// The directory to run git in for a path a caller named: the path itself when it is a directory, its folder when it
+    /// is a file, and the nearest existing ancestor otherwise. Without this a file target answered nothing, and "is this
+    /// file in another checkout of the repository" would have said "outside" for every file.
+    /// </summary>
+    private static string? DirectoryFor(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path)) return WorkspacePaths.Canonical(path);
+            if (File.Exists(path)) return WorkspacePaths.Canonical(Path.GetDirectoryName(path) ?? path);
+            for (var dir = new DirectoryInfo(WorkspacePaths.Canonical(path)); dir is not null; dir = dir.Parent)
+                if (dir.Exists) return WorkspacePaths.Canonical(dir.FullName);
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { return null; }
     }
 
     /// <summary>Forget what is cached about a directory (after creating or removing a worktree there).</summary>

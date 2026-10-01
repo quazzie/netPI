@@ -117,7 +117,13 @@ public sealed class FilesPlugin : INetPiPlugin
                 if (session.WorkspaceId is { Length: > 0 })
                 {
                     var resolver = context.Services.Get<IWorkspaceResolver>();
-                    if (resolver is not null) return resolver.CwdOf(session);   // throws when the workspace is broken
+                    if (resolver is not null)
+                    {
+                        // A workspace that cannot be used is an answer, not a fall back to the project's folder: the tab
+                        // would otherwise show a tree the session does not edit.
+                        try { return resolver.CwdOf(session); }
+                        catch (WorkspaceUnavailableException ex) { throw new RpcException("workspace_unavailable", ex.Message); }
+                    }
                 }
                 var sc = context.Sessions!.GetCwd(session);
                 if (!string.IsNullOrWhiteSpace(sc)) return sc;

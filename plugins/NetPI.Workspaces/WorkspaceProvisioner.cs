@@ -44,7 +44,9 @@ public sealed class WorkspaceProvisioner(
     /// </summary>
     public async Task<WorkspaceOutcome> ProvisionAsync(WorkspaceRequest request, CancellationToken ct)
     {
-        if (request.Reuse && request.OwnerSessionId is { Length: > 0 } owner && !request.Isolated)
+        // Reuse first, isolation or not: a worker handed a second task keeps the checkout it already has (and its
+        // uncommitted work), instead of getting a second worktree for the same repository.
+        if (request.Reuse && request.OwnerSessionId is { Length: > 0 } owner)
         {
             if (store.ListWorkspaces(request.ProjectId)
                 .FirstOrDefault(w => string.Equals(w.OwnerSessionId, owner, StringComparison.Ordinal) &&

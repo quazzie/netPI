@@ -42,6 +42,14 @@ public static class Check
             throw new AssertException($"{message ?? "unexpected substring"}: {Show(needle)}\n      in: {Show(haystack)}");
     }
 
+    public static TEx Throws<TEx>(Action body, string? message = null) where TEx : Exception
+    {
+        try { body(); }
+        catch (TEx ex) { return ex; }
+        catch (Exception ex) { throw new AssertException($"{message ?? "wrong exception"}: expected {typeof(TEx).Name}, got {ex.GetType().Name}: {ex.Message}"); }
+        throw new AssertException($"{message ?? "no exception"}: expected {typeof(TEx).Name}");
+    }
+
     public static void Ok(ToolResult r)
     {
         if (r.IsError) throw new AssertException($"tool returned an error: {r.Content}");
@@ -216,7 +224,9 @@ public sealed class FakePluginContext(string workspace) : IPluginContext
     public FakeSettings SettingsFake { get; } = new();
     public ISettings Settings => SettingsFake;
     public IDatabase Db => null!;
-    public ISessionStore Sessions => null!;
+    /// <summary>Set by a test that needs a session (the workspace-aware roots); null otherwise, like before.</summary>
+    public ISessionStore SessionsFake { get; set; } = null!;
+    public ISessionStore Sessions => SessionsFake;
     public IModelCatalog Models => null!;
     public CancellationToken Stopping => CancellationToken.None;
     public T Track<T>(T disposable) where T : IDisposable => disposable;
@@ -243,7 +253,23 @@ public static class T
 {
     public static readonly FakeServices Services = new();
 
-    public static ToolContext Ctx(string cwd, ModelInfo? model = null, Action<string>? output = null, IEventBus? bus = null) => new()
+    public static ToolContext Ctx(string cwd, ModelInfo? model = null, Action<string>? output = null, IEventBus? bus = null) => Ctx(cwd, null, model, output, bus);
+
+    /// <summary>A tool context for a session bound to a workspace (the workspace-aware file and shell tools).</summary>
+    public static ToolContext Ctx(string cwd, WorkspaceBinding? workspace, ModelInfo? model = null, Action<string>? output = null, IEventBus? bus = null) => new()
+    {
+        SessionId = "ses_test",
+        AgentId = "agt_test",
+        CallId = "call_" + Ids.Short(),
+        Cwd = cwd,
+        Workspace = workspace,
+        Model = model,
+        Services = Services,
+        Events = bus ?? new FakeBus(),
+        Output = output,
+    };
+
+    private static ToolContext CtxUnused(string cwd, ModelInfo? model = null, Action<string>? output = null, IEventBus? bus = null) => new()
     {
         SessionId = "ses_test",
         AgentId = "agt_test",

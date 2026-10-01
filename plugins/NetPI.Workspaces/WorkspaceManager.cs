@@ -60,6 +60,14 @@ public sealed class WorkspaceManager(
                 $"A subagent works in its parent's project; pass workspace (one of that project's workspaces) instead of switching project. Project {pp} stays.");
         }
 
+        if (!Isolated(request, ctx.Services.Get<IToolRegistry>()))
+        {
+            // Nothing asked for a checkout of its own: the child starts where its parent works, and a null binding says
+            // exactly that (the runtime inherits the parent's). Provisioning here would give every reader a workspace
+            // record pointing at the project's own folder, which isolates nothing and only obscures where it works.
+            return new WorkspaceOutcome(null, null);
+        }
+
         return await provisioner.ProvisionAsync(new WorkspaceRequest(
             projectId,
             string.IsNullOrWhiteSpace(request.WorkspaceName) ? childName : request.WorkspaceName.Trim(),

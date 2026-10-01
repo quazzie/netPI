@@ -32,6 +32,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
 
         context.Services.Register<IWorkspaceRepoProbe>(git);
         context.Services.Register<IWorkspaceResolver>(resolver);
+        context.Services.Register(provisioner);   // the git-facing half, for diagnostics and tests
         var manager = new WorkspaceManager(context, store, resolver, provisioner, git);
         context.Services.Register<IWorkspaceProvisioner>(manager);
         context.Services.Register<IAgentHook>(new WorkspaceGuard(git));
