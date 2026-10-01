@@ -23,7 +23,9 @@ using NetPI.E2E;
 //   results
 //     --out DIR       this run's folder: report.json, failures/<id>.txt, screenshots/ (default artifacts/e2elogs/<run>)
 //     --state-dir DIR where the failing list and the timing history persist (default artifacts/e2elogs); --no-state = nowhere
+//     --ledger FILE  where the flake ledger is written (default tests/NetPI.E2E/flakes.json, committed)
 //     --failed        run the tests that failed and have not passed since (across runs)
+//     --flakes        print the flake ledger (how often each test fails, and the runner's diagnosis when it last did)
 //     --keep          keep each server's work folder (server.log, home, projects, app copy)
 //     --verbose       echo server log lines and mock requests
 //     --self-test     check the runner itself (selection, scheduling, timeout containment, reports); starts no server
@@ -36,8 +38,9 @@ var o = new E2EOptions();
 var list = false;
 var selfTest = false;
 var failedOnly = false;
+var showFlakes = false;
 var noState = false;
-string? stateDir = null, outDir = null;
+string? stateDir = null, outDir = null, ledgerPath = null;
 try
 {
     for (var i = 0; i < args.Length; i++)
@@ -63,8 +66,10 @@ try
             case "--timeout-scale": o.TimeoutScale = double.Parse(Next(), CultureInfo.InvariantCulture); break;
             case "--out": outDir = Next(); break;
             case "--state-dir": stateDir = Next(); break;
+            case "--ledger": ledgerPath = Next(); break;
             case "--no-state": noState = true; break;
             case "--failed": failedOnly = true; break;
+            case "--flakes": showFlakes = true; break;
             case "--self-test": selfTest = true; break;
             default:
                 if (args[i].StartsWith("--", StringComparison.Ordinal)) throw new ArgumentException($"Unknown option {args[i]}");
@@ -87,7 +92,21 @@ o.StateDir = noState ? "" : Path.GetFullPath(stateDir ?? Path.Combine(repo, "art
 o.OutDir = Path.GetFullPath(outDir ?? Path.Combine(o.StateDir.Length > 0 ? o.StateDir : Path.Combine(Path.GetTempPath(), "netpi-e2e-out"),
     DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..4]));
 
+o.LedgerPath = ledgerPath ?? FlakeLedger.PathFor(repo);
+
 var catalog = Suite.RegisterAll(null).Cases;
+if (showFlakes)
+{
+    var path = FlakeLedger.PathFor(repo);
+    var entries = FlakeLedger.Load(path);
+    if (entries.Count == 0) { Console.WriteLine($"No test has ever failed in the ledger ({path})."); return 0; }
+    Console.WriteLine($"Flake ledger ({path}) — {entries.Count} test(s) that have failed at least once\n");
+    Console.WriteLine($"  {"test",-34} {"failures",9} {"of runs",8}  {"last failure",-18} state  cause");
+    foreach (var e in entries)
+        Console.WriteLine($"  {e.Id,-34} {e.Failures,9} {e.Runs,8}  {e.LastFailure ?? "-",-18} {(e.Quiet ? "quiet" : "FAILING"),-7} {e.Cause ?? ""}");
+    Console.WriteLine("\nA test at 0/20 has stopped flaking; one at 1/20 has not. Fix the cause, then quote the before/after rate in the commit.");
+    return 0;
+}
 if (failedOnly)
 {
     var failing = FailingState.Load(o.StateDir).Keys.Where(id => catalog.Any(c => c.Id == id)).ToList();

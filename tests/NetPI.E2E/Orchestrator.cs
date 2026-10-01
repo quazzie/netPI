@@ -125,6 +125,7 @@ public sealed class Orchestrator
         catch (Exception ex) { Console.WriteLine($"  could not write report.json: {ex.Message}"); }
         Timings.Save(Options.StateDir, timings, results);
         FailingState.Update(Options.StateDir, results, Path.GetFileName(Options.OutDir));
+        if (Options.LedgerPath.Length > 0) FlakeLedger.Update(Options.LedgerPath, results, Path.GetFileName(Options.OutDir));
         PruneRunDirs(Options.OutDir, Options.StateDir);
         return report;
     }
@@ -483,6 +484,119 @@ public static class Timings
             File.WriteAllText(Path.Combine(stateDir, "timings.json"), o.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
+    }
+}
+
+/// <summary>
+/// One test's flakiness, kept across runs: how often it failed, when it last did, and the one-line cause once the
+/// runner's own diagnosis has named it. <see cref="FailingState"/> answers "what is failing now" and forgets a test
+/// the moment it passes; this is the other half — a test that fails one run in twenty is a different problem from one
+/// that fails every run, and only a rate can tell them apart. It lives beside the test list, not in artifacts, so
+/// <c>PruneRunDirs</c> cannot take it and a reader can see the suite's health without running it.
+/// </summary>
+public sealed class FlakeEntry
+{
+    public required string Id { get; init; }
+    /// <summary>Times this test has run since the ledger existed.</summary>
+    public int Runs { get; init; }
+    public int Failures { get; init; }
+    public double Rate => Runs == 0 ? 0 : (double)Failures / Runs;
+    public string? FirstSeen { get; init; }
+    public string? LastFailure { get; init; }
+    /// <summary>What the runner said was wrong (the server verdict), else the first line of the test message.</summary>
+    public string? Cause { get; init; }
+    /// <summary>Whether a later run passed after the last failure — a flake that has stopped, still listed for the record.</summary>
+    public bool Quiet { get; init; }
+}
+
+public static class FlakeLedger
+{
+    /// <summary>Beside the test list, so it survives pruning and shows up in a diff.</summary>
+    public static string PathFor(string repo) => System.IO.Path.Combine(repo, "tests", "NetPI.E2E", "flakes.json");
+
+    public static List<FlakeEntry> Load(string path)
+    {
+        var list = new List<FlakeEntry>();
+        try
+        {
+            if (File.Exists(path))
+                foreach (var e in JsonNode.Parse(File.ReadAllText(path))!["flakes"]!.AsArray())
+                    list.Add(new FlakeEntry
+                    {
+                        Id = e!["id"]!.GetValue<string>(),
+                        Runs = e["runs"]?.GetValue<int>() ?? 0,
+                        Failures = e["failures"]?.GetValue<int>() ?? 0,
+                        FirstSeen = e["firstSeen"]?.GetValue<string>(),
+                        LastFailure = e["lastFailure"]?.GetValue<string>(),
+                        Cause = e["cause"]?.GetValue<string>(),
+                        Quiet = e["quiet"]?.GetValue<bool>() ?? false,
+                    });
+        }
+        catch { }
+        return list;
+    }
+
+    /// <summary>
+    /// Fold one run into the ledger. Only tests that ran are counted, so a targeted fix loop never distorts a rate, and
+    /// only a failure carries a cause forward — a later pass marks the entry quiet instead of erasing it, because
+    /// "it flaked, and here is how often" is the part worth keeping.
+    /// </summary>
+    public static void Update(string path, IEnumerable<TestResult> results, string run)
+    {
+        try
+        {
+            var byId = Load(path).ToDictionary(e => e.Id, StringComparer.Ordinal);
+            var dirty = false;
+            foreach (var group in results.GroupBy(r => r.Id))
+            {
+                var entry = byId.GetValueOrDefault(group.Key);
+                if (entry is null)
+                {
+                    // Only a test that has actually failed earns a row; a clean run must not write 65 lines of zeroes.
+                    if (!group.Any(IsBad)) continue;
+                    entry = new FlakeEntry { Id = group.Key, Runs = 0, Failures = 0, FirstSeen = run };
+                    byId[group.Key] = entry;
+                }
+                var bad = group.FirstOrDefault(IsBad);
+                var passed = group.Any(r => r.Outcome == Outcome.Passed);
+                byId[group.Key] = new FlakeEntry
+                {
+                    Id = entry.Id,
+                    Runs = entry.Runs + group.Count(),
+                    Failures = entry.Failures + (bad is not null ? 1 : 0),
+                    FirstSeen = entry.FirstSeen,
+                    LastFailure = bad is not null ? run : entry.LastFailure,
+                    // The server's own verdict is the cause; a test message is only a fallback for a failure it never saw.
+                    Cause = bad is not null ? Cause(bad) : entry.Cause,
+                    Quiet = bad is null && passed,
+                };
+                dirty = true;
+            }
+            if (!dirty) return;
+            var arr = new JsonArray(byId.Values.OrderByDescending(e => e.Rate).ThenBy(e => e.Id, StringComparer.Ordinal).Select(e => (JsonNode)new JsonObject
+            {
+                ["id"] = e.Id, ["runs"] = e.Runs, ["failures"] = e.Failures, ["rate"] = Math.Round(e.Rate, 4),
+                ["firstSeen"] = e.FirstSeen, ["lastFailure"] = e.LastFailure, ["cause"] = e.Cause,
+                ["quiet"] = e.Quiet,
+            }).ToArray());
+            File.WriteAllText(path, new JsonObject
+            {
+                ["note"] = "Flake ledger: how often each test has failed, and the runner's own diagnosis when it last did. Updated by every run; a pass marks an entry quiet rather than deleting it.",
+                ["flakes"] = arr,
+            }.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex) { Console.WriteLine("  could not update the flake ledger: " + ex.Message); }
+    }
+
+    private static bool IsBad(TestResult r) => r.Outcome is Outcome.Failed or Outcome.TimedOut;
+    private static string Cause(TestResult r)
+    {
+        var verdict = string.IsNullOrWhiteSpace(r.Server) ? "" : r.Server.Trim();
+        if (verdict.Length > 160) verdict = verdict[..160] + "…";
+        var message = (r.Message ?? "").Split('\n')[0];
+        if (message.Length > 160) message = message[..160] + "…";
+        var cause = string.Join(" — ", new[] { message, verdict }.Where(s => s.Length > 0));
+        return cause.Length == 0 ? "no message and no server verdict" : cause;
     }
 }
 

@@ -46,6 +46,7 @@
   .\scripts\e2e.ps1 -Changed                       # after editing a plugin: its tests, in seconds
   .\scripts\e2e.ps1 -Only chat.stream -SkipBuild   # one test, nothing rebuilt
   .\scripts\e2e.ps1 -Failed                        # the fix loop
+  .\scripts\e2e.ps1 -Flakes                        # how often each test flakes, and why it last failed
   .\scripts\e2e.ps1                                # the gate
 #>
 param(
@@ -53,6 +54,7 @@ param(
     [string[]]$Tag,
     [switch]$Smoke,
     [switch]$Failed,
+    [switch]$Flakes,
     [switch]$Changed,
     [switch]$List,
     [switch]$NoUi,
@@ -215,6 +217,7 @@ try {
     if ($selectTags.Count) { $argList.Add('--tag'); $argList.Add(($selectTags -join ',')) }
     if ($Smoke) { $argList.Add('--smoke') }
     if ($Failed) { $argList.Add('--failed') }
+    if ($Flakes) { $argList.Add('--flakes') }
     if ($NoUi) { $argList.Add('--no-ui') }
     if ($List) { $argList.Add('--list') }
     if ($Repeat -gt 1) { $argList.Add('--repeat'); $argList.Add("$Repeat") }

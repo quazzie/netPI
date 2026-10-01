@@ -16,6 +16,8 @@ public sealed class E2EOptions
     /// <summary>App directory to run (default: a fresh copy of the build output, artifacts/dev/app, so plugin files can be touched safely).</summary>
     public string? AppDir { get; set; }
     public bool Keep { get; set; }
+    /// <summary>Where the flake ledger is written (default: beside the test list, so it is committed). Empty: nowhere.</summary>
+    public string LedgerPath { get; set; } = "";
     public bool Verbose { get; set; }
     public double MockSpeed { get; set; } = 1;
     public int TinyContext { get; set; } = 12000;
