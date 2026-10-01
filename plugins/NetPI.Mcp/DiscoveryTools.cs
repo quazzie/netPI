@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Logging;
 
 namespace NetPI.Mcp;
 
@@ -127,8 +128,28 @@ internal sealed class McpCallTool(IPluginContext ctx, ServerManager manager) : I
         var tool = Check(context, arguments);
         var inner = arguments.GetProperty("arguments");
         if (inner.ValueKind != JsonValueKind.Object) throw new McpException("arguments must be an object.");
-        Schema.Validate(tool.Definition.Parameters, JsonNode.Parse(inner.GetRawText()));
-        return ValueTask.FromResult(new ResolvedToolCall { ToolName = tool.Definition.Name, Arguments = inner.Clone(), ServerId = tool.ServerId });
+        var schema = tool.Definition.Parameters;
+        var args = JsonNode.Parse(inner.GetRawText()) as JsonObject ?? throw new McpException("arguments must be an object.");
+        JsonElement effective;
+        try { Schema.Validate(schema, args); effective = NetPiJson.ToElement(args); }
+        catch (McpException ex) { effective = Repaired(tool, schema, args, ex); }
+        return ValueTask.FromResult(new ResolvedToolCall { ToolName = tool.Definition.Name, Arguments = effective, ServerId = tool.ServerId });
+    }
+    /// <summary>
+    /// The arguments as the server will receive them, after the repair a model needs and the schema allows. A model
+    /// that writes JSON as a string inside a typed argument (<c>"list_only":"true"</c>,
+    /// <c>"config":"{\"views\":[…]}"</c>) fails the validation above; the discovered schema is then the only authority
+    /// that may re-read such a value, and only when the repaired arguments are the ones the schema accepts. Anything
+    /// else keeps the original error, so nothing is guessed on the model's behalf.
+    /// </summary>
+    private JsonElement Repaired(RemoteTool tool, JsonObject schema, JsonObject args, McpException error)
+    {
+        if (Coercion.Repair(schema, args) is not { } repaired) throw error;
+        try { Schema.Validate(schema, repaired); }
+        catch (McpException) { throw error; }
+        ctx.Logger.LogInformation("MCP {Server}/{Tool}: repaired {Count} argument(s) written as text against the discovered schema",
+            tool.ServerId, tool.RemoteName, repaired.Count(p => !JsonNode.DeepEquals(p.Value, args[p.Key])));
+        return NetPiJson.ToElement(repaired);
     }
     public ValueTask ValidateAsync(ToolContext context, JsonElement originalArguments, CancellationToken ct)
     { Check(context, originalArguments); return ValueTask.CompletedTask; }

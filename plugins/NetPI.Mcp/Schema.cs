@@ -83,7 +83,7 @@ internal static class Schema
         if (schema["type"] is { } type)
         {
             var types = type is JsonArray a ? a.Select(n => n!.GetValue<string>()) : [type.GetValue<string>()];
-            if (!types.Any(t => Matches(t, value))) return path + ": unexpected value type.";
+            if (!types.Any(t => Matches(t, value))) return path + ": expected " + string.Join(" or ", types) + ", got " + Kind(value) + ".";
         }
         if (schema["enum"] is JsonArray options && !options.Any(n => JsonNode.DeepEquals(n, value))) return path + ": value is not in enum.";
         if (schema.ContainsKey("const") && !JsonNode.DeepEquals(schema["const"], value)) return path + ": value differs from const.";
@@ -157,7 +157,24 @@ internal static class Schema
         }
         return null;
     }
-    private static bool Number(JsonNode? value, out double number) { number = 0; return value is JsonValue v && v.TryGetValue<double>(out number); }
+    // A number written by NetPI itself (a repaired argument) is a JsonValue over long/decimal, not over a JsonElement:
+    // reading only TryGetValue<double> would call every such value "not a number".
+    private static bool Number(JsonNode? value, out double number)
+    {
+        number = 0;
+        if (value is not JsonValue v) return false;
+        if (v.TryGetValue<double>(out number)) return double.IsFinite(number);
+        if (v.TryGetValue<long>(out var integer)) { number = integer; return true; }
+        if (v.TryGetValue<decimal>(out var exact)) { number = (double)exact; return double.IsFinite(number); }
+        return false;
+    }
+    private static string Kind(JsonNode? value) => value switch
+    {
+        null => "null", JsonObject => "object", JsonArray => "array",
+        JsonValue v when v.TryGetValue<bool>(out _) => "boolean",
+        JsonValue v when v.TryGetValue<string>(out _) => "string",
+        _ => "number",
+    };
     private static bool Below(JsonObject schema, string key, double value) => schema[key] is { } n && value < n.GetValue<double>();
     private static bool Above(JsonObject schema, string key, double value) => schema[key] is { } n && value > n.GetValue<double>();
     private static bool Matches(string type, JsonNode? value) => type switch
@@ -168,7 +185,7 @@ internal static class Schema
         "number" => Number(value, out _), "integer" => Number(value, out var n) && n == Math.Truncate(n),
         _ => false,
     };
-    private static JsonNode? Resolve(JsonObject root, string pointer)
+    internal static JsonNode? Resolve(JsonObject root, string pointer)
     {
         JsonNode? current = root;
         foreach (var token in pointer[2..].Split('/')) current = current?[token.Replace("~1", "/").Replace("~0", "~")];

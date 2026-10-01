@@ -102,6 +102,46 @@ public static class McpTests
             Check.False(ToolSelection.Eligible(ctx.Tools,agent,ctx.Sessions.GetSession("ses_1")).Contains(target));
             await manager.DisposeAsync();ctx.Unload();Check.Equal(0,ctx.Tools.All.Count);
         });
+        r.Add("mcp: arguments a model wrote as text are re-read against the discovered schema",async ()=>{
+            var ctx=new FakePluginContext();
+            ctx.Sessions.CreateSession(new SessionInfo {Id="ses_1"});
+            var counter=Path.Combine(ctx.Paths.TempDir,"typed.txt");
+            var config=Config("typed") with {Args=[typeof(McpTests).Assembly.Location,"--mcp-fixture","typed",counter]};
+            ctx.Settings.Set("mcp.servers",new JsonObject {["fixture"]=config.Json()});
+            await using var manager=new ServerManager(ctx);await manager.StartAsync([],CancellationToken.None);
+            var search=new McpSearchTool(ctx,manager);var call=new McpCallTool(ctx,manager);
+            ctx.Tools.Register(search);ctx.Tools.Register(call);
+            var tool=manager.Catalog().Single();var context=Context(ctx);
+            var disclosure=await search.ExecuteAsync(context,T.Args(new {query=tool.Definition.Name,detail="schema"}),CancellationToken.None);
+            ctx.Sessions.AppendMessage("ses_1",new ChatMessage {Role=MessageRole.Tool,Parts=[new ToolResultPart {Name="mcp_search",CallId="search",Content=disclosure.Content,Details=NetPiJson.ToNode(disclosure.Details)}]});
+            async Task<ResolvedToolCall> Resolve(object arguments)=>await call.ResolveAsync(context,
+                T.Args(new {id=tool.Definition.Name,revision=tool.Definition.Revision,arguments}),CancellationToken.None);
+
+            // What a model writes when the remote schema only arrived after the call envelope was built.
+            var resolved=await Resolve(new {list_only="true",timeout="10",views="[{\"title\":\"Probe\"}]",config="{\"patch\":[\"1\",2]}",script="{\"not\":\"parsed\"}"});
+            var sent=NetPiJson.ToNode(resolved.Arguments)!.ToJsonString();
+            Check.Contains(sent,"\"list_only\":true");Check.Contains(sent,"\"timeout\":10");
+            Check.Contains(sent,"\"views\":[{\"title\":\"Probe\"}]");Check.Contains(sent,"\"patch\":[1,2]");
+            // A string-typed argument is never re-read, even when it holds JSON.
+            Check.Equal("""{"not":"parsed"}""",NetPiJson.ToNode(resolved.Arguments)!["script"]!.GetValue<string>());
+            // The server receives the repaired types, not the text the model wrote.
+            var result=await manager.CallAsync(tool,resolved.Arguments,CancellationToken.None);
+            Check.Contains(result.Content,"\"list_only\":true");
+            Check.Equal(sent,JsonNode.Parse(File.ReadAllLines(counter).Single())!.ToJsonString());
+            // Arguments that already match the schema are never rewritten, not even a number that looks like text.
+            Check.Equal("""{"list_only":true,"timeout":10,"script":"10"}""",NetPiJson.ToNode((await Resolve(new {list_only=true,timeout=10,script="10"})).Arguments)!.ToJsonString());
+            // A value no schema can repair keeps failing, and now says what it wanted.
+            var bad=await Check.ThrowsAsync<McpException>(()=>Resolve(new {timeout="soon"}));
+            Check.Contains(bad.Message,"integer");Check.Contains(bad.Message,"string");
+            await manager.DisposeAsync();ctx.Unload();
+        });
+        r.Add("mcp: a number NetPI wrote itself validates as a number, and a type error names what it wanted",()=>{
+            var schema=JsonNode.Parse("""{"type":"object","properties":{"n":{"type":"integer"},"x":{"type":"number","maximum":10}}}""")!.AsObject();
+            Schema.Validate(schema,new JsonObject {["n"]=JsonValue.Create(7L),["x"]=JsonValue.Create(2.5d)});
+            Check.Throws<McpException>(()=>Schema.Validate(schema,new JsonObject {["n"]=JsonValue.Create(7L),["x"]=JsonValue.Create(20d)}));
+            Check.Contains(Check.Throws<McpException>(()=>Schema.Validate(schema,new JsonObject {["n"]="7"})).Message,
+                "$.n: expected integer, got string");
+        });
         r.Add("mcp: HTTP modern metadata headers pagination auth rejection and no replay", async () => {
             int calls=0; string? header=null;
             await using var web=await LocalWeb.StartAsync(app=> app.Run(async http => {
