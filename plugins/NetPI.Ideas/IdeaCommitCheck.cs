@@ -43,6 +43,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     private readonly Lock _watchLock = new();
     private readonly Dictionary<string, Watch> _watches = new(StringComparer.OrdinalIgnoreCase); // repo path → its watcher
     private Timer? _timer;
+    private IDisposable? _runEnds;
     private volatile bool _stopped;
     private int _rescanRunning;
     private volatile bool _rescanQueued;
@@ -77,6 +78,11 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     public async Task StartAsync()
     {
         if (_stopped) return;
+        _runEnds ??= ctx.Events.Subscribe(EventTypes.AgentStatus, e =>
+        {
+            var status = IdeaOps.Str(NetPiJson.ToNode(e.Data)?["agent"]?["status"]);
+            if (status is "idle" or "completed" or "failed" or "cancelled") _ = RescanAsync();
+        });
         _timer ??= new Timer(_ => _ = RescanAsync(), null, Rescan, Rescan);
         await RescanAsync().ConfigureAwait(false);
     }
@@ -86,6 +92,8 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         _stopped = true;
         _timer?.Dispose();
         _timer = null;
+        _runEnds?.Dispose();
+        _runEnds = null;
         lock (_watchLock)
         {
             foreach (var w in _watches.Values) w.Dispose();
@@ -314,7 +322,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// </summary>
     private async Task SweepAsync(Watch watch)
     {
-        if (_stopped || !Setting("ideas.closeOnCommit", true)) return;
+        if (_stopped || !Setting("ideas.closeOnCommit", true) || IdeaRuns.ProjectBusy(ctx, watch.ProjectId)) return;
         var since = _repo.LastSeen(watch.Repo);
         var pages = new List<List<JsonObject>>();
         string? upper = null;
@@ -351,12 +359,11 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         ctx.Logger.LogInformation("Ideas: {Count} new commit(s) in {Repo} since {Since}", all.Count, watch.Repo, since ?? "(the start)");
         ctx.Logger.LogDebug("Ideas: the watcher is the fast path; a missed event is caught by the {Minutes}-minute sweep", Rescan.TotalMinutes);
 
-        // The backlog is read once for the whole sweep, not once per commit: a burst would otherwise re-read the backlog
-        // per commit, and the open set cannot change mid-sweep (only a user's click changes an idea's status).
-        var open = OpenAsync(watch.ProjectId, ctx.Stopping);
         foreach (var commit in all)
         {
-            if (_stopped) return;
+            if (_stopped || IdeaRuns.ProjectBusy(ctx, watch.ProjectId)) return;
+            // The agent or another window may close/update an idea between commits or while a decision runs.
+            var open = OpenAsync(watch.ProjectId, ctx.Stopping);
             if (await HandleAsync(watch, open, commit, ctx.Stopping).ConfigureAwait(false))
                 _repo.Remember(watch.Repo, IdeaOps.Str(commit["hash"]), watch.ProjectId, watch.ProjectName);
             else
@@ -415,7 +422,9 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             {
                 if (_stopped) return true;
                 if (IdeaOps.Str(idea["status"]) is not ("open" or "planned" or "in-progress" or "parked")) continue;
-                if (await OfferDoneAsync(watch, idea, entry, titles, ct).ConfigureAwait(false)) break;  // one offer per sweep
+                var offered = await OfferDoneAsync(watch, idea, entry, titles, ct).ConfigureAwait(false);
+                if (offered is null) return false; // changed or busy: leave this commit for the next sweep
+                if (offered == true) break;
             }
         }
         return true;
@@ -472,11 +481,14 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// commit and the summary alone offered only 5/12 (docs/DECISION-MODELS.md). On a clear margin a card is added; one per
     /// idea, and never for an idea that is already closed.
     /// </summary>
-    private async Task<bool> OfferDoneAsync(Watch watch, JsonObject idea, JsonObject commit, List<string> committed, CancellationToken ct)
+    private async Task<bool?> OfferDoneAsync(Watch watch, JsonObject idea, JsonObject commit, List<string> committed, CancellationToken ct)
     {
         if (!ctx.Rpc.Exists("decide.decision")) return false;
         var id = IdeaOps.Str(idea["id"]);
         if (id is not { Length: > 0 }) return false;
+        if (IdeaRuns.ProjectBusy(ctx, watch.ProjectId)) return null;
+        var revision = idea["revision"]?.GetValue<long>();
+        if (revision is null) return false;
         var text = IdeaOps.RenderMarkdown(idea);
         if (text.Length < 40) return false;
         var linked = (idea["commits"] as JsonArray ?? []).OfType<JsonObject>()
@@ -497,13 +509,17 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         var threshold = Math.Clamp(Setting("ideas.doneThreshold", DefaultDoneThreshold), 0.3, 0.99);
         if ((probs.TryGetValue("DONE", out var done) ? done : 0) < threshold) return false;
         if ((probs.TryGetValue("DONE", out var d) ? d : 0) <= (probs.TryGetValue("MORE", out var m) ? m : 0)) return false;
+        // The result judges this exact snapshot. A later revision must be judged again, never stamped onto old text.
+        var current = _repo.Find(id);
+        if (current is null || IdeaOps.Str(current.Doc["status"]) is not ("open" or "planned" or "in-progress" or "parked")) return false;
+        if (IdeaRuns.ProjectBusy(ctx, watch.ProjectId) || current.Revision != revision) return null;
 
         var suggestion = new JsonObject
         {
             ["id"] = "sg_" + Guid.NewGuid().ToString("N")[..10],
             ["kind"] = "done",
             ["ideaId"] = id,
-            ["ideaRevision"] = _repo.Find(id)?.Revision ?? 0, // the version of the idea this offer was made from
+            ["ideaRevision"] = revision.Value,
             ["title"] = IdeaOps.Str(idea["title"]) ?? "",
             ["commits"] = new JsonArray(linked.Select(c => (JsonNode)c!).ToArray()),
             ["at"] = IdeaOps.Now(),

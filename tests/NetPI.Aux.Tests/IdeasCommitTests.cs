@@ -169,6 +169,56 @@ public static class IdeasCommitTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("ideas commits: defer while a project run is active and re-read what the agent closed", async () =>
+        {
+            var env = new Env();
+            var runtime = new FakeAgentRuntime();
+            var agent = new AgentInfo { Id = "working", SessionId = env.Session.Id, Status = AgentStatus.Running };
+            runtime.Agents.Add(agent);
+            env.Ctx.ServicesFake.Register<IAgentRuntime>(runtime);
+            await env.StartAsync();
+            var idea = await env.AddIdea("Finish after the agent", "The agent will close this itself.");
+            env.Repo.Commit($"implement {idea}");
+            foreach (var status in new[] { AgentStatus.Running, AgentStatus.Yielded, AgentStatus.Queued })
+            {
+                agent.Status = status;
+                await env.Check!.SweepNowAsync();
+                Check.Equal(0, env.Decisions, "no background decision before the run ends");
+                Check.Equal(0, (await env.CommitsOn(idea)).Count);
+            }
+            await env.Rpc("ideas.update", new JsonObject { ["id"] = idea, ["patch"] = new JsonObject { ["status"] = "done" } });
+            agent.Status = AgentStatus.Idle;
+            await env.Check!.SweepNowAsync();
+            Check.Equal(env.Repo.Commits[^1].Hash, env.Cursor, "the deferred commit is handled after the run");
+            Check.Equal(0, env.Decisions, "an already closed idea needs no decision");
+            Check.Equal(0, await env.Cards());
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: a done decision cannot bless an idea revised while it was being judged", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var idea = await env.AddIdea("A complete implementation", "All of this must be built before it is done.");
+            env.Repo.Commit($"implement {idea}");
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var registration = env.Ctx.RpcFake.Register("decide.decision", async (_, ct) =>
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(ct);
+                return Answer(new() { ["DONE"] = 0.95, ["MORE"] = 0.05 });
+            });
+            var sweep = env.Check!.SweepNowAsync();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await env.Rpc("ideas.update", new JsonObject { ["id"] = idea, ["patch"] = new JsonObject { ["summary"] = "New requirements remain to implement." } });
+            release.TrySetResult();
+            await sweep;
+            Check.Equal(0, await env.Cards(), "the old answer is discarded");
+            Check.True(env.Cursor != env.Repo.Commits[^1].Hash, "the next sweep must judge the new revision");
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas commits: a burst of 45 commits is read whole — oldest first, no gap", async () =>
         {
             var env = new Env();

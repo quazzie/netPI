@@ -313,6 +313,11 @@ again a few times. A check that *ran* and found nothing is `done`, not failed: "
 old aborted turn does not exclude the chat, and a check whose claim was taken over cannot report over the newer
 outcome.
 
+The runtime's running, queued and yielded states also hold the check, even if the transcript already has a final
+assistant message. After twenty 30-second waits a still-active run leaves a retryable failed check; it is never
+judged mid-run. Before offering a save card, the check suppresses a draft with the same title already saved by that
+session.
+
 What runs in the background, in this order:
 
 1. **Attach.** One pick-one decision over the open ideas of the chat's project plus the global ones, the conversation
@@ -411,6 +416,11 @@ Unseen history is read in bounded pages **oldest first** (`since..until`, then t
 git answers a range with its newest commits), so a burst of more than 20 is read whole: none skipped, none twice. The
 cursor moves past a commit only when it was handled — a decision that failed leaves it unread and the next sweep starts
 there — and a history that was rewritten under the cursor re-anchors at HEAD with a line in the log.
+
+A project with a running, queued or yielded agent defers its sweep without moving the cursor. Run completion triggers
+another sweep, which reads the current open ideas so an agent can finish its own backlog updates first. A done
+judgment carries the revision it actually read: if the idea changes or work resumes while the decision is in flight,
+the result is discarded and the commit stays unread for a later sweep.
 
 Each new commit is read twice over, in the order that measured best (docs/DECISION-MODELS.md):
 

@@ -112,6 +112,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
         // The state the chat is in now, not every state it was in: a turn that was cut short hours ago and was worked
         // on since is a finished conversation. A tab closed while the agent is still running is not: it waits.
         var turn = TurnOf(messages);
+        if (IdeaRuns.SessionBusy(ctx, sessionId)) turn = Turn.Open;
         if (turn == Turn.Bad) return Result("unfinished");
 
         var rev = Revision(messages);
@@ -142,7 +143,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
     {
       try {
         var current = messages;
-        for (var waited = 0; turn == Turn.Open && waited < MaxDefers; waited++)
+        for (var waited = 0; (turn == Turn.Open || IdeaRuns.SessionBusy(ctx, session.Id)) && waited < MaxDefers; waited++)
         {
             await Task.Delay(DeferStep, ct).ConfigureAwait(false);
             if (ct.IsCancellationRequested) return;
@@ -150,7 +151,9 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
             current = ctx.Sessions.GetMessages(session.Id);
             turn = TurnOf(current);
         }
-        await RunAsync(session, current, turn == Turn.Open, token, ct).ConfigureAwait(false);
+        if (turn == Turn.Open || IdeaRuns.SessionBusy(ctx, session.Id)) { GiveUpAsync(session.Id, token, ct); return; }
+        if (turn == Turn.Bad) { GiveUpAsync(session.Id, token, ct); return; }
+        await RunAsync(session, current, token, ct).ConfigureAwait(false);
       } catch (Exception ex) when (ex is not OperationCanceledException) {
         ctx.Logger.LogWarning("Ideas: the deferred check on {Session} failed: {Message}", session.Id, ex.Message);
       }
@@ -179,7 +182,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
     /// </summary>
     private static string Revision(IReadOnlyList<ChatMessage> messages) => messages.Count > 0 ? $"{messages.Count}:{messages[^1].Id}" : "0";
 
-    private async Task RunAsync(SessionInfo session, IReadOnlyList<ChatMessage> messages, bool gaveUpWaiting, string? token, CancellationToken ct)
+    private async Task RunAsync(SessionInfo session, IReadOnlyList<ChatMessage> messages, string? token, CancellationToken ct)
     {
         var digest = Digest(messages);
         if (digest.Length < 80) { FinishAsync(session.Id, token, ct, null); return; } // nothing to judge: that is an outcome, not a failure
@@ -195,9 +198,16 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
             var draft = await SaveCheckAsync(session, digest, project, ct).ConfigureAwait(false);
             if (draft is null)
             {
-                FinishAsync(session.Id, token, ct, gaveUpWaiting ? "the run never ended, so the chat was judged as it was" : null);
+                FinishAsync(session.Id, token, ct, null);
                 return;
             }
+
+            if (IdeaRuns.SessionBusy(ctx, session.Id)) { GiveUpAsync(session.Id, token, ct); return; }
+            // A plan the agent saved while this check was in flight must not be offered a second time.
+            var alreadySaved = _repo.All().Any(i =>
+                (i["sessionIds"] as JsonArray ?? []).Any(s => IdeaOps.Str(s) == session.Id) &&
+                string.Equals(IdeaOps.Str(i["title"])?.Trim(), draft.Value.Title.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (alreadySaved) { FinishAsync(session.Id, token, ct, null); return; }
 
             var suggestion = new JsonObject
             {

@@ -173,6 +173,35 @@ public static class IdeasCheckTests
 
     public static void Register(TestRunner r)
     {
+        r.Add("ideas check: a final response still waits for the runtime and does not offer a plan the agent saved", async () =>
+        {
+            var env = new Env();
+            var runtime = new FakeAgentRuntime();
+            var agent = new AgentInfo { Id = "working", SessionId = env.Session.Id, Status = AgentStatus.Running };
+            runtime.Agents.Add(agent);
+            env.Ctx.ServicesFake.Register<IAgentRuntime>(runtime);
+            await env.StartAsync();
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
+            env.Talk();
+            env.Talk();
+            env.Says("SAVE\nSaved by the agent\nThis plan is already in the backlog.");
+            var previousStep = IdeaSaveCheck.DeferStep;
+            IdeaSaveCheck.DeferStep = TimeSpan.FromMilliseconds(20);
+            try
+            {
+                var result = await env.Rpc("ideas.closed", new JsonObject { ["sessionId"] = env.Session.Id });
+                Check.Equal("running", result["reason"].Str(), "a final assistant message does not mean the run has finished");
+                Check.Equal(0, env.Ctx.ModelsFake.Requests.Count);
+                await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id,
+                    ["idea"] = new JsonObject { ["title"] = "Saved by the agent", ["summary"] = "Already recorded before returning idle." } });
+                agent.Status = AgentStatus.Idle;
+                await env.WaitForMark(env.Session.Id);
+                Check.Equal(1, env.Ctx.ModelsFake.Requests.Count);
+                Check.Equal(0, (await env.Cards()).Count, "no duplicate save card");
+            }
+            finally { IdeaSaveCheck.DeferStep = previousStep; env.Ctx.Unload(); }
+        });
+
         r.Add("ideas check: the attach decision is asked about the conversation, not only the option list", async () =>
         {
             var env = new Env();
