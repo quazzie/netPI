@@ -96,12 +96,11 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
             {
                 if (failure is not null) return;
                 var startedItem = System.Diagnostics.Stopwatch.StartNew();
-                var answers = await client.EvaluateAsync(new DecisionRequest
+                results[i] = await client.EvaluateAnswerAsync(new DecisionRequest
                 {
                     Model = model, Body = new JsonObject { ["state"] = text, ["questions"] = questions.DeepClone() },
                     ExistingLease = context.AdmissionLease, HeldModel = context.Model?.Ref,
                 }, ct).ConfigureAwait(false);
-                results[i] = new DecisionAnswer(answers, client.Model(model), startedItem.Elapsed.TotalMilliseconds);
             }
             catch (DecisionException ex) { failure ??= ex; }
             finally { gate.Release(); }
@@ -226,7 +225,32 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         }
         else if (items.Count > ListAll) sb.AppendLine(Inv($"\nNo unsure answers (all ≥ {minConf:0.##})."));
 
-        return ToolResult.Ok(sb.ToString().TrimEnd(), new { model, file, questions, count = done, unsure = unsure.Count, ms = Math.Round(ms), items = rows });
+        return ToolResult.Ok(sb.ToString().TrimEnd(), new { model, file, questions, count = done, unsure = unsure.Count, ms = Math.Round(ms), items = rows, usage = Usage(results) });
+    }
+
+    /// <summary>
+    /// What the server reported for tokens, so the cost of a decision is measurable rather than assumed: the whole
+    /// argument for these calls is that they reuse a cached prefix, and <c>cached_tokens</c> is the only place that
+    /// number exists. Totals across the items of one call; null when the server reported no usage.
+    /// </summary>
+    private static JsonObject? Usage(DecisionAnswer?[] results)
+    {
+        long prompt = 0, cached = 0, completion = 0;
+        var seen = false;
+        foreach (var r in results)
+        {
+            if (r?.Usage is not { } u) continue;
+            seen = true;
+            prompt += u["prompt_tokens"]?.GetValue<long>() ?? u["input_tokens"]?.GetValue<long>() ?? 0;
+            cached += u["cached_tokens"]?.GetValue<long>() ?? u["cache_read_tokens"]?.GetValue<long>() ?? 0;
+            completion += u["completion_tokens"]?.GetValue<long>() ?? u["output_tokens"]?.GetValue<long>() ?? 0;
+        }
+        if (!seen) return null;
+        return new JsonObject
+        {
+            ["promptTokens"] = prompt, ["cachedTokens"] = cached, ["completionTokens"] = completion,
+            ["cacheHitRate"] = prompt == 0 ? 0 : Math.Round((double)cached / prompt, 4),
+        };
     }
 
     /// <summary>An answer's label and confidence: choice/score use the model's confidence; yes/no uses the distance from 0.5.</summary>

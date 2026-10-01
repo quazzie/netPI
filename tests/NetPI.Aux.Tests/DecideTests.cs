@@ -51,7 +51,13 @@ public static class DecideTests
                     _ => new JsonObject { ["type"] = "score", ["score"] = 1.5, ["confidence"] = 0.8 },
                 };
             }
-            await http.Response.WriteAsJsonAsync(new JsonObject { ["model"] = body["model"]!.GetValue<string>(), ["answers"] = answers });
+            // The server reports usage beside `answers`, not inside it: the only place cached_tokens exists, and the
+            // whole cost argument for these calls depends on it being readable.
+            await http.Response.WriteAsJsonAsync(new JsonObject
+            {
+                ["model"] = body["model"]!.GetValue<string>(), ["answers"] = answers,
+                ["usage"] = new JsonObject { ["prompt_tokens"] = 4096, ["cached_tokens"] = 4000, ["completion_tokens"] = 3 },
+            });
         });
     });
 
@@ -121,6 +127,13 @@ public static class DecideTests
             var d = NetPiJson.ToElement(res.Details);
             Check.Equal(1, d.GetProperty("unsure").GetInt32());
             Check.Equal("ERR disk full", d.GetProperty("items")[1].GetProperty("text").GetString());
+            // What it cost, read from the server and totalled over the three items: 4000 of each item's 4096 prompt
+            // tokens came from its cache.
+            var usage = d.GetProperty("usage");
+            Check.Equal(12288, usage.GetProperty("promptTokens").GetInt32());
+            Check.Equal(12000, usage.GetProperty("cachedTokens").GetInt32());
+            Check.Equal(9, usage.GetProperty("completionTokens").GetInt32());
+            Check.Equal(0.9766, usage.GetProperty("cacheHitRate").GetDouble(), "12000 of 12288 prompt tokens came from its cache");
         });
 
         r.Add("decide: errors keep the gateway's code and request id, with a hint for an unloaded model; bad questions are refused", async () =>
