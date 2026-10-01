@@ -1,8 +1,12 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Host.Events;
+
+/// <summary>A moment of the dispatcher: the handler it is inside (null between handlers) and how long it has been there.</summary>
+internal readonly record struct BusActivity(string? Type, string? Pattern, TimeSpan Elapsed, long Delivered, int Backlog);
 
 /// <summary>
 /// In-process event bus. <see cref="Publish(BusEvent)"/> never blocks: events are queued on an unbounded channel and
@@ -32,6 +36,11 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     private long _seq;
     private long _backlog;
     private int _warnedBacklog;
+    // What the dispatcher is inside right now, for the stall watchdog. Written by the dispatcher only; read racily by
+    // the watchdog, which only needs "which handler, for how long". _inSince is a Stopwatch timestamp, 0 between handlers.
+    private long _inSince;
+    private string? _inType, _inPattern;
+    private long _delivered;
 
     public EventBus(ILogger log)
     {
@@ -43,6 +52,16 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
 
     /// <summary>Events published but not yet delivered. Delivery is serial, so this is how far behind the bus is.</summary>
     public int Backlog => (int)Math.Min(int.MaxValue, Interlocked.Read(ref _backlog));
+
+    /// <summary>Which handler the dispatcher is inside, and for how long: how a stalled bus names its culprit (see <see cref="StallWatchdog"/>).</summary>
+    public BusActivity Activity()
+    {
+        var since = Volatile.Read(ref _inSince);
+        var type = Volatile.Read(ref _inType);
+        var pattern = Volatile.Read(ref _inPattern);
+        return new BusActivity(since == 0 ? null : type, since == 0 ? null : pattern,
+            since == 0 ? TimeSpan.Zero : Stopwatch.GetElapsedTime(since), Interlocked.Read(ref _delivered), Backlog);
+    }
 
     public void Publish(BusEvent evt)
     {
@@ -155,6 +174,9 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
         foreach (var s in Volatile.Read(ref _subs))
         {
             if (s.Disposed || !s.Matches(evt.Type)) continue;
+            Volatile.Write(ref _inType, evt.Type);
+            Volatile.Write(ref _inPattern, s.Pattern);
+            Volatile.Write(ref _inSince, Stopwatch.GetTimestamp());
             try
             {
                 if (s.Sync is not null)
@@ -185,7 +207,9 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
             {
                 _log.LogError(ex, "Event handler '{Pattern}' failed on '{Type}'", s.Pattern, evt.Type);
             }
+            finally { Volatile.Write(ref _inSince, 0); }
         }
+        Interlocked.Increment(ref _delivered);
     }
 
     private void AddToRing(BusEvent evt)

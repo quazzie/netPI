@@ -35,6 +35,8 @@ internal sealed class HostKernel : IAsyncDisposable
     public required ModelCatalog Models { get; init; }
     /// <summary>This app's hold on its home (one NetPI per home).</summary>
     internal HomeLock? HomeLock { get; init; }
+    /// <summary>Logs it when the bus, or the thread pool, stops making progress (see <see cref="StallWatchdog"/>).</summary>
+    internal StallWatchdog? Watchdog { get; init; }
     public PluginManager Plugins { get; private set; } = null!;
     public ILogger Log { get; private set; } = null!;
 
@@ -69,6 +71,8 @@ internal sealed class HostKernel : IAsyncDisposable
             created.Push(db);
             var bus = new EventBus(factory.CreateLogger("NetPI.Events"));
             created.Push(bus);
+            var watchdog = new StallWatchdog(bus, factory.CreateLogger("NetPI.Watchdog"));
+            created.Push(watchdog);
             settings.AttachBus(bus);
             var services = new ServiceRegistry();
             var tools = new ToolRegistry(settings, bus, factory.CreateLogger("NetPI.Tools"));
@@ -97,6 +101,7 @@ internal sealed class HostKernel : IAsyncDisposable
                 Sessions = sessions,
                 Models = models,
                 HomeLock = homeLock,
+                Watchdog = watchdog,
             };
             kernel.Log = factory.CreateLogger("NetPI.Host");
             kernel.Plugins = new PluginManager(kernel, factory.CreateLogger("NetPI.Plugins"));
@@ -205,6 +210,7 @@ internal sealed class HostKernel : IAsyncDisposable
         Tools.Dispose();
         Ui.Dispose();
         Settings.Dispose();
+        Watchdog?.Dispose();
         await Bus.DisposeAsync().ConfigureAwait(false);
         Db.Dispose();
         LoggerFactory.Dispose();

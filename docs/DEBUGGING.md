@@ -110,6 +110,24 @@ web_fetch (plugin reload netpi.tools.web).` — and the diagnostics plugin recor
 `diag.problems` has a line for each, and the Diagnostics tab shows both. The full history of one chat is
 `diag.toolsets { sessionId }`: its tools now, the baseline of its first model call, and every change with its cause.
 
+## "The app stopped answering"
+
+When nothing is answering, `diag` cannot say why (it is an RPC like any other), so the host's **stall watchdog**
+(`src/NetPI.Host/Events/StallWatchdog.cs`) writes it in the log, from a thread of its own that never waits for the thread
+pool. Three things, each logged when it starts (5 s), every 30 s while it lasts, and again when it ends:
+
+- `The event bus has been inside the handler '<pattern>' on '<type>' for N s; M event(s) wait behind it` — delivery is one
+  task, so one handler that never returns holds back every later event, the UI fan-out included. The pattern and the event
+  name the culprit. (An async handler is let go of after 30 s with its own `Event handler … is stuck` error; a sync one
+  cannot be, which is why this one exists.)
+- `The event bus has not delivered anything … with N event(s) queued and no handler running` — the dispatcher is not being
+  scheduled at all.
+- `The thread pool has not started a queued work item for N s (threads, pending items, completed)` — every pool thread is
+  blocked (usually a synchronous wait on async work), so no RPC, event or continuation can run until one frees up.
+
+The E2E harness reads the same log line when a test fails: `artifacts/e2elogs/<run>/failures/<id>.txt` shows it under
+"server log since the test started".
+
 ## How it is kept
 
 The diagnostics plugin (`plugins/NetPI.Diagnostics`) records in memory from its start: the last 300 model calls (a model
