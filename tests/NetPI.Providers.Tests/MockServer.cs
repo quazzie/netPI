@@ -335,6 +335,18 @@ internal sealed class MockServer : IAsyncDisposable
                     "data: [DONE]\n\n",
                 ]);
                 return;
+            case "vendor/arg-types":
+                // Typed arguments a gateway may send as a JSON object instead of a string, plus the same value split
+                // across chunks. Nothing may be stringified or reshaped on the way in.
+                await Sse(ctx,
+                [
+                    OrChunk(new { tool_calls = new[] { new { index = 0, id = "call_typed", type = "function", function = new { name = "set_dashboard",
+                        arguments = new { views = new[] { new { title = "Probe", n = 1 } }, flag = true, n = 10, text = "10" } } } } }),
+                    OrChunk(new { tool_calls = new[] { new { index = 1, id = "call_typed2", type = "function", function = new { name = "set_dashboard", arguments = "{\"views\":[" } } } }),
+                    OrChunk(new { tool_calls = new[] { new { index = 1, function = new { arguments = "{\"n\":1}],\"flag\":true}" } } } }, "tool_calls"),
+                    "data: [DONE]\n\n",
+                ]);
+                return;
         }
 
         // Default: reasoning text + reasoning_details streamed in pieces (keep-alive comments between), text, a tool call

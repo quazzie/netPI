@@ -10,6 +10,10 @@ Disclosure lives in retained tool-result history, not a process cache. Forks inh
 
 Concrete tools obey global disabled tools, agent allowlists, profile selection and session switches. Granting only `mcp_call` grants no remote targets. The runtime resolves the target before policy hooks, rechecks selection before execution and preserves the outer provider call id. Journal events and result details identify the resolved target and server.
 
+## Arguments the model wrote as text
+
+A remote schema arrives after the call envelope has been built, so a model often writes JSON as a string inside a typed argument: `"list_only":"true"`, `"timeout":"10"`, `"config":"{\"views\":[…]}"`. When the arguments fail the discovered schema, `mcp_call` re-reads such a value once, and only where the schema for that exact path asks for a non-string type, the text parses exactly to it (`"007"` and `"+1"` are not the numbers written), and the repaired arguments are the ones the schema accepts. A value the schema permits as a string is never re-read, arguments that already validate are never rewritten, and anything left over fails with the model's own error. The repair is recorded in the log; the server receives the repaired types.
+
 ## Configuration
 
 Use the MCP tab to add, edit, enable, inspect, refresh or reconnect servers. Settings are a map at `mcp.servers` keyed by a stable server id:

@@ -978,6 +978,22 @@ await t.Run("openrouter: a tool name split across chunks is not truncated to its
     t.Eq(events.OfType<ToolCallStarted>().Single().Id, call.Id, "the part keeps the id the events were emitted with");
 });
 
+await t.Run("openrouter: typed tool arguments arrive exactly as the model wrote them", async () =>
+{
+    // idea-mn5yfd blamed an argument encoder here. A gateway that sends `arguments` as a JSON object instead of a
+    // string, and the same value split across chunks, must both reach the runner byte for byte.
+    var events = await Collect(openrouter, Req(M("openrouter", "vendor/arg-types")));
+    var calls = events.OfType<StreamCompleted>().Single().Message.ToolCalls.ToArray();
+    t.Eq(2, calls.Length, "both tool calls");
+    var asObject = JsonNode.Parse(calls[0].Arguments)!.AsObject();
+    t.Eq("Probe", asObject["views"]![0]!["title"]!.GetValue<string>(), "a nested string inside an array");
+    t.Eq(1, asObject["views"]![0]!["n"]!.GetValue<int>(), "a number inside an array element is a number");
+    t.Eq(true, asObject["flag"]!.GetValue<bool>(), "a boolean stays a boolean");
+    t.Eq(10, asObject["n"]!.GetValue<int>(), "a number stays a number");
+    t.Eq("10", asObject["text"]!.GetValue<string>(), "a number written as text stays text");
+    t.Eq("""{"views":[{"n":1}],"flag":true}""", calls[1].Arguments, "the same value across chunks");
+});
+
 await t.Run("openrouter: reasoning_details go back unmodified, only to the model that produced them", async () =>
 {
     var bunny = await OrModel("stealth/bunny");
