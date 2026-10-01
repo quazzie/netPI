@@ -81,25 +81,27 @@ internal sealed class McpSearchTool(IPluginContext ctx, ServerManager manager) :
         var eligible = Eligible(ctx, context).ToHashSet(ReferenceEqualityComparer.Instance);
         var catalog = manager.Catalog().Where(t => eligible.Contains(t) && (server is null || t.ServerId == server)).ToList();
         var resources = detail == "schema" ? new List<RemoteResource>() : manager.Resources(server);
-        // Tools and resources compete in one pool, so a query for a skill document does not have to know which it is.
-        var ranked = McpSearchTool.Score(catalog, query, t => t.Definition.Name + " " + t.RemoteName, t => t.SearchText)
-            .Select(r => (r.Score, Kind: "tool", Id: r.Id, Value: (object)r.Item))
-            .Concat(McpSearchTool.Score(resources, query, r => r.Uri + " " + r.Name, r => r.SearchText)
-                .Select(r => (r.Score, Kind: "resource", Id: r.Id, Value: (object)r.Item)))
-            .OrderByDescending(r => r.Score).ThenBy(r => r.Id, StringComparer.Ordinal).Take(limit).ToList();
+        // One pool, not two. Scoring tools and resources separately made the kinds incomparable: idf is computed over
+        // the documents being ranked, so a rare term in a 77-tool pool always outscored the same term in a 16-resource
+        // one, and tools won every query by default. Tools and resources compete here on the same terms.
+        var candidates = catalog.Select(t => (Kind: "tool", Id: t.Definition.Name, Exact: t.Definition.Name + " " + t.RemoteName, Text: t.SearchText, Value: (object)t))
+            .Concat(resources.Select(r => (Kind: "resource", Id: r.Uri, Exact: r.Uri + " " + r.Name, Text: r.SearchText, Value: (object)r)))
+            .ToList();
+        var ranked = McpSearchTool.Score(candidates, query, c => c.Exact, c => c.Text)
+            .OrderByDescending(s => s.Score).ThenBy(s => s.Item.Id, StringComparer.Ordinal).Take(limit).ToList();
         var budget = ToolResultLimit.Fit(ctx.Settings, manager.Limit("mcp.discoveryChars", 4000, 1024, 20000));
         var disclosures = new JsonArray(); var results = new JsonArray();
         var known = DiscoveryState.Current(ctx.Sessions, context.SessionId);
         foreach (var entry in ranked)
         {
-            if (entry.Kind == "resource")
+            if (entry.Item.Kind == "resource")
             {
-                var resource = (RemoteResource)entry.Value;
+                var resource = (RemoteResource)entry.Item.Value;
                 if (results.ToJsonString().Length + 400 > budget - 100) break;
                 results.Add(resource.Summary(manager.Available(resource.ServerId)));
                 continue;
             }
-            var tool = (RemoteTool)entry.Value;
+            var tool = (RemoteTool)entry.Item.Value;
             var result = tool.Summary(manager.Available(tool.ServerId));
             result["kind"] = "tool";
             JsonObject? disclosure = null;
