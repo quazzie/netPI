@@ -44,6 +44,9 @@ public sealed class ShellPlugin : INetPiPlugin
         }
 
         var registry = _registry;
+        // A running process keeps the ownership of the directory it was started in: the workspace plugin refuses to
+        // delete a checkout that still has one working in it.
+        context.Services.Register<IWorkspaceProcesses>(new WorkspaceProcesses(registry));
         context.Rpc.Register("processes.list", (_, _) =>
             Task.FromResult<object?>(registry.List().Select(p => p.ToInfo()).ToList()),
             "Running and recent shell processes → ProcessInfo[]");
@@ -72,5 +75,22 @@ public sealed class ShellPlugin : INetPiPlugin
     public async Task StopAsync(CancellationToken ct)
     {
         if (_registry is not null) await _registry.KillAllAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+    }
+}
+
+/// <summary>Whether a process is running inside a directory (the shell registry is the only place that knows).</summary>
+internal sealed class WorkspaceProcesses(ProcessRegistry registry) : IWorkspaceProcesses
+{
+    public bool IsBusyIn(string path)
+    {
+        var root = WorkspacePaths.Canonical(path);
+        foreach (var p in registry.List())
+        {
+            if (!p.IsRunning) continue;
+            var cwd = p.Cwd;
+            if (string.IsNullOrWhiteSpace(cwd)) continue;
+            if (WorkspacePaths.IsInside(root, cwd)) return true;
+        }
+        return false;
     }
 }

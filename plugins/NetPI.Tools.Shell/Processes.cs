@@ -15,6 +15,10 @@ public sealed class ProcessInfo
     public required string Cwd { get; init; }
     public string? SessionId { get; init; }
     public string? AgentId { get; init; }
+    /// <summary>The workspace the process was started in. It keeps that workspace's ownership for as long as it runs, so
+    /// a cleanup that would delete the checkout has to wait for it (IWorkspaceProcesses).</summary>
+    public string? WorkspaceId { get; init; }
+    public string? WorkspaceBranch { get; init; }
     public bool Background { get; init; }
     /// <summary>running | exited | killed | timeout</summary>
     public required string Status { get; init; }
@@ -54,6 +58,10 @@ public sealed class ManagedProcess : IDisposable
     public string Cwd { get; }
     public string? SessionId { get; init; }
     public string? AgentId { get; init; }
+    /// <summary>The workspace the process was started in. It keeps that workspace's ownership for as long as it runs, so
+    /// a cleanup that would delete the checkout has to wait for it (IWorkspaceProcesses).</summary>
+    public string? WorkspaceId { get; init; }
+    public string? WorkspaceBranch { get; init; }
     public bool Background { get; init; }
     public DateTimeOffset StartedAt { get; }
     public DateTimeOffset? EndedAt { get; private set; }
@@ -86,7 +94,8 @@ public sealed class ManagedProcess : IDisposable
     /// <summary>Start the process. Throws <see cref="System.ComponentModel.Win32Exception"/>/<see cref="InvalidOperationException"/> when it cannot be spawned.</summary>
     public static ManagedProcess Start(string id, LaunchSpec spec, string command, string cwd, OutputCapture output,
         Action<string>? live = null, TimeSpan? liveInterval = null, string? sessionId = null, string? agentId = null, bool background = false,
-        Action<ManagedProcess>? onExited = null, Action<ManagedProcess>? onStarted = null)
+        Action<ManagedProcess>? onExited = null, Action<ManagedProcess>? onStarted = null,
+        string? workspaceId = null, string? workspaceBranch = null)
     {
         var psi = new ProcessStartInfo(spec.Executable)
         {
@@ -110,6 +119,8 @@ public sealed class ManagedProcess : IDisposable
             SessionId = sessionId,
             AgentId = agentId,
             Background = background,
+            WorkspaceId = workspaceId,
+            WorkspaceBranch = workspaceBranch,
         };
         mp.OnExited = onExited;
         if (live is not null) mp._live = new OutputThrottle(live, liveInterval ?? TimeSpan.FromMilliseconds(50));
@@ -211,6 +222,7 @@ public sealed class ManagedProcess : IDisposable
             return new ProcessInfo
             {
                 Id = Id, Pid = Pid, Shell = Shell, Command = Command, Cwd = Cwd, SessionId = SessionId, AgentId = AgentId,
+                WorkspaceId = WorkspaceId, WorkspaceBranch = WorkspaceBranch,
                 Background = Background, Status = _status, ExitCode = ExitCode, StartedAt = StartedAt, EndedAt = EndedAt,
                 OutputBytes = Output.TotalBytes,
             };

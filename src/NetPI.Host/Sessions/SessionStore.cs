@@ -510,6 +510,17 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
         var detached = _db.Query($"SELECT {SessionColumns} FROM sessions WHERE workspace_id = @id", new { id }, ReadSession);
         var n = _db.Execute("DELETE FROM workspaces WHERE id = @id", new { id });
         if (n == 0) return false;
+        // The sessions that pointed at it now work in their project again, so their stored reference goes with the record.
+        foreach (var s in detached)
+            _db.Execute("UPDATE sessions SET workspace_id = NULL, updated_at = @updated_at WHERE id = @id", new { updated_at = Now(), id = s.Id });
+        // Transient (message-less) sessions have no row: detach them in memory, like the stored ones above.
+        List<SessionInfo> transient = [];
+        lock (_transientLock)
+        {
+            transient = _transient.Values.Where(s => s.WorkspaceId == id).ToList();
+            foreach (var s in transient) { s.WorkspaceId = null; s.UpdatedAt = Now(); }
+        }
+        detached.AddRange(transient);
         Publish(EventTypes.WorkspaceDeleted, new { id });
         foreach (var s in detached)
         {
@@ -529,13 +540,25 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
         else workspaceId = null;
         if (workspaceId is not null && GetWorkspace(workspaceId) is null)
             throw new KeyNotFoundException($"Workspace {workspaceId} not found");
+        lock (_transientLock)
+        {
+            // A session with no messages yet lives in memory only: bind it there, or the binding would be lost the moment
+            // the first message materializes the session (and the UPDATE below would match no row).
+            if (_transient.TryGetValue(sessionId, out var t))
+            {
+                if (t.WorkspaceId == workspaceId) return;
+                t.WorkspaceId = workspaceId;
+                t.UpdatedAt = Now();
+                return;
+            }
+        }
         var session = _db.Transaction(_ =>
         {
             var s = GetSession(sessionId) ?? throw new KeyNotFoundException($"Session {sessionId} not found");
             if (s.WorkspaceId == workspaceId) return s;
             s.WorkspaceId = workspaceId;
             s.UpdatedAt = Now();
-            _db.Execute("UPDATE sessions SET workspace_id = @workspace_id, updated_at = @updated_at WHERE id = @id", s);
+            _db.Execute("UPDATE sessions SET workspace_id = @WorkspaceId, updated_at = @UpdatedAt WHERE id = @Id", s);
             return GetSession(sessionId) ?? s;
         });
         Publish(EventTypes.SessionUpdated, new { session });

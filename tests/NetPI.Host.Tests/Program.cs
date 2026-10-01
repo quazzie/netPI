@@ -9,6 +9,7 @@ SettingsTests.Register(runner);
 EventBusTests.Register(runner);
 RegistryTests.Register(runner);
 SessionStoreTests.Register(runner);
+WorkspaceStoreTests.Register(runner);
 ModelCatalogTests.Register(runner);
 ServerTests.Register(runner);
 PluginTests.Register(runner);

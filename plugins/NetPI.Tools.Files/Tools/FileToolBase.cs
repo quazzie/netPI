@@ -20,6 +20,23 @@ public abstract class FileToolBase(ISettings? settings) : IAgentTool
 
     public abstract ToolDefinition Definition { get; }
 
+    /// <summary>
+    /// The workspace rule for a mutation, in the file tools' own base class so <c>write</c>, <c>edit</c> and anything
+    /// added later obey the same one: an unbound session may write anywhere (the behavior before workspaces existed),
+    /// and an isolated one may not write into another checkout of the same repository. Returns null when the write is
+    /// allowed, and the refusal otherwise — the hook in the workspace plugin already blocks most of these, this is the
+    /// tool's own answer so a call made without hooks (a test, another caller) is not unprotected either.
+    /// </summary>
+    protected static string? WorkspaceRefusal(ToolContext ctx, string fullPath)
+    {
+        var binding = ctx.Workspace;
+        if (binding is null || !binding.Isolated) return null;
+        var probe = ctx.Services?.Get<IWorkspaceRepoProbe>();
+        return WorkspacePaths.CheckMutation(binding, fullPath, probe) == WorkspacePathVerdict.ForeignCheckout
+            ? WorkspacePaths.Refusal(binding, fullPath, probe)
+            : null;
+    }
+
     protected abstract Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct);
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)

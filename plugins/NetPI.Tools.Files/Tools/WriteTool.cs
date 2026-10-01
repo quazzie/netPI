@@ -28,6 +28,7 @@ public sealed class WriteTool(ISettings? settings = null) : FileToolBase(setting
         var content = args.Str(ContentNames);
         if (content is null) return MissingArg("content", "{\"path\": \"notes.txt\", \"content\": \"…\"}");
         var full = ctx.ResolvePath(path);
+        if (WorkspaceRefusal(ctx, full) is { } refusal) return ToolResult.Error(refusal);
         if (Directory.Exists(full)) return ToolResult.Error($"{full} is a directory; give a file path.");
 
         var existed = File.Exists(full);

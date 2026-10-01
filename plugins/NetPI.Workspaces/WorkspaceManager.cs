@@ -11,7 +11,7 @@ public sealed class WorkspaceManager(
     IWorkspaceStore store,
     WorkspaceResolver resolver,
     WorkspaceProvisioner provisioner,
-    GitProbe git)
+    GitProbe git) : IWorkspaceProvisioner
 {
     /// <summary>The workspace an already-running session uses, without validating it (for display).</summary>
     public WorkspaceBinding? Of(SessionInfo? session) => resolver.ResolveLenient(session);
@@ -20,12 +20,19 @@ public sealed class WorkspaceManager(
     /// The workspace a child worker should start in: the one that was named (and must exist), the parent's (so a reader
     /// sees what its boss sees), or a fresh one provisioned for it. Every outcome is either a binding or a refusal —
     /// there is no "start it in the parent's checkout anyway".
+    /// <para>
+    /// Isolation is decided by what the worker can do, not by the setting alone: a worker whose tools cannot write shares
+    /// the caller's workspace (a reader gains nothing from a worktree of its own, and a worktree per research subagent is
+    /// real disk and real confusion), while a worker that gets a write tool gets its own checkout when
+    /// <see cref="WorkspaceProvisioner.IsolationEnabled"/> is on. <see cref="SpawnRequest.Isolated"/> asks for one
+    /// regardless, and <c>isolated: false</c> on a reader keeps the old behavior.
+    /// </para>
     /// </summary>
     public async Task<WorkspaceOutcome> ForChildAsync(SpawnRequest request, SessionInfo? parentSession, string childSessionId, string childName, CancellationToken ct)
     {
         var named = request.WorkspaceId;
         if (named is { Length: > 0 } && !string.Equals(named, "new", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(named, "own", StringComparison.OrdinalIgnoreCase) && !request.Isolated)
+            !string.Equals(named, "own", StringComparison.OrdinalIgnoreCase) && !Isolated(request, ctx.Services.Get<IToolRegistry>()))
         {
             var found = Find(named);
             if (found is null) return new WorkspaceOutcome(null, NoWorkspace(named));
@@ -58,8 +65,32 @@ public sealed class WorkspaceManager(
             string.IsNullOrWhiteSpace(request.WorkspaceName) ? childName : request.WorkspaceName.Trim(),
             request.WorkspaceOwnerSessionId ?? childSessionId,
             request.ParentAgentId,
-            Isolated: request.Isolated,
+            Isolated: Isolated(request),
             Base: request.WorkspaceBase), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The tools that make a worker a writer: without one of these its writes cannot reach the checkout.</summary>
+    private static readonly HashSet<string> WriteTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "write", "edit", "write_file", "edit_file", "notebook_edit", "patch", "bash", "pwsh", "shell",
+    };
+
+    /// <summary>
+    /// Whether this worker gets a checkout of its own: asked for, or able to write while the setting says writers should be
+    /// isolated. <paramref name="registry"/> may be null (the runtime calls this before the tools are known), in which case
+    /// only an explicit request counts — an unknown tool set is not a reason to create a worktree.
+    /// </summary>
+    public bool Isolated(SpawnRequest request, IToolRegistry? registry = null)
+    {
+        if (request.Isolated) return true;
+        if (!provisioner.IsolationEnabled) return false;
+        var allow = request.Tools;
+        if (allow is null)
+        {
+            if (registry is null) return false;                       // its parent's tools, unknown here: assume a reader
+            return registry.All.Any(t => WriteTools.Contains(t.Definition.Name));
+        }
+        return allow.Any(t => WriteTools.Contains(t));
     }
 
     /// <summary>A workspace by id, then by name, then by path (case-insensitively). Null when none of them is it.</summary>

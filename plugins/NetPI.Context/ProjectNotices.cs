@@ -8,6 +8,8 @@ namespace NetPI.Context;
 /// session's first model call, right after a project switch (event <c>session.project</c>), and whenever the directory
 /// no longer matches the last notice in the context (a project folder moved, the notice was compacted away). Notices are
 /// only ever appended, so the conversation's cached prefix survives a switch.
+/// <para>Its text names the project's folder; when the session is bound to a workspace, the workspace plugin's own notice
+/// says which checkout that actually is, so the two do not have to be merged here.</para>
 /// </summary>
 internal sealed class ProjectNotices(IPluginContext ctx) : IAgentHook
 {

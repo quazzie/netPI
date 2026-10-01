@@ -149,6 +149,8 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         ["model"] = Prop("string", ""),
         ["tools"] = StringArray(""),
         ["instructions"] = Prop("string", ""),
+        ["workspace"] = Prop("string", "An existing workspace id or name; \"new\" (or isolated: true) gives the subagent its own worktree and branch"),
+        ["isolated"] = Prop("boolean", "Give the subagent its own worktree and branch, so its writes cannot reach yours"),
     };
 
     public override ToolDefinition Definition { get; } = new()
@@ -159,7 +161,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         Help =
             "Each subagent runs on one of the agents the user set up (a model with instances) and gets its own session, and ends " +
             "with a final report. One subagent: pass task (and agent, name, …). Several at once: pass them in subagents, each " +
-            "{ task, name?, agent?, model?, tools?, instructions? }; they all start together, and all are checked before any " +
+            "{ task, name?, agent?, model?, tools?, instructions?, workspace?, isolated? }; they all start together, and all are checked before any " +
             "starts. Waits until all of them finish and returns every report; your own instance is free for them meanwhile. " +
             "background: true returns at once instead: each report arrives later on its own (or collect them with agent, action " +
             "wait). timeoutSeconds: when waiting, the longest wait (the ones still running then report later on their own).\n" +
@@ -168,7 +170,14 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             "from agent_choices (required when the user has set up agents); on a busy agent the subagent waits for a free " +
             "instance. model: only when no agents are set up, a model ref \"provider/model\" (default: your model). tools: the " +
             "subagent's tools by name, which may include tools you do not have yourself (e.g. give a remote-work agent the ssh " +
-            "tool); default: the tools you have. instructions: extra text for the subagent's system prompt.",
+            "tool); default: the tools you have. instructions: extra text for the subagent's system prompt.\n" +
+            "workspace: where it works. A subagent that only reads shares your workspace, so it sees what you see. A subagent that WRITES " +
+            "gets its own git worktree and branch (workspaces.isolateWriters, on by default), provisioned before it starts: its commits land " +
+            "on that branch, never on yours, and a write that resolves into another checkout of the same repository is refused. Pass " +
+            "isolated: true (or workspace: \"new\") to ask for one regardless of what it can do. The branch comes back in the report \u2014 merge " +
+            "it in the project checkout yourself, or ask the workspace tool. A worker keeps its own workspace for a second task, so no new " +
+            "worktree per task. In a project that is not a git repository, isolation gives it a plain folder instead. Pass the same workspace " +
+            "to two subagents that must see each other's files; every workspace in a batch is checked before any subagent starts.",
         Category = "agents",
         SummaryArg = "name",
         PromptGuidelines = SpawnGuidelines,
@@ -201,6 +210,11 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
                 return ToolResult.Error(batch is null ? error : $"subagents[{i}]{(ToolArgs.Str(items[i], "name") is { } n ? $" ({n})" : "")}: {error}\nNone of them was started.");
             requests.Add(request!);
         }
+
+        // Every workspace the batch names is resolved and provisioned BEFORE the first child starts: a subagent that
+        // cannot have a workspace is an error for the whole call, and nothing runs in the parent's checkout meanwhile.
+        var workspaceError = await PrepareBatchWorkspacesAsync(requests, context, batch is null, ct).ConfigureAwait(false);
+        if (workspaceError is not null) return ToolResult.Error(workspaceError);
 
         var started = new List<AgentInfo>(requests.Count);
         foreach (var request in requests) started.Add(await runtime.SpawnAsync(request, ct).ConfigureAwait(false));
@@ -253,6 +267,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     {
         var task = ToolArgs.Str(item, "task", "prompt", "description", "message");
         if (string.IsNullOrWhiteSpace(task)) return (null, "Missing 'task': describe the subagent's task completely.");
+        var (workspace, isolated) = WorkspaceArgs(item);
 
         // the agents the user set up are the menu: one of them is required (an active one); without any, a model ref or your model
         var agentArg = ToolArgs.Str(item, "agent");
@@ -299,8 +314,76 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             Tools = tools,
             Instructions = ToolArgs.Str(item, "instructions", "systemPrompt"),
             ParentAgentId = context.AgentId,
+            WorkspaceId = workspace,
+            Isolated = isolated,
         }, null);
     }
+
+    /// <summary>The workspace arguments of one subagent: a name/id to share, or a request for its own checkout.</summary>
+    private static (string? Workspace, bool Isolated) WorkspaceArgs(JsonElement item)
+    {
+        var named = ToolArgs.Str(item, "workspace", "workspaceId", "workspaceName");
+        var isolated = ToolArgs.Bool(item, "isolated", "ownWorktree", "own_worktree") ?? false;
+        if (named is { Length: > 0 } n && !string.Equals(n, "new", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(n, "own", StringComparison.OrdinalIgnoreCase) && !string.Equals(n, "isolated", StringComparison.OrdinalIgnoreCase))
+            return (n.Trim(), isolated);
+        if (named is { Length: > 0 }) return (null, true);
+        return (null, isolated);
+    }
+
+    /// <summary>
+    /// Give every subagent in the batch its workspace before the first one starts. A subagent that asks for one gets it
+    /// provisioned here — a worktree and a branch created now, not when its first tool runs — and a subagent that names a
+    /// workspace that does not exist, is gone from disk or belongs to another project fails the whole call. Half a batch
+    /// running in the caller's checkout is exactly the state this prevents.
+    /// </summary>
+    private async Task<string?> PrepareBatchWorkspacesAsync(List<SpawnRequest> requests, ToolContext context, bool single, CancellationToken ct)
+    {
+        var provisioner = context.Services.Get<IWorkspaceProvisioner>();
+        if (provisioner is null) return null;   // no workspace support loaded: the pre-workspace behavior for everything
+        var session = context.Services.Get<ISessionStore>()?.GetSession(context.SessionId);
+        var prepared = new List<SpawnRequest>(requests.Count);
+        for (var i = 0; i < requests.Count; i++)
+        {
+            var request = requests[i];
+            if (request.WorkspaceId is null && !request.Isolated) { prepared.Add(request); continue; }
+            WorkspaceOutcome outcome;
+            try
+            {
+                outcome = await provisioner.ForChildAsync(request, session, "", Name(request), ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or WorkspaceUnavailableException or KeyNotFoundException)
+            {
+                return Describe(single, i, $"{ex.Message}\nNone of them was started.");
+            }
+            if (outcome.Error is not null) return Describe(single, i, $"{outcome.Error}\nNone of them was started.");
+            if (outcome.Binding is null) { prepared.Add(request); continue; }
+            // The workspace now exists; the child binds it (the runtime hands ownership to its own session).
+            prepared.Add(new SpawnRequest
+            {
+                Task = request.Task, Name = request.Name, Model = request.Model, Reasoning = request.Reasoning,
+                ParentAgentId = request.ParentAgentId, ProjectId = request.ProjectId,
+                WorkspaceId = outcome.Binding.WorkspaceId,
+                WorkspaceName = request.WorkspaceName,
+                WorkspaceBase = request.WorkspaceBase,
+                Agent = request.Agent, Tools = request.Tools, Instructions = request.Instructions, NotifyParent = request.NotifyParent,
+            });
+        }
+        requests.Clear();
+        requests.AddRange(prepared);
+        return null;
+    }
+
+    /// <summary>The name a provisioned workspace gets when the subagent did not name it.</summary>
+    private static string Name(SpawnRequest r) =>
+        string.IsNullOrWhiteSpace(r.Name) ? "subagent" : r.Name.Trim();
+
+    private static string Describe(bool single, int index, string message) =>
+        single ? message : $"subagents[{index}]: {message}";
 
     private static string AgentMenu(IEnumerable<AgentSlots> agents) => string.Join("\n", agents.OrderBy(p => p.Available ? 0 : 1).Select(p =>
         $"- {p.Key} · {p.Model} · " +

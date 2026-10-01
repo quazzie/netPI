@@ -55,7 +55,27 @@ public sealed class FilesPlugin : INetPiPlugin
 
         context.Rpc.RegisterReadOnly("files.git", async (req, token) =>
             await GitStatus.ReadAsync(ResolveRoot(context, req), token).ConfigureAwait(false),
-            "The workspace's changes since the last commit, for the Files tab: { sessionId?, cwd? } → { repo, branch, ahead, behind, files: { path, rel, status, added?, deleted? }[], added, deleted } | null (not a git repository)");
+            "The workspace's changes since the last commit, for the Files tab: { sessionId?, cwd? } → { repo, root, workspaceId?, branch, ahead, behind, files: { path, rel, status, added?, deleted? }[], added, deleted } | null (not a git repository)");
+
+        // What the Files tab keys its refreshes on: the workspace identity and version, so a late answer computed for
+        // the previous root is recognizably stale instead of being merged into the new one.
+        context.Rpc.RegisterReadOnly("files.scope", (req, _) =>
+        {
+            var sessionId = req.Str("sessionId");
+            var session = sessionId is { Length: > 0 } ? context.Sessions?.GetSession(sessionId) : null;
+            var resolver = context.Services.Get<IWorkspaceResolver>();
+            var binding = resolver is not null && session is not null ? resolver.ResolveLenient(session) : null;
+            return Task.FromResult<object?>(new
+            {
+                sessionId,
+                root = ResolveRoot(context, req),
+                workspaceId = binding?.WorkspaceId,
+                branch = binding?.Branch,
+                isolated = binding?.Isolated ?? false,
+                identity = session is not null && resolver is not null ? resolver.IdentityOf(session) : null,
+                version = binding?.Version ?? 0,
+            });
+        }, "Identity and version of what the Files tab is showing: { sessionId?, cwd? } → { sessionId, root, workspaceId?, branch?, isolated, identity?, version }");
 
         context.Rpc.RegisterReadOnly("files.commits", async (req, token) =>
         {
@@ -73,7 +93,12 @@ public sealed class FilesPlugin : INetPiPlugin
         return Task.CompletedTask;
     }
 
-    /// <summary>Root directory for an RPC call: explicit cwd, else the session's cwd, else the default workspace.</summary>
+    /// <summary>
+    /// Root directory for an RPC call: an explicit cwd, else the session's workspace root (through the workspace
+    /// resolver, so the Files tab and the git line show the tree the session actually works in), else its project path,
+    /// else the default workspace. A session bound to a workspace that cannot be used fails here instead of quietly
+    /// showing the project checkout, which would be a different tree from the one the agent edits.
+    /// </summary>
     internal static string ResolveRoot(IPluginContext context, RpcRequest req)
     {
         var cwd = req.Str("cwd");
@@ -89,6 +114,11 @@ public sealed class FilesPlugin : INetPiPlugin
             var session = context.Sessions?.GetSession(sessionId);
             if (session is not null)
             {
+                if (session.WorkspaceId is { Length: > 0 })
+                {
+                    var resolver = context.Services.Get<IWorkspaceResolver>();
+                    if (resolver is not null) return resolver.CwdOf(session);   // throws when the workspace is broken
+                }
                 var sc = context.Sessions!.GetCwd(session);
                 if (!string.IsNullOrWhiteSpace(sc)) return sc;
             }

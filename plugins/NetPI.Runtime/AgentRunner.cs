@@ -97,7 +97,10 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 throw new RunFailedException(msg);
             }
             var project = session.ProjectId is null ? null : Ctx.Sessions.GetProject(session.ProjectId);
-            var cwd = Ctx.Sessions.GetCwd(session);
+            // One resolver, asked once per turn: the run's workspace and its root. Every consumer of the run (the tools'
+            // Cwd, the guard, the notices, the UI) reads these two, so they cannot disagree about where this turn works.
+            var workspace = ResolveWorkspace(session);
+            var cwd = workspace?.Root ?? Ctx.Sessions.GetCwd(session);
             rt.Update(state, i => i.Model = model.Ref);
 
             if (_rc is null)
@@ -107,6 +110,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                     Agent = Info,
                     Session = session,
                     Project = project,
+                    Workspace = workspace,
                     Cwd = cwd,
                     Model = model,
                     ReasoningEffort = session.Reasoning,
@@ -127,6 +131,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             {
                 _rc.Session = session;
                 _rc.Project = project;
+                _rc.Workspace = workspace;
                 _rc.Cwd = cwd;
                 _rc.Model = model;
                 _rc.ReasoningEffort = session.Reasoning;
@@ -757,10 +762,30 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
     private ToolContext CallContext(string callId, Action<string>? output = null) => new()
     {
         SessionId = SessionId, AgentId = AgentId, CallId = callId,
-        Cwd = _rc!.Cwd, Project = _rc.Project, Model = _rc.Model,
+        Cwd = _rc!.Cwd, Project = _rc.Project, Workspace = _rc.Workspace, Model = _rc.Model,
         Services = Ctx.Services, Events = Ctx.Events, Output = output,
         EligibleTools = () => ActiveTools(Ctx.Sessions.GetSession(SessionId) ?? _rc.Session),
     };
+
+    /// <summary>
+    /// The session's workspace for this turn, or null when it is not bound to one (the pre-workspace behavior: the
+    /// project's path). A bound workspace that cannot be used is an error for the run, not a fall back to the project
+    /// checkout — the model has to be told, because otherwise its next write lands in the tree it was told not to use.
+    /// </summary>
+    private WorkspaceBinding? ResolveWorkspace(SessionInfo session)
+    {
+        var resolver = Ctx.Services.Get<IWorkspaceResolver>();
+        if (resolver is null) return null;
+        try
+        {
+            return resolver.Resolve(session);
+        }
+        catch (WorkspaceUnavailableException ex)
+        {
+            rt.AppendNotice(state, ex.Message, "error");
+            throw new RunFailedException(ex.Message, ex);
+        }
+    }
 
     private bool StillEligible(PreparedCall p)
     {

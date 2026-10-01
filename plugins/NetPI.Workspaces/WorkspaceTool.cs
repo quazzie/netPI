@@ -13,17 +13,11 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
 {
     public const string Name = "workspace";
 
-    /// <summary>Switches asked for and not yet applied, per session: the workspace id, or null to unbind.</summary>
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string?> Pending = new(StringComparer.Ordinal);
+    /// <summary>Ask for a switch; the applier takes it at the next safe boundary (between model calls).</summary>
+    internal static void Request(string sessionId, string? workspaceId) => WorkspaceSwitchApplier.Request(sessionId, workspaceId);
 
     /// <summary>A switch waiting for a safe boundary, if any.</summary>
-    internal static string? PendingFor(string sessionId) => Pending.TryGetValue(sessionId, out var v) ? v : null;
-
-    /// <summary>Take a pending switch and forget it. Called by the runtime at the start of a model call.</summary>
-    internal static string? TakePending(string sessionId) => Pending.TryRemove(sessionId, out var v) ? v : null;
-
-    /// <summary>Record a switch to apply at the next safe boundary.</summary>
-    internal static void Request(string sessionId, string? workspaceId) => Pending[sessionId] = workspaceId;
+    internal static string? PendingFor(string sessionId) => WorkspaceSwitchApplier.PendingFor(sessionId);
 
     public ToolDefinition Definition { get; } = new()
     {

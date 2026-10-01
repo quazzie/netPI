@@ -39,16 +39,18 @@ public sealed class AgentsMdPlugin : INetPiPlugin
         context.Rpc.Register("agentsmd.list", (req, _) =>
         {
             string cwd;
+            var bound = false;
             if (req.Str("projectId") is { Length: > 0 } projectId)
                 cwd = (context.Sessions.GetProject(projectId) ?? throw new RpcException("not_found", $"No project {projectId}")).Path;
             else
             {
                 var sessionId = req.Required("sessionId");
                 var session = context.Sessions.GetSession(sessionId) ?? throw new RpcException("not_found", $"No session {sessionId}");
-                cwd = context.Sessions.GetCwd(session);
+                cwd = AgentsMdLoader.WorkspaceRoot(context, session);
+                bound = context.Services.Get<IWorkspaceResolver>()?.ResolveLenient(session) is { Isolated: true };
             }
             var arr = new JsonArray();
-            foreach (var f in loader.Discover(cwd))
+            foreach (var f in loader.Discover(cwd, stopAtRepoRoot: bound))
                 arr.Add(new JsonObject { ["path"] = f.Path, ["bytes"] = f.Bytes, ["scope"] = f.Scope });
             return Task.FromResult<object?>(arr);
         }, "Instruction files that apply to a session or a project folder: { sessionId } | { projectId } → [{ path, bytes, scope }]");
@@ -84,6 +86,10 @@ internal sealed record InstructionFile(string Path, string Scope, long Bytes);
 
 internal sealed class AgentsMdLoader(IPluginContext ctx)
 {
+    /// <summary>A session's working directory, resolved through the workspace service when one is loaded.</summary>
+    internal static string WorkspaceRoot(IPluginContext ctx, SessionInfo session) => InstructionNotices.CwdOf(ctx, session);
+
+
     public const int MaxBytes = 32 * 1024;
     public static readonly string[] DefaultFileNames = ["AGENTS.md", "CLAUDE.md"];
 
@@ -108,7 +114,19 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
     }
 
     /// <summary>Instruction files in prompt order: global, root → cwd, extra.</summary>
-    public List<InstructionFile> Discover(string cwd)
+    public List<InstructionFile> Discover(string cwd) => Discover(cwd, stopAtRepoRoot: false);
+
+    /// <summary>
+    /// Instruction files in prompt order: global, root → cwd, extra.
+    /// <para>
+    /// <paramref name="stopAtRepoRoot"/> stops the walk at the working directory's own repository boundary. Without it a
+    /// worktree nested inside the main checkout (or a checkout of a repository that has one) also picks up the main
+    /// checkout's <c>AGENTS.md</c>, because that file is an ancestor directory of it — and its rules are about a tree the
+    /// worker is not working in. Instructions above the checkout (the workspace's own <c>..</c> chain, the user's global
+    /// file) still apply.
+    /// </para>
+    /// </summary>
+    public List<InstructionFile> Discover(string cwd, bool stopAtRepoRoot)
     {
         var result = new List<InstructionFile>();
         var seen = new HashSet<string>(PathComparer);
@@ -138,6 +156,9 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
                     var candidate = Path.Combine(dir.FullName, name);
                     if (File.Exists(candidate)) { chain.Add(candidate); break; }
                 }
+                // The working directory's own repository is the boundary: its .git here means everything above belongs to
+                // a checkout this session is not in.
+                if (stopAtRepoRoot && IsRepoRoot(dir.FullName)) break;
             }
         }
         catch (Exception ex)
@@ -155,6 +176,13 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
             Add(path, "extra");
         }
         return result;
+    }
+
+    /// <summary>Whether a directory is the root of a git checkout: it holds a <c>.git</c> directory or file (a worktree's is a file).</summary>
+    internal static bool IsRepoRoot(string dir)
+    {
+        try { return Directory.Exists(Path.Combine(dir, ".git")) || File.Exists(Path.Combine(dir, ".git")); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
     }
 
     /// <summary>File content capped at <see cref="MaxBytes"/> (with a note), cached by path + mtime + size.</summary>
@@ -217,6 +245,14 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
 /// </summary>
 internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader loader) : IAgentHook
 {
+    /// <summary>A session's working directory: its workspace root when it is bound to one, else its project path.</summary>
+    internal static string CwdOf(IPluginContext ctx, SessionInfo session)
+    {
+        var resolver = ctx.Services.Get<IWorkspaceResolver>();
+        return session.WorkspaceId is { Length: > 0 } && resolver is not null ? resolver.CwdOf(session) : ctx.Sessions.GetCwd(session);
+    }
+
+
     public const string Kind = "instructions";
 
     private sealed record Current(InstructionFile File, string Content, string Hash);
@@ -232,7 +268,10 @@ internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader load
 
     public async ValueTask OnBeforeModelCallAsync(AgentTurnContext turn)
     {
-        if (!Pending(turn.Messages, turn.Run.Cwd).Any) return;
+        // A session in a workspace of its own stops the instruction walk at that checkout's root: the main checkout's
+        // AGENTS.md is an ancestor file, not an instruction about this tree.
+        var ownCheckout = turn.Run.Workspace is { Isolated: true };
+        if (!Pending(turn.Messages, turn.Run.Cwd, ownCheckout).Any) return;
         if (Announce(turn.Run.Session.Id)) await turn.ReloadMessagesAsync().ConfigureAwait(false);
     }
 
@@ -250,7 +289,8 @@ internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader load
         {
             var session = ctx.Sessions.GetSession(sessionId);
             if (session is null) return false;
-            var delta = Pending(ctx.Sessions.GetContextMessages(sessionId), ctx.Sessions.GetCwd(session));
+            var binding = ctx.Services.Get<IWorkspaceResolver>()?.ResolveLenient(session);
+            var delta = Pending(ctx.Sessions.GetContextMessages(sessionId), CwdOf(ctx, session), binding is { Isolated: true });
             if (!delta.Any) return false;
             var notice = ChatMessage.NoticeText(Text(delta), Kind);
             notice.Meta!["files"] = new JsonArray([.. delta.Changed.Select(c =>
@@ -262,11 +302,11 @@ internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader load
         }
     }
 
-    private Delta Pending(IReadOnlyList<ChatMessage> context, string cwd)
+    private Delta Pending(IReadOnlyList<ChatMessage> context, string cwd, bool ownCheckout)
     {
         var known = Known(context);
         var current = new List<Current>();
-        foreach (var f in loader.Discover(cwd))
+        foreach (var f in loader.Discover(cwd, stopAtRepoRoot: ownCheckout))
         {
             var (content, hash) = loader.ReadHashed(f.Path);
             content = content?.Trim();

@@ -28,7 +28,7 @@ internal static class GitStatus
     /// its commits newest first (null outside a repository).</summary>
     public sealed record CommitsResult(string Repo, string GitDir, string CommonDir, IReadOnlyList<Commit> Commits, bool Reachable);
 
-    public sealed record Result(string Repo, string? Branch, int Ahead, int Behind, IReadOnlyList<Change> Files, int Added, int Deleted);
+    public sealed record Result(string Repo, string Root, string? WorkspaceId, string? Branch, int Ahead, int Behind, IReadOnlyList<Change> Files, int Added, int Deleted);
 
     /// <summary>Between the fields of one <c>git log</c> line: a subject line can hold anything else.</summary>
     private const char Field = '\u001f';
@@ -42,7 +42,7 @@ internal static class GitStatus
         if (status is null) return null;
         var hasHead = !string.IsNullOrWhiteSpace(await GitAsync(repo, ct, "rev-parse", "--verify", "--quiet", "HEAD").ConfigureAwait(false));
         var numstat = await GitAsync(repo, ct, "diff", "--numstat", "-z", hasHead ? "HEAD" : EmptyTree).ConfigureAwait(false) ?? "";
-        return Build(repo, root, status, numstat);
+        return Build(repo, root, null, status, numstat);
     }
 
     /// <summary>
@@ -87,7 +87,7 @@ internal static class GitStatus
     }
 
     /// <summary>Parses <c>git status --porcelain=v2 --branch -z</c> and <c>git diff --numstat -z</c> (paths relative to the repository).</summary>
-    internal static Result Build(string repo, string root, string status, string numstat)
+    internal static Result Build(string repo, string root, string? workspaceId, string status, string numstat)
     {
         var lines = ParseNumstat(numstat);
         string? branch = null;
@@ -115,7 +115,7 @@ internal static class GitStatus
                 files.Add(Make(path, "new", count, count is null ? null : 0));
             }
         }
-        return new Result(repo, branch, ahead, behind, files, files.Sum(c => c.Added ?? 0), files.Sum(c => c.Deleted ?? 0));
+        return new Result(repo, WorkspacePaths.Canonical(root), workspaceId, branch, ahead, behind, files, files.Sum(c => c.Added ?? 0), files.Sum(c => c.Deleted ?? 0));
 
         void Add(string[] parts, int pathIndex, string kind)
         {

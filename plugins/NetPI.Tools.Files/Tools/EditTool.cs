@@ -78,6 +78,7 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
         if (parseError is not null) return ToolResult.Error(parseError);
 
         var full = ctx.ResolvePath(path);
+        if (WorkspaceRefusal(ctx, full) is { } refusal) return ToolResult.Error(refusal);
         if (Directory.Exists(full)) return ToolResult.Error($"{full} is a directory, not a file.");
         if (!File.Exists(full)) return NotFound(ctx, full, "To create a new file use the write tool.");
         var size = new FileInfo(full).Length;

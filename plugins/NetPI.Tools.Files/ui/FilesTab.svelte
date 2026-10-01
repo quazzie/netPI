@@ -20,7 +20,25 @@
   let visible = true;
   let dirty = false;
   let gitDirty = false;
-  let scopeKey = $state(''); // workspace generation (session + project path): an answer applies only while its generation is still current
+  let scopeKey = $state(''); // workspace generation (session + workspace identity/version): an answer applies only while its generation is still current
+  let scope = $state.raw(null); // files.scope: the workspace this tab shows (root, branch, owner), null until loaded
+
+  /**
+   * The refresh key. The workspace identity (id + version) rather than the session's project path, because a session can
+   * move to another checkout of the same project — the path alone would not change, and answers for the old root would be
+   * merged into the new one. Falls back to the session id when the workspace plugin is not loaded.
+   */
+  async function key() {
+    try {
+      const r = await ctx.rpc('files.scope', loc());
+      scope = r ?? null;
+      return `${ctx.app.activeSessionId ?? ''}|${r?.identity ?? (r?.root ?? '')}|${r?.version ?? 0}`;
+    } catch {
+      // No workspace support: the session and its project path are all there is.
+      scope = null;
+      return `${ctx.app.activeSessionId ?? ''}|${ctx.app.activeProject?.path ?? ''}`;
+    }
+  }
 
   const loc = () => (ctx.app.activeSessionId ? { sessionId: ctx.app.activeSessionId } : {});
   const sep = $derived(root.includes('\\') && !root.includes('/') ? '\\' : '/');
@@ -99,29 +117,34 @@
     else if (v && gitDirty) loadGit();
   }
 
-  onMount(() => {
-    scopeKey = `${ctx.app.activeSessionId}|${ctx.app.activeProject?.path ?? ''}`;
+  onMount(async () => {
+    scopeKey = await key();
     loadDir('');
     loadGit();
     ctx.on('tool.end', () => gitSoon());
     const onFocus = () => gitSoon(300);
     window.addEventListener('focus', onFocus);
     const off = ctx.app.onChange(() => {
-      const key = `${ctx.app.activeSessionId}|${ctx.app.activeProject?.path ?? ''}`;
-      if (key === scopeKey) return;
-      scopeKey = key; // new generation: the in-flight answers of the old workspace are stale
-      root = '';
-      entries = new Map();
-      expanded = new Set();
-      loadingDirs = new Set();
-      error = '';
-      results = null;
-      git = null;
-      gitOpen = false;
-      if (visible) {
-        loadDir('');
-        loadGit();
-      } else dirty = true;
+      // The new identity is read asynchronously; every load below waits for it, and the generation it yields is what the
+      // in-flight answers of the old workspace are compared against.
+      const switching = (async () => {
+        const next = await key();
+        if (next === scopeKey) return;
+        scopeKey = next; // new generation: the in-flight answers of the old workspace are stale
+        root = '';
+        entries = new Map();
+        expanded = new Set();
+        loadingDirs = new Set();
+        error = '';
+        results = null;
+        git = null;
+        gitOpen = false;
+        if (visible) {
+          await loadDir('');
+          loadGit();
+        } else dirty = true;
+      })();
+      void switching;
     });
     return () => {
       off?.();
@@ -303,7 +326,7 @@
 <div class="files">
   <div class="head">
     <Icon name="folder" size={13} />
-    <span class="rname" title={root}>{project?.name ?? (root ? basename(root) : 'Workspace')}</span>
+    <span class="rname" title={root}>{scope?.branch ?? project?.name ?? (root ? basename(root) : 'Workspace')}</span>
     <span class="rpath np-mono" title={root}><bdi>{root}</bdi></span>
     {#if ignoredCount}
       <IconButton

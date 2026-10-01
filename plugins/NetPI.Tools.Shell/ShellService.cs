@@ -75,6 +75,12 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         if (!Directory.Exists(cwd))
             return ToolResult.Error($"Working directory does not exist: {cwd}");
 
+        // The default is the session's workspace root, so a call without a cwd runs where the session works - and the
+        // result says so when it is somewhere else, because a command that changes directory itself is invisible here:
+        // what this reports is where the shell was started, which is the only place the tool knows.
+        var workspace = ctx.Workspace;
+        var elsewhere = workspace is not null && !WorkspacePaths.IsInside(workspace.Root, cwd);
+
         var background = args.Bool("background", "run_in_background", "runInBackground", "detach", "async") ?? false;
         var timeout = ResolveTimeout(args, background);
 
@@ -91,7 +97,7 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         {
             mp = ManagedProcess.Start(id, spec, command, cwd, capture, live,
                 background ? TimeSpan.FromMilliseconds(250) : TimeSpan.FromMilliseconds(50),
-                ctx.SessionId, ctx.AgentId, background, Registry.OnExited, Registry.Add);
+                ctx.SessionId, ctx.AgentId, background, Registry.OnExited, Registry.Add, ctx.Workspace?.WorkspaceId, ctx.Workspace?.Branch);
         }
         catch (Exception ex)
         {
@@ -120,8 +126,14 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
                 catch (TimeoutException) { }
             }
         }
-        return FormatForeground(mp, timeout ?? DefaultTimeoutSeconds, timedOut, aborted);
+        return FormatForeground(mp, timeout ?? DefaultTimeoutSeconds, timedOut, aborted, workspace, elsewhere);
     }
+
+    /// <summary>One line naming where the shell actually started, for a call that ran outside this session's workspace.</summary>
+    private static string WhereNote(WorkspaceBinding? workspace, bool elsewhere, string cwd) =>
+        workspace is null || !elsewhere ? ""
+        : $"\n[Ran in {WorkspacePaths.Canonical(cwd)}, not in this session's workspace ({workspace.Describe()}). " +
+          "The command may write anywhere it likes: this is a path check, not a sandbox.]";
 
     private Action<string>? BackgroundPublisher(string id)
     {
@@ -161,7 +173,8 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         return ToolResult.Ok(msg.ToString(), details);
     }
 
-    private ToolResult FormatForeground(ManagedProcess mp, int timeoutSeconds, bool timedOut, bool aborted)
+    private ToolResult FormatForeground(ManagedProcess mp, int timeoutSeconds, bool timedOut, bool aborted,
+        WorkspaceBinding? workspace = null, bool elsewhere = false)
     {
         var full = OutputFormat.ResolveCarriageReturns(mp.Output.Snapshot());
         var (tail, truncated, totalLines, shownLines) = OutputFormat.TailLines(full, OutputFormat.ModelMaxLines, ToolResultLimit.Fit(Settings, OutputFormat.ModelMaxBytes));
@@ -184,6 +197,7 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         if (timedOut) sb.Append($"\n[timed out after {timeoutSeconds}s; the process tree was killed. Use a longer timeout or background=true for long-running commands.]");
         else if (aborted) sb.Append("\n[aborted; the process tree was killed]");
         else if (mp.ExitCode is { } code && code != 0) sb.Append($"\n[exit code {code}]");
+        sb.Append(WhereNote(workspace, elsewhere, mp.Cwd));
 
         return new ToolResult
         {
@@ -201,7 +215,11 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
     {
         command = mp.Command,
         shell = mp.Shell,
+        // The directory the shell was actually started in. A `cd` inside the command does not change it, so this is the
+        // value a later tool or a UI should read as "where it ran".
         cwd = mp.Cwd,
+        workspaceId = mp.WorkspaceId,
+        workspaceBranch = mp.WorkspaceBranch,
         exitCode = mp.IsRunning ? null : mp.ExitCode,
         durationMs = mp.IsRunning ? (long?)null : (long)mp.Elapsed.TotalMilliseconds,
         truncated,

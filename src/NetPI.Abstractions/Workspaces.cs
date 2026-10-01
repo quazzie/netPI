@@ -116,6 +116,13 @@ public interface IWorkspaceResolver
     WorkspaceBinding? ResolveById(string workspaceId);
     /// <summary>The session's workspace, or a clear failure when it is bound to one that is missing or invalid.</summary>
     WorkspaceBinding Require(SessionInfo session);
+    /// <summary>
+    /// The binding if it can be used, else null — including when it is bound but broken. For displays (the Files tab, the
+    /// composer, a notice), which have to show something either way; the strict <see cref="Resolve"/> stays the answer for
+    /// anything that acts on it. The default is <see cref="Resolve"/>, so an implementation that has nothing extra to say
+    /// throws like it does.
+    /// </summary>
+    WorkspaceBinding? ResolveLenient(SessionInfo? session) => Resolve(session);
     /// <summary>The directory the session works in, or a clear failure. Never falls back to the project checkout for a bound session.</summary>
     string CwdOf(SessionInfo session);
     /// <summary>Identity of the session's binding for UI refresh keys: the workspace id and its version, or the project path.</summary>
@@ -138,7 +145,42 @@ public interface IWorkspaceRepoProbe
 }
 
 /// <summary>
-/// Which processes are running in which directory. The shell plugin registers the implementation (it owns the process
+/// What a caller asks for when it needs a checkout before it starts working. Shared so that the pieces which only need
+/// "a checkout for this worker" (the agent runtime, the spawn tool) do not have to know that worktrees exist.
+/// </summary>
+public sealed record WorkspaceRequest(
+    string? ProjectId,
+    string Name,
+    /// <summary>The worker that will own it: a session id, plus the agent id when it is a subagent.</summary>
+    string? OwnerSessionId = null,
+    string? OwnerAgentId = null,
+    /// <summary>Give the worker its own git worktree and branch. False shares an existing checkout.</summary>
+    bool Isolated = false,
+    /// <summary>Branch or commit to start from (null = the project's current HEAD).</summary>
+    string? Base = null,
+    /// <summary>Reuse a workspace this owner already has with that name, instead of making a second one.</summary>
+    bool Reuse = true);
+
+/// <summary>
+/// What provisioning produced, or why it refused. There is no third answer: a worker either has a workspace or the
+/// spawn fails, because "start it in the parent's checkout anyway" is the accident this whole feature prevents.
+/// </summary>
+public sealed record WorkspaceOutcome(WorkspaceBinding? Binding, string? Error)
+{
+    public bool Ok => Error is null && Binding is not null;
+}
+
+/// <summary>
+/// The workspace a child worker should start in, decided before the child's session exists. Implemented by the
+/// workspace plugin and resolved per use, so the runtime and the spawn tool do not depend on it being loaded (without it
+/// every worker shares its parent's project, exactly as before).
+/// </summary>
+public interface IWorkspaceProvisioner
+{
+    Task<WorkspaceOutcome> ForChildAsync(SpawnRequest request, SessionInfo? parentSession, string childSessionId, string childName, CancellationToken ct);
+}
+
+/// <summary>Which processes are running in which directory. The shell plugin registers the implementation (it owns the process
 /// registry); the workspace plugin asks before it deletes a checkout, because a background process keeps its workspace's
 /// ownership for as long as it runs and must not have its files pulled out from under it.
 /// </summary>

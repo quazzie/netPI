@@ -45,6 +45,9 @@ class AppState {
   activeProject = $derived(
     this.activeSession?.projectId ? (this.projectsById.get(this.activeSession.projectId) ?? null) : null,
   );
+  // sessionId -> what the session's workspace resolves to (files.scope). Keyed on the identity the server gives, so a
+  // refresh that answers for a different root replaces the entry instead of being merged into it.
+  workspaces = $state.raw(new Map());
 }
 
 export const app = new AppState();
@@ -60,6 +63,31 @@ export function modelFor(s) {
 }
 export function projectOf(s) {
   return s?.projectId ? (app.projectsById.get(s.projectId) ?? null) : null;
+}
+
+/** What the session's workspace resolves to, or null while it is unknown (not loaded, or not bound to one). */
+export function workspaceOf(s) {
+  return s?.id ? (app.workspaces.get(s.id) ?? null) : null;
+}
+
+/** Record a session's resolved workspace. `scope` is files.scope or a session.workspace payload. */
+export function setWorkspace(sessionId, scope) {
+  if (!sessionId || !scope) return;
+  app.workspaces = new Map(app.workspaces).set(sessionId, scope);
+}
+
+/** Load (or refresh) one session's workspace; the answer is dropped when the session moved on in the meantime. */
+export async function loadWorkspace(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const scope = await rpc('files.scope', { sessionId });
+    if (!scope) return null;
+    setWorkspace(sessionId, scope);
+    return scope;
+  } catch {
+    // The workspace plugin is not loaded, or the workspace cannot be used: leave the last known value alone.
+    return null;
+  }
 }
 
 const BUSY = new Set(['running', 'queued', 'yielded']);
@@ -275,6 +303,7 @@ export function activate(id) {
   app.activeId = id;
   const act = app.sessionsById.get(id);
   if (act) noteProject(act.projectId ?? null);
+  loadWorkspace(id);   // the composer and the Files tab read this; it is per session and may change at any time
   app.unread.delete(id);
   app.errored.delete(id);
   const c = getChat(id);
@@ -613,6 +642,10 @@ function onEvent(d, env) {
       break;
     case 'project.deleted':
       app.projects = app.projects.filter((p) => p.id !== d.id);
+      break;
+    case 'session.workspace':
+      // The server resolved the new root for us; an answer for the previous workspace is never kept.
+      setWorkspace(d.sessionId, d);
       break;
     case 'agent.status':
       setAgent(d.agent);

@@ -790,6 +790,22 @@ internal sealed class AgentRuntime : IAgentRuntime
         var n = Interlocked.Increment(ref _spawnCounter);
         var name = string.IsNullOrWhiteSpace(request.Name) ? $"agent-{(parentInfo?.Children.Count ?? n - 1) + 1}" : request.Name.Trim();
 
+        // The child's checkout, decided BEFORE the session exists: an explicitly requested workspace must exist and be
+        // usable, and a writing worker gets its worktree provisioned here, so a failure means no child at all rather
+        // than a runnable child sitting in the parent's checkout. Without the workspace plugin nothing changes.
+        var workspaceBinding = await ProvisionWorkspaceAsync(request, parentSession, id, name, ct).ConfigureAwait(false);
+        if (workspaceBinding is not null && !string.IsNullOrWhiteSpace(workspaceBinding.OwnerSessionId))
+        {
+            // A workspace provisioned for this batch before it started has no owner yet; the owner is the worker, and
+            // the worker is this session — not the agent, and not the slot it runs on.
+            Ctx.Services.Get<IWorkspaceStore>()?.UpdateWorkspace(workspaceBinding.WorkspaceId, w =>
+            {
+                w.OwnerSessionId = id;
+                w.OwnerAgentId ??= id;
+            });
+            workspaceBinding = workspaceBinding with { OwnerSessionId = id, OwnerAgentId = id };
+        }
+
         // The owner chooses a subagent's tools: the ones it names (tools it does not have itself included: a limited
         // orchestrator can dispatch an agent with other tools), or by default its own (its allowlist, and the tools
         // switched off for its session stay off).
@@ -813,6 +829,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             Kind = "subagent",
             ParentSessionId = parentSession?.Id ?? parentInfo?.SessionId,
             ProjectId = request.ProjectId ?? parentSession?.ProjectId,
+            WorkspaceId = workspaceBinding?.WorkspaceId ?? (workspaceBinding is null ? ParentWorkspaceId(parentSession) : null),
             Model = modelRef,
             Reasoning = reasoning,
             Meta = meta,
@@ -852,6 +869,40 @@ internal sealed class AgentRuntime : IAgentRuntime
             Source = parentInfo is null ? "system" : "agent:" + parentInfo.Id,
         }, DeliveryMode.Auto).ConfigureAwait(false);
         return Snapshot(state);
+    }
+
+    /// <summary>
+    /// The child's checkout. Null when no workspace plugin is loaded (the child shares its parent's project, as it always
+    /// did); otherwise the provisioner answers, and a refusal is an error that stops the spawn <em>before</em> the child's
+    /// session exists, so a failed provisioning cannot leave a runnable child in the parent's checkout.
+    /// </summary>
+    private async Task<WorkspaceBinding?> ProvisionWorkspaceAsync(SpawnRequest request, SessionInfo? parentSession, string agentId, string name, CancellationToken ct)
+    {
+        var provisioner = Ctx.Services.Get<IWorkspaceProvisioner>();
+        if (provisioner is null) return null;
+        WorkspaceOutcome outcome;
+        try
+        {
+            outcome = await provisioner.ForChildAsync(request, parentSession, agentId, name, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (WorkspaceUnavailableException ex)
+        {
+            throw new InvalidOperationException(ex.Message);
+        }
+        if (outcome.Error is not null) throw new InvalidOperationException(outcome.Error);
+        return outcome.Binding;
+    }
+
+    /// <summary>
+    /// The parent's workspace, when it can be inherited: the child's own session is a new worker, so it starts where its
+    /// parent works (a reader sees the same tree) unless it was given one. A binding whose workspace record has gone is
+    /// not inherited, so the child falls back to the project path instead of inheriting a broken one.
+    /// </summary>
+    private string? ParentWorkspaceId(SessionInfo? parentSession)
+    {
+        if (parentSession?.WorkspaceId is not { Length: > 0 } id) return null;
+        return Ctx.Services.Get<IWorkspaceStore>()?.GetWorkspace(id) is null ? null : id;
     }
 
     private static string SubagentInstructions(string id, string name, AgentInfo? parent, string? extra, bool canMessage)

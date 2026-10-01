@@ -3,28 +3,6 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Workspaces;
 
 /// <summary>
-/// What a caller asks for when it needs a checkout before it starts working.
-/// </summary>
-public sealed record WorkspaceRequest(
-    string? ProjectId,
-    string Name,
-    /// <summary>The worker that will own it: a session id, plus the agent id when it is a subagent.</summary>
-    string? OwnerSessionId = null,
-    string? OwnerAgentId = null,
-    /// <summary>Give the worker its own git worktree and branch. False attaches a plain folder (or the project's own path).</summary>
-    bool Isolated = false,
-    /// <summary>Branch or commit to start from (null = the project's current HEAD).</summary>
-    string? Base = null,
-    /// <summary>Reuse a workspace this owner already has with that name, instead of making a second one.</summary>
-    bool Reuse = true);
-
-/// <summary>What provisioning produced, and whether something had to be refused.</summary>
-public sealed record WorkspaceOutcome(WorkspaceBinding? Binding, string? Error)
-{
-    public bool Ok => Error is null && Binding is not null;
-}
-
-/// <summary>
 /// Creates and retires checkouts: a folder for a non-git project, a worktree and branch for a writing worker in a git
 /// project, and the serialized integration that merges a worker's commits into the project's branch.
 /// <para>
