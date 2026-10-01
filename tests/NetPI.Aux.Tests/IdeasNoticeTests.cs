@@ -233,8 +233,239 @@ public static class IdeasNoticeTests
             var text = IdeaCommitNoticeHook.Text(new IdeaCommitNoticeHook.Pending("NetPI", titles));
             Check.True(text.Length < 1400, $"the notice stays short (was {text.Length})");
         });
+
+        // The attribution checks below run against real temporary git repositories (the repository rule: never a fake
+        // .git): the project's own checkout, a linked worktree of it, and an unrelated repository. Select them all with
+        // -Only "notice: attribution".
+
+        r.Add("notice: attribution: a relative cwd counts as the session's own directory", () =>
+        {
+            using var env = GitRepo();
+            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            var run = env.Run();
+            Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", "plugins", run, env.Project), "relative: resolved against the run's cwd, which is the project");
+            Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", null, run, env.Project), "no cwd: the run's own directory");
+        });
+
+        r.Add("notice: attribution: git -C a worktree of the same repository is the project's commit", async () =>
+        {
+            using var env = GitRepo(probed: true);
+            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            var run = env.Run();
+            Check.True(IdeaCommitNoticeHook.InProject($"git -C {env.Worktree} commit -m x", null, run, env.Project),
+                "the -C directory is another checkout of the session's repository");
+            // End to end through the hook, with the cwd argument still the project: the notice has to land.
+            var hook = env.Hook();
+            var turn = TurnWithIdeas(run);
+            await hook.OnAfterToolCallAsync(turn, Commit($"git -C {env.Worktree} commit -m x", cwd: env.Project.Path), Ok());
+            Check.True(await After(hook, turn) is { Action: TurnAction.Inject }, "the notice still lands");
+        });
+
+        r.Add("notice: attribution: git -C an unrelated repository is not the project's", async () =>
+        {
+            using var env = GitRepo(probed: true);
+            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            var run = env.Run();
+            Check.False(IdeaCommitNoticeHook.InProject($"git -C {env.Unrelated} commit -m x", null, run, env.Project),
+                "a different repository is another project's work");
+            var hook = env.Hook();
+            var turn = TurnWithIdeas(run);
+            await hook.OnAfterToolCallAsync(turn, Commit($"git -C {env.Unrelated} commit -m x"), Ok());
+            Check.True(await After(hook, turn) is null, "no notice for another repository");
+        });
+
+        r.Add("notice: attribution: an absolute cwd in another worktree of the same repository is attributed", () =>
+        {
+            using var env = GitRepo(probed: true);
+            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            var run = env.Run();
+            Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", env.Worktree, run, env.Project), "the worktree itself");
+            Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", Path.Combine(env.Worktree, "sub"), run, env.Project), "a subdirectory of the worktree");
+            Check.False(IdeaCommitNoticeHook.InProject("git commit -m x", env.Unrelated, run, env.Project), "an unrelated repository is not");
+        });
+
+        r.Add("notice: attribution: the same path in different case is the same path", () =>
+        {
+            using var env = GitRepo(probed: true);
+            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            var run = env.Run();
+            var flipped = MixedCase(env.Worktree);
+            if (OperatingSystem.IsWindows())
+                Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", flipped, run, env.Project), "case-insensitive: the same path, different spelling");
+            else
+                Check.False(IdeaCommitNoticeHook.InProject("git commit -m x", flipped, run, env.Project), "on Linux a different case is a different, absent path");
+        });
+
+        r.Add("notice: attribution: a session bound to a worktree attributes commits of its repository", () =>
+        {
+            using var env = GitRepo(probed: true);
+            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            var run = env.Run();
+            run.Cwd = env.Worktree;                                   // a bound session works in its workspace
+            run.Workspace = new WorkspaceBinding("ws1", env.Worktree, RepoCommonDir: env.CommonDir, Kind: "worktree");
+            Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", null, run, env.Project), "a commit in the session's own worktree");
+            Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", env.Main, run, env.Project), "a commit in the main checkout of the same repository");
+            Check.False(IdeaCommitNoticeHook.InProject("git commit -m x", env.Unrelated, run, env.Project), "a commit in another repository is not");
+            // The binding recorded no common dir: the probe fills the gap.
+            run.Workspace = new WorkspaceBinding("ws2", env.Worktree, Kind: "worktree");
+            Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", env.Main, run, env.Project), "the probe finds the worktree's repository");
+        });
+
+        r.Add("notice: attribution: without a probe the path-containment fallback decides", () =>
+        {
+            using var env = GitRepo(probed: false);
+            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            var run = env.Run();
+            Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", null, run, env.Project), "no cwd: the run's own directory");
+            Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", "plugins", run, env.Project), "a relative cwd: the session's own directory");
+            Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", Path.Combine(env.Main, "plugins"), run, env.Project), "an absolute cwd inside the checkout");
+            Check.False(IdeaCommitNoticeHook.InProject("git commit -m x", env.Unrelated, run, env.Project), "an absolute cwd outside the checkout");
+            Check.False(IdeaCommitNoticeHook.InProject("git commit -m x", env.Worktree, run, env.Project),
+                "a worktree of the same repository: the old containment check cannot see through it without a probe");
+        });
+
+        r.Add("notice: attribution: the -C redirection a commit obeys", () =>
+        {
+            Check.Equal("/x/y", IdeaCommitNoticeHook.GitCdir("git -C /x/y commit -m x"), "space after -C");
+            Check.Equal("/x/y", IdeaCommitNoticeHook.GitCdir("git -C/x/y commit -m x"), "no space after -C");
+            Check.Equal("/x/y", IdeaCommitNoticeHook.GitCdir("git -C \"/x/y\" commit -m x"), "a double-quoted path");
+            Check.Equal("/x/y", IdeaCommitNoticeHook.GitCdir("git -C'/x/y' commit -m x"), "a single-quoted path");
+            Check.Equal("/x/y", IdeaCommitNoticeHook.GitCdir("git -C\"/x/y\" commit -m x"), "a quoted path glued to -C");
+            Check.Equal("/b", IdeaCommitNoticeHook.GitCdir("git -C /a -C /b commit -m x"), "the last -C wins");
+            Check.Equal("/b", IdeaCommitNoticeHook.GitCdir("git -C /a status; git -C /b commit -m x"), "only the commit command's -C counts");
+            Check.Equal("/a", IdeaCommitNoticeHook.GitCdir("git -C /a commit -m x; git push"), "the commit's own -C, nothing after it");
+            Check.True(IdeaCommitNoticeHook.GitCdir("git commit -m x") is null, "no -C: no redirection");
+            Check.True(IdeaCommitNoticeHook.GitCdir("git -c user.name=t commit") is null, "-c is a config option, not a directory");
+            Check.True(IdeaCommitNoticeHook.GitCdir("git -C \"\" commit") is null, "an empty -C value is \"stay put\"");
+            Check.Equal("/b", IdeaCommitNoticeHook.GitCdir("git --git-dir=/g -C /b commit"), "the values of other global options are skipped");
+            Check.Equal("/x/y", IdeaCommitNoticeHook.GitCdir("sudo git -C /x/y commit"), "a git word behind sudo");
+        });
     }
 
     /// <summary>An open idea as the repository hands it over.</summary>
     private static JsonObject Idea(string title) => new() { ["id"] = "idea-" + title.GetHashCode().ToString("N")[..6], ["title"] = title, ["status"] = "open" };
+
+    // ------------------------------------------------------------------ real repositories for the attribution checks
+
+    /// <summary>
+    /// The fixture the attribution checks run in: a temporary git repository (the project's checkout, one commit in
+    /// it), a linked worktree of it (a sibling directory, the same repository), and an unrelated repository in its own
+    /// right — built with real git, never a fake <c>.git</c>.
+    /// </summary>
+    private sealed class GitEnv : IDisposable
+    {
+        public FakePluginContext Ctx { get; }
+        public bool GitAvailable { get; }
+        /// <summary>The project's own checkout (a real repository with one commit).</summary>
+        public string Main { get; }
+        /// <summary>A linked worktree of the same repository: a sibling directory git made of it.</summary>
+        public string Worktree { get; } = "";
+        /// <summary>An unrelated repository, on purpose.</summary>
+        public string Unrelated { get; } = "";
+        public ProjectInfo Project { get; }
+        public SessionInfo Session { get; }
+        public List<JsonObject> Open { get; } = [Idea("Something")];
+
+        public GitEnv(bool probed)
+        {
+            Ctx = new FakePluginContext();
+            Main = T.TempDir("notice-main");
+            GitAvailable = Git(Main, "init", "-q", "-b", "main");
+            if (GitAvailable)
+            {
+                File.WriteAllText(Path.Combine(Main, "a.txt"), "a");
+                Git(Main, "add", "-A");
+                Git(Main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
+                // A linked worktree: a sibling checkout of the same repository (HEAD, detached — the branch state is
+                // irrelevant to the identity the checks care about).
+                Worktree = T.TempDir("notice-wt");
+                Git(Main, "worktree", "add", "-q", Worktree, "HEAD");
+                Directory.CreateDirectory(Path.Combine(Worktree, "sub"));
+                Unrelated = T.TempDir("notice-other");
+                Git(Unrelated, "init", "-q", "-b", "main");
+            }
+            Project = Ctx.SessionsFake.CreateProject("Repo", Main);
+            Session = Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "s", ProjectId = Project.Id });
+            if (probed && GitAvailable)
+                Ctx.Services.Register<IWorkspaceRepoProbe>(new RealGitProbe());
+        }
+
+        public IdeaCommitNoticeHook Hook() => new(() => Ctx.Settings, _ => Open);
+
+        public AgentRunContext Run()
+        {
+            var run = T.Run(Ctx, T.Model(), Session);
+            run.Project = Project;
+            run.Cwd = Main;
+            return run;
+        }
+
+        /// <summary>The repository's common dir as git reports it: the identity the worktree shares with Main.</summary>
+        public string CommonDir => GitOut(Main, "rev-parse", "--path-format=absolute", "--git-common-dir")!;
+
+        public void Dispose()
+        {
+            Ctx.Unload();
+            foreach (var dir in new[] { Main, Worktree, Unrelated })
+            {
+                try { Directory.Delete(dir, true); } catch { }   // a skipped fixture leaves nothing behind
+            }
+        }
+    }
+
+    private static GitEnv GitRepo(bool probed = false) => new(probed);
+
+    /// <summary>The probe the workspaces plugin registers, here answered by real git in the temporary repositories.</summary>
+    private sealed class RealGitProbe : IWorkspaceRepoProbe
+    {
+        public string? CommonDirOf(string path) => GitOut(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+        public string? BranchOf(string path) => null;
+        public string? HeadOf(string path) => null;
+    }
+
+    private static bool Git(string cwd, params string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("git")
+        { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        try
+        {
+            using var p = System.Diagnostics.Process.Start(psi)!;
+            p.StandardOutput.ReadToEnd();
+            p.StandardError.ReadToEnd();
+            p.WaitForExit();
+            return p.ExitCode == 0;
+        }
+        catch (System.ComponentModel.Win32Exception) { return false; }
+    }
+
+    private static string? GitOut(string cwd, params string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("git")
+        { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        try
+        {
+            using var p = System.Diagnostics.Process.Start(psi)!;
+            var stdout = p.StandardOutput.ReadToEnd();
+            p.StandardError.ReadToEnd();
+            p.WaitForExit();
+            return p.ExitCode == 0 ? stdout.Trim() : null;
+        }
+        catch (System.ComponentModel.Win32Exception) { return null; }
+    }
+
+    /// <summary>The same path with one letter's case flipped: on Windows the same path, on Linux a different, absent one.</summary>
+    private static string MixedCase(string path)
+    {
+        var dir = Path.GetDirectoryName(path) ?? string.Empty;
+        var name = Path.GetFileName(path);
+        for (var i = 0; i < name.Length; i++)
+        {
+            if (!char.IsLetter(name[i])) continue;
+            var flipped = char.IsUpper(name[i]) ? char.ToLowerInvariant(name[i]) : char.ToUpperInvariant(name[i]);
+            return Path.Combine(dir, name[..i] + flipped + name[(i + 1)..]);
+        }
+        return path;
+    }
 }
