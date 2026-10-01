@@ -17,6 +17,8 @@ internal sealed unsafe class Database : IDatabase, IDisposable
     private const int MaxCachedCommands = 256;
 
     private readonly object _gate = new();
+    /// <summary>The one lock every statement and transaction runs under (re-entrant). <see cref="Sessions.SessionStore"/> guards its in-memory state with it too: two locks taken in opposite orders froze the process.</summary>
+    internal object Gate => _gate;
     private readonly Dictionary<string, Command> _cache = new(StringComparer.Ordinal);
     private readonly ILogger? _log;
     private IntPtr _db;

@@ -254,6 +254,84 @@ public static class SessionStoreTests
 
         // The host only stores the switch and publishes session.project; the conversation is appended to by plugins (the
         // context plugin's project notice), so the host never writes model-facing text.
+        r.Add("sessions: a first message materializing a session never deadlocks with a thread inside a transaction reading a session", async () =>
+        {
+            // The first message of a session (it lives in memory until then) takes the transient-session lock and then the database
+            // gate; a transaction holds the gate and reads a session, which looks the transient ones up under that lock. Two threads
+            // in opposite order froze every database call of the process (a subagent's first message racing any other append did
+            // it: /api/health still answered, nothing that reads the database did, CPU idle). One lock now: no order to get wrong.
+            // not disposed when the deadlock is found: closing the database would wait for the gate the deadlocked threads hold
+            var f = new Fixture();
+            var fresh = f.Store.CreateSession(new SessionInfo { Title = "fresh" });               // transient: no messages yet
+            var stored = f.Store.CreateSession(new SessionInfo { Title = "stored" });
+            f.Store.AppendMessage(stored.Id, new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = "hello" }] });
+
+            Exception? materializeFailed = null;
+            var materializer = new Thread(() =>
+            {
+                try { f.Store.AppendMessage(fresh.Id, new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = "first" }] }); }
+                catch (Exception ex) { materializeFailed = ex; }
+            }) { IsBackground = true };
+
+            var holder = Task.Run(() => f.Db.Transaction(_ =>
+            {
+                // this thread now holds the database gate; start the materialization and wait until it is blocked behind us
+                materializer.Start();
+                var deadline = DateTime.UtcNow.AddSeconds(10);
+                while ((materializer.ThreadState & System.Threading.ThreadState.WaitSleepJoin) == 0 && DateTime.UtcNow < deadline) Thread.Sleep(5);
+                // reading a session inside the transaction, as every update and append does
+                var read = f.Store.GetSession(stored.Id);
+                Check.Equal("stored", read?.Title, "the stored session is read");
+                return 0;
+            }));
+
+            var finished = await Task.WhenAny(holder, Task.Delay(TimeSpan.FromSeconds(10))) == holder;
+            Check.True(finished, "the transaction finished: a thread inside it reading a session did not wait for a lock the materializing thread holds");
+            await holder;
+            Check.True(materializer.Join(TimeSpan.FromSeconds(10)), "the first message was stored once the transaction ended");
+            Check.True(materializeFailed is null, "no failure: " + materializeFailed);
+            Check.Equal(1, f.Store.GetSession(fresh.Id)?.MessageCount, "the session is stored with its first message");
+            await f.DisposeAsync();
+        });
+
+        r.Add("sessions: the whole life of sessions on many threads at once never freezes the store", async () =>
+        {
+            // create (in memory), update, give a project, first message (stored), appends, update again, read, list, delete: every
+            // public path that takes the transient-session state or the database, on eight threads. A lock taken in two orders
+            // anywhere in the store ends this in a freeze, which is reported rather than waited for.
+            var f = new Fixture();
+            var project = f.Store.CreateProject("stress", T.TempDir("stress-project"));
+            const int workers = 8, rounds = 40;
+            var errors = new List<string>();
+            var threads = Enumerable.Range(0, workers).Select(w => new Thread(() =>
+            {
+                try
+                {
+                    for (var i = 0; i < rounds; i++)
+                    {
+                        var s = f.Store.CreateSession(new SessionInfo { Title = $"w{w}-{i}", Kind = i % 3 == 0 ? "subagent" : "chat" });
+                        f.Store.UpdateSession(s.Id, x => x.Meta = new JsonObject { ["n"] = i });          // transient: in memory
+                        f.Store.SetSessionProject(s.Id, project.Id);
+                        f.Store.AppendMessage(s.Id, new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = "first " + i }] });
+                        f.Store.AppendMessage(s.Id, new ChatMessage { Role = MessageRole.Assistant, Parts = [new TextPart { Text = "answer" }] });
+                        f.Store.UpdateSession(s.Id, x => x.Title = $"renamed {w}-{i}");                  // stored: in a transaction
+                        f.Store.GetContextMessages(s.Id);
+                        f.Store.ListSessions(new SessionQuery { Limit = 5 });
+                        f.Store.SetSessionProject(s.Id, null);
+                        if (i % 4 == 0) f.Store.DeleteSession(s.Id);
+                    }
+                }
+                catch (Exception ex) { lock (errors) errors.Add($"worker {w}: {ex.GetType().Name}: {ex.Message}"); }
+            }) { IsBackground = true }).ToList();
+            foreach (var t in threads) t.Start();
+            var deadline = DateTime.UtcNow.AddSeconds(60);
+            var stuck = threads.Where(t => !t.Join(TimeSpan.FromMilliseconds(Math.Max(1, (deadline - DateTime.UtcNow).TotalMilliseconds)))).Count();
+            Check.Equal(0, stuck, $"{stuck} of {workers} threads are frozen: a lock is taken in two orders");
+            Check.Equal(0, errors.Count, string.Join(" | ", errors));
+            Check.Equal(workers * rounds - workers * (rounds / 4), f.Store.ListSessions(new SessionQuery { Limit = 1000, IncludeSubagents = true }).Count, "every session that was not deleted is there");
+            await f.DisposeAsync();
+        });
+
         r.Add("sessions: a read that races an append never caches a view without it", async () =>
         {
             await using var f = new Fixture();

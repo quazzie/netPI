@@ -71,7 +71,7 @@ internal sealed class HostKernel : IAsyncDisposable
             created.Push(db);
             var bus = new EventBus(factory.CreateLogger("NetPI.Events"));
             created.Push(bus);
-            var watchdog = new StallWatchdog(bus, factory.CreateLogger("NetPI.Watchdog"));
+            var watchdog = new StallWatchdog(bus, factory.CreateLogger("NetPI.Watchdog"), gate: db.Gate);
             created.Push(watchdog);
             settings.AttachBus(bus);
             var services = new ServiceRegistry();
