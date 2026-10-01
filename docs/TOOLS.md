@@ -14,6 +14,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
 | `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
 | `plugins/NetPI.Tools.Ssh` | `netpi.tools.ssh` | `ssh` (actions `hosts` `run` `read` `write` `edit` `copy`) | – |
+| `plugins/NetPI.Workspaces` | `netpi.workspaces` | `workspace` (actions `info` `list` `switch`) | `workspaces.*` (see `docs/PROTOCOL.md`) |
 
 The file and shell tools start at `Order = 20`. Tests live in `tests/NetPI.Tools.Tests`, a console app with no test framework:
 
@@ -328,6 +329,79 @@ Events (broadcast):
 | `process.started` | `{ process: ProcessInfo }` (every run) |
 | `process.exited` | `{ process: ProcessInfo }` (every run) |
 | `process.output` | `{ id, chunk }`: live output of **background** processes only, batched about every 250ms. Foreground output streams through `tool.output` |
+
+---
+
+## Workspaces (`category: "general"`)
+
+`plugins/NetPI.Workspaces` (`netpi.workspaces`). A session's working directory used to be its project's path, so two
+agents of one repository always wrote into the same checkout. A workspace is the checkout a session actually works in —
+a root, a branch, a starting commit, an owner; a session binds to at most one (`SessionInfo.workspaceId`), and the
+project stays the shared identity (backlog, defaults, which repository). A session that is not bound works in the
+project's folder exactly as before. Settings `workspaces.*` in `docs/SETTINGS.md`, the RPCs and events in
+`docs/PROTOCOL.md`.
+
+### `workspace` (summary arg `action`)
+
+`{ action?: 'info'|'list'|'switch', id? }` — the checkout this session works in, what else exists, and a switch to
+another.
+
+- **`info`**: where relative paths resolve (the workspace's root, or the project's folder when unbound), its kind,
+  branch and the commit it started from, and whether it is its own checkout; unbound, it says so — and how to get one
+  (`agent_spawn` with `isolated: true`, or `switch`). A pending switch is reported too.
+- **`list`**: the project's workspaces, one line each: id, name, path, branch, owner, "created by NetPI", "MISSING on
+disk". When there are none: this session works in the project's folder.
+- **`switch { id }`** (id or name): work in another workspace from the next model call. A switch is **not** applied in
+  the middle of a tool batch — it is recorded and applied at the next safe boundary (the start of the next model call),
+  so a tool that already resolved a path against the old root cannot land a write in the old tree after the root moved.
+  A target that does not exist, is missing on disk or belongs to another project is refused rather than ignored. A call
+  without `id` unbinds — the explicit way back to the project's folder.
+
+```ts
+details: info:   { workspaceId, root, branch, isolated, pending? }
+         list:   { workspaces: { workspaceId, name, path, branch, kind }[] }
+         switch: { workspaceId, name, path, branch, kind, isolated }
+```
+
+### Subagents' workspaces (`agent_spawn`)
+
+A subagent's checkout is decided before it starts, and a failure stops the spawn — no runnable child in the parent's
+checkout:
+
+- `workspace`: an existing workspace to work in (id or name; pass the same one to two subagents and they see each
+  other's files);
+- `isolated: true` (or `workspace: "new"`): a writing worker gets its own git worktree and branch, so its commits land
+  on that branch, never on the caller's (the branch name comes back in the report; merge it into the project's branch
+  with `workspaces.integrate`, or by hand);
+- a worker's own session is the owner of its workspace, so a worker that is asked for a second task keeps the checkout
+  it already has — no new worktree per task;
+- every workspace a batch names is resolved and checked before the first child starts: one that does not exist, is
+  missing on disk or belongs to another project fails the whole call ("None of them was started").
+
+A project that is not a git repository gets a plain folder (`<parent>/<Project>-<name>`) instead of a worktree, so
+isolation is not imposed on it. Without the plugin, spawn behaves as before: a child shares the project's path.
+
+### The ownership guard
+
+Only an isolated workspace (its own worktree) is guarded, and the guard runs before the guardrails' own path rules, so a
+refusal names the workspace rather than a bare path. It works from git evidence, not from spelling: a path is "another
+checkout of the same repository" when it is outside the session's workspace and its `--git-common-dir` is the
+repository's — so a relative `../` that climbs out, an absolute path into the primary checkout, a differently cased
+spelling, and a junction or symlink that points there all reach the same answer, because every path is resolved to its
+canonical form first.
+
+- The native writing tools (`write`, `edit`, `write_file`, `edit_file`, `notebook_edit`, `patch`) refuse a path argument
+  that resolves into another checkout of the same repository: another worker's tree, or the primary checkout the worker
+  was branched from. The refusal says which workspace the session is in and which checkout it aimed at.
+- A shell call's `cwd` is checked the same way (an explicit `cwd` into another checkout is refused; the default `cwd` is
+  the workspace).
+- A shell command is never parsed. This is a **path check, not an OS sandbox**: it refuses the specific accident — a
+  native write into another worker's checkout in an isolated workspace. Writing outside the workspace and outside the
+  repository is ordinary work (a log to the temp folder); reading another checkout is always fine; and trusted plugins
+  and arbitrary code keep the user's privileges.
+
+A session that is bound but not isolated (an attached or shared checkout) is not guarded: its writes reach the files
+other workers of the project see, and `workspace info` says so.
 
 ---
 
@@ -779,7 +853,7 @@ diag { action: "rpc", method: "rpc.list" }                            → every 
 - Only methods registered `readOnly` are called. That is the registration's own claim (`IRpcRegistry.Register(method,
   handler, description, readOnly: true)`, reported by `rpc.list`), not a name pattern: a renamed method neither becomes
   writable nor gets blocked, and an **unmarked method may write and is refused** with who may instead. The host marks its
-  own reads (`app.info`, `projects.list`, `sessions.list/get/messages`, `models.list`, `ui.tabs`, `ui.commands`,
+  own reads (`app.info`, `projects.list`, `sessions.list/get/messages`, `workspaces.list/get`, `models.list`, `ui.tabs`, `ui.commands`,
   `ui.state.get`, `plugins.list`, `settings.schema`, `fs.dirs`, `tools.list`, `rpc.list`, `services.list`,
   `events.recent`, `logs.recent`); `settings.get` is deliberately not among them (it returns API keys).
 - `diag.rpc` and `diag.reload` are refused (the tool cannot call itself or the one method that changes the app).

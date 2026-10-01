@@ -296,6 +296,16 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `ideas.tellAgentOnCommit` | `true` | after the agent itself runs a successful `git commit`/`git merge` in the session's project, one notice asks it to mark the idea that commit finished, or to say that none of them is about it. Silent when the project has no open idea. The cards above stay: they catch a commit made outside any chat |
 | `ideas.commitNoticesPerRun` | `2` | how many of those notices one run may get (0–10), so a run that commits in a loop is asked a bounded number of times |
 
+## Workspaces
+
+A workspace is the checkout a session works in — a root, a branch, a starting commit, an owner (`docs/PROTOCOL.md` for the RPCs and events). Isolation is at the checkout level, deciding which of a repository's checkouts a worker's files land in: **it is not an OS sandbox** (a shell command is never parsed, and code a worker runs keeps the user's privileges). A project that is not a git repository gets a plain folder, and is otherwise unaffected by these settings.
+
+| key | default | |
+|---|---|---|
+| `workspaces.isolateWriters` | `true` | a worker that writes gets its own git worktree and branch instead of sharing the project's checkout: the default of `isolated` when `agent_spawn` or `workspaces.create` does not say (`isolated: false` asks to share, recorded so the UI and the guards can see that the worker is not isolated); a caller can ask either way |
+| `workspaces.branchPrefix` | `"netpi/"` | the branch name of a worktree NetPI creates is this prefix plus the workspace's name (a taken name gets a `-2`, `-3`, … suffix, so nobody's existing branch is reused) |
+| `workspaces.worktreeRoot` | `""` | where worktrees are created: a sibling folder of the project (`../<Project>-<name>`) when empty, otherwise this folder (a relative path is taken from the project) |
+
 ## Guardrails
 
 `plugins/NetPI.Guardrails` checks every tool call before it runs: patterns and paths only (no model call, no change to
