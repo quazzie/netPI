@@ -4,6 +4,9 @@ artifacts/
 node_modules/
 .vs/
 *.user
+# Agent worktrees live here (see C:\AI\Projects\AGENTS.md). Anchored, so a nested
+# checkout that happens to carry the same name elsewhere is not ignored with it.
+/.worktrees/
 web/mock/**/wwwroot/
 web/mock/screenshots/
 tests/NetPI.E2E/screenshots/
