@@ -316,27 +316,35 @@ internal sealed class SettingsStore : ISettings, IDisposable
         }
     }
 
-    private void ReloadFromDisk()
+    internal void ReloadFromDisk()
     {
         if (_disposed || !File.Exists(FilePath)) return;
-        string text;
-        try { text = ReadText(); }
-        catch (Exception ex)
+        // Under the writer gate, so a reload and a write never interleave. Reading the file outside it and then replacing the
+        // live document with what was read undid a Set that landed in between: the older file content became the live
+        // settings until the next reload (a setting just changed, gone; seen as `agents.setEnabled` answering "not disabled").
+        // Held, a reload sees either the file before a write (and the write then goes on top of it) or the file after it
+        // (the text is our own, and nothing changes).
+        lock (_writeGate)
         {
-            _log.LogWarning(ex, "Cannot read {File}", FilePath);
-            return;
-        }
-        lock (_gate)
-        {
-            if (text == _lastText) return; // our own write, or nothing changed
-            _lastText = text;
-            if (!TryParse(text, out var root, out var error))
+            string text;
+            try { text = ReadText(); }
+            catch (Exception ex)
             {
-                _log.LogWarning("Ignoring invalid settings file {File}: {Error} (keeping the last valid settings)", FilePath, error);
+                _log.LogWarning(ex, "Cannot read {File}", FilePath);
                 return;
             }
-            if (JsonNode.DeepEquals(_root, root)) return;
-            _root = root;
+            lock (_gate)
+            {
+                if (text == _lastText) return; // our own write, or nothing changed
+                _lastText = text;
+                if (!TryParse(text, out var root, out var error))
+                {
+                    _log.LogWarning("Ignoring invalid settings file {File}: {Error} (keeping the last valid settings)", FilePath, error);
+                    return;
+                }
+                if (JsonNode.DeepEquals(_root, root)) return;
+                _root = root;
+            }
         }
         _log.LogInformation("Settings reloaded from {File}", FilePath);
         OnChanged(null, fromFile: true);

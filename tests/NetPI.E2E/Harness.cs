@@ -7,7 +7,7 @@ namespace NetPI.E2E;
 
 // ------------------------------------------------------------------ mini test framework (NuGet is not available)
 
-public sealed class AssertException(string message) : Exception(message);
+public class AssertException(string message) : Exception(message);
 
 public static class Check
 {

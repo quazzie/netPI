@@ -143,6 +143,32 @@ public static class SettingsTests
             Check.True(JsonNode.DeepEquals(s.Snapshot(), JsonNode.Parse(File.ReadAllText(file))), "memory == disk");
         });
 
+        r.Add("settings: a reload of the file never undoes a write made while it was reading", async () =>
+        {
+            var file = Path.Combine(T.TempDir("settings"), "settings.json");
+            using var s = new SettingsStore(file, NullLogger.Instance);
+            // A reload picks up edits other programs made. It reads the file and then replaces the live document with what it read,
+            // so a Set that lands in between is undone (the live value goes back to the older one until the next reload): a setting
+            // the user just changed, lost. Hammer the reload while writes land and ask after each one what is live.
+            using var stop = new CancellationTokenSource();
+            var reloads = 0;
+            var reloader = Task.Run(() => { while (!stop.IsCancellationRequested) { s.ReloadFromDisk(); Interlocked.Increment(ref reloads); } });
+            const int writes = 300;
+            string? lost = null;
+            for (var i = 0; i < writes && lost is null; i++)
+            {
+                s.Set("race.value", JsonValue.Create(i));
+                var live = s.Get<int>("race.value", -1);
+                if (live != i) lost = $"write {i} was undone: the live value is {live}";
+            }
+            stop.Cancel();
+            await reloader;
+            Check.True(lost is null, lost ?? "");
+            Check.True(Volatile.Read(ref reloads) >= 20, "the reloader really ran alongside the writes (they take turns, so about one reload per write): " + reloads);
+            Check.Equal(writes - 1, s.Get<int>("race.value"), "the last write is live");
+            Check.Equal(writes - 1, JsonNode.Parse(File.ReadAllText(file))!["race"]!["value"]!.GetValue<int>(), "and on disk");
+        });
+
         r.Add("settings: a failed write changes nothing, and the identical retry writes", () =>
         {
             var dir = T.TempDir("settings");

@@ -30,6 +30,11 @@ public static class RunnerSelfTests
             ("ports: two asks never get the same port", Ports_AreDistinct),
             ("output: console lines of concurrent tests stay with their test", Output_IsRouted),
             ("containment: a timed-out body cannot touch the next test's fixture", Containment_TimedOutBodyIsCut),
+            ("containment: a failed test's server is replaced, and the failure file says what was wrong with it", Containment_FailedTestGetsAFreshServer),
+            ("triage: the verdict names where a server is stuck, and a slow answer is not a wedge", Triage_Verdicts),
+            ("evidence: a failure file never has an empty section", Evidence_NeverEmpty),
+            ("stacks: a missing tool says how to get it, a tool that answers is captured, and it cannot hang the run", Stacks_AreCaptured),
+            ("settle: what a test left running is reported, and an agent that will not stop costs the server", Settle_ReportsLeaks),
             ("report: outcomes, exit codes, all failures at once, evidence files", Report_AndExitCodes),
             ("rerun hint: the caller's command line when it gave one, else a dotnet command", RerunHint_FollowsTheCaller),
             ("setup failure: the shard's tests are reported as not run, exit 3", SetupFailure_IsNotRun),
@@ -215,6 +220,173 @@ public static class RunnerSelfTests
         Check.Contains(string.Join(",", fixtures[0].Events), "A-late-write", "A's late write went to the closed fixture");
         Check.Equal(1, report.ExitCode, "a timeout fails the run");
         Check.True(report.Results[0].Artifact is not null && File.Exists(report.Results[0].Artifact!), "the timeout left a failure file");
+    }
+
+    private static async Task Containment_FailedTestGetsAFreshServer()
+    {
+        // Test A fails because its server is wedged (every later call on it would wait out its timeout). Test B must not meet that
+        // server: it gets a new one, and A's failure file says what was wrong with the old one.
+        var fixtures = new List<Fixture>();
+        var dry = Cases(("a.hangs", "A"), ("b.next", "B"));
+        var bRanOn = 0;
+        var wedged = ServerTriage.Classify(new ServerVitals(true, null, 38, 410, 190, 0.4),
+            [new Probe("health", false, 2000, "no answer in 2000 ms"), new Probe("app.info", false, 2000, "no answer in 2000 ms"),
+             new Probe("sessions.list", false, 2000, "no answer in 2000 ms"), new Probe("ws app.info", false, 2000, "no answer in 2000 ms")]);
+        var (report, output, outDir, _) = await Run(dry, async shard =>
+        {
+            await Task.Yield();
+            var fx = new Fixture { Generation = fixtures.Count + 1 };
+            lock (fixtures) fixtures.Add(fx);
+            var r = new TestRunner();
+            r.Add("a.hangs", "A", () => throw new AssertException("RPC projects.create timed out after 30000ms"));
+            r.Add("b.next", "B", () => { bRanOn = fx.Generation; return Task.CompletedTask; });
+            return new ShardContext
+            {
+                Runner = r, Close = () => { fx.Closed = true; return ValueTask.CompletedTask; },
+                Triage = () => Task.FromResult(fx.Generation == 1 ? wedged : ServerTriage.Unknown),
+            };
+        });
+        Check.Equal(2, fixtures.Count, "the shard started a second server after the failure");
+        Check.True(fixtures[0].Closed, "...and stopped the first");
+        Check.Equal(2, bRanOn, "B ran on the new one");
+        Check.Equal(Outcome.Failed, report.Results[0].Outcome, "A failed");
+        Check.Equal(Outcome.Passed, report.Results[1].Outcome, "B passed: it did not inherit A's wedge");
+        var file = File.ReadAllText(report.Results[0].Artifact!);
+        Check.Contains(file, "--- server state", "the failure file starts with the state of the server");
+        Check.Contains(file, "wedged: the process is alive but does not even answer /api/health", "...and says it was wedged, not merely that an RPC timed out");
+        Check.Contains(file, "probe app.info", "...with every probe");
+        Check.Contains(output, "server: wedged", "the console says so as well");
+        var json = JsonNode.Parse(File.ReadAllText(Path.Combine(outDir, "report.json")))!;
+        Check.Contains(json["tests"]![0]!["server"]!.GetValue<string>(), "wedged", "report.json carries the verdict");
+    }
+
+    private static Task Triage_Verdicts()
+    {
+        Probe Ok(string n, long ms = 3) => new(n, true, ms);
+        Probe No(string n) => new(n, false, 2000, "no answer in 2000 ms");
+        var alive = new ServerVitals(true, null, 40, 300, 200, 1);
+        var spinning = new ServerVitals(true, null, 40, 300, 200, 95);
+
+        var gone = ServerTriage.Classify(new ServerVitals(false, -1073741819), []);
+        Check.False(gone.Healthy, "a dead server is not healthy");
+        Check.Contains(gone.Verdict, "process is gone", "the process exited");
+        Check.Contains(gone.Verdict, "-1073741819", "with its exit code");
+
+        var frozen = ServerTriage.Classify(alive, [No("health"), No("app.info"), No("sessions.list"), No("ws app.info")]);
+        Check.Contains(frozen.Verdict, "wedged", "nothing answers at all: the pool or the process");
+        Check.Contains(frozen.Verdict, "idle", "idle CPU means blocked threads");
+        Check.Contains(ServerTriage.Classify(spinning, [No("health"), No("app.info"), No("sessions.list")]).Verdict, "busy", "a busy CPU means a thread is working or spinning");
+        Check.Contains(frozen.Verdict, "The thread pool has not started a queued work item", "and points at the watchdog's line in the server log");
+
+        var rpc = ServerTriage.Classify(alive, [Ok("health"), No("app.info"), No("sessions.list")]);
+        Check.Contains(rpc.Verdict, "RPC dispatch is stuck", "health works but a call that touches nothing does not");
+
+        var db = ServerTriage.Classify(alive, [Ok("health"), Ok("app.info"), No("sessions.list"), Ok("ws app.info")]);
+        Check.Contains(db.Verdict, "database path is blocked", "the one that reads the database is the one that hangs");
+        Check.False(db.Healthy, "not healthy");
+
+        var ws = ServerTriage.Classify(alive, [Ok("health"), Ok("app.info"), Ok("sessions.list"), No("ws app.info")]);
+        Check.Contains(ws.Verdict, "WebSocket connection is dead", "only the test's own connection is dead");
+
+        // The probes are made from the runner: when the runner could not start a trivial work item, a "dead" server proves nothing
+        var starved = ServerTriage.Classify(alive, [No("health"), No("app.info"), No("sessions.list")], runnerPoolMs: 4200);
+        Check.Contains(starved.Verdict, "UNRELIABLE: the runner itself is overloaded", "a starved runner says so before it blames the server");
+        Check.Contains(starved.Verdict, "4200 ms", "with the number");
+        Check.False(ServerTriage.Classify(alive, [Ok("health"), Ok("app.info"), Ok("sessions.list")], runnerPoolMs: 4200).Verdict.Contains("UNRELIABLE"), "but a server that answered is not doubted");
+
+        // The server was slow, not stuck: every probe answered, and an RPC that took 29 s is a slow RPC, not a wedged server.
+        var slow = ServerTriage.Classify(alive, [Ok("health", 4), Ok("app.info", 6), Ok("sessions.list", 40), Ok("ws app.info", 7)]);
+        Check.True(slow.Healthy, "answers to every probe: the server is fine");
+        Check.Contains(slow.Verdict, "responsive", "and the verdict says the failure is the test's own");
+        Check.Equal("responsive", slow.Summary, "one word for the console");
+        Check.Contains(slow.Describe(), "probe sessions.list", "the file keeps every probe's timing");
+        return Task.CompletedTask;
+    }
+
+    private static async Task Evidence_NeverEmpty()
+    {
+        // a runner with no diagnostics at all, and a test that prints nothing: the worst case for an empty file
+        var dry = Cases(("a.bad", "A"));
+        var (report, output, _, _) = await Run(dry, _ =>
+        {
+            var r = new TestRunner();
+            r.Add("a.bad", "A", () => throw new AssertException("it failed"));
+            return Task.FromResult(Shard(r));
+        });
+        var file = File.ReadAllText(report.Results[0].Artifact!);
+        Check.Equal(0, Evidence.EmptySections(file).Count, "no section of the failure file is empty: " + string.Join(", ", Evidence.EmptySections(file)));
+        Check.Contains(file, "(the test printed nothing)", "an empty test output says so");
+        Check.NotContains(output, "evidence incomplete", "the runner did not have to complain");
+        // and the check itself sees an empty section when there is one
+        Check.Equal("test output, mock model server requests since the test started", string.Join(", ", Evidence.EmptySections(
+            "head\n\n--- message\nboom\n\n--- test output\n\n--- mock model server requests since the test started (0, last 40)\n--- client events since the test started (1, last 40)\n#1 x\n")),
+            "an empty section is found, with or without a blank line before the next");
+    }
+
+    private static async Task Settle_ReportsLeaks()
+    {
+        var fixtures = new List<Fixture>();
+        var dry = Cases(("a.leaks", "A"), ("b.stuck", "B"), ("c.last", "C"));
+        var (report, output, outDir, _) = await Run(dry, async shard =>
+        {
+            await Task.Yield();
+            var fx = new Fixture { Generation = fixtures.Count + 1 };
+            lock (fixtures) fixtures.Add(fx);
+            var r = new TestRunner();
+            r.Add("a.leaks", "A", () => Task.CompletedTask);
+            r.Add("b.stuck", "B", () => Task.CompletedTask);
+            r.Add("c.last", "C", () => Task.CompletedTask);
+            var calls = 0;
+            return new ShardContext
+            {
+                Runner = r, Close = () => { fx.Closed = true; return ValueTask.CompletedTask; },
+                Settle = () => Task.FromResult(++calls switch
+                {
+                    1 when fx.Generation == 1 => new SettleResult("left 1 agent(s) running when it returned: main:running; they finished 700 ms later", true),
+                    2 when fx.Generation == 1 => new SettleResult("left 1 agent(s) running when it returned: worker:running; still running 5000 ms later, and would not stop", false),
+                    _ => SettleResult.Quiet,
+                }),
+            };
+        });
+        Check.True(report.Results.All(r => r.Outcome == Outcome.Passed), "the leaks do not fail the tests themselves");
+        Check.Contains(report.Results[0].Leak ?? "", "main:running", "the first test's leak is recorded on it");
+        Check.Contains(output, "LEAK: the test left 1 agent(s) running", "and printed under it");
+        Check.Contains(output, "LEAK   a.leaks:", "and again in the summary");
+        Check.Equal(2, fixtures.Count, "the server that could not be cleaned was replaced (after B), the one that was cleaned was kept (after A)");
+        Check.Equal(null, report.Results[2].Leak, "a test that left nothing has no leak");
+        var json = JsonNode.Parse(File.ReadAllText(Path.Combine(outDir, "report.json")))!;
+        Check.Contains(json["tests"]![1]!["leak"]!.GetValue<string>(), "would not stop", "report.json carries it");
+    }
+
+    private static async Task Stacks_AreCaptured()
+    {
+        var missing = await StackCapture.CaptureAsync(Environment.ProcessId, "netpi-no-such-tool-" + Guid.NewGuid().ToString("N")[..6]);
+        Check.Contains(missing, "is not installed", "a missing tool is said, not thrown");
+        Check.Contains(missing, "dotnet tool install -g dotnet-stack", "with the way to get it");
+        // `dotnet report -p <pid>` is not a command: what the CLI says is what is captured, so the output path is the real one
+        var said = await StackCapture.CaptureAsync(Environment.ProcessId, "dotnet");
+        Check.True(said.Length > 0 && !said.Contains("is not installed"), "a tool that runs has its output captured: " + said);
+        // a tool that never ends is cut off, and the run goes on
+        var hang = Path.Combine(TempDir(), OperatingSystem.IsWindows() ? "hang.cmd" : "hang.sh");
+        await File.WriteAllTextAsync(hang, OperatingSystem.IsWindows() ? "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n" : "#!/bin/sh\nsleep 30\n");
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(hang, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var cut = await StackCapture.CaptureAsync(Environment.ProcessId, hang, TimeSpan.FromMilliseconds(600));
+        Check.Contains(cut, "did not finish in time", "a hung tool is reported as such");
+        Check.True(sw.ElapsedMilliseconds < 10_000, $"and does not hold the run ({sw.ElapsedMilliseconds} ms)");
+        // the failure file points at the stacks and keeps them beside it
+        var wedged = ServerTriage.Classify(new ServerVitals(true, null, 38, 410, 190, 0.4), [new Probe("health", false, 2000, "no answer in 2000 ms")]).WithStacks("Thread (0x1)\n  System.Threading.Monitor.Enter\n  NetPI.Host.Data.Database.Execute");
+        var dry = Cases(("a.hangs", "A"));
+        var (report, _, _, _) = await Run(dry, _ =>
+        {
+            var r = new TestRunner();
+            r.Add("a.hangs", "A", () => throw new AssertException("RPC timed out"));
+            return Task.FromResult(new ShardContext { Runner = r, Triage = () => Task.FromResult(wedged) });
+        });
+        var file = report.Results[0].Artifact!;
+        Check.Contains(File.ReadAllText(file), "a.hangs.stacks.txt", "the failure file names the stacks file");
+        Check.Contains(File.ReadAllText(Path.ChangeExtension(file, ".stacks.txt")), "Database.Execute", "and it holds the stacks");
+        Check.Equal(0, Evidence.EmptySections(File.ReadAllText(file)).Count, "no empty section");
     }
 
     private static async Task Report_AndExitCodes()

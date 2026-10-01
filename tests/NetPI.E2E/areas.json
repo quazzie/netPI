@@ -36,6 +36,7 @@
     { "path": "plugins/NetPI.Tools.Ssh/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Tools.Web/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Work/", "tags": ["scheduling"], "ids": ["ui.smoke"] },
+    { "path": "plugins/NetPI.Workspaces/", "tags": ["subagents", "tools"] },
     { "path": "plugins/Directory.Build.props", "all": true },
 
     { "path": "web/", "tags": ["ui"] },

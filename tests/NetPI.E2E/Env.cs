@@ -100,6 +100,8 @@ public sealed class Env : IAsyncDisposable
     /// <summary>How long each phase of starting this env took (copy, mock, server), for the report.</summary>
     public Dictionary<string, long> Setup { get; } = [];
     public string BaseUrl { get; private set; } = "";
+    /// <summary>The server process (null once stopped).</summary>
+    public int? ServerPid => _proc is { HasExited: false } p ? p.Id : null;
     public int Port { get; private set; }
     public MockLlmServer Mock { get; private set; } = null!;
     public NetPiClient Client { get; private set; } = null!;
@@ -282,7 +284,8 @@ public sealed class Env : IAsyncDisposable
 
     /// <summary>
     /// What happened around a failed test, so the failure can be read without running it again: the server's log since the
-    /// test started, the requests the mock model server got, and the last events the client heard.
+    /// test started, the requests the mock model server got, and the last events the client heard. A section that has
+    /// nothing says why, because a header followed by nothing reads as "nothing happened" and explains none of it.
     /// </summary>
     public async Task<string> DiagnoseAsync(DiagMark since)
     {
@@ -296,15 +299,20 @@ public sealed class Env : IAsyncDisposable
                 fs.Seek(Math.Min(since.ServerLogBytes, fs.Length), SeekOrigin.Begin);
                 log = new StreamReader(fs).ReadToEnd();
             }
-            var lines = log.Split('\n');
+            var lines = log.Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Length > 0).ToArray();
             sb.AppendLine($"--- server log since the test started ({lines.Length} lines, last 120)");
-            foreach (var l in lines.TakeLast(120)) sb.AppendLine(l.TrimEnd('\r'));
+            if (lines.Length == 0)
+                sb.AppendLine("(the server wrote nothing since the test started. It logs at debug level: every model call, plugin reload, stall and failed RPC. " +
+                              "A silent server was either not working on anything or not running at all; 'server state' above says which.)");
+            foreach (var l in lines.TakeLast(120)) sb.AppendLine(l);
         }
-        catch (Exception ex) { sb.AppendLine("--- server log unavailable: " + ex.Message); }
+        catch (Exception ex) { sb.AppendLine("--- server log unavailable"); sb.AppendLine(ex.Message); }
         try
         {
             var mock = await MockLog(since.MockSeq);
             sb.AppendLine($"--- mock model server requests since the test started ({mock.Count}, last 40)");
+            if (mock.Count == 0)
+                sb.AppendLine("(none. A test that never asks a model has none; for one that does, the server never got as far as calling the model.)");
             foreach (var e in mock.TakeLast(40))
             {
                 var calls = string.Join(",", e.Arr("calls").Select(c => c.GetString()));
@@ -312,15 +320,133 @@ public sealed class Env : IAsyncDisposable
                 sb.AppendLine($"#{e.L("seq")} {e.S("api")} {e.S("model")} scenario={e.S("scenario")} step={e.L("step")} status={e.L("status")}{(e.S("error") is { } err ? " error=" + err : "")}{flags} calls=[{calls}] last={e.S("lastRole")}: {Check.Show(e.S("lastText") ?? "")} ({e.L("durationMs")} ms)");
             }
         }
-        catch (Exception ex) { sb.AppendLine("--- mock log unavailable: " + ex.Message); }
+        catch (Exception ex) { sb.AppendLine("--- mock log unavailable"); sb.AppendLine(ex.Message); }
         try
         {
             var events = Client?.Since(since.ClientIndex) ?? [];
             sb.AppendLine($"--- client events since the test started ({events.Count}, last 40)");
+            if (events.Count == 0)
+                sb.AppendLine($"(none. The server published nothing this client heard{(Client is { Closed: true } ? "; the client's WebSocket is closed" : "; the WebSocket is open, so the server was silent")}.)");
             foreach (var e in events.TakeLast(40)) sb.AppendLine(Check.Show(e.ToString()));
         }
-        catch (Exception ex) { sb.AppendLine("--- client events unavailable: " + ex.Message); }
+        catch (Exception ex) { sb.AppendLine("--- client events unavailable"); sb.AppendLine(ex.Message); }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Asks the server four small questions at once, each with its own short deadline, and says what the answers add up to.
+    /// Nothing here can wait on the server for long: a wedged one costs <paramref name="probeMs"/>, not a probe each.
+    /// </summary>
+    public async Task<ServerTriage> TriageAsync(int probeMs = 2000, bool captureStacks = false)
+    {
+        var proc = _proc;
+        if (proc is null) return ServerTriage.Classify(new ServerVitals(false), []);
+        TimeSpan cpu0;
+        try
+        {
+            if (proc.HasExited) return ServerTriage.Classify(new ServerVitals(false, proc.ExitCode), []);
+            proc.Refresh();
+            cpu0 = proc.TotalProcessorTime;
+        }
+        catch (Exception ex) { return ServerTriage.Of("the server process cannot be inspected: " + ex.Message); }
+        // the probes are made from here: how long does THIS process take to run a trivial work item? (a starved runner blames a healthy server)
+        var poolWatch = Stopwatch.StartNew();
+        await Task.Run(() => { }).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        var runnerPoolMs = poolWatch.ElapsedMilliseconds;
+        var window = Stopwatch.StartNew();
+
+        async Task<Probe> Ask(string name, Func<CancellationToken, Task> call)
+        {
+            var sw = Stopwatch.StartNew();
+            using var cts = new CancellationTokenSource(probeMs);
+            try
+            {
+                await call(cts.Token).ConfigureAwait(false);
+                return new Probe(name, true, sw.ElapsedMilliseconds);
+            }
+            catch (OperationCanceledException) { return new Probe(name, false, sw.ElapsedMilliseconds, $"no answer in {probeMs} ms"); }
+            catch (Exception ex) { return new Probe(name, false, sw.ElapsedMilliseconds, ex.GetType().Name + ": " + ex.Message.Split('\n')[0]); }
+        }
+        async Task HttpRpc(string method, string body, CancellationToken ct)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/api/rpc/{method}") { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+            req.Headers.Add("X-NetPI-Token", Token);
+            using var res = await Http.SendAsync(req, ct).ConfigureAwait(false);
+            res.EnsureSuccessStatusCode();
+        }
+        var asked = new List<Task<Probe>>
+        {
+            Ask(ServerTriage.Health, async ct => { using var r = await Http.GetAsync(BaseUrl + "/api/health", ct).ConfigureAwait(false); r.EnsureSuccessStatusCode(); }),
+            Ask(ServerTriage.Rpc, ct => HttpRpc("app.info", "{}", ct)),
+            Ask(ServerTriage.Db, ct => HttpRpc("sessions.list", "{\"limit\":1}", ct)),
+        };
+        if (Client is { Closed: false } client) asked.Add(Ask(ServerTriage.Ws, _ => client.Rpc("app.info", null, probeMs)));
+        else if (Client is not null) asked.Add(Task.FromResult(new Probe(ServerTriage.Ws, false, 0, "the client's WebSocket is closed")));
+        var probes = await Task.WhenAll(asked).ConfigureAwait(false);
+
+        ServerVitals vitals;
+        try
+        {
+            proc.Refresh();
+            var seconds = Math.Max(0.05, window.Elapsed.TotalSeconds);
+            var cpu = (proc.TotalProcessorTime - cpu0).TotalSeconds / seconds / Environment.ProcessorCount * 100;
+            vitals = new ServerVitals(!proc.HasExited, proc.HasExited ? proc.ExitCode : null, proc.Threads.Count, proc.HandleCount, proc.WorkingSet64 / (1024 * 1024), cpu);
+        }
+        catch { vitals = new ServerVitals(!proc.HasExited); }
+        var triage = ServerTriage.Classify(vitals, probes, runnerPoolMs);
+        // A server that is alive and answers nothing (or not the database) is blocked somewhere: its threads' stacks say where.
+        if (captureStacks && vitals.Alive && !triage.Healthy && probes.Any(p => p.Name != ServerTriage.Ws && !p.Ok))
+            triage = triage.WithStacks(await StackCapture.CaptureAsync(proc.Id).ConfigureAwait(false));
+        return triage;
+    }
+
+    /// <summary>
+    /// A test has returned: waits for the agents it started to finish, then stops the ones that will not. Whatever was still
+    /// running when the test returned is reported as a leak, because it goes on making model requests and changing state
+    /// inside the NEXT test's window (that is how one test's background worker failed another test's check on the mock's log).
+    /// </summary>
+    public async Task<SettleResult> SettleAsync(int graceMs = 5000)
+    {
+        static bool Busy(JsonElement a) => a.S("status") is not ("idle" or "completed" or "failed" or "cancelled" or null);
+        var sw = Stopwatch.StartNew();
+        string? leak = null;
+        var quietPolls = 0;
+        try
+        {
+            List<JsonElement> busy;
+            while (true)
+            {
+                busy = (await Client.Rpc("runs.list", new { includeFinished = false }, 5000)).Arr().Where(Busy).ToList();
+                if (busy.Count == 0)
+                {
+                    if (leak is null) return SettleResult.Quiet;
+                    // A finished worker's report wakes its parent: there is a gap between "the worker is done" and "the parent is
+                    // running again" in which nothing looks busy. Quiet counts once it has stayed quiet for a few polls.
+                    if (++quietPolls >= 4) return new SettleResult(leak + $"; they finished {sw.ElapsedMilliseconds - 4 * 80} ms later", true);
+                }
+                else
+                {
+                    quietPolls = 0;
+                    leak ??= $"left {busy.Count} agent(s) running when it returned: " + string.Join(", ", busy.Select(a => $"{a.S("name")}:{a.S("status")}"));
+                }
+                if (sw.ElapsedMilliseconds >= graceMs) break;
+                await Task.Delay(busy.Count == 0 ? 80 : 40);
+            }
+            foreach (var a in busy)
+                if (a.S("sessionId") is { } sid) try { await Client.Rpc("agent.abort", new { sessionId = sid }, 5000); } catch (Exception) { }
+            var quiet = false;
+            for (var i = 0; i < 100 && !quiet; i++)
+            {
+                await Task.Delay(50);
+                quiet = !(await Client.Rpc("runs.list", new { includeFinished = false }, 5000)).Arr().Any(Busy);
+            }
+            return new SettleResult(leak + $"; still running {graceMs} ms later, " + (quiet ? "stopped by the runner" : "and would not stop"), quiet);
+        }
+        catch (Exception ex)
+        {
+            // a test that stopped or restarted the server itself leaves nothing to settle; anything else is worth saying
+            return Client is { Closed: true } || _proc is null ? SettleResult.Quiet : new SettleResult($"could not check for leftovers: {ex.Message.Split('\n')[0]}", false);
+        }
     }
 
     // ------------------------------------------------------------------ mock control
@@ -357,7 +483,17 @@ public sealed class Env : IAsyncDisposable
 
     // ------------------------------------------------------------------ NetPI helpers
 
-    public Task<JsonElement> Rpc(string method, object? p = null, int timeoutMs = 30_000) => Client.Rpc(method, p, timeoutMs);
+    /// <summary>An RPC. When it times out, the message says whether the server is wedged and where, instead of only that it timed out.</summary>
+    public async Task<JsonElement> Rpc(string method, object? p = null, int timeoutMs = 30_000)
+    {
+        try { return await Client.Rpc(method, p, timeoutMs); }
+        catch (RpcTimeoutException ex)
+        {
+            ServerTriage t;
+            try { t = await TriageAsync(); } catch (Exception inner) { t = ServerTriage.Of("not checked: " + inner.Message); }
+            throw new RpcTimeoutException($"{ex.Message}\n      server: {t.Summary}");
+        }
+    }
 
     public string NewProjectDir(string name)
     {
@@ -396,6 +532,26 @@ public sealed class Env : IAsyncDisposable
                                         && e.D.P("agent").S("status") is "idle" or "completed" or "failed" or "cancelled"
                                         && e.D.P("agent").L("runs") >= minRuns,
             $"agent of {sessionId} to become idle (run {minRuns})", timeoutMs);
+
+    /// <summary>
+    /// A background subagent was started in this session: wait until its report has reached the parent and the parent has dealt
+    /// with it. The report either wakes an idle parent for one more run, or (when the worker is quick) arrives in the middle of a
+    /// run and is answered by it, so the number of runs says nothing; what does is a parent that is idle with its own answer
+    /// after the report. Returns the report's notice.
+    /// </summary>
+    public async Task<Ev> WaitReportHandled(string sessionId, long mark, int timeoutMs = 30_000)
+    {
+        var notice = await Client.WaitFor(mark, e => e.Type == "message.added" && e.Sid == sessionId
+                                                    && e.D.P("message").P("meta").S("kind") == "agent-result", "the background report reaching its parent", timeoutMs);
+        var noticeSeq = notice.D.P("message").L("seq");
+        await Wait.UntilAsync(async () =>
+        {
+            if ((await Rpc("agent.get", new { sessionId })).S("status") is not "idle") return null;
+            var last = (await Rpc("sessions.messages", new { id = sessionId, limit = 2000 })).Arr("messages").LastOrDefault();
+            return last.ValueKind == JsonValueKind.Object && last.S("role") == "assistant" && last.L("seq") > noticeSeq ? "ok" : null;
+        }, "the parent answering the background report and going idle", timeoutMs);
+        return notice;
+    }
 
     public async Task<RunResult> Result(string sessionId, long mark, Ev? done = null)
     {

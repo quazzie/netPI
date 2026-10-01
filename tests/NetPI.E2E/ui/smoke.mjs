@@ -210,7 +210,9 @@ try {
 
   const filesOpened = await openStripTab('left', 'Files');
   if (filesOpened) {
-    await page.waitForTimeout(700);
+    // The tab loads the project's tree over RPC ("Loading Files…" first): wait for the listing, not for a fixed pause that a busy
+    // machine outlasts (it failed this check with the tab still saying "Loading Files…").
+    await page.locator('.panel.left > .body', { hasText: 'notes.txt' }).first().waitFor({ timeout: 15_000 }).catch(() => {});
     const text = await page.locator('.panel.left > .body').innerText().catch(() => '');
     check('files tab lists the project', text.includes('notes.txt'), text.slice(0, 120).replace(/\s+/g, ' '));
     await shot(page, 'ui-09-files');

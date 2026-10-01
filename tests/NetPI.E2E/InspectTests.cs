@@ -64,7 +64,61 @@ public static class InspectTests
             Check.Equal(2, code);
             Check.Contains(err, "isn't running");
         }, 60);
+
+        r.Add("inspect.triage", "harness: a healthy server is classified responsive, a frozen one as wedged within seconds, and its RPC timeout says so", async () =>
+        {
+            var healthy = await env.TriageAsync();
+            Check.True(healthy.Healthy, "a working server is responsive: " + healthy.Describe());
+            Check.Equal(4, healthy.Probes.Count, "the four probes were asked: " + healthy.Describe());
+            Check.True(healthy.Probes.All(p => p.Ok && p.Ms < 1500), "and each answered quickly: " + healthy.Describe());
+            Check.True(healthy.Vitals.Threads > 0 && healthy.Vitals.WorkingSetMb > 0, "the process vitals were read: " + healthy.Describe());
+
+            // frozen from outside: not crashed, not slow, simply never scheduled again. This is the shape of the wedge that
+            // used to end as "RPC projects.create timed out after 30000ms", six times in a row.
+            var pid = env.ServerPid ?? throw new AssertException("the server is not running");
+            Freeze(pid, true);
+            RpcTimeoutException? timeout = null;
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                try { await env.Rpc("app.info", null, 500); }
+                catch (RpcTimeoutException ex) { timeout = ex; }
+            }
+            finally { Freeze(pid, false); }
+            Check.True(timeout is not null, "an RPC to a frozen server times out");
+            Check.True(sw.ElapsedMilliseconds < 6000, $"and the verdict arrives with it, not after another timeout ({sw.ElapsedMilliseconds} ms)");
+            Check.Contains(timeout!.Message, "timed out after 500ms", "the message keeps the timeout");
+            Check.Contains(timeout.Message, "server: wedged: the process is alive but does not even answer /api/health", "and says what is wrong with the server");
+            Check.Contains(timeout.Message, "idle", "a frozen process burns no CPU");
+
+            // and when it runs again it is fine, and the RPC works
+            var back = await Wait.UntilAsync(async () => (await env.TriageAsync()) is { Healthy: true } t ? t : null, "the server answers again", 15_000);
+            Check.True(back.Healthy, back.Describe());
+            Check.True((await env.Rpc("app.info")).S("home") is { Length: > 0 }, "an ordinary RPC works again");
+        }, 60);
     }
+
+    /// <summary>Stops (or resumes) every thread of a process, as if it had hung: the process stays alive and answers nothing.</summary>
+    private static void Freeze(int pid, bool frozen)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            using var p = Process.GetProcessById(pid);
+            var rc = frozen ? NtSuspendProcess(p.Handle) : NtResumeProcess(p.Handle);
+            if (rc != 0) throw new AssertException($"could not {(frozen ? "suspend" : "resume")} process {pid} (NTSTATUS {rc:x})");
+        }
+        else
+        {
+            using var kill = Process.Start("kill", [frozen ? "-STOP" : "-CONT", pid.ToString()])!;
+            kill.WaitForExit();
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("ntdll.dll")]
+    private static extern int NtSuspendProcess(IntPtr handle);
+
+    [System.Runtime.InteropServices.DllImport("ntdll.dll")]
+    private static extern int NtResumeProcess(IntPtr handle);
 
     private static async Task<(int Code, string Output, string Error)> NodeAsync(Env env, params string[] args)
     {
