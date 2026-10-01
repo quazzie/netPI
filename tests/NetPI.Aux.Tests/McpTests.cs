@@ -166,6 +166,34 @@ public static class McpTests
             Check.Equal(null,Coercion.Repair(schema,JsonNode.Parse("""{"views":{"item":{"type":"a"},"other":1}}""")!.AsObject()));
             Check.Equal(null,Coercion.Repair(schema,JsonNode.Parse("""{"views":{"element":{"type":"a"}}}""")!.AsObject()));
         });
+        r.Add("mcp: a wrapped list is unwrapped under an anyOf schema, however many times it was wrapped",()=>{
+            // ha_list_floors_areas: fields is anyOf[string, array of string, null].
+            var schema=JsonNode.Parse(
+                """
+                {"type":"object","additionalProperties":false,"properties":{
+                  "fields":{"anyOf":[{"type":"string"},{"items":{"type":"string"},"type":"array"},{"type":"null"}],"default":null,"description":"x"},
+                  "views":{"anyOf":[{"type":"array","items":{"$ref":"#/$defs/card"}},{"type":"null"}]},
+                  "meta":{"type":"object","properties":{"item":{"type":"string"}}}},
+                 "$defs":{"card":{"type":"object","properties":{"title":{"type":"string"}}}}}
+                """)!.AsObject();
+            // The shape a value takes inside mcp_call's own envelope: wrapped once, and wrapped twice.
+            foreach(var wrapped in new[]{"{\"item\":[\"success\"]}","{\"item\":{\"item\":[\"success\"]}}"})
+            {
+                var args=JsonNode.Parse("{\"fields\":"+wrapped+"}")!.AsObject();
+                var repaired=Coercion.Repair(schema,args);
+                Check.Equal("""{"fields":["success"]}""",repaired?.ToJsonString()??"NULL");
+                Schema.Validate(schema,repaired!);
+            }
+            // A wrapped object becomes a one-element list, again as deep as the wrappers go.
+            Check.Equal("""{"views":[{"title":"Probe"}]}""",Coercion.Repair(schema,
+                JsonNode.Parse("""{"views":{"item":{"item":{"item":{"title":"Probe"}}}}}""")!.AsObject())!.ToJsonString());
+            // Still untouched: an object where the schema says object, and a wrapper chain that never reaches a value.
+            Check.Equal(null,Coercion.Repair(schema,JsonNode.Parse("""{"meta":{"item":{"item":"kept"}}}""")!.AsObject()));
+            Check.Equal(null,Coercion.Repair(schema,JsonNode.Parse("""{"views":{"item":"kept","other":1}}""")!.AsObject()));
+            // The outer wrapper goes because the schema says array; what it held is the element, ambiguity and all.
+            Check.Equal("""{"views":[{"item":{"title":"x"},"other":1}]}""",Coercion.Repair(schema,
+                JsonNode.Parse("""{"views":{"item":{"item":{"title":"x"},"other":1}}}""")!.AsObject())!.ToJsonString());
+        });
         r.Add("mcp: a number NetPI wrote itself validates as a number, and a type error names what it wanted",()=>{
             var schema=JsonNode.Parse("""{"type":"object","properties":{"n":{"type":"integer"},"x":{"type":"number","maximum":10}}}""")!.AsObject();
             Schema.Validate(schema,new JsonObject {["n"]=JsonValue.Create(7L),["x"]=JsonValue.Create(2.5d)});

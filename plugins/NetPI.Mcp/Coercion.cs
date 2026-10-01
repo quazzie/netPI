@@ -73,19 +73,40 @@ internal static class Coercion
     /// <summary>
     /// A list the model wrote as a one-property object — <c>{"item": …}</c> — standing where the schema says array.
     /// The schema leaves no other reading of that value, so it is unwrapped rather than guessed at: a wrapped list is
-    /// the list (a model wraps the whole thing, however many elements it has), anything else is a single-element list.
-    /// Two properties, an unknown key, or a schema that also allows an object here are left exactly as written.
+    /// the list (the whole thing is wrapped, however many elements it has), anything else is a single-element list.
+    /// The same value is sometimes wrapped twice over (<c>{"item":{"item":[…]}}</c>) because the argument sits inside
+    /// another tool call's envelope, so wrappers are peeled until the value is reached.
+    ///
+    /// Left exactly as written: a path whose schema also permits an object, a wrapper holding more than one property,
+    /// an unknown key, and a chain of wrappers that never reaches a value.
     /// </summary>
     private static JsonNode? Unwrap(JsonObject obj, JsonNode? schema, JsonObject root)
     {
-        if (obj.Count != 1) return null;
         var types = Types(schema, root);
         if (!types.Contains("array") || types.Contains("object")) return null;
+        JsonNode? value = null;
+        var current = obj;
+        for (var hop = 0; hop < 8; hop++)
+        {
+            if (!Wrapped(current, out var inner)) break;
+            value = inner;
+            // An object that is itself a wrapper is peeled too; any other object is the value itself.
+            if (value is JsonObject nested && Wrapped(nested, out _)) current = nested;
+            else break;
+        }
+        if (value is null) return null;
+        return value is JsonArray list ? list.DeepClone() : new JsonArray(value.DeepClone());
+    }
+
+    /// <summary>Whether this object is a single <c>item</c>/<c>items</c> wrapper, and what it wraps.</summary>
+    private static bool Wrapped(JsonObject obj, out JsonNode? inner)
+    {
+        inner = null;
+        if (obj.Count != 1) return false;
         var pair = obj.First();
-        if (pair.Key is not ("item" or "items" or "Item" or "Items")) return null;
-        var inner = pair.Value;
-        if (inner is null) return null;
-        return inner is JsonArray list ? list.DeepClone() : new JsonArray(inner.DeepClone());
+        if (pair.Key is not ("item" or "items" or "Item" or "Items") || pair.Value is null) return false;
+        inner = pair.Value;
+        return true;
     }
 
     private static long? Integer(string text)
