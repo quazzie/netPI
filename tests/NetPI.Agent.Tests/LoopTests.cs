@@ -21,6 +21,7 @@ public static class LoopTests
         t.Add("loop: abort persists partial message", AbortPartial);
         t.Add("loop: abort during a tool call", AbortDuringTool);
         t.Add("loop: abort during a tool that swallows cancellation stops the batch", AbortDuringSwallowingTool);
+        t.Add("loop: an abort keeps the queue: dequeue it, then send it as the next turn", AbortKeepsQueue);
         t.Add("loop: unknown tool and invalid JSON arguments", ToolErrors);
         t.Add("loop: {\"help\": true} on any tool returns its manual and does not run it", ToolHelpCall);
         t.Add("loop: tool exceptions and result truncation", ToolExceptionAndTruncation);
@@ -443,6 +444,47 @@ public static class LoopTests
         Check.True(results.Skip(1).All(r => r.IsError && r.Content == AgentRunner.NotExecutedAbort), "the rest was not executed");
         Check.Equal(1, h.Bus.OfType(EventTypes.ToolStart).Count, "no tool.start for the skipped calls");
         Check.Equal(1, h.Catalog.Calls);
+    }
+ 
+    // A stop leaves the queued input with no run left to run in: the UI's chip send action dequeues it and
+    // sends the same text as the next turn. The queue must survive the abort, the removal is what authorizes
+    // the send (a second removal reports "gone", so the text is never sent twice), and the resent text starts
+    // its own run.
+    private static async Task AbortKeepsQueue()
+    {
+        await using var h = await TestHost.StartAsync();
+        var gate = new TaskCompletionSource();
+        var calls = 0;
+        h.Catalog.Handler = (r, ct) => Interlocked.Increment(ref calls) switch
+        {
+            1 => Reply.Text("first", c => gate.Task.WaitAsync(c)),
+            _ => Reply.Text("second"),
+        };
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 1, "first call");
+        await h.SendAsync(s.Id, "change of plans", DeliveryMode.Steer);
+        Check.Equal(1, h.Runtime.GetQueue(s.Id).Count, "the steer waits in the queue");
+        Check.True(await h.Runtime.AbortAsync(s.Id), "abort");
+        var a = await h.IdleAsync(s.Id);
+        Check.Equal(AgentStatus.Idle, a.Status);
+        Check.Equal(1, a.Runs, "the abort started no follow-up run for the queue");
+        var queued = h.Runtime.GetQueue(s.Id);
+        Check.Equal(1, queued.Count, "the queue survives the abort");
+        var q = queued[0];
+        Check.Equal("steer", q.Mode);
+        Check.Equal("user", q.Source);
+        Check.True(h.Runtime.RemoveQueued(s.Id, q.Id), "dequeue");
+        Check.False(h.Runtime.RemoveQueued(s.Id, q.Id), "not removed twice: already gone");
+        Check.Equal(0, h.Runtime.GetQueue(s.Id).Count);
+        // what the chip's send action does: the removal succeeded, so send the same text as the next turn
+        await h.SendAsync(s.Id, q.Text, DeliveryMode.Auto);
+        a = await h.IdleAsync(s.Id);
+        Check.Equal(2, a.Runs, "the resent text started its own run");
+        Check.Equal(0, a.QueuedMessages);
+        Check.Equal("go,change of plans", string.Join(",", h.Messages(s.Id).Where(m => m.Role == MessageRole.User).Select(m => m.Text)),
+            "the resent text is the next turn");
+        Check.Equal("second", h.Messages(s.Id)[^1].Text, "the new run answered the resent text");
     }
 
     private static async Task ToolErrors()
