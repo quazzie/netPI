@@ -96,12 +96,11 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
             {
                 if (failure is not null) return;
                 var startedItem = System.Diagnostics.Stopwatch.StartNew();
-                var answers = await client.EvaluateAsync(new DecisionRequest
+                results[i] = await client.EvaluateAnswerAsync(new DecisionRequest
                 {
                     Model = model, Body = new JsonObject { ["state"] = text, ["questions"] = questions.DeepClone() },
                     ExistingLease = context.AdmissionLease, HeldModel = context.Model?.Ref,
                 }, ct).ConfigureAwait(false);
-                results[i] = new DecisionAnswer(answers, client.Model(model), startedItem.Elapsed.TotalMilliseconds);
             }
             catch (DecisionException ex) { failure ??= ex; }
             finally { gate.Release(); }
@@ -240,7 +239,7 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
         var seen = false;
         foreach (var r in results)
         {
-            if (r?.Answers["usage"] is not JsonObject u) continue;
+            if (r?.Usage is not { } u) continue;
             seen = true;
             prompt += u["prompt_tokens"]?.GetValue<long>() ?? u["input_tokens"]?.GetValue<long>() ?? 0;
             cached += u["cached_tokens"]?.GetValue<long>() ?? u["cache_read_tokens"]?.GetValue<long>() ?? 0;

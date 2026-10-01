@@ -64,7 +64,9 @@ internal sealed class DecisionException(string code, string message) : Exception
     public string Code { get; } = code;
 }
 
-internal sealed record DecisionAnswer(JsonObject Answers, string Model, double Ms);
+/// <summary>An answer plus what it cost: the server's <c>usage</c> lives beside <c>answers</c>, not inside it, so it
+/// has to be carried out with the answer or the only evidence of a cached prefix is lost.</summary>
+internal sealed record DecisionAnswer(JsonObject Answers, string Model, double Ms, JsonObject? Usage = null);
 
 /// <summary>POST /v1/systemone through the configured server; errors keep the server's code and request id.</summary>
 internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDecisionService
@@ -72,7 +74,11 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDec
     private readonly SemaphoreSlim _requests = new(Math.Clamp(ctx.Settings.Get("decide.parallel", 4), 1, 16));
     private readonly SemaphoreSlim _reuse = new(1, 1);
 
-    public async Task<JsonObject> EvaluateAsync(DecisionRequest request, CancellationToken ct)
+    public async Task<JsonObject> EvaluateAsync(DecisionRequest request, CancellationToken ct) =>
+        (await EvaluateAnswerAsync(request, ct).ConfigureAwait(false)).Answers;
+
+    /// <summary>The same call with the server's usage kept, for a caller that reports what a decision cost.</summary>
+    public async Task<DecisionAnswer> EvaluateAnswerAsync(DecisionRequest request, CancellationToken ct)
     {
         var id = Model(request.Model);
         var model = await ctx.Models.FindAsync(id, ct).ConfigureAwait(false);
@@ -102,11 +108,12 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDec
                 if (request.Conversation)
                 {
                     if (request.ReasoningEffort is not null) body["reasoning_effort"] = request.ReasoningEffort;
-                    return await DecisionAsync(wireModel, body, ct).ConfigureAwait(false);
+                    var answer = await DecisionAsync(wireModel, body, ct).ConfigureAwait(false);
+                    return new DecisionAnswer(answer, wireModel, 0, answer["usage"] as JsonObject);
                 }
                 var state = body["state"] ?? throw new DecisionException("bad_request", "Missing state");
                 var questions = body["questions"] ?? throw new DecisionException("bad_request", "Missing questions");
-                return (await AskAsync(wireModel, NetPiJson.ToElement(state), DecideTool.NormalizeQuestions(NetPiJson.ToElement(questions)), ct).ConfigureAwait(false)).Answers;
+                return await AskAsync(wireModel, NetPiJson.ToElement(state), DecideTool.NormalizeQuestions(NetPiJson.ToElement(questions)), ct).ConfigureAwait(false);
             }
             finally { _requests.Release(); }
         }
@@ -129,7 +136,7 @@ internal sealed class DecisionClient(IPluginContext ctx, HttpClient http) : IDec
         var sw = Stopwatch.StartNew();
         var (json, text) = await PostAsync("/v1/systemone", id, body, ct).ConfigureAwait(false);
         var answers = (json?["answers"] ?? json) as JsonObject ?? throw new DecisionException("bad_response", $"{id} returned no answers: {Trim(text, 200)}");
-        return new DecisionAnswer((JsonObject)answers.DeepClone(), id, sw.Elapsed.TotalMilliseconds);
+        return new DecisionAnswer((JsonObject)answers.DeepClone(), id, sw.Elapsed.TotalMilliseconds, json?["usage"] as JsonObject);
     }
 
     /// <summary>
