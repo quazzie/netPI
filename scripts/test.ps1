@@ -72,7 +72,8 @@ try {
         "<Solution>`n$body`n</Solution>" | Set-Content $sln
         Write-Host "building $($suites.Count) suite project(s) in one graph" -ForegroundColor DarkGray
         $sw = [Diagnostics.Stopwatch]::StartNew()
-        dotnet build $sln -c $Config -v q | Out-Null
+        # Referenced projects outside the generated solution must keep the selected configuration.
+        dotnet build $sln -c $Config -p:ShouldUnsetParentConfigurationAndPlatform=false -v q | Out-Null
         $code = $LASTEXITCODE
         $sw.Stop()
         $build = [ordered]@{ seconds = [math]::Round($sw.Elapsed.TotalSeconds, 2); built = $true; exitCode = $code }
