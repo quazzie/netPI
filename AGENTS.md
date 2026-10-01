@@ -84,6 +84,10 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
 ## Conventions
 - Keep the core small; new behaviour goes into a plugin. Register everything through `IPluginContext` so hot
   reload can remove it; resolve other plugins' services per use.
+- **A session's working directory is a workspace, not its project.** `plugins/NetPI.Workspaces` owns them and registers
+  the one resolver (`IWorkspaceResolver`); ask it instead of `Sessions.GetCwd` when you need a session's root, its branch
+  or its owner, and never fall back to the project path for a session that is bound to one. Adding a tool that writes
+  files or runs a shell? The rule is `WorkspacePaths.CheckMutation` (native tools) and the `workspace` guard hook.
 - Several agents work in this repo at once; the git rules are in `C:\AI\Projects\AGENTS.md`.
 - Don't cache plugin-defined types in host-wide JSON options or `object` containers (blocks unloading) — see
   `docs/PLUGINS.md`.

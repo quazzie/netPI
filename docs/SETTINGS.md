@@ -302,7 +302,7 @@ A workspace is the checkout a session works in — a root, a branch, a starting 
 
 | key | default | |
 |---|---|---|
-| `workspaces.isolateWriters` | `true` | a worker that writes gets its own git worktree and branch instead of sharing the project's checkout: the default of `isolated` when `agent_spawn` or `workspaces.create` does not say (`isolated: false` asks to share, recorded so the UI and the guards can see that the worker is not isolated); a caller can ask either way |
+| `workspaces.isolateWriters` | `true` | a worker that can write gets its own git worktree and branch instead of sharing the project's checkout: it decides `isolated` for `agent_spawn` and `workspaces.create` when the caller does not say, and it follows the worker's **tools** (a subagent that can only read shares its caller's workspace, because a worktree of its own isolates nothing). `isolated: true` asks for one regardless, `isolated: false` asks to share |
 | `workspaces.branchPrefix` | `"netpi/"` | the branch name of a worktree NetPI creates is this prefix plus the workspace's name (a taken name gets a `-2`, `-3`, … suffix, so nobody's existing branch is reused) |
 | `workspaces.worktreeRoot` | `""` | where worktrees are created: a sibling folder of the project (`../<Project>-<name>`) when empty, otherwise this folder (a relative path is taken from the project) |
 
