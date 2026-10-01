@@ -1,7 +1,33 @@
 # Agents: two local slots plus cloud workers
 
-Status: proposed implementation plan; no implementation or deployment performed.
+Status: in progress; first scheduler slice implemented and tested. No deployment performed.
 Date: 2026-09-29. Reviewed source baseline: 3ee1c22.
+
+## Progress — 2026-10-01
+
+A2–A3 are implemented with eight deterministic owning-suite regressions: positive catalog concurrency or the
+clamped localSlots fallback is shared across named/plain calls; eligible queues use priority then FIFO across pools;
+pool-specific limits do not obstruct eligible peers; existing plain pools refresh on settings/catalog changes.
+Active calls retain their admitted model resource when an agent is rebound. Resolving a plain model also survives
+an idle pool being removed by a refresh before acquisition.
+
+Validation includes actual provider entry/exit counts: four chats on two named agents with missing concurrency
+metadata and fallback 2 reached at most two simultaneous provider calls. All eight regressions passed in 20 fresh
+test processes; targeted checks passed (38 agent/scheduler, 10 affected E2E). Final integration gates passed:
+`scripts/test.ps1` (636 tests across five suites) and `scripts/e2e.ps1` (65 tests, 837 checks), including the other
+agent's merged event-bus and client-cache fixes. This demonstrates the fallback admission
+bound with the mock provider; it is not a measurement of Qwen performance.
+
+A1 is partly complete: the fallback, fairness and rebind defects were reproduced before their fixes. A4's reload
+accounting remains the next scheduler task; the current Stop path releases old ownership before active provider
+calls finish. Inspect the swap lifecycle and agree on a small stable lease contract before changing it. A5's shared
+resource snapshot/UI data, B's delegation guidance and C's Work/settings views are still pending. A6's read-only
+agents.list registration is already present. D is completed per slice, with final A–C integration still pending.
+
+Related ideas remain distinct: idea-cozvvq (effective-model resolver), idea-me3lbx (removed-agent admission) and
+idea-phu8yb (spawn workspaces) are already done. idea-21mwu3 still needs Ideas wait/drop visibility; its bounded
+background admission is implemented. idea-dac7rt's low-priority decision verifier and idea-7zha4j's plugin
+independence plan are separate open work, not completed by this scheduler slice.
 
 ## Objective
 
