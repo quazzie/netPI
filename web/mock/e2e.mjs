@@ -996,7 +996,7 @@ log('plugin tab: Files');
   await ta.fill('');
 
   // A workspace switch mid-fetch: the old workspace's late answers must not apply, and an open search must rerun
-  log('files: a workspace switch drops late answers from the old workspace');
+  log('  files: a workspace switch drops late answers from the old workspace'); // indented: see the Calls sub-headers
   {
     // a second, real workspace: the mock's own folder as a project (its top level is not the repo root's)
     const ALT = path.join(repo, 'web', 'mock');
