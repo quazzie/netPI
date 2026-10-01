@@ -130,7 +130,7 @@ try
                 Runner = Suite.RegisterAll(env),
                 Mark = env.MarkAsync,
                 Diagnose = env.DiagnoseAsync,
-                Triage = () => env.TriageAsync(),
+                Triage = () => env.TriageAsync(captureStacks: true),
                 Settle = () => env.SettleAsync(),
                 Close = env.DisposeAsync,
                 Setup = env.Setup,

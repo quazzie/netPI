@@ -33,6 +33,7 @@ public static class RunnerSelfTests
             ("containment: a failed test's server is replaced, and the failure file says what was wrong with it", Containment_FailedTestGetsAFreshServer),
             ("triage: the verdict names where a server is stuck, and a slow answer is not a wedge", Triage_Verdicts),
             ("evidence: a failure file never has an empty section", Evidence_NeverEmpty),
+            ("stacks: a missing tool says how to get it, a tool that answers is captured, and it cannot hang the run", Stacks_AreCaptured),
             ("settle: what a test left running is reported, and an agent that will not stop costs the server", Settle_ReportsLeaks),
             ("report: outcomes, exit codes, all failures at once, evidence files", Report_AndExitCodes),
             ("rerun hint: the caller's command line when it gave one, else a dotnet command", RerunHint_FollowsTheCaller),
@@ -287,6 +288,12 @@ public static class RunnerSelfTests
         var ws = ServerTriage.Classify(alive, [Ok("health"), Ok("app.info"), Ok("sessions.list"), No("ws app.info")]);
         Check.Contains(ws.Verdict, "WebSocket connection is dead", "only the test's own connection is dead");
 
+        // The probes are made from the runner: when the runner could not start a trivial work item, a "dead" server proves nothing
+        var starved = ServerTriage.Classify(alive, [No("health"), No("app.info"), No("sessions.list")], runnerPoolMs: 4200);
+        Check.Contains(starved.Verdict, "UNRELIABLE: the runner itself is overloaded", "a starved runner says so before it blames the server");
+        Check.Contains(starved.Verdict, "4200 ms", "with the number");
+        Check.False(ServerTriage.Classify(alive, [Ok("health"), Ok("app.info"), Ok("sessions.list")], runnerPoolMs: 4200).Verdict.Contains("UNRELIABLE"), "but a server that answered is not doubted");
+
         // The server was slow, not stuck: every probe answered, and an RPC that took 29 s is a slow RPC, not a wedged server.
         var slow = ServerTriage.Classify(alive, [Ok("health", 4), Ok("app.info", 6), Ok("sessions.list", 40), Ok("ws app.info", 7)]);
         Check.True(slow.Healthy, "answers to every probe: the server is fine");
@@ -349,6 +356,37 @@ public static class RunnerSelfTests
         Check.Equal(null, report.Results[2].Leak, "a test that left nothing has no leak");
         var json = JsonNode.Parse(File.ReadAllText(Path.Combine(outDir, "report.json")))!;
         Check.Contains(json["tests"]![1]!["leak"]!.GetValue<string>(), "would not stop", "report.json carries it");
+    }
+
+    private static async Task Stacks_AreCaptured()
+    {
+        var missing = await StackCapture.CaptureAsync(Environment.ProcessId, "netpi-no-such-tool-" + Guid.NewGuid().ToString("N")[..6]);
+        Check.Contains(missing, "is not installed", "a missing tool is said, not thrown");
+        Check.Contains(missing, "dotnet tool install -g dotnet-stack", "with the way to get it");
+        // `dotnet report -p <pid>` is not a command: what the CLI says is what is captured, so the output path is the real one
+        var said = await StackCapture.CaptureAsync(Environment.ProcessId, "dotnet");
+        Check.True(said.Length > 0 && !said.Contains("is not installed"), "a tool that runs has its output captured: " + said);
+        // a tool that never ends is cut off, and the run goes on
+        var hang = Path.Combine(TempDir(), OperatingSystem.IsWindows() ? "hang.cmd" : "hang.sh");
+        await File.WriteAllTextAsync(hang, OperatingSystem.IsWindows() ? "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n" : "#!/bin/sh\nsleep 30\n");
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(hang, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var cut = await StackCapture.CaptureAsync(Environment.ProcessId, hang, TimeSpan.FromMilliseconds(600));
+        Check.Contains(cut, "did not finish in time", "a hung tool is reported as such");
+        Check.True(sw.ElapsedMilliseconds < 10_000, $"and does not hold the run ({sw.ElapsedMilliseconds} ms)");
+        // the failure file points at the stacks and keeps them beside it
+        var wedged = ServerTriage.Classify(new ServerVitals(true, null, 38, 410, 190, 0.4), [new Probe("health", false, 2000, "no answer in 2000 ms")]).WithStacks("Thread (0x1)\n  System.Threading.Monitor.Enter\n  NetPI.Host.Data.Database.Execute");
+        var dry = Cases(("a.hangs", "A"));
+        var (report, _, _, _) = await Run(dry, _ =>
+        {
+            var r = new TestRunner();
+            r.Add("a.hangs", "A", () => throw new AssertException("RPC timed out"));
+            return Task.FromResult(new ShardContext { Runner = r, Triage = () => Task.FromResult(wedged) });
+        });
+        var file = report.Results[0].Artifact!;
+        Check.Contains(File.ReadAllText(file), "a.hangs.stacks.txt", "the failure file names the stacks file");
+        Check.Contains(File.ReadAllText(Path.ChangeExtension(file, ".stacks.txt")), "Database.Execute", "and it holds the stacks");
+        Check.Equal(0, Evidence.EmptySections(File.ReadAllText(file)).Count, "no empty section");
     }
 
     private static async Task Report_AndExitCodes()

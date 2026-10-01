@@ -157,7 +157,7 @@ public static class CoreTests
             // a subagent's chat is not forked
             var bgMark = env.Client.Mark();
             var bg = await env.Rpc("agent.send", new { sessionId = sid, text = "Start a background job [s:spawnbg delay=100]" });
-            var bgIdle = await env.WaitIdle(sid, bgMark, bg.L("runs"));
+            await env.WaitIdle(sid, bgMark, bg.L("runs"));
             var sub = (await env.Rpc("sessions.list", new { includeSubagents = true, parentSessionId = sid })).Arr().First(x => x.S("kind") == "subagent");
             try
             {
@@ -165,9 +165,9 @@ public static class CoreTests
                 throw new AssertException("expected bad_request");
             }
             catch (RpcError ex) { Check.Equal("bad_request", ex.Code); }
-            // The worker's report wakes the parent for one more run. The test ends after that run, not in the middle of it: a run
-            // still going when the test returns makes its model requests inside the next test's window.
-            await env.WaitIdle(sid, bgIdle.Index, bg.L("runs") + 1, 30_000);
+            // The worker's report reaches the parent (waking it, or in the middle of its run). The test ends once the parent has
+            // answered it: a run still going when the test returns makes its model requests inside the next test's window.
+            await env.WaitReportHandled(sid, bgMark);
         });
 
         r.Add("tools.files", "tools: ls/read/edit/write really run in the project (CRLF kept), results persisted, paging", async () =>

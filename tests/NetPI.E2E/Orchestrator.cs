@@ -297,6 +297,12 @@ public sealed class Orchestrator
             var text = $"{c.Id}\n{c.Name}\n{outcome} after {ms} ms on shard {shard + 1} (attempt {attempt})\n\n" +
                        $"--- server state (asked right after the failure)\n{triage.Describe()}\n\n" +
                        $"--- message\n{message}\n\n--- test output\n{output}\n{diag}";
+            if (triage.Stacks is { Length: > 0 } stacks)
+            {
+                var stackFile = Path.ChangeExtension(file, ".stacks.txt");
+                File.WriteAllText(stackFile, stacks);
+                text = text.Replace("--- message\n", $"(every thread\'s managed stack: {Path.GetFileName(stackFile)})\n\n--- message\n");
+            }
             File.WriteAllText(file, text);
             var empty = Evidence.EmptySections(text);
             if (empty.Count > 0) Locked(() => Console.WriteLine($"  evidence incomplete for {c.Id}: empty section(s) {string.Join(", ", empty)} (a bug in the runner)"));

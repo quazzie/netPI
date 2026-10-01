@@ -337,7 +337,7 @@ public sealed class Env : IAsyncDisposable
     /// Asks the server four small questions at once, each with its own short deadline, and says what the answers add up to.
     /// Nothing here can wait on the server for long: a wedged one costs <paramref name="probeMs"/>, not a probe each.
     /// </summary>
-    public async Task<ServerTriage> TriageAsync(int probeMs = 2000)
+    public async Task<ServerTriage> TriageAsync(int probeMs = 2000, bool captureStacks = false)
     {
         var proc = _proc;
         if (proc is null) return ServerTriage.Classify(new ServerVitals(false), []);
@@ -349,6 +349,10 @@ public sealed class Env : IAsyncDisposable
             cpu0 = proc.TotalProcessorTime;
         }
         catch (Exception ex) { return ServerTriage.Of("the server process cannot be inspected: " + ex.Message); }
+        // the probes are made from here: how long does THIS process take to run a trivial work item? (a starved runner blames a healthy server)
+        var poolWatch = Stopwatch.StartNew();
+        await Task.Run(() => { }).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        var runnerPoolMs = poolWatch.ElapsedMilliseconds;
         var window = Stopwatch.StartNew();
 
         async Task<Probe> Ask(string name, Func<CancellationToken, Task> call)
@@ -389,7 +393,11 @@ public sealed class Env : IAsyncDisposable
             vitals = new ServerVitals(!proc.HasExited, proc.HasExited ? proc.ExitCode : null, proc.Threads.Count, proc.HandleCount, proc.WorkingSet64 / (1024 * 1024), cpu);
         }
         catch { vitals = new ServerVitals(!proc.HasExited); }
-        return ServerTriage.Classify(vitals, probes);
+        var triage = ServerTriage.Classify(vitals, probes, runnerPoolMs);
+        // A server that is alive and answers nothing (or not the database) is blocked somewhere: its threads' stacks say where.
+        if (captureStacks && vitals.Alive && !triage.Healthy && probes.Any(p => p.Name != ServerTriage.Ws && !p.Ok))
+            triage = triage.WithStacks(await StackCapture.CaptureAsync(proc.Id).ConfigureAwait(false));
+        return triage;
     }
 
     /// <summary>
@@ -524,6 +532,26 @@ public sealed class Env : IAsyncDisposable
                                         && e.D.P("agent").S("status") is "idle" or "completed" or "failed" or "cancelled"
                                         && e.D.P("agent").L("runs") >= minRuns,
             $"agent of {sessionId} to become idle (run {minRuns})", timeoutMs);
+
+    /// <summary>
+    /// A background subagent was started in this session: wait until its report has reached the parent and the parent has dealt
+    /// with it. The report either wakes an idle parent for one more run, or (when the worker is quick) arrives in the middle of a
+    /// run and is answered by it, so the number of runs says nothing; what does is a parent that is idle with its own answer
+    /// after the report. Returns the report's notice.
+    /// </summary>
+    public async Task<Ev> WaitReportHandled(string sessionId, long mark, int timeoutMs = 30_000)
+    {
+        var notice = await Client.WaitFor(mark, e => e.Type == "message.added" && e.Sid == sessionId
+                                                    && e.D.P("message").P("meta").S("kind") == "agent-result", "the background report reaching its parent", timeoutMs);
+        var noticeSeq = notice.D.P("message").L("seq");
+        await Wait.UntilAsync(async () =>
+        {
+            if ((await Rpc("agent.get", new { sessionId })).S("status") is not "idle") return null;
+            var last = (await Rpc("sessions.messages", new { id = sessionId, limit = 2000 })).Arr("messages").LastOrDefault();
+            return last.ValueKind == JsonValueKind.Object && last.S("role") == "assistant" && last.L("seq") > noticeSeq ? "ok" : null;
+        }, "the parent answering the background report and going idle", timeoutMs);
+        return notice;
+    }
 
     public async Task<RunResult> Result(string sessionId, long mark, Ev? done = null)
     {

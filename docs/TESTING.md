@@ -255,8 +255,16 @@ section, the console and `report.json` (`server`) carry the verdict: *the proces
 pool is starved or the process is frozen, with idle or busy CPU), *RPC dispatch is stuck*, *the database path is blocked*, *this
 test's WebSocket is dead*, or *responsive* (the server was fine: the failure is the test's own, an RPC that was merely slow). An RPC
 that times out carries the same verdict in its message (`RPC projects.create timed out after 30000ms` / `server: wedged: …`).
-For a wedge, the server's own log is the second half of the evidence: its stall watchdog names the handler or the starved
-pool (`docs/DEBUGGING.md`, "The app stopped answering"). `inspect.triage` freezes a real server process and checks the verdict.
+The probes are made from the runner, so the runner is timed first: when its own thread pool needs a second to start a trivial
+work item (4 browsers and a loaded machine do that), the verdict starts with `UNRELIABLE: the runner itself is overloaded` instead of
+blaming a healthy server. For a wedge, the server's own log is the second half of the evidence: its stall watchdog names the handler
+or the starved pool (`docs/DEBUGGING.md`, "The app stopped answering"). `inspect.triage` freezes a real server process and checks the
+verdict.
+
+The third half is the stacks: when the server is alive and does not answer, the runner reads every thread's managed stack from outside
+with `dotnet-stack report -p <pid>` into `failures/<id>.stacks.txt`, which names what the process is blocked on. The tool is not a
+dependency of the repository (`dotnet tool install -g dotnet-stack` once; `NETPI_E2E_STACK_TOOL` names another executable); without
+it the failure file says how to get it.
 
 **A test ends with nothing of its own running.** When a test passes, the runner waits for the agents it started to finish (up to 5 s,
 stopping what will not) before the next test begins. Anything that was still running when the test returned is a **leak**: a `LEAK`

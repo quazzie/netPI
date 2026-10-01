@@ -23,13 +23,22 @@ public sealed class ServerTriage
     public required string Verdict { get; init; }
     /// <summary>True when the server answered every question: a failure was then the test's own, not a wedged server.</summary>
     public required bool Healthy { get; init; }
+    /// <summary>Every thread's managed stack of a server that did not answer, read from outside by <see cref="StackCapture"/>; null when none was taken.</summary>
+    public string? Stacks { get; init; }
+    /// <summary>How long the RUNNER's own thread pool took to start a trivial work item just before the probes (ms). The probes are made from
+    /// the runner, so a runner that is starved makes a healthy server look dead: when this is large, the probes prove nothing.</summary>
+    public long RunnerPoolMs { get; init; }
+
+    public const long RunnerStarvedMs = 1000;
+
+    public ServerTriage WithStacks(string stacks) => new() { Vitals = Vitals, Probes = Probes, Verdict = Verdict, Healthy = Healthy, Stacks = stacks, RunnerPoolMs = RunnerPoolMs };
 
     public static ServerTriage Unknown { get; } = new() { Vitals = new ServerVitals(true), Probes = [], Verdict = "not checked", Healthy = true };
 
     public static ServerTriage Of(string verdict) => new() { Vitals = new ServerVitals(true), Probes = [], Verdict = verdict, Healthy = false };
 
     /// <summary>The verdict the vitals and the probes add up to. Pure: the same inputs always give the same words.</summary>
-    public static ServerTriage Classify(ServerVitals vitals, IReadOnlyList<Probe> probes)
+    public static ServerTriage Classify(ServerVitals vitals, IReadOnlyList<Probe> probes, long runnerPoolMs = 0)
     {
         Probe? Find(string name) => probes.FirstOrDefault(p => p.Name == name);
         bool Answered(string name) => Find(name)?.Ok == true;
@@ -54,7 +63,10 @@ public sealed class ServerTriage
             healthy = true;
             verdict = "responsive: every probe was answered, so the server was not wedged and the failure is the test's own";
         }
-        return new ServerTriage { Vitals = vitals, Probes = probes, Verdict = verdict, Healthy = healthy };
+        // The probes are made from the runner. A runner that cannot start a work item for a second is the one that is stuck.
+        if (runnerPoolMs >= RunnerStarvedMs && !healthy)
+            verdict = $"UNRELIABLE: the runner itself is overloaded (its own thread pool took {runnerPoolMs} ms to start a trivial work item), so the probes below may blame a healthy server. {verdict}";
+        return new ServerTriage { Vitals = vitals, Probes = probes, Verdict = verdict, Healthy = healthy, RunnerPoolMs = runnerPoolMs };
     }
 
     /// <summary>One line for the console and the report.</summary>
@@ -68,6 +80,7 @@ public sealed class ServerTriage
         foreach (var p in Probes)
             sb.AppendLine($"  probe {p.Name,-16} {(p.Ok ? "answered" : "NO ANSWER"),-9} {p.Ms} ms{(p.Error is null ? "" : "  " + p.Error)}");
         var v = Vitals;
+        sb.AppendLine($"  runner: its thread pool started a trivial work item in {RunnerPoolMs} ms");
         sb.AppendLine(v.Alive
             ? $"  process: {v.Threads} threads, {v.Handles} handles, {v.WorkingSetMb} MB working set, {v.CpuPercent:0}% CPU over the probes"
             : $"  process: exited{(v.ExitCode is { } c ? $" with code {c}" : "")}");
