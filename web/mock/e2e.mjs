@@ -1468,12 +1468,25 @@ log('budget: chat cost, Work tab, a chat stopped by the budget');
   // the Work tab: this month against the budget set above ($50)
   await openStripTab('right', 'Work');
   await page.waitForSelector('.work .usage.budget', { timeout: 5000 }).catch(() => {});
-  // A changed limit reaches this line on the tab's next refresh (every 30 s, or when a call is recorded), so a run that set it a
-  // moment ago refreshes the tab as a user would, then waits for what the check looks at (not for a pause to pass).
-  await page.locator('.work button[title^="Refresh"]').click();
   await page.waitForFunction(() => (document.querySelector('.work .usage.budget')?.innerText ?? '').replace(/ /g, ' ').includes('$0.68 / $50'), null, { timeout: 5000 }).catch(() => {});
   const wb = page.locator('.work .usage.budget');
   check('the Work tab shows this month against the budget', (await wb.count()) === 1 && (await wb.innerText()).replace(/\u00a0/g, ' ').includes('$0.68 / $50'), (await wb.count()) ? await wb.innerText() : 'none');
+
+  // Keep the already-loaded tab visible: mounting it after a change would hide a missing usage.changed event.
+  await rpcCall('settings.set', { path: 'budget.monthlyUsd', value: 75 });
+  await page.waitForFunction(() => (document.querySelector('.work .usage.budget')?.innerText ?? '').replace(/ /g, ' ').includes('$0.68 / $75'), null, { timeout: 3000 }).catch(() => {});
+  check('a monthly limit change refreshes the open Work tab', (await wb.innerText()).replace(/\u00a0/g, ' ').includes('$0.68 / $75'), await wb.innerText());
+  await rpcCall('settings.set', { path: 'budget.dailyUsd', value: 5 });
+  await page.waitForFunction(() => (document.querySelector('.work .usage.budget .umeta')?.innerText ?? '').replace(/ /g, ' ').includes('/ $5'), null, { timeout: 3000 }).catch(() => {});
+  check('a daily limit change refreshes the open Work tab', (await wb.locator('.umeta').innerText()).replace(/\u00a0/g, ' ').includes('/ $5'), await wb.innerText());
+  const settings = (await rpcCall('settings.get')).settings;
+  await rpcCall('settings.replace', { settings: { ...settings, budget: { ...settings.budget, monthlyUsd: 50, dailyUsd: null } } });
+  await page.waitForFunction(() => {
+    const text = (document.querySelector('.work .usage.budget')?.innerText ?? '').replace(/ /g, ' ');
+    const daily = document.querySelector('.work .usage.budget .umeta')?.innerText ?? '';
+    return text.includes('$0.68 / $50') && !daily.includes('/');
+  }, null, { timeout: 3000 }).catch(() => {});
+  check('a settings replacement refreshes the budget and removes the daily cap', (await wb.locator('.uline').innerText()).replace(/\u00a0/g, ' ').includes('$0.68 / $50') && !(await wb.locator('.umeta').innerText()).includes('/'), await wb.innerText());
 
   // a chat the budget stopped (budget.onLimit "ask") offers to go over
   await page.keyboard.press('Control+t');

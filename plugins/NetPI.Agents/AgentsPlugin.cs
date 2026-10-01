@@ -114,7 +114,14 @@ public sealed class AgentsPlugin : INetPiPlugin
             return usage.BudgetStatus();
         }, "Let a chat go over the budget until the period ends and continue it: { sessionId } (budget.onLimit \"ask\")");
 
-        context.Events.Subscribe(EventTypes.SettingsChanged, _ => scheduler.Refresh());
+        context.Events.Subscribe(EventTypes.SettingsChanged, e =>
+        {
+            scheduler.Refresh();
+            var path = (NetPiJson.ToNode(e.Data) as JsonObject)?["path"]?.GetValue<string>();
+            // A file reload or settings.replace has no path: its budget may have changed too.
+            if (string.IsNullOrEmpty(path) || path == "budget" || path.StartsWith("budget.", StringComparison.Ordinal))
+                context.Events.Publish("usage.changed", usage.BudgetStatus());
+        });
         // model states (loaded, unloaded, offline) switch local agents on and off
         context.Events.Subscribe(EventTypes.ModelsChanged, _ => scheduler.Refresh());
 
