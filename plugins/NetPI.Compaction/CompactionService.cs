@@ -94,14 +94,9 @@ public sealed class CompactionService(IPluginContext ctx)
 
     public async Task<ModelInfo?> ResolveSessionModelAsync(SessionInfo session, CancellationToken ct)
     {
-        var models = ctx.Models;
-        foreach (var r in new[] { session.Model, models.DefaultModelRef })
-        {
-            if (string.IsNullOrWhiteSpace(r)) continue;
-            var m = await models.FindAsync(r, ct).ConfigureAwait(false);
-            if (m is not null) return m;
-        }
-        return models.Cached.FirstOrDefault();
+        var modelRef = await SessionModel.ResolveRefAsync(session, ctx.Models, ctx.Settings,
+            ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
+        return modelRef is null ? null : await ctx.Models.FindAsync(modelRef, ct).ConfigureAwait(false);
     }
 
     public async Task<CompactionResult> CompactAsync(CompactionRequest req, CancellationToken ct)

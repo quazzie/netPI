@@ -81,7 +81,8 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
             // 1. session, model, project, cwd: re-read every turn (they can change mid-run)
             var session = Ctx.Sessions.GetSession(SessionId) ?? throw new RunFailedException("The session no longer exists.");
-            var modelRef = session.Model ?? AgentModelRef(session) ?? await DefaultModelRefAsync(ct).ConfigureAwait(false);
+            var modelRef = await SessionModel.ResolveRefAsync(session, Ctx.Models, Ctx.Settings,
+                Ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
             ModelInfo? model = null;
             if (!string.IsNullOrWhiteSpace(modelRef))
             {
@@ -253,27 +254,6 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             if (TakeNextInput()) continue;
             break;
         }
-    }
-
-    /// <summary>
-    /// The default model. Without a <c>defaultModel</c> setting it is derived from the catalog cache, which is empty until
-    /// the first model listing finishes (right after startup, or after a provider reload): list once, then ask again.
-    /// </summary>
-    /// <summary>The model of the chat's agent (<c>agents.&lt;id&gt;.model</c>) when the chat has no model of its own.</summary>
-    private string? AgentModelRef(SessionInfo session)
-    {
-        if (SessionAgent.Of(session) is not { } agent || agent.Contains('.')) return null;
-        try { return Ctx.Settings.Get<string>($"agents.{agent}.model") is { Length: > 0 } m ? m.Trim() : null; }
-        catch { return null; }
-    }
-
-    private async Task<string?> DefaultModelRefAsync(CancellationToken ct)
-    {
-        var modelRef = Ctx.Models.DefaultModelRef;
-        if (!string.IsNullOrWhiteSpace(modelRef)) return modelRef;
-        try { await Ctx.Models.ListAsync(refresh: Ctx.Models.Cached.Count == 0, ct).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is not OperationCanceledException) { Ctx.Logger.LogWarning(ex, "Listing models for the default model failed"); }
-        return Ctx.Models.DefaultModelRef;
     }
 
     // One line for a person: DisplayMessage, not Message, so the provider's ids and the saved failed request stay in

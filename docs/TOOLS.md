@@ -585,6 +585,12 @@ work is refused with the list. The subagent's session keeps the agent (`meta.age
 instances are busy. Without agents, `model` (default: the caller's). `tools`: the subagent's tools, which may include
 tools the caller doesn't have (default: the caller's). `details`: the subagent's `{ agentId, sessionId, name, status }`.
 
+Where the caller's model is inherited, it means the effective model: the session's explicit model, otherwise its
+named agent's model, otherwise the catalog default. Turns, delegation and manual compaction use the same
+`SessionModel.ResolveRefAsync` rule. Reasoning effort is inherited only when the child uses that same model
+(a bare model id is normalized first); an explicit child effort wins. An unavailable selected model is reported,
+including during manual compaction, rather than silently replaced by the global default.
+
 Several at once: `{ subagents: [{ task, name?, agent?, model?, tools?, instructions? }, …], background?, timeoutSeconds? }`.
 Every entry is checked first (a bad one starts none of them: "subagents[1] (name): …"), then they all start together.
 `details`: `{ agents: [{ agentId, sessionId, name, status }] }`.
