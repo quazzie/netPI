@@ -36,7 +36,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $suites = if ($Suite) { $Suite } else { @('Providers', 'Tools', 'Agent', 'Aux', 'Host') }
-Push-Location (Split-Path -Parent $PSScriptRoot)
+$repoRoot = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path
+Push-Location $repoRoot
 $previousAppDir = $env:NETPI_APP_DIR
 $previousTestRoot = $env:NETPI_TEST_ROOT
 $runRoots = @()   # this run's temp roots, removed on the way out whatever happens
@@ -107,12 +108,15 @@ try {
             $runRoots += $env:NETPI_TEST_ROOT
             $sw = [Diagnostics.Stopwatch]::StartNew()
             $job = Start-Job -ScriptBlock {
-                param($dll, $only, $appDir, $testRoot)
+                param($dll, $only, $appDir, $testRoot, $root)
+                # A job starts in the user's profile folder, not where this script was invoked from, so the suite's
+                # relative paths (and the repo it reads) need the repository root set explicitly.
+                Set-Location $root
                 $env:NETPI_APP_DIR = $appDir
                 $env:NETPI_TEST_ROOT = $testRoot
                 $out = & dotnet $dll @only 2>&1 | ForEach-Object { "$_" }
                 [pscustomobject]@{ Code = $LASTEXITCODE; Out = $out }
-            } -ArgumentList "tests\NetPI.$s.Tests\bin\$Config\NetPI.$s.Tests.dll", $Only, $env:NETPI_APP_DIR, $env:NETPI_TEST_ROOT
+            } -ArgumentList (Join-Path $repoRoot "tests\NetPI.$s.Tests\bin\$Config\NetPI.$s.Tests.dll"), $Only, $env:NETPI_APP_DIR, $env:NETPI_TEST_ROOT, $repoRoot
             $running[$s] = @{ Job = $job; Sw = $sw }
         }
         $done = @($running.Keys | Where-Object { $running[$_].Job.State -ne 'Running' })
