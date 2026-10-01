@@ -114,7 +114,7 @@ web_fetch (plugin reload netpi.tools.web).` — and the diagnostics plugin recor
 
 When nothing is answering, `diag` cannot say why (it is an RPC like any other), so the host's **stall watchdog**
 (`src/NetPI.Host/Events/StallWatchdog.cs`) writes it in the log, from a thread of its own that never waits for the thread
-pool. Three things, each logged when it starts (5 s), every 30 s while it lasts, and again when it ends:
+pool. Four things, each logged when it starts (5 s), every 30 s while it lasts, and again when it ends:
 
 - `The event bus has been inside the handler '<pattern>' on '<type>' for N s; M event(s) wait behind it` — delivery is one
   task, so one handler that never returns holds back every later event, the UI fan-out included. The pattern and the event
@@ -124,6 +124,11 @@ pool. Three things, each logged when it starts (5 s), every 30 s while it lasts,
   scheduled at all.
 - `The thread pool has not started a queued work item for N s (threads, pending items, completed)` — every pool thread is
   blocked (usually a synchronous wait on async work), so no RPC, event or continuation can run until one frees up.
+- `The database gate has not been free for N s` — every statement of the process runs under one lock; a thread that holds it and
+  does not come back (a deadlock with another lock, or a call that never returns) freezes every RPC that reads or writes the
+  database, while `/api/health` and `app.info` still answer and the CPU is idle. The watchdog tries the gate without waiting once a
+  second. (A lock-order inversion between the session store's transient-session lock and this gate did exactly that until
+  2026-10-01; the store now guards its memory with the gate itself, so there is one lock and no order to get wrong.)
 
 The E2E harness reads the same log line when a test fails: `artifacts/e2elogs/<run>/failures/<id>.txt` shows it under
 "server log since the test started".

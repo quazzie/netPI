@@ -5,8 +5,9 @@ namespace NetPI.Host.Events;
 
 /// <summary>
 /// Says so, in the log, when the process stops making progress: the event bus inside one handler for too long (delivery is
-/// one task, so everything behind it waits, the UI fan-out included), the bus not delivering with events queued, or the
-/// thread pool not starting work that was queued to it (every blocked call and every RPC then waits too).
+/// one task, so everything behind it waits, the UI fan-out included), the bus not delivering with events queued, the
+/// thread pool not starting work that was queued to it (every blocked call and every RPC then waits too), or the database gate
+/// that nothing can take (every statement of the process goes through it: a deadlock on it freezes all of them).
 /// <para>
 /// It runs on a thread of its own, never on the pool: a watchdog that needs the thing it watches goes quiet exactly when it
 /// is needed. It only reads counters, logs on the edge of a stall (and now and then while it lasts) and again when it ends,
@@ -31,13 +32,18 @@ internal sealed class StallWatchdog : IDisposable
     private long _probeQueuedAt;
 
     // the episodes in progress: when each began (Stopwatch timestamp) and when it was last reported
-    private Episode _handler, _dispatcher, _pool;
+    private Episode _handler, _dispatcher, _pool, _gateEpisode;
+    private readonly object? _gate;
+    private int _gateMisses;
 
     /// <param name="queue">Where the pool probe is queued; the thread pool unless a test stands in for a pool that does not run it.</param>
-    public StallWatchdog(EventBus bus, ILogger log, TimeSpan? threshold = null, TimeSpan? tick = null, Action<Action>? queue = null)
+    /// <param name="gate">A lock every statement of the process runs under (the database's): tried without waiting each tick, and a stretch where it
+    /// cannot be taken for the threshold is reported. Null: not watched.</param>
+    public StallWatchdog(EventBus bus, ILogger log, TimeSpan? threshold = null, TimeSpan? tick = null, Action<Action>? queue = null, object? gate = null)
     {
         _bus = bus;
         _log = log;
+        _gate = gate;
         _queue = queue ?? (work => ThreadPool.UnsafeQueueUserWorkItem(static w => ((Action)w!)(), work));
         _threshold = threshold ?? DefaultThreshold;
         _tick = tick ?? TimeSpan.FromSeconds(1);
@@ -79,6 +85,20 @@ internal sealed class StallWatchdog : IDisposable
                           $"(threads {ThreadPool.ThreadCount}, pending items {ThreadPool.PendingWorkItemCount}, completed {ThreadPool.CompletedWorkItemCount}): " +
                           "its threads are blocked, so no RPC, event or continuation can run",
                     "The thread pool is running work again");
+
+                // the database gate: held by a thread that is not coming back (a deadlock, or a statement that never returns)?
+                if (_gate is not null)
+                {
+                    var free = Monitor.TryEnter(_gate, TimeSpan.FromMilliseconds(Math.Min(100, _tick.TotalMilliseconds * 2)));
+                    if (free) Monitor.Exit(_gate);
+                    _gateMisses = free ? 0 : _gateMisses + 1;
+                    var heldFor = TimeSpan.FromTicks(_tick.Ticks * _gateMisses);
+                    Report(ref _gateEpisode, _gateMisses > 0 && heldFor >= _threshold,
+                        () => $"The database gate has not been free for {heldFor.TotalSeconds:0.#}s: a thread holds it and is not coming back (a deadlock, or a statement that never returns). " +
+                              "Every statement of the process waits for it (every RPC that reads or writes a session, a message, a setting stored in the database), " +
+                              "while calls that touch no database (/api/health, app.info) still answer",
+                        "The database gate is free again");
+                }
             }
             catch (Exception ex)
             {
