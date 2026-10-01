@@ -24,6 +24,7 @@ public static class WorkspaceTests
         t.Add("workspaces: a workspace of another repository is refused", OtherRepositoryRefused);
         t.Add("workspaces: provisioning starts from a recorded commit and leaves the parent's dirty changes behind", CleanStart);
         t.Add("workspaces: a second assignment to the same worker reuses its workspace", ReusePerWorker);
+        t.Add("workspaces: worktrees live inside the project (.worktrees), and the primary checkout stays clean", WorktreesInsideProject);
         t.Add("workspaces: a non-git project gets a plain folder, with no git workflow", NonGitProject);
         t.Add("workspaces: a failed provisioning leaves no runnable workspace", FailedProvisioning);
         t.Add("workspaces: integrations into one branch serialize", IntegrationSerializes);
@@ -311,6 +312,38 @@ public static class WorkspaceTests
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// The layout the user asked for: a project's worktrees are its own subfolder (<c>&lt;project&gt;/.worktrees/&lt;name&gt;</c>),
+    /// not siblings beside it, so a repository's parent folder does not fill up with checkout folders. The parent must
+    /// stay clean, which is why the root is excluded locally rather than through a committed .gitignore.
+    /// </summary>
+    private static Task WorktreesInsideProject()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("worktree layout"); return Task.CompletedTask; }
+        var a = env.Provision("tests", "ses_a");
+        var b = env.Provision("docs", "ses_b");
+        Check.True(a.Ok && b.Ok, a.Error ?? b.Error ?? "");
+
+        var root = Path.Combine(env.ProjectPath, WorkspaceProvisioner.DefaultWorktreeFolder);
+        Check.Equal(Path.Combine(root, "tests"), a.Binding!.Root);
+        Check.Equal(Path.Combine(root, "docs"), b.Binding!.Root);
+        Check.True(WorkspacePaths.IsInside(env.ProjectPath, a.Binding.Root));
+        Check.True(Directory.Exists(a.Binding.Root));
+
+        // A nested checkout is still a checkout of the same repository: the evidence the guards rely on is unchanged.
+        Check.Equal(a.Binding.RepoCommonDir, b.Binding.RepoCommonDir);
+        Check.Contains(GitOut(env.ProjectPath, "worktree", "list") ?? "", "tests");
+
+        // And the parent's status is clean: the root is excluded locally, so no branch gains an ignore line.
+        Check.Equal("", GitOut(env.ProjectPath, "status", "--porcelain") ?? "", "the project checkout shows pending changes");
+        var exclude = Path.Combine(WorkspacePaths.Canonical(a.Binding.RepoCommonDir!), "info", "exclude");
+        Check.True(File.Exists(exclude), "the local exclude file was not written");
+        Check.Contains(File.ReadAllText(exclude), "/" + WorkspaceProvisioner.DefaultWorktreeFolder + "/");
+        Check.True(Git_(env.ProjectPath, "check-ignore", "-q", WorkspaceProvisioner.DefaultWorktreeFolder), "git does not ignore the worktree root");
+        return Task.CompletedTask;
+    }
+
     private static Task NonGitProject()
     {
         using var env = new Env(git: false);
@@ -328,7 +361,7 @@ public static class WorkspaceTests
         using var env = new Env();
         if (!env.GitAvailable) { Skip("failed provisioning"); return Task.CompletedTask; }
         // The target folder is already taken: provisioning must refuse rather than reuse it silently.
-        var target = Path.Combine(env.Root, "repo-taken");
+        var target = Path.Combine(env.ProjectPath, WorkspaceProvisioner.DefaultWorktreeFolder, "taken");
         Directory.CreateDirectory(target);
         File.WriteAllText(Path.Combine(target, "keep.txt"), "someone else's work");
         var outcome = env.Manager.ForChildAsync(

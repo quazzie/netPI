@@ -52,7 +52,8 @@ public sealed class WorkspacePlugin : INetPiPlugin
                 SettingInfo.Text(WorkspaceProvisioner.BranchPrefixSetting, "Branch prefix for worktrees", "netpi/",
                     "The branch name of a worktree NetPI creates is this prefix plus the workspace name."),
                 SettingInfo.Text(WorkspaceProvisioner.WorktreeRootSetting, "Where worktrees are created", "",
-                    "Empty: a sibling folder of the project (../Project-name). Otherwise this folder (relative paths are taken from the project)."),
+                    "Empty: inside the project, in its .worktrees folder. Otherwise this folder (a relative path is taken from the project). "
+                    + "A root inside the repository is kept out of git's status through .git/info/exclude, so no branch gains an ignore line."),
             ],
         });
 

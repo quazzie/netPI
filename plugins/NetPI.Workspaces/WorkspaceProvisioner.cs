@@ -100,7 +100,7 @@ public sealed class WorkspaceProvisioner(
         if (string.IsNullOrWhiteSpace(startAt))
             return new WorkspaceOutcome(null, $"{projectRoot} has no commits yet, so there is nothing to branch a workspace from. Make the first commit, or work in the project folder without isolation.");
         var baseCommit = startAt.Trim();
-        var target = Path.Combine(WorktreeRoot(projectRoot), Path.GetFileName(projectRoot) + "-" + Slug(request.Name));
+        var target = Path.Combine(WorktreeRoot(projectRoot), Slug(request.Name));
 
         if (Directory.Exists(target))
             return new WorkspaceOutcome(null, $"{target} already exists. Pick another name for the workspace, or remove that folder.");
@@ -111,6 +111,7 @@ public sealed class WorkspaceProvisioner(
             ctx.Logger.LogDebug("git worktree prune in {Root} said: {Output}", projectRoot, output.Trim());
 
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        ExcludeFromGit(projectRoot, Path.GetDirectoryName(target)!);   // before the checkout lands, so the parent stays clean
         var (addCode, addOut) = await git.ExecAsync(projectRoot, ct, "worktree", "add", "-b", branch, target, baseCommit).ConfigureAwait(false);
         if (addCode != 0)
         {
@@ -290,7 +291,7 @@ public sealed class WorkspaceProvisioner(
         }
     }
 
-    /// <summary>Where worktrees of a project are created: <c>workspaces.worktreeRoot</c>, else a sibling of the project.</summary>
+    /// <summary>Where worktrees of a project are created: <c>workspaces.worktreeRoot</c>, else <c>&lt;project&gt;/.worktrees</c>.</summary>
     public string WorktreeRoot(string projectRoot)
     {
         var configured = Read(WorktreeRootSetting, "");
@@ -300,7 +301,40 @@ public sealed class WorkspaceProvisioner(
             Directory.CreateDirectory(dir);
             return dir;
         }
-        return Path.GetDirectoryName(WorkspacePaths.Canonical(projectRoot)) ?? projectRoot;
+        var inside = Path.Combine(WorkspacePaths.Canonical(projectRoot), DefaultWorktreeFolder);
+        Directory.CreateDirectory(inside);
+        return inside;
+    }
+
+    /// <summary>Where a project's worktrees live unless the setting says otherwise: inside the project, not beside it.</summary>
+    public const string DefaultWorktreeFolder = ".worktrees";
+
+    /// <summary>
+    /// Keep a worktree root out of its repository's status, without editing the project's tracked <c>.gitignore</c>: the
+    /// pattern goes into the shared <c>.git/info/exclude</c>, which is local to this clone (never committed, so no branch
+    /// ever gains an ignore line because of one worker) and applies to every linked worktree of the same repository.
+    /// <para>Best effort: a repository that cannot write it (read-only, or not a repository at all) is left as it was, and a
+    /// worktree root outside the repository needs nothing.</para>
+    /// </summary>
+    private void ExcludeFromGit(string repoRoot, string worktreeRoot)
+    {
+        try
+        {
+            var repo = WorkspacePaths.Canonical(repoRoot).TrimEnd(Path.DirectorySeparatorChar);
+            var root = WorkspacePaths.Canonical(worktreeRoot);
+            if (!WorkspacePaths.IsInside(repo, root)) return;                   // outside the repository: nothing to ignore
+            var common = WorkspacePaths.Canonical(git.CommonDirOf(repo) ?? Path.Combine(repo, ".git"));
+            var exclude = Path.Combine(common, "info", "exclude");
+            var pattern = "/" + root[(repo.Length + 1)..].Replace('\\', '/') + "/";
+            if (File.Exists(exclude) && File.ReadAllText(exclude).Contains(pattern, StringComparison.Ordinal)) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(exclude)!);
+            File.AppendAllText(exclude, pattern + Environment.NewLine);
+            ctx.Logger.LogDebug("Kept {Root} out of git's status through {Exclude}", root, exclude);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            ctx.Logger.LogDebug(ex, "Could not keep {Root} out of git's status", worktreeRoot);
+        }
     }
 
     /// <summary>The branch of the project's own checkout: where a worker's work is integrated into.</summary>
