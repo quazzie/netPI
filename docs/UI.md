@@ -157,6 +157,12 @@ Plugin tabs attach to the same bus through `ctx.on`.
 reads the host copies with `ui.state.get` only when localStorage is empty, for example in a new WebView
 profile. Drafts (`netpi.draft.<sessionId>`) and the last project used (`netpi.lastProject`) are local only.
 
+**Menus and popovers.** `Menu` (the kit's dropdown/context menu) and `Popover` are `position: fixed`, so a scroll
+anywhere in the window moves their anchor and not them: they **follow the anchor and stay open**. They close on a
+click outside, on Esc, and once the anchor has left the window (or, for `Popover`, been removed). A scroll never
+dismisses one — a chat that grows re-pins its list to the bottom on every streamed chunk, and closing on that took
+the top bar's favorites menu down mid-reply.
+
 **Tab bar.** Tabs scroll sideways with the wheel, drag to reorder, middle-click or the × to close. The `+` starts a
 new session in the project new sessions start in; next to it a chevron (`TopBar.svelte`) opens the **favorites**
 menu — one entry per starred project, a new session in it (idea-xzsy6z; they used to be buttons beside the `+`, and
@@ -656,7 +662,7 @@ Import from `@netpi/kit`. The build aliases it to `web/src/lib/kit/index.js`, an
 | `ConfirmButton` | `icon`, `label`, `confirmLabel`, `title`, `onconfirm`: the first click arms it for 2.5s, the second confirms |
 | `SearchInput` | `bind:value`, `placeholder`; Esc clears |
 | `Segmented` | `options` (`{ value, label, icon?, count?, tone?, title? }[]`), `bind:value`, `onchange`, `fit` (default `true`: steps down to labels only → icons + selected label → icons only to stay inside its container; the icon steps need an `icon` on every option). Buttons carry `data-value`. |
-| `Menu` | `items` (`{ label, icon?, hint?, checked?, danger?, disabled?, keepOpen?, onclick }`, `{ divider }`, `{ header }`; `keepOpen` for multi-select toggles), `trigger` snippet `({ toggle, open })`, `placement` (`bottom-end` / `bottom-start`); exported `openAt(x, y, items?)`, `openFor(el, items?)`, `close()` for context menus |
+| `Menu` | `items` (`{ label, icon?, hint?, checked?, danger?, disabled?, keepOpen?, onclick }`, `{ divider }`, `{ header }`; `keepOpen` for multi-select toggles), `trigger` snippet `({ toggle, open })`, `placement` (`bottom-end` / `bottom-start`); exported `openAt(x, y, items?)`, `openFor(el, items?)`, `close()` for context menus. Follows its anchor when anything scrolls; `openAt` has no anchor (a point), so nothing moves it |
 | `Pips` | `busy`, `capacity`, `queued`, `max` (a bar instead of pips above `max`) |
 | `Collapsible` | `title` or `header` snippet, `bind:open` |
 | `Markdown` | `text`, `highlight` (default `true`) |

@@ -2,7 +2,8 @@
   import { onMount, tick } from 'svelte';
   import { escLayer } from './modals/Modal.svelte';
   /**
-   * Floating panel anchored to an element (fixed positioning, so it escapes overflow clipping).
+   * Floating panel anchored to an element (fixed positioning, so it escapes overflow clipping). Follows its anchor
+   * when anything scrolls; closes on an outside click, on Esc, or when the anchor leaves the window.
    * placement: bottom-start | bottom-end | top-start | top-end
    */
   let { anchor, onclose, placement = 'bottom-start', width = undefined, class: cls = '', children } = $props();
@@ -36,17 +37,35 @@
     }
   }
 
+  /** True once the button this popover hangs on has left the window: there is nothing left to hang it on. */
+  function outOfView() {
+    if (!anchor?.isConnected) return true;
+    const r = anchor.getBoundingClientRect();
+    return r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth;
+  }
+
+  // The popover is fixed, so a scroll elsewhere in the window moves its anchor, not it: follow the anchor and stay
+  // open (the chat re-pinning as a reply arrives used to leave every popover hanging where the button used to be),
+  // and close only once what opened it is gone or has scrolled out of sight.
+  const onScroll = (e) => {
+    if (el?.contains(e.target)) return;
+    if (outOfView()) onclose?.();
+    else place();
+  };
+
   onMount(() => {
     layer = escLayer();
     place();
     tick().then(place);
     window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('keydown', onKey, true);
+    window.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', place);
     return () => {
       layer?.remove();
       window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', place);
     };
   });

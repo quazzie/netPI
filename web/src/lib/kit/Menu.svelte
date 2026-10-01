@@ -2,7 +2,7 @@
   import { tick } from 'svelte';
   import Icon from './Icon.svelte';
   /**
-   * Dropdown / context menu (fixed position, closes on outside click or Esc).
+   * Dropdown / context menu (fixed position; closes on outside click or Esc, follows its anchor when the page scrolls).
    *   items: ({ label, icon?, hint?, checked?, danger?, disabled?, keepOpen?, onclick } | { divider: true } | { header })[]
    *   (keepOpen: the menu stays open after the click, e.g. for multi-select toggles)
    * Use the `trigger` snippet ({ toggle, open }) for a dropdown button, or call openAt(x, y, items?) /
@@ -15,6 +15,7 @@
   let y = $state(0);
   let menuEl = $state();
   let anchorEl = $state();
+  let refEl = $state(); // what the open menu hangs on: the trigger, or the row a context menu was opened on
   let override = $state.raw(null);
   const list = $derived(override ?? items);
 
@@ -25,19 +26,38 @@
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     if (x + r.width > vw - 6) x = Math.max(6, vw - r.width - 6);
-    if (y + r.height > vh - 6) y = Math.max(6, y - r.height - (anchorEl ? anchorEl.getBoundingClientRect().height + 8 : 0));
+    if (y + r.height > vh - 6) y = Math.max(6, y - r.height - (refEl ? refEl.getBoundingClientRect().height + 8 : 0));
+  }
+
+  /** Put the menu back where refEl is now. */
+  function place() {
+    if (!refEl?.isConnected) return;
+    const r = refEl.getBoundingClientRect();
+    x = placement.endsWith('start') ? r.left : Math.max(6, r.right - minWidth);
+    y = r.bottom + 4;
+    clamp();
+  }
+
+  /** True once whatever opened the menu has left the window: there is nothing left to hang it on. */
+  function outOfView(el) {
+    if (!el?.isConnected) return true;
+    const r = el.getBoundingClientRect();
+    return r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth;
   }
 
   export function openAt(px, py, its) {
     override = its ?? null;
+    refEl = null; // a point in the viewport: nothing follows it
     x = px;
     y = py;
     open = true;
     clamp();
   }
   export function openFor(el, its) {
-    const r = el.getBoundingClientRect();
-    openAt(placement.endsWith('start') ? r.left : Math.max(6, r.right - minWidth), r.bottom + 4, its);
+    override = its ?? null;
+    refEl = el;
+    open = true;
+    place();
   }
   export function close() {
     open = false;
@@ -51,7 +71,7 @@
   $effect(() => {
     if (!open) return;
     const onDown = (e) => {
-      if (menuEl?.contains(e.target) || anchorEl?.contains(e.target)) return;
+      if (menuEl?.contains(e.target) || refEl?.contains(e.target)) return;
       open = false;
     };
     const onKey = (e) => {
@@ -61,17 +81,25 @@
         open = false;
       }
     };
+    // A scroll moves no part of the menu but the anchor, so the menu follows it instead of closing. Closing on every
+    // scroll in the window (what this did) meant any scroll anywhere took it down: the chat re-pinning to the bottom
+    // as a reply arrives, a file tree scrolling under a right-click menu, a shell row growing.
     const onScroll = (e) => {
-      if (!menuEl?.contains(e.target)) open = false;
+      if (menuEl?.contains(e.target)) return;
+      if (!refEl) return;
+      if (outOfView(refEl)) open = false;
+      else place();
     };
     window.addEventListener('pointerdown', onDown, true);
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onScroll);
     window.addEventListener('blur', close);
     return () => {
       window.removeEventListener('pointerdown', onDown, true);
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onScroll);
       window.removeEventListener('blur', close);
     };
   });

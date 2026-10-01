@@ -45,6 +45,7 @@ function resolveOnly(spec) {
 // for every section is the audit that proves each one stands on its own plus what is listed here.
 const NEEDS = {
   "composer popups": ["new session + agent run"],
+  "popups survive a chat update": ["new session + agent run"],
   "tabs": ["new session + agent run"],
   "plugin tab: Files": ["new session + agent run"],
   "guardrails: a tool call waits for your OK": ["new session + agent run"],
@@ -445,6 +446,108 @@ await shot(page, '12-mentions');
 check('mention popup (files.search)', (await page.locator('.popup .file').count()) > 0);
 await page.keyboard.press('Escape');
 await ta.fill('');
+
+}
+
+// ------------------------------------------------------------------ a popup that stays open while the chat moves underneath it
+if (want('popups survive a chat update')) {
+log('popups survive a chat update');
+{
+  // The bug: the menu closed on any scroll in the window, and a chat that grows re-pins its list to the bottom, so a
+  // reply arriving under an open menu took it down. Scrolling has to move a popup with its anchor, not dismiss it.
+  // The popover half below is the same rule for the composer's pickers: it already ignored scrolls, but it also never
+  // followed its button, so it was left hanging where the button used to be.
+  await page.setViewportSize({ width: 1280, height: 520 });   // a short window: a few rows overflow the chat list
+  await openStripTab('left', 'Projects');
+  const favRow = page.locator('.panel.left .prow').first();
+  await favRow.hover();
+  await favRow.locator('button[title^="Add to favorites"]').click();
+  await page.waitForTimeout(200);
+  check('a favorite project gives the top bar its chevron', (await page.locator('.topbar .quick-more').count()) === 1);
+
+  await ta.fill('Keep the popups open while this answer streams.');
+  await ta.press('Enter');
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 });
+  await page.waitForTimeout(400);
+  const overflows = await page.locator('.scroller').evaluate((el) => el.scrollHeight > el.clientHeight + 4).catch(() => false);
+
+  // the chevron menu (a Menu): open it mid-run, so every streamed chunk re-pins the chat under it
+  await ta.fill('Second answer, streamed under an open menu.');
+  await ta.press('Enter');
+  await page.waitForSelector('.composer.running', { timeout: 5000 }).catch(() => {});
+  await page.locator('.topbar .quick-more').click();
+  const opened = await page.waitForSelector('.np-menu', { timeout: 3000 }).then(() => true).catch(() => false);
+  check('the chevron menu opens', opened);
+  const anchorGap = async () => {
+    // the gap the menu keeps to its button (null once the menu is gone: every check below reports, not the first one)
+    const a = await page.locator('.topbar .quick-more').boundingBox();
+    const m = await page.locator('.np-menu').boundingBox().catch(() => null);
+    if (!a || !m) return null;
+    return { dx: Math.round(m.x - (a.x + a.width - 220)), dy: Math.round(m.y - (a.y + a.height)) };
+  };
+  const before = await anchorGap();
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 });
+  await page.waitForTimeout(300);
+  const stillOpen = opened && (await page.locator('.np-menu').count()) === 1;
+  check('the chat list was big enough to scroll (the case the bug needed)', overflows);
+  check('a reply streaming under an open menu does not close it', stillOpen);
+  const after = await anchorGap();
+  check('the menu stays attached to the button that opened it', !!after && !!before && Math.abs(after.dx - before.dx) < 4 && Math.abs(after.dy - before.dy) < 4,
+    stillOpen ? `moved ${after.dx - before.dx}px across, ${after.dy - before.dy}px down` : 'the menu was gone');
+
+  // a scroll the user makes in the chat keeps it open too, and one that carries the anchor away still closes it
+  if (stillOpen) {
+    await page.mouse.move(640, 260);
+    await page.mouse.wheel(0, -400);
+    await page.waitForTimeout(300);
+    check('scrolling the chat under the menu keeps it open', (await page.locator('.np-menu').count()) === 1);
+    await shot(page, '12b-menu-survives');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    check('Esc still closes the menu', (await page.locator('.np-menu').count()) === 0);
+  } else {
+    check('scrolling the chat under the menu keeps it open', false, 'the menu had already closed');
+    await shot(page, '12b-menu-survives');
+    await page.keyboard.press('Escape');
+  }
+
+  // the composer's project picker (a Popover): same rule, and it has to keep up with its button
+  const projBtn = page.locator('.composer button[aria-label="Project"]').first();
+  if (await projBtn.count()) {
+    await projBtn.click();
+    const pop = page.locator('.popover');
+    if (await pop.first().waitFor({ timeout: 3000 }).then(() => true).catch(() => false)) {
+      const popAt = async () => {
+        const a = await projBtn.boundingBox();
+        const p = await pop.first().boundingBox().catch(() => null);
+        if (!a || !p) return null;
+        return { dx: Math.round(p.x - a.x), gap: Math.round(a.y - (p.y + p.height)) }; // placement puts the bottom 6px above the button
+      };
+      const pBefore = await popAt();
+      check('the project picker opens above its button', !!pBefore && Math.abs(pBefore.gap - 6) < 4, `${pBefore?.gap}px above`);
+      await ta.fill('A third answer, streamed under the open project picker.');
+      await ta.press('Enter');
+      await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 60_000 });
+      await page.waitForTimeout(300);
+      const popOpen = (await page.locator('.popover').count()) === 1;
+      check('a reply streaming under the project picker does not close it', popOpen);
+      const pAfter = await popAt();
+      check('the project picker stays on its button', popOpen && !!pBefore && !!pAfter && Math.abs(pAfter.gap - pBefore.gap) < 4 && Math.abs(pAfter.dx - pBefore.dx) < 4,
+        popOpen ? `${pBefore.dx}px across / ${pBefore.gap}px above → ${pAfter.dx}px across / ${pAfter.gap}px above` : 'the popover had closed');
+      await page.keyboard.press('Escape');
+      await ta.fill('');
+    } else check('the project picker opens', false);
+  }
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  // leave the state the sections after this one expect: the favorite is gone again (the next one stars a project itself)
+  await openStripTab('left', 'Projects');
+  const stillFav = page.locator('.panel.left .prow').first();
+  await stillFav.hover();
+  await stillFav.locator('button[title^="Remove from favorites"]').click();
+  await page.waitForTimeout(200);
+  check('the favorite is given back (the next section stars its own)', (await page.locator('.topbar .quick-more').count()) === 0);
+  await ta.fill('');
+}
 
 }
 // ------------------------------------------------------------------ tabs
