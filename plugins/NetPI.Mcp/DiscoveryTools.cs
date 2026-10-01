@@ -28,8 +28,8 @@ internal sealed class McpSearchTool(IPluginContext ctx, ServerManager manager) :
     public ToolDefinition Definition { get; } = new()
     {
         Name = "mcp_search", Label = "Find MCP tool", Category = "mcp", ReadOnly = true, SummaryArg = "query",
-        Description = "Find external tools. Search summaries, then request detail=schema for one exact tool id before mcp_call.",
-        PromptGuidelines = ["For external capabilities, use mcp_search, inspect only the selected schema, then mcp_call with its revision."],
+        Description = "Find external tools and resources. Search summaries, then request detail=schema for one exact tool id before mcp_call; read a resource's uri with mcp_resource.",
+        PromptGuidelines = ["For external capabilities, use mcp_search, inspect only the selected schema, then mcp_call with its revision.", "A resource uri from mcp_search is read with mcp_resource."],
         Parameters = JsonNode.Parse("""{"type":"object","properties":{"query":{"type":"string"},"server":{"type":"string"},"detail":{"type":"string","enum":["summary","schema"]},"limit":{"type":"integer","minimum":1,"maximum":5}},"required":["query"],"additionalProperties":false}""")!.AsObject(),
     };
     internal static IReadOnlyList<IAgentTool> Eligible(IPluginContext ctx, ToolContext context) =>
@@ -37,15 +37,20 @@ internal sealed class McpSearchTool(IPluginContext ctx, ServerManager manager) :
             ctx.Services.Get<IAgentRuntime>()?.GetBySession(context.SessionId), ctx.Sessions.GetSession(context.SessionId),
             ctx.Settings.Get("agents.maxDepth", 3));
 
-    internal static List<RemoteTool> Rank(IEnumerable<RemoteTool> tools, string query, int limit)
+    internal static List<RemoteTool> Rank(IEnumerable<RemoteTool> tools, string query, int limit) =>
+        Score(tools, query, t => t.Definition.Name + " " + t.RemoteName, t => t.SearchText).Take(limit).Select(s => s.Item).ToList();
+
+    /// <summary>One ranked candidate: a tool, or a resource, scored by the same local rules.</summary>
+    internal static List<(double Score, T Item, string Id)> Score<T>(IEnumerable<T> items, string query,
+        Func<T, string> exact, Func<T, string> text)
     {
         var words = Tokens(query).Distinct(StringComparer.Ordinal).ToArray();
-        var docs = tools.Select(t => (Tool: t, Words: Tokens(t.SearchText).ToArray())).ToList();
+        var docs = items.Select(i => (Item: i, Exact: exact(i), Words: Tokens(text(i)).ToArray())).ToList();
         var average = docs.Count == 0 ? 1 : docs.Average(d => d.Words.Length);
         var frequencies = words.ToDictionary(w => w, w => docs.Count(d => d.Words.Contains(w, StringComparer.Ordinal)), StringComparer.Ordinal);
-        double Score((RemoteTool Tool, string[] Words) doc)
+        double Score((T Item, string Exact, string[] Words) doc)
         {
-            if (doc.Tool.Definition.Name == query || doc.Tool.RemoteName == query) return 10000;
+            if (doc.Exact.Split(' ').Contains(query.Trim(), StringComparer.Ordinal)) return 10000;
             double score = 0;
             foreach (var word in words)
             {
@@ -57,8 +62,8 @@ internal sealed class McpSearchTool(IPluginContext ctx, ServerManager manager) :
             }
             return score;
         }
-        return docs.Select(d => (d.Tool, Score: Score(d))).Where(d => d.Score > 0)
-            .OrderByDescending(d => d.Score).ThenBy(d => d.Tool.Definition.Name, StringComparer.Ordinal).Take(limit).Select(d => d.Tool).ToList();
+        return docs.Select(d => (Score: Score(d), Item: d.Item, Id: d.Exact)).Where(d => d.Score > 0)
+            .OrderByDescending(d => d.Score).ThenBy(d => d.Id, StringComparer.Ordinal).ToList();
     }
     private static IEnumerable<string> Tokens(string text) =>
         Regex.Matches(Regex.Replace(text, "([a-z])([A-Z])", "$1 $2").ToLowerInvariant(), "[a-z0-9]+", RegexOptions.CultureInvariant)
@@ -75,13 +80,28 @@ internal sealed class McpSearchTool(IPluginContext ctx, ServerManager manager) :
         var server = args.TryGetProperty("server", out var s) ? s.GetString() : null;
         var eligible = Eligible(ctx, context).ToHashSet(ReferenceEqualityComparer.Instance);
         var catalog = manager.Catalog().Where(t => eligible.Contains(t) && (server is null || t.ServerId == server)).ToList();
-        var matches = Rank(catalog, query, limit);
+        var resources = detail == "schema" ? new List<RemoteResource>() : manager.Resources(server);
+        // Tools and resources compete in one pool, so a query for a skill document does not have to know which it is.
+        var ranked = McpSearchTool.Score(catalog, query, t => t.Definition.Name + " " + t.RemoteName, t => t.SearchText)
+            .Select(r => (r.Score, Kind: "tool", Id: r.Id, Value: (object)r.Item))
+            .Concat(McpSearchTool.Score(resources, query, r => r.Uri + " " + r.Name, r => r.SearchText)
+                .Select(r => (r.Score, Kind: "resource", Id: r.Id, Value: (object)r.Item)))
+            .OrderByDescending(r => r.Score).ThenBy(r => r.Id, StringComparer.Ordinal).Take(limit).ToList();
         var budget = ToolResultLimit.Fit(ctx.Settings, manager.Limit("mcp.discoveryChars", 4000, 1024, 20000));
         var disclosures = new JsonArray(); var results = new JsonArray();
         var known = DiscoveryState.Current(ctx.Sessions, context.SessionId);
-        foreach (var tool in matches)
+        foreach (var entry in ranked)
         {
+            if (entry.Kind == "resource")
+            {
+                var resource = (RemoteResource)entry.Value;
+                if (results.ToJsonString().Length + 400 > budget - 100) break;
+                results.Add(resource.Summary(manager.Available(resource.ServerId)));
+                continue;
+            }
+            var tool = (RemoteTool)entry.Value;
             var result = tool.Summary(manager.Available(tool.ServerId));
+            result["kind"] = "tool";
             JsonObject? disclosure = null;
             if (detail == "schema")
             {

@@ -16,6 +16,8 @@ internal sealed record ServerConfig
     public Dictionary<string, string> Env { get; init; } = [];
     public Dictionary<string, string> HeaderEnv { get; init; } = [];
     public string[]? Tools { get; init; }
+    /// <summary>Resource URIs this server may expose. Null: every advertised resource; empty: none.</summary>
+    public string[]? Resources { get; init; }
     public string[] Pinned { get; init; } = [];
     public string[] ReadOnly { get; init; } = [];
     public string[] Synonyms { get; init; } = [];
@@ -31,7 +33,8 @@ internal sealed record ServerConfig
             Command = Str(value, "command"), Args = Strings(value, "args") ?? [],
             Cwd = Str(value, "cwd", defaultCwd), Url = Str(value, "url"),
             Env = Map(value, "env"), HeaderEnv = Map(value, "headerEnv"),
-            Tools = Strings(value, "tools"), Pinned = Strings(value, "pinned") ?? [],
+            Tools = Strings(value, "tools"), Resources = Strings(value, "resources"),
+            Pinned = Strings(value, "pinned") ?? [],
             ReadOnly = Strings(value, "readOnly") ?? [], Synonyms = Strings(value, "synonyms") ?? [],
             ConnectTimeoutMs = Int(value, "connectTimeoutMs", 5000, 100, 30000),
             CallTimeoutMs = Int(value, "callTimeoutMs", 60000, 100, 300000),
@@ -39,7 +42,7 @@ internal sealed record ServerConfig
         if (c.Transport is not ("stdio" or "http")) throw new RpcException("bad_request", "Transport must be stdio or http.");
         if (c.Transport == "stdio" && (string.IsNullOrWhiteSpace(c.Command) || !Path.IsPathFullyQualified(c.Cwd)))
             throw new RpcException("bad_request", "A stdio server requires a command and an absolute working directory.");
-        if (c.Transport == "http" && (!Uri.TryCreate(c.Url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(uri.UserInfo)))
+        if (c.Transport == "http" && (!Uri.TryCreate(c.Url, UriKind.Absolute, out var url) || url.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(url.UserInfo)))
             throw new RpcException("bad_request", "An HTTP server requires an http/https URL without embedded credentials.");
         foreach (var (name, source) in c.Env)
             if (name.Length > 128 || name.Contains('=') || name.IndexOf('\0') >= 0 || !ValidEnv(source))
@@ -49,6 +52,9 @@ internal sealed record ServerConfig
                 || name.StartsWith("Mcp-", StringComparison.OrdinalIgnoreCase) || name.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("Accept", StringComparison.OrdinalIgnoreCase) || name.Equals("Host", StringComparison.OrdinalIgnoreCase))
                 throw new RpcException("bad_request", "Invalid or reserved HTTP header. Values must name source environment variables.");
+        foreach (var uri in c.Resources ?? [])
+            if (uri.Length == 0 || uri.Length > 2048 || uri.Any(char.IsControl) || uri.Any(char.IsWhiteSpace))
+                throw new RpcException("bad_request", "resources entries must be a URI or a prefix ending in '*'.");
         return c;
     }
     public JsonObject Json() => new()
@@ -56,10 +62,14 @@ internal sealed record ServerConfig
         ["enabled"] = Enabled, ["transport"] = Transport, ["command"] = Command,
         ["args"] = Array(Args), ["cwd"] = Cwd, ["url"] = Url,
         ["env"] = Object(Env), ["headerEnv"] = Object(HeaderEnv),
-        ["tools"] = Tools is null ? null : Array(Tools), ["pinned"] = Array(Pinned), ["readOnly"] = Array(ReadOnly),
+        ["tools"] = Tools is null ? null : Array(Tools), ["resources"] = Resources is null ? null : Array(Resources),
+        ["pinned"] = Array(Pinned), ["readOnly"] = Array(ReadOnly),
         ["synonyms"] = Array(Synonyms), ["connectTimeoutMs"] = ConnectTimeoutMs, ["callTimeoutMs"] = CallTimeoutMs,
     };
     public bool Exposes(string name) => Tools is null || Tools.Contains(name, StringComparer.Ordinal);
+    /// <summary>An exact URI, or a prefix when the entry ends in <c>*</c>.</summary>
+    public bool ExposesResource(string uri) => Resources is null || Resources.Any(entry =>
+        entry.EndsWith('*') ? uri.StartsWith(entry[..^1], StringComparison.Ordinal) : string.Equals(entry, uri, StringComparison.Ordinal));
     public string Secret(string source) => Environment.GetEnvironmentVariable(source) ?? throw new InvalidOperationException($"Environment variable '{source}' is not set.");
     public string Redact(string text)
     {

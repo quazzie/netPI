@@ -875,7 +875,7 @@ details: the same value as JSON (the chat shows it)
 
 ## Deferred MCP tools
 
-[NetPI.Mcp](PLUGIN-MCP.md) registers concrete external tools but sends only `mcp_search` and `mcp_call` by default. `mcp_search {query,server?,detail?:"summary"|"schema",limit?:1..5}` returns bounded summaries or one selected schema and revision. `mcp_call {id,revision,arguments}` resolves the eligible concrete tool before policy hooks. Pinned tools expose ordinary schemas.
+[NetPI.Mcp](PLUGIN-MCP.md) registers concrete external tools but sends only `mcp_search`, `mcp_call` and `mcp_resource` by default. `mcp_search {query,server?,detail?:"summary"|"schema",limit?:1..5}` returns bounded summaries or one selected schema and revision. `mcp_call {id,revision,arguments}` resolves the eligible concrete tool before policy hooks. Pinned tools expose ordinary schemas. `mcp_resource {uri,server?}` reads one remote resource; results are tagged `kind:"tool"` or `kind:"resource"` so a search for a document and a search for a capability rank in one pool. Only a URI the server advertised can be read.
 
 Discovery result Details: `{kind:"mcp-discovery",schemas:[{id,revision,serverId}]}`; these retained disclosures authorize the exact revision. Remote result Details: `{kind:"mcp",serverId,tool,structuredContent,content:[metadata]}`, with indirect dispatch adding `resolvedTool` and effective `arguments`. Text/structured content is model-facing; supported images use ImagePart. Binary data is excluded from metadata and text, resource links remain links.
 
