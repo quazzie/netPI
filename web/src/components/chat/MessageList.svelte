@@ -77,15 +77,30 @@
   }
 
   async function loadEarlier() {
+    // the button is the first thing in the content, so the first item is the top of what the reader sees: remember its
+    // place in the content (a scroll-independent coordinate, read in the scroller's own space so no offsetParent
+    // assumption is involved) to restore the reading position once the older page has landed
     const first = content.querySelector('[data-key]');
     const key = first?.dataset.key;
-    const before = first?.offsetTop ?? 0;
-    stick = false;
+    const srect = scroller.getBoundingClientRect();
+    const anchorY = key ? first.getBoundingClientRect().top - srect.top + scroller.scrollTop : 0;
     const changed = await chat.loadEarlier();
-    if (!changed) return;
+    if (!changed) return; // nothing was prepended: nothing moved, and the bottom-pin state is left alone
+    stick = false; // the reader is in the history now: content that grows while they read must not pin them to the bottom
     await tick();
     const el = key ? content.querySelector(`[data-key="${CSS.escape(key)}"]`) : null;
-    if (el) scroller.scrollTop += el.offsetTop - before;
+    if (el) {
+      // the older page grew the content above the anchor by (anchorY_new - anchorY); scrolling by exactly that keeps
+      // the viewport where the reader was (or where they scrolled to while the load was in flight), in the same
+      // frame the new nodes are laid out
+      const srect2 = scroller.getBoundingClientRect();
+      scroller.scrollTop += el.getBoundingClientRect().top - srect2.top + scroller.scrollTop - anchorY;
+    } else {
+      // the anchor is gone (a full reload of the window raced the load): the top of the new content is the only
+      // position that makes sense
+      scroller.scrollTop = 0;
+    }
+    lastTop = scroller.scrollTop; // the programmatic scroll is not the user moving: the pin logic must not act on it
   }
 
   async function jumpToLatest() {
