@@ -231,8 +231,13 @@ try {
     $oldRerun = $env:NETPI_E2E_RERUN
     $env:NETPI_E2E_RERUN = ".\scripts\e2e.ps1 -Only {ids} -SkipBuild`n  .\scripts\e2e.ps1 -Failed -SkipBuild        (everything still failing, across runs)"
     try {
-        & dotnet $dll @argList 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath (Join-Path $out 'console.txt')
-        $code = $LASTEXITCODE
+        # UTF-8 on purpose: Tee-Object writes UTF-16 in Windows PowerShell 5.1, and console.txt is read with grep
+        $console = [IO.StreamWriter]::new((Join-Path $out 'console.txt'), $false, [Text.UTF8Encoding]::new($false))
+        try {
+            & dotnet $dll @argList 2>&1 | ForEach-Object { $line = "$_"; $console.WriteLine($line); $console.Flush(); $line }
+            $code = $LASTEXITCODE
+        }
+        finally { $console.Dispose() }
     }
     finally {
         if ($hadRerun) { $env:NETPI_E2E_RERUN = $oldRerun } else { Remove-Item Env:NETPI_E2E_RERUN -ErrorAction SilentlyContinue }
