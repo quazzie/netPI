@@ -712,8 +712,13 @@ the first error.
 
 ```ts
 details: { model, file?, questions /* as sent */, count, unsure, ms,
-  items: { index /* 1-based */, text /* ≤ 300 chars */, answers: { [id]: { answer, confidence } }, unsure, ms }[] }
+  items: { index /* 1-based */, text /* ≤ 300 chars */, answers: { [id]: { answer, confidence } }, unsure, ms }[],
+  usage? /* { promptTokens, cachedTokens, completionTokens, cacheHitRate } — what the server reported; null when it reported none */ }
 ```
+
+The `usage` block is what makes the cost of a decision measurable rather than assumed: `cachedTokens` against
+`promptTokens` is the only place the cache-reuse claim can be checked, and on an endpoint that does not cache it reads
+0, which is the answer the feature's default-off setting exists to protect against.
 
 ---
 
