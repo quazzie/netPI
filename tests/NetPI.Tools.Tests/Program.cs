@@ -8,5 +8,6 @@ ShellTests.Register(runner);
 OpenTests.Register(runner);
 LoadTests.Register(runner);
 var code = await runner.RunAsync(args);
-try { Directory.Delete(Path.Combine(Path.GetTempPath(), "netpi-tests"), recursive: true); } catch { }
+// only this run's root, so a concurrent run of the same suite keeps its files
+try { Directory.Delete(T.TestRoot, recursive: true); } catch { }
 return code;

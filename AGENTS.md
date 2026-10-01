@@ -51,10 +51,12 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   that every session shares.
 - Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
   Agent, Aux, Host. End-to-end (real server, mock model): `.\scripts\e2e.ps1` (below; `docs/TESTING.md`).
-- **The test loop: one big run, then only the failures.** `.\scripts\test.ps1` builds the five suites, runs them once
-  (log in `artifacts/testlogs`), and prints the failing names as a paste-ready `-Only` command — re-run that while
-  fixing (seconds, not ~90 s), and the full run again before merging. `-Suite Aux`, `-Only "settings:"` (substring,
-  OR-ed), `-SkipBuild`. Never re-run the whole set to check one fix.
+- **The test loop: one big run, then only the failures.** `.\scripts\test.ps1` builds the selected suites once
+  (one generated solution), runs them (2 processes at once by default; `-Parallel 3` for three, `-Serial` for one),
+  keeps the log and timings in `artifacts/testlogs`, and prints the failing names as a paste-ready `-Only` command.
+  Re-run those while fixing, and the full run again before merging. `-Suite Aux`, `-Only "settings:"` (substring,
+  OR-ed), `-SkipBuild`. Never re-run the whole set to check one fix. The summary shows each suite's process time
+  next to its own reported test time: a gap there means the runner waited on output that never arrived.
 - **End-to-end: pick what your change can reach; never the whole suite while you work.** `.\scripts\e2e.ps1 -Changed` runs
   the tests your changed files can affect (`tests/NetPI.E2E/areas.json` maps them); `-Only <id|substring>`, `-Tag <area>`,
   `-Smoke`, `-Failed` (what failed and has not passed since, across runs) and `-List` pick by hand. One test is ~2 s, one
