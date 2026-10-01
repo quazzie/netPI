@@ -237,13 +237,33 @@ agents) share nothing: ports, work folders, screenshots and result folders are p
 
 **Results.** Every run leaves `artifacts/e2elogs/<run>/`: `report.json` (selection, per-test outcome and time, per-shard
 setup/test/teardown time, revision), `console.txt` (from the script), `screenshots/`, and `failures/<id>.txt` for each failed
-test: the message, the test's console output, the server log since it started, the requests the mock model server got and the
-client events. All failures of a run are listed together with a rerun command; `failing.json` remembers them across runs until
+test: the state of the server asked right after the failure (below), the message, the test's console output, the server log
+since it started, the requests the mock model server got and the client events. No section of that file is ever empty: one that has
+nothing says why, and the runner complains when it writes one that is. All failures of a run are listed together with a rerun command; `failing.json` remembers them across runs until
 they pass (`-Failed`). The 20 newest run folders are kept. Exit codes: 0 passed, 1 a test failed or timed out, 2 bad selection,
 3 a server would not start (that shard's tests are reported as *not run*), 4 the runner itself failed.
 
-**A timed-out test is contained.** Its body keeps running in the background, so its server is stopped and the rest of its shard
-gets a fresh one: it can never mutate the next test's fixture. `--self-test` pins this (and was mutation-checked).
+**A failed test is contained.** Its body may keep running in the background (a timeout), its server may be wedged, and whatever it
+left running is still at work, so its server is stopped and the rest of its shard gets a fresh one: it can never mutate the next
+test's fixture, and one hang cannot turn into a dozen failures that each wait out their own 30 s timeout (that is what happened
+on 2026-10-01: one wedged server, six "failures"). `--self-test` pins this (and was mutation-checked).
+
+**What is wrong with the server.** Right after any failure the runner asks the server four small questions at once, each with a
+2 s deadline: `/api/health`, `app.info` (touches nothing), `sessions.list` (reads the database) over HTTP, and `app.info` over the
+test's own WebSocket, and reads the process (alive? exit code, threads, CPU over the window). The failure file's `server state`
+section, the console and `report.json` (`server`) carry the verdict: *the process is gone*, *wedged* (nothing answers: the thread
+pool is starved or the process is frozen, with idle or busy CPU), *RPC dispatch is stuck*, *the database path is blocked*, *this
+test's WebSocket is dead*, or *responsive* (the server was fine: the failure is the test's own, an RPC that was merely slow). An RPC
+that times out carries the same verdict in its message (`RPC projects.create timed out after 30000ms` / `server: wedged: …`).
+For a wedge, the server's own log is the second half of the evidence: its stall watchdog names the handler or the starved
+pool (`docs/DEBUGGING.md`, "The app stopped answering"). `inspect.triage` freezes a real server process and checks the verdict.
+
+**A test ends with nothing of its own running.** When a test passes, the runner waits for the agents it started to finish (up to 5 s,
+stopping what will not) before the next test begins. Anything that was still running when the test returned is a **leak**: a `LEAK`
+line under the test and in the summary, `leak` in `report.json`. It is a warning, not a failure, but a leak is a race waiting for the
+next test: a worker still running makes its model requests inside the next test's window (`provider.anthropic-thinking` failed once
+because `chat.fork` returned while a background worker's report was about to wake its parent). Wait for the final idle, as
+`subagents.report-wakes-parent` does. A leak that will not stop also costs the shard its server.
 
 **Ids and tags.** An id is `area.name` (`retry.drop`); the area is also a tag. `tests/NetPI.E2E/Catalog.cs` holds the other tags.
 `smoke` is one representative test per boundary: startup, chat and a real file tool, the Responses/Chat/Anthropic adapters, abort

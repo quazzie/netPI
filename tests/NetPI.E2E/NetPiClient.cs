@@ -20,6 +20,9 @@ public sealed class Ev
     public override string ToString() => $"#{Index} {Type} {D.GetRawText()}";
 }
 
+/// <summary>An RPC that got no answer in time. Distinct from an error answer: <see cref="Env.Rpc"/> adds what is wrong with the server.</summary>
+public sealed class RpcTimeoutException(string message) : AssertException(message);
+
 public sealed class RpcError(string method, string code, string detail) : Exception($"{method}: {code}: {detail}")
 {
     public string Code { get; } = code;
@@ -124,7 +127,7 @@ public sealed class NetPiClient : IAsyncDisposable
         _pending[id] = tcs;
         await SendAsync(new { t = "rpc", id, m = method, p = p ?? new { } });
         try { return await tcs.Task.WaitAsync(TimeSpan.FromMilliseconds(timeoutMs)); }
-        catch (TimeoutException) { _pending.TryRemove(id, out _); throw new AssertException($"RPC {method} timed out after {timeoutMs}ms"); }
+        catch (TimeoutException) { _pending.TryRemove(id, out _); throw new RpcTimeoutException($"RPC {method} timed out after {timeoutMs}ms"); }
         catch (RpcError e) { throw new RpcError(method, e.Code, e.Detail); }
     }
 

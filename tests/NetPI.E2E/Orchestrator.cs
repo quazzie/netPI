@@ -19,6 +19,12 @@ public sealed class TestResult
     public string? Message { get; init; }
     public string? Artifact { get; init; }
     public string? Reason { get; init; }
+    /// <summary>What the server answered when asked after this test failed (null for a pass): "responsive", or what is wrong with it.</summary>
+    public string? Server { get; init; }
+    /// <summary>What the test left running when it returned (agents it never waited for), if anything.</summary>
+    public string? Leak { get; init; }
+    /// <summary>The leak could not be cleaned up (an agent that would not stop, or a server that could not be asked): the server is not reused.</summary>
+    public bool LeakUnclean { get; init; }
 }
 
 /// <summary>What one shard runs against: the tests bound to its own server, and how to explain a failure on it.</summary>
@@ -27,6 +33,10 @@ public sealed class ShardContext : IAsyncDisposable
     public required TestRunner Runner { get; init; }
     public Func<Task<DiagMark>> Mark { get; init; } = () => Task.FromResult(default(DiagMark));
     public Func<DiagMark, Task<string>> Diagnose { get; init; } = _ => Task.FromResult("");
+    /// <summary>Asks the server whether it is alive and where it is stuck, once a test has failed.</summary>
+    public Func<Task<ServerTriage>> Triage { get; init; } = () => Task.FromResult(ServerTriage.Unknown);
+    /// <summary>Called when a test has returned: waits for what it left running to finish, stops what will not, reports the leak.</summary>
+    public Func<Task<SettleResult>> Settle { get; init; } = () => Task.FromResult(SettleResult.Quiet);
     public Func<ValueTask> Close { get; init; } = () => ValueTask.CompletedTask;
     public IReadOnlyDictionary<string, long> Setup { get; init; } = new Dictionary<string, long>();
 
@@ -43,8 +53,10 @@ public sealed class RunReport
 
 /// <summary>
 /// Runs the selected tests: splits them over shards (each a server + mock of its own) by how long they took last time, runs
-/// every shard's tests in registration order, contains a timed-out test by stopping its server, and leaves what it saw behind:
-/// a failure file per failed test, report.json, the timing history and the list of tests that are failing right now.
+/// every shard's tests in registration order, and contains a failure: a test that did not pass (failed or timed out) is asked
+/// "is your server still alive?" and its server is stopped, so the rest of the shard starts on a fresh one and a wedged server
+/// cannot turn one failure into a dozen. What it saw is left behind: a failure file per failed test, report.json, the timing
+/// history and the list of tests that are failing right now.
 /// </summary>
 public sealed class Orchestrator
 {
@@ -167,9 +179,12 @@ public sealed class Orchestrator
                 var r = await RunOneAsync(ctx!, next, index, stats.Length);
                 st.TestsMs += t.ElapsedMilliseconds;
                 results.Add(r);
-                // A timed-out body may still be running against this server. It must not reach the next test's fixture: stop the
-                // server (the body then fails on its own) and give the rest of the shard a fresh one. --fresh does this every time.
-                if (r.Outcome == Outcome.TimedOut || Options.Fresh)
+                // A failed test leaves a server in a state nobody knows: a timed-out body may still be running against it, a wedged
+                // server answers nothing, a leaked agent is still at work. None of that may reach the next test's fixture (one hang
+                // once turned into six "failures" on the same shard, each waiting out its 30 s timeout): stop the server and give the
+                // rest of the shard a fresh one. A test that passed but left something running that would not stop does the same.
+                // --fresh does this every time.
+                if (r.Outcome != Outcome.Passed || r.LeakUnclean || Options.Fresh)
                 {
                     var td = Stopwatch.StartNew();
                     await CloseQuietly(ctx);
@@ -237,30 +252,54 @@ public sealed class Orchestrator
             message = ex is AssertException ? ex.Message : ex.ToString();
         }
         var ms = sw.ElapsedMilliseconds;
-        string? artifact = null;
+        string? artifact = null, server = null, leak = null;
+        var unclean = false;
         if (outcome != Outcome.Passed)
         {
+            // first the server (what is wrong with it is the most useful thing to know), then what it logged and said
+            ServerTriage triage;
+            try { triage = await ctx.Triage(); } catch (Exception ex) { triage = ServerTriage.Of("could not be checked: " + ex.Message); }
+            server = triage.Summary;
             string diag;
-            try { diag = await ctx.Diagnose(mark); } catch (Exception ex) { diag = "diagnostics failed: " + ex.Message; }
-            artifact = WriteFailureFile(bound, w.Attempt, outcome, ms, shard, message!, buffer.ToString(), diag);
+            try { diag = await ctx.Diagnose(mark); } catch (Exception ex) { diag = "--- diagnostics failed\n" + ex.Message + "\n"; }
+            artifact = WriteFailureFile(bound, w.Attempt, outcome, ms, shard, message!, buffer.ToString(), diag, triage);
+        }
+        else
+        {
+            // the server stays for the next test only if the test left nothing of its own running on it
+            try
+            {
+                var settled = await ctx.Settle();
+                leak = settled.Leak;
+                unclean = !settled.Clean;
+            }
+            catch (Exception ex) { leak = "could not check for leftovers: " + ex.Message.Split('\n')[0]; unclean = true; }
         }
         var result = new TestResult
         {
             Id = bound.Id, Name = bound.Name, Outcome = outcome, Ms = ms, Checks = counter[0], Shard = shard, Attempt = w.Attempt,
-            Message = message, Artifact = artifact,
+            Message = message, Artifact = artifact, Server = server, Leak = leak, LeakUnclean = unclean,
         };
         PrintOne(result, buffer.ToString(), shards);
         return result;
     }
 
-    private string? WriteFailureFile(TestCase c, int attempt, Outcome outcome, long ms, int shard, string message, string output, string diag)
+    private string? WriteFailureFile(TestCase c, int attempt, Outcome outcome, long ms, int shard, string message, string output, string diag, ServerTriage triage)
     {
         try
         {
             var dir = Path.Combine(Options.OutDir, "failures");
             Directory.CreateDirectory(dir);
             var file = Path.Combine(dir, attempt > 1 || Options.Repeat > 1 ? $"{c.Id}-{attempt}.txt" : $"{c.Id}.txt");
-            File.WriteAllText(file, $"{c.Id}\n{c.Name}\n{outcome} after {ms} ms on shard {shard + 1} (attempt {attempt})\n\n--- message\n{message}\n\n--- test output\n{output}\n{diag}");
+            // A section with nothing in it reads as "nothing happened" and says nothing: every one says what it has instead.
+            if (output.Trim().Length == 0) output = "(the test printed nothing)\n";
+            if (diag.Trim().Length == 0) diag = "--- diagnostics\n(none were captured for this test: the runner that produced this file has no server to ask)\n";
+            var text = $"{c.Id}\n{c.Name}\n{outcome} after {ms} ms on shard {shard + 1} (attempt {attempt})\n\n" +
+                       $"--- server state (asked right after the failure)\n{triage.Describe()}\n\n" +
+                       $"--- message\n{message}\n\n--- test output\n{output}\n{diag}";
+            File.WriteAllText(file, text);
+            var empty = Evidence.EmptySections(text);
+            if (empty.Count > 0) Locked(() => Console.WriteLine($"  evidence incomplete for {c.Id}: empty section(s) {string.Join(", ", empty)} (a bug in the runner)"));
             return file;
         }
         catch { return null; }
@@ -278,12 +317,14 @@ public sealed class Orchestrator
             if (r.Outcome == Outcome.Passed)
             {
                 Console.WriteLine($"  PASS  {tag}{r.Id}{rep}  {r.Name} ({r.Ms}ms, {r.Checks} checks)");
+                if (r.Leak is not null) Console.WriteLine($"        LEAK: the test {r.Leak}");
                 return;
             }
             var lines = (r.Message ?? "").Split('\n');
             var head = string.Join("\n        ", lines.Take(14));
             Console.WriteLine($"  {(r.Outcome == Outcome.TimedOut ? "TIME" : "FAIL")}  {tag}{r.Id}{rep}  {r.Name} ({r.Ms}ms)\n        {head}");
             if (lines.Length > 14) Console.WriteLine($"        … {lines.Length - 14} more lines");
+            if (r.Server is not null && r.Server != "responsive" && r.Server != "not checked") Console.WriteLine($"        server: {r.Server}");
             if (r.Artifact is not null) Console.WriteLine($"        details: {r.Artifact}");
         }
     }
@@ -301,6 +342,9 @@ public sealed class Orchestrator
                           $"(setup {setup:0.0}s + tests {tests:0.0}s + teardown {down:0.0}s, {shardInfo.Length} shard(s))");
         var slow = results.Where(r => r.Outcome != Outcome.NotRun).OrderByDescending(r => r.Ms).Take(5).ToList();
         if (slow.Count > 0 && results.Count > 5) Console.WriteLine("slowest: " + string.Join(", ", slow.Select(r => $"{r.Id} {r.Ms / 1000.0:0.0}s")));
+
+        foreach (var r in results.Where(r => r.Leak is not null))
+            Console.WriteLine($"LEAK   {r.Id}: {r.Leak}. A test ends with nothing of its own running: the next test shares the server.");
 
         var flaky = results.GroupBy(r => r.Id).Where(g => g.Count() > 1 && g.Any(r => r.Outcome == Outcome.Passed) && g.Any(r => r.Outcome is Outcome.Failed or Outcome.TimedOut)).ToList();
         foreach (var g in flaky)
@@ -363,6 +407,7 @@ public sealed class Orchestrator
             {
                 ["id"] = r.Id, ["name"] = r.Name, ["outcome"] = r.Outcome.ToString(), ["ms"] = r.Ms, ["checks"] = r.Checks,
                 ["shard"] = r.Shard + 1, ["attempt"] = r.Attempt, ["message"] = r.Message, ["artifact"] = r.Artifact, ["reason"] = r.Reason,
+                ["server"] = r.Server, ["leak"] = r.Leak,
             }).ToArray()),
         };
         return new RunReport { Results = results, Json = json, ExitCode = exit, OutDir = Options.OutDir };
