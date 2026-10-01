@@ -114,12 +114,16 @@ web_fetch (plugin reload netpi.tools.web).` — and the diagnostics plugin recor
 
 When nothing is answering, `diag` cannot say why (it is an RPC like any other), so the host's **stall watchdog**
 (`src/NetPI.Host/Events/StallWatchdog.cs`) writes it in the log, from a thread of its own that never waits for the thread
-pool. Four things, each logged when it starts (5 s), every 30 s while it lasts, and again when it ends:
+pool. Five things; the stalls are logged when they start (5 s), every 30 s while it lasts, and again when it ends:
 
 - `The event bus has been inside the handler '<pattern>' on '<type>' for N s; M event(s) wait behind it` — delivery is one
   task, so one handler that never returns holds back every later event, the UI fan-out included. The pattern and the event
   name the culprit. (An async handler is let go of after 30 s with its own `Event handler … is stuck` error; a sync one
   cannot be, which is why this one exists.)
+- `Event handler '<pattern>' is slow: N call(s) took over 250 ms since the last report, the slowest M ms on '<type>'` — not a stall,
+  but the reason a chat "feels laggy" when the model is not: delivery is one event at a time, so a handler that takes 400 ms holds
+  every event behind it (the UI's included) for 400 ms. Reported at once and then at most every 30 s per subscription, with the
+  calls since. A sync handler that does database work is the usual one.
 - `The event bus has not delivered anything … with N event(s) queued and no handler running` — the dispatcher is not being
   scheduled at all.
 - `The thread pool has not started a queued work item for N s (threads, pending items, completed)` — every pool thread is

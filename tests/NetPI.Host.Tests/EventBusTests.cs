@@ -164,6 +164,42 @@ public static class EventBusTests
             Check.Equal(0, log.Lines.Count, "no stall to report: " + log.Dump());
         });
 
+        r.Add("bus: a slow handler is named in the log once per report interval, with how often and how slow", async () =>
+        {
+            var log = new CapturingLogger();
+            await using var bus = new EventBus(log, slowHandler: TimeSpan.FromMilliseconds(40), slowReportEvery: TimeSpan.FromHours(1));
+            using var slow = bus.Subscribe("laggy.*", _ => Thread.Sleep(80));
+            using var fast = bus.Subscribe("quick.*", _ => { });
+            for (var i = 0; i < 3; i++) bus.Publish("laggy.one");
+            for (var i = 0; i < 20; i++) bus.Publish("quick.one");
+            await bus.FlushAsync();
+            var reports = log.Lines.Where(l => l.Contains("is slow")).ToList();
+            Check.Equal(1, reports.Count, "one report, not one per slow call: " + log.Dump());
+            Check.Contains(reports[0], "'laggy.*'", "it names the subscription");
+            Check.Contains(reports[0], "'laggy.one'", "and the event it was slow on");
+            Check.Contains(reports[0], "everything behind it", "and what that costs");
+            Check.False(log.Lines.Any(l => l.Contains("'quick.*'")), "a fast handler is never named");
+        });
+
+        r.Add("bus: a handler that is slow again after the interval is reported again, with the calls since", async () =>
+        {
+            var log = new CapturingLogger();
+            await using var bus = new EventBus(log, slowHandler: TimeSpan.FromMilliseconds(30), slowReportEvery: TimeSpan.FromMilliseconds(150));
+            using var slow = bus.Subscribe("laggy", _ => Thread.Sleep(50));
+            bus.Publish("laggy");
+            await bus.FlushAsync();
+            Check.Equal(1, log.Lines.Count(l => l.Contains("is slow")), "the first call is reported at once: " + log.Dump());
+            bus.Publish("laggy");   // inside the interval: counted, not reported
+            await bus.FlushAsync();
+            Check.Equal(1, log.Lines.Count(l => l.Contains("is slow")), "inside the interval: still one: " + log.Dump());
+            await Task.Delay(200);
+            bus.Publish("laggy");
+            await bus.FlushAsync();
+            var reports = log.Lines.Where(l => l.Contains("is slow")).ToList();
+            Check.Equal(2, reports.Count, "after the interval it is reported again: " + log.Dump());
+            Check.Contains(reports[1], "2 call(s)", "with the calls since the last report");
+        });
+
         r.Add("bus: ring buffer keeps the last 500 events", async () =>
         {
             await using var bus = new EventBus(NullLogger.Instance);
