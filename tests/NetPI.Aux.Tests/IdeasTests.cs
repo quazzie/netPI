@@ -180,6 +180,7 @@ public static class IdeasTests
             // The link picks the first idea, the done question is a plain two-way one.
             var finished = false;
             var asked = new List<JsonObject>();
+            var doneAnswered = 0;
             env.Ctx.RpcFake.Register("decide.decision", (req, _) =>
             {
                 asked.Add(JsonObject.Create(req.Params.Clone())!);
@@ -187,6 +188,8 @@ public static class IdeasTests
                 var probs = new JsonObject();
                 if (labels is ["DONE", "MORE"]) { probs["DONE"] = finished ? 0.92 : 0.4; probs["MORE"] = finished ? 0.08 : 0.6; }
                 else { probs[labels[0]] = 0.86; foreach (var l in labels.Skip(1)) probs[l] = 0.14 / (labels.Count - 1); }
+                // counted once the answer is fixed: what `finished` said when the question was asked is what the question got
+                if (labels is ["DONE", "MORE"]) Interlocked.Increment(ref doneAnswered);
                 return Task.FromResult<object?>(new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["probabilities"] = probs }) });
             });
 
@@ -205,6 +208,10 @@ public static class IdeasTests
             Check.Equal("nudge: first step of the reset", linked["subject"]!.Str());
             Check.Equal(40, linked["hash"]!.Str()!.Length);
             Check.Equal(0, (IdeaAt(env, other)["commits"] as JsonArray)?.Count ?? 0, "not the other idea");
+            // The commit is recorded BEFORE the done question for it is asked, and that question is answered from `finished`. Flip
+            // `finished` while it is still on its way and the first commit is offered as the finishing one (a card of one commit,
+            // not two): wait for the answer first. This also makes the "no offer" check below mean something.
+            await Until(() => Volatile.Read(ref doneAnswered) >= 1, "the done question for the first commit is answered", 6000);
             Check.Equal(0, (await Suggestions(env)).Count, "a commit that only advances an idea is not an offer");
 
             // the commit that finishes it: the card, once
