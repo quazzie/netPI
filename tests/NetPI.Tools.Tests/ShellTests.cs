@@ -296,39 +296,53 @@ public static class ShellTests
         {
             var (svc, registry, bus) = NewService();
             var dir = T.TempDir("bg");
-            var sw = Stopwatch.StartNew();
-            var res = await T.Run(Bash(svc), dir, new { command = "for i in 1 2 3; do echo tick $i; sleep 0.2; done; sleep 30 & wait", background = true });
-            Check.True(sw.Elapsed < TimeSpan.FromSeconds(3), "returns immediately");
-            Check.Ok(res);
-            var d = T.D(res);
-            var id = d.Str("processId");
-            Check.Contains(res.Content, $"Started background process {id}");
-            Check.True(d.Bool("background"));
-            Check.Equal("running", d.Str("status"));
+            try
+            {
+                var sw = Stopwatch.StartNew();
+                // Deliberately emit after the old 900 ms observation window.
+                var res = await T.Run(Bash(svc), dir, new { command = "sleep 1.2; for i in 1 2 3; do echo tick $i; sleep 0.2; done; sleep 30 & wait", background = true });
+                Check.True(sw.Elapsed < TimeSpan.FromSeconds(3), "returns immediately");
+                Check.Ok(res);
+                var d = T.D(res);
+                var id = d.Str("processId");
+                Check.Contains(res.Content, $"Started background process {id}");
+                Check.True(d.Bool("background"));
+                Check.Equal("running", d.Str("status"));
 
-            var list = await T.Run(new ProcessTool(registry), dir, new { action = "list" });
-            Check.Contains(list.Content, $"{id}  running");
-            Check.Contains(list.Content, "bg  bash:");
+                var list = await T.Run(new ProcessTool(registry), dir, new { action = "list" });
+                Check.Contains(list.Content, $"{id}  running");
+                Check.Contains(list.Content, "bg  bash:");
 
-            await Task.Delay(900);
-            var outRes = await T.Run(new ProcessTool(registry), dir, new { action = "output", id });
-            Check.Contains(outRes.Content, "tick 1\ntick 2\ntick 3");
-            Check.Contains(outRes.Content, "running");
-            Check.True(bus.OfType(EventTypes.ProcessOutput).Count > 0, "process.output events for background processes");
+                // Startup and the output pump can be slow under a parallel build/test load. Observe the
+                // output we need, rather than assuming three lines arrived after a fixed sleep.
+                var outputDeadline = Stopwatch.StartNew();
+                while (!registry.Get(id)!.Output.Snapshot().Contains("tick 1\ntick 2\ntick 3", StringComparison.Ordinal)
+                    && outputDeadline.Elapsed < TimeSpan.FromSeconds(10))
+                    await Task.Delay(25);
+                var outRes = await T.Run(new ProcessTool(registry), dir, new { action = "output", id });
+                Check.Contains(outRes.Content, "tick 1\ntick 2\ntick 3");
+                Check.Contains(outRes.Content, "running");
+                Check.True(bus.OfType(EventTypes.ProcessOutput).Count > 0, "process.output events for background processes");
 
-            var kill = await T.Run(new ProcessTool(registry), dir, new { action = "kill", id });
-            Check.Ok(kill);
-            Check.Contains(kill.Content, "Killed");
-            var p = registry.Get(id)!;
-            Check.Equal("killed", p.Status);
-            Check.Contains((await T.Run(new ProcessTool(registry), dir, new { action = "list" })).Content, $"{id}  killed");
-            Check.Contains((await T.Run(new ProcessTool(registry), dir, new { action = "kill", id })).Content, "not running");
+                var kill = await T.Run(new ProcessTool(registry), dir, new { action = "kill", id });
+                Check.Ok(kill);
+                Check.Contains(kill.Content, "Killed");
+                var p = registry.Get(id)!;
+                Check.Equal("killed", p.Status);
+                Check.Contains((await T.Run(new ProcessTool(registry), dir, new { action = "list" })).Content, $"{id}  killed");
+                Check.Contains((await T.Run(new ProcessTool(registry), dir, new { action = "kill", id })).Content, "not running");
 
-            var started = bus.OfType(EventTypes.ProcessStarted).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
-            Check.True(started.Process.Background);
-            var exited = bus.OfType(EventTypes.ProcessExited).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
-            Check.Equal("killed", exited.Process.Status);
-            Check.Error(await T.Run(new ProcessTool(registry), dir, new { action = "output", id = "proc_nope" }), "No process");
+                var started = bus.OfType(EventTypes.ProcessStarted).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
+                Check.True(started.Process.Background);
+                var exited = bus.OfType(EventTypes.ProcessExited).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
+                Check.Equal("killed", exited.Process.Status);
+                Check.Error(await T.Run(new ProcessTool(registry), dir, new { action = "output", id = "proc_nope" }), "No process");
+            }
+            finally
+            {
+                // A failed assertion must not leave sleep holding the suite's output pipe open.
+                await registry.KillAllAsync(TimeSpan.FromSeconds(5));
+            }
         });
 
         r.Add("process wait: returns the moment the job exits, with its code, duration and output", async () =>
