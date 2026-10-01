@@ -51,6 +51,7 @@ internal static class Coercion
         if (schema is null || depth > 32) return value;
         if (value is JsonObject obj)
         {
+            if (Unwrap(obj, schema, root) is { } unwrapped) return Structure(unwrapped, schema, root, depth + 1);
             var properties = Properties(schema, root);
             if (properties is null) return value;
             var copy = new JsonObject();
@@ -67,6 +68,24 @@ internal static class Coercion
             return copy;
         }
         return value;
+    }
+
+    /// <summary>
+    /// A list the model wrote as a one-property object — <c>{"item": …}</c> — standing where the schema says array.
+    /// The schema leaves no other reading of that value, so it is unwrapped rather than guessed at: a wrapped list is
+    /// the list (a model wraps the whole thing, however many elements it has), anything else is a single-element list.
+    /// Two properties, an unknown key, or a schema that also allows an object here are left exactly as written.
+    /// </summary>
+    private static JsonNode? Unwrap(JsonObject obj, JsonNode? schema, JsonObject root)
+    {
+        if (obj.Count != 1) return null;
+        var types = Types(schema, root);
+        if (!types.Contains("array") || types.Contains("object")) return null;
+        var pair = obj.First();
+        if (pair.Key is not ("item" or "items" or "Item" or "Items")) return null;
+        var inner = pair.Value;
+        if (inner is null) return null;
+        return inner is JsonArray list ? list.DeepClone() : new JsonArray(inner.DeepClone());
     }
 
     private static long? Integer(string text)
