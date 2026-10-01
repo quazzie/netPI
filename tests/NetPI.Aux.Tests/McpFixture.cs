@@ -18,10 +18,11 @@ internal static class McpFixture
         JsonObject Typed() => new() { ["name"]="weather", ["description"]="Set a dashboard", ["inputSchema"]=JsonNode.Parse(
             """
             {"type":"object",
-             "$defs":{"view":{"type":"object","properties":{"title":{"type":"string"}}}},
+             "$defs":{"view":{"type":"object","properties":{"title":{"type":"string"},"max_columns":{"type":"integer"}}}},
              "properties":{"list_only":{"type":"boolean"},"timeout":{"type":"integer"},
                "views":{"type":"array","items":{"$ref":"#/$defs/view"}},
                "config":{"type":"object","properties":{"patch":{"type":"array","items":{"type":"integer"}}}},
+               "meta":{"type":"object","properties":{"item":{"type":"string"}}},
                "script":{"type":"string"}}}
             """)! };
         while (await Console.In.ReadLineAsync() is { } line)

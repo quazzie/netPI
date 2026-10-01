@@ -124,16 +124,47 @@ public static class McpTests
             Check.Contains(sent,"\"views\":[{\"title\":\"Probe\"}]");Check.Contains(sent,"\"patch\":[1,2]");
             // A string-typed argument is never re-read, even when it holds JSON.
             Check.Equal("""{"not":"parsed"}""",NetPiJson.ToNode(resolved.Arguments)!["script"]!.GetValue<string>());
+            // A list wrapped in an object crosses whole, at every level, with the scalars inside it repaired too.
+            var wrapped=await Resolve(new {views=new {item=new {title="Probe",max_columns="1"}}});
+            Check.Equal("""{"views":[{"title":"Probe","max_columns":1}]}""",NetPiJson.ToNode(wrapped.Arguments)!.ToJsonString());
+            var wrappedCall=await manager.CallAsync(tool,wrapped.Arguments,CancellationToken.None);
+            Check.Contains(wrappedCall.Content,"\"views\":[{\"title\":\"Probe\",\"max_columns\":1}]");
             // The server receives the repaired types, not the text the model wrote.
             var result=await manager.CallAsync(tool,resolved.Arguments,CancellationToken.None);
             Check.Contains(result.Content,"\"list_only\":true");
-            Check.Equal(sent,JsonNode.Parse(File.ReadAllLines(counter).Single())!.ToJsonString());
+            var received=File.ReadAllLines(counter);
+            Check.Equal("""{"views":[{"title":"Probe","max_columns":1}]}""",JsonNode.Parse(received[0])!.ToJsonString());
+            Check.Equal(sent,JsonNode.Parse(received[1])!.ToJsonString());
             // Arguments that already match the schema are never rewritten, not even a number that looks like text.
             Check.Equal("""{"list_only":true,"timeout":10,"script":"10"}""",NetPiJson.ToNode((await Resolve(new {list_only=true,timeout=10,script="10"})).Arguments)!.ToJsonString());
             // A value no schema can repair keeps failing, and now says what it wanted.
             var bad=await Check.ThrowsAsync<McpException>(()=>Resolve(new {timeout="soon"}));
             Check.Contains(bad.Message,"integer");Check.Contains(bad.Message,"string");
             await manager.DisposeAsync();ctx.Unload();
+        });
+        r.Add("mcp: a list the model wrapped in an object is unwrapped only where the schema allows nothing else",()=>{
+            var schema=JsonNode.Parse(
+                """
+                {"type":"object","$defs":{"card":{"type":"object","properties":{"type":{"type":"string"},"max_columns":{"type":"integer"}}}},
+                 "properties":{
+                   "views":{"type":"array","items":{"$ref":"#/$defs/card"}},
+                   "cards":{"type":"array","items":{"$ref":"#/$defs/card"}},
+                   "loose":{"type":["array","object"],"items":{"type":"integer"}},
+                   "meta":{"type":"object","properties":{"item":{"type":"string"}}},
+                   "grid":{"type":"array","items":{"type":"array","items":{"type":"integer"}}}}}
+                """)!.AsObject();
+            // The shape ha-mcp received: a one-property object where the schema says array, at two nesting levels.
+            var args=JsonNode.Parse("""{"views":{"item":{"type":"sections","max_columns":"1"}},"cards":{"item":[{"type":"heading"},{"type":"entities"}]}}""")!.AsObject();
+            var repaired=Coercion.Repair(schema,args);
+            Check.Equal("""{"views":[{"type":"sections","max_columns":1}],"cards":[{"type":"heading"},{"type":"entities"}]}""",repaired!.ToJsonString());
+            // A list of lists keeps its nesting: the wrapper goes, the inner array stays an element.
+            Check.Equal("""{"grid":[[1,2],[3]]}""",Coercion.Repair(schema,JsonNode.Parse("""{"grid":{"item":[[1,2],[3]]}}""")!.AsObject())!.ToJsonString());
+            // Left alone: an object where an object is allowed, a schema that permits either shape, and an
+            // ambiguous two-property wrapper.
+            Check.Equal(null,Coercion.Repair(schema,JsonNode.Parse("""{"meta":{"item":"kept"}}""")!.AsObject()));
+            Check.Equal(null,Coercion.Repair(schema,JsonNode.Parse("""{"loose":{"item":1}}""")!.AsObject()));
+            Check.Equal(null,Coercion.Repair(schema,JsonNode.Parse("""{"views":{"item":{"type":"a"},"other":1}}""")!.AsObject()));
+            Check.Equal(null,Coercion.Repair(schema,JsonNode.Parse("""{"views":{"element":{"type":"a"}}}""")!.AsObject()));
         });
         r.Add("mcp: a number NetPI wrote itself validates as a number, and a type error names what it wanted",()=>{
             var schema=JsonNode.Parse("""{"type":"object","properties":{"n":{"type":"integer"},"x":{"type":"number","maximum":10}}}""")!.AsObject();
