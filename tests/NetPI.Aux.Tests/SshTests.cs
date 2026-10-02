@@ -230,6 +230,27 @@ public static class SshTests
             File.Delete(D(cut).GetProperty("fullOutputPath").GetString()!);
         });
 
+        r.Add("ssh_run: a single line that outruns the tail budget keeps its end, and a lone trailing CR keeps its line", async () =>
+        {
+            var env = new Env();
+            // one 100 KB line: the old char-counting loop kept nothing of it ("(no output)"), the byte-counting tail keeps its end
+            var big = new string('x', 100_000);
+            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_pgid=1\n" + big + "\n", "", false, false);
+            var res = await env.Run("ssh_run", new { host = "nuc", script = "head -c 100000 /dev/zero | tr 0 x" });
+            Check.False(res.IsError, res.Content);
+            Check.True(res.Content.StartsWith("[Output truncated: showing the last 1 lines of 1. Full output saved to "), res.Content[..140]);
+            Check.True(res.Content.EndsWith(big[..1000]), "the tail of the giant line is there, not (no output)");
+            var saved = D(res).GetProperty("fullOutputPath").GetString()!;
+            try { Check.True(File.ReadAllText(saved).Contains(big), "the whole line is saved"); }
+            finally { File.Delete(saved); }
+
+            // a line that ends in a lone \r (what \r\r\n leaves) is not emptied by the progress-line collapse
+            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_pgid=1\ndone\r\r\n", "", false, false);
+            Check.Equal("done", (await env.Run("ssh_run", new { host = "nuc", script = "printf 'done\\r\\r'" })).Content);
+            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_pgid=1\n", "progress 10%\rprogress 50%\r\n", false, false);
+            Check.Equal("progress 50%", (await env.Run("ssh_run", new { host = "nuc", script = "ls" })).Content, "overwrite progress still collapses");
+        });
+
         r.Add("ssh_run: an aborted run ends the remote process group", async () =>
         {
             var env = new Env();

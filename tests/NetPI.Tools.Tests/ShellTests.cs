@@ -74,21 +74,44 @@ public static class ShellTests
             Check.Equal("red ok!\n", outp);
             Check.Equal("ab", AnsiStripper.Strip("a\x1b(Bb"));
             Check.Equal("tab\there", AnsiStripper.Strip("tab\there\a"));
-            Check.Equal("c\nnext", OutputFormat.ResolveCarriageReturns("a\rb\rc\r\nnext"));
+            Check.Equal("c\nnext", ToolOutput.ResolveCarriageReturns("a\rb\rc\r\nnext"));
         });
 
         r.Add("shell: output tail formatting (lines, bytes, giant line)", () =>
         {
             var text = string.Join("\n", Enumerable.Range(1, 3000));
-            var (tail, truncated, total, shown) = OutputFormat.TailLines(text, 2000, 30 * 1024);
+            var (tail, truncated, total, shown) = ToolOutput.TailLines(text, 2000, 30 * 1024);
             Check.True(truncated); Check.Equal(3000, total);
             Check.True(tail.EndsWith("\n3000"));
             Check.Equal(shown, tail.Split('\n').Length);
             Check.True(Encoding.UTF8.GetByteCount(tail) <= 30 * 1024);
-            var (small, t2, _, _) = OutputFormat.TailLines("a\nb\n", 2000, 30 * 1024);
+            var (small, t2, _, _) = ToolOutput.TailLines("a\nb\n", 2000, 30 * 1024);
             Check.Equal("a\nb", small); Check.False(t2);
-            var (giant, t3, _, _) = OutputFormat.TailLines(new string('z', 100_000) + "END", 2000, 1000);
-            Check.True(t3 && giant.EndsWith("END") && giant.Length <= 1001);
+            var (giant, t3, _, shownGiant) = ToolOutput.TailLines(new string('z', 100_000) + "END", 2000, 1000);
+            Check.True(t3 && giant.EndsWith("END") && giant.Length <= 1001 && shownGiant == 1);
+        });
+
+        r.Add("tools: text limit cuts (surrogate-safe head and head+tail, the truncation note)", () =>
+        {
+            // head: short is unchanged, cut appends the note with the count
+            Check.Equal("ok", TextLimit.Head("ok", 10, "n"));
+            Check.Equal("aaaaaaaaaa\n[... truncated: 5 more characters. the rest is lost]", TextLimit.Head(new string('a', 15), 10, "the rest is lost"));
+            // a cut must not end on a lone high surrogate: it backs off one character and counts it in
+            var surrogates = new string('a', 10) + "\ud83d" + new string('b', 5);
+            Check.Equal("aaaaaaaaaa\n[... truncated: 6 more characters. n]", TextLimit.Head(surrogates, 11, "n"));
+
+            // head+tail: short is unchanged, cut keeps both ends and the marker names (dropped, total)
+            Check.Equal("ok", TextLimit.HeadTail("ok", 10, 2, (o, t) => $"~{o}~{t}~"));
+            var both = TextLimit.HeadTail(new string('a', 50) + "END", 20, 2, (o, t) => $"~{o}~{t}~");
+            Check.Equal(13, 20 * 2 / 3, "head gets 2 of 3 of the budget");
+            Check.True(both.StartsWith(new string('a', 13)), both[..20]);
+            Check.Equal("~33~53~", both[13..20], "the marker names the dropped and the total");
+            Check.True(both.EndsWith("aaaaEND"), both[^10..]);
+
+            // the note a tool prepends to a tail
+            Check.Equal("[Output truncated: showing the last 200 lines of 3000 lines.]", ToolOutput.Note(200, " of 3000 lines"));
+            Check.Equal("[Output truncated: showing the last 500 lines; only the last 8 MB of the output were kept. Those are saved to /tmp/x (use read or grep on it).]",
+                ToolOutput.Note(500, "; only the last 8 MB of the output were kept", "/tmp/x", "Those are"));
         });
 
         r.Add("shell: timeout argument resolution", () =>

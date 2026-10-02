@@ -71,13 +71,6 @@ internal abstract class AgentToolBase(IPluginContext plugin)
 
     protected static bool IsBusy(AgentStatus s) => s is AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded;
 
-    protected static string Truncate(string? text, int max, string note)
-    {
-        text ??= "";
-        if (text.Length <= max) return text;
-        return text[..max] + $"\n[... truncated: {text.Length - max:N0} more characters. {note}]";
-    }
-
     protected static string Tokens(long n) => n >= 1_000_000 ? (n / 1_000_000d).ToString("0.#", CultureInfo.InvariantCulture) + "M"
         : n >= 1_000 ? (n / 1_000d).ToString("0.#", CultureInfo.InvariantCulture) + "k" : n.ToString(CultureInfo.InvariantCulture);
 
@@ -149,7 +142,7 @@ internal abstract class AgentToolBase(IPluginContext plugin)
         if (!string.IsNullOrEmpty(a.Error) && a.Status != AgentStatus.Completed) sb.Append("Error: ").Append(a.Error).Append('\n');
         sb.Append(string.IsNullOrWhiteSpace(a.Result)
             ? "(no final report)"
-            : Truncate(a.Result.Trim(), ReportChars, $"The full report is in session {a.SessionId}."));
+            : TextLimit.Head(a.Result.Trim(), ReportChars, $"The full report is in session {a.SessionId}."));
         return sb.ToString();
     }
 
@@ -632,7 +625,7 @@ internal sealed class AgentListTool(IPluginContext plugin) : AgentToolBase(plugi
             if (a.Agent is not null) sb.Append("agent ").Append(a.Agent).Append(", ");
             sb.Append(Stats(a));
             if (a.QueuedMessages > 0) sb.Append(", ").Append(a.QueuedMessages).Append(" queued messages");
-            if (!string.IsNullOrWhiteSpace(a.Task)) sb.Append("\n  task: ").Append(Truncate(a.Task.ReplaceLineEndings(" "), 160, "…"));
+            if (!string.IsNullOrWhiteSpace(a.Task)) sb.Append("\n  task: ").Append(TextLimit.Head(a.Task.ReplaceLineEndings(" "), 160, "…"));
             sb.Append('\n');
             arr.Add(Details(a));
         }
@@ -658,7 +651,7 @@ internal sealed class AgentResultTool(IPluginContext plugin) : AgentToolBase(plu
             : $"Agent '{id}': {refusal}"));
         var text = Report(a);
         if (IsBusy(a.Status) && !string.IsNullOrWhiteSpace(a.Result))
-            text += "\n\nLast report of a previous run:\n" + Truncate(a.Result.Trim(), ReportChars, $"See session {a.SessionId}.");
+            text += "\n\nLast report of a previous run:\n" + TextLimit.Head(a.Result.Trim(), ReportChars, $"See session {a.SessionId}.");
         return Task.FromResult(ToolResult.Ok(text, Details(a)));
     }
 }

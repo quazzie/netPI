@@ -663,15 +663,6 @@ internal sealed class AgentRuntime : IAgentRuntime
 
     // ---------------------------------------------------------------- parent notification
 
-    internal static string Truncate(string? text, int max, string note)
-    {
-        text ??= "";
-        if (text.Length <= max) return text;
-        var cut = max;
-        if (cut > 0 && char.IsHighSurrogate(text[cut - 1])) cut--;
-        return text[..cut] + $"\n[... truncated: {text.Length - cut:N0} more characters. {note}]";
-    }
-
     internal static string Escape(string s) => s.Replace("&", "&amp;").Replace("\"", "&quot;").Replace("<", "&lt;").Replace(">", "&gt;");
 
     internal static string StatusName(AgentStatus s) => JsonNamingPolicy.CamelCase.ConvertName(s.ToString());
@@ -684,7 +675,7 @@ internal sealed class AgentRuntime : IAgentRuntime
           .Append("\" status=\"").Append(StatusName(final.Status)).Append("\">\n");
         if (final.Status == AgentStatus.Failed && !string.IsNullOrEmpty(final.Error)) sb.Append("Error: ").Append(final.Error).Append("\n\n");
         var report = string.IsNullOrWhiteSpace(final.Result) ? "(no final report)" : final.Result.Trim();
-        sb.Append(Truncate(report, ResultNoticeChars, $"Use agent with action result and id {final.Id} for the full report."));
+        sb.Append(TextLimit.Head(report, ResultNoticeChars, $"Use agent with action result and id {final.Id} for the full report."));
         sb.Append("\n</agent-result>");
         return new UserInput
         {

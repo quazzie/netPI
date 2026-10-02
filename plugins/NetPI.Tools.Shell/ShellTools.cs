@@ -148,7 +148,7 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
         Help =
             "list: every background process and recent command with its status (running / exited N / killed / timeout) — " +
             "this session's and its subagents', not other chats'; all:true shows every session's, read-only, with the session on each line. " +
-            $"output: the last lines of a process's output (tail, default {DefaultTail}, max {OutputFormat.ModelMaxLines}) and " +
+            $"output: the last lines of a process's output (tail, default {DefaultTail}, max {ToolOutput.ModelMaxLines}) and " +
             "whether it still runs. " +
             $"wait: blocks until the process exits, then returns its exit code, how long it ran and the last {DefaultTail} lines of " +
             "output — one call, no follow-up output. It returns the moment the process exits, so a second wait costs nothing. " +
@@ -307,12 +307,12 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
     }
 
     private static int Tail(ToolArgs args) =>
-        Math.Clamp(args.Int("tail", "lines", "n", "limit") ?? DefaultTail, 1, OutputFormat.ModelMaxLines);
+        Math.Clamp(args.Int("tail", "lines", "n", "limit") ?? DefaultTail, 1, ToolOutput.ModelMaxLines);
 
     private static (string Shown, bool Truncated, int Total, int ShownLines) TailOf(ManagedProcess p, int tail)
     {
-        var text = OutputFormat.ResolveCarriageReturns(p.Output.Snapshot());
-        var (shown, truncated, total, shownLines) = OutputFormat.TailLines(text, tail, OutputFormat.ModelMaxBytes);
+        var text = ToolOutput.ResolveCarriageReturns(p.Output.Snapshot());
+        var (shown, truncated, total, shownLines) = ToolOutput.TailLines(text, tail, ToolOutput.ModelMaxBytes);
         return (shown, truncated, total, shownLines);
     }
 
