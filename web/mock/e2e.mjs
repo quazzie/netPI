@@ -2480,6 +2480,73 @@ if (!EXTERNAL && !argv.includes('--no-dev') && want('vite dev server')) {
   }
 }
 
+// ------------------------------------------------------------------ a snapshot answer must not undo what it missed
+if (want('a snapshot answer must not undo what it missed')) {
+log('a snapshot answer must not undo what it missed');
+{
+  // The chat window is read as a whole (sessions.messages), but the answer is the page as the server read it
+  // when the request went out: a message committed in between is already on screen when that older page lands,
+  // and replacing the window with it loses the message (and everything the run streamed after it).
+  // mock.messagesHold is that window: the page is read, a message is published while the answer is held, and
+  // the page answers last. This chat is opened for the first time here, so opening it is what reads the page.
+  await openStripTab('left', 'Sessions');
+  const target = (await rpcCall('sessions.list', { includeSubagents: true })).find((s) => s.title === 'AiProxy model catalog aliases');
+  const row = page.locator('.srow', { hasText: 'AiProxy model catalog aliases' }).first();
+  await row.waitFor({ timeout: 10_000 });
+  const loads = async () => ((await rpcCall('mock.msgLoads')) ?? {})[target.id] ?? 0;
+  const before = await loads();
+  await rpcCall('mock.messagesHold', { id: target.id, ms: 700, text: 'Committed while the page was being read.' });
+  await row.click();
+  const late = page.locator('.content:visible .item[data-kind="text"]', { hasText: 'Committed while the page was being read' });
+  await late.waitFor({ timeout: 10_000 }).catch(() => {});
+  check('a message published while the page loads is not dropped by the older page', (await late.count()) === 1,
+    `sessions.messages ${before} → ${await loads()} for ${target.id}`);
+  check('…and the page it answered with is still the window (not replaced by the one message)',
+    (await page.locator('.content:visible .item[data-kind="text"]', { hasText: 'candidate list' }).count()) > 0,
+    `${await page.locator('.content:visible .item').count()} items in the window`);
+  await shot(page, '30-snapshot-vs-event');
+}
+}
+
+// ------------------------------------------------------------------ deleting a chat leaves nothing of it behind
+if (want('deleting a chat leaves nothing of it behind')) {
+log('deleting a chat leaves nothing of it behind');
+{
+  // removeSessionLocal drops what a session left in the window's own maps (app.agents, app.context,
+  // app.workspaces among them) — a deleted chat, a subagent's included, otherwise keeps an entry in every one of
+  // them for the life of the window. That is memory only, so this drives the path with the maps full (a chat
+  // that ran, so it has a run state, a context and a resolved workspace) and checks the window afterwards.
+  await openStripTab('left', 'Sessions');
+  await newTab();
+  await ta.fill('A short chat that will be deleted.');
+  await ta.press('Enter');
+  await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 20_000 }).catch(() => {});
+  const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const mine = page.locator('.srow', { hasText: 'A short chat that will be deleted.' }).first();
+  await mine.focus();
+  await page.keyboard.press('Delete');
+  await page.locator('.dialog button', { hasText: /^Delete$/ }).click();
+  await mine.waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {});
+  check('a deleted chat: its row and its tab are gone',
+    (await mine.count()) === 0 && (await page.locator(`.topbar .tab[data-tab="${sid}"]`).count()) === 0,
+    `tab ${sid} left: ${await page.locator(`.topbar .tab[data-tab="${sid}"]`).count()}`);
+  // a subagent row of a seeded chat: the parent keeps the other one
+  const parent = page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first();
+  await parent.locator('.kids').click();
+  const sub = page.locator('.srow', { hasText: 'tester: reproduce disconnect' }).first();
+  await sub.focus();
+  await page.keyboard.press('Delete');
+  await page.locator('.dialog button', { hasText: /^Delete$/ }).click();
+  await sub.waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {});
+  check('a deleted subagent: its parent and the other subagent stay',
+    (await sub.count()) === 0
+      && (await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).count()) === 1
+      && (await page.locator('.srow', { hasText: 'explorer: map websocket handlers' }).count()) === 1);
+  await shot(page, '30b-deleted-chat');
+}
+}
+
+// ------------------------------------------------------------------ capability removal and recovery
 if (!EXTERNAL && want('capability removal and recovery')) {
 log('capability removal and recovery');
   await newTab();

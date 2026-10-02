@@ -55,17 +55,38 @@ export function approvalIn(sessionId) {
   return null;
 }
 
+// What a load in flight holds: the server read its waiting state when the request went out, so an ask.asked /
+// guard.asked that lands while the answer is on its way is not in it, and the clear() below would drop it (no
+// card, and the agent waits). Those events are handed to the load and replayed over its answer.
+let inFlight = null; // { seq, events: [[type, d]] }
+let loadSeq = 0;
+
 /** On (re)connect: what waits now. Without the ask or guardrails plugin nothing does. */
 export async function loadAsks() {
-  const [questions, approvals] = await Promise.all([rpc('ask.pending', {}).catch(() => []), rpc('guard.pending', {}).catch(() => [])]);
-  asks.pending.clear();
-  for (const a of questions ?? []) asks.pending.set(qid(a), a);
-  asks.approvals.clear();
-  for (const a of approvals ?? []) asks.approvals.set(a.approvalId, a);
+  const seq = ++loadSeq;
+  const events = [];
+  inFlight = { seq, events };
+  try {
+    const [questions, approvals] = await Promise.all([rpc('ask.pending', {}).catch(() => []), rpc('guard.pending', {}).catch(() => [])]);
+    asks.pending.clear();
+    for (const a of questions ?? []) asks.pending.set(qid(a), a);
+    asks.approvals.clear();
+    for (const a of approvals ?? []) asks.approvals.set(a.approvalId, a);
+  } finally {
+    // a load that started after this one holds the buffer now, and replays it over its own answer
+    if (inFlight?.seq === seq) {
+      inFlight = null;
+      for (const [type, d] of events) askEvent(type, d);
+    }
+  }
 }
 
 /** ask.asked / ask.closed and guard.asked / guard.closed / guard.cleared (unscoped: every window hears of every chat's). */
 export function askEvent(type, d) {
+  if (inFlight) {
+    inFlight.events.push([type, d]);
+    return;
+  }
   if (type === 'ask.asked' || type === 'ask.closed') {
     const id = qid(d);
     if (!id) return;

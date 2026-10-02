@@ -176,7 +176,10 @@ const SESSION_PAGE = 300;
  * unchanged: the first page replaces, keeping open sessions that fell outside it.
  */
 export async function loadSessions(offset = 0, append = false) {
-  const list = await rpc('sessions.list', { includeSubagents: true, limit: SESSION_PAGE, offset });
+  // the rows in hand when the request goes out: a row that appears while it is in flight (a chat created in
+  // another window) is newer than the page that answers, and must survive it
+  const had = new Set(app.sessions.map((s) => s.id));
+  const list = (await rpc('sessions.list', { includeSubagents: true, limit: SESSION_PAGE, offset })).filter((s) => !goneSessions.has(s.id));
   if (append) {
     // the rows we don't have yet, in newest-first order (a row that moved up stays where it is)
     const known = new Set(app.sessions.map((s) => s.id));
@@ -184,8 +187,8 @@ export async function loadSessions(offset = 0, append = false) {
     if (older.length) app.sessions = [...app.sessions, ...older];
   } else {
     const known = new Set(list.map((s) => s.id));
-    // keep open sessions that fell outside the page
-    const extra = app.sessions.filter((s) => !known.has(s.id) && app.openTabs.includes(s.id));
+    // keep the open sessions that fell outside the page, and the rows that arrived while it was in flight
+    const extra = app.sessions.filter((s) => !known.has(s.id) && (app.openTabs.includes(s.id) || !had.has(s.id)));
     app.sessions = [...list, ...extra];
   }
   app.sessionsOffset = offset + list.length;
@@ -224,16 +227,29 @@ export async function loadUiRegistry() {
   app.commands = Array.isArray(cmds) ? cmds : [];
 }
 
+// The agent.status events that land while a runs.list snapshot is in flight: the server read its runs when the
+// request went out, so its answer cannot have them, and the clear() below would drop them — a run that ended
+// mid-read would be left looking busy (a spinner that never stops).
+let runEvents = null;
+
 async function loadAgents() {
+  const events = [];
+  runEvents = events;
   try {
     const list = await rpc('runs.list', { includeFinished: true }, { timeout: 8000 });
     app.agents.clear();
-    for (const a of list ?? []) setAgent(a);
+    for (const a of list ?? []) setAgentNow(a);
     return new Map((list ?? []).map((a) => [a.sessionId, a]));
   } catch {
     /* agent plugin missing */
     app.agents.clear();
     return null;
+  } finally {
+    // a load that started after this one holds the buffer now, and replays it over its own answer
+    if (runEvents === events) {
+      runEvents = null;
+      for (const a of events) setAgentNow(a);
+    }
   }
 }
 
@@ -463,6 +479,13 @@ function removeSessionLocal(id) {
   saidJustNow.delete(id);
   recall.prune(id);
   pruneSession(id);
+  app.agents.delete(id); // its last run state (agent.status), a subagent's included
+  app.context.delete(id); // its context ring (session.context)
+  if (app.workspaces.has(id)) {
+    const workspaces = new Map(app.workspaces); // $state.raw: a copy, or nothing that reads it re-renders
+    workspaces.delete(id);
+    app.workspaces = workspaces;
+  }
 }
 
 export async function setSessionProject(id, projectId) {
@@ -535,8 +558,7 @@ export async function abortAgent(sessionId) {
 export async function dequeue(sessionId, id) {
   try {
     await rpc('agent.dequeue', { sessionId, id });
-    const c = peekChat(sessionId);
-    if (c) c.queue = c.queue.filter((q) => q.id !== id);
+    peekChat(sessionId)?.dropQueued(id);
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -559,7 +581,7 @@ export async function resendQueued(sessionId, id, text) {
     toast(e.message || 'That queued message could not be removed.', 'error');
     return; // it is still there (or the host is gone): keep the chip, say what happened
   }
-  c.queue = c.queue.filter((q) => q.id !== id);
+  c.dropQueued(id);
   if (!removed) {
     toast('That queued message is no longer in the queue (it was delivered or removed), so it was not sent.', 'warn');
     return;
@@ -568,6 +590,15 @@ export async function resendQueued(sessionId, id, text) {
 }
 
 function setAgent(a) {
+  if (!a?.sessionId) return;
+  if (runEvents) {
+    runEvents.push(a);
+    return;
+  }
+  setAgentNow(a);
+}
+
+function setAgentNow(a) {
   if (!a?.sessionId) return;
   const prev = app.agents.get(a.sessionId);
   app.agents.set(a.sessionId, a);
