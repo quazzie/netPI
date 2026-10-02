@@ -68,7 +68,7 @@ no SQL outside `src/NetPI.Host/Storage/Sqlite`, and nothing a plugin stores leav
 | `includeEncryptedReasoning` | `false` | also request `include: ["reasoning.encrypted_content"]` (OpenAI-hosted reasoning models; nInfer rejects non-empty `include` with HTTP 400) |
 | `dumpFailedRequests` | `true` | save the request **and response** body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30, response capped at 16k chars) and add the server's `x-request-id` / response id to the error, for reproducing backend bugs |
 | `parseThinkTags` | `true` | split a leading inline `<think>…</think>` into thinking blocks; a tag after visible text stays text (it is content the model wrote) |
-| `defaultMaxOutputTokens` | `16384` | when the catalog says `max_output_tokens: null` |
+| `defaultMaxOutputTokens` | `16384` | when the catalog says `max_output_tokens: null`. Every provider also cuts the value down to what the model's `contextWindow` has left beside the request, so it never sends more output than the window can hold |
 | `modelsCacheSeconds` | `10` | `/v1/models` cache |
 | `reasoningSummary` | – | Responses `reasoning.summary` (nInfer rejects it with HTTP 400; leave unset for AiProxy/nInfer) |
 | `headers` | – | extra HTTP headers |
@@ -93,7 +93,7 @@ model that produced them (required for tool calls with Claude, Gemini or OpenAI 
 | `baseUrl` | `https://openrouter.ai/api` | a trailing `/v1` is fine |
 | `include` | all models with tool calls | model ids or globs to offer, e.g. `["stealth/*", "anthropic/claude-*", "*:free"]`; an exact id is offered even without tool support |
 | `models.<id>` | – | per model: `displayName`, `contextWindow`, `maxOutputTokens`, `hidden` |
-| `maxOutputTokens` | `32768` | cap for `max_tokens` (catalogs report up to 500k+; reasoning counts against it) |
+| `maxOutputTokens` | `32768` | cap for `max_tokens` (catalogs report up to 500k+; reasoning counts against it), further cut to what the model's `contextWindow` has left beside the request |
 | `provider` | – | routing preferences sent as the request's `provider` object, e.g. `{ "sort": "throughput" }` |
 | `promptCaching` | `true` | top-level `cache_control` for `anthropic/*` models (other providers cache automatically) |
 | `replayReasoning` | `true` | send `reasoning_details` back |
@@ -114,10 +114,10 @@ turned off; models without effort levels only get on/off. Free models are limite
 | `apiKey` | env `ANTHROPIC_API_KEY` | required |
 | `baseUrl` | `https://api.anthropic.com` | |
 | `thinking` | `budget` | `budget` (`budget_tokens` from the effort), `adaptive`, `off` |
-| `thinkingBudgets` | low 2048, medium 8192, high 16384, max 32000 | tokens per effort |
+| `thinkingBudgets` | low 2048, medium 8192, high 16384, max 32000 | tokens per effort. A budget is fitted inside `max_tokens` rather than raising it: when the caller named its own cap (a compaction summary, the budget ledger's reservation) that cap is what is sent |
 | `adaptiveEffort` | `true` | send `output_config.effort` with adaptive thinking |
 | `promptCaching` | `true` | cache_control on system prompt, tools and the rolling last message |
-| `defaultMaxOutputTokens` | `32000` | |
+| `defaultMaxOutputTokens` | `32000` | also cut to what the model's `contextWindow` has left beside the request |
 | `betas` | `[]` | `anthropic-beta` header values |
 | `fallbackModels` | built-in list | used when `/v1/models` can't be listed |
 | `modelsCacheSeconds` | `600` | |

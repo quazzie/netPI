@@ -26,6 +26,9 @@ internal static partial class ProviderErrors
     {
         "context_length_exceeded", "exceed_context_size_error", "context_window_exceeded", "prompt_too_long",
         "model_context_window_exceeded",
+        // The request itself is too big (an oversize image, a body over the endpoint's limit): compaction is what
+        // shrinks it, so it belongs with the other overflows instead of failing every turn unrecoverably (idea-begg3v).
+        "request_too_large",
     };
 
     [GeneratedRegex(@"prompt is too long|prompt too long|too many tokens|context[ _-]?(length|window|size)|maximum context|exceeds? (the )?(available |maximum |model'?s? )?(context|token limit)|input is too long|exceed_context|reduce the length|too long for (the )?context|tokens? > \d+ maximum", RegexOptions.IgnoreCase)]

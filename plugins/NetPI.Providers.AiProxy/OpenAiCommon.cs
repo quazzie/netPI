@@ -26,13 +26,15 @@ internal static class OpenAiCommon
     public static string ToolImagesOmitted(string callId, int count) =>
         $"[{count} image{(count == 1 ? "" : "s")} returned by tool call {callId} omitted: the selected model does not accept image input]";
 
-    /// <summary>Request max tokens: request value, else catalog value, else configured default; never above the catalog limit.</summary>
+    /// <summary>
+    /// Request max tokens: request value, else catalog value, else configured default; never above the catalog limit
+    /// and never above what the model's context window has room for beside what this request sends (idea-begg3v).
+    /// </summary>
     public static int ResolveMaxTokens(ModelRequest req, ModelOptions mo)
     {
         var catalog = req.Model.MaxOutputTokens is > 0 ? req.Model.MaxOutputTokens : null;
         var value = req.MaxOutputTokens is > 0 ? req.MaxOutputTokens.Value : catalog ?? mo.DefaultMaxOutputTokens;
-        if (catalog is { } c && value > c) value = c;
-        return value;
+        return ModelMessages.ClampMaxTokens(req, value);
     }
 
     /// <summary>Responses usage: input_tokens includes cached tokens, output_tokens includes reasoning.</summary>

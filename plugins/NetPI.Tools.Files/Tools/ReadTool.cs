@@ -6,7 +6,8 @@ public sealed class ReadTool(ISettings? settings = null) : FileToolBase(settings
 {
     public const int MaxLines = 2000;
     public const int MaxBytes = 50 * 1024;
-    private const long MaxImageBytes = 20L * 1024 * 1024;
+    /// <summary>What a transport takes; a bigger image is refused here rather than sent and rejected by every later call (idea-begg3v).</summary>
+    private const long MaxImageBytes = ModelMessages.MaxImageBytes;
     /// <summary>
     /// Above this size a file is paged by streaming instead of being read whole. A field, not a constant, so a test can
     /// put a small file on the streaming path and assert what it does (the production value is what ships).

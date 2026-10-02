@@ -54,7 +54,7 @@ internal static class ChatTransport
             foreach (var group in toolImages.GroupBy(x => x.CallId))
             {
                 content.Add(new JsonObject { ["type"] = "text", ["text"] = $"[Image(s) returned by tool call {group.Key}]" });
-                foreach (var (_, img) in group) content.Add(ImageUrl(img));
+                foreach (var (_, img) in group) content.Add(Image(img));
             }
             foreach (var (callId, count) in toolImagesOmitted)
                 content.Add(new JsonObject { ["type"] = "text", ["text"] = OpenAiCommon.ToolImagesOmitted(callId, count) });
@@ -119,7 +119,7 @@ internal static class ChatTransport
                     {
                         if (p is TextPart t && t.Text.Length > 0) content.Add(new JsonObject { ["type"] = "text", ["text"] = t.Text });
                         else if (p is ImagePart img)
-                            content.Add(allowImages ? ImageUrl(img) : new JsonObject { ["type"] = "text", ["text"] = OpenAiCommon.ImageOmitted });
+                            content.Add(allowImages ? Image(img) : new JsonObject { ["type"] = "text", ["text"] = OpenAiCommon.ImageOmitted });
                     }
                     if (content.Count > 0) list.Add(new JsonObject { ["role"] = "user", ["content"] = content });
                     break;
@@ -135,6 +135,12 @@ internal static class ChatTransport
         ["type"] = "image_url",
         ["image_url"] = new JsonObject { ["url"] = $"data:{img.MediaType};base64,{img.Data}" },
     };
+
+    /// <summary>The image, or the note that replaces one no transport takes: it would fail every later call too (idea-begg3v).</summary>
+    private static JsonObject Image(ImagePart img) =>
+        ModelMessages.OversizedImage(img) is { } tooBig
+            ? new JsonObject { ["type"] = "text", ["text"] = tooBig }
+            : ImageUrl(img);
 }
 
 /// <summary>Parses Chat Completions chunks (content, reasoning_content/reasoning, inline think tags, tool_calls by index).</summary>

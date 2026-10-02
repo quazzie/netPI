@@ -52,6 +52,9 @@ static async Task<ModelException?> Fails(IModelProvider p, ModelRequest r)
 
 static string Img(string data) => Convert.ToBase64String(Encoding.UTF8.GetBytes(data));
 
+/// <summary>An image one base64 character over what a transport takes (idea-begg3v).</summary>
+static ImagePart BigImage() => new() { MediaType = "image/png", Data = new string('x', ModelMessages.MaxImageChars + 4) };
+
 // A conversation exercising every part type (normalized: tool results directly after their calls).
 List<ChatMessage> Conversation(string assistantProvider) =>
 [
@@ -187,6 +190,48 @@ await t.Run("Effort mapping to catalog efforts", () =>
     return Task.CompletedTask;
 });
 
+// A provider asked for more output than its window has beside the prompt answers HTTP 400 whatever the model does:
+// "input length and max_tokens exceed context limit". It reads as a context overflow, so every attempt pays for a
+// compaction round and a body dump before the conversation is shortened (idea-begg3v).
+await t.Run("max_tokens is clamped to what the context window has left beside the request", () =>
+{
+    static ModelRequest Small(int window, int maxOut, int words) => new()
+    {
+        Model = new ModelInfo { Provider = "p", Id = "m", ContextWindow = window, MaxOutputTokens = maxOut },
+        SystemPrompt = new string('s', 400),
+        Messages = [ChatMessage.UserText(new string('w', words * 4))],
+    };
+
+    // 16k window, 4k catalog maximum, a ~4k-token prompt: the request fits with room to spare.
+    t.Eq(4000, ModelMessages.ClampMaxTokens(Small(16_384, 4000, 1000), 999_999), "a request that fits keeps its value");
+    // 16k window, 64k requested: the caller's value is above what the window can hold, so it is cut to the room.
+    var tight = ModelMessages.ClampMaxTokens(Small(16_384, 64_000, 2000), 999_999);
+    var input = ModelMessages.EstimateInputTokens(Small(16_384, 64_000, 2000));
+    t.Check(tight < 999_999 && input + tight <= 16_384, $"input {input} + max_tokens {tight} fits the 16384 window");
+    t.Eq(1, ModelMessages.ClampMaxTokens(Small(16_384, 64_000, 100_000), 999_999), "a prompt over the window still asks for something");
+    // No window in the catalog: nothing to clamp against, the model's own maximum stands.
+    t.Eq(4096, ModelMessages.ClampMaxTokens(Small(0, 4096, 1000), 999_999), "unknown window");
+    t.Eq(256, ModelMessages.ClampMaxTokens(Small(0, 0, 1000), 256), "no maximum and no window: the caller's value");
+
+    // The tools travel with every call, so they count against the room.
+    var withTools = Small(16_384, 64_000, 500);
+    withTools.Tools = [Tool("read"), Tool("ls")];
+    t.Check(ModelMessages.ClampMaxTokens(withTools, 999_999) < ModelMessages.ClampMaxTokens(Small(16_384, 64_000, 500), 999_999),
+        "tool definitions shrink the room");
+    return Task.CompletedTask;
+});
+
+// An image over the provider's per-image limit is a 400 for the call and for every later one (it stays in the
+// history), and nothing compacts it away. It is replaced by a note instead, so the turn still runs (idea-begg3v).
+await t.Run("an oversize image is replaced by a note, a fitting one is sent as it is", () =>
+{
+    var ok = new ImagePart { MediaType = "image/png", Data = new string('x', ModelMessages.MaxImageChars) };
+    t.Check(ModelMessages.OversizedImage(ok) is null, "at the limit: sent as it is");
+    var big = new ImagePart { MediaType = "image/png", Data = new string('x', ModelMessages.MaxImageChars + 4) };
+    t.Eq("[image omitted: 5 MB exceeds the provider limit]", ModelMessages.OversizedImage(big), "over the limit: a deterministic note");
+    return Task.CompletedTask;
+});
+
 await t.Run("Error classification (HTTP)", () =>
 {
     var e503 = AP.ProviderErrors.FromHttp("AiProxy", 503, "Service Unavailable", """{"error":{"type":"backend_unavailable"}}""");
@@ -200,6 +245,10 @@ await t.Run("Error classification (HTTP)", () =>
     t.Check(ov.ContextOverflow && !ov.Transient && ov.ErrorType == "context_length_exceeded", "openai overflow");
     var ov2 = AN.ProviderErrors.FromHttp("Anthropic", 413, null, """{"type":"error","error":{"type":"request_too_large","message":"prompt is too long: 250000 tokens > 200000 maximum"}}""");
     t.Check(ov2.ContextOverflow, "413 prompt too long");
+    // A body over the endpoint's limit (an oversize image, say) says nothing about the text: without its type it
+    // stayed a dead end, and no compaction ran to shrink the request (idea-begg3v).
+    var tooBig = AN.ProviderErrors.FromHttp("Anthropic", 413, null, """{"type":"error","error":{"type":"request_too_large","message":"Request body is too large"}}""");
+    t.Check(tooBig.ContextOverflow && !tooBig.Transient, "413 request_too_large");
     var notOv = AP.ProviderErrors.FromHttp("X", 400, null, """{"error":{"message":"invalid tool schema","type":"invalid_request_error"}}""");
     t.Check(!notOv.ContextOverflow && !notOv.Transient, "plain 400");
     var ovl = AN.ProviderErrors.FromHttp("Anthropic", 529, null, """{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}""");
@@ -810,6 +859,43 @@ await t.Run("chat: images dropped for a text-only catalog model (aiproxy gemma-4
     finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
 });
 
+// Both aiproxy transports and OpenRouter sent the catalog's output maximum whatever the prompt left of the window,
+// so a model whose window is smaller than that failed every call until compaction ran (idea-begg3v).
+await t.Run("max_tokens is clamped to the window beside the request (all three transports)", async () =>
+{
+    var model = M("vllm", "narrow");
+    model.ContextWindow = 16_384;
+    model.MaxOutputTokens = 64_000;
+    var long0 = new List<ChatMessage> { ChatMessage.UserText(new string('w', 8000)) };
+    foreach (var (transport, path, field) in new[] { ("chat", "/v1/chat/completions", "max_tokens"), ("responses", "/v1/responses", "max_output_tokens") })
+    {
+        apCtx.SettingsImpl.Set("providers.aiproxy.transport", transport);
+        try { await Collect(aiproxy, Req(model, long0)); }
+        finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+        var sent = mock.Last(path).Json[field]!.GetValue<int>();
+        t.Check(sent < 64_000 && ModelMessages.EstimateInputTokens(Req(model, long0)) + sent <= 16_384,
+            $"aiproxy {transport}: {sent} output tokens beside the prompt fit the 16384 window");
+    }
+});
+
+// An oversize image is refused by the provider and stays in the history, so every later call failed the same way. It
+// is replaced by a note instead, on both aiproxy transports (idea-begg3v).
+await t.Run("an oversize image becomes a note (aiproxy both transports)", async () =>
+{
+    var messages = new List<ChatMessage> { new() { Role = MessageRole.User, Parts = [new TextPart { Text = "what is this?" }, BigImage()] } };
+    var vision = M("aiproxy", "qwen3.8-27b");
+    vision.InputModalities = ["text", "image"];
+    foreach (var (transport, path) in new[] { ("chat", "/v1/chat/completions"), ("responses", "/v1/responses") })
+    {
+        apCtx.SettingsImpl.Set("providers.aiproxy.transport", transport);
+        try { await Collect(aiproxy, Req(vision, messages)); }
+        finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+        var json = mock.Last(path).Json.ToJsonString();
+        t.Check(json.Contains("[image omitted: 5 MB exceeds the provider limit]") && !json.Contains("data:image"),
+            $"aiproxy {transport}: noted, no image sent");
+    }
+});
+
 await t.Run("per-model transport override with a dotted model id", async () =>
 {
     apCtx.SettingsImpl.Set("providers.aiproxy.models", new JsonObject { ["qwen3.8-27b"] = new JsonObject { ["transport"] = "chat" } });
@@ -1071,6 +1157,40 @@ await t.Run("anthropic: thinking modes (foreign assistant turn, adaptive, off, m
     t.Check(!b.ToJsonString().Contains("cache_control"), "promptCaching=false");
     anCtx.SettingsImpl.Set("providers.anthropic.thinking", null);
     anCtx.SettingsImpl.Set("providers.anthropic.promptCaching", null);
+});
+
+// A caller that names its own max_tokens (the budget ledger reserves exactly that, and a compaction summary counts
+// on the rest) must not have it raised under it: thinking is fitted inside the cap, or dropped when it does not fit.
+// It used to be sent as budget + 4096, so the ledger held 13107 and the call spent 20480 (idea-begg3v).
+await t.Run("anthropic: thinking never raises max_tokens over an explicit caller cap", async () =>
+{
+    var r = Req(sonnet, effort: "high");
+    r.MaxOutputTokens = 13107;                       // the compaction summarizer's budget
+    await Collect(anthropic, r);
+    var b = mock.Last("/v1/messages").Json;
+    var budget = b["thinking"]?["budget_tokens"]?.GetValue<int>() ?? 0;
+    t.Eq(13107, b["max_tokens"]!.GetValue<int>(), "max_tokens is the caller's, unchanged");
+    t.Check(budget > 0 && budget < 13107, $"thinking fitted inside the cap: {budget}");
+
+    // A cap with no room for both: no thinking, and the caller's cap is still what is sent.
+    var tiny = Req(sonnet, effort: "high");
+    tiny.MaxOutputTokens = 1500;
+    await Collect(anthropic, tiny);
+    b = mock.Last("/v1/messages").Json;
+    t.Check(b["thinking"] is null && b["max_tokens"]!.GetValue<int>() == 1500, "too small for both: no thinking, cap kept");
+});
+
+await t.Run("anthropic: an oversize image is replaced by a note instead of a 400 on every later call", async () =>
+{
+    var messages = new List<ChatMessage>
+    {
+        new() { Role = MessageRole.User, Parts = [new TextPart { Text = "what is this?" }, BigImage()] },
+        new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "c1", Name = "read", Content = "chart.png", Images = [BigImage()] }] },
+    };
+    await Collect(anthropic, Req(sonnet, messages));
+    var json = mock.Last("/v1/messages").Json.ToJsonString();
+    t.Check(json.Contains("[image omitted: 5 MB exceeds the provider limit]"), "both images noted");
+    t.Check(!json.Contains("\"type\":\"image\""), "no image block is sent");
 });
 
 await t.Run("anthropic: no tools defined -> tool blocks flattened to text; short explicit max tokens -> no thinking", async () =>
@@ -1337,6 +1457,25 @@ await t.Run("openrouter: tool-result images are named as omitted for a text-only
     await Collect(openrouter, Req(await OrModel("stealth/bunny"), ToolImagesConvo()));
     all = mock.Last("/openrouter/api/v1/chat/completions").Json.ToJsonString();
     t.Check(all.Contains("data:image") && !all.Contains("omitted:"), "an image-capable model gets the images and no note");
+});
+
+await t.Run("openrouter: max_tokens is clamped to the window, an oversize image becomes a note", async () =>
+{
+    var vision = await OrModel("stealth/bunny");
+    var narrow = M("openrouter", vision.Id);
+    narrow.ContextWindow = 16_384;
+    narrow.MaxOutputTokens = 64_000;
+    var longPrompt = new List<ChatMessage> { ChatMessage.UserText(new string('w', 8000)) };
+    await Collect(openrouter, Req(narrow, longPrompt));
+    var sent = mock.Last("/openrouter/api/v1/chat/completions").Json["max_tokens"]!.GetValue<int>();
+    t.Check(sent < 64_000 && ModelMessages.EstimateInputTokens(Req(narrow, longPrompt)) + sent <= 16_384,
+        $"{sent} output tokens beside the prompt fit the 16384 window");
+
+    var big = new List<ChatMessage> { new() { Role = MessageRole.User, Parts = [new TextPart { Text = "what is this?" }, BigImage()] } };
+    await Collect(openrouter, Req(vision, big));
+    var json = mock.Last("/openrouter/api/v1/chat/completions").Json.ToJsonString();
+    t.Check(json.Contains("[image omitted: 5 MB exceeds the provider limit]") && !json.Contains("data:image"),
+        "the oversize image is noted, not sent");
 });
 
 await t.Run("openrouter: without an API key no models are offered and calls fail clearly", async () =>

@@ -164,4 +164,49 @@ public static class ModelMessages
     }
 
     public static long EstimateTokens(string? text) => (text?.Length ?? 0) / 4;
+
+    /// <summary>What a request already puts into the context window: system prompt, conversation, tool definitions.</summary>
+    public static long EstimateInputTokens(ModelRequest request)
+    {
+        long chars = 0;
+        foreach (var t in request.Tools) chars += t.Name.Length + t.Description.Length + t.ParametersChars;
+        return EstimateTokens(request.Messages) + EstimateTokens(request.SystemPrompt) + chars / 4;
+    }
+
+    /// <summary>Room kept free beyond the estimate: the char/4 estimate is rough, and the window is counted exactly.</summary>
+    public const int WindowMargin = 1024;
+    /// <summary>Share of the window the margin grows with, for the same reason.</summary>
+    public const double WindowMarginShare = 0.05;
+
+    /// <summary>
+    /// The largest <c>max_tokens</c> a request may send: what the caller asked for, never above the model's own
+    /// maximum, and never above what is left of the context window once its input is counted. A provider asked for
+    /// more than the window has answers HTTP 400 ("input length and max_tokens exceed context limit") — read as a
+    /// context overflow, so every attempt pays for a compaction round and dumps a body (idea-begg3v).
+    /// </summary>
+    public static int ClampMaxTokens(ModelRequest request, int desired)
+    {
+        var value = request.Model.MaxOutputTokens is > 0 && desired > request.Model.MaxOutputTokens.Value
+            ? request.Model.MaxOutputTokens.Value
+            : desired;
+        var window = request.Model.ContextWindow ?? 0;
+        if (window <= 0) return value;
+        var margin = Math.Max(WindowMargin, (long)(window * WindowMarginShare));
+        var room = window - EstimateInputTokens(request) - margin;
+        return value <= room ? value : (int)Math.Max(1, room);
+    }
+
+    /// <summary>The largest image the transports accept, in bytes. Anthropic's 5 MB per image is the smallest limit we know.</summary>
+    public const int MaxImageBytes = 5 * 1024 * 1024;
+    /// <summary><see cref="MaxImageBytes"/> as base64 characters, which is what a request body carries.</summary>
+    public const int MaxImageChars = MaxImageBytes / 3 * 4;
+
+    /// <summary>
+    /// The note that replaces an image no transport will take, or null when it fits. An oversize image is refused
+    /// with a 400 that no compaction clears — it stays in the history, so every later call fails the same way
+    /// (idea-begg3v). The note is deterministic, so the conversation prefix (and its cache) stays the same.
+    /// </summary>
+    public static string? OversizedImage(ImagePart image) =>
+        image.Data.Length <= MaxImageChars ? null
+        : $"[image omitted: {image.Data.Length * 3 / 4 / (1024 * 1024)} MB exceeds the provider limit]";
 }

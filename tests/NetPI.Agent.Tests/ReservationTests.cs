@@ -16,6 +16,7 @@ public static class ReservationTests
         t.Add("budget: a 529 storm under a dollar cap no longer locks the day", FailedBeforeFirstByte);
         t.Add("budget: a hot swap runs two ledger generations: one reservation, one settle", Swap);
         t.Add("budget: budget.allow runs alongside reservations without wedging the gates", AllowParallel);
+        t.Add("budget: the reservation holds what the provider can actually send beside a full window", WindowClamp);
     }
 
     private static ModelRequest Request() => new()
@@ -219,5 +220,26 @@ public static class ReservationTests
         await Task.WhenAll(allow, reserve).WaitAsync(TimeSpan.FromSeconds(10));
         Check.True(Math.Abs(l.Spent().Today - 0.003) < 1e-9, $"every reservation settled ({l.Spent().Today})");
         Check.True(h.Sessions.GetSession(sid)!.Meta?["budgetAllowedFrom"] is JsonValue, "the allow landed in the session");
+    }
+
+    // The transports cut max_tokens to what the window has left beside the request, so a reservation that used the
+    // caller's value alone held more than the call could ever spend (idea-begg3v).
+    private static void WindowClamp()
+    {
+        var price = new Ledger.Price(0.000001, 0.000002, 0.000001, 0.000002, "test");
+        var req = Request();
+        req.MaxOutputTokens = 100;
+        Check.True(Ledger.Estimate(req, price) > 0, "a small request reserves something");
+
+        // A prompt that fills most of the window: the transport sends the room that is left, not the 16k the caller
+        // asked for, and the reservation holds exactly that much output.
+        req.MaxOutputTokens = 16_000;
+        req.Messages = [ChatMessage.UserText(new string('w', 100_000))];
+        var estimate = Ledger.Estimate(req, price);
+        var input = ModelMessages.EstimateInputTokens(req);
+        var room = req.Model.ContextWindow!.Value - input - Math.Max(ModelMessages.WindowMargin, req.Model.ContextWindow.Value * ModelMessages.WindowMarginShare);
+        Check.True(room > 0 && room < 16_000, $"the window leaves {room} output tokens");
+        Check.True(Math.Abs(estimate - (input * price.CacheRead + room * price.Output) / 1_000_000) < 1e-12,
+            $"the reservation holds what the transport would send ({estimate})");
     }
 }

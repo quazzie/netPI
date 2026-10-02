@@ -73,7 +73,7 @@ internal static class ResponsesTransport
             foreach (var group in toolImages.GroupBy(x => x.CallId))
             {
                 content.Add(new JsonObject { ["type"] = "input_text", ["text"] = $"[Image(s) returned by tool call {group.Key}]" });
-                foreach (var (_, img) in group) content.Add(InputImage(img));
+                foreach (var (_, img) in group) content.Add(Image(img));
             }
             foreach (var (callId, count) in toolImagesOmitted)
                 content.Add(new JsonObject { ["type"] = "input_text", ["text"] = OpenAiCommon.ToolImagesOmitted(callId, count) });
@@ -153,7 +153,7 @@ internal static class ResponsesTransport
                                 break;
                             case ImagePart img:
                                 content.Add(allowImages
-                                    ? InputImage(img)
+                                    ? Image(img)
                                     : new JsonObject { ["type"] = "input_text", ["text"] = OpenAiCommon.ImageOmitted });
                                 break;
                         }
@@ -171,6 +171,12 @@ internal static class ResponsesTransport
         ["type"] = "input_image",
         ["image_url"] = $"data:{img.MediaType};base64,{img.Data}",
     };
+
+    /// <summary>The image, or the note that replaces one no transport takes: it would fail every later call too (idea-begg3v).</summary>
+    private static JsonObject Image(ImagePart img) =>
+        ModelMessages.OversizedImage(img) is { } tooBig
+            ? new JsonObject { ["type"] = "input_text", ["text"] = tooBig }
+            : InputImage(img);
 
     private static JsonObject? ReasoningItem(ThinkingPart th)
     {
