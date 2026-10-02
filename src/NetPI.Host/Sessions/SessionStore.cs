@@ -522,9 +522,9 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
         var detached = _db.Query($"SELECT {SessionColumns} FROM sessions WHERE workspace_id = @id", new { id }, ReadSession);
         var n = _db.Execute("DELETE FROM workspaces WHERE id = @id", new { id });
         if (n == 0) return false;
-        // The sessions that pointed at it now work in their project again, so their stored reference goes with the record.
-        foreach (var s in detached)
-            _db.Execute("UPDATE sessions SET workspace_id = NULL, updated_at = @updated_at WHERE id = @id", new { updated_at = Now(), id = s.Id });
+        // The sessions that pointed at it now work in their project again, so their stored reference goes with the record:
+        // one set-based update over the binding, not one statement per session.
+        _db.Execute("UPDATE sessions SET workspace_id = NULL, updated_at = @updated_at WHERE workspace_id = @id", new { updated_at = Now(), id });
         // Transient (message-less) sessions have no row: detach them in memory, like the stored ones above.
         List<SessionInfo> transient = [];
         lock (_transientLock)

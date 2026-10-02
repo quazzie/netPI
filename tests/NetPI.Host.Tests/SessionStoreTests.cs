@@ -603,6 +603,10 @@ public static class SessionStoreTests
             var ancient = f.Store.CreateSession(new SessionInfo { Title = "Ancient" });
             f.Store.UpdateSession(ancient.Id, x => x.Pinned = true);
             f.Store.AppendMessage(ancient.Id, ChatMessage.UserText("old news"));
+            // Timestamps store at millisecond resolution: on a fast machine the two pinned sessions' last
+            // writes can land in one millisecond, and the ordering would fall to the id tiebreak instead of
+            // newest-first. Separate them so the assertion tests the ordering, not the clock.
+            await Task.Delay(2);
 
             var old = f.Store.CreateSession(new SessionInfo { Title = "Old chat" });
             f.Store.AppendMessage(old.Id, ChatMessage.UserText("hello"));

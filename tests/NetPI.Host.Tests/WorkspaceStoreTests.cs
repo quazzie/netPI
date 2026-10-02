@@ -196,6 +196,61 @@ public static class WorkspaceStoreTests
             Check.Equal(project.Path, f.Store.GetCwd(f.Store.GetSession(transient.Id)!));
         });
 
+        r.Add("workspaces: deleting a workspace detaches every bound session in one pass, other bindings untouched", async () =>
+        {
+            await using var f = new Fixture();
+            var project = Project(f);
+            var w = Workspace(f, "wt", project.Id);
+            var other = Workspace(f, "other", project.Id);
+
+            // Three sessions bound to the workspace being deleted (two with rows, one message-less) and one to another.
+            var s1 = f.Store.CreateSession(new SessionInfo { Title = "one", ProjectId = project.Id, WorkspaceId = w.Id });
+            var s2 = f.Store.CreateSession(new SessionInfo { Title = "two", ProjectId = project.Id, WorkspaceId = w.Id });
+            var transient = f.Store.CreateSession(new SessionInfo { Title = "new", ProjectId = project.Id, WorkspaceId = w.Id });
+            var kept = f.Store.CreateSession(new SessionInfo { Title = "kept", ProjectId = project.Id, WorkspaceId = other.Id });
+            foreach (var s in new[] { s1, s2, kept })
+                f.Store.AppendMessage(s.Id, new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = "hi" }] });
+            var keptBefore = f.Store.GetSession(kept.Id)!;
+
+            // Only what the deletion publishes: workspace.deleted first, then per detached session its updated and workspace events.
+            // Flush first: a late subscriber would also be handed what the bus is still delivering from the appends above.
+            await f.Bus.FlushAsync();
+            var order = new List<BusEvent>();
+            var subscribe = f.Bus.Subscribe("*", e => { lock (order) order.Add(e); });
+            var oneBefore = f.Store.GetSession(s1.Id)!;
+            try
+            {
+                Check.True(f.Store.DeleteWorkspace(w.Id));
+                await f.Bus.FlushAsync();
+            }
+            finally { subscribe.Dispose(); }
+
+            // The detached sessions survive whole: still in their project, working in its folder again, messages intact.
+            Check.Equal(1, f.Store.GetSession(s1.Id)!.MessageCount);
+            foreach (var id in new[] { s1.Id, s2.Id, transient.Id })
+            {
+                var got = f.Store.GetSession(id)!;
+                Check.Equal(null, got.WorkspaceId);
+                Check.Equal(project.Id, got.ProjectId);
+                Check.Equal(project.Path, f.Store.GetCwd(got));
+            }
+            Check.True(f.Store.GetSession(s1.Id)!.UpdatedAt >= oneBefore.UpdatedAt);   // the detach is an update, not a rewrite from scratch
+            // The other workspace's binding stands: not touched, not even mentioned in the events.
+            Check.Equal(other.Id, f.Store.GetSession(kept.Id)!.WorkspaceId);
+            Check.Equal(keptBefore.UpdatedAt, f.Store.GetSession(kept.Id)!.UpdatedAt);
+
+            lock (order)
+            {
+                Check.Equal(7, order.Count);
+                Check.Equal(EventTypes.WorkspaceDeleted, order[0].Type);
+                for (var i = 1; i < 7; i += 2)
+                {
+                    Check.Equal(EventTypes.SessionUpdated, order[i].Type);
+                    Check.Equal(EventTypes.SessionWorkspace, order[i + 1].Type);
+                }
+            }
+        });
+
         r.Add("workspaces: a fork does not inherit the original writer's checkout", async () =>
         {
             await using var f = new Fixture();
