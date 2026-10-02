@@ -26,6 +26,9 @@ internal sealed unsafe class Database : IDisposable
 
     public string FilePath { get; }
 
+    /// <summary>True while a transaction is open on this connection (it is the caller's own when the caller is inside one: the gate is re-entrant).</summary>
+    internal bool InTransaction { get { lock (_gate) return _txDepth > 0; } }
+
     public Database(string filePath, ILogger? log = null)
     {
         _log = log;

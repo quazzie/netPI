@@ -188,6 +188,16 @@ public static class CollectionTests
             Check.Equal(1L, docs.Count());
         });
 
+        Providers.Add(r, "collections: a document whose index field holds the wrong kind of value is refused, and nothing of it is stored", store =>
+        {
+            var docs = store.Plugins.For("test").Collection("things", new CollectionSpec().Integer("n").Text("t"));
+            Check.Throws<ArgumentException>(() => docs.Put("a", Build.Doc(("n", "not a number"))));
+            Check.Throws<ArgumentException>(() => docs.Insert("b", Build.Doc(("t", 5L))));
+            Check.Equal(0L, docs.Count(), "nothing was stored");
+            docs.Put("ok", Build.Doc(("n", 3L)));
+            Check.Equal(1L, docs.Count(), "a number in an Integer field and no value in the Text one is fine");
+        });
+
         Providers.Add(r, "collections: a changed declaration is applied to the documents already stored", store =>
         {
             var data = store.Plugins.For("test");

@@ -34,7 +34,9 @@ internal sealed class SqliteStorageProvider : IStorageProvider
 internal sealed class SqliteStorage : IStorage, IStorageSnapshot
 {
     /// <summary>
-    /// The schema, as one step: this provider's own tables (projects, sessions, messages, kv). A database written by an earlier
+    /// The schema, as one step: this provider's own tables (projects, sessions, messages, kv). A session's project is a plain value (the
+    /// session service checks it exists, and a deleted project's sessions are cleared first): no foreign key ties the two, as in every provider.
+    /// A message id is never reused, even after the newest message is deleted (AUTOINCREMENT). A database written by an earlier
     /// shape of NetPI is brought to this one by the one-off storage migration, never by this code, and is refused until it is.
     /// </summary>
     internal static readonly string[] CoreMigrations =
@@ -52,7 +54,7 @@ internal sealed class SqliteStorage : IStorage, IStorageSnapshot
         CREATE TABLE sessions (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL DEFAULT '',
-            project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            project_id TEXT,
             parent_session_id TEXT,
             kind TEXT NOT NULL DEFAULT 'chat',
             model TEXT,
@@ -69,7 +71,7 @@ internal sealed class SqliteStorage : IStorage, IStorageSnapshot
         CREATE INDEX ix_sessions_project ON sessions(project_id, updated_at DESC);
         CREATE INDEX ix_sessions_parent ON sessions(parent_session_id);
         CREATE TABLE messages (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             seq INTEGER NOT NULL,
             role TEXT NOT NULL,

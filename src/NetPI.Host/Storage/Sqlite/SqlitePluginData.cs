@@ -29,6 +29,8 @@ internal sealed partial class SqlitePluginData(Database db, string pluginId) : I
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, SqliteCollection> _open = new(StringComparer.Ordinal);
+    // Collections first declared inside a plugin transaction: their table is created inside it, so a rollback takes it away again.
+    private readonly List<string> _createdInTransaction = [];
 
     [GeneratedRegex("^[A-Za-z][A-Za-z0-9_]{0,63}$")]
     private static partial Regex NamePattern();
@@ -44,9 +46,15 @@ internal sealed partial class SqlitePluginData(Database db, string pluginId) : I
             lock (_open)
             {
                 var fields = spec.Fields.ToDictionary(f => f.Key, f => f.Value, StringComparer.Ordinal);
-                if (_open.TryGetValue(name, out var existing) && existing.SameFields(fields)) return existing;
-                var collection = db.Transaction(_ => SqliteCollection.OpenOrUpgrade(db, pluginId, name, fields));
-                _open[name] = collection;
+                _open.TryGetValue(name, out var existing);
+                if (existing is not null && existing.SameFields(fields)) return existing;
+                // The same collection object is kept when its declaration changes: a handle a plugin holds stays the collection.
+                var collection = db.Transaction(_ => SqliteCollection.OpenOrUpgrade(db, pluginId, name, fields, existing));
+                if (existing is null)
+                {
+                    _open[name] = collection;
+                    if (db.InTransaction) _createdInTransaction.Add(name);
+                }
                 return collection;
             }
         }
@@ -56,7 +64,21 @@ internal sealed partial class SqlitePluginData(Database db, string pluginId) : I
     {
         ArgumentNullException.ThrowIfNull(work);
         // The plugin's own lock first, then the store's (inside the database transaction): always in this order.
-        lock (_gate) return db.Transaction(_ => work());
+        lock (_gate)
+        {
+            var joined = db.InTransaction;
+            try
+            {
+                var result = db.Transaction(_ => work());
+                if (!joined) lock (_open) _createdInTransaction.Clear();
+                return result;
+            }
+            catch
+            {
+                if (!joined) ForgetCreated();
+                throw;
+            }
+        }
     }
 
     public void Transaction(Action work)
@@ -64,22 +86,38 @@ internal sealed partial class SqlitePluginData(Database db, string pluginId) : I
         ArgumentNullException.ThrowIfNull(work);
         Transaction<object?>(() => { work(); return null; });
     }
+
+    /// <summary>The transaction rolled back: a collection it created has no table any more, so the next declaration creates it again.</summary>
+    private void ForgetCreated()
+    {
+        lock (_open)
+        {
+            foreach (var name in _createdInTransaction) _open.Remove(name);
+            _createdInTransaction.Clear();
+        }
+    }
 }
 
 internal sealed class SqliteCollection : IDataCollection
 {
     private readonly Database _db;
     private readonly string _table;
-    private readonly Dictionary<string, DataFieldType> _fields;
-    private readonly string[] _order;   // field names in column order
-    private readonly string _putSql;
-    private readonly string _insertSql;
+    private Dictionary<string, DataFieldType> _fields = null!;
+    private string[] _order = null!;   // field names in column order
+    private string _putSql = null!;
+    private string _insertSql = null!;
 
     private SqliteCollection(Database db, string name, string table, Dictionary<string, DataFieldType> fields)
     {
         _db = db;
         Name = name;
         _table = table;
+        Declare(fields);
+    }
+
+    /// <summary>Take on a declaration: which fields a query may name, and the statements that write them.</summary>
+    private void Declare(Dictionary<string, DataFieldType> fields)
+    {
         _fields = fields;
         _order = [.. fields.Keys];
         var columns = string.Concat(_order.Select(f => ", f_" + f));
@@ -97,7 +135,7 @@ internal sealed class SqliteCollection : IDataCollection
     private static string SqlType(DataFieldType t) => t switch { DataFieldType.Text => "TEXT", DataFieldType.Integer => "INTEGER", _ => "REAL" };
 
     /// <summary>Creates the collection's table, or brings an existing one to the declared fields: a new field gets a column, an index and a back-fill.</summary>
-    internal static SqliteCollection OpenOrUpgrade(Database db, string plugin, string name, Dictionary<string, DataFieldType> fields)
+    internal static SqliteCollection OpenOrUpgrade(Database db, string plugin, string name, Dictionary<string, DataFieldType> fields, SqliteCollection? existing)
     {
         var row = db.QuerySingle("SELECT id, spec FROM _collections WHERE plugin = @plugin AND name = @name", new { plugin, name },
             r => (Id: r.GetInt64("id"), Spec: r.GetString("spec")));
@@ -133,7 +171,8 @@ internal sealed class SqliteCollection : IDataCollection
             }
         }
         db.Execute("UPDATE _collections SET spec = @spec WHERE id = @id", new { spec = specJson.ToJsonString(), id = row.Id });
-        var collection = new SqliteCollection(db, name, tableName, fields);
+        var collection = existing ?? new SqliteCollection(db, name, tableName, fields);
+        collection.Declare(fields);
         if (backfill.Count > 0) collection.Backfill(backfill);
         return collection;
     }

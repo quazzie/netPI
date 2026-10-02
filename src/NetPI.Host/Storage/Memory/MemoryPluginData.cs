@@ -102,10 +102,20 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
             return store.Read(() => collection.Docs.TryGetValue(key, out var doc) ? Copy(doc) : null);
     }
 
+    /// <summary>A document whose value in a declared index field is not of the field's type is refused (as the sqlite provider refuses it), never stored as "no value".</summary>
+    private void CheckFieldTypes(JsonObject doc)
+    {
+        foreach (var (field, type) in collection.Fields)
+            if (doc.TryGetPropertyValue(field, out var node) && node is not null && node.GetValueKind() is not (System.Text.Json.JsonValueKind.Null or System.Text.Json.JsonValueKind.Undefined)
+                && Field(node, type) is null)
+                throw new ArgumentException($"Field '{field}' is declared {type}, and the document holds {node.GetValueKind()}");
+    }
+
     public void Put(string key, JsonObject doc)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         ArgumentNullException.ThrowIfNull(doc);
+        CheckFieldTypes(doc);
         lock (store.Lock)
             store.Apply(() => Write(key, doc));
     }
@@ -114,6 +124,7 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         ArgumentNullException.ThrowIfNull(doc);
+        CheckFieldTypes(doc);
         lock (store.Lock)
             return store.Apply(() =>
             {
