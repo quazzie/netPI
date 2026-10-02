@@ -43,39 +43,14 @@ internal sealed class SessionService : ISessionStore
     /// </summary>
     private readonly object _transientLock;
 
-    // The deserialized context of the sessions being worked on. Without it every turn re-reads and re-parses the whole
-    // history (measured: ~30 ms and megabytes of garbage for a 1,500-message chat), and does so again for every hook
-    // that appends a notice. Only the few most recent sessions are kept, and a session too big to be worth retaining
-    // is never cached at all — see ContextRows.
-    //
-    // An appended message goes INTO the cached context (AppendContext) instead of throwing it away, because dropping it
-    // is what made the turn-start read a guaranteed miss: a turn appends its own messages, so every turn paid the full
-    // read again. Anything that changes a message in place, or compacts, still drops the entry.
-    private const int ContextCacheSessions = 3;
-    private const int ContextCacheMaxMessages = 2000;
-
-    /// <summary>A session's uncompacted messages in storage order, and the seq they end at.</summary>
-    private sealed record ContextEntry(List<ChatMessage> Rows, long LastSeq);
-
-    private readonly Dictionary<string, ContextEntry> _context = new(StringComparer.Ordinal);
-    private readonly LinkedList<string> _contextLru = new();
-    private readonly object _contextLock = new();
-    private long _contextHits;
-    private long _contextReads;
-
-    /// <summary>
-    /// A generation per cached session, bumped by every drop: a cold read captures its value before it reads
-    /// storage, and may fill the slot only if nothing dropped in the meantime. That is the check the seq compare
-    /// cannot give: rows and newest are read as two separate statements, and a write that changes a message in
-    /// place (or compacts) commits between them with the seq still matching, leaving pre-write rows in the cache.
-    /// </summary>
-    private readonly Dictionary<string, long> _contextGeneration = new(StringComparer.Ordinal);
+    /// <summary>The deserialized contexts of the sessions being worked on: the few most recent, kept warm across appends.</summary>
+    private readonly ContextCache _context = new();
 
     private readonly HashSet<string> _forkReset = new(StringComparer.Ordinal);
     private readonly object _forkResetLock = new();
 
     /// <summary>Times the cached context answered a read; the rest were read from storage. Diagnostics and tests.</summary>
-    internal (long Hits, long Reads) ContextCache => (Interlocked.Read(ref _contextHits), Interlocked.Read(ref _contextReads));
+    internal (long Hits, long Reads) ContextCache => _context.Counters;
 
     public SessionService(IStorage storage, IEventBus bus, string defaultWorkspace)
     {
@@ -385,7 +360,7 @@ internal sealed class SessionService : ISessionStore
                 return MaterializeFirstMessage(sessionId, transient, message);
         }
         var (appended, session) = _repo.Atomic(r => AppendCore(r, sessionId, message));
-        AppendContext(appended);   // committed: the cached context can take it (inside the transaction it might roll back)
+        _context.Append(appended);   // committed: the cached context can take it (inside the transaction it might roll back)
         PublishMessage(EventTypes.MessageAdded, appended);
         Publish(EventTypes.SessionUpdated, new { session });
         return appended;
@@ -414,7 +389,7 @@ internal sealed class SessionService : ISessionStore
             Publish(EventTypes.SessionCreated, new { session });
             PublishMessage(EventTypes.MessageAdded, stored);
             Publish(EventTypes.SessionUpdated, new { session });
-            AppendContext(stored);   // committed: a fresh session has no cached context yet, so this is usually a no-op
+            _context.Append(stored);   // committed: a fresh session has no cached context yet, so this is usually a no-op
             return stored;
         }
     }
@@ -464,20 +439,11 @@ internal sealed class SessionService : ISessionStore
 
     public IReadOnlyList<ChatMessage> GetContextMessages(string sessionId)
     {
-        // The copy is taken under the cache lock — a reference copy, and it is what a warm read costs now (before this,
-        // a turn re-read the whole history and re-parsed its JSON — ~30 ms and megabytes of garbage for a 1,500-message
-        // chat, every turn). The read that fills the cache happens OUTSIDE it, so one session's cold read does not hold up
-        // another session's warm read or any append.
-        lock (_contextLock)
-        {
-            if (_context.TryGetValue(sessionId, out var cached))
-            {
-                Interlocked.Increment(ref _contextHits);
-                TouchContextLocked(sessionId);
-                return Ordered(cached.Rows);
-            }
-        }
-        return Ordered(ContextRows(sessionId));
+        // A warm read is just the copy of the cached context (before this, a turn re-read the whole history and
+        // re-parsed its JSON — ~30 ms and megabytes of garbage for a 1,500-message chat, every turn). The read that
+        // fills the cache happens OUTSIDE the cache lock, so one session's cold read does not hold up another
+        // session's warm read or any append.
+        return _context.TryGet(sessionId) is { } rows ? Ordered(rows) : Ordered(ContextRows(sessionId));
     }
 
     /// <summary>The caller's own copy, with the latest summary first (it is appended after the retained tail).</summary>
@@ -495,62 +461,17 @@ internal sealed class SessionService : ISessionStore
     }
 
     /// <summary>
-    /// The session's uncompacted messages in storage order, read once and put in the cache when the cache may hold them. The
-    /// read also reports the newest uncompacted seq and only caches when that is the seq it read: a message that committed
-    /// while this read was running would otherwise be missing from the cache with nothing left to drop it (an append that
-    /// finds no entry has nothing to extend), and the staleness would last until the next write.
+    /// The session's uncompacted messages in storage order: the read the cache could not answer. It begins (and so
+    /// captures the session's generation for) a cold read, and puts the result in the cache when the cache may hold
+    /// it — the judgement is the cache's, against the newest seq the store reported in the same read.
     /// </summary>
     private List<ChatMessage> ContextRows(string sessionId)
     {
-        Interlocked.Increment(ref _contextReads);
-        long generation;
-        lock (_contextLock) generation = _contextGeneration.GetValueOrDefault(sessionId);
+        var generation = _context.BeginRead(sessionId);
         var (read, newest) = _repo.ReadContext(sessionId);
         var rows = read.ToList();
-        if (rows.Count > ContextCacheMaxMessages) return rows;      // too big to be worth retaining
-        if (rows.Count == 0 ? newest != 0 : rows[^1].Seq != newest) return rows;  // a message landed during the read: do not cache a view without it
-        lock (_contextLock)
-        {
-            // Only fill an empty slot: if an append extended the cache while this read ran, that entry knows more.
-            // And only if nothing dropped since the read started — the generation is the check the seq compare
-            // cannot give (a same-seq update or a compaction commits between the rows and the newest).
-            if (generation == _contextGeneration.GetValueOrDefault(sessionId) && !_context.ContainsKey(sessionId))
-            {
-                _context[sessionId] = new ContextEntry(rows, newest);
-                _contextLru.AddLast(sessionId);
-                while (_contextLru.Count > ContextCacheSessions)
-                {
-                    _context.Remove(_contextLru.First!.Value);
-                    _contextLru.RemoveFirst();
-                }
-            }
-        }
+        _context.Fill(sessionId, rows, newest, generation);
         return rows;
-    }
-
-    /// <summary>
-    /// A committed append extends the cached context instead of dropping it, so the next turn reads it warm. Only an
-    /// append that lands after the last cached seq can be added: two appends to one session can commit in either order
-    /// (a plugin's notice and the runtime's own message), and a message that arrives out of order would corrupt the
-    /// order the model sees — that case drops the entry and the next read rebuilds it. A message stored as already
-    /// compacted does not belong in this list at all.
-    /// </summary>
-    private void AppendContext(ChatMessage message)
-    {
-        if (string.IsNullOrEmpty(message.SessionId) || message.Compacted) return;
-        lock (_contextLock)
-        {
-            if (!_context.TryGetValue(message.SessionId, out var entry)) return;
-            if (message.Seq <= entry.LastSeq || entry.Rows.Count >= ContextCacheMaxMessages)
-            {
-                _context.Remove(message.SessionId);
-                _contextLru.Remove(message.SessionId);
-                return;
-            }
-            entry.Rows.Add(message);
-            _context[message.SessionId] = entry with { LastSeq = message.Seq };
-            TouchContextLocked(message.SessionId);
-        }
     }
 
     /// <summary>
@@ -568,32 +489,10 @@ internal sealed class SessionService : ISessionStore
     }
 
     /// <summary>Forget a session's cached context. Every write that changes a message calls it.</summary>
-    private void DropContext(string sessionId)
-    {
-        lock (_contextLock)
-        {
-            if (_context.Remove(sessionId)) _contextLru.Remove(sessionId);
-            _contextGeneration[sessionId] = _contextGeneration.GetValueOrDefault(sessionId) + 1;
-        }
-    }
+    private void DropContext(string sessionId) => _context.Drop(sessionId);
 
     /// <summary>A session that is going away: forget its cached context and let its generation go with it.</summary>
-    private void ForgetContext(string sessionId)
-    {
-        lock (_contextLock)
-        {
-            if (_context.Remove(sessionId)) _contextLru.Remove(sessionId);
-            _contextGeneration.Remove(sessionId);
-        }
-    }
-
-    private void TouchContextLocked(string sessionId)
-    {
-        var node = _contextLru.Find(sessionId);
-        if (node is null) return;
-        _contextLru.Remove(node);
-        _contextLru.AddLast(node);
-    }
+    private void ForgetContext(string sessionId) => _context.Forget(sessionId);
 
     public void MarkCompacted(string sessionId, long upToSeq)
     {

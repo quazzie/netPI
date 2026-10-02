@@ -11,6 +11,7 @@ LogSinkTests.Register(runner);
 RegistryTests.Register(runner);
 CoreRpcTests.Register(runner);
 SessionStoreTests.Register(runner);
+ContextCacheTests.Register(runner);
 ModelCatalogTests.Register(runner);
 ServerTests.Register(runner);
 PluginTests.Register(runner);
