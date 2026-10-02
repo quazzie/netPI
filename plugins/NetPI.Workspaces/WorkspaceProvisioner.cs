@@ -229,14 +229,44 @@ public sealed class WorkspaceProvisioner(
     }
 
     /// <summary>
+    /// The branch an integration merges and verifies: the one the worktree is actually on, checked against the record.
+    /// The record can go stale — an agent or the user switches branches in the worktree and commits there — and
+    /// merging the recorded branch would then be a no-op that still answers merged and verified, because the ancestry
+    /// check would run against the same empty branch. A stale record is refused with both branches named; a record
+    /// without a branch falls back to what git says the worktree is on (idea-ui6o31).
+    /// </summary>
+    public (string? Branch, string? Error) IntegrateBranch(WorkspaceInfo workspace)
+    {
+        var recorded = workspace.Branch is { Length: > 0 } branch ? branch : null;
+        string? actual = null;
+        if (Directory.Exists(workspace.Path))
+        {
+            // Asked uncached: the branch the worktree is on <em>right now</em> is the question. A cached answer is
+            // precisely the staleness this check exists to catch — a switch made seconds ago is the common case.
+            actual = git.Run(workspace.Path, "rev-parse", "--abbrev-ref", "HEAD");
+        }
+        if (recorded is not null && actual is not null && !WorkspacePaths.Comparer.Equals(recorded, actual))
+            return (null,
+                $"{workspace.Name}'s worktree is on branch {actual}, but the record says {recorded}. Merging the recorded " +
+                "branch would not include what the worktree is working on, so the integration would be reported as merged " +
+                "and verified without touching it. Update the record (or re-attach the workspace) to match the worktree, " +
+                "and integrate again.");
+        if (recorded is not null) return (recorded, null);
+        if (actual is not null) return (actual, null);
+        return (null, $"{workspace.Name} is not on a branch of its own; there is nothing to merge.");
+    }
+
+    /// <summary>
     /// Merge a worker's branch into the project's branch, one repository at a time. The lock is per repository, so two
     /// integrators serialize instead of racing on the same index; the second waits and re-reads the branch, which is why
     /// the merge runs after it takes the lock rather than before.
     /// </summary>
     public async Task<(bool Ok, string? Error)> IntegrateAsync(WorkspaceInfo workspace, string? intoBranch = null, CancellationToken ct = default)
     {
-        if (workspace.Branch is not { Length: > 0 } branch)
-            return (false, $"{workspace.Name} is not on a branch of its own; there is nothing to merge.");
+        // The branch to merge and verify: the worktree's actual branch, refused when the record has gone stale.
+        var (branch, problem) = IntegrateBranch(workspace);
+        if (branch is null)
+            return (false, problem ?? $"{workspace.Name} is not on a branch of its own; there is nothing to merge.");
         var repo = workspace.RepoCommonDir is { } common ? Path.GetDirectoryName(WorkspacePaths.Canonical(common)) : null;
         if (repo is not { Length: > 0 } || !Directory.Exists(repo))
             return (false, $"The main checkout of {workspace.Name}'s repository was not found; merge it by hand.");

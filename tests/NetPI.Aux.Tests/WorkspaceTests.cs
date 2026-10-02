@@ -30,6 +30,7 @@ public static class WorkspaceTests
         t.Add("workspaces: a non-git project gets a plain folder, with no git workflow", NonGitProject);
         t.Add("workspaces: a failed provisioning leaves no runnable workspace", FailedProvisioning);
         t.Add("workspaces: integrations into one branch serialize", IntegrationSerializes);
+        t.Add("workspaces: integrate verifies the branch the worktree is on, and refuses a stale record", IntegrateRefusesStaleRecord);
         t.Add("workspaces: cleanup refuses a dirty, unbound or running worktree and removes a merged one", CleanupSafety);
         t.Add("workspaces: a background process keeps its workspace busy", BackgroundProcessHoldsWorkspace);
         t.Add("workspaces: the guard is per spelling: relative, absolute, .. and a symlink into another checkout", GuardSpellings);
@@ -485,6 +486,64 @@ public static class WorkspaceTests
         // The lock is per repository and held only for the merge.
         Check.True(env.Provisioner.IntegrationLock(GitOut(env.ProjectPath, "rev-parse", "--path-format=absolute", "--git-common-dir")!).CurrentCount == 1);
         return;
+    }
+
+    /// <summary>
+    /// integrate merges and verifies the branch the worktree is actually on. If the worktree switched branches and
+    /// committed there, the recorded branch no longer holds the work — a no-op merge of it would still answer
+    /// merged and verified. The stale record is refused with both branches named, and a record without a branch
+    /// resolves the branch from git (idea-ui6o31).
+    /// </summary>
+    private static async Task IntegrateRefusesStaleRecord()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("integrate, stale record"); return; }
+        var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
+        var w = env.Provision("work", "ses_w");
+        Check.True(w.Ok, w.Error ?? "");
+        var record = store.GetWorkspace(w.Binding!.WorkspaceId)!;
+        var root = w.Binding.Root;
+
+        // The record's branch is current: the work merges into the project's branch and verifies.
+        env.Write(root, "ok.txt", "work");
+        Git_(root, "add", "-A");
+        Git_(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "on the record");
+        var (okFirst, errFirst) = await env.Provisioner.IntegrateAsync(store.GetWorkspace(record.Id)!);
+        Check.True(okFirst, errFirst ?? "");
+        Check.Contains(GitOut(env.ProjectPath, "log", "--format=%s") ?? "", "on the record");
+
+        // The worktree switches branches and commits there: the record is now stale.
+        Check.True(Git_(root, "switch", "-c", "drifted"));
+        env.Write(root, "drift.txt", "work off the record");
+        Git_(root, "add", "-A");
+        Git_(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "drifted");
+
+        // The refusal names both branches, and the drifted work is not merged and not verified.
+        var (ok, err) = await env.Provisioner.IntegrateAsync(store.GetWorkspace(record.Id)!);
+        Check.False(ok, "a stale record was integrated");
+        Check.Contains(err!, "drifted");
+        Check.Contains(err, record.Branch!);
+        var driftedHead = GitOut(root, "rev-parse", "HEAD")!;
+        Check.False(env.Provisioner.IsAncestor(root, driftedHead, "main"), "the drifted work was merged after all");
+        Check.NotContains(GitOut(env.ProjectPath, "log", "--format=%s") ?? "", "drifted");
+
+        // Through the RPC the same refusal comes back, with the answer never claiming a merge that did not include the work.
+        var ex = await Check.ThrowsAsync<RpcException>(
+            async () => await env.Ctx.RpcFake.InvokeAsync("workspaces.integrate", new { id = record.Id }));
+        Check.Equal("integration_failed", ex.Code);
+        Check.Contains(ex.Message, "drifted");
+        Check.Contains(ex.Message, record.Branch!);
+
+        // A record without a branch resolves the branch from git and merges the work that is actually on it.
+        var bare = store.CreateWorkspace(new WorkspaceInfo
+        {
+            Name = "bare", Path = root, ProjectId = env.Project.Id, Kind = "worktree",
+            RepoCommonDir = w.Binding.RepoCommonDir, Managed = true,
+        });
+        var (okBare, errBare) = await env.Provisioner.IntegrateAsync(bare);
+        Check.True(okBare, errBare ?? "");
+        Check.Contains(GitOut(env.ProjectPath, "log", "--format=%s") ?? "", "drifted");
+        Check.True(env.Provisioner.IsAncestor(root, driftedHead, "main"), "the work resolved from git is merged and verified");
     }
 
     private static async Task CleanupSafety()
