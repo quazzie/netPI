@@ -130,6 +130,7 @@ netpi-server (headless) ─────────┴─ NetPI.Host ─┤   Ne
    storage port (sqlite or memory) · catalog    │   NetPI.Providers.*  AiProxy (OpenAI-compatible), Anthropic, OpenRouter
                                                 │   NetPI.Tools.*      files, shell, agents, web, media, ssh · NetPI.Todo · NetPI.Goal
                                                 │   NetPI.Ask          ask_user: questions for you, inline in the chat
+                                                │   NetPI.Plan         /plan: a read-only chat that submits a plan for you to approve
                                                 │   NetPI.Guardrails   blocks dangerous commands and protected paths, or asks you first
 NetPI.Abstractions: the contracts plugins use   │   NetPI.Compaction · NetPI.Nudge · NetPI.Loops · NetPI.Retry · NetPI.ToolRepair
 NetPI.Contracts: the higher abstractions'       │   NetPI.Ideas · NetPI.Work · NetPI.Diagnostics

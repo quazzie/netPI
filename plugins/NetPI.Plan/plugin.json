@@ -1,0 +1,5 @@
+{
+  "id": "netpi.plan",
+  "name": "Plan mode",
+  "description": "/plan: a read-only chat that explores, asks and submits a plan (plan_submit) the user approves, revises or saves as an idea."
+}

@@ -421,6 +421,16 @@ refuses an `ssh` download into another checkout of the repository.
 | `goal.noProgressLimit` | `3` | automatic runs in a row without a successful tool call before the goal pauses |
 | `goal.tokenBudget` | `0` | token budget for goals set without one (0 = none); input not read from the cache plus output |
 
+## Plan mode
+
+`plugins/NetPI.Plan` (see `docs/TOOLS.md`, "Plan mode").
+
+| key | default | |
+|---|---|---|
+| `plan.mcpAllow` | `[]` | MCP tools a plan-mode chat may call besides the ones their server declares read-only (`annotations.readOnlyHint`, or the server's own `readOnly` list). Names with `*` as wildcard, matched against the tool's own name or `server/name`, ignoring case: `ha_get_*`, `ha_search`, `ha_list_*`. A tool that changes things stays blocked |
+| `plan.subagentsReadOnly` | `true` | the subagents a plan-mode chat starts get only tools that read, no checkout of their own, and are bound by plan mode too |
+| `plan.seedTodos` | `true` | approving a plan in the same chat puts its steps in the chat's todo list (unless the list has open items) |
+
 ## SSH tools
 
 | key | default | |

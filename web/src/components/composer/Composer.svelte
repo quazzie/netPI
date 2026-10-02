@@ -12,6 +12,7 @@
   import TodoStrip from './TodoStrip.svelte';
   import RunStatus from './RunStatus.svelte';
   import GoalStrip from './GoalStrip.svelte';
+  import PlanPill from './PlanPill.svelte';
   import IdeaChip from './IdeaChip.svelte';
   import IdeaCards from './IdeaCards.svelte';
   import { app, isBusy, modelFor, sendMessage, abortAgent, hasRpc } from '../../lib/state/app.svelte.js';
@@ -456,6 +457,7 @@
         <AgentPicker {session} bind:open={agentOpen} />
         <EffortPicker {session} {model} bind:open={effortOpen} />
         <ToolsPicker {session} />
+        <PlanPill {session} />
         <span class="spacer"></span>
         <ChatCost sessionId={session.id} />
         {#if used || win}<ContextRing {used} window={win} sessionId={session.id} />{/if}

@@ -265,6 +265,14 @@ into locals first, because after the parent clears the modal state or the row re
      card is one line, `Question · question → answer` (the answer keeps its room on a narrow chat), which opens to every
      question and its answer; a stopped run or a new message instead reads "not answered". The run status line says
      "Waiting for your answer", and the chat's tab and session row get an `asking` dot (warn colour).
+   - **Plan mode.** The composer bar has a Plan pill (`PlanPill`, session meta `planMode`): off → click to plan first;
+     Planning → click to leave; Plan ready (a plan waits, in the chat) and Plan approved are states only. A `plan_submit` call is
+     an item of its own (`plan`, `PlanCard`): while the plugin holds the plan as awaiting (`lib/state/plans.svelte.js`: `plan.list`
+     on connect, `plan.changed`) the card is open with the plan (summary, steps, files, risks, tests, open questions) and Approve /
+     Approve in new chat / Revise… (a box for the feedback) and the quiet links Save as idea, Save as file, Cancel; a plan that waits
+     gives the chat's tab the `asking` dot. Decided, it is one line, `Plan · title → outcome`, that opens to the plan. Approve in a
+     new chat puts the new chat in the old one's tab (`replaceTab`) and archives the old one. A `plan_enter` call is a small card
+     (`planenter`, `PlanOfferCard`): Enter plan mode / Not now.
    - **Guardrails.** A tool call that waits for the user's OK (a guardrails `ask:` rule; `asks.approvals` from
      `guard.pending`, `guard.asked`, `guard.closed`) shows "needs your OK" on its row, with a bar under it: why (the
      rule; for a path, the path) and **No** / **Allow in this chat** / **Allow** (`guard.answer`, scope `session` or

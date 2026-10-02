@@ -22,6 +22,7 @@ SessionToolsTests.Register(runner);
 ProfilesTests.Register(runner);
 SkillsTests.Register(runner);
 AskTests.Register(runner);
+PlanTests.Register(runner);
 GuardrailsTests.Register(runner);
 LoopsTests.Register(runner);
 RpcReadOnlyTests.Register(runner);

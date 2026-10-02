@@ -13,6 +13,9 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
   const runs = new Map(); // sessionId -> { ac, turn }
   const asks = new Map(); // callId -> { entry, resolve }: ask_user questions waiting for ask.answer
   const approvals = new Map(); // callId -> { entry, resolve }: tool calls waiting for the user's OK (guardrails)
+  const plans = new Map(); // plan id -> the plan document, like plugins/NetPI.Plan keeps it
+  const planWaits = new Map(); // plan id -> { sessionId, resolve }: plan_submit waiting for plan.answer
+  const planOffers = new Map(); // offer id -> { entry, resolve }: plan_enter waiting for plan.enterAnswer
   const allowedInChat = new Map(); // sessionId -> Set of ask rules the user allowed for the rest of that chat
   let thinkDelayMs = 0; // e2e test helper (mock.thinkDelay): hold the live thinking line long enough to observe it
 
@@ -450,6 +453,168 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
     }
   }
 
+  // ---------------------------------------------------------------- plan mode, like plugins/NetPI.Plan
+
+  const planActive = (sid) => ['planning', 'awaiting'].includes(store.sessions.get(sid)?.meta?.planMode?.state);
+
+  /** meta.planMode (state null: the chat leaves plan mode) */
+  function setPlanMode(sid, state, extra = {}) {
+    const s = store.sessions.get(sid);
+    if (!s) return;
+    const meta = { ...(s.meta ?? {}) };
+    if (state) meta.planMode = { state, planId: extra.planId ?? meta.planMode?.planId ?? null, title: extra.title ?? meta.planMode?.title ?? null, since: new Date().toISOString() };
+    else delete meta.planMode;
+    s.meta = meta;
+    publish('session.updated', { session: s });
+  }
+
+  const planBody = (a) => ({
+    title: String(a.title ?? 'Plan'),
+    summary: String(a.summary ?? ''),
+    steps: (a.steps ?? []).map((x) => (typeof x === 'string' ? { text: x, detail: null } : { text: x.text, detail: x.detail ?? null })),
+    files: (a.files ?? []).map((x) => (typeof x === 'string' ? { path: x, note: null } : { path: x.path, note: x.note ?? null })),
+    risks: a.risks ?? [],
+    tests: a.tests ?? [],
+    openQuestions: a.openQuestions ?? [],
+  });
+
+  function planMarkdown(p) {
+    const out = [];
+    if (p.summary) out.push(p.summary, '');
+    out.push('## Steps', ...p.steps.map((x, i) => `${i + 1}. ${x.text}${x.detail ? ` — ${x.detail}` : ''}`));
+    if (p.files.length) out.push('', '## Files', ...p.files.map((f) => `- \`${f.path}\`${f.note ? ` — ${f.note}` : ''}`));
+    for (const [label, list] of [['Risks', p.risks], ['Tests', p.tests], ['Open questions', p.openQuestions]]) if (list.length) out.push('', `## ${label}`, ...list.map((x) => `- ${x}`));
+    return out.join('\n') + '\n';
+  }
+
+  const planView = (d) => ({ ...d, markdown: d.plan ? planMarkdown(d.plan) : null, waiting: planWaits.has(d.id) });
+  const planChanged = (d, mode, submitted = false) =>
+    publish('plan.changed', { sessionId: d.sessionId, mode, planId: d.id, callId: d.callId, status: d.status, revision: d.revision, title: d.title, submitted });
+
+  /** plan_submit: stores the revision, then waits (agent yielded) for plan.answer, a message from the user (steered) or an abort */
+  async function planSubmit(sid, run, tool) {
+    const a = agentFor(sid);
+    publish('tool.start', { sessionId: sid, agentId: a.id, callId: tool.id, name: tool.name, label: 'Plan', arguments: JSON.stringify(tool.args) }, sid);
+    const body = planBody(tool.args);
+    let doc = [...plans.values()].find((p) => p.sessionId === sid && ['awaiting', 'revising'].includes(p.status));
+    if (!doc) {
+      doc = { id: `plan_${newId('p').slice(1)}`, sessionId: sid, projectId: store.sessions.get(sid)?.projectId ?? null, status: 'revising', revision: 0, revisions: [], createdAt: new Date().toISOString() };
+      plans.set(doc.id, doc);
+    }
+    doc.revision += 1;
+    Object.assign(doc, { title: body.title, plan: body, status: 'awaiting', callId: tool.id, updatedAt: new Date().toISOString() });
+    doc.revisions.push({ n: doc.revision, at: doc.updatedAt, plan: body });
+    setPlanMode(sid, 'awaiting', { planId: doc.id, title: body.title });
+    setStatus(sid, { status: 'yielded', activity: 'waiting for your decision on the plan' });
+    planChanged(doc, 'awaiting', true);
+    const t0 = Date.now();
+    const finish = (content, details, isError = false) => {
+      publish('tool.end', { sessionId: sid, callId: tool.id, name: tool.name, isError, durationMs: Date.now() - t0 }, sid);
+      append(sid, 'tool', [result(tool.id, tool.name, content, details, { isError, durationMs: Date.now() - t0 })]);
+    };
+    let outcome;
+    try {
+      outcome = await new Promise((resolve, reject) => {
+        planWaits.set(doc.id, { sessionId: sid, resolve });
+        run.ac.signal.addEventListener('abort', () => reject(ABORT), { once: true });
+      });
+    } catch (e) {
+      planWaits.delete(doc.id);
+      finish('Aborted: the run was stopped.', null, true);
+      throw e; // the plan itself stays awaiting: the user can still decide
+    }
+    planWaits.delete(doc.id);
+    setStatus(sid, { status: 'running', activity: null });
+    const details = (status, more = {}) => ({ kind: 'plan', planId: doc.id, revision: doc.revision, title: doc.title, plan: body, status, ...more });
+    if (outcome.steered) {
+      doc.status = 'revising';
+      setPlanMode(sid, 'planning');
+      planChanged(doc, 'planning');
+      finish('No decision: the user wrote a new message instead; it follows. Plan mode stays on.', details('steered'));
+    } else if (outcome.kind === 'revise') {
+      finish(`The user asked for changes to revision ${doc.revision}:\n${outcome.feedback}\nRevise the plan and call plan_submit again.`, details('revised', { feedback: outcome.feedback }));
+    } else if (outcome.kind === 'cancel') {
+      finish('The user cancelled the plan: nothing was approved and plan mode is off.', details('cancelled'));
+    } else {
+      finish(
+        outcome.kind === 'approve-new'
+          ? `The user approved your plan and moved it to a new chat (${outcome.newSessionId}); this chat is archived.`
+          : `The user approved your plan “${doc.title}” (revision ${doc.revision}). Plan mode is off.${outcome.ideaId ? ` It is saved as idea ${outcome.ideaId}.` : ''}`,
+        details('approved', { ideaId: outcome.ideaId ?? null, newSessionId: outcome.newSessionId ?? null }),
+      );
+    }
+    return outcome;
+  }
+
+  async function planScript(sid, run) {
+    if (!planActive(sid)) setPlanMode(sid, 'planning');
+    let plan = {
+      title: 'Re-subscribe after a reconnect',
+      summary: 'The client drops events after a reconnect because it never re-subscribes. Re-subscribe on open, replay what was missed, and test it.',
+      steps: [
+        { text: 'Re-subscribe to the open chats when the socket opens', detail: 'web/src/lib/rpc.svelte.js: call resubscribe() from onopen' },
+        { text: 'Replay the events missed since the last seen seq' },
+        { text: 'Cover it with a mock-UI test: offline for 2 s, then a message' },
+      ],
+      files: [{ path: 'web/src/lib/rpc.svelte.js', note: 'resubscribe on open' }, { path: 'web/mock/e2e.mjs', note: 'the new test' }],
+      risks: ['A burst of events right after the reconnect could arrive twice'],
+      tests: ['npm run e2e -- --only reconnect'],
+      openQuestions: [],
+    };
+    for (let revision = 1; ; revision++) {
+      const tool = { id: newId('call'), name: 'plan_submit', label: 'Plan', args: plan };
+      await streamAssistant(sid, run, {
+        thinking: revision === 1 ? 'Read the reconnect path, then write the plan.' : 'The user wants a change: add it to the steps.',
+        text: revision === 1 ? 'I read the reconnect path. Here is the plan:' : 'Revised the plan:',
+        tools: [tool],
+        fast: true,
+      });
+      const outcome = await planSubmit(sid, run, tool);
+      if (outcome.steered) return;
+      if (outcome.kind === 'revise') {
+        plan = { ...plan, steps: [...plan.steps, { text: `Also: ${outcome.feedback}` }] };
+        continue;
+      }
+      await streamAssistant(sid, run, { text: outcome.kind === 'cancel' ? 'Cancelled: nothing changed.' : outcome.kind === 'approve-new' ? 'Moved to the new chat.' : 'Approved. Starting with step 1.', fast: true });
+      return;
+    }
+  }
+
+  /** plan_enter: the agent offers plan mode; waits (agent yielded) for plan.enterAnswer, a message (steered) or an abort */
+  async function planEnterScript(sid, run) {
+    const tool = { id: newId('call'), name: 'plan_enter', label: 'Plan mode', args: { reason: 'This touches the reconnect path in three places; a plan first is safer.' } };
+    await streamAssistant(sid, run, { thinking: 'Large change: offer plan mode.', text: 'This is a bigger change than it looks.', tools: [tool], fast: true });
+    const a = agentFor(sid);
+    publish('tool.start', { sessionId: sid, agentId: a.id, callId: tool.id, name: tool.name, label: 'Plan mode', arguments: JSON.stringify(tool.args) }, sid);
+    const entry = { id: `planq_${newId('q').slice(1)}`, sessionId: sid, callId: tool.id, agentId: a.id, reason: tool.args.reason, askedAt: new Date().toISOString() };
+    setStatus(sid, { status: 'yielded', activity: 'waiting for your OK to plan' });
+    const t0 = Date.now();
+    const finish = (content, status, isError = false) => {
+      publish('tool.end', { sessionId: sid, callId: tool.id, name: tool.name, isError, durationMs: Date.now() - t0 }, sid);
+      append(sid, 'tool', [result(tool.id, tool.name, content, { kind: 'plan-enter', reason: entry.reason, status }, { isError, durationMs: Date.now() - t0 })]);
+    };
+    let outcome;
+    try {
+      outcome = await new Promise((resolve, reject) => {
+        planOffers.set(entry.id, { entry, resolve });
+        publish('plan.enter.asked', entry);
+        run.ac.signal.addEventListener('abort', () => reject(ABORT), { once: true });
+      });
+    } catch (e) {
+      planOffers.delete(entry.id);
+      publish('plan.enter.closed', { id: entry.id, sessionId: sid, callId: tool.id, status: 'cancelled' });
+      finish('Aborted: the run was stopped.', 'cancelled', true);
+      throw e;
+    }
+    planOffers.delete(entry.id);
+    setStatus(sid, { status: 'running', activity: null });
+    const status = outcome.steered ? 'steered' : outcome.enter ? 'entered' : 'declined';
+    publish('plan.enter.closed', { id: entry.id, sessionId: sid, callId: tool.id, status });
+    finish(outcome.steered ? 'No answer: the user wrote a new message instead; it follows.' : outcome.enter ? 'Plan mode is on.' : 'The user declined plan mode: go ahead without a plan.', status);
+    if (outcome.enter) return planScript(sid, run);
+    if (!outcome.steered) await streamAssistant(sid, run, { text: 'Fine, going ahead without a plan.', fast: true });
+  }
+
   // ask_user, like plugins/NetPI.Ask: the question waits (ask.asked, unscoped) with the agent yielded, until ask.answer,
   // a new message from the user (steered: it follows) or an abort
   async function askUser(sid, run, tool) {
@@ -584,6 +749,8 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
   }
 
   async function script(sid, run, input) {
+    if (/\[planenter\]/i.test(input)) return planEnterScript(sid, run);
+    if (/\[plan\]/i.test(input) || planActive(sid)) return planScript(sid, run);
     if (/\[ask2?\]/i.test(input)) return askScript(sid, run, input);
     if (/\[guard\]/i.test(input)) return guardScript(sid, run);
     if (/\[web\]/i.test(input)) return webScript(sid, run);
@@ -720,7 +887,10 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
       queueOf(sid).push({ id: newId('in'), text: p.text ?? '', mode: mode === 'queue' ? 'queue' : 'steer', source: 'user', createdAt: new Date().toISOString() });
       publishQueue(sid);
       // a message instead of an answer ends the question waiting in this chat
-      if (mode !== 'queue') for (const w of [...asks.values(), ...approvals.values()]) if (w.entry.sessionId === sid) w.resolve({ steered: true });
+      if (mode !== 'queue') {
+        for (const w of [...asks.values(), ...approvals.values(), ...planOffers.values()]) if (w.entry.sessionId === sid) w.resolve({ steered: true });
+        for (const w of planWaits.values()) if (w.sessionId === sid) w.resolve({ steered: true });
+      }
       return agentFor(sid);
     },
     /** guard.pending: the tool calls waiting for the user's OK. */
@@ -743,6 +913,71 @@ export function createAgentRuntime({ publish, work, log = () => {}, onFirstMessa
       close(w, allow ? 'allowed' : 'denied');
       if (forChat) for (const o of [...approvals.values()]) if (o.entry.sessionId === sid && o.entry.rule === w.entry.rule) close(o, 'allowed');
       return true;
+    },
+    plan: {
+      active: planActive,
+      enter(sid) {
+        if (!planActive(sid)) setPlanMode(sid, 'planning');
+        return { mode: store.sessions.get(sid)?.meta?.planMode?.state ?? null };
+      },
+      exit(sid) {
+        if (!planActive(sid)) return false;
+        for (const d of plans.values()) {
+          if (d.sessionId !== sid || !['awaiting', 'revising'].includes(d.status)) continue;
+          d.status = 'cancelled';
+          planWaits.get(d.id)?.resolve({ kind: 'cancel' });
+          planChanged(d, 'off');
+        }
+        setPlanMode(sid, null);
+        return true;
+      },
+      get: (id) => (plans.has(id) ? planView(plans.get(id)) : null),
+      forSession: (sid) => [...plans.values()].filter((d) => d.sessionId === sid).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(planView),
+      listOpen: () => [...plans.values()].filter((d) => ['awaiting', 'revising'].includes(d.status)).map(planView),
+      offers: (sid) => [...planOffers.values()].map((w) => w.entry).filter((e) => !sid || e.sessionId === sid),
+      answerOffer(id, enter) {
+        const w = planOffers.get(id);
+        if (!w) return false;
+        if (enter) setPlanMode(w.entry.sessionId, 'planning');
+        w.resolve({ enter });
+        return true;
+      },
+      /** plan.answer: the result after the decision; a new chat is the caller's (it needs the session store) */
+      answer(id, decision, { feedback, newSessionId } = {}) {
+        const d = plans.get(id);
+        if (!d) return 'not_found';
+        const sid = d.sessionId;
+        const wait = planWaits.get(id);
+        if (decision === 'save') {
+          d.ideaId ||= 'idea-mock-plan';
+          return { planId: id, status: d.status, ideaId: d.ideaId };
+        }
+        if (decision === 'file') return { planId: id, status: d.status, path: `docs/plans/2026-10-03-${d.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md` };
+        if (decision === 'revise') {
+          if (d.status !== 'awaiting') return 'not_awaiting';
+          if (!feedback?.trim()) return 'no_feedback';
+          d.status = 'revising';
+          setPlanMode(sid, 'planning');
+          planChanged(d, 'planning');
+          wait?.resolve({ kind: 'revise', feedback: feedback.trim() });
+          return { planId: id, status: d.status };
+        }
+        if (decision === 'cancel') {
+          d.status = 'cancelled';
+          setPlanMode(sid, null);
+          planChanged(d, 'off');
+          wait?.resolve({ kind: 'cancel' });
+          return { planId: id, status: d.status };
+        }
+        if (d.status !== 'awaiting') return 'not_awaiting';
+        d.ideaId ||= 'idea-mock-plan';
+        d.status = 'approved';
+        setPlanMode(sid, 'approved', { planId: id, title: d.title });
+        planChanged(d, 'approved');
+        wait?.resolve({ kind: newSessionId ? 'approve-new' : 'approve', ideaId: d.ideaId, newSessionId });
+        return { planId: id, status: d.status, ideaId: d.ideaId, newSessionId: newSessionId ?? null, todos: !newSessionId };
+      },
+      markdown: (id) => planMarkdown(plans.get(id).plan),
     },
     /** ask.pending: the questions waiting (in one chat, or all). */
     pendingAsks: (sid) => [...asks.values()].map((w) => w.entry).filter((e) => !sid || e.sessionId === sid),

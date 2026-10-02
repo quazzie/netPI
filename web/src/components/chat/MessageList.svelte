@@ -9,6 +9,8 @@
   import StatusRow from './StatusRow.svelte';
   import ShownImage from './ShownImage.svelte';
   import AskCard from './AskCard.svelte';
+  import PlanCard from './PlanCard.svelte';
+  import PlanOfferCard from './PlanOfferCard.svelte';
   import { createItemBuilder, withStream } from '../../lib/chatItems.js';
   import { isBusy, projectOf, forkSession } from '../../lib/state/app.svelte.js';
   import { modals } from '../../lib/state/ui.svelte.js';
@@ -204,6 +206,10 @@
           <ShownImage {item} onimage={openImage} />
         {:else if item.kind === 'ask'}
           <AskCard {item} sessionId={session.id} />
+        {:else if item.kind === 'plan'}
+          <PlanCard {item} sessionId={session.id} />
+        {:else if item.kind === 'planenter'}
+          <PlanOfferCard {item} sessionId={session.id} />
         {:else if item.kind === 'images'}
           <div class="images">
             {#each item.images as img, j (j)}

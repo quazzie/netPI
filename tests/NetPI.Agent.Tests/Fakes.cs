@@ -478,3 +478,18 @@ public sealed class ConsoleLogger(string category, bool verbose) : ILogger
         Console.WriteLine($"    [{category} {logLevel}] {formatter(state, exception)}{(exception is null ? "" : " — " + exception.GetType().Name + ": " + exception.Message)}");
     }
 }
+
+/// <summary>The UI registry of a test host: it keeps the slash commands plugins add (the tabs are not shown anywhere).</summary>
+public sealed class FakeUi : IUiRegistry
+{
+    private readonly List<SlashCommandInfo> _commands = [];
+    public IDisposable AddTab(UiTabInfo tab) => new Remove(() => { });
+    public IDisposable AddCommand(SlashCommandInfo command)
+    {
+        lock (_commands) _commands.Add(command);
+        return new Remove(() => { lock (_commands) _commands.Remove(command); });
+    }
+    public IReadOnlyList<UiTabInfo> Tabs => [];
+    public IReadOnlyList<SlashCommandInfo> Commands { get { lock (_commands) return [.. _commands]; } }
+    private sealed class Remove(Action action) : IDisposable { public void Dispose() => action(); }
+}

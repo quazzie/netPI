@@ -12,6 +12,7 @@ in `docs/PLUGIN-IDEAS.md`):
 | `plugins/NetPI.Tools.Web` | `netpi.tools.web` | `web_fetch` `web_search` `screenshot` | – |
 | `plugins/NetPI.Todo` | `netpi.todo` | `todo_write` | – |
 | `plugins/NetPI.Ask` | `netpi.ask` | `ask_user` | `ask.pending`, `ask.answer` |
+| `plugins/NetPI.Plan` | `netpi.plan` | `plan_submit` `plan_enter` | `plan.*` (see `docs/PROTOCOL.md`), the `/plan` command |
 | `plugins/NetPI.Goal` | `netpi.goal` | `goal_update` `goal_set` | `goal.get`, `goal.set`, `goal.edit`, `goal.pause`, `goal.resume`, `goal.clear` |
 | `plugins/NetPI.Tools.Media` | `netpi.tools.media` | `show_image` | – |
 | `plugins/NetPI.Decide` | `netpi.decide` | `decide` | `decide.ask` |
@@ -577,6 +578,60 @@ question), writes their own words (`text`), or both. The result is:
 Subagents can't ask (an error: nobody watches their chat). `ask.pending { sessionId? }` lists the questions that wait;
 each has an `id` of its own (`ask_…`), because a tool call id belongs to the model and two chats can hold the same one;
 the events `ask.asked` and `ask.closed` are unscoped, so every window hears of every chat's questions.
+
+## Plan mode
+
+`plugins/NetPI.Plan`. `/plan [task]` (or the Plan pill in the composer, or the model's `plan_enter`) puts a chat in plan mode:
+it may only read. The agent explores, asks (`ask_user`), may start research subagents, and submits a plan with `plan_submit`;
+the user approves it, asks for changes, saves it, or cancels. The mode is `meta.planMode` (`{ state: planning | awaiting |
+approved, planId?, title?, since, newSessionId? }`; a fork starts without it); the plans (with every revision) are in the
+plugin's data (collection `plans`).
+
+**What a plan-mode chat may call** (`PlanHook`, before the workspace guard and the guardrails, so a refused call never
+asks): tools that only read (`ToolDefinition.ReadOnly`, or a call a tool with actions says only reads: `ideas` list, `agent`
+list), `ask_user`, `todo_write`, `compact`, `agent`, `agent_spawn`, `plan_submit`; MCP tools the server declares read-only
+(`readOnlyHint`) or `plan.mcpAllow` names. **Never**: `bash`, `pwsh`, `ssh`, `process` (a read-only shell cannot be told from a
+writing one: `grep`, `find`, `ls`, `read` explore) and `browser`. Everything else is blocked with a reason that says what to do
+instead ("describe the change in the plan"). The check fails closed. A chat is told once when it enters or leaves the mode (a
+`plan` / `plan-off` notice, written again when compaction removed it): the system prompt is frozen at a chat's first call.
+
+**Research subagents.** `agent_spawn` is allowed, with its arguments rewritten: `tools` is cut to the read-only set (what the
+child asked for that passes, else all of it; plus `mcp_search`, `mcp_call`, `mcp_resource`), `isolated: false` and no `workspace`
+(it shares the plan chat's checkout), and the research instructions are appended. The child's own calls are checked by the same
+hook while the chat that started it (up to six levels) is in plan mode. Any agent may be chosen: `agent_choices` shows each one's
+model and description. `plan.subagentsReadOnly: false` leaves spawns alone.
+
+### `plan_submit`
+
+`{ title, summary?, steps: (string | { text, detail? })[], files?: (string | { path, note? })[], risks?, tests?, openQuestions?: string[] }`
+(lenient: `step`/`task`, `file`/`what`, a JSON string; at most 40 steps, 60 files, 20 of each list). Stores the plan as the chat's
+next revision (the same plan again, as after a plugin reload, is not a new revision) and waits for the user's decision with the run's
+instance given back (`IAgentRuntime.WaitYieldedAsync`: "waiting for your decision on the plan"). Only in plan mode, only the main
+agent. The result text is one of:
+
+- `The user approved your plan “…” (revision n). Plan mode is off…` (with `It is saved as idea …`, and that the todo list holds the steps);
+- `The user approved your plan … and moved it to a new chat (…); this chat is archived. Do nothing more here…`;
+- `The user asked for changes to revision n:` + the feedback (revise, submit again; plan mode stays on);
+- `The user cancelled the plan…` (plan mode is off);
+- `No decision: the user wrote a new message instead; it follows.` (the plan is `revising`, the mode `planning`);
+- `The plan tool restarted…` when the plugin stopped (a hot reload): the plan still waits, submitting it again keeps waiting.
+
+`Details`: `{ kind: 'plan', planId, revision, title, plan, status: approved | revised | cancelled | steered | withdrawn | replaced,
+feedback?, ideaId?, newSessionId? }`. A decision made when no run waits (NetPI restarted, the run was stopped) does the same work and tells the
+chat with a message (the approval text, or `Please revise the plan: …`).
+
+What a decision does (`plan.answer`): **approve** saves the plan as an idea (status `planned`, tag `plan`, a `plan` section; an idea
+saved earlier by "save as idea" follows the plan instead of a second one), ends the mode and seeds the todo list. **Approve in a new
+chat** creates a chat of the same project, workspace and agent whose first message is the plan (the idea attached), archives the plan
+chat and links them (`meta.planFrom` on the new chat, `planMode.newSessionId` on the old); the UI puts the new chat in the old one's tab.
+**Revise** needs feedback. **Save as idea** (status `open`) and **Save as file** (`docs/plans/<date>-<title>.md` in the chat's
+workspace, written only on that click, the same file again on a second click) leave the plan waiting. **Cancel** drops it and leaves the mode.
+
+### `plan_enter`
+
+`{ reason? }`. The model proposes plan mode for a large, risky or unclear change; the user answers on a card (Enter plan mode / Not now) and
+the run waits like `ask_user`. Result `Plan mode is on…` (`Details.status: entered`) or `The user declined plan mode…` (`declined`; also
+`steered`, `withdrawn`). Not in plan mode already; not for subagents. `plan.offers` lists the offers that wait.
 
 ```ts
 details: { questions: { question, options: { label, description? }[], multiple }[], answers: string[][] | null,

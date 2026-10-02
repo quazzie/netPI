@@ -101,7 +101,12 @@ Source: `C:\AI\Projects\ninfer-windows\.local\stateless-agents-20260924\report.m
 3. **Try the harness gaps with a real model** (all built, `docs/archive/2026-09-26-harness-gaps.md`): does `qwen3.8-27b`
    use `ask_user` for real decisions and not for routine steps, close ideas when done, and keep the cache when a chat
    is forked (the per-turn line shows it)? The guardrails' defaults block only the catastrophic; see whether they need more.
-4. **Open items** in `docs/STATUS.md`, under "Known limitations / ideas".
+4. **Plan mode with a real model** (`plugins/NetPI.Plan`, `docs/TOOLS.md` "Plan mode"; built 2026-10-03): does `qwen3.8-27b`
+   explore with grep/find/read instead of reaching for the shell, pick a research agent from `agent_choices`, and submit a plan that
+   is concrete? The Home Assistant MCP server (ha-mcp) marks its reading tools with `readOnlyHint: true`
+   (checked in its source: `ha_search` does), so they pass without setting anything; confirm with `mcp.tools` (`readOnly`) on the
+   user's NetPI. `plan.mcpAllow` (`ha_get_*`, `ha_list_*`) covers any a server forgets to mark. Not built yet: a read-only git tool for plan mode, plan revision diffs.
+5. **Open items** in `docs/STATUS.md`, under "Known limitations / ideas".
 
 ## Working rules
 

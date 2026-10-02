@@ -7,6 +7,8 @@
 //   images        { kind:'images', key, msg, images }                 assistant image parts
 //   shown         { kind:'shown', key, call, result, msg }            an image the agent showed (show_image): not in a steps group
 //   ask           { kind:'ask', key, call, result, msg }              questions for the user (ask_user): a card of its own, not a step
+//   plan          { kind:'plan', key, call, result, msg }             the plan the agent submitted (plan_submit): a card of its own
+//   planenter     { kind:'planenter', key, call, result, msg }        the agent's offer of plan mode (plan_enter): a card of its own
 //   notice        { kind:'notice', key, msg }                         role notice / summary
 //   prompt        { kind:'prompt', key, prompt }                      a system prompt the session was sent (context.prompts):
 //                                                                     the first at the top, a later one after the message it followed
@@ -129,6 +131,9 @@ export function createItemBuilder() {
               if (p.name === 'ask_user') {
                 flush();
                 items.push(stable({ kind: 'ask', key: `a${p.id}`, call: p, result: r?.part ?? null, msg: m }, [p, r?.part ?? null]));
+              } else if (p.name === 'plan_submit' || p.name === 'plan_enter') {
+                flush();
+                items.push(stable({ kind: p.name === 'plan_submit' ? 'plan' : 'planenter', key: `p${p.id}`, call: p, result: r?.part ?? null, msg: m }, [p, r?.part ?? null]));
               } else if (r && p.name === 'show_image' && !r.part.isError && r.part.details?.data) {
                 flush();
                 items.push(stable({ kind: 'shown', key: `v${p.id}`, call: p, result: r.part, msg: m }, [p, r.part]));
@@ -216,6 +221,9 @@ export function withStream(items, stream) {
     if (t.name === 'ask_user') {
       flush();
       out.push({ kind: 'ask', key: `a${t.callId}`, call, result: null, msg: null, preparing: true });
+    } else if (t.name === 'plan_submit' || t.name === 'plan_enter') {
+      flush();
+      out.push({ kind: t.name === 'plan_submit' ? 'plan' : 'planenter', key: `p${t.callId}`, call, result: null, msg: null, preparing: true });
     } else push({ kind: 'tool', key: `c${t.callId}`, call, result: null, resultMsg: null, msg: null, preparing: true });
   }
   flush();

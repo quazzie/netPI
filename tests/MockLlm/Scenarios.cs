@@ -142,6 +142,7 @@ public sealed partial class ScenarioEngine
                 "sub" => Sub(req, tag),
                 "ideas" => Ideas(tag, step, after),
                 "ask" => Ask(step, after),
+                "plan" => PlanFlow(tag, step, after),
                 "long" => Long(tag, msgs),
                 _ => Echo(req, anchor >= 0 ? msgs[anchor] : msgs.LastOrDefault(m => m.Role == "user" && !m.IsNotice), step),
             };
@@ -513,6 +514,31 @@ public sealed partial class ScenarioEngine
                     ("question", "Which way?"),
                     ("options", new JsonArray(Obj(("label", "Fast")), Obj(("label", "Thorough")))))))));
         return Final("Answer received: " + FirstLine(ToolResults(after).LastOrDefault()?.Text) + "\n\nASK-DONE");
+    }
+
+    /// <summary>Plan mode: a write that is blocked, the plan, and (once the user decided) the write again.</summary>
+    private static Plan PlanFlow(ScenarioTag tag, int step, List<NMsg> after)
+    {
+        var file = tag.P("file", "plan-e2e.txt");
+        switch (step)
+        {
+            case 0:
+                return new Plan { Thinking = "Plan mode is on, but let me try the write first.", Text = "Trying to write first." }
+                    .Call("write", Obj(("path", file), ("content", "too early\n")));
+            case 1:
+                return new Plan { Thinking = "The write is blocked: submit the plan instead." }
+                    .Call("plan_submit", Obj(
+                        ("title", "Add the file"),
+                        ("summary", "Create " + file + " with one line."),
+                        ("steps", new JsonArray(Obj(("text", "Create the file")), Obj(("text", "Read it back")))),
+                        ("files", new JsonArray(Obj(("path", file), ("note", "new")))),
+                        ("tests", new JsonArray("read it back"))));
+            case 2:
+                return new Plan { Text = "Plan decided: " + FirstLine(ToolResults(after).LastOrDefault()?.Text) }
+                    .Call("write", Obj(("path", file), ("content", "after approval\n")));
+            default:
+                return Final("Written after the decision. PLAN-DONE");
+        }
     }
 
     private static Plan Long(ScenarioTag tag, List<NMsg> msgs)

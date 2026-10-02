@@ -500,6 +500,7 @@ const handlers = {
   'ui.commands': () => [
     { name: 'compact', description: 'Summarize older messages to free context', rpc: 'compaction.run', pluginId: 'netpi.compaction' },
     { name: 'idea', description: 'Add an idea to the backlog', rpc: 'ideas.quickAdd', argsHint: '<title>', pluginId: 'netpi.ideas' },
+    { name: 'plan', description: 'Plan mode: explore read-only and submit a plan to approve (/plan off leaves it)', rpc: 'plan.command', argsHint: '[task] | off | show', pluginId: 'netpi.plan' },
     { name: 'reload', description: 'Hot-reload a plugin (or all plugins)', rpc: 'diag.reload', argsHint: '[pluginId]', pluginId: 'netpi.diagnostics' },
     { name: 'sample', description: 'Open the sample plugin tab', clientAction: 'openTab:netpi.sample/sample', pluginId: 'netpi.sample' },
   ],
@@ -808,6 +809,55 @@ const handlers = {
     if (r === 'not_found') throw new RpcError('not_found', 'No question waits with that id (it was answered, or its run ended).');
     if (r === 'empty') throw new RpcError('bad_request', 'An answer needs an option picked or some text.');
     return true;
+  },
+  // --- plan plugin (plugins/NetPI.Plan): meta.planMode on the chat, the plans in the plugin
+  'plan.enter': (p) => {
+    getSession(need(p, 'sessionId'));
+    return agent.plan.enter(p.sessionId);
+  },
+  'plan.exit': (p) => agent.plan.exit(need(p, 'sessionId')),
+  'plan.get': (p = {}) => (p.planId ? agent.plan.get(p.planId) : (agent.plan.forSession(need(p, 'sessionId'))[0] ?? null)),
+  'plan.list': (p = {}) => (p.sessionId ? agent.plan.forSession(p.sessionId).filter((x) => !p.status || x.status === p.status) : agent.plan.listOpen()),
+  'plan.offers': (p = {}) => agent.plan.offers(p.sessionId),
+  'plan.enterAnswer': (p) => {
+    if (!agent.plan.answerOffer(need(p, 'id'), p.enter === true)) throw new RpcError('not_found', 'No plan-mode offer waits with that id (it was answered, or its run ended).');
+    return true;
+  },
+  'plan.answer': (p) => {
+    const id = need(p, 'planId');
+    const doc = agent.plan.get(id);
+    if (!doc) throw new RpcError('not_found', `No plan ${id}.`);
+    let newSessionId;
+    if (p.decision === 'approve' && p.newChat && doc.status === 'awaiting') {
+      const old = getSession(doc.sessionId);
+      const created = mkSession({ title: `Plan: ${doc.title}`, projectId: old.projectId, model: old.model, reasoning: old.reasoning, meta: { planFrom: old.id } });
+      agentFor(created.id);
+      newSessionId = created.id;
+    }
+    const r = agent.plan.answer(id, p.decision, { feedback: p.feedback, newSessionId });
+    if (r === 'not_awaiting') throw new RpcError('bad_request', `This plan is ${doc.status}, so it cannot be decided now.`);
+    if (r === 'no_feedback') throw new RpcError('bad_request', 'Say what to change: a revision needs feedback.');
+    if (newSessionId) {
+      agent.send(newSessionId, { text: `Carry out this approved plan.
+
+# ${doc.title}
+
+${agent.plan.markdown(id)}` });
+      const old = getSession(doc.sessionId);
+      old.archived = true;
+      old.meta = { ...old.meta, planMode: { ...old.meta.planMode, newSessionId } };
+      publish('session.updated', { session: old });
+    }
+    return r;
+  },
+  'plan.command': (p) => {
+    const sid = need(p, 'sessionId');
+    const args = (p.args ?? '').trim();
+    if (args === 'off') return agent.plan.exit(sid) ? 'Plan mode is off.' : 'This chat is not in plan mode.';
+    if (args === 'show') return agent.plan.active(sid) ? 'Plan mode is on.' : 'Not in plan mode. /plan <task> starts one.';
+    agent.plan.enter(sid);
+    if (args) agent.send(sid, { text: args });
+    return 'Plan mode is on.';
   },
   'mock.queueInternal': (p) => (agent.queueInternal(need(p, 'sessionId')), true),
   // e2e test helper: drop the WebSocket link for `ms` (the server keeps running: runs finish and persist while the

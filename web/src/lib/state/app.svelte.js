@@ -10,6 +10,7 @@ import { toolDefs } from '../tools.js';
 import { defaultAgent, useAgent } from '../agents.js';
 import { notify, onNotificationClick, firstLine } from '../notify.js';
 import { loadAsks, askEvent, pendingIn, approvalIn, pruneSession } from './asks.svelte.js';
+import { loadPlans, planEvent, planWaiting, prunePlans } from './plans.svelte.js';
 import { recall } from '../../components/composer/ideaRecall.svelte.js';
 import { suggestions } from '../../components/composer/ideaSuggestions.svelte.js';
 import { formatBytes, payloadBytes, sendBudget } from '../images.js';
@@ -111,7 +112,7 @@ export function isBusy(sessionId) {
 
 /** Status for tab dots: asking (a question, or a tool call, waits for the user) | running | queued | yielded | error | unread | idle */
 export function sessionStatus(sessionId) {
-  if (pendingIn(sessionId) || approvalIn(sessionId)) return 'asking';
+  if (pendingIn(sessionId) || approvalIn(sessionId) || planWaiting(sessionId)) return 'asking';
   const a = app.agents.get(sessionId);
   if (a) {
     if (a.status === 'running') return 'running';
@@ -284,6 +285,7 @@ async function loadAll({ reconnect }) {
       loadAgents(),
       loadTools(),
       loadAsks(),
+      loadPlans(),
       loadCapabilities(),
     ]);
     app.info = info;
@@ -353,6 +355,23 @@ export async function openSession(id) {
     }
   }
   activate(id);
+}
+
+/** A chat that carries on in another (an approved plan moved to a new chat): the new one takes the old one's place in the tab row. */
+export async function replaceTab(oldId, newId) {
+  if (!newId) return;
+  if (!app.sessionsById.has(newId) && !(await fetchSession(newId))) return;
+  const i = app.openTabs.indexOf(oldId);
+  if (i < 0) return activate(newId);
+  const wasActive = app.activeId === oldId;
+  peekChat(oldId)?.saveDraft();
+  if (!app.openTabs.includes(newId)) app.openTabs.splice(i, 1, newId);
+  else app.openTabs.splice(i, 1);
+  if (wasActive) activate(newId);
+  else {
+    resubscribe();
+    persistTabs();
+  }
 }
 
 export function closeTab(id) {
@@ -479,6 +498,7 @@ function removeSessionLocal(id) {
   saidJustNow.delete(id);
   recall.prune(id);
   pruneSession(id);
+  prunePlans(id);
   app.agents.delete(id); // its last run state (agent.status), a subagent's included
   app.context.delete(id); // its context ring (session.context)
   if (app.workspaces.has(id)) {
@@ -670,6 +690,12 @@ function askNotification(d) {
   notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), `Asks: ${firstLine(q[0].question)}${q.length > 1 ? ` (+${q.length - 1} more)` : ''}`);
 }
 
+// A plan was submitted and waits for the decision (plugins/NetPI.Plan).
+function planNotification(d) {
+  if (!d?.submitted) return;
+  notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), `Plan ready: ${firstLine(d.title ?? '')}`);
+}
+
 // A tool call waits for the user's OK (a guardrails ask rule).
 function approvalNotification(d) {
   const what = d?.kind === 'path' ? `Wants to change ${d.subject}` : `Wants to run: ${firstLine(d?.subject ?? '')}`;
@@ -778,6 +804,13 @@ function onEvent(d, env) {
       askEvent(type, d);
       if (type === 'ask.asked') askNotification(d);
       else if (type === 'guard.asked') approvalNotification(d);
+      break;
+    case 'plan.changed':
+    case 'plan.enter.asked':
+    case 'plan.enter.closed':
+      planEvent(type, d);
+      if (type === 'plan.changed') planNotification(d);
+      else if (type === 'plan.enter.asked') notifyAbout(d.sessionId, app.sessionsById.get(d.sessionId), `Suggests plan mode${d.reason ? `: ${firstLine(d.reason)}` : ''}`);
       break;
     case 'ideas.suggested':
       suggestions.event(d);

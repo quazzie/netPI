@@ -30,6 +30,7 @@
     <ProjectReference Include="../../plugins/NetPI.Guardrails/NetPI.Guardrails.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Loops/NetPI.Loops.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Nudge/NetPI.Nudge.csproj" />
+    <ProjectReference Include="../../plugins/NetPI.Plan/NetPI.Plan.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Profiles/NetPI.Profiles.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Skills/NetPI.Skills.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Workspaces/NetPI.Workspaces.csproj" />

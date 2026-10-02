@@ -48,6 +48,7 @@ const NEEDS = {
   "popups survive a chat update": ["new session + agent run"],
   "tabs": ["new session + agent run"],
   "plugin tab: Files": ["new session + agent run"],
+  "plan mode: the pill, the plan card and its decisions": ["new session + agent run"],
   "guardrails: a tool call waits for your OK": ["new session + agent run"],
   "plugin tab: Diagnostics": ["new session + agent run"],
   "settings": ["new session + agent run"],
@@ -1266,6 +1267,93 @@ log('ask_user: questions in the chat');
     (await page.locator('.item[data-kind="ask"] button.line').last().innerText()).includes('Neither: a heartbeat'),
   );
   await page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
+}
+
+}
+if (want('plan mode: the pill, the plan card and its decisions')) {
+log('plan mode: the pill, the plan card and its decisions');
+{
+  await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click();
+  await page.waitForTimeout(300);
+  const pill = page.locator('.composer .bar button.pick[data-state]');
+  const card = page.locator('.item[data-kind="plan"] .card').last();
+  const settled = () => page.waitForFunction(() => !document.querySelector('.composer.running'), null, { timeout: 15_000 }).catch(() => {});
+  check('plan: the composer has a Plan pill, off', (await pill.getAttribute('data-state')) === 'off' && (await pill.innerText()).trim() === 'Plan');
+  await pill.click();
+  await page.waitForFunction(() => document.querySelector('.composer .bar button.pick[data-state]')?.dataset.state === 'planning', null, { timeout: 5000 }).catch(() => {});
+  check('plan: clicking it puts the chat in plan mode (Planning)', (await pill.getAttribute('data-state')) === 'planning' && (await pill.innerText()).trim() === 'Planning');
+
+  await ta.fill('go');
+  await ta.press('Enter');
+  await card.waitFor({ timeout: 15_000 }).catch(() => {});
+  check('plan: the plan is a card of its own in the chat, with its steps and files', (await card.locator('.steps li').count()) === 3 && (await card.locator('.files li').count()) === 2);
+  await card.locator('.foot button', { hasText: 'Revise' }).waitFor({ timeout: 5000 }).catch(() => {}); // the buttons come once the plugin says the plan waits
+  check('plan: the card has the decisions', (await card.locator('.foot button', { hasText: 'Approve in new chat' }).count()) === 1 && (await card.locator('.foot button', { hasText: 'Revise' }).count()) === 1);
+  check('plan: the pill says the plan is ready, and the tab says the chat waits for you', (await pill.getAttribute('data-state')) === 'awaiting' && (await page.locator('.tab.active .np-dot[data-status="asking"]').count()) === 1);
+  await shot(page, '48-plan-card');
+
+  // revise: the feedback goes back, the next revision is a new card and the first becomes one line
+  await card.locator('.foot button', { hasText: 'Revise' }).click();
+  await card.locator('textarea').fill('also log the reconnect');
+  await card.locator('.foot button', { hasText: 'Send changes' }).click();
+  await page.waitForFunction(() => document.querySelector('.item[data-kind="plan"] .card .rev')?.textContent.includes('revision 2'), null, { timeout: 15_000 }).catch(() => {});
+  const second = page.locator('.item[data-kind="plan"] .card').last();
+  check('plan: revise answers with a second revision that has the change', (await second.locator('.steps li').count()) === 4 && (await second.innerText()).includes('also log the reconnect'));
+  check('plan: the first revision is one line: changes asked', (await page.locator('.item[data-kind="plan"] button.line').first().innerText()).includes('changes asked: also log the reconnect'));
+
+  // save as idea stays on the card; approve ends plan mode
+  await second.locator('.link', { hasText: 'Save as idea' }).click();
+  await page.waitForTimeout(300);
+  check('plan: save as idea does not decide', (await page.locator('.item[data-kind="plan"] .card').count()) === 1);
+  await second.locator('.foot button', { hasText: /^Approve$/ }).click();
+  await settled();
+  const approved = page.locator('.item[data-kind="plan"] button.line').last();
+  check('plan: approved, the card is one line', (await approved.innerText()).includes('approved'));
+  check('plan: the pill says the plan was approved', (await pill.getAttribute('data-state')) === 'approved');
+  await approved.click();
+  check('plan: the line opens to the plan and the idea it was saved as', (await page.locator('.item[data-kind="plan"] .opened').last().innerText()).includes('idea-mock-plan'));
+
+  // the agent offers plan mode: not now, then yes; cancel leaves the mode
+  await ta.fill('[planenter] a bigger change');
+  await ta.press('Enter');
+  const offer = page.locator('.item[data-kind="planenter"] .card').last();
+  await offer.waitFor({ timeout: 15_000 }).catch(() => {});
+  check('plan: the offer is a card with the reason and two answers', (await offer.locator('.foot button').count()) === 2 && (await offer.innerText()).includes('reconnect path'));
+  await offer.locator('.foot button', { hasText: 'Not now' }).click();
+  await settled();
+  check('plan: declined, the offer is one line', (await page.locator('.item[data-kind="planenter"] .line').last().innerText()).includes('not now'));
+  await ta.fill('[planenter] again');
+  await ta.press('Enter');
+  await page.locator('.item[data-kind="planenter"] .card').last().waitFor({ timeout: 15_000 }).catch(() => {});
+  await page.locator('.item[data-kind="planenter"] .card .foot button', { hasText: 'Enter plan mode' }).last().click();
+  await card.waitFor({ timeout: 15_000 }).catch(() => {});
+  check('plan: entering the mode lets the plan follow', (await pill.getAttribute('data-state')) === 'awaiting');
+  await page.locator('.item[data-kind="plan"] .card .link', { hasText: 'Cancel' }).last().click();
+  await settled();
+  check('plan: cancelled, the pill is off again', (await pill.getAttribute('data-state')) === 'off');
+  check('plan: the cancelled plan is one line', (await page.locator('.item[data-kind="plan"] button.line').last().innerText()).includes('cancelled'));
+
+  // approve in a new chat: the new chat takes this tab's place and starts from the plan; this chat is archived
+  await ta.fill('[plan] once more');
+  await ta.press('Enter');
+  await card.waitFor({ timeout: 15_000 }).catch(() => {});
+  await page.locator('.item[data-kind="plan"] .card .foot button', { hasText: 'Approve in new chat' }).last().click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.tab')].some((t) => t.textContent.includes('Plan: Re-subscribe')), null, { timeout: 15_000 }).catch(() => {});
+  const tabs = await page.locator('.tab').allInnerTexts();
+  check('plan: the new chat took the plan chat\'s tab', tabs.some((t) => t.includes('Plan: Re-subscribe')) && !tabs.some((t) => t.includes('Fix streaming reconnect bug')), tabs.join(' | '));
+  await page
+    .waitForFunction(() => [...document.querySelectorAll('.content')].some((c) => c.offsetParent && c.textContent.includes('Carry out this approved plan')), null, { timeout: 15_000 })
+    .catch(() => {});
+  check('plan: the new chat starts from the plan', (await page.locator('.content:visible').innerText()).includes('Re-subscribe to the open chats'));
+  await shot(page, '49-plan-new-chat');
+  await settled();
+  // leave the seeded state as it was: the plan chat is not archived and the new one is gone
+  const all = (await rpcCall('sessions.list', { includeArchived: true })) ?? [];
+  const old = all.find((x) => x.title === 'Fix streaming reconnect bug');
+  if (old) await rpcCall('sessions.update', { id: old.id, archived: false });
+  for (const x of all.filter((y) => y.title?.startsWith('Plan: Re-subscribe'))) await rpcCall('sessions.delete', { id: x.id });
+  await page.locator('.srow', { hasText: 'Fix streaming reconnect bug' }).first().click().catch(() => {});
+  await page.waitForTimeout(300);
 }
 
 }

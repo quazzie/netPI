@@ -31,7 +31,7 @@ public sealed class TestPluginContext : IPluginContext
     public IServiceRegistry Services { get; }
     public IRpcRegistry Rpc { get; }
     public IToolRegistry Tools { get; }
-    public IUiRegistry Ui => throw new NotSupportedException();
+    public IUiRegistry Ui => _host.Ui;
     public IHttpRegistry Http => throw new NotSupportedException();
     public ISettings Settings => _host.Settings;
     public IPluginData Data => _host.Storage.Plugins.For(PluginId);
@@ -129,6 +129,7 @@ public sealed class TestHost : IAsyncDisposable
     public FakeSettings Settings { get; }
     public FakeTools Tools { get; }
     public FakeRpc Rpc { get; } = new();
+    public FakeUi Ui { get; } = new();
     public ISessionStore Sessions { get; }
     /// <summary>The store the plugins' <c>ctx.Data</c> and the session service live in (memory, in this process).</summary>
     public IStorage Storage { get; }

@@ -219,6 +219,56 @@ public static class AgentsTests
             Check.Equal(0, (await env.Rpc("ask.pending", new { })).Arr().Count());
         });
 
+        r.Add("plan.flow", "plan mode: a write is blocked, plan_submit waits with its agent yielded, approving saves the idea and seeds the todo list, then the write runs", async () =>
+        {
+            var p = await env.NewProject("plan");
+            var dir = p.S("path")!;
+            var s = await env.NewSession(projectId: p.S("id"));
+            var sid = s.S("id")!;
+            Check.Equal("planning", (await env.Rpc("plan.enter", new { sessionId = sid })).S("mode"));
+            var mark = env.Client.Mark();
+            var agent = await env.Rpc("agent.send", new { sessionId = sid, text = "Add the file [s:plan]" });
+            var decided = false;
+            try
+            {
+                var awaiting = await env.Client.WaitFor(mark, e => e.Type == "plan.changed" && e.D.S("sessionId") == sid && e.D.S("status") == "awaiting", "plan.changed awaiting", 20_000);
+                Check.True(awaiting.Sid is null, "plan.changed is unscoped");
+                var planId = awaiting.D.S("planId")!;
+                var yielded = await env.Client.WaitFor(mark, e => e.Type == "agent.status" && e.D.P("agent").S("sessionId") == sid
+                                                                  && e.D.P("agent").S("status") == "yielded", "the agent yielded", 5000);
+                Check.Equal("waiting for your decision on the plan", yielded.D.P("agent").S("activity"));
+                Check.False(File.Exists(Path.Combine(dir, "plan-e2e.txt")), "the write that came first was blocked");
+                var plan = await env.Rpc("plan.get", new { planId });
+                Check.Equal("Add the file", plan.S("title"));
+                Check.Equal("awaiting", plan.S("status"));
+                Check.Equal(2, plan.P("plan").Arr("steps").Count());
+                Check.Equal("awaiting", (await env.Rpc("sessions.get", new { id = sid })).P("meta").P("planMode").S("state"));
+                var answered = await env.Rpc("plan.answer", new { planId, decision = "approve" });
+                Check.Equal("approved", answered.S("status"));
+                Check.True(answered.S("ideaId") is not null, "the plan was saved as an idea");
+                decided = true;
+            }
+            finally
+            {
+                if (!decided) await env.Rpc("agent.abort", new { sessionId = sid }); // a plan left waiting holds its run
+            }
+            var done = await env.WaitIdle(sid, mark, agent.L("runs"), 30_000);
+            var run = await env.Result(sid, mark, done);
+            Check.Contains(run.FinalText, "PLAN-DONE");
+            var results = run.Parts("tool_result").ToList();
+            Check.Contains(results[0].GetRawText(), "Plan mode is read-only", "the first write was refused");
+            Check.Contains(results[1].GetRawText(), "The user approved your plan");
+            Check.Equal("after approval\n", File.ReadAllText(Path.Combine(dir, "plan-e2e.txt")).ReplaceLineEndings("\n"), "after the approval the write ran");
+
+            var idea = (await env.Rpc("ideas.list", new { })).Arr("ideas").Single(i => i.S("title") == "Add the file");
+            Check.Equal("planned", idea.S("status"));
+            Check.Equal("plan", idea.Arr("sections").First().S("kind"));
+            Check.Contains(idea.Arr("tags").First().GetString(), "plan");
+            var meta = (await env.Rpc("sessions.get", new { id = sid })).P("meta");
+            Check.Equal("approved", meta.P("planMode").S("state"));
+            Check.Equal(2, meta.Arr("todo").Count(), "the plan's steps are the todo list");
+        });
+
         r.Add("ideas.tool", "ideas: the ideas tool writes the backlog in the database (stamped with the project); ideas.list and ideas.changed see it", async () =>
         {
             var p = await env.NewProject("ideas");

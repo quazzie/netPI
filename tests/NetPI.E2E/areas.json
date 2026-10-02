@@ -20,6 +20,7 @@
     { "path": "plugins/NetPI.Loops/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Mcp/", "tags": ["mcp", "ui"] },
     { "path": "plugins/NetPI.Nudge/", "tags": ["nudge", "reload"] },
+    { "path": "plugins/NetPI.Plan/", "tags": ["plan"] },
     { "path": "plugins/NetPI.Profiles/", "tags": ["profiles"] },
     { "path": "plugins/NetPI.Providers.AiProxy/", "tags": ["provider", "usage"] },
     { "path": "plugins/NetPI.Providers.Anthropic/", "tags": ["provider", "usage"] },
