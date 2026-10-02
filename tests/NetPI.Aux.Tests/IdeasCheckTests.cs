@@ -254,12 +254,14 @@ public static class IdeasCheckTests
                 _ => new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick" }) },
                 _ => new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["probabilities"] = new JsonObject() }) },
                 _ => new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["probabilities"] = new JsonObject { ["Z"] = 0.99, ["Y"] = 0.01 } }) },
+                // A label the decision did not weigh is not a label it rejected: the attach question has nothing to go on.
+                _ => new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["probabilities"] = new JsonObject { ["A"] = 0.93 } }) },
             })
             {
                 var env = new Env();
                 await env.StartAsync();
                 env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "qwen3.8-27b", IsLocal = true, MaxOutputTokens = 16384 });
-                await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Nudge reset" } });
+                var idea = (await env.Rpc("ideas.add", new JsonObject { ["sessionId"] = env.Session.Id, ["idea"] = new JsonObject { ["title"] = "Nudge reset" } }))["id"].Str()!;
                 env.Talk();
                 env.Talk();
                 env.DecideRaw(answer);
@@ -269,6 +271,7 @@ public static class IdeasCheckTests
                 Check.Equal("started", res["reason"].Str());
                 var cards = await env.WaitForCards(1);
                 Check.Equal("Still offered", cards[0]!["title"].Str());
+                Check.Equal(0, (await env.SessionsOn(idea)).Count, "and nothing was attached: there was no usable answer");
                 env.Ctx.Unload();
             }
         });
@@ -422,7 +425,11 @@ public static class IdeasCheckTests
                 var letter = options.Split('\n')
                     .FirstOrDefault(l => l.Contains("Rework the transcript indexer", StringComparison.Ordinal))?[..1];
                 Check.True(letter is { Length: 1 }, "the idea past the 51st was offered to the model");
-                return new() { [letter!] = 0.91, ["none"] = 0.02 };
+                // A decision weighs every label it is offered (a partial answer is not an answer), so answer them all.
+                var probs = body["branches"]![0]!["labels"]!.AsArray()
+                    .Select(l => l.Str()!)
+                    .ToDictionary(l => l, l => l == letter ? 0.91 : 0.09 / 50);
+                return probs;
             });
 
             var res = await env.Rpc("ideas.recall", new JsonObject { ["sessionId"] = env.Session.Id, ["text"] = "the transcript indexer is slow, can we rework it" });

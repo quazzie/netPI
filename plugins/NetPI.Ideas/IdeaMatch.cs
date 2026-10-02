@@ -40,7 +40,7 @@ internal static class IdeaMatch
         {
             var idea = candidates[k];
             list.Append(Letters[k]).Append(") [").Append(IdeaOps.ProjectLabel(idea)).Append("] ").Append(IdeaOps.Str(idea["title"]));
-            if (OneLine(IdeaOps.Str(idea["summary"])) is { Length: > 0 } summary) list.Append(" — ").Append(Clip(summary, 240));
+            if (IdeaOps.OneLine(IdeaOps.Str(idea["summary"])) is { Length: > 0 } summary) list.Append(" — ").Append(IdeaOps.Clip(summary, 240));
             list.Append('\n');
         }
         none = Letters[candidates.Count].ToString();
@@ -50,33 +50,8 @@ internal static class IdeaMatch
         return list.ToString();
     }
 
-    public static JsonArray Labels(int count)
-    {
-        var labels = new JsonArray();
-        for (var k = 0; k <= count; k++) labels.Add(Letters[k].ToString());
-        return labels;
-    }
-
-    /// <summary>
-    /// The answer, read the way it can be trusted: only the letters we asked about count, the winner is one of the
-    /// options (never "none"), and an answer without probabilities for them is no answer at all.
-    /// </summary>
-    public static IdeaPick? Answer(JsonNode? answer, int options)
-    {
-        if (answer is not JsonObject o) return null;
-        if (o["branches"] is not JsonArray { Count: > 0 } branches || branches[0]?["probabilities"] is not JsonObject probs) return null;
-        if (options <= 0) return null;
-        double P(string label) => probs[label] is JsonValue v && v.TryGetValue<double>(out var d) && double.IsFinite(d) ? d : 0;
-        var best = -1;
-        for (var k = 0; k < options; k++)
-        {
-            if (probs[Letters[k].ToString()] is null) continue; // a letter we never offered says nothing about this answer
-            if (best < 0 || P(Letters[k].ToString()) > P(Letters[best].ToString())) best = k;
-        }
-        if (best < 0) return null;
-        return new IdeaPick(best, P(Letters[best].ToString()), P(Letters[options].ToString()))
-        { RunnerUp = Enumerable.Range(0, options).Where(k => k != best).Select(k => P(Letters[k].ToString())).DefaultIfEmpty(0).Max() };
-    }
+    /// <summary>The labels of one decision's options as plain names, in order (what <see cref="Pick"/> reads them).</summary>
+    public static List<string> Names(JsonArray labels) => labels.OfType<JsonValue>().Select(v => IdeaOps.Str(v) ?? "").ToList();
 
     /// <summary>The same reading, for an answer that has already been turned into label → probability.</summary>
     public static IdeaPick? Pick(IReadOnlyDictionary<string, double> probs, IReadOnlyList<string> labels)
@@ -145,7 +120,4 @@ internal static class IdeaMatch
         }
         return set;
     }
-
-    private static string OneLine(string? s) => string.Join(' ', (s ?? "").Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
-    private static string Clip(string s, int n) => s.Length > n ? s[..n] + "…" : s;
 }

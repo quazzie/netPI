@@ -155,6 +155,10 @@ Every idea carries an integer **`revision`**, raised by every stored change. `id
 `ideas.update` all return it, and `ideas.update` takes it back as `expectedRevision` — that is how a stale window is
 turned into a `conflict` instead of a silent overwrite.
 
+The methods that only read are registered `readOnly`: `ideas.list`, `ideas.get`, `ideas.suggestions`,
+`ideas.toPrompt`, `ideas.image` and the three `ideas.work`/`ideas.capabilities`/`ideas.unread` views. A tool may call
+those without `--write` (`docs/PROTOCOL.md`); everything else this plugin registers writes.
+
 Error codes: `bad_request` (invalid input: the message says what is wrong, for example the list of valid statuses or
 projects), `not_found` (idea, session or project — also a card that is gone), `conflict` (an edit whose
 `expectedRevision`/`expectedUpdatedAt` is stale, or an id that is already in the backlog),

@@ -117,6 +117,22 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas: the pure reads are registered read-only, so a tool can call them without --write", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var flags = env.Ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
+            foreach (var m in new[] { "ideas.work", "ideas.capabilities", "ideas.unread", "ideas.list", "ideas.get", "ideas.suggestions", "ideas.toPrompt", "ideas.image" })
+            {
+                Check.True(flags.TryGetValue(m, out var readOnly), $"{m} is registered");
+                Check.True(readOnly, $"{m} only reads, so it is marked read-only");
+            }
+            // The other side of the claim: what writes stays unmarked, so nothing reaches it by accident.
+            foreach (var m in new[] { "ideas.add", "ideas.update", "ideas.delete", "ideas.reorder", "ideas.resolve", "ideas.addImage", "ideas.removeImage", "ideas.import", "ideas.quickAdd" })
+                Check.False(flags.GetValueOrDefault(m), $"{m} changes something, so it stays writable");
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas: images attach to an idea, come back for the card, and go when it does", async () =>
         {
             var env = new Env();

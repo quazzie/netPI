@@ -82,23 +82,6 @@ public static class IdeaOps
         }
     }
 
-    public static JsonObject? Find(JsonArray ideas, string id)
-    {
-        id = id.Trim();
-        JsonObject? ci = null;
-        foreach (var n in ideas)
-        {
-            if (n is not JsonObject o) continue;
-            var oid = Str(o["id"]);
-            if (oid == id) return o;
-            if (oid is not null && (string.Equals(oid, id, StringComparison.OrdinalIgnoreCase)
-                                    || string.Equals(oid, "idea-" + id, StringComparison.OrdinalIgnoreCase))) ci ??= o;
-        }
-        return ci;
-    }
-
-    public static IEnumerable<JsonObject> All(JsonArray ideas) => ideas.OfType<JsonObject>();
-
     // ------------------------------------------------------------------ project
 
     /// <summary>The project the idea belongs to (the id and name stored on it), or null when it is not bound ("global").</summary>
@@ -144,6 +127,14 @@ public static class IdeaOps
         if (p is null) return "global";
         return p.Value.Name is { Length: > 0 } n ? n : p.Value.Id;
     }
+
+    // ------------------------------------------------------------------ text
+
+    /// <summary>The text on one line: the newlines of a title or a summary become spaces.</summary>
+    public static string OneLine(string? s) => string.Join(' ', (s ?? "").Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
+
+    /// <summary>The text, clipped to <paramref name="n"/> characters with an ellipsis when it was longer.</summary>
+    public static string Clip(string s, int n) => s.Length > n ? s[..n] + "…" : s;
 
     // ------------------------------------------------------------------ normalization
 
@@ -227,13 +218,10 @@ public static class IdeaOps
     }
 
     /// <summary>
-    /// Create an idea from an input object ({ title, summary?, status?, priority?, tags?, sections? }).
-    /// With <paramref name="keepExtraFields"/> (UI) other input fields are stored as well.
+    /// Create an idea from an input object ({ title, summary?, status?, priority?, tags?, sections? }) whose id is not
+    /// among <paramref name="existingIds"/>. With <paramref name="keepExtraFields"/> (UI) other input fields are
+    /// stored as well.
     /// </summary>
-    public static JsonObject CreateIdea(JsonObject input, JsonArray existing, string createdBy, string? sessionId, bool keepExtraFields = false) =>
-        CreateIdea(input, All(existing).Select(i => Str(i["id"])), createdBy, sessionId, keepExtraFields);
-
-    /// <summary>As above, for a caller that holds the taken ids (the SQLite repository) rather than the whole backlog.</summary>
     public static JsonObject CreateIdea(JsonObject input, IEnumerable<string?> existingIds, string createdBy, string? sessionId, bool keepExtraFields = false)
     {
         var title = Str(input, "title")?.Trim();
@@ -574,8 +562,6 @@ public static class IdeaOps
         if (n > 0) sb.Append($" ({n} section{(n == 1 ? "" : "s")})");
         return sb.ToString();
     }
-
-    private static string OneLine(string? s) => string.Join(' ', (s ?? "").Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
 
     public static string KindLabel(string? kind) => NormalizeKind(kind) switch
     {

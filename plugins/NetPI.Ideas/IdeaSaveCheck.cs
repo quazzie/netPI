@@ -1,5 +1,3 @@
-using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -22,11 +20,8 @@ namespace NetPI.Ideas;
 /// </summary>
 public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
 {
-    public const string DefaultModel = "qwen3.8-27b";
     public const double DefaultAttachThreshold = 0.8;
     public const int MinUserMessages = 2;
-    /// <summary>How long a "this chat was checked" mark is kept, so a session reopened months later is not asked again.</summary>
-    private const int MarkKeepDays = IdeasRepository.CheckMarkKeepDays;
     /// <summary>How often a check that failed on this conversation is retried.</summary>
     public const int MaxTries = 3;
     /// <summary>And how long to wait before the next try.</summary>
@@ -38,9 +33,6 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
     /// <summary>A card left the pending file (answered, discarded, or finished after a restart).</summary>
     public const string ResolvedEvent = "ideas.resolved";
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(60);
-
-    // Single-token letters for the options (the last one used is "none"); more open ideas than letters: the newest stay out.
-    private const string Letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
     // The digest the two checks read: what the user asked and what came back, tools by name. Never the raw transcript:
     // the measured runs used a digest, and a whole 200-turn session would not fit the check's window anyway.
@@ -74,16 +66,17 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
         <summary: one or two sentences saying what it is and what is left>
         """;
 
-    private readonly SemaphoreSlim _gate = new(1, 1);
     /// <summary>Background model work queues behind the chats, on the backend's own slots.</summary>
     private readonly IdeaAdmission _admission = new(ctx);
+    /// <summary>Every pick-one question a check asks, asked in one place.</summary>
+    private readonly IdeaDecider _decider = new(ctx);
     private readonly IdeasRepository _repo = repo;
 
     public void Register(IRpcRegistry rpc)
     {
         rpc.Register("ideas.closed", Closed,
             "A session tab was closed: { sessionId } → { checked: bool, reason } — attaches the chat to the idea it worked on and offers a card when it leaves an unsaved plan (background)");
-        rpc.Register("ideas.suggestions", Suggestions,
+        rpc.RegisterReadOnly("ideas.suggestions", Suggestions,
             "Cards waiting for the user (a plan a closed chat left unsaved, an idea a commit may have finished): { } → { suggestions: [...] }");
         rpc.Register("ideas.resolve", Resolve,
             "Answer a card: { id, action: \"save\" | \"done\" | \"discard\", edit?: { title?, summary? } } → { saved: idea | null, discarded }");
@@ -218,7 +211,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
                 ["id"] = "sg_" + Guid.NewGuid().ToString("N")[..10],
                 ["kind"] = "save",
                 ["sessionId"] = session.Id,
-                ["sessionTitle"] = Clip(session.Title, 120),
+                ["sessionTitle"] = IdeaOps.Clip(session.Title, 120),
                 ["title"] = draft.Value.Title,
                 ["summary"] = draft.Value.Summary,
                 ["at"] = IdeaOps.Now(),
@@ -283,7 +276,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
         foreach (var window in IdeaMatch.Windows(open, digest))
         {
             var list = IdeaMatch.Options(window, "none of these: the conversation is about something else", out var none, out var labels);
-            var answer = await DecideAsync(new JsonObject
+            var answer = await _decider.AskAsync(new JsonObject
             {
                 ["role"] = "system",
                 ["content"] = "You decide which of the user's backlog of open ideas a finished conversation with an AI coding " +
@@ -292,11 +285,12 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
             }, "Which open idea is this conversation about? " +
                "Read the conversation: pick the idea it worked on (built, tested, discussed, or changed its plan), " +
                $"pick {none} when it is about something else. Answer with one letter.\n\n" +
-               $"Conversation:\n<<<\n{Clip(digest, 4000)}\n>>>",
-                labels, ct).ConfigureAwait(false);
-            if (answer is null) return; // no usable answer: nothing is attached, and the save check still runs
-            if (best is null || answer.P > best.P) { best = answer; bestWindow = window; }
-            if (best.P > 0.5 || answer.None >= best.P) break; // decided (or nothing in this window): no further windows
+               $"Conversation:\n<<<\n{IdeaOps.Clip(digest, 4000)}\n>>>",
+                labels, "the attach question", sessionId: null, projectId: null, wait: null, Timeout, ct).ConfigureAwait(false);
+            var pick = Pick(answer, labels);
+            if (pick is null) return; // no usable answer: nothing is attached, and the save check still runs
+            if (best is null || pick.P > best.P) { best = pick; bestWindow = window; }
+            if (best.P > 0.5 || pick.None >= best.P) break; // decided (or nothing in this window): no further windows
         }
         if (best is null || bestWindow is null) return;
         if (!best.Clear(Math.Clamp(Setting("ideas.attachThreshold", DefaultAttachThreshold), 0.3, 0.99))) return;
@@ -324,7 +318,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
         var entry = new JsonObject
         {
             ["sessionId"] = session.Id,
-            ["title"] = Clip(session.Title, 120),
+            ["title"] = IdeaOps.Clip(session.Title, 120),
             ["at"] = IdeaOps.Now(),
             ["seen"] = false,
         };
@@ -337,7 +331,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
     {
         var model = await ResolveModelAsync(ct).ConfigureAwait(false);
         // Not a silent "no card": the check did not run, so the mark says why and the next close tries again.
-        if (model is null) throw new InvalidOperationException($"model {Setting("ideas.model", DefaultModel)} is not in the catalog");
+        if (model is null) throw new InvalidOperationException($"model {Setting("ideas.model", IdeaRecall.DefaultModel)} is not in the catalog");
         var maxOut = Math.Clamp(model.MaxOutputTokens is > 0 and var m ? Math.Min(m, 1024) : 1024, 256, 4096);
         var request = new ModelRequest
         {
@@ -371,43 +365,18 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
         var title = lines.Length > 1 ? Clean(lines[1]) : "";
         var summary = string.Join(' ', lines.Skip(2).Select(Clean).Where(s => s.Length > 0));
         if (title.Length is 0 or > 140) return null;
-        return (title, Clip(summary, 600));
+        return (title, IdeaOps.Clip(summary, 600));
     }
 
     private static string Clean(string s) => s.Trim().Trim('#', '*', '`', '"', '\'', '-', ' ').Trim();
 
-    private async Task<IdeaPick?> DecideAsync(JsonObject system, string question, JsonArray labels, CancellationToken ct)
-    {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(Timeout);
-        try
-        {
-            var name = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel;
-            // The decision runs on the same backend as the chats, so it takes a slot like everything else.
-            var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
-            var admission = await _admission.EnterAsync(model, "an ideas decision", sessionId: null, projectId: null, ct).ConfigureAwait(false);
-            if (!admission.Admitted) throw new InvalidOperationException($"no decision: {admission.Reason}");
-            using var slot = admission.Lease!;
-            var raw = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.decision", new JsonObject
-            {
-                ["model"] = name,
-                ["messages"] = new JsonArray(system),
-                ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["content"] = question, ["labels"] = labels }),
-            }, cts.Token, admission.Slot, model?.Ref, IdeaAdmission.Priority).ConfigureAwait(false);
-            // Read the answer once, in one place: only the letters we offered count, and "none" is never an idea.
-            return IdeaMatch.Answer(raw as JsonNode ?? JsonSerializer.SerializeToNode(raw), labels.Count - 1);
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            ctx.Logger.LogWarning("Ideas: the check got no answer within {Seconds:0} s.", Timeout.TotalSeconds);
-            return null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            ctx.Logger.LogWarning("Ideas: the check failed: {Message}", ex.Message);
-            return null;
-        }
-    }
+    /// <summary>
+    /// A <see cref="IdeaDecider.Answer"/> as this check reads it: no pick for a skip, a drop or a failure alike, so
+    /// the caller only has to know whether there is an answer. Only the labels that were offered count, and "none" is
+    /// never an idea.
+    /// </summary>
+    private static IdeaPick? Pick(IdeaDecider.Answer answer, JsonArray labels) =>
+        answer.Probs is { } probs ? IdeaMatch.Pick(probs, IdeaMatch.Names(labels)) : null;
 
     // ------------------------------------------------------------------ the cards
 
@@ -449,8 +418,6 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
         });
     });
 
-    private static RpcException Gone() => new("not_found", "That card is gone (already answered, discarded, or NetPI restarted).");
-
     /// <summary>A storage failure is the caller's answer, not a crash.</summary>
     private static async Task<object?> Guard(Func<Task<object?>> body)
     {
@@ -486,13 +453,13 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
             switch (m.Role)
             {
                 case MessageRole.User:
-                    lines.Add("User: " + Clip(Plain(m), 1500));
+                    lines.Add("User: " + IdeaOps.Clip(Plain(m), 1500));
                     break;
                 case MessageRole.Assistant:
                     var text = Plain(m);
                     var tools = m.Parts.OfType<ToolCallPart>().Select(c => c.Name).ToList();
                     if (text.Length == 0 && tools.Count == 0) break;
-                    var line = "Agent: " + Clip(text, 800);
+                    var line = "Agent: " + IdeaOps.Clip(text, 800);
                     if (tools.Count > 0) line += "\n  used: " + string.Join(", ", tools.Distinct());
                     lines.Add(line);
                     break;
@@ -521,7 +488,7 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
     /// </summary>
     private async Task<ModelInfo?> ResolveModelAsync(CancellationToken ct)
     {
-        var name = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel;
+        var name = Setting("ideas.model", IdeaRecall.DefaultModel) is { Length: > 0 } m ? m.Trim() : IdeaRecall.DefaultModel;
         var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
         if (model is null)
             ctx.Logger.LogWarning("Ideas: the save check cannot run: model {Model} is not in the catalog (it is not replaced by another one).", name);
@@ -550,14 +517,4 @@ public sealed class IdeaSaveCheck(IPluginContext ctx, IdeasRepository repo)
     }
 
     private static JsonObject Result(string reason) => new() { ["checked"] = reason is "started" or "already", ["reason"] = reason };
-
-    private static int Tries(JsonObject mark) => mark["tries"] is JsonValue v && v.TryGetValue<int>(out var n) ? n : 0;
-
-    /// <summary>An idea timestamp (an ISO string, <see cref="IdeaOps.Now"/>); null when it is missing or not one.</summary>
-    private static DateTimeOffset? Stamp(JsonNode? node) =>
-        node is JsonValue v && v.TryGetValue<string>(out var s) && DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var at)
-            ? at : null;
-
-    private static string OneLine(string? s) => string.Join(' ', (s ?? "").Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
-    private static string Clip(string s, int n) => s.Length > n ? s[..n] + "…" : s;
 }
