@@ -156,6 +156,37 @@ public static class EventBusTests
             await WaitFor(() => seen.Count == 3, "the worker drained what was queued: " + string.Join(",", seen));
         });
 
+        r.Add("bus: a flush whose marker is owed to a disposed subscriber completes when it goes away", async () =>
+        {
+            await using var bus = new EventBus(NullLogger.Instance, queueCapacity: 4);
+            var wedged = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            var ticked = 0;
+            var slow = bus.Subscribe("slow", _ => { wedged.Set(); release.Wait(TimeSpan.FromSeconds(30)); });
+            using var fast = bus.Subscribe("tick", _ => Interlocked.Increment(ref ticked));
+            try
+            {
+                // One event first, and wait for the worker to be inside it: its queue is empty and, wedged as it is, the
+                // worker will take nothing more. Only then is the queue full *and staying full* when the marker is offered
+                // (fill it before the worker takes its first event and it drains a slot again, and the marker would fit).
+                bus.Publish("slow", 1);
+                Check.True(wedged.Wait(5000), "the subscriber wedged on its first event");
+                for (var i = 2; i <= 11; i++) bus.Publish("slow", i);
+                await WaitFor(() => bus.Dropped >= 6, "the wedged line's queue of 4 to fill (and the rest to be dropped for it alone)");
+                await WaitFor(() => bus.Backlog == 0, "the dispatcher to fan every event out");
+
+                var flush = bus.FlushAsync();   // the marker is written to the input before this call returns
+                bus.Publish("tick");            // so the dispatcher reaches the marker before this event
+                await WaitFor(() => Volatile.Read(ref ticked) == 1, "the fast line to see the event published after the flush");
+                Check.False(flush.IsCompleted, "the flush waits for the wedged line, which cannot hold the marker");
+
+                slow.Dispose();   // the plugin is unloaded while its line still owes the marker
+
+                await flush.WaitAsync(TimeSpan.FromSeconds(5));   // it comes back: the marker is acked for the line that went away
+            }
+            finally { release.Set(); }
+        });
+
         r.Add("bus: disposing a subscription is idempotent and stops delivery", async () =>
         {
             await using var bus = new EventBus(NullLogger.Instance);
