@@ -5,7 +5,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using NetPI.Host.Data;
+using NetPI.Host.Settings;
+using NetPI.Host.Storage.Sqlite;
 
 namespace NetPI.Aux.Tests;
 
@@ -363,12 +364,15 @@ public sealed class FakeSessionStore : ISessionStore
     public ProjectInfo UpdateProject(string id, string? name, string? path) => throw new NotSupportedException();
     public void DeleteProject(string id) => Projects.RemoveAll(p => p.Id == id);
 
-    public IReadOnlyList<SessionInfo> ListSessions(SessionQuery query) => Sessions;
-    /// <summary>The exact answer, like the real store: every kind of session, no list window, archived opt-in, and the
-    /// in-memory (message-less) sessions included — they bind the same way and must count the same.</summary>
-    public IReadOnlyList<string> SessionIdsUsingWorkspace(string workspaceId, bool includeArchived = false) =>
-        Sessions.Where(s => string.Equals(s.WorkspaceId, workspaceId, StringComparison.Ordinal) && (includeArchived || !s.Archived))
-            .Select(s => s.Id).ToList();
+    /// <summary>Every session, except that an attached-key query is answered like the real service: the sessions whose meta holds that
+    /// string, archived ones only when asked (the fake has no list window, and its sessions are all "stored").</summary>
+    public IReadOnlyList<SessionInfo> ListSessions(SessionQuery query) =>
+        query.AttachedKey is { Length: > 0 } key && query.AttachedValue is not null
+            ? Sessions.Where(s => s.Meta?[key] is System.Text.Json.Nodes.JsonValue v && v.TryGetValue<string>(out var text) && text == query.AttachedValue
+                                  && (query.IncludeArchived || !s.Archived)).ToList()
+            : Sessions;
+    public void DeclareForkReset(params string[] keys) { }
+    public SessionInfo ForkSession(string sessionId, long upToSeq, SessionInfo template) => throw new NotSupportedException("this fake does not fork: use a real SessionService");
     public SessionInfo? GetSession(string id) => Sessions.FirstOrDefault(s => s.Id == id);
     public SessionInfo CreateSession(SessionInfo template)
     {
@@ -391,9 +395,9 @@ public sealed class FakeSessionStore : ISessionStore
     /// (The workspace records themselves live in the host store; the tests that bind sessions use a
     /// <c>MemoryWorkspaceStore</c> and pass the binding explicitly where the root matters.)</summary>
     public string GetCwd(SessionInfo session) =>
-        session.WorkspaceId is { Length: > 0 } && WorkspaceRoots.TryGetValue(session.WorkspaceId, out var root)
-            ? root
-            : session.ProjectId is { } p && GetProject(p) is { } proj ? proj.Path : Path.GetTempPath();
+        SessionCwd.Of(session) is { } own ? own
+        : SessionWorkspace.Of(session) is { } wid && WorkspaceRoots.TryGetValue(wid, out var root) ? root
+        : session.ProjectId is { } p && GetProject(p) is { } proj ? proj.Path : Path.GetTempPath();
 
     /// <summary>Workspace root by id, for tests that bind a session to one of their own workspaces.</summary>
     public Dictionary<string, string> WorkspaceRoots { get; } = new(StringComparer.Ordinal);
@@ -569,7 +573,7 @@ public sealed class FakePluginContext : IPluginContext
         Paths = new NetPiPaths
         {
             AppDir = home, Home = home, LogsDir = home, WebRoot = home, SettingsFile = Path.Combine(home, "settings.json"),
-            DatabaseFile = Path.Combine(home, "netpi.db"), TempDir = home, PluginDirs = [], DefaultWorkspace = home,
+            TempDir = home, PluginDirs = [], DefaultWorkspace = home,
         };
         Bus = new FakeBus(Owner);
         ServicesFake = new FakeServices(Owner);
@@ -597,14 +601,26 @@ public sealed class FakePluginContext : IPluginContext
     public IHttpRegistry Http { get; } = new FakeHttp();
     public FakeSettings SettingsFake { get; } = new();
     public ISettings Settings => SettingsFake;
-    private Database? _db;
+    private IStorage? _storage;
     /// <summary>
-    /// A real SQLite database in the context's home (the same one the host hands a plugin), so a plugin that owns
-    /// tables is exercised against an actual database: transactions, unique indexes and rollback are the point, and a
-    /// fake cannot prove any of them. Opened on first use and closed by <see cref="Unload"/>, so a "restart" in a test
-    /// is a second connection to the same file — the data has to have survived it.
+    /// The plugin's own data over a real SQLite store in the context's home (the same provider the host uses), so a plugin that keeps
+    /// collections is exercised against an actual store: transactions, rollback and what survives a restart are the point, and a fake
+    /// cannot prove any of them. Opened on first use and closed by <see cref="Unload"/>, so a "restart" in a test is a second store
+    /// over the same folder — the data has to have survived it.
     /// </summary>
-    public IDatabase Db => _db ??= new Database(Path.Combine(Paths.Home, "netpi.db"));
+    public IPluginData Data => Storage.Plugins.For(PluginId);
+    /// <summary>The whole store behind <see cref="Data"/>, for tests that read what a plugin wrote under another plugin id.</summary>
+    /// <summary>What the kernel registers for plugins that ask what the store is (<see cref="IStorageAccess"/>): its info and its snapshot.</summary>
+    public IStorageAccess Access => new StorageAccessFake(Storage);
+    private sealed class StorageAccessFake(IStorage storage) : IStorageAccess
+    {
+        public StorageInfo Info => storage.Info;
+        public IStorageSnapshot Snapshot => storage.Snapshot;
+    }
+    public IStorage Storage => _storage ??= new SqliteStorageProvider().Open(new StorageOpenOptions
+    {
+        Home = Paths.Home, Logger = Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, Settings = SettingsFake,
+    });
     public FakeSessionStore SessionsFake { get; } = new();
     public ISessionStore Sessions => SessionsFake;
     public FakeModelCatalog ModelsFake { get; } = new();
@@ -617,8 +633,8 @@ public sealed class FakePluginContext : IPluginContext
     {
         _stopping.Cancel();
         Owner.DisposeAll();
-        _db?.Dispose();
-        _db = null;
+        _storage?.Dispose();
+        _storage = null;
     }
 }
 
