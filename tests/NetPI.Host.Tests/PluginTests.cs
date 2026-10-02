@@ -205,6 +205,36 @@ public static class PluginTests
             await Wait.UntilAsync(() => server.Rpc.Exists("sample.value"), "re-enabled");
         });
 
+        r.Add("plugins: a plugin whose folder disappears is removed, and says so on the bus (kind: removed)", async () =>
+        {
+            await SampleBuild.EnsureAsync();
+            var (pluginsRoot, pluginDir) = PreparePluginDir("v1");
+            await using var server = await StartAsync(pluginsRoot);
+            Check.Equal("running", server.Plugins.List().Single(p => p.Id == "test.sample").State);
+            Check.True(server.Kernel.Tools.Get("sample_echo") is not null, "its tool is registered");
+
+            // The context plugin names the cause of a vanished tool from plugins.reloaded, so a removal that says
+            // nothing leaves the notice with no cause at all ("unknown").
+            var removals = new List<(string Ids, string Kind)>();
+            using var sub = server.Events.Subscribe(EventTypes.PluginsReloaded, e =>
+            {
+                var d = NetPiJson.ToNode(e.Data) as JsonObject;
+                if (d?["ids"] is not JsonArray ids) return;
+                lock (removals) removals.Add((string.Join(",", ids.Select(n => n!.GetValue<string>())), d["kind"]?.GetValue<string>() ?? ""));
+            });
+
+            Directory.Delete(pluginDir, recursive: true);   // the folder is gone (a moved or deleted plugin install)
+            await server.Plugins.RescanAsync();
+
+            Check.True(server.Plugins.List().All(p => p.Id != "test.sample"), "the plugin is no longer listed");
+            Check.True(server.Kernel.Tools.Get("sample_echo") is null, "and its tools are gone with it");
+            await Wait.UntilAsync(() => { lock (removals) return removals.Count > 0; }, "plugins.reloaded for the removal", 20_000);
+            (string Ids, string Kind) first;
+            lock (removals) first = removals[0];
+            Check.Contains(first.Ids, "test.sample", "the event names the plugin that went away");
+            Check.Equal("removed", first.Kind, "and says why its tools are gone");
+        });
+
         // build.ps1 while NetPI runs: what the running NetPI must not load yet waits in .pending, replaced host files in .old
         r.Add("plugins: the next start installs a build made while NetPI ran (.pending plugins and web UI, .old files)", () =>
         {
