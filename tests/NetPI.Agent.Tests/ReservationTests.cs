@@ -12,7 +12,10 @@ public static class ReservationTests
         t.Add("budget: concurrent first-use recording never loses spend", ConcurrentRecording);
         t.Add("budget: day and period changes recalculate spending", Rollover);
         t.Add("budget: unknown prices are blocked by caps, free calls remain allowed", UnknownPrice);
-        t.Add("budget: interrupted usage, rejected calls and cancellation settle reservations", Interrupted);
+        t.Add("budget: interrupted usage, rejected calls and cancellation settle from what they used, not the reservation", Interrupted);
+        t.Add("budget: a 529 storm under a dollar cap no longer locks the day", FailedBeforeFirstByte);
+        t.Add("budget: a hot swap runs two ledger generations: one reservation, one settle", Swap);
+        t.Add("budget: budget.allow runs alongside reservations without wedging the gates", AllowParallel);
     }
 
     private static ModelRequest Request() => new()
@@ -129,8 +132,85 @@ public static class ReservationTests
             throw new OperationCanceledException();
         }
         await Check.ThrowsAsync<OperationCanceledException>(async () => { await foreach (var e in m.InvokeAsync(req, Cancel, default)) { } });
-        Check.True(l.Spent().Period > 0.003, "unbilled interruption keeps the reservation estimate");
-        Check.True(l.BudgetStatus()["interruptedEstimateUsd"]!.GetValue<double>() > 0);
+        var estimate = Ledger.Estimate(req, Ledger.PriceOf(req.Model, null));
+        Check.True(l.Spent().Period > 0.003, "a stop that streamed settles from the partial work");
+        Check.True(l.Spent().Period < 0.003 + estimate, "no more than the reservation (the old code charged the full reservation)");
+        Check.Equal(1L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls WHERE cost_source = 'interrupted-estimate'"));
+        Check.Equal(1L, l.BudgetStatus()["interruptedEstimateCalls"]!.GetValue<long>(), "the settled-from-estimate count is visible");
         Check.Equal(3L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls"));
+    }
+
+    private static async Task FailedBeforeFirstByte()
+    {
+        using var db = TestSqlite.TryCreate() ?? throw new Exception("SQLite required");
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None, db: db);
+        var l = Create(h);
+        var ctx = new TestPluginContext(h, "ledger-test");
+        var m = new LedgerMiddleware(l, new AgentScheduler(ctx, l));
+        h.Settings.SetQuiet("budget.dailyUsd", JsonValue.Create(1));
+        var req = new ModelRequest
+        {
+            Model = new ModelInfo { Provider = "cloud", Id = "storm",
+                Extra = new JsonObject { ["pricing"] = new JsonObject { ["prompt"] = "0.000001", ["completion"] = "0.000002" } } },
+            // A million characters ≈ 250 k tokens. The old byte-based estimate (≈ $1.00 at $1/M) did not fit under the
+            // $1 cap, so the first 529's reservation locked the day's budget although the call was never billed.
+            Messages = [ChatMessage.UserText(new string('x', 1_000_000))],
+            MaxOutputTokens = 100,
+        };
+        // 503, 529 and a dead connection, all before the first byte: nothing was billed, nothing is settled.
+        await Check.ThrowsAsync<ModelException>(async () => { await foreach (var _ in m.InvokeAsync(req, (r, ct) => Reply.Fail(new ModelException("overloaded", true, 529)), default)) { } });
+        await Check.ThrowsAsync<ModelException>(async () => { await foreach (var _ in m.InvokeAsync(req, (r, ct) => Reply.Fail(new ModelException("overloaded", true, 503)), default)) { } });
+        await Check.ThrowsAsync<IOException>(async () => { await foreach (var _ in m.InvokeAsync(req, (r, ct) => Reply.Fail(new IOException("connect failed")), default)) { } });
+        Check.Equal(0.0, l.Spent().Today, "failed calls settle at $0, not at the reservation");
+        Check.Equal(0L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls WHERE cost_source != 'rejected'"), "no phantom spend");
+
+        // The storm itself: six more 529s, all refused-by-the-provider, none of them locking the cap.
+        for (var i = 0; i < 3; i++)
+        {
+            var failed = false;
+            try { await foreach (var _ in m.InvokeAsync(req, (r, ct) => Reply.Fail(new ModelException("overloaded", true, 529)), default)) { } }
+            catch (ModelException) { failed = true; }
+            Check.True(failed, "the provider failed");
+        }
+        Check.Equal(0.0, l.Spent().Today, "the cap is still free (the old estimate refused the second storm call)");
+        Check.Equal(6L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls"));
+
+        // A call that does answer settles from its real usage and fits the cap.
+        await foreach (var _ in m.InvokeAsync(req, (r, ct) => Reply.Text("ok"), CancellationToken.None)) { }
+        Check.True(l.Spent().Today > 0, "the answered call is billed");
+    }
+
+    private static async Task Swap()
+    {
+        using var db = TestSqlite.TryCreate() ?? throw new Exception("SQLite required");
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None, db: db);
+        var l = Create(h);
+        var ctx = new TestPluginContext(h, "ledger-test");
+        // A hot swap keeps the old generation in the pipeline until the new one serves: two middlewares, one call.
+        var m1 = new LedgerMiddleware(l, new AgentScheduler(ctx, l));
+        var m2 = new LedgerMiddleware(l, new AgentScheduler(ctx, l));
+        IAsyncEnumerable<ModelStreamEvent> Provider(ModelRequest r, CancellationToken ct) => Reply.Text("ok");
+        await foreach (var _ in m2.InvokeAsync(Request(), (r, ct) => m1.InvokeAsync(r, Provider, ct), CancellationToken.None)) { }
+        Check.Equal(1L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls"), "one call, one reservation");
+        Check.Equal(1L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls WHERE cost_source != 'reserved'"), "and settled once");
+        // The other order: the first to run reserves, the other passes through either way.
+        await foreach (var _ in m1.InvokeAsync(Request(), (r, ct) => m2.InvokeAsync(r, Provider, ct), CancellationToken.None)) { }
+        Check.Equal(2L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls"), "the next call meters again");
+    }
+
+    private static async Task AllowParallel()
+    {
+        using var db = TestSqlite.TryCreate() ?? throw new Exception("SQLite required");
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Agents, db: db);
+        var l = (Ledger)h.Services.Get<IBudgetGate>()!;
+        var sid = h.NewSession().Id;
+        var req = Request();
+        // Allow takes the session update (a database transaction) and the ledger's period; Reserve the other way
+        // round. Interleaved, the old order wedged the two gates across threads.
+        var allow = Task.Run(() => { for (var i = 0; i < 300; i++) l.Allow(sid); });
+        var reserve = Task.Run(() => { for (var i = 0; i < 300; i++) { var r = l.Reserve(req, null, null); l.Settle(r, new Usage { CostUsd = 0.00001 }, true, false); } });
+        await Task.WhenAll(allow, reserve).WaitAsync(TimeSpan.FromSeconds(10));
+        Check.True(Math.Abs(l.Spent().Today - 0.003) < 1e-9, $"every reservation settled ({l.Spent().Today})");
+        Check.True(h.Sessions.GetSession(sid)!.Meta?["budgetAllowedFrom"] is JsonValue, "the allow landed in the session");
     }
 }

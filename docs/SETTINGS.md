@@ -202,17 +202,22 @@ where a chat runs, the profile who it is.
 | `budget.onLimit` | `"stop"` | when a budget is spent: `"stop"` paid calls, or `"ask"`: your chats stop with "let this chat go over" (`budget.allow`), subagents stop |
 
 Every provider attempt (including each retry) is recorded in `usage_calls`. Before dispatch, paid calls reserve
-uncached input plus the full output allowance at the configured/catalog price. Admission and reservation are one
+their estimate at the configured/catalog price: the input counted in tokens at the cache-read rate (in an agent
+loop the context is re-read, and a call that misses the cache is corrected by the settlement) and the output at
+the effective maximum the provider accepts. Admission and reservation are one
 SQLite transaction, so concurrent chats and plugin generations share the same remaining budget. A reservation
 that would exceed a monthly, daily or per-agent limit stops the call; `budget.onLimit: "ask"` offers the existing
 explicit per-chat override. Subagents cannot override. Unknown cloud prices are refused when a dollar cap applies:
 configure **both** input and output prices in the agent, or explicitly allow the chat to go over.
 
 Completed usage replaces the reservation with provider-reported cost, else a token-price estimate. Interrupted
-calls keep reported cost when supplied; otherwise they retain a conservative estimate. Clear HTTP rejections
-(400/401/403/404/429 or context overflow) before usage release the reservation. Persistent reservations survive
-crashes and hot reload; a lost final bill stays marked reserved/unsettled instead of silently disappearing.
-The Budget page identifies reserved/unsettled, interrupted estimates and unknown-price calls separately.
+calls settle from the usage actually used (reported, or estimated from what was sent and streamed) — never from
+the full reservation. A failure or stop before the first byte settles at $0, so a storm of 503/529s cannot lock
+the budget. Persistent reservations survive crashes and hot reload; a lost final bill stays marked
+reserved/unsettled instead of silently disappearing. A hot swap briefly runs two ledger generations on one call;
+the first reserves, the other passes through its mark. Paid models also need the budget gate: while the Agents
+plugin is not loaded, the model catalog refuses non-local models. The Budget page identifies
+reserved/unsettled, interrupted estimates and unknown-price calls separately.
 
 Reservations are estimates, not a provider billing guarantee: tokenization, image billing and provider price
 changes can differ. Amounts are attributed to the attempt's start day. Without a dollar cap unpriced calls remain

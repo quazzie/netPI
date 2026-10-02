@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 using System.Text;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace NetPI.Agents;
@@ -38,46 +37,68 @@ internal sealed partial class Ledger
         });
     }
 
-    // Conservative estimate, not a provider billing guarantee. Reserve uncached input and the complete output limit.
+    // A gate, not a bill: what the call may cost at worst, so concurrent reservations fit against the budgets.
+    // The input is counted in tokens (a conversation serialised to JSON is 3-5x its token count, and base64 images
+    // would count at full size), priced at the cache-read rate — in an agent loop the context is re-read, not
+    // re-sent, and a call that misses the cache is corrected by the settlement, while a 3-5x over-reservation
+    // locks a tight budget for nothing. The output is the effective maximum the provider would accept.
     internal static double Estimate(ModelRequest request, Price? price)
     {
         if (price is null || price.Free) return 0;
-        var bytes = Encoding.UTF8.GetByteCount(request.SystemPrompt ?? "")
-            + (long)JsonSerializer.SerializeToUtf8Bytes(request.Messages, NetPiJson.Options).Length
-            + JsonSerializer.SerializeToUtf8Bytes(request.Tools, NetPiJson.Options).Length + 2048;
-        var input = request.Model.ContextWindow is > 0 and var window ? Math.Min(bytes, window) : bytes;
+        var input = EstimateInput(request);
         var output = request.MaxOutputTokens is > 0 and var max ? max : request.Model.MaxOutputTokens ?? 16384;
-        return (input * Math.Max(price.Input, price.CacheWrite) + output * price.Output) / 1_000_000;
+        if (request.Model.MaxOutputTokens is > 0 and var cap && output > cap) output = cap;   // the provider clamps to its own maximum
+        return (input * price.CacheRead + output * price.Output) / 1_000_000;
     }
 
-    private (double Reserved, double Interrupted, long Unknown) EstimateStatus()
+    /// <summary>Approximate input context in tokens: the conversation, the system prompt and the tool definitions (images at 4000).</summary>
+    internal static long EstimateInput(ModelRequest request)
     {
-        if (!_dbReady) return (0, 0, 0);
+        var input = ModelMessages.EstimateTokens(request.Messages) + ModelMessages.EstimateTokens(request.SystemPrompt);
+        if (request.Tools is { Count: > 0 } tools)
+        {
+            var chars = 0;
+            foreach (var t in tools)
+            {
+                chars += t.Name.Length + t.Description.Length + (t.Help?.Length ?? 0);
+                if (t.Parameters is not null) chars += t.Parameters.ToJsonString(NetPiJson.Options).Length;
+            }
+            input += chars / 4;
+        }
+        return input;
+    }
+
+    private (double Reserved, double Interrupted, long InterruptedCalls, long Unknown) EstimateStatus()
+    {
+        if (!_dbReady) return (0, 0, 0, 0);
         var from = new DateTimeOffset(PeriodStart).ToUnixTimeMilliseconds();
         return _ctx.Db.QuerySingle("""
             SELECT COALESCE(SUM(CASE WHEN cost_source='reserved' THEN cost_usd ELSE 0 END),0) AS reserved,
                    COALESCE(SUM(CASE WHEN cost_source='interrupted-estimate' THEN cost_usd ELSE 0 END),0) AS interrupted,
+                   COALESCE(SUM(CASE WHEN cost_source='interrupted-estimate' THEN 1 ELSE 0 END),0) AS interruptedCalls,
                    SUM(CASE WHEN cost_source='unknown' THEN 1 ELSE 0 END) AS unknown
               FROM usage_calls WHERE ts >= @from
-            """, new { from }, r => (r.GetDouble("reserved"), r.GetDouble("interrupted"), r.GetInt64OrNull("unknown") ?? 0));
+            """, new { from }, r => (r.GetDouble("reserved"), r.GetDouble("interrupted"), r.GetInt64("interruptedCalls"), r.GetInt64OrNull("unknown") ?? 0));
     }
 
     public Reservation Reserve(ModelRequest request, string? agent, JsonObject? cfg)
     {
+        // Priced outside the gate: the estimate must not be computed while the ledger gate or a database transaction
+        // is held (it is pure, and a long conversation used to be serialised here on every paid attempt).
+        var price = PriceOf(request.Model, cfg);
+        var paid = Paid(request.Model, price);
+        if (paid && request.MaxOutputTokens is not > 0)
+            request.MaxOutputTokens = request.Model.MaxOutputTokens is > 0 ? request.Model.MaxOutputTokens : 16384;
+        var cost = paid ? Estimate(request, price) : 0;
         lock (_gate)
         {
             Reservation Begin()
             {
                 Check(request, agent, cfg);
-                var price = PriceOf(request.Model, cfg);
                 var o = Options();
                 var limited = o.MonthlyUsd.HasValue || o.DailyUsd.HasValue || DailyCap(cfg).HasValue;
-                var paid = Paid(request.Model, price);
                 if (paid && limited && !_dbReady)
                     throw new BudgetExceededException("The budget ledger is unavailable; paid calls are stopped until storage is repaired.");
-                if (paid && request.MaxOutputTokens is not > 0)
-                    request.MaxOutputTokens = request.Model.MaxOutputTokens is > 0 ? request.Model.MaxOutputTokens : 16384;
-                var cost = paid ? Estimate(request, price) : 0;
                 var session = request.SessionId is null ? null : _ctx.Sessions.GetSession(request.SessionId);
                 var ask = o.OnLimit == "ask" && session is { Kind: not "subagent" } && request.Purpose == "agent";
                 var allowed = ask && AllowedNow(session!);
@@ -107,21 +128,26 @@ internal sealed partial class Ledger
         lock (_gate)
         {
             var u = usage ?? new Usage();
-            var (cost, source) = usage is not null ? CostOf(reservation.Request.Model, u, reservation.Config)
-                : (rejected ? 0 : reservation.Cost, rejected ? "rejected" : "interrupted-estimate");
-            if (!completed && usage is not null && (u.CostUsd is null || !double.IsFinite(u.CostUsd.Value)))
+            double cost;
+            string source;
+            if (rejected)
             {
-                cost = Math.Max(cost, reservation.Cost);
-                source = "interrupted-estimate";
+                // Nothing reached the consumer before the failure or stop: nothing was billed.
+                (cost, source) = (0, "rejected");
             }
-            if (!rejected && Paid(reservation.Request.Model, null) && PriceOf(reservation.Request.Model, reservation.Config) is null
-                && (usage?.CostUsd is null || !double.IsFinite(usage.CostUsd.Value))) source = "unknown";
+            else
+            {
+                // The partial work, priced at what was actually used — never the reservation (a stop after
+                // message_start used to charge the full output limit; a 503 after a few minutes, the worst case).
+                (cost, source) = CostOf(reservation.Request.Model, u, reservation.Config);
+                if (!completed && u.CostUsd is not { } && source == "estimated") source = "interrupted-estimate";
+            }
             if (_dbReady)
                 _ctx.Db.Execute("""
                     UPDATE usage_calls SET cost_usd=@cost, cost_source=@source, input_tokens=@input,
                       output_tokens=@output, cache_read_tokens=@cacheRead, cache_write_tokens=@cacheWrite WHERE id=@id
                     """, new { id = reservation.Id, cost, source, input = u.InputTokens, output = u.OutputTokens,
-                        cacheRead = u.CacheReadTokens, cacheWrite = u.CacheWriteTokens });
+                    cacheRead = u.CacheReadTokens, cacheWrite = u.CacheWriteTokens });
             else if (_memoryCharges.TryGetValue(reservation.Id, out var charge))
                 _memoryCharges[reservation.Id] = charge with { Cost = cost };
             Record(reservation.Request.Model.Provider, reservation.Request.Model.Id,
@@ -140,27 +166,36 @@ internal sealed class LedgerMiddleware(Ledger ledger, AgentScheduler scheduler) 
         [EnumeratorCancellation] CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        // A hot swap briefly runs two generations of this middleware on one call (the old one is removed only after
+        // the new one serves): the first one to run reserves, the other sees the mark and passes through, so the call
+        // is reserved and settled exactly once instead of twice.
+        var state = request.PipelineState ??= new JsonObject();
+        if (state["$ledger"] is not null)
+        {
+            await foreach (var e in next(request, ct).ConfigureAwait(false)) yield return e;
+            yield break;
+        }
         var (agent, cfg) = scheduler.AgentOf(request.Model, request.SessionId);
         var reservation = ledger.Reserve(request, agent, cfg);
+        state["$ledger"] = reservation.Id;
         Usage? usage = null;
         var completed = false;
-        var rejected = false;
         var started = false;
+        var streamed = new StringBuilder();
         try
         {
             await using var iterator = next(request, ct).GetAsyncEnumerator(ct);
             while (true)
             {
-                bool more;
-                try { more = await iterator.MoveNextAsync().ConfigureAwait(false); }
-                catch (ModelException ex) when (ex.StatusCode is 400 or 401 or 403 or 404 or 429 || ex.ContextOverflow)
-                {
-                    rejected = !started && usage is null;
-                    throw;
-                }
+                // A failure propagates to the retry middleware (or the caller); the finally settles what the
+                // stream did not report.
+                bool more = await iterator.MoveNextAsync().ConfigureAwait(false);
                 if (!more) break;
                 var e = iterator.Current;
                 if (e is TextDelta or ThinkingDelta or ToolCallStarted or ToolCallArgsDelta or UsageUpdate) started = true;
+                if (e is TextDelta t) streamed.Append(t.Text);
+                else if (e is ThinkingDelta th) streamed.Append(th.Text);
+                else if (e is ToolCallArgsDelta a) streamed.Append(a.Delta);
                 if (e is UsageUpdate update) usage = update.Usage;
                 if (e is StreamCompleted done)
                 {
@@ -175,7 +210,19 @@ internal sealed class LedgerMiddleware(Ledger ledger, AgentScheduler scheduler) 
         }
         finally
         {
-            if (!completed) ledger.Settle(reservation, usage, false, rejected);
+            if (!completed)
+            {
+                if (usage is null && started)
+                    // The stream died before reporting usage: price what was sent and what had streamed, not the
+                    // reservation (a stop after a few seconds no longer charges the full output limit).
+                    usage = new Usage { InputTokens = Ledger.EstimateInput(request), OutputTokens = ModelMessages.EstimateTokens(streamed.ToString()) };
+                // !started: nothing arrived before the failure or stop — rejected, $0 (a 503/529 before the first
+                // byte, a connect failure, or a cancel that made it out the door).
+                ledger.Settle(reservation, usage, false, !started);
+            }
+            // The attempt is over: a retry re-runs the pipeline with the same request, and each attempt reserves
+            // and settles of its own.
+            state.Remove("$ledger");
         }
     }
 }

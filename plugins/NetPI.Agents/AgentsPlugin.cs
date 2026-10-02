@@ -61,6 +61,9 @@ public sealed class AgentsPlugin : INetPiPlugin
 
         context.Services.Register<IAgentScheduler>(scheduler);
         context.Services.Register<IModelMiddleware>(new LedgerMiddleware(usage, scheduler));
+        // The budget gate the model catalog requires for paid models: without the Agents plugin there is no metering,
+        // and a missing meter is why the gate fails closed rather than open.
+        context.Services.Register<IBudgetGate>(usage);
         context.Tools.Register(new AgentChoicesTool(scheduler, usage));
         context.Services.Register<IPromptSection>(new AgentsPromptSection());
 
