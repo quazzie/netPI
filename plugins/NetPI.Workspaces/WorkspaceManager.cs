@@ -24,7 +24,7 @@ public sealed class WorkspaceManager(
     /// Isolation is decided by what the worker can do, not by the setting alone: a worker whose tools cannot write shares
     /// the caller's workspace (a reader gains nothing from a worktree of its own, and a worktree per research subagent is
     /// real disk and real confusion), while a worker that gets a write tool gets its own checkout when
-    /// <see cref="WorkspaceProvisioner.IsolationEnabled"/> is on. <see cref="SpawnRequest.Isolated"/> asks for one
+    /// <see cref="WorkspaceProvisioner.IsolationEnabled"/> is on. <see cref="SpawnWorkspace.Isolated"/> asks for one
     /// regardless, and <c>isolated: false</c> on a reader keeps the old behavior.
     /// </para>
     /// </summary>

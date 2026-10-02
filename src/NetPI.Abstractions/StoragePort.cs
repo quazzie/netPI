@@ -232,7 +232,7 @@ public sealed class DataQuery
 public sealed record DataDoc(string Key, JsonObject Doc);
 
 /// <summary>
-/// A named set of JSON documents, each under a non-empty string key (ordinal, case-sensitive; compared by UTF-16 code unit, so keys outside the Basic Multilingual Plane may order differently between providers). What comes back is the caller's own copy.
+/// A named set of JSON documents, each under a non-empty string key (ordinal, case-sensitive; compared by UTF-16 code unit, so keys outside the Basic Multilingual Plane may order differently between providers). What comes back is the caller's own copy of the document, but a JSON node taken out of it is still a child of that document: `DeepClone` it before putting it into another one.
 /// Calls outside <see cref="IPluginData.Transaction{T}"/> are each atomic.
 /// </summary>
 public interface IDataCollection
