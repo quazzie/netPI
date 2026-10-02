@@ -4,9 +4,9 @@ using System.Text.Json.Nodes;
 namespace NetPI.Ideas;
 
 /// <summary>
-/// Where the ideas live: in the app's database, in the tables of the <c>netpi.ideas</c> plugin. The
-/// <c>ideas.fileName</c> setting survives as the name of the file the JSON versions used — the one a cutover reads, and
-/// the default name an export is written under — and no longer as a live file. A session's calls default to the ideas of
+/// Where the ideas live: the plugin's own collections in the store (the <c>netpi.ideas</c> scope). The
+/// <c>ideas.fileName</c> setting survives as the name of the file the JSON versions used — reported by ideas.list and
+/// ideas.changed for older UIs — and no longer as a live file. A session's calls default to the ideas of
 /// its project (the ideas with a matching <c>project</c>), and the agent's <c>project</c> argument reaches any project
 /// or the unbound ("global") ones.
 /// </summary>
@@ -24,10 +24,7 @@ public sealed class IdeasLocator(Func<ISessionStore?> sessions, NetPiPaths paths
     /// <summary>Where that legacy file is, or would be. The backlog is not written there any more.</summary>
     public string LegacyFile() => Path.GetFullPath(Path.Combine(paths.Home, FileName()));
 
-    /// <summary>The default name an export gets (the same one, so a round trip is obvious).</summary>
-    public string DefaultExportName() => Path.GetFileNameWithoutExtension(FileName()) + "-export.json";
-
-    /// <summary>The home the backlog's tables live in (the app's database is here).</summary>
+    /// <summary>The home the backlog's collections live in.</summary>
     public string Home => paths.Home;
 
     /// <summary>The project a session's calls default to (a new idea's stamp, a list's slice); null when the session has no project. Unknown sessions are an error.</summary>
