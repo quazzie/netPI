@@ -75,7 +75,7 @@ public sealed class IdeasPlugin : INetPiPlugin
         try
         {
             // A database written by a newer NetPI: refuse rather than read a shape this build would mangle on a write.
-            repo = IdeasRepository.Open(context.Db, context.Logger, context.Paths.DatabaseFile);
+            repo = IdeasRepository.Open(context.Db, context.Logger, context.Paths.DatabaseFile, context.Paths.Home);
         }
         catch (IdeasStorageVersionException ex)
         {

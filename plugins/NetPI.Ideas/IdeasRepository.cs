@@ -168,6 +168,7 @@ public sealed class IdeasRepository
     private readonly IDatabase _db;
     private readonly ILogger? _log;
     private readonly string _databaseName;
+    private readonly string? _home;
 
     /// <summary>
     /// Announced after a write has committed (never before, and never for one that rolled back), so every window
@@ -178,21 +179,22 @@ public sealed class IdeasRepository
 
     private void Announce(string reason) => OnChanged?.Invoke(reason);
 
-    private IdeasRepository(IDatabase db, ILogger? log, string databaseName)
+    private IdeasRepository(IDatabase db, ILogger? log, string databaseName, string? home)
     {
         _db = db;
         _log = log;
         _databaseName = databaseName;
+        _home = home;
     }
 
     /// <summary>
     /// Open the backlog: create the tables, and refuse a database written by a newer build. Called once per plugin
     /// start, so two instances of this plugin (a reload swap) share one set of tables instead of two backends.
     /// </summary>
-    public static IdeasRepository Open(IDatabase db, ILogger? log = null, string? databaseFile = null)
+    public static IdeasRepository Open(IDatabase db, ILogger? log = null, string? databaseFile = null, string? home = null)
     {
         ArgumentNullException.ThrowIfNull(db);
-        var repository = new IdeasRepository(db, log, Path.GetFileName(databaseFile ?? "netpi.db"));
+        var repository = new IdeasRepository(db, log, Path.GetFileName(databaseFile ?? "netpi.db"), home);
         var version = repository.ScopeVersion();
         if (version > SchemaVersion)
             throw new IdeasStorageVersionException(
@@ -255,7 +257,12 @@ public sealed class IdeasRepository
     /// <summary>One idea as it is stored, or null — for a caller that does not care about the revision.</summary>
     public JsonObject? Idea(string? id) => Find(id)?.Doc;
 
-    /// <summary>Store a new idea at the end of the backlog (or the top of it) and return it with its revision.</summary>
+    /// <summary>
+    /// Store a new idea at the end of the backlog (or the top of it) and return it with its revision. An idea comes
+    /// in here as a whole document — the cutover and <c>ideas.import</b> bring in files this host did not write — so
+    /// its images are sanitized here, where the home is known, and a stored reference can never name a file outside
+    /// the images directory (idea-w6v48t).
+    /// </summary>
     public (JsonObject Doc, long Revision) Add(JsonObject idea, bool prepend = false)
     {
         var added = _db.Transaction(_ =>
@@ -264,6 +271,7 @@ public sealed class IdeasRepository
             var id = IdeaOps.Str(doc["id"]);
             if (string.IsNullOrWhiteSpace(id)) throw new IdeaInputException("An idea needs an id.");
             if (Find(id) is not null) throw new IdeasConflictException($"Idea {id} is already in the backlog.");
+            if (doc["images"] is { } images) doc["images"] = IdeaImages.Sanitize(_home, images);
             var ord = prepend
                 ? _db.Scalar<long?>("SELECT MIN(ord) - 1 FROM ideas_items") ?? 0
                 : _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_items") ?? 0;
@@ -299,7 +307,7 @@ public sealed class IdeasRepository
                     $"Idea {storedId} changed since {stamp} (it is now {IdeaOps.Str(current.Doc["updatedAt"]) ?? "untouched"}). Reload it and apply your change again.");
 
             var next = (JsonObject)current.Doc.DeepClone();
-            var changes = IdeaOps.ApplyPatch(next, patch, fromUi, sessionId);
+            var changes = IdeaOps.ApplyPatch(next, patch, fromUi, sessionId, _home);
             if (changes.Count == 0) return (current.Doc, current.Revision, changes); // nothing changed: no write, no revision
             var revision = current.Revision + 1;
             Save_(storedId, next, revision);
@@ -429,7 +437,7 @@ public sealed class IdeasRepository
     {
         if (Find(id) is not { } found) throw new RpcException("not_found", $"No idea {id}.");
         var next = (JsonObject)found.Doc.DeepClone();
-        IdeaOps.ApplyPatch(next, new JsonObject { ["status"] = "done" }, fromUi: true);
+        IdeaOps.ApplyPatch(next, new JsonObject { ["status"] = "done" }, fromUi: true, null, _home);
         var revision = found.Revision + 1;
         Save_(IdeaOps.Str(found.Doc["id"])!, next, revision);
         return (WithRevision(next, revision), revision);
