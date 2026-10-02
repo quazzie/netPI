@@ -132,7 +132,7 @@ turned off; models without effort levels only get on/off. Free models are limite
 | `agent.parallelReadOnlyTools` | `true` | run several read-only calls of one turn concurrently |
 | `agents.maxDepth` | `3` | subagent nesting depth (deeper agents get no orchestration tools) |
 | `agents.queueMax` | `20` | the longest an agent's queue of waiting runs grows: beyond it a new run is refused with a clear error instead of waiting (0: no waiting at all) |
-| `agents.queueTimeoutSeconds` | `600` | a run that has waited this long for a free slot fails with a clear error instead of waiting forever (0: no time limit) |
+| `agents.queueTimeoutSeconds` | `0` | a run that has waited this long for a free slot fails with a clear error (0, the default: no time limit, a waiting run stays queued until a slot is free) |
 
 ## Profiles
 
@@ -192,9 +192,9 @@ where a chat runs, the profile who it is.
   changing an agent's model keeps its active calls counted against their original model until they finish.
 - **A chat without an agent** takes an agent on its model (a free one first) and keeps it; with no agent on its model it
   stops with a notice. New chats start on the agent chosen last.
-- **Waiting:** a run whose agent is full waits in the agent's queue, which is capped and timed (`agents.queueMax`,
-  `agents.queueTimeoutSeconds`): a burst past the cap is refused at once, and a run that waits longer than the cap
-  fails with a clear error — neither parks forever. Eligible queued calls across pools are admitted by priority,
+- **Waiting:** a run whose agent is full waits in the agent's queue, which is capped (`agents.queueMax`) and can be
+  timed (`agents.queueTimeoutSeconds`, off by default): a burst past the cap is refused at once, and a run waits
+  as long as it takes unless a time limit is set, after which it fails with a clear error. Eligible queued calls across pools are admitted by priority,
   then arrival order; a pool at its own instance limit does not hold up another eligible pool. A parent resuming
   after a wait retains its higher priority. FIFO applies within a priority class; active calls are not preempted.
 - **With no agents at all** (a settings file without any) every model call gets a slot per model:

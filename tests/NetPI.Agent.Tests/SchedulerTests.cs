@@ -17,6 +17,7 @@ public static class SchedulerTests
         t.Add("agents: more instances wake waiters; instances follow the catalog", CapacityIncrease);
         t.Add("scheduler: agents.changed is debounced, and only sent on changes", Debounce);
         t.Add("scheduler: the wait queue has a cap and a longest wait (agents.queueMax/queueTimeoutSeconds)", QueueCapAndTimeout);
+        t.Add("scheduler: by default a waiting run stays queued (no queue timeout)", QueueHasNoTimeoutByDefault);
         t.Add("scheduler: stop fails waiters; runs survive a reload of the agents plugin", ReloadDuringWait);
         t.Add("scheduler: budget exceeded + usage.summary", Budget);
         t.Add("scheduler: runs without the agents plugin", NoAgentsPlugin);
@@ -405,6 +406,22 @@ public static class SchedulerTests
         Check.True(s.Snapshot().Single(p => p.Key == "solo").Waiters.Count == 0, "the timed-out waiter is gone");
         a2.Dispose();
         Check.Equal(0, s.Snapshot().Sum(p => p.Busy + p.Queued));
+    }
+
+    private static async Task QueueHasNoTimeoutByDefault()
+    {
+        await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.solo", J("""{ "model": "fake/solo" }""")),
+            plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
+        var a = await s.AcquireAsync(Req("solo", "A"), CancellationToken.None);
+        var w = s.AcquireAsync(Req("solo", "W"), CancellationToken.None).AsTask();
+        await Task.Delay(3000); // longer than any timeout a test would set (the explicit one above is 2 s)
+        Check.False(w.IsCompleted, "a waiter is not failed just for waiting");
+        Check.Equal(1, s.Snapshot().Single(p => p.Key == "solo").Queued, "it is still in line");
+        a.Dispose();
+        var got = await w.WaitAsync(TimeSpan.FromSeconds(3));
+        Check.Equal("W", got.AgentId);
+        got.Dispose();
     }
 
     private static async Task ReloadDuringWait()

@@ -547,8 +547,8 @@ internal sealed class AgentScheduler : IAgentScheduler
     /// <summary>How long a pool's wait queue may grow (<c>agents.queueMax</c>): beyond it a new run is refused, not parked.</summary>
     private int QueueMax() => Math.Max(0, Setting("agents.queueMax", 20));
 
-    /// <summary>The longest a waiter may wait for a slot (<c>agents.queueTimeoutSeconds</c>): after it, the run fails.</summary>
-    private int QueueTimeoutSeconds() => Math.Max(0, Setting("agents.queueTimeoutSeconds", 600));
+    /// <summary>The longest a waiter may wait for a slot (<c>agents.queueTimeoutSeconds</c>): after it, the run fails. 0, the default: a waiter stays queued.</summary>
+    private int QueueTimeoutSeconds() => Math.Max(0, Setting("agents.queueTimeoutSeconds", 0));
 
     private static string QueueFull(Pool pool, int maxWaiters) => maxWaiters <= 0
         ? $"The agent \"{pool.Key}\" takes no waiting runs (agents.queueMax is 0): run it when a slot is free, or use another agent."

@@ -41,8 +41,8 @@ public sealed class AgentsPlugin : INetPiPlugin
             [
                 SettingInfo.Int("agents.queueMax", "Waiting runs per agent", 20,
                     "The longest an agent's queue of waiting runs grows: beyond it a new run is refused with a clear error instead of waiting forever. 0: no waiting at all."),
-                SettingInfo.Int("agents.queueTimeoutSeconds", "Longest wait for a free slot", 600,
-                    "A run that has waited this long for a slot fails with a clear error instead of waiting forever. 0: no time limit.", 0, null, "s"),
+                SettingInfo.Int("agents.queueTimeoutSeconds", "Longest wait for a free slot", 0,
+                    "A run that has waited this long for a slot fails with a clear error. 0 (the default): no time limit, a waiting run stays queued until a slot is free.", 0, null, "s"),
             ],
         });
         // the agents themselves (agents.<id>) have their own editor in the settings (Agents & budget)
