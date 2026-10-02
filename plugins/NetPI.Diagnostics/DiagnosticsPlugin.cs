@@ -61,7 +61,8 @@ public sealed class DiagnosticsPlugin : INetPiPlugin
         context.Rpc.RegisterReadOnly("diag.failures", (req, _) => Task.FromResult<object?>(inspect.Failures(req)),
             "Failed requests the providers saved (logs/failed-requests), newest first: { limit? (20) } → { name, time, bytes, provider, model, sessionId, transport, requestId, responseId, error }[]");
         context.Rpc.RegisterReadOnly("diag.failure", (req, _) => Task.FromResult<object?>(inspect.Failure(req)),
-            "One saved failed request with its body: { name, maxChars? (200000) } → { name, bytes, truncated, content }");
+            "One saved failed request with its body: { name, offset?, limit? (or maxChars, default 200000), summary? } → { name, bytes, offset, returned, truncated, nextOffset?, content, shape? }" +
+            " — offset/limit page through a body too large to hand over whole; summary adds its shape (the ordered input[]/messages[] kinds, no payload)");
         context.Rpc.RegisterReadOnly("diag.toolsets", async (req, rpcCt) => await inspect.ToolSetsAsync(req.Required("sessionId"), rpcCt).ConfigureAwait(false),
             "A session's tools now and every change with its cause (the context plugin's context.toolsets): { sessionId } → { sessionId, tools, baseline, changes: [{ seq, time, added, removed, cause, plugins }], reloads }");
 

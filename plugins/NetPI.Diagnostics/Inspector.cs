@@ -641,7 +641,12 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         return list;
     }
 
-    /// <summary>One saved failed request with its request body (cut at <c>maxChars</c>).</summary>
+    /// <summary>
+    /// One saved failed request with its request body. A call with no <c>offset</c> gets the first <c>maxChars</c>
+    /// characters, as it always did; <c>offset</c>/<c>limit</c> page through a body too large to hand over whole
+    /// (an OpenAI-compatible one with a long system prompt, tools and history is routinely 300 KB – 2 MB, and the
+    /// evidence is often in the middle), and <c>summary</c> answers with the body's shape instead of its text.
+    /// </summary>
     public JsonObject Failure(RpcRequest r)
     {
         var name = r.Required("name");
@@ -649,13 +654,68 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
             throw new RpcException("bad_request", "'name' is a file name from diag.failures");
         var file = new FileInfo(Path.Combine(ctx.Paths.LogsDir, "failed-requests", name));
         if (!file.Exists) throw new RpcException("not_found", $"No saved request {name}");
-        var max = Math.Clamp(r.Int("maxChars") ?? 200_000, 1000, 5_000_000);
         var text = File.ReadAllText(file.FullName);
-        return new JsonObject
+        var offset = r.Int("offset");
+        var limit = r.Int("limit") ?? r.Int("maxChars");
+        var summary = r.Bool("summary") == true;
+        // summary stands in for the text: a caller that wants the shape does not also want 200 000 characters of it.
+        var wanted = summary && offset is null && limit is null ? 0 : Math.Clamp(limit ?? 200_000, 1000, 5_000_000);
+        var from = Math.Clamp(offset ?? 0, 0, text.Length);
+        var returned = Math.Min(wanted, text.Length - from);
+        int? next = from + returned < text.Length ? from + returned : null;
+        var result = new JsonObject
         {
-            ["name"] = name, ["bytes"] = file.Length, ["truncated"] = text.Length > max,
-            ["content"] = text.Length > max ? text[..max] : text,
+            ["name"] = name, ["bytes"] = file.Length, ["offset"] = from, ["returned"] = returned,
+            ["truncated"] = next is not null,
+            ["content"] = text.Substring(from, returned),
         };
+        if (next is { } more) result["nextOffset"] = more;
+        if (summary) result["shape"] = Shape(text);
+        return result;
+    }
+
+    /// <summary>
+    /// The ordered shape of a saved request: what the input is made of, by index and with a count per kind, and no
+    /// payload. A complaint like "item 176 cannot follow assistant message content" is answerable from this, and the
+    /// interleaving that caused it is visible at a glance.
+    /// </summary>
+    public static JsonNode Shape(string dump)
+    {
+        if (JsonNode.Parse(dump) is not JsonObject doc) return new JsonObject { ["note"] = "not a JSON object" };
+        var o = new JsonObject { ["url"] = doc["url"]?.DeepClone(), ["transport"] = doc["transport"]?.DeepClone() };
+        var error = doc["error"] as JsonObject;
+        if (error is not null) o["error"] = error.DeepClone();
+        var request = doc["request"] as JsonObject;
+        if (request?["input"] is JsonArray items) o["input"] = Items(items);
+        else if (request?["messages"] is JsonArray messages) o["messages"] = Items(messages, role: true);
+        return o;
+    }
+
+    /// <summary>One entry per item (index + kind, the role for a chat turn) plus a count per kind.</summary>
+    private static JsonObject Items(JsonArray items, bool role = false)
+    {
+        var list = new JsonArray();
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < items.Count; i++)
+        {
+            var item = items[i] as JsonObject;
+            // A Responses item is typed; a chat turn is a role, and a plain user message on the Responses side is neither.
+            var kind = role
+                ? Recorder.Str(item, "role") ?? Recorder.Str(item, "type") ?? "?"
+                : Recorder.Str(item, "type") ?? Recorder.Str(item, "role") ?? "?";
+            counts[kind] = counts.GetValueOrDefault(kind) + 1;
+            var entry = new JsonObject { ["i"] = i, [role ? "role" : "type"] = kind };
+            // What the item carried, still without its payload: an order bug is about the kinds and their position.
+            if (item?["name"] is { } name) entry["name"] = name.GetValue<string>();
+            if (item?["call_id"] is { } call) entry["callId"] = call.GetValue<string>();
+            if (item?["content"] is JsonArray content)
+                entry["content"] = new JsonArray([.. content.OfType<JsonObject>()
+                    .Select(c => (JsonNode?)new JsonObject { ["type"] = Recorder.Str(c, "type") ?? "?" })]);
+            list.Add(entry);
+        }
+        var o = new JsonObject { ["count"] = items.Count, ["kinds"] = new JsonArray([.. counts.OrderBy(k => k.Key)
+            .Select(k => (JsonNode?)new JsonObject { ["type"] = k.Key, ["count"] = k.Value })]), ["items"] = list };
+        return o;
     }
 
     // ---------------------------------------------------------------- helpers

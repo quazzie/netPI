@@ -14,6 +14,7 @@ public static class InspectTests
         r.Add("inspect: the journal leaves out per-token events and sums up messages; tool calls from tool.start/end", JournalAndTools);
         r.Add("inspect: problems (failed plugin, a broken settings file, waiters on an inactive agent, a long wait, errors in the log)", Problems);
         r.Add("inspect: settings without secrets, saved failed requests, the overview lists the diag methods", SettingsFailuresOverview);
+        r.Add("inspect: a saved failed request can be sliced and summarised; no body is out of reach", FailureSlice);
         r.Add("inspect: a secret hiding in a value is masked too — a token in a baseUrl, a header no name pattern knows", SecretsInValues);
         r.Add("inspect: the tool scans are paged and bounded — one page for a recent call id, and the old window reported", BoundedScans);
         r.Add("inspect: every diag action is cut at the same limit, and a cut answer leaves no details behind", ActionsAreCapped);
@@ -82,6 +83,94 @@ public static class InspectTests
         Check.Equal("ses_caller", journal!.Str("sessionId"), "without a type it is this chat's timeline");
         await Call(tool, """{ "action": "journal", "type": "session.changed", "sessionId": "ses_other" }""");
         Check.Equal("ses_other", journal!.Str("sessionId"), "and a named session still wins");
+    }
+
+    // A saved failed request is routinely 300 KB – 2 MB, and the evidence is often in the middle: the only way to
+    // reach it was to open the file under ~/.netpi by hand, with paths and JSON parsing the agent should not need
+    // (idea-rkgzk5). A slice pages through any body; a summary answers an order complaint from one small result.
+    private static async Task FailureSlice()
+    {
+        var ctx = await StartAsync();
+        var dir = Path.Combine(ctx.Paths.LogsDir, "failed-requests");
+        Directory.CreateDirectory(dir);
+        const string name = "20261002-144909-881-qwen.json";
+        // 180 input items: the gateway complained about item 176, far past the 200 000 characters the call returns.
+        var input = new JsonArray();
+        for (var i = 0; i < 180; i++)
+            input.Add(i switch
+            {
+                176 => new JsonObject { ["type"] = "reasoning", ["summary"] = new JsonArray(), ["id"] = $"rs_{i}", ["content"] = new string('r', 3000) },
+                _ when i % 7 == 0 => new JsonObject { ["type"] = "function_call", ["call_id"] = $"c{i}", ["name"] = "read", ["arguments"] = "{}" },
+                _ when i % 5 == 0 => new JsonObject { ["type"] = "function_call_output", ["call_id"] = $"c{i}", ["output"] = new string('o', 3000) },
+                _ when i % 3 == 0 => new JsonObject { ["type"] = "message", ["role"] = "assistant", ["content"] = new JsonArray(new JsonObject { ["type"] = "output_text", ["text"] = "ok" }) },
+                _ => new JsonObject { ["role"] = "user", ["content"] = new JsonArray(new JsonObject { ["type"] = "input_text", ["text"] = new string('u', 3000) }) },
+            });
+        var dump = new JsonObject
+        {
+            ["time"] = "2026-10-02T14:49:09+02:00", ["provider"] = "aiproxy", ["model"] = "qwen3.8-27b",
+            ["transport"] = "responses", ["requestId"] = "req_x",
+            ["error"] = new JsonObject { ["message"] = "input Item 176 reasoning cannot follow assistant message content", ["status"] = 400 },
+            ["request"] = new JsonObject { ["model"] = "qwen3.8-27b", ["input"] = input },
+        };
+        var text = dump.ToJsonString(NetPiJson.Indented);
+        File.WriteAllText(Path.Combine(dir, name), text);
+        Check.True(text.Length > 200_000, $"the body is past what one call returns ({text.Length} chars)");
+
+        // Without an offset nothing changes: the first maxChars, and a nextOffset to go on from.
+        var head = (JsonObject)(await ctx.RpcFake.Call("diag.failure", new JsonObject { ["name"] = name }))!;
+        Check.Equal(text[..head["returned"]!.GetValue<int>()], head["content"].Str(), "the head is the start of the file");
+        Check.True(head["truncated"]!.GetValue<bool>() && head["nextOffset"] is not null, "and says there is more");
+
+        // A slice is the same window of the file, wherever it sits.
+        var offset = text.Length / 2;
+        var slice = (JsonObject)(await ctx.RpcFake.Call("diag.failure", new JsonObject { ["name"] = name, ["offset"] = offset, ["limit"] = 5000 }))!;
+        Check.Equal(text.Substring(offset, 5000), slice["content"].Str(), "the slice is that window of the file");
+        Check.Equal(offset, slice["offset"]!.GetValue<int>(), "the offset it started at");
+        Check.Equal(offset + 5000, slice["nextOffset"]!.GetValue<int>(), "and where the next one starts");
+
+        // The tail is reachable too.
+        var past = (JsonObject)(await ctx.RpcFake.Call("diag.failure", new JsonObject { ["name"] = name, ["offset"] = text.Length + 10 }))!;
+        Check.Equal("", past["content"].Str(), "an offset past the end returns nothing");
+        Check.False(past.ContainsKey("nextOffset"), "and no next: there is nothing left");
+
+        // The shape answers the gateway's complaint from one small result: index, kind, counts — no payload.
+        var summary = (JsonObject)(await ctx.RpcFake.Call("diag.failure", new JsonObject { ["name"] = name, ["summary"] = true }))!;
+        var shape = summary["shape"]!;
+        Check.Equal(400, shape["error"]!["status"]!.GetValue<int>(), "the error it was saved for");
+        var items = (JsonArray)shape["input"]!["items"]!;
+        Check.Equal(180, items.Count, "one entry per input item");
+        Check.Equal("reasoning", items[176]!["type"].Str(), "item 176, the one the gateway named");
+        Check.Equal(176, items[176]!["i"]!.GetValue<int>(), "with its index");
+        var shapeJson = shape["input"]!["items"]!.ToJsonString();
+        Check.True(shapeJson.Length < 20_000 && !shapeJson.Contains(new string('u', 50)) && !shapeJson.Contains(new string('o', 50)),
+            $"the kinds, not the payload ({shapeJson.Length} chars)");
+        var kinds = ((JsonArray)shape["input"]!["kinds"]!).ToDictionary(k => k!["type"]!.Str()!, k => (int)k["count"]!);
+        Check.Equal(1, kinds["reasoning"], "one reasoning item");
+        Check.Equal(180, kinds.Values.Sum(), "the counts add up to the item count");
+
+        // A chat body is a list of roles.
+        File.WriteAllText(Path.Combine(dir, "chat.json"), new JsonObject
+        {
+            ["transport"] = "chat", ["request"] = new JsonObject { ["messages"] = new JsonArray(
+                new JsonObject { ["role"] = "system", ["content"] = "You are NetPI." },
+                new JsonObject { ["role"] = "user", ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "hi" }) }) },
+        }.ToJsonString());
+        var chat = ((JsonObject)(await ctx.RpcFake.Call("diag.failure", new JsonObject { ["name"] = "chat.json", ["summary"] = true }))!)["shape"]!;
+        Check.Equal("system,user", string.Join(",", ((JsonArray)chat["messages"]!["items"]!).Select(i => i!["role"]!.Str())), "the roles in order");
+
+        // and the tool passes them on: the slice is the point, so the model has to be able to ask for one.
+        var tool = ctx.ToolsFake.Tools.OfType<DiagTool>().Single();
+        var properties = tool.Definition.Parameters["properties"]!.AsObject();
+        Check.True(properties.ContainsKey("offset") && properties.ContainsKey("summary"), "the diag tool offers the slice");
+        Check.Contains(tool.Definition.Help!, "offset", "and its manual says so");
+        var answer = await Call(tool, $$"""{ "action": "failure", "name": "{{name}}", "summary": true }""");
+        Check.False(answer.IsError, answer.Content);
+        var through = JsonNode.Parse(answer.Content)!;
+        Check.Equal(0, through["returned"]!.GetValue<int>(), "summary answers with the shape instead of the body");
+        Check.True(through["shape"]!["input"] is not null, "and the shape is there");
+        var sliced = await Call(tool, $$"""{ "action": "failure", "name": "{{name}}", "offset": 1000, "limit": 4000 }""");
+        var cut = JsonNode.Parse(sliced.Content)!["content"]!.Str()!;
+        Check.Equal(text.Substring(1000, cut.Length), cut, "the tool forwarded offset to the method");
     }
 
     // Redaction keyed on the setting path and the property name, so a credential carried by the *value* came through
