@@ -398,19 +398,14 @@ internal sealed class SettingsStore : ISettings, IDisposable
     }
 }
 
-/// <summary>The settings document written on first run: nothing about one machine (no default model, no agents; they are set up in the app).</summary>
+/// <summary>
+/// The settings document written on first run: the core's own keys only. Nothing about one machine (no default model, no
+/// agents; they are set up in the app) and nothing a plugin owns: each plugin declares its defaults in its settings schema.
+/// </summary>
 internal static class DefaultSettings
 {
     public static JsonObject Create() => new()
     {
-        ["providers"] = new JsonObject
-        {
-            ["aiproxy"] = new JsonObject { ["baseUrl"] = "http://127.0.0.1:8090", ["transport"] = "responses" },
-            ["anthropic"] = new JsonObject { ["apiKey"] = "" },
-        },
-        ["compaction"] = new JsonObject { ["enabled"] = true },
-        ["nudge"] = new JsonObject { ["enabled"] = true },
-        ["retry"] = new JsonObject { ["maxAttempts"] = 6 },
         ["tools"] = new JsonObject { ["disabled"] = new JsonArray() },
         ["plugins"] = new JsonObject { ["disabled"] = new JsonArray(), ["dirs"] = new JsonArray(), ["quiet"] = false },
         ["server"] = new JsonObject { ["port"] = 7431, ["devOrigins"] = new JsonArray() },
