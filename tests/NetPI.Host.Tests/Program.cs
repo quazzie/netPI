@@ -7,6 +7,7 @@ McpLifecycleTests.Register(runner);
 SqliteTests.Register(runner);
 SettingsTests.Register(runner);
 EventBusTests.Register(runner);
+LogSinkTests.Register(runner);
 RegistryTests.Register(runner);
 SessionStoreTests.Register(runner);
 WorkspaceStoreTests.Register(runner);
