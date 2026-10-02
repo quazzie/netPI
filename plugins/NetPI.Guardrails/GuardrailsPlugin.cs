@@ -208,9 +208,10 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
                 });
                 return null;
             }
-            // An ask rule on a shell command: a decision model may clear a confidently read-only one (SecondOpinion).
+            // An ask rule on a shell command: a decision model may clear a confidently read-only one (SecondOpinion). A path
+            // verdict on anything but a local shell is about where the call writes (an ssh download), not the command text.
             Opinion? opinion = null;
-            if (RuleSet.CommandOf(call.Name, args) is { Length: > 0 } command)
+            if ((verdict.Kind != "path" || RuleSet.LocalShellTools.Contains(call.Name)) && RuleSet.CommandOf(call.Name, args) is { Length: > 0 } command)
             {
                 opinion = await secondOpinion.AskAsync(call.Name, command, run.Cwd, RuleSet.HostOf(args), ct, run).ConfigureAwait(false);
                 if (opinion is { Harmless: true })

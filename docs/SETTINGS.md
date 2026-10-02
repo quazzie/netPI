@@ -327,8 +327,8 @@ checks catch the plain cases (a command built at run time gets through): they ar
 | key | default | |
 |---|---|---|
 | `guardrails.enabled` | `true` | check tool calls against the rules below |
-| `guardrails.commands` | catastrophic commands (below) | regular expressions, tried on each part of a `bash`, `pwsh` or `ssh` `run` command (split at new lines, `;`, `&&`, `\|\|`, `\|`, `&`), ignoring case |
-| `guardrails.paths` | `["ask: ~/.netpi", "~/.ssh"]` | files and folders the agent may not change: `write` and `edit` refuse them, and so do `bash` and `pwsh` commands that name them, in any spelling a shell uses (`~/.netpi`, `$HOME/.netpi`, `%USERPROFILE%\.netpi`, `$env:USERPROFILE\.netpi`, `C:\Users\me\.netpi`, `/c/Users/me/.netpi`); the `read` tool still reads them. `~` is your home |
+| `guardrails.commands` | catastrophic commands (below) | regular expressions, tried on each part of a `bash`, `pwsh` or `ssh` `run` command (split at new lines, `;`, `&&`, `\|\|`, `\|`, `&`, but not the `&` of a redirection such as `2>&1`; a backslash at the end of a line continues it), ignoring case. A part is tried as written and with what a shell ignores taken off (a trailing `# comment`, redirections, quotes, and wrappers: `sudo` and its options, `env`, `command`, `time`, `nohup`, `exec`, `if`, `then`, `do`), so `rm -rf / 2>/dev/null` and `sudo -n rm -rf "$HOME"` match like `rm -rf /`. A rule that takes longer than 250 ms on a part counts as matching it |
+| `guardrails.paths` | `["ask: ~/.netpi", "~/.ssh"]` | files and folders the agent may not change: `write` and `edit` refuse them, so does an `ssh` download (`copy`, direction `download`) whose destination is under one, and so do `bash` and `pwsh` commands that name them, in any spelling a shell uses (`~/.netpi`, `$HOME/.netpi`, `%USERPROFILE%\.netpi`, `$env:USERPROFILE\.netpi`, `C:\Users\me\.netpi`, `/c/Users/me/.netpi`); the `read` tool still reads them. `~` is your home |
 | `guardrails.secondOpinion` | `false` | before an `ask:` rule asks you about a `bash`, `pwsh` or `ssh` `run` command, a decision model reads it (`decide.ask`, the Decide plugin through AiGateway); one it finds harmless runs without asking (event `guard.cleared`), the rest ask as before with the model's view on the card. Blocking rules and `write`/`edit` are never relaxed; no answer (no Decide plugin, the model not loaded, 15 s) means you are asked. In a subagent a cleared call runs; one that is not cleared is blocked as before |
 | `guardrails.secondOpinionModel` | `qwen3.8-27b` | the decision model; `qwen3.8-27b` (about 0.3 s) was measured on 852 real commands (docs/DECISION-MODELS.md, "NInfer baselines" 0.4); `kev-9b` calls too many local commands remote |
 | `guardrails.secondOpinionThreshold` | `0.2` | a command runs without asking only when p(destructive), p(stops a process) and p(changes a remote) are each below it (0.01–0.5); p(read-only) is shown on the card but not required (the model underrates builds and test runs). At 0.3 a hub quit was cleared in the hand-labelled set, at 0.2 no risky command |
@@ -337,6 +337,12 @@ The default commands: `rm -r` of `/`, `/*`, `~` or `$HOME`; deleting a drive roo
 `C:\`, `/c`); `mkfs`; `dd … of=/dev/…` (not `/dev/null`); `format C:`; `shutdown`, `reboot`, `poweroff`, `halt`,
 `Stop-Computer`, `Restart-Computer`; a fork bomb. Each is anchored at the start of a command part, so `grep shutdown` or
 `echo 'rm -rf /'` pass.
+
+The guard judges the call that runs, not another one: tool names match ignoring case (`Bash` runs `bash`), and arguments are read as the
+tools read them: names ignoring case, `_`, `-` and spaces; the first name the tool tries wins (`bash`: `command`, `cmd`, `script`, `code`,
+`commands`, `input`; `ssh` run: `script`, `command`, `cmd`, `code`; `write`/`edit`: `path`, `file_path`, `file`, `filename`, `target`);
+an array is its lines; a string-encoded arguments object is unwrapped. The workspace guard reads its paths the same way, and also
+refuses an `ssh` download into another checkout of the repository.
 
 ## Web tools
 

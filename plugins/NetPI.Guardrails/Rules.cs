@@ -12,14 +12,21 @@ internal sealed record Verdict(GuardAction Action, string Rule, string Kind, str
 /// The rules of <c>guardrails.commands</c> and <c>guardrails.paths</c>, one per line: a line starting with <c>ask:</c>
 /// asks the user first, otherwise the rule blocks (<c>block:</c> may be written); <c>#</c> starts a comment line.
 /// <para>Commands (bash, pwsh, ssh run) are split into parts at new lines, <c>;</c>, <c>&amp;&amp;</c>, <c>||</c>,
-/// <c>|</c> and <c>&amp;</c>, and each regular expression is tried on each part, ignoring case.</para>
-/// <para>A path rule protects a file or folder: <c>write</c> and <c>edit</c> may not change it or anything in it, and a
-/// shell command (bash, pwsh) may not name it, in any of the spellings a shell takes (<c>~/.netpi</c>,
-/// <c>$HOME/.netpi</c>, <c>%USERPROFILE%\.netpi</c>, <c>C:\Users\me\.netpi</c>, <c>/c/Users/me/.netpi</c>…).</para>
+/// <c>|</c> and <c>&amp;</c> (not the <c>&amp;</c> of a redirection such as <c>2&gt;&amp;1</c>), and each regular
+/// expression is tried on each part, ignoring case. A part is tried as written and with the decoration a shell ignores
+/// taken off (see <see cref="Forms"/>), so a trailing comment, a redirection, quotes or <c>sudo</c> do not hide it.</para>
+/// <para>A path rule protects a file or folder: <c>write</c> and <c>edit</c> may not change it or anything in it, nor may
+/// an ssh download write into it, and a shell command (bash, pwsh) may not name it, in any of the spellings a shell takes
+/// (<c>~/.netpi</c>, <c>$HOME/.netpi</c>, <c>%USERPROFILE%\.netpi</c>, <c>C:\Users\me\.netpi</c>,
+/// <c>/c/Users/me/.netpi</c>…).</para>
+/// <para>The guard has to judge the call that runs, not another one: tool names are matched ignoring case (as the runner
+/// finds the tool) and every argument is read as the tool reads it — names ignoring case, <c>_</c>, <c>-</c> and spaces,
+/// the first name the tool tries wins, an array is its lines, a string-encoded arguments object is unwrapped.</para>
 /// </summary>
-internal sealed class RuleSet
+internal sealed partial class RuleSet
 {
-    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(50);
+    /// <summary>A rule that takes longer than this on one part counts as matching it (see <see cref="IsMatch"/>).</summary>
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly StringComparison PathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
     /// <summary>Catastrophic commands only: none of these has a place in normal development work.</summary>
@@ -38,9 +45,19 @@ internal sealed class RuleSet
     /// <summary>NetPI's own home asks first; SSH keys and config stay untouched.</summary>
     public static readonly IReadOnlyList<string> DefaultPaths = ["ask: ~/.netpi", "~/.ssh"];
 
-    public static readonly HashSet<string> CommandTools = new(StringComparer.Ordinal) { "bash", "pwsh", "ssh" };
-    public static readonly HashSet<string> LocalShellTools = new(StringComparer.Ordinal) { "bash", "pwsh" };
-    public static readonly HashSet<string> WriteTools = new(StringComparer.Ordinal) { "write", "edit" };
+    // Ignoring case: the runner finds a tool by its name ignoring case, so "Bash" runs bash.
+    public static readonly HashSet<string> CommandTools = new(StringComparer.OrdinalIgnoreCase) { "bash", "pwsh", "ssh" };
+    public static readonly HashSet<string> LocalShellTools = new(StringComparer.OrdinalIgnoreCase) { "bash", "pwsh" };
+    public static readonly HashSet<string> WriteTools = new(StringComparer.OrdinalIgnoreCase) { "write", "edit" };
+
+    // The names each tool reads its argument by, in the order it tries them (Tools.Shell ShellService, Tools.Ssh run,
+    // Tools.Files FileToolBase.PathNames, Tools.Ssh copy): the first one present wins, so the guard takes the same one.
+    private static readonly string[] ShellCommandNames = ["command", "cmd", "script", "code", "commands", "input"];
+    private static readonly string[] SshCommandNames = ["script", "command", "cmd", "code"];
+    private static readonly string[] WritePathNames = ["path", "file_path", "filePath", "file", "filename", "fileName", "target"];
+    private static readonly string[] SshDownloadTargetNames = ["to", "destination", "dest", "target"];
+
+    private static string[] CommandNames(string tool) => tool.Equals("ssh", StringComparison.OrdinalIgnoreCase) ? SshCommandNames : ShellCommandNames;
 
     private sealed record CommandRule(string Text, Regex Pattern, GuardAction Action);
     private sealed record PathRule(string Text, string Root, string[] Spellings, GuardAction Action);
@@ -107,22 +124,27 @@ internal sealed class RuleSet
             return false;
         }
 
-        if (CommandTools.Contains(tool) && Arg(args, "command", "script", "cmd") is { Length: > 0 } command)
+        if (CommandTools.Contains(tool) && Arg(args, CommandNames(tool)) is { Length: > 0 } command)
         {
             foreach (var part in Parts(command))
+            {
+                var forms = Forms(part);
                 foreach (var r in _commands)
-                    if (IsMatch(r.Pattern, part) && Note(new Verdict(r.Action, r.Text, "command", part)))
+                    if (forms.Any(f => IsMatch(r.Pattern, f)) && Note(new Verdict(r.Action, r.Text, "command", part)))
                         return new Verdict(r.Action, r.Text, "command", part);
+            }
             if (LocalShellTools.Contains(tool))
                 foreach (var r in _paths)
                     if (Names(command, r) && Note(new Verdict(r.Action, r.Text, "path", r.Root)))
                         return new Verdict(r.Action, r.Text, "path", r.Root);
         }
-        else if (WriteTools.Contains(tool) && Arg(args, "path", "filepath", "file", "filename", "target") is { Length: > 0 } path)
+
+        // Independent of the command above: an ssh call can carry a script and still be a download.
+        if (LocalWriteTarget(tool, args) is { Length: > 0 } path)
         {
             string full;
             try { full = resolve(path); }
-            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return null; }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return ask; }
             foreach (var r in _paths)
                 if (Under(full, r.Root) && Note(new Verdict(r.Action, r.Text, "path", full)))
                     return new Verdict(r.Action, r.Text, "path", full);
@@ -132,19 +154,78 @@ internal sealed class RuleSet
 
     /// <summary>The command a bash, pwsh or ssh (run) call runs (null for other tools or without one).</summary>
     internal static string? CommandOf(string tool, JsonElement args) =>
-        CommandTools.Contains(tool) ? Arg(args, "command", "script", "cmd") : null;
+        CommandTools.Contains(tool) ? Arg(args, CommandNames(tool)) : null;
 
     /// <summary>The host an ssh call runs on, when it names one.</summary>
-    internal static string? HostOf(JsonElement args) => Arg(args, "host", "target", "server");
+    internal static string? HostOf(JsonElement args) => Arg(args, "host", "server", "alias");
 
-    /// <summary>The parts of a command line, split where a shell starts another command (quotes are not understood).</summary>
+    /// <summary>The local path a call writes: the file of write and edit, the destination of an ssh download (scp writes it).</summary>
+    internal static string? LocalWriteTarget(string tool, JsonElement args)
+    {
+        if (WriteTools.Contains(tool)) return Arg(args, WritePathNames);
+        return IsSshDownload(tool, args) ? Arg(args, SshDownloadTargetNames)?.Trim() : null;
+    }
+
+    /// <summary>
+    /// Whether an ssh call is a download, routed as the ssh tool routes it: the action is <c>copy</c> (or scp, upload,
+    /// download), and the direction is the <c>direction</c> argument, or the action itself when that says upload/download.
+    /// </summary>
+    internal static bool IsSshDownload(string tool, JsonElement args)
+    {
+        if (!tool.Equals("ssh", StringComparison.OrdinalIgnoreCase)) return false;
+        var action = Arg(args, "action", "verb", "command")?.Trim().ToLowerInvariant();
+        if (action is null && Arg(args, "script") is not null) action = "run";
+        if (action is not ("copy" or "scp" or "upload" or "download")) return false;
+        var direction = Arg(args, "direction", "mode")?.Trim().ToLowerInvariant();
+        if (direction is null && Arg(args, "action")?.Trim().ToLowerInvariant() is "upload" or "download")
+            direction = Arg(args, "action")!.Trim().ToLowerInvariant();
+        return direction == "download";
+    }
+
+    /// <summary>
+    /// The parts of a command line, split where a shell starts another command (quotes are not understood). A backslash at
+    /// the end of a line continues it, and the <c>&amp;</c> of a redirection (<c>2&gt;&amp;1</c>, <c>&amp;&gt;file</c>) is not a separator.
+    /// </summary>
     internal static IEnumerable<string> Parts(string command) =>
-        Regex.Split(command, @"\r?\n|&&|\|\||[;|&]").Select(p => p.Trim()).Where(p => p.Length > 0);
+        Regex.Split(LineContinuation().Replace(command, " "), @"\r?\n|&&|\|\||;|\||(?<![<>])&(?!>)").Select(p => p.Trim()).Where(p => p.Length > 0);
 
+    /// <summary>
+    /// The ways to read a part: as written, and with what a shell ignores taken off — a trailing comment, redirections,
+    /// quotes, and wrappers such as <c>sudo -n</c>, <c>env</c>, <c>command</c>, <c>time</c>, <c>then</c> and <c>do</c>. A rule that
+    /// matches any form applies. The extra form only widens what is caught: it can never hide the part as written.
+    /// </summary>
+    internal static IReadOnlyList<string> Forms(string part)
+    {
+        try
+        {
+            var s = TrailingComment().Replace(part, "");
+            s = Redirection().Replace(s, "");
+            s = s.Replace("\"", "").Replace("'", "").Trim();
+            s = Wrapper().Replace(s, "").Trim();
+            return s.Length == 0 || s == part ? [part] : [part, s];
+        }
+        catch (RegexMatchTimeoutException) { return [part]; }   // the helper patterns are linear; the part as written is still checked
+    }
+
+    [GeneratedRegex(@"\\\r?\n", RegexOptions.CultureInvariant, 250)]
+    private static partial Regex LineContinuation();
+
+    // One whitespace character before the marker, not a run: each start position is O(1), so a long run of spaces cannot make it quadratic.
+    [GeneratedRegex(@"\s#[^\r\n]*$", RegexOptions.CultureInvariant, 250)]
+    private static partial Regex TrailingComment();
+
+    [GeneratedRegex(@"\s(?:\d*|&)(?:>>?|<)\s*&?\S*", RegexOptions.CultureInvariant, 250)]
+    private static partial Regex Redirection();
+
+    [GeneratedRegex(@"^(?:(?:sudo(?:\s+(?:-[ugCDhpRrT]\s+\S+|-\S+))*|command|env(?:\s+(?:-\S+|\w+=\S*))*|time|nohup|exec|if|elif|while|until|then|do|else|!)\s+)+",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, 250)]
+    private static partial Regex Wrapper();
+
+    /// <summary>A rule that times out on a part counts as matching it: not knowing is not a pass.</summary>
     private static bool IsMatch(Regex r, string s)
     {
         try { return r.IsMatch(s); }
-        catch (RegexMatchTimeoutException) { return false; }
+        catch (RegexMatchTimeoutException) { return true; }
     }
 
     private static bool Under(string full, string root) =>
@@ -202,24 +283,49 @@ internal sealed class RuleSet
         return [.. list.Distinct(StringComparer.OrdinalIgnoreCase)];
     }
 
-    /// <summary>A string argument by any of its names, ignoring case, '_' and '-' (as the tools read them).</summary>
+    /// <summary>
+    /// An argument as the tools read it (Tools.Shell and Tools.Files <c>ToolArgs.Str</c>): names match ignoring case,
+    /// <c>_</c>, <c>-</c> and spaces; the <em>first of <paramref name="names"/> that is present</em> wins — the order the tool
+    /// tries them, not the order the model wrote them; a string is itself, a number or boolean its JSON text, an array its
+    /// elements joined by new lines; a string-encoded arguments object is unwrapped once.
+    /// </summary>
     private static string? Arg(JsonElement args, params string[] names)
     {
-        if (args.ValueKind == JsonValueKind.String)
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(args.GetString() ?? "{}");
-                return Arg(doc.RootElement.Clone(), names);
-            }
-            catch (JsonException) { return null; }
-        }
+        args = Unwrap(args);
         if (args.ValueKind != JsonValueKind.Object) return null;
-        foreach (var p in args.EnumerateObject())
-        {
-            var key = p.Name.Replace("_", "").Replace("-", "").ToLowerInvariant();
-            if (names.Contains(key) && p.Value.ValueKind == JsonValueKind.String) return p.Value.GetString();
-        }
+        var props = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var p in args.EnumerateObject()) props.TryAdd(Key(p.Name), p.Value);   // the first spelling of a name, as the tools
+        foreach (var name in names)
+            if (props.TryGetValue(Key(name), out var value) && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
+                return Text(value);
         return null;
     }
+
+    /// <summary>Some models send the arguments object as a JSON string; the tools unwrap it, so the guard must see through it.</summary>
+    private static JsonElement Unwrap(JsonElement args)
+    {
+        if (args.ValueKind != JsonValueKind.String) return args;
+        try
+        {
+            using var doc = JsonDocument.Parse(args.GetString() ?? "{}");
+            return doc.RootElement.Clone();
+        }
+        catch (JsonException) { return args; }
+    }
+
+    private static string Key(string name)
+    {
+        Span<char> buf = stackalloc char[name.Length];
+        var n = 0;
+        foreach (var c in name)
+            if (c != '_' && c != '-' && c != ' ') buf[n++] = char.ToLowerInvariant(c);
+        return new string(buf[..n]);
+    }
+
+    private static string Text(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.String => value.GetString() ?? "",
+        JsonValueKind.Array => string.Join("\n", value.EnumerateArray().Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : e.GetRawText())),
+        _ => value.GetRawText(),
+    };
 }

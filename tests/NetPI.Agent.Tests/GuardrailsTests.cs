@@ -17,6 +17,120 @@ public static class GuardrailsTests
         t.Add("guardrails: the default rules block the catastrophic, not everyday work; spellings of a path", DefaultRules);
         t.Add("guardrails: second opinion: a confidently read-only command runs without asking, the rest ask with the model's view", SecondOpinionClears);
         t.Add("guardrails: second opinion never relaxes a block or write/edit, is off by default, and asks when the model fails", SecondOpinionLimits);
+        t.Add("guardrails: the call that runs is the call that is checked: tool-name case, argument aliases and their order, arrays, spaced keys, string-encoded arguments", RunsWhatIsChecked);
+        t.Add("guardrails: a redirection, comment, quotes, sudo or a wrapper do not hide a blocked command; a rule that times out blocks", Decorations);
+        t.Add("guardrails: an ssh download into a protected path is refused; an upload from it, and a download elsewhere, are not", SshDownload);
+    }
+
+    private static string Home => OperatingSystem.IsWindows() ? @"C:\Users\me" : "/home/me";
+
+    private static Verdict? Judge(RuleSet rules, string tool, object args) => JudgeJson(rules, tool, JsonSerializer.Serialize(args));
+
+    private static Verdict? JudgeJson(RuleSet rules, string tool, string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        return rules.Check(tool, doc.RootElement.Clone(), p => p);
+    }
+
+    /// <summary>The guard must judge the call the tool will run: the runner finds the tool ignoring case and the tools read
+    /// their arguments by alias order, so the guard does the same, or a call can say one thing to it and another to the tool.</summary>
+    private static Task RunsWhatIsChecked()
+    {
+        var rules = RuleSet.Parse(RuleSet.DefaultCommands, RuleSet.DefaultPaths, Home);
+        var key = Path.Combine(Home, ".ssh", "authorized_keys");
+        bool Blocks(string tool, object args) => Judge(rules, tool, args) is { Action: GuardAction.Block };
+
+        foreach (var tool in (string[])["Bash", "BASH", "bAsH", "PWSH", "Pwsh"])
+            Check.True(Blocks(tool, new { command = "rm -rf /" }), $"blocked as {tool}");
+        foreach (var tool in (string[])["Write", "EDIT", "wRiTe"])
+            Check.True(Judge(rules, tool, new { path = key, content = "x" }) is { Action: GuardAction.Block, Kind: "path" }, $"~/.ssh blocked as {tool}");
+
+        // every name the shell tools read a command by (ShellService: command, cmd, script, code, commands, input)
+        foreach (var name in (string[])["command", "cmd", "script", "code", "commands", "input", "Command", "COMMAND", "com mand", "co_mm-and"])
+            Check.True(Blocks("bash", new Dictionary<string, string> { [name] = "rm -rf /" }), $"command read from '{name}'");
+        // an array is its lines; the tool joins it with new lines
+        Check.True(Blocks("bash", new { command = new[] { "ls", "rm -rf /" } }), "an array of lines");
+        Check.True(Blocks("bash", new { command = new[] { "rm -rf /" } }), "an array of one line");
+        // the tool tries the names in its own order, so the first present one is what runs: the guard judges that one
+        Check.True(Blocks("bash", new { cmd = "ls", command = "rm -rf /" }), "command comes before cmd, whatever order the model wrote them in");
+        Check.True(Judge(rules, "bash", new { command = "ls", cmd = "rm -rf /" }) is null, "ls runs, so ls is what is judged");
+        // a string-encoded arguments object is unwrapped by the tools
+        Check.True(JudgeJson(rules, "bash", JsonSerializer.Serialize(JsonSerializer.Serialize(new { command = "rm -rf /" }))) is { Action: GuardAction.Block }, "string-encoded arguments");
+
+        // ssh run reads script first, then command, cmd, code
+        foreach (var name in (string[])["script", "command", "cmd", "code"])
+            Check.True(Blocks("ssh", new Dictionary<string, string> { ["action"] = "run", [name] = "rm -rf /" }), $"ssh run {name}");
+        Check.True(Blocks("ssh", new { action = "run", command = "ls", script = "rm -rf /" }), "ssh: script comes first");
+        Check.True(Judge(rules, "ssh", new { action = "run", script = "ls", command = "rm -rf /" }) is null, "ssh: script ls runs");
+
+        // the file tools read path, file_path, file, filename, target in that order
+        foreach (var name in (string[])["path", "file_path", "filePath", "file", "filename", "fileName", "target", "File-Path", "FILE"])
+            Check.True(Blocks("write", new Dictionary<string, string> { [name] = key, ["content"] = "x" }), $"write path read from '{name}'");
+        Check.True(Blocks("edit", new { path = new[] { key }, oldText = "a", newText = "b" }), "an array path");
+        Check.True(Blocks("write", new { target = "/tmp/x", path = key, content = "x" }), "path comes before target");
+        Check.True(Judge(rules, "write", new { path = "/tmp/x", file = key, content = "x" }) is null, "/tmp/x is what is written");
+
+        // a shell command that names a protected path is caught under any tool-name case too
+        Check.True(Blocks("Bash", new { command = "cat ~/.ssh/id_rsa" }), "path rule via Bash");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>The default rules anchor on the whole part, so what a shell ignores — a trailing comment, a redirection, quotes,
+    /// sudo and its options, env, command, time, then/do — must not decide whether they match. The extra forms only widen.</summary>
+    private static Task Decorations()
+    {
+        var rules = RuleSet.Parse(RuleSet.DefaultCommands, RuleSet.DefaultPaths, Home);
+        bool Blocks(string command) => Judge(rules, "bash", new { command }) is { Action: GuardAction.Block, Kind: "command" };
+
+        string[] blocked =
+        [
+            "rm -rf / 2>/dev/null", "rm -rf ~ # tidy", "rm -rf ~/ >/dev/null 2>&1", "rm -rf \"$HOME\"", "sudo -n rm -rf /",
+            "sudo -u root rm -rf /", "if x; then rm -rf /; fi", "rm -rf \\\n/", "env FOO=1 rm -rf /", "time rm -rf /", "command rm -rf /",
+            "nohup rm -rf / &", "rm -rf / &> out.log", "rm -rf '/'", "ls && rm -rf / # why not", "rm -rf / >> log", "rm -rf /  2> err.txt",
+            "Remove-Item -Recurse -Force C:\\ 2>$null", "sudo shutdown -h now # bye",
+        ];
+        foreach (var c in blocked) Check.True(Blocks(c), $"blocked: {c}");
+
+        string[] fine =
+        [
+            "rm -rf build 2>&1", "rm -rf ./node_modules # clean", "echo \"sudo rm -rf /\" >> log", "git commit -m 'rm -rf /'",
+            "grep 'rm -rf /' notes.txt", "ls > /dev/null 2>&1 && echo ok", "cat a.txt | sort &> out.txt", "sudo apt update", "time dotnet build",
+            "env FOO=1 dotnet test", "nohup ./server &", "rm -rf ./out 2>/dev/null",
+        ];
+        foreach (var c in fine) Check.True(Judge(rules, "bash", new { command = c }) is null, $"allowed: {c}");
+
+        // the & of a redirection is not a separator; a backslash at the end of a line continues it
+        Check.Equal("a &> out|b >&2|c|d", string.Join("|", RuleSet.Parts("a &> out; b >&2 && c & d")));
+        Check.Equal("rm -rf  /", string.Join("|", RuleSet.Parts("rm -rf \\\n/")));
+        // the part as written is always one of the forms
+        Check.True(RuleSet.Forms("sudo rm -rf / # x").Contains("sudo rm -rf / # x"), "as written");
+        Check.True(RuleSet.Forms("sudo -n rm -rf / 2>&1").Contains("rm -rf /"), "decoration off");
+
+        // a rule that times out on a part matches it: not knowing is not a pass
+        var slow = RuleSet.Parse(["^(([a-z])+.)+[A-Z]([a-z])+$"], [], Home);
+        Check.True(Judge(slow, "bash", new { command = new string('a', 45) + "!" }) is { Action: GuardAction.Block }, "a timeout blocks");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>scp writes the destination of a download on this machine, where the call says: it is a write like write and edit.</summary>
+    private static Task SshDownload()
+    {
+        var rules = RuleSet.Parse(RuleSet.DefaultCommands, RuleSet.DefaultPaths, Home);
+        var key = Path.Combine(Home, ".ssh", "authorized_keys");
+        bool Blocks(string tool, object args) => Judge(rules, tool, args) is { Action: GuardAction.Block, Kind: "path" };
+
+        Check.True(Blocks("ssh", new { action = "copy", direction = "download", host = "nuc", from = "/tmp/k", to = key }), "copy + direction");
+        Check.True(Blocks("SSH", new { action = "copy", direction = "download", host = "nuc", from = "/tmp/k", to = key }), "tool name case");
+        Check.True(Blocks("ssh", new { action = "download", host = "nuc", from = "/tmp/k", to = key }), "the action says the direction");
+        Check.True(Blocks("ssh", new { action = "scp", mode = "download", host = "nuc", from = "/tmp/k", destination = key }), "scp, mode, destination");
+        Check.True(Blocks("ssh", new { action = "copy", direction = "download", from = "/tmp/k", target = key }), "target is a destination name");
+        Check.True(Blocks("ssh", new { action = "copy", direction = "download", script = "echo hi", to = key }), "a script does not hide the download");
+
+        Check.True(Judge(rules, "ssh", new { action = "copy", direction = "upload", host = "nuc", from = key, to = "/tmp/k" }) is null, "an upload only reads");
+        Check.True(Judge(rules, "ssh", new { action = "upload", from = key, to = "/tmp/k" }) is null, "action upload");
+        Check.True(Judge(rules, "ssh", new { action = "run", script = "ls", to = key }) is null, "not a copy");
+        Check.True(Judge(rules, "ssh", new { action = "copy", direction = "download", from = "/tmp/k", to = Path.Combine(Home, "project", "k") }) is null, "a download elsewhere");
+        return Task.CompletedTask;
     }
 
     private static async Task DuplicateIds()
@@ -428,7 +542,7 @@ public static class GuardrailsTests
         Check.Equal(2, mixed.Count);
         using (var doc = JsonDocument.Parse("""{"command":"git push --force"}"""))
             Check.True(mixed.Check("bash", doc.RootElement.Clone(), p => p) is { Action: GuardAction.Block }, "block beats ask");
-        Check.Equal("a|b|c|d|e 2>|1", string.Join("|", RuleSet.Parts("a && b || c; d | e 2>&1")));
+        Check.Equal("a|b|c|d|e 2>&1", string.Join("|", RuleSet.Parts("a && b || c; d | e 2>&1")));
         return Task.CompletedTask;
     }
 }

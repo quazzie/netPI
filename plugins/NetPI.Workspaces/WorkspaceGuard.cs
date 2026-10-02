@@ -32,6 +32,9 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
     /// <summary>Shell tools: their cwd is checked, but the command is not parsed (nothing here is an OS sandbox).</summary>
     internal static readonly HashSet<string> ShellTools = new(StringComparer.OrdinalIgnoreCase) { "bash", "pwsh", "shell" };
 
+    /// <summary>The names the shell tools read their working directory by (Tools.Shell ShellService), in the order it tries them.</summary>
+    internal static readonly string[] CwdArgs = ["cwd", "workdir", "working_directory", "workingDirectory", "directory", "dir"];
+
     /// <summary>Before the guardrails' own path rules, so a refusal names the workspace rather than a bare path.</summary>
     public int Order => 100;
 
@@ -44,9 +47,12 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
         if (args is null) return ValueTask.FromResult<ToolCallDecision?>(null);
         var name = call.Name;
 
-        if (MutatingTools.Contains(name))
+        // A write tool's file, or the destination an ssh download writes on this machine (scp writes it where the call says).
+        var mutation = MutatingTools.Contains(name);
+        var download = mutation ? null : SshDownloadTarget(name, args);
+        if (mutation || download is not null)
         {
-            var target = PathArg(args);
+            var target = mutation ? PathArg(args) : download;
             if (target is not null)
             {
                 var full = turn.Resolve(call, target);
@@ -63,7 +69,7 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
 
         if (ShellTools.Contains(name))
         {
-            var cwd = Str(args, "cwd", "workdir", "working_directory", "workingDirectory", "directory", "dir");
+            var cwd = Str(args, CwdArgs);
             if (cwd is null) return ValueTask.FromResult<ToolCallDecision?>(null);   // the default cwd is the workspace
             var full = turn.Resolve(call, cwd);
             var verdict = WorkspacePaths.CheckMutation(binding, full, git);
@@ -82,25 +88,63 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
     }
 
     /// <summary>The tool's own path argument, by its own names first and then the shared ones.</summary>
-    internal static string? PathArg(JsonObject args)
-    {
-        foreach (var key in PathArgs)
-            if (Str(args, key) is { Length: > 0 } v) return v;
-        return null;
-    }
+    internal static string? PathArg(JsonObject args) => Str(args, PathArgs);
 
+    /// <summary>
+    /// An argument as the tools read it: names match ignoring case, <c>_</c>, <c>-</c> and spaces, and the first of
+    /// <paramref name="names"/> that is present wins (a blank value is no value, as the tool then refuses it). The guard has
+    /// to judge the path the tool will use, so <c>{"Path": ...}</c> and <c>{"file-path": ...}</c> count like <c>path</c>.
+    /// </summary>
     internal static string? Str(JsonObject args, params string[] names)
     {
+        var props = new Dictionary<string, JsonNode?>(StringComparer.Ordinal);
+        foreach (var (key, value) in args) props.TryAdd(Key(key), value);
         foreach (var name in names)
-            if (args[name] is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s)) return s.Trim();
+            if (props.TryGetValue(Key(name), out var node) && node is not null)
+                return Text(node)?.Trim() is { Length: > 0 } s ? s : null;
         return null;
     }
 
+    private static string Key(string name) => name.Replace("_", "").Replace("-", "").Replace(" ", "").ToLowerInvariant();
+
+    private static string? Text(JsonNode node) => node switch
+    {
+        JsonValue v when v.TryGetValue<string>(out var s) => s,
+        JsonArray a => string.Join("\n", a.Select(e => e is JsonValue ev && ev.TryGetValue<string>(out var es) ? es : e?.ToJsonString())),
+        _ => node.ToJsonString(),
+    };
+
+    /// <summary>
+    /// The arguments object. Some models send it as a JSON <em>string</em>; the tools unwrap that, so the guard must too, or
+    /// a call it cannot read is a call it lets through.
+    /// </summary>
     internal static JsonObject? Arguments(string json)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
-        try { return JsonNode.Parse(json) as JsonObject; }
+        try
+        {
+            var node = JsonNode.Parse(json);
+            if (node is JsonValue v && v.TryGetValue<string>(out var inner)) node = JsonNode.Parse(inner);
+            return node as JsonObject;
+        }
         catch (JsonException) { return null; }
+    }
+
+    /// <summary>
+    /// The local path an ssh download writes, routed as the ssh tool routes it: the action is <c>copy</c> (or scp, upload,
+    /// download) and the direction is the <c>direction</c> argument, or the action itself when that says upload/download.
+    /// Null for any other call. (The guardrails plugin keeps its own copy of this rule for its protected paths: plugins do
+    /// not share code.)
+    /// </summary>
+    internal static string? SshDownloadTarget(string tool, JsonObject args)
+    {
+        if (!tool.Equals("ssh", StringComparison.OrdinalIgnoreCase)) return null;
+        var action = Str(args, "action", "verb", "command")?.ToLowerInvariant();
+        if (action is null && Str(args, "script") is not null) action = "run";
+        if (action is not ("copy" or "scp" or "upload" or "download")) return null;
+        var direction = Str(args, "direction", "mode")?.ToLowerInvariant();
+        if (direction is null && Str(args, "action")?.ToLowerInvariant() is "upload" or "download") direction = Str(args, "action")!.ToLowerInvariant();
+        return direction == "download" ? Str(args, "to", "destination", "dest", "target") : null;
     }
 
     /// <summary>Resolve a path argument the way the tool will: relative to the call's own cwd.</summary>

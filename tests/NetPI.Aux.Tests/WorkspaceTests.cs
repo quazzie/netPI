@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetPI.Tools.Ssh;
 using NetPI.Workspaces;
 
 namespace NetPI.Aux.Tests;
@@ -31,6 +32,8 @@ public static class WorkspaceTests
         t.Add("workspaces: cleanup refuses a dirty, unbound or running worktree and removes a merged one", CleanupSafety);
         t.Add("workspaces: a background process keeps its workspace busy", BackgroundProcessHoldsWorkspace);
         t.Add("workspaces: the guard is per spelling: relative, absolute, .. and a symlink into another checkout", GuardSpellings);
+        t.Add("workspaces: the guard reads arguments as the tools do: names, order, string-encoded arguments, an ssh download's destination", GuardArguments);
+        t.Add("workspaces: ssh copy refuses a download into another checkout of the repository and allows one into the worker's own", SshDownloadRefused);
         t.Add("workspaces: the notice names the checkout, the branch and what a write outside it does", NoticeText);
         t.Add("workspaces: a switch asked for mid-batch is applied at the next model call", DeferredSwitch);
         t.Add("workspaces: every consumer agrees on the assigned root", ConsumersAgree);
@@ -205,6 +208,80 @@ public static class WorkspaceTests
         // The worktree's changes are its own, visible from its own status.
         Check.Contains(GitOut(w.Binding.Root, "status", "--porcelain") ?? "", "only-here.txt");
         return Task.CompletedTask;
+    }
+
+    /// <summary>The hook judges the path the tool will use: names match as the tools match them, the first name the tool
+    /// tries wins, a string-encoded arguments object is unwrapped, and an ssh download's destination counts as a write.</summary>
+    private static Task GuardArguments()
+    {
+        static JsonObject O(string json) => (JsonObject)JsonNode.Parse(json)!;
+
+        // the arguments object sent as a JSON string, as some models do: the tools unwrap it, so the guard must
+        var wrapped = WorkspaceGuard.Arguments(JsonSerializer.Serialize("""{"path":"a.txt","content":"x"}"""));
+        Check.True(wrapped is not null, "a string-encoded arguments object is unwrapped");
+        Check.Equal("a.txt", WorkspaceGuard.PathArg(wrapped!));
+        Check.True(WorkspaceGuard.Arguments("\"not json\"") is null, "a string that is not an object is not arguments");
+        Check.True(WorkspaceGuard.Arguments("{broken") is null);
+
+        foreach (var key in (string[])["path", "Path", "PATH", "file_path", "filePath", "File-Path", "FILE PATH", "file", "filename", "fileName", "target"])
+            Check.Equal("x.txt", WorkspaceGuard.PathArg(new JsonObject { [key] = "x.txt" }), $"read from '{key}'");
+        Check.Equal("p", WorkspaceGuard.PathArg(O("""{"target":"t","path":"p"}""")), "path comes before target whatever order they were written in");
+        Check.True(WorkspaceGuard.PathArg(O("""{"path":"","file":"f"}""")) is null, "a blank first name is the tool's refusal, not a reason to look at the next");
+        Check.Equal("a\nb", WorkspaceGuard.PathArg(O("""{"path":["a","b"]}""")), "an array is its lines, as the tools join it");
+
+        Check.Equal("/w", WorkspaceGuard.Str(O("""{"Working-Directory":"/w"}"""), WorkspaceGuard.CwdArgs));
+        Check.Equal("a", WorkspaceGuard.Str(O("""{"dir":"b","cwd":"a"}"""), WorkspaceGuard.CwdArgs), "cwd comes before dir");
+
+        // ssh: copy in the download direction writes `to` on this machine; nothing else does
+        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", O("""{"action":"copy","direction":"download","to":"/w/x"}""")));
+        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("SSH", O("""{"action":"download","destination":"/w/x"}""")), "the action says the direction; name case");
+        Check.Equal("/w/x", WorkspaceGuard.SshDownloadTarget("ssh", O("""{"action":"scp","mode":"download","dest":"/w/x"}""")));
+        Check.True(WorkspaceGuard.SshDownloadTarget("ssh", O("""{"action":"copy","direction":"upload","from":"/w/x","to":"/remote"}""")) is null, "an upload only reads");
+        Check.True(WorkspaceGuard.SshDownloadTarget("ssh", O("""{"action":"run","script":"ls","to":"/w/x"}""")) is null, "not a copy");
+        Check.True(WorkspaceGuard.SshDownloadTarget("bash", O("""{"action":"copy","direction":"download","to":"/w/x"}""")) is null, "only the ssh tool");
+        return Task.CompletedTask;
+    }
+
+    private sealed class CountingLauncher : ISshLauncher
+    {
+        public int Calls;
+        public Task<SshExec> RunAsync(string exe, IReadOnlyList<string> args, byte[]? stdin, string? workDir, Action<string>? onStdout,
+            Action<string>? onStderr, TimeSpan timeout, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);
+            return Task.FromResult(new SshExec(0, "", "", false, false));
+        }
+    }
+
+    /// <summary>The tool's own answer, for a call made without the hook: scp must not be started for a destination in another checkout.</summary>
+    private static async Task SshDownloadRefused()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("ssh download"); return; }
+        var w = env.Provision("w", "ses_w");
+        var session = env.Session("w", w.Binding!.WorkspaceId);
+        var config = Path.Combine(env.Root, "ssh-config");
+        File.WriteAllText(config, "Host nuc\n  HostName 192.168.1.3\n  User quazzie\n");
+        env.Ctx.Settings.Set("ssh.config", JsonValue.Create(config));
+        env.Ctx.Settings.Set("ssh.path", JsonValue.Create("fake-ssh"));
+        var launcher = new CountingLauncher();
+        var ssh = SshToolSet.Create(env.Ctx, launcher).Single();
+
+        // into the primary checkout: refused, and nothing was started
+        var theirs = Path.Combine(env.ProjectPath, "pulled.txt");
+        var refused = await ssh.ExecuteAsync(env.Context(session, w.Binding),
+            Json(new { action = "copy", direction = "download", host = "nuc", from = "/tmp/x", to = theirs }), CancellationToken.None);
+        Check.True(refused.IsError, "a download into the primary checkout was allowed");
+        Check.Contains(refused.Content, "Refused");
+        Check.Equal(0, launcher.Calls, "scp was started anyway");
+        Check.False(File.Exists(theirs), "nothing was created there");
+
+        // into its own workspace: the call goes through to scp
+        var mine = Path.Combine(w.Binding.Root, "pulled.txt");
+        var allowed = await ssh.ExecuteAsync(env.Context(session, w.Binding),
+            Json(new { action = "download", host = "nuc", from = "/tmp/x", to = mine }), CancellationToken.None);
+        Check.False(allowed.IsError, "a download into the worker's own workspace was refused: " + allowed.Content);
+        Check.Equal(1, launcher.Calls, "scp ran once");
     }
 
     private static Task StalePathRefused()

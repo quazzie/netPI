@@ -133,6 +133,21 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) :
     protected ISshLauncher Launcher => launcher;
     public abstract ToolDefinition Definition { get; }
 
+    /// <summary>
+    /// The workspace rule for a write on this machine, the one the file tools apply (a private copy: plugins do not share
+    /// code): an unbound session may write anywhere, an isolated one may not write into another checkout of the same
+    /// repository. The workspace hook already blocks these; this is the tool's own answer for a call made without hooks.
+    /// </summary>
+    protected static string? WorkspaceRefusal(ToolContext context, string fullPath)
+    {
+        var binding = context.Workspace;
+        if (binding is null || !binding.Isolated) return null;
+        var probe = context.Services?.Get<IWorkspaceRepoProbe>();
+        return WorkspacePaths.CheckMutation(binding, fullPath, probe) == WorkspacePathVerdict.ForeignCheckout
+            ? WorkspacePaths.Refusal(binding, fullPath, probe)
+            : null;
+    }
+
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
         args = A.Unwrap(args);
@@ -729,6 +744,7 @@ internal sealed class SshCopyTool(IPluginContext ctx, ISshLauncher launcher) : S
         else
         {
             local = context.ResolvePath(to);
+            if (WorkspaceRefusal(context, local) is { } refusal) return ToolResult.Error(refusal);
             var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(local)) ?? local;
             Directory.CreateDirectory(parent);
             workDir = parent;
