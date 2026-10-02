@@ -261,7 +261,7 @@
       imageCache = { ...imageCache, [r.path]: `data:${r.mediaType};base64,${image.data}` };
       return { image: { ...r, url: image.url }, note };
     } catch (e) {
-      toast(`Could not attach ${file.name || 'the image'}: ${e?.message ?? e}`, 'error');
+      ctx.app.toast(`Could not attach ${file.name || 'the image'}: ${e?.message ?? e}`, 'error');
       return { image: null, note: null };
     }
   }

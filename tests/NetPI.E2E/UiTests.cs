@@ -52,6 +52,34 @@ public static class UiTests
             Check.Equal("ALPHA-UI line\nbeta line\ngamma line\n", File.ReadAllText(Path.Combine(p.S("path")!, "notes.txt")), "the UI run edited the file");
             Env.Log($"screenshots: {outDir}");
         }, 180);
+        r.Add("ui.idea-image", "ui: a failed image attach toasts its error and the Image button comes back — no undefined toast, attaching resets (idea-r7j411)", async () =>
+        {
+            var p = await env.NewProject("idea-img", CoreTests.Seed);
+            var s = await env.NewSession(projectId: p.S("id"), title: "Idea image");
+            await env.Run(s.S("id")!, "hello [s:echo]");
+            var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "idea-image.mjs");
+            var outDir = env.ScreenshotDir;
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--session", "Idea image", "--out", outDir })
+                psi.ArgumentList.Add(a);
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            try { await proc.WaitForExitAsync(cts.Token); }
+            catch (OperationCanceledException) { if (!proc.HasExited) proc.Kill(true); throw new AssertException("ui idea-image timed out"); }
+            var output = await stdout;
+            var err = await stderr;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
+            Check.True(json is not null, "idea-image output: " + output + err);
+            using var doc = JsonDocument.Parse(json!);
+            var failedChecks = doc.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
+            Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
+                + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
+            Check.Equal(0, proc.ExitCode, "idea-image exit code; stderr: " + err);
+            Env.Log($"screenshots: {outDir}");
+        }, 120);
         r.Add("ui.pinned-sessions", "ui: pin a session — a Pinned group above the recency groups, and unpinning removes it (idea-k8nghc)", async () =>
         {
             // Unique per run: a shared server (shards, -Repeat) keeps sessions from earlier runs, so a fixed title

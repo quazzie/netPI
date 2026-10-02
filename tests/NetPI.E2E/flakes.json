@@ -1,4 +1,15 @@
 {
-  "note": "Flake ledger: how often each test has failed, and the runner's own diagnosis when it last did. Updated by every run; a pass marks an entry quiet rather than deleting it. Empty means no test has failed since the ledger existed — which is the state to keep it in. `scripts/e2e.ps1 -Flakes` prints it.",
-  "flakes": []
+  "note": "Flake ledger: how often each test has failed, and the runner\u0027s own diagnosis when it last did. Updated by every run; a pass marks an entry quiet rather than deleting it.",
+  "flakes": [
+    {
+      "id": "ui.idea-image",
+      "runs": 6,
+      "failures": 3,
+      "rate": 0.5,
+      "firstSeen": "20261002-164209-c9ca",
+      "lastFailure": "20261002-164357-4982",
+      "cause": "3 ui check(s) failed: \u2014 responsive",
+      "quiet": true
+    }
+  ]
 }
