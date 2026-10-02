@@ -158,7 +158,7 @@ internal sealed class SqliteStorage : IStorage, IStorageSnapshot
     /// <summary>A consistent copy of the live database, with the committed contents of the WAL, as one file.</summary>
     public IReadOnlyList<string> Write(string directory)
     {
-        _db.Execute("VACUUM INTO @file", new { file = Path.Combine(directory, "netpi.db") });
+        _db.BackupTo(Path.Combine(directory, "netpi.db"));   // in batches: the gate is free between pages of the copy
         return ["netpi.db"];
     }
 

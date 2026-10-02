@@ -6,8 +6,10 @@ that includes the WAL), `settings.json` and a versioned `manifest.json` that nam
 checksum per file — and nothing else, because the ideas backlog (the ideas themselves, the cards waiting for an
 answer, the answers already given, the per-conversation check marks and the per-repository commit cursors) is
 plugin-owned tables in that same `netpi.db`. It therefore travels inside the consistent database copy: a backup needs no
-Ideas plugin installed or running, and it cannot be a snapshot that quietly left the backlog out. `VACUUM INTO` includes
-committed WAL changes while NetPI runs, so a snapshot never catches a card answer half applied. The provider's files and
+Ideas plugin installed or running, and it cannot be a snapshot that quietly left the backlog out. The copy runs in
+batches over the online backup API (the store's lock is free between them, so a long copy does not stall the running
+server), and it includes committed WAL changes while NetPI runs, so a snapshot never catches a card answer half
+applied. The provider's files and
 the settings are captured sequentially; they are not one cross-file transaction. Restore copies exactly what the manifest
 lists, so a snapshot from an older build — one that still carries the ideas JSON files — restores as it was, and the
 plugin imports those files at its first start.
