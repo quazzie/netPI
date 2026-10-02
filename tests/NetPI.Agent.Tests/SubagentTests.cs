@@ -81,19 +81,12 @@ public static class SubagentTests
     /// The child ends on its own thread and the parent's wait lands right on its finish: the wait's read of the
     /// finished child must see the id of the agent-result notice — recorded together with the run's clearing, not
     /// after the store save that follows it — so the notice is dropped and the parent gets the report with the
-    /// wait's result, not twice. The real SQLite store keeps the child's end path long enough for the racing
-    /// waits to land inside it, deterministically.
+    /// wait's result, not twice. Each raced wait is fired the moment the finished status flips, so it lands inside
+    /// the child's end path racing its notification path.
     /// </summary>
     private static async Task RacedWaitDropsNotice()
     {
-        var dbPath = Path.Combine(Path.GetTempPath(), "netpi-racedwait-" + Guid.NewGuid().ToString("N") + ".db");
-        using var db = TestSqlite.TryCreate(dbPath);
-        if (db is null)
-        {
-            Console.WriteLine("        (skipped: no native sqlite library)");
-            return;
-        }
-        await using var h = await TestHost.StartAsync(db: db);
+        await using var h = await TestHost.StartAsync();
         for (var i = 0; i < 10; i++)
         {
             var childGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

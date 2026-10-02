@@ -20,8 +20,7 @@ public static class AgentReworkTests
 
     private static async Task HistoricalFallbackFork()
     {
-        using var db = TestSqlite.TryCreate();
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Runtime, db: db);
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Runtime);
         var origin = h.NewSession();
         h.Sessions.UpdateSession(origin.Id, s => { s.Meta = new JsonObject { [SessionIdentity.MetaKey] = "Identity A" }; });
         await h.SendAsync(origin.Id, "first"); await h.IdleAsync(origin.Id);
@@ -32,9 +31,7 @@ public static class AgentReworkTests
         h.Sessions.UpdateSession(origin.Id, s => { s.Meta![SessionIdentity.MetaKey] = "Identity B"; SessionPrompt.Invalidate(s); });
         await h.SendAsync(origin.Id, "second"); await h.IdleAsync(origin.Id);
         var prefixB = h.Catalog.Requests.Last().SystemPrompt;
-        var latest = h.Sessions.GetSession(origin.Id)!;
-        SessionInfo Fork(long seq) => ((ISessionStore)h.Sessions).ForkSession(origin.Id, seq,
-            NetPI.Host.Sessions.SessionFork.Template(latest, seq, 0));
+        SessionInfo Fork(long seq) => h.Fork(origin.Id, seq);
         var early = Fork(seqA);
         var late = Fork(h.Messages(origin.Id).Last().Seq);
         var before = Fork(0);
@@ -154,16 +151,11 @@ public static class AgentReworkTests
 
     private static async Task ForkReset()
     {
-        using var db = TestSqlite.TryCreate();
-        if (db is null) throw new InvalidOperationException("SQLite is required for durable fork revision coverage");
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Context | TestHost.Plugins.Runtime, db: db);
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Context | TestHost.Plugins.Runtime);
         h.Settings.SetQuiet("context.customPrompt", "Original identity");
         var origin = h.NewSession();
         await h.SendAsync(origin.Id, "hello"); await h.IdleAsync(origin.Id);
-        var fork = ((ISessionStore)h.Sessions).ForkSession(origin.Id, h.Messages(origin.Id).Last().Seq, new SessionInfo
-        {
-            Title = "fork", Meta = new JsonObject { ["forkedFrom"] = new JsonObject { ["sessionId"] = origin.Id, ["seq"] = h.Messages(origin.Id).Last().Seq } },
-        });
+        var fork = h.Fork(origin.Id, h.Messages(origin.Id).Last().Seq);
         h.Sessions.UpdateSession(fork.Id, s => { s.Meta![SessionIdentity.MetaKey] = "New fork identity"; SessionPrompt.Invalidate(s); });
         await h.StopPluginAsync("netpi.context");
         await h.StartPluginAsync(new NetPI.Context.ContextPlugin());

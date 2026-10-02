@@ -137,17 +137,17 @@ public static class SchedulerTests
         Check.Equal("a", s.ChooseAgent(TestHost.LocalModel(), "a"));
         Check.Equal("b", s.ChooseAgent(TestHost.LocalModel(), null), "a is full");
         Check.Equal("b", s.ChooseAgent(TestHost.LocalModel(), "elsewhere"));
-        try { s.ChooseAgent(TestHost.SoloModel(), null); throw new AssertException("expected AgentUnavailableException"); }
-        catch (AgentUnavailableException ex) { Check.Contains(ex.Message, "No agent runs fake/solo."); }
+        try { s.ChooseAgent(TestHost.SoloModel(), null); throw new AssertException("expected CallRefusedException"); }
+        catch (CallRefusedException ex) { Check.Contains(ex.Message, "No agent runs fake/solo."); }
 
         // switched off: new runs are refused at once, waiters are told
         var b2 = s.AcquireAsync(Req("b", "B2"), CancellationToken.None).AsTask();
         h.Settings.Set("agents.b.disabled", JsonValue.Create(true));
         await h.Bus.DrainAsync();
-        try { await b2.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected AgentUnavailableException"); }
-        catch (AgentUnavailableException ex) { Check.Contains(ex.Message, "The agent \"b\" is disabled."); }
-        try { await s.AcquireAsync(Req("b", "B3"), CancellationToken.None); throw new AssertException("expected AgentUnavailableException"); }
-        catch (AgentUnavailableException) { }
+        try { await b2.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected CallRefusedException"); }
+        catch (CallRefusedException ex) { Check.Contains(ex.Message, "The agent \"b\" is disabled."); }
+        try { await s.AcquireAsync(Req("b", "B3"), CancellationToken.None); throw new AssertException("expected CallRefusedException"); }
+        catch (CallRefusedException) { }
         Check.False(s.TryAcquire(Req("b", "B4"), out _));
         Check.Equal("a", s.ChooseAgent(TestHost.LocalModel(), null), "an active agent first");
         a1.Dispose();
@@ -183,10 +183,10 @@ public static class SchedulerTests
         Check.Equal("removed", pool.Unavailable);
         Check.Equal("retiring", pool.Status);
         Check.Equal("fake/local", pool.Model, "the model stays while the run finishes");
-        try { await a2.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected AgentUnavailableException"); }
-        catch (AgentUnavailableException ex) { Check.Contains(ex.Message, "The agent \"a\" was removed"); }
-        try { await s.AcquireAsync(Req("a", "A3"), CancellationToken.None); throw new AssertException("expected AgentUnavailableException"); }
-        catch (AgentUnavailableException) { }
+        try { await a2.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected CallRefusedException"); }
+        catch (CallRefusedException ex) { Check.Contains(ex.Message, "The agent \"a\" was removed"); }
+        try { await s.AcquireAsync(Req("a", "A3"), CancellationToken.None); throw new AssertException("expected CallRefusedException"); }
+        catch (CallRefusedException) { }
         Check.False(s.TryAcquire(Req("a", "A4"), out _), "no new work on a removed agent");
 
         // The model serves two at once, and the removed agent's call is one of them: "b" has a free instance, "c"
@@ -385,8 +385,8 @@ public static class SchedulerTests
         Check.Equal(1, s.Snapshot().Single(p => p.Key == "solo").Queued, "one waiter in line");
 
         // beyond the cap: refused at once (the callers handle it and tell the user), not parked
-        try { await s.AcquireAsync(Req("solo", "W2"), CancellationToken.None); throw new AssertException("expected AgentUnavailableException"); }
-        catch (AgentUnavailableException ex) { Check.Contains(ex.Message, "agents.queueMax"); }
+        try { await s.AcquireAsync(Req("solo", "W2"), CancellationToken.None); throw new AssertException("expected CallRefusedException"); }
+        catch (CallRefusedException ex) { Check.Contains(ex.Message, "agents.queueMax"); }
         Check.Equal(1, s.Snapshot().Single(p => p.Key == "solo").Queued, "the refused one is not queued");
 
         // a free slot goes to the waiter in line: the cap does not disturb the normal flow
@@ -400,8 +400,8 @@ public static class SchedulerTests
         var w3 = s.AcquireAsync(Req("solo", "W3"), CancellationToken.None).AsTask();
         await Task.Delay(50);
         Check.Equal("queued", s.Snapshot().Single(p => p.Key == "solo").Status);
-        try { await w3.WaitAsync(TimeSpan.FromSeconds(10)); throw new AssertException("expected AgentUnavailableException"); }
-        catch (AgentUnavailableException ex) { Check.Contains(ex.Message, "agents.queueTimeoutSeconds"); Check.Contains(ex.Message, "2 s"); }
+        try { await w3.WaitAsync(TimeSpan.FromSeconds(10)); throw new AssertException("expected CallRefusedException"); }
+        catch (CallRefusedException ex) { Check.Contains(ex.Message, "agents.queueTimeoutSeconds"); Check.Contains(ex.Message, "2 s"); }
         Check.True(s.Snapshot().Single(p => p.Key == "solo").Waiters.Count == 0, "the timed-out waiter is gone");
         a2.Dispose();
         Check.Equal(0, s.Snapshot().Sum(p => p.Busy + p.Queued));

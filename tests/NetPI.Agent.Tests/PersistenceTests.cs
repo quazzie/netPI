@@ -7,19 +7,18 @@ public static class PersistenceTests
 {
     public static void Register(TestRunner t)
     {
-        t.Add("persistence: agent records survive a restart (sqlite)", AgentRecords);
-        t.Add("persistence: usage survives a restart (sqlite)", UsageRecords);
+        t.Add("persistence: agent records survive a restart", AgentRecords);
+        t.Add("persistence: usage survives a restart", UsageRecords);
     }
+
+    /// <summary>The runtime plugin's agent records, the shape the store declares (a test that leaves a row behind).</summary>
+    private static IDataCollection Records(TestHost h) =>
+        h.Storage.Plugins.For("netpi.runtime").Collection("agent_records",
+            new CollectionSpec().Text("sessionId").Text("createdAt").Text("status"));
 
     private static async Task AgentRecords()
     {
-        using var db = TestSqlite.TryCreate();
-        if (db is null)
-        {
-            Console.WriteLine("        (skipped: no native sqlite library)");
-            return;
-        }
-        await using var h = await TestHost.StartAsync(db: db);
+        await using var h = await TestHost.StartAsync();
         h.Catalog.Handler = (r, ct) => Reply.Text(r.SystemPrompt!.Contains("subagent") ? "sub report" : "main reply");
         var s = h.NewSession();
         await h.SendAsync(s.Id, "hello");
@@ -27,13 +26,16 @@ public static class PersistenceTests
         var sub = await h.Runtime.SpawnAsync(new SpawnRequest { Task = "do it", Name = "persisted", ParentAgentId = main.Id, Instructions = "custom rule" });
         await h.StatusAsync(sub.Id, AgentStatus.Completed);
         await h.IdleAsync(s.Id); // woken by the result
-        Check.True(db.Statements > 0);
 
-        // a row left behind by a crashed process
-        db.Execute("""
-            INSERT INTO agent_records (id, session_id, name, status, created_at)
-            VALUES ('agt_stale', 'ses_stale', 'ghost', 'running', '2026-01-01T00:00:00.0000000Z')
-            """);
+        // a record left behind by a crashed process
+        Records(h).Put("agt_stale", new JsonObject
+        {
+            ["id"] = "agt_stale",
+            ["sessionId"] = "ses_stale",
+            ["name"] = "ghost",
+            ["status"] = "running",
+            ["createdAt"] = "2026-01-01T00:00:00.0000000Z",
+        });
 
         await h.StopPluginAsync("netpi.runtime");
         await h.StopPluginAsync("netpi.tools.agents");
@@ -56,7 +58,7 @@ public static class PersistenceTests
         var stale = rt.Get("agt_stale")!;
         Check.Equal(AgentStatus.Failed, stale.Status);
         Check.Equal("interrupted", stale.Error);
-        Check.Equal("failed", db.Scalar<string>("SELECT status FROM agent_records WHERE id = 'agt_stale'"));
+        Check.Equal("failed", Records(h).Get("agt_stale")!["status"]?.GetValue<string>());
 
         // the reloaded runtime continues the same agent
         await h.SendAsync(s.Id, "again");
@@ -73,20 +75,17 @@ public static class PersistenceTests
 
     private static async Task UsageRecords()
     {
-        using var db = TestSqlite.TryCreate();
-        if (db is null)
-        {
-            Console.WriteLine("        (skipped: no native sqlite library)");
-            return;
-        }
-        await using var h = await TestHost.StartAsync(db: db);
+        await using var h = await TestHost.StartAsync();
         var s = h.NewSession();
         await h.SendAsync(s.Id, "one");
         await h.IdleAsync(s.Id);
         await h.SendAsync(s.Id, "two");
         await h.IdleAsync(s.Id);
         await h.Bus.DrainAsync();
-        Check.Equal(2L, db.Scalar<long>("SELECT calls FROM lanes_usage WHERE provider = 'fake' AND model = 'local'"));
+        var lanes = h.Storage.Plugins.For("netpi.agents").Collection("lanes_usage",
+            new CollectionSpec().Text("day").Text("provider").Text("model").Integer("budgetTokens"));
+        Check.Equal(2L, lanes.Find(new DataQuery().Eq("provider", "fake").Eq("model", "local"))
+            .Sum(d => d.Doc["calls"]!.GetValue<long>()));
 
         await h.StopPluginAsync("netpi.agents");
         await h.StartPluginAsync(new AgentsPlugin());

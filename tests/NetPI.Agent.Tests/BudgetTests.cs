@@ -13,8 +13,15 @@ public static class BudgetTests
         t.Add("agents: agent_choices shows the budget, state, price, spend and note; agent_spawn needs an active agent; an agent's daily cap", AgentsAndCap);
         t.Add("budget: the period starts on budget.resetDay", Period);
         t.Add("budget: settings changes refresh usage without a model call, including file reloads", SettingsRefresh);
-        t.Add("ledger: without a database the in-memory charge list stays bounded and idle rolls are skipped", MemoryLedger);
     }
+
+    /// <summary>The ledger's call collection, read by the tests the way the migration tool will (the same declaration the ledger makes).</summary>
+    private static IDataCollection Calls(TestHost h) =>
+        h.Storage.Plugins.For("netpi.agents").Collection("usage_calls", new CollectionSpec()
+            .Integer("ts").Text("day").Text("sessionId").Text("rootSessionId").Text("lane").Real("costUsd").Text("costSource"));
+
+    private static DataDoc CallOf(TestHost h, string sessionId) =>
+        Calls(h).Find(new DataQuery().Eq("sessionId", sessionId)).Single();
 
     /// <summary>cloud/big costs $3 / $15 per million tokens (the catalog's pricing, as OpenRouter lists it).</summary>
     private static void Priced(TestHost h) =>
@@ -84,9 +91,7 @@ public static class BudgetTests
 
     private static async Task Ledger()
     {
-        using var db = TestSqlite.TryCreate();
-        if (db is null) { Console.WriteLine("    (no SQLite library: skipped)"); return; }
-        await using var h = await TestHost.StartAsync(Priced, db: db);
+        await using var h = await TestHost.StartAsync(Priced);
 
         // 1. estimated from the price: 100 input + 10 output tokens at $3 / $15 per Mtok = $0.00045
         var priced = h.NewSession(model: "cloud/big");
@@ -106,10 +111,10 @@ public static class BudgetTests
         await h.SendAsync(local.Id, "hi");
         await h.IdleAsync(local.Id);
 
-        Check.Equal("estimated", db.Scalar<string>("SELECT cost_source FROM usage_calls WHERE session_id = @s", new { s = priced.Id }));
-        Check.Equal(0.00045, Math.Round(db.Scalar<double>("SELECT cost_usd FROM usage_calls WHERE session_id = @s", new { s = priced.Id }), 8));
-        Check.Equal("reported", db.Scalar<string>("SELECT cost_source FROM usage_calls WHERE session_id = @s", new { s = reported.Id }));
-        Check.Equal("free", db.Scalar<string>("SELECT cost_source FROM usage_calls WHERE session_id = @s", new { s = local.Id }));
+        Check.Equal("estimated", CallOf(h, priced.Id).Doc["costSource"]?.GetValue<string>());
+        Check.Equal(0.00045, Math.Round(CallOf(h, priced.Id).Doc["costUsd"]!.GetValue<double>(), 8));
+        Check.Equal("reported", CallOf(h, reported.Id).Doc["costSource"]?.GetValue<string>());
+        Check.Equal("free", CallOf(h, local.Id).Doc["costSource"]?.GetValue<string>());
 
         var summary = Summary(h);
         Check.Equal(0.02045, Math.Round(Num(summary["budget"]!["spentUsd"]), 8));
@@ -137,9 +142,7 @@ public static class BudgetTests
 
     private static async Task MonthlyBudget()
     {
-        using var db = TestSqlite.TryCreate();
-        if (db is null) { Console.WriteLine("    (no SQLite library: skipped)"); return; }
-        await using var h = await TestHost.StartAsync(x => { Priced(x); x.Settings.SetQuiet("budget.monthlyUsd", JsonValue.Create(1.00)); }, db: db);
+        await using var h = await TestHost.StartAsync(x => { Priced(x); x.Settings.SetQuiet("budget.monthlyUsd", JsonValue.Create(1.00)); });
         h.Catalog.Handler = (r, ct) => Costing("spent", 2.00);
         var s = h.NewSession(model: "cloud/big");
         await h.SendAsync(s.Id, "spend it");
@@ -194,8 +197,6 @@ public static class BudgetTests
 
     private static async Task AgentsAndCap()
     {
-        using var db = TestSqlite.TryCreate();
-        if (db is null) { Console.WriteLine("    (no SQLite library: skipped)"); return; }
         await using var h = await TestHost.StartAsync(x =>
         {
             Priced(x);
@@ -203,7 +204,7 @@ public static class BudgetTests
             x.Settings.SetQuiet("agents.big", JsonNode.Parse("""{ "model": "cloud/big", "use": "Costly: hard problems only.", "budget": { "limitUsd": 1.00 } }"""));
             x.Settings.SetQuiet("agents.small", JsonNode.Parse("""{ "model": "fake/local", "use": "Free: searches and small edits." }"""));
             x.Settings.SetQuiet("agents.solo", JsonNode.Parse("""{ "model": "fake/solo", "disabled": true }"""));
-        }, db: db);
+        });
 
         var agents = h.Scheduler!.Snapshot().Where(p => p.Configured).OrderBy(p => p.Key).ToList();
         Check.Equal("big,small,solo", string.Join(",", agents.Select(p => p.Key)));
@@ -277,47 +278,5 @@ public static class BudgetTests
         Check.Equal("2026-08-15..2026-09-15", P(2026, 9, 10, 15));
         Check.Equal("2026-09-15..2026-10-15", P(2026, 9, 15, 15));
         Check.Equal("2025-12-28..2026-01-28", P(2026, 1, 3, 28));
-    }
-
-    /// <summary>
-    /// No database (the usage tables fail to migrate): charges live in memory. The list keeps only the current
-    /// period and today (pruned as charges are recorded, like the token totals), and the snapshot rescans it only
-    /// when a day turns or a charge is recorded or settled — not on every budget roll.
-    /// </summary>
-    private static async Task MemoryLedger()
-    {
-        await using var h = await TestHost.StartAsync(x => { Priced(x); x.Db = new ThrowingDatabase(); }, plugins: TestHost.Plugins.Agents);
-        await h.Bus.DrainAsync();
-        var ledger = h.Services.Get<IBudgetGate>() as NetPI.Agents.Ledger ?? throw new AssertException("no ledger");
-        var model = h.Catalog.Cached.First(m => m.Ref == "cloud/big");
-        ModelRequest Call() => new()
-        {
-            Model = model,
-            Messages = [new ChatMessage { Role = MessageRole.User, Parts = [new TextPart { Text = "hi" }] }],
-            SessionId = h.NewSession().Id,
-        };
-
-        // a charge from before the period (a different day): kept until a newer charge is recorded, counts for nothing
-        var (start, _) = NetPI.Agents.Ledger.Period(DateTime.Now, 1);
-        var old = new DateTimeOffset(start).AddDays(-3);
-        ledger.BackdateCharge(old.ToUnixTimeMilliseconds(), old.UtcDateTime.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), null, 9.0);
-        Check.Equal(1, ledger.MemoryStats.Charges, "kept until a newer charge is recorded");
-        Check.Equal((0.0, 0.0), ledger.Spent(), "out of period and not today: counts for nothing");
-
-        // recording a live charge forgets the old one and counts the new one
-        var reservation = ledger.Reserve(Call(), null, null);
-        var spent = ledger.Spent();
-        Check.Equal(1, ledger.MemoryStats.Charges, "the out-of-period charge is forgotten when a new one is recorded");
-        Check.Equal(0.24576, Math.Round(spent.Period, 8), "the reservation counts for period and today");
-        Check.Equal(0.24576, Math.Round(spent.Today, 8));
-        var scans = ledger.MemoryStats.Scans;
-
-        // idle rolls are skipped; a settle makes the snapshot stale and the next roll picks up the settled cost
-        for (var i = 0; i < 5; i++) Check.Equal((spent.Period, spent.Today), ledger.Spent());
-        Check.Equal(scans, ledger.MemoryStats.Scans, "no new charge: no rescan");
-        ledger.Settle(reservation, new Usage { InputTokens = 100, OutputTokens = 10 }, true, false);
-        var after = ledger.Spent();
-        Check.Equal(0.00045, Math.Round(after.Period, 8), "the settlement replaces the reservation");
-        Check.Equal(scans + 1, ledger.MemoryStats.Scans, "a settle triggers exactly one rescan");
     }
 }

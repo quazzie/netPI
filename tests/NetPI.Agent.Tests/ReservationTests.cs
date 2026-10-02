@@ -31,10 +31,14 @@ public static class ReservationTests
         return l;
     }
 
+    /// <summary>The ledger's call collection of the test's own plugin id (the same declaration the ledger makes).</summary>
+    private static IDataCollection Calls(TestHost h) =>
+        h.Storage.Plugins.For("ledger-test").Collection("usage_calls", new CollectionSpec()
+            .Integer("ts").Text("day").Text("sessionId").Text("rootSessionId").Text("lane").Real("costUsd").Text("costSource"));
+
     private static async Task Concurrent()
     {
-        using var db = TestSqlite.TryCreate() ?? throw new Exception("SQLite required");
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None, db: db);
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
         var l = Create(h);
         var req = Request();
         var estimate = Ledger.Estimate(req, Ledger.PriceOf(req.Model, null));
@@ -42,12 +46,12 @@ public static class ReservationTests
         var won = new System.Collections.Concurrent.ConcurrentBag<Ledger.Reservation>();
         await Task.WhenAll(Enumerable.Range(0, 12).Select(_ => Task.Run(() =>
         {
-            try { won.Add(l.Reserve(req, "a", null)); } catch (BudgetExceededException) { }
+            try { won.Add(l.Reserve(req, "a", null)); } catch (CallRefusedException) { }
         })));
         Check.Equal(1, won.Count, "only one simultaneous call fits");
         Check.Equal(estimate, l.Spent().Period);
         var reloaded = Create(h);
-        await Check.ThrowsAsync<BudgetExceededException>(() => Task.Run(() => reloaded.Reserve(req, "a", null)));
+        await Check.ThrowsAsync<CallRefusedException>(() => Task.Run(() => reloaded.Reserve(req, "a", null)));
         l.Settle(won.Single(), new Usage { CostUsd = 0.00001 }, true, false);
         var next = reloaded.Reserve(req, "a", null);
         reloaded.Settle(next, null, false, true);
@@ -57,8 +61,7 @@ public static class ReservationTests
 
     private static async Task ConcurrentRecording()
     {
-        using var db = TestSqlite.TryCreate() ?? throw new Exception("SQLite required");
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None, db: db);
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
         var a = Create(h); var b = Create(h);
         await Task.WhenAll(Enumerable.Range(0, 100).Select(i => Task.Run(() =>
         {
@@ -67,20 +70,29 @@ public static class ReservationTests
         })));
         Check.Equal(100.0, a.Spent().Period);
         Check.Equal(100.0, b.SpentToday("a"));
-        Check.Equal(100.0, db.Scalar<double>("SELECT SUM(cost_usd) FROM usage_calls"));
+        Check.Equal(100.0, Calls(h).Sum("costUsd", null));
     }
 
     private static async Task Rollover()
     {
-        using var db = TestSqlite.TryCreate() ?? throw new Exception("SQLite required");
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None, db: db);
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
         var l = Create(h);
         var req = Request();
         var r = l.Reserve(req, "a", null);
         l.Settle(r, new Usage { CostUsd = 2 }, true, false);
         Check.Equal(2.0, l.Spent().Today);
         var old = DateTimeOffset.Now.AddMonths(-2);
-        db.Execute("UPDATE usage_calls SET ts=@ts, day=@day", new { ts = old.ToUnixTimeMilliseconds(), day = old.ToString("yyyy-MM-dd") });
+        // move the charge out of the period: its call, and the lane-day roll-up that read it from (the old store
+        // recomputed the roll-up from the calls; now the roll-up is the read, so it moves with them)
+        var calls = Calls(h);
+        var doc = calls.Get(r.Id.ToString(System.Globalization.CultureInfo.InvariantCulture))!;
+        doc["ts"] = old.ToUnixTimeMilliseconds();
+        doc["day"] = old.ToString("yyyy-MM-dd");
+        calls.Put(r.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), doc);
+        var lanes = h.Storage.Plugins.For("ledger-test").Collection("lane_usage", new CollectionSpec().Text("day").Text("laneKey").Real("costUsd"));
+        var lane = lanes.Find(new DataQuery().Eq("laneKey", "a")).Single();
+        lane.Doc["day"] = old.ToString("yyyy-MM-dd");
+        lanes.Put(lane.Key, lane.Doc);
         Check.Equal(0.0, l.Spent().Period);
         Check.Equal(0.0, l.SpentToday("a"));
         l.RecordCall(req, new ChatMessage { Usage = new Usage { CostUsd = 3 } }, "a", null);
@@ -89,11 +101,10 @@ public static class ReservationTests
 
     private static async Task UnknownPrice()
     {
-        using var db = TestSqlite.TryCreate() ?? throw new Exception("SQLite required");
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None, db: db);
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
         h.Settings.SetQuiet("budget.dailyUsd", JsonValue.Create(1));
         var l = Create(h); var r = Request(); r.Model.Extra = null;
-        await Check.ThrowsAsync<BudgetExceededException>(() => Task.Run(() => l.Reserve(r, null, null)));
+        await Check.ThrowsAsync<CallRefusedException>(() => Task.Run(() => l.Reserve(r, null, null)));
         r.Model.IsLocal = true;
         var local = l.Reserve(r, null, null); l.Settle(local, new Usage(), true, false);
         Check.Equal(0.0, l.Spent().Today);
@@ -101,8 +112,7 @@ public static class ReservationTests
 
     private static async Task Interrupted()
     {
-        using var db = TestSqlite.TryCreate() ?? throw new Exception("SQLite required");
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None, db: db);
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
         var ctx = new TestPluginContext(h, "ledger-test");
         var l = Create(h); var m = new LedgerMiddleware(l, new AgentScheduler(ctx, l));
         var req = Request();
@@ -114,7 +124,7 @@ public static class ReservationTests
         }
         await Check.ThrowsAsync<IOException>(async () => { await foreach (var e in m.InvokeAsync(req, Partial, default)) { } });
         Check.Equal(0.003, l.Spent().Period);
-        Check.Equal(25L, db.Scalar<long>("SELECT SUM(input_tokens) FROM usage_calls"));
+        Check.Equal(25L, Calls(h).Find(null).Sum(d => d.Doc["inputTokens"]?.GetValue<long>() ?? 0));
         static async IAsyncEnumerable<ModelStreamEvent> Reject(ModelRequest r, [EnumeratorCancellation] CancellationToken ct)
         {
             await Task.Yield();
@@ -135,15 +145,14 @@ public static class ReservationTests
         var estimate = Ledger.Estimate(req, Ledger.PriceOf(req.Model, null));
         Check.True(l.Spent().Period > 0.003, "a stop that streamed settles from the partial work");
         Check.True(l.Spent().Period < 0.003 + estimate, "no more than the reservation (the old code charged the full reservation)");
-        Check.Equal(1L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls WHERE cost_source = 'interrupted-estimate'"));
+        Check.Equal(1L, Calls(h).Count(new DataQuery().Eq("costSource", "interrupted-estimate")));
         Check.Equal(1L, l.BudgetStatus()["interruptedEstimateCalls"]!.GetValue<long>(), "the settled-from-estimate count is visible");
-        Check.Equal(3L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls"));
+        Check.Equal(3L, Calls(h).Count(null));
     }
 
     private static async Task FailedBeforeFirstByte()
     {
-        using var db = TestSqlite.TryCreate() ?? throw new Exception("SQLite required");
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None, db: db);
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
         var l = Create(h);
         var ctx = new TestPluginContext(h, "ledger-test");
         var m = new LedgerMiddleware(l, new AgentScheduler(ctx, l));
@@ -162,7 +171,7 @@ public static class ReservationTests
         await Check.ThrowsAsync<ModelException>(async () => { await foreach (var _ in m.InvokeAsync(req, (r, ct) => Reply.Fail(new ModelException("overloaded", true, 503)), default)) { } });
         await Check.ThrowsAsync<IOException>(async () => { await foreach (var _ in m.InvokeAsync(req, (r, ct) => Reply.Fail(new IOException("connect failed")), default)) { } });
         Check.Equal(0.0, l.Spent().Today, "failed calls settle at $0, not at the reservation");
-        Check.Equal(0L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls WHERE cost_source != 'rejected'"), "no phantom spend");
+        Check.Equal(0L, Calls(h).Count(new DataQuery().Ne("costSource", "rejected")), "no phantom spend");
 
         // The storm itself: six more 529s, all refused-by-the-provider, none of them locking the cap.
         for (var i = 0; i < 3; i++)
@@ -173,7 +182,7 @@ public static class ReservationTests
             Check.True(failed, "the provider failed");
         }
         Check.Equal(0.0, l.Spent().Today, "the cap is still free (the old estimate refused the second storm call)");
-        Check.Equal(6L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls"));
+        Check.Equal(6L, Calls(h).Count(null));
 
         // A call that does answer settles from its real usage and fits the cap.
         await foreach (var _ in m.InvokeAsync(req, (r, ct) => Reply.Text("ok"), CancellationToken.None)) { }
@@ -182,8 +191,7 @@ public static class ReservationTests
 
     private static async Task Swap()
     {
-        using var db = TestSqlite.TryCreate() ?? throw new Exception("SQLite required");
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None, db: db);
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
         var l = Create(h);
         var ctx = new TestPluginContext(h, "ledger-test");
         // A hot swap keeps the old generation in the pipeline until the new one serves: two middlewares, one call.
@@ -191,18 +199,17 @@ public static class ReservationTests
         var m2 = new LedgerMiddleware(l, new AgentScheduler(ctx, l));
         IAsyncEnumerable<ModelStreamEvent> Provider(ModelRequest r, CancellationToken ct) => Reply.Text("ok");
         await foreach (var _ in m2.InvokeAsync(Request(), (r, ct) => m1.InvokeAsync(r, Provider, ct), CancellationToken.None)) { }
-        Check.Equal(1L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls"), "one call, one reservation");
-        Check.Equal(1L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls WHERE cost_source != 'reserved'"), "and settled once");
+        Check.Equal(1L, Calls(h).Count(null), "one call, one reservation");
+        Check.Equal(1L, Calls(h).Count(new DataQuery().Ne("costSource", "reserved")), "and settled once");
         // The other order: the first to run reserves, the other passes through either way.
         await foreach (var _ in m1.InvokeAsync(Request(), (r, ct) => m2.InvokeAsync(r, Provider, ct), CancellationToken.None)) { }
-        Check.Equal(2L, db.Scalar<long>("SELECT COUNT(*) FROM usage_calls"), "the next call meters again");
+        Check.Equal(2L, Calls(h).Count(null), "the next call meters again");
     }
 
     private static async Task AllowParallel()
     {
-        using var db = TestSqlite.TryCreate() ?? throw new Exception("SQLite required");
-        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Agents, db: db);
-        var l = (Ledger)h.Services.Get<IBudgetGate>()!;
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Agents);
+        var l = Create(h);
         var sid = h.NewSession().Id;
         var req = Request();
         // Allow takes the session update (a database transaction) and the ledger's period; Reserve the other way
