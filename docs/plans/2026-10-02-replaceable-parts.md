@@ -45,6 +45,19 @@ Evidence for plugin ↔ plugin independence: 35 real servers were booted with ea
 
 ## The design
 
+### Layering: who knows what
+
+```
+plugins (Ideas, Agents, Context, Runtime, Workspaces, Backup, …)
+    use only:  ctx.Sessions (sessions, messages, projects)   ctx.Data (collections)   the snapshot
+        ▼
+the ports: interfaces in the contract assembly. No SQL, no engine types, no hint that a database exists.
+        ▼
+a storage provider (sqlite today, memory, a future mssql): the ONLY layer that knows its engine and writes its SQL
+```
+
+A plugin never sees SQL and never needs to know the store is a database: it asks for a collection by name and puts, gets and queries documents. Each plugin keeps one small repository class of its own, the only code that touches `ctx.Data`. **Today is the opposite and is what this plan removes:** five plugins (~102 sites) write SQLite SQL through `ctx.Db`. The **conformance suite** is not about SQL: it is one set of scenarios (ids allocate in order, a query returns the same rows, a transaction is exclusive, a snapshot restores) run against *every* provider to prove each behaves identically behind the interfaces, so a second provider can be trusted. It contains no SQL.
+
 ### 1. The storage port
 
 ```
@@ -67,6 +80,8 @@ The `workspaces` table and its CRUD move into the Workspaces plugin as a collect
 ### 3. Budget leaves the kernel
 
 Delete the `IBudgetGate` check in `ModelCatalog` and the marker interface. The ledger, caps and reservations stay in the Agents plugin as a normal model middleware (it already is one). The kernel keeps only descriptive data (`ModelInfo` price and `IsLocal`) and the generic middleware pipeline. Trade-off, stated plainly: if Agents fails to load, paid calls are no longer refused automatically. Instead Diagnostics reports "N paid models available and no metering active" as a visible problem. Paid providers already need an API key you set. Decide's direct calls to the model server stay outside the catalog, as they are today.
+
+**What the Agents plugin is, and why it does not move into a "models" plugin.** It is two features in one: a **scheduler** (named agents = a model plus instances and config, and capacity slots: `agents.*`, `AgentScheduler.cs`) and a **budget ledger** (`budget.*`, `usage.*`, `Ledger.cs`, `Reservations.cs`). Talking to a model needs only a **provider** (the "model plugin": one per backend), the catalog and **Runtime** (the loop). Runtime already looks the scheduler up optionally, so chat works without Agents today for local models; with the kernel check gone it works for paid models too. Nobody needs a second kind of models plugin. Splitting Agents into a scheduler plugin and a budget plugin (so you could have either alone) is a sensible later cleanup and is not needed here.
 
 ### 4. Test infrastructure follows
 
@@ -132,4 +147,4 @@ It implements `IStorageProvider` with its own SQL and passes the conformance sui
 
 ## Not in this change
 
-Policy moves out of the contract assembly; normalised tool arguments and guards by role; one owner per RPC and an error taxonomy; the session `meta` bag and the fork policy; UI slots and the shared Svelte runtime; settings seeds; typed decision contracts; the two small silent-failure fixes (`agent_spawn isolated` with no Workspaces, a throwing before-tool-call hook); SQL Server, Oracle or any other engine; a SQL-translation layer; hot-swapping storage at runtime; touching `ISettings`. Each can be taken later; none is needed for storage to be swappable.
+Splitting the Agents plugin into a scheduler plugin and a budget plugin; policy moves out of the contract assembly; normalised tool arguments and guards by role; one owner per RPC and an error taxonomy; the session `meta` bag and the fork policy; UI slots and the shared Svelte runtime; settings seeds; typed decision contracts; the two small silent-failure fixes (`agent_spawn isolated` with no Workspaces, a throwing before-tool-call hook); SQL Server, Oracle or any other engine; a SQL-translation layer; hot-swapping storage at runtime; touching `ISettings`. Each can be taken later; none is needed for storage to be swappable.
