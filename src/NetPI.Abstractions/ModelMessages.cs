@@ -97,12 +97,45 @@ public static class ModelMessages
         return output;
     }
 
+    /// <summary>Wraps a notice body in the <c>&lt;system-notice&gt;</c> element the system prompt names as NetPI's own.
+    /// The body is not necessarily harness-authored: skill text, <c>AGENTS.md</c> and subagent reports all come through
+    /// here, so a body carrying a tag would render as a second, well-formed notice with a NetPI kind. The tag is
+    /// therefore neutralised in the body and the kind is quoted.</summary>
     public static string WrapNotice(string text, string? kind)
     {
         var sb = new StringBuilder();
         sb.Append("<system-notice");
-        if (!string.IsNullOrEmpty(kind)) sb.Append(" kind=\"").Append(kind).Append('"');
-        sb.Append(">\n").Append(text.Trim()).Append("\n</system-notice>");
+        if (!string.IsNullOrEmpty(kind)) sb.Append(" kind=\"").Append(EscapeAttr(kind)).Append('"');
+        sb.Append(">\n").Append(NeutraliseTag(text.Trim())).Append("\n</system-notice>");
+        return sb.ToString();
+    }
+
+    /// <summary>Escape the characters that end the attribute value or the tag itself.</summary>
+    private static string EscapeAttr(string value) =>
+        value.Replace("&", "&amp;", StringComparison.Ordinal)
+             .Replace("\"", "&quot;", StringComparison.Ordinal)
+             .Replace("<", "&lt;", StringComparison.Ordinal);
+
+    /// <summary>Escape the <c>&lt;</c> of every <c>&lt;system-notice&gt;</c> and <c>&lt;/system-notice&gt;</c> in the body,
+    /// so neither an opening nor a closing tag from repository or model text can open or close an element. Case
+    /// insensitive: <c>&lt;/SYSTEM-NOTICE&gt;</c> closes it just as well.</summary>
+    private static string NeutraliseTag(string body)
+    {
+        const string name = "system-notice";
+        var sb = new StringBuilder(body.Length + 16);
+        var from = 0;   // start of the text not yet copied
+        for (var i = 0; i < body.Length; i++)
+        {
+            if (body[i] != '<') continue;
+            var nameAt = i + 1;
+            if (nameAt < body.Length && body[nameAt] == '/') nameAt++;   // a closing tag
+            if (nameAt + name.Length > body.Length || !body.AsSpan(nameAt, name.Length).Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
+            sb.Append(body, from, i - from).Append("&lt;");
+            from = i + 1;   // the name stays readable, only the character that starts a tag is escaped
+            i = nameAt - 1;
+        }
+        if (from == 0) return body;
+        sb.Append(body, from, body.Length - from);
         return sb.ToString();
     }
 

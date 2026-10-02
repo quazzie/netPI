@@ -120,9 +120,12 @@ internal sealed class Goals(IPluginContext ctx)
         public int Runs;
     }
 
-    private readonly ConcurrentDictionary<string, RunTrack> _runs = new(); // session id → the running run
-    private readonly ConcurrentDictionary<string, byte> _autoNext = new(); // sessions whose next run is a continuation
-    private readonly ConcurrentDictionary<string, int> _started = new(); // session id → the last run that reached OnRunStart
+    private readonly ConcurrentDictionary<string, RunTrack> _runs = new(); // session id → the running run (RunEnded removes it)
+    // Sessions whose next run is a continuation, and the last run that reached OnRunStart: both are released with the
+    // session by Forget, which the plugin calls on session.deleted (a subagent's chat is created and deleted constantly,
+    // and neither map had any removal at all — idea-bv3iw4).
+    private readonly SessionState<byte> _autoNext = new();
+    private readonly SessionState<int> _started = new();
 
     public IPluginContext Ctx => ctx;
 
@@ -425,7 +428,7 @@ internal sealed class Goals(IPluginContext ctx)
         }
         catch (Exception ex)
         {
-            _autoNext.TryRemove(sessionId, out _);
+            _autoNext.Forget(sessionId);
             ctx.Logger.LogWarning(ex, "Starting the goal run for session {Session} failed", sessionId);
             try { PauseQuietly(sessionId, goal.Id, $"Could not start the next run: {ex.Message}"); } catch (Exception) { }
         }
@@ -448,11 +451,19 @@ internal sealed class Goals(IPluginContext ctx)
         catch (Exception ex) { ctx.Logger.LogWarning(ex, "Watching the goal run for session {Session} failed", sessionId); }
     }
 
+    /// <summary>A deleted session: its goal state went with its messages, so no continuation of it may start.</summary>
+    internal void Forget(string sessionId)
+    {
+        _autoNext.Forget(sessionId);
+        _started.Forget(sessionId);
+        _runs.TryRemove(sessionId, out _);
+    }
+
     public void RunStarted(AgentRunContext run)
     {
         var sid = run.Session.Id;
         _started[sid] = run.Agent.Runs;
-        var auto = _autoNext.TryRemove(sid, out _);
+        var auto = _autoNext.Forget(sid);
         _runs[sid] = new RunTrack { GoalId = Get(sid) is { Status: Goal.Active } g ? g.Id : null, Auto = auto, Runs = run.Agent.Runs };
     }
 

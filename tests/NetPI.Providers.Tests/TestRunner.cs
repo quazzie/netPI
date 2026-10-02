@@ -7,6 +7,11 @@ namespace NetPI.Providers.Tests;
 /// any of them (case-insensitive), like the other suites.</summary>
 internal sealed class TestRunner(string[] filters)
 {
+    /// <summary>Exit code when the filter selected no test at all: a broken selection, not a pass (idea-jw74xi). The
+    /// documented direct run is <c>dotnet &lt;suite&gt;.dll [filter]</c>, and it must not report green for a typo or a
+    /// renamed test. scripts/test.ps1 maps a non-zero exit with no FAIL line to a failure.</summary>
+    public const int NoTestSelected = 2;
+
     private int _passedChecks, _failedChecks, _passedTests, _failedTests, _skippedTests;
     private readonly List<string> _failures = [];
     private string _current = "";
@@ -55,8 +60,9 @@ internal sealed class TestRunner(string[] filters)
         Console.WriteLine();
         var skipped = _skippedTests > 0 ? $" ({_skippedTests} skipped by the filter)" : "";
         Console.WriteLine($"Tests: {_passedTests} passed, {_failedTests} failed{skipped}. Checks: {_passedChecks} passed, {_failedChecks} failed.");
-        if (_passedTests + _failedTests == 0) Console.WriteLine("No test matches the filter.");
+        var nothing = _passedTests + _failedTests == 0;
+        if (nothing) Console.WriteLine("No test matches the filter.");
         foreach (var f in _failures) Console.WriteLine("  - " + f);
-        return _failedTests == 0 ? 0 : 1;
+        return _failedTests > 0 ? 1 : nothing ? NoTestSelected : 0;
     }
 }

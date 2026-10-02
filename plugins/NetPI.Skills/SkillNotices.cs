@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Security;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -21,7 +20,8 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
     public const string SkillKind = "skill";
     public const string Command = "/skill:";
 
-    private readonly ConcurrentDictionary<string, object> _gates = new(StringComparer.Ordinal);
+    /// <summary>One gate per session, released with the session (a deleted session loads no skills).</summary>
+    private readonly SessionState<object> _gates = new(ctx.Events);
 
     /// <summary>After the working-directory notice (500) and the instruction files (510).</summary>
     public int Order => 520;
@@ -29,7 +29,7 @@ internal sealed class SkillNotices(IPluginContext ctx, SkillLoader loader) : IAg
     public async ValueTask OnBeforeModelCallAsync(AgentTurnContext turn)
     {
         var appended = false;
-        lock (_gates.GetOrAdd(turn.Run.Session.Id, _ => new object()))
+        lock (_gates.GetOrAdd(turn.Run.Session.Id, static _ => new object()))
         {
             var set = loader.Discover(turn.Run.Cwd);
             if (turn.Tools.Any(t => t.Name == SkillTool.Name) && Catalog(turn.Run.Session.Id, turn.Messages, set) is { } catalog)

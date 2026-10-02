@@ -167,6 +167,12 @@ Services from other plugins can be reloaded at any time: resolve them per use (`
 cache them. Use `ctx.Db.Migrate("my.plugin", "CREATE TABLE …")` for your own SQLite tables and `ctx.Settings` for
 settings (read them at use time; `settings.changed` is published on every change).
 
+**Per-session state:** sessions are not a bounded set — every subagent spawn creates one — so a dictionary keyed by
+session id has to drop its entry when the session is deleted. Keep such a map in `SessionState<T>`
+(`src/NetPI.Abstractions`): `new SessionState<T>(ctx.Events)` takes the plugin's bus and drops the entry on
+`session.deleted` itself, and `Forget`/`Clear` do it by hand. Six plugins kept a raw dictionary with no removal at
+all and tracked every session the process had ever seen (idea-bv3iw4).
+
 **Hot-reload rule:** don't hand your plugin's own types to long-lived host caches. Event payloads and RPC results may
 be anonymous objects, records or `JsonObject`s — but don't put your types inside `object`-typed containers
 (`Dictionary<string, object>`, `List<object>`), and use `NetPiJson.ToElement/ToNode/For(type)` instead of
