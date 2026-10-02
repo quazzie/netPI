@@ -41,6 +41,13 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   - `.\build.ps1 -Run` — publish and start the desktop app. `./build.sh` takes `--publish`, `--next-start`,
     `--pending`, `--discard`, `--app-dir`.
   - One plugin only, on purpose: `dotnet build plugins/<Name> -p:AppOutDir=<app>/plugins/<Name>/`.
+- **A change is not done until the running app has it.** Merging into `master` and building land in `artifacts/dev/app` only;
+  the running NetPI loads from the app folder, and a restart consumes `.pending` — not `master`. Before telling the user a
+  change is done (or "you'll see it after a restart"), install it: `.uild.ps1 -Publish` (plugins hot-swap immediately),
+  `-Publish -NextStart` (nothing moves under a live chat; the next start applies it), or the one-plugin dll copy above.
+  If you cannot install it (no access to the app folder, or the user should choose when the host restarts), say so in the
+  report and name the exact command. "It'll come in on your next restart" with nothing staged in `.pending` is false:
+  that restart just restarts.
 - **A publish from a worktree stages plugins instead of swapping them.** The built `NetPI.Abstractions.dll` never hash-matches
   the one the running app holds open, so `-Publish` reports "the contracts changed" and puts every plugin in `.pending` for the
   next start. To hot-swap one plugin anyway, copy its `.dll` and `.pdb` from the worktree's `artifacts\dev\app\plugins\<Name>\`
