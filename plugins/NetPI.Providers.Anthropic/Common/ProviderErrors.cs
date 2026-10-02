@@ -101,8 +101,11 @@ internal static partial class ProviderErrors
         return new ModelException(text, transient, status, type) { ContextOverflow = overflow };
     }
 
-    public static ModelException UnexpectedEnd(string provider) =>
-        new($"{provider}: the response stream ended unexpectedly", transient: true, null, "stream_truncated");
+    /// <summary>The stream ended before its terminal event. <paramref name="dropped"/> says how many frames could
+    /// not be parsed and what the first looked like, so a mangled stream is not silently a clean one (idea-saljbd).</summary>
+    public static ModelException UnexpectedEnd(string provider, string? dropped = null) =>
+        new(dropped is null ? $"{provider}: the response stream ended unexpectedly"
+            : $"{provider}: the response stream ended unexpectedly ({dropped})", transient: true, null, "stream_truncated");
 
     /// <summary>Translate a transport exception. User cancellation is re-thrown as <see cref="OperationCanceledException"/>.</summary>
     public static Exception Translate(Exception ex, string provider, CancellationToken ct)

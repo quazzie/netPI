@@ -211,24 +211,11 @@ public sealed class OpenRouterProvider : IModelProvider
 
     // ================================================================ streaming
 
-    /// <summary>What one call sent and got back, for error messages and failed-request dumps.</summary>
-    private sealed class CallInfo
-    {
-        public string? Url;
-        public JsonObject? Body;
-        public string? GenerationId;
-        /// <summary>The response body as received, capped (16k) by <see cref="ProviderErrors.ReadBodySafeAsync"/>. The
-        /// dump used to keep only the 2,000-char excerpt the error message carries, so a cause outside
-        /// <c>error.message</c> was unreproducible from the file (idea-022jh1).</summary>
-        public string? ResponseBody;
-        public bool Dump;
-    }
-
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
     {
         // Errors are reported as they are (no retries or workarounds here): the message is only extended with the
         // generation id, and the request body is saved so the failure can be reproduced.
-        var call = new CallInfo();
+        var call = new CallInfo { ResponseIdLabel = "generation", Transport = "chat" };
         await using var e = StreamCoreAsync(request, call, ct).GetAsyncEnumerator(ct);
         while (true)
         {
@@ -240,63 +227,10 @@ public sealed class OpenRouterProvider : IModelProvider
             }
             catch (ModelException ex) when (!ct.IsCancellationRequested)
             {
-                throw Describe(ex, request, call);
+                throw await FailedRequests.DescribeAsync(ex, request, call, Id, _dumpDir, _log, ct).ConfigureAwait(false);
             }
             yield return current;
         }
-    }
-
-    private ModelException Describe(ModelException ex, ModelRequest request, CallInfo call)
-    {
-        var ids = new List<string>();
-        if (call.GenerationId is { Length: > 0 } gen) ids.Add("generation " + gen);
-        if (call.Dump && call.Body is not null && ex.ErrorType is not ("network_error" or "provider_disabled" or "invalid_config" or "authentication_error")
-            && DumpFailedRequest(ex, request, call) is { } dump)
-            ids.Add("saved " + dump);
-        if (ids.Count == 0) return ex;
-        // The ids stay in the message (the log, diag and a bug report want them) and are handed over as Detail, so the
-        // retry notice can show the reason without them (idea-qz1a5z).
-        var detail = string.Join(", ", ids);
-        return new ModelException($"{ex.Message} [{detail}]", ex.Transient, ex.StatusCode, ex.ErrorType, ex)
-        {
-            ContextOverflow = ex.ContextOverflow,
-            RetryAfter = ex.RetryAfter,
-            Detail = detail,
-        };
-    }
-
-    private string? DumpFailedRequest(ModelException ex, ModelRequest request, CallInfo call)
-    {
-        if (_dumpDir is null) return null;
-        try
-        {
-            Directory.CreateDirectory(_dumpDir);
-            var name = $"{DateTime.Now:yyyyMMdd-HHmmss-fff}-{Safe(request.Model.Id)}.json";
-            var path = Path.Combine(_dumpDir, name);
-            var doc = new JsonObject
-            {
-                ["time"] = DateTimeOffset.Now.ToString("O"),
-                ["provider"] = Id,
-                ["model"] = request.Model.Id,
-                ["sessionId"] = request.SessionId,
-                ["url"] = call.Url,
-                ["generationId"] = call.GenerationId,
-                ["error"] = new JsonObject { ["message"] = ex.Message, ["type"] = ex.ErrorType, ["status"] = ex.StatusCode },
-                ["request"] = call.Body!.DeepClone(),
-            };
-            if (!string.IsNullOrEmpty(call.ResponseBody)) doc["response"] = call.ResponseBody;
-            File.WriteAllText(path, doc.ToJsonString(NetPiJson.Indented));
-            foreach (var old in new DirectoryInfo(_dumpDir).GetFiles("*.json").OrderByDescending(f => f.Name).Skip(30))
-                try { old.Delete(); } catch { }
-            return path;
-        }
-        catch (Exception e)
-        {
-            _log.LogDebug(e, "openrouter: could not save the failed request");
-            return null;
-        }
-
-        static string Safe(string s) => string.Concat(s.Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_'));
     }
 
     private async IAsyncEnumerable<ModelStreamEvent> StreamCoreAsync(ModelRequest request, CallInfo call, [EnumeratorCancellation] CancellationToken ct)
@@ -327,7 +261,7 @@ public sealed class OpenRouterProvider : IModelProvider
 
         using (resp)
         {
-            if (resp.Headers.TryGetValues("x-generation-id", out var gen)) call.GenerationId = gen.FirstOrDefault();
+            if (resp.Headers.TryGetValues("x-generation-id", out var gen)) call.ResponseId = gen.FirstOrDefault();
             if (!resp.IsSuccessStatusCode)
             {
                 var errBody = await ProviderErrors.ReadBodySafeAsync(resp, ct).ConfigureAwait(false);
@@ -346,7 +280,7 @@ public sealed class OpenRouterProvider : IModelProvider
                 catch (Exception ex) when (ex is not ModelException) { throw Rethrow(ex, ct); }
                 call.ResponseBody = ProviderErrors.Cap(text);
                 try { parser.HandleJsonBody(text); }
-                finally { call.GenerationId ??= parser.GenerationId; }
+                finally { call.ResponseId ??= parser.GenerationId; }
             }
             else
             {
@@ -357,7 +291,7 @@ public sealed class OpenRouterProvider : IModelProvider
                 await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct), DisplayName, ct).ConfigureAwait(false))
                 {
                     try { parser.Handle(sse); }
-                    finally { call.GenerationId ??= parser.GenerationId; }
+                    finally { call.ResponseId ??= parser.GenerationId; }
                     foreach (var ev in asm.Drain()) yield return ev;
                     if (parser.Finished) break;
                 }
@@ -374,7 +308,7 @@ public sealed class OpenRouterProvider : IModelProvider
                 th.ProviderData = new JsonObject { [OpenRouterChat.DetailsKey] = new JsonArray([.. parser.ReasoningDetails.Select(d => (JsonNode)d.DeepClone())]) };
             }
             var meta = new JsonObject();
-            if ((call.GenerationId ?? parser.GenerationId) is { } gid) meta["generationId"] = gid;
+            if ((call.ResponseId ?? parser.GenerationId) is { } gid) meta["generationId"] = gid;
             if (parser.UpstreamProvider is { } upstream) meta["provider"] = upstream;
             if (parser.Cost is { } cost) meta["cost"] = cost;
             if (meta.Count > 0) message.Meta = new JsonObject { ["openrouter"] = meta };

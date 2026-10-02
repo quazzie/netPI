@@ -232,6 +232,38 @@ await t.Run("an oversize image is replaced by a note, a fitting one is sent as i
     return Task.CompletedTask;
 });
 
+// Every stream parser swallowed a frame it could not read, so a stream whose terminal event was mangled ended as a
+// clean truncation and the error said nothing about what was lost (idea-saljbd).
+await t.Run("a malformed frame is counted by every parser and named in the truncation", () =>
+{
+    var mangled = """{"choices":[{"delta":{"content":"x"}}""";   // cut mid-object
+
+    var chat = new AP.ChatStreamParser(new AP.MessageAssembler(), "P", false);
+    chat.Handle(new AP.SseEvent(null, mangled));
+    ModelException? chatErr = null;
+    try { chat.Finish(); } catch (ModelException ex) { chatErr = ex; }
+    t.Check(chatErr?.Message.Contains("1 malformed event") == true && chatErr.Message.Contains("choices"), "chat: " + chatErr?.Message);
+
+    var responses = new AP.ResponsesStreamParser(new AP.MessageAssembler(), "P");
+    responses.Handle(new AP.SseEvent(null, mangled));
+    ModelException? respErr = null;
+    try { responses.Finish(); } catch (ModelException ex) { respErr = ex; }
+    t.Check(respErr?.Message.Contains("1 malformed event") == true, "responses: " + respErr?.Message);
+
+    var router = new OR.OpenRouterStreamParser(new OR.MessageAssembler(), "OR", false);
+    router.Handle(new OR.SseEvent(null, mangled));
+    ModelException? orErr = null;
+    try { router.Finish(); } catch (ModelException ex) { orErr = ex; }
+    t.Check(orErr?.Message.Contains("1 malformed event") == true, "openrouter: " + orErr?.Message);
+
+    // A stream with no mangled frame says nothing about it.
+    var clean = new AP.ChatStreamParser(new AP.MessageAssembler(), "P", false);
+    ModelException? cleanErr = null;
+    try { clean.Finish(); } catch (ModelException ex) { cleanErr = ex; }
+    t.Check(cleanErr?.Message.EndsWith("ended unexpectedly") == true, "unchanged without one: " + cleanErr?.Message);
+    return Task.CompletedTask;
+});
+
 await t.Run("Error classification (HTTP)", () =>
 {
     var e503 = AP.ProviderErrors.FromHttp("AiProxy", 503, "Service Unavailable", """{"error":{"type":"backend_unavailable"}}""");
@@ -722,6 +754,11 @@ await t.Run("responses: errors (503, context overflow, cut-off, EOF, response.fa
     t.Check(e4 is { Transient: true, ErrorType: "stream_truncated" }, "EOF before completed -> transient");
     var e5 = await Fails(aiproxy, Req(M("aiproxy", "failed")));
     t.Check(e5 is { Transient: true, ErrorType: "server_error" }, "response.failed server_error transient");
+    // A data-only {"error":{...}} frame has no type and no event line: it used to match no case at all, so the user saw
+    // "the stream ended unexpectedly" and Retry spent six attempts at full price on a call already refused (idea-saljbd).
+    var e5b = await Fails(aiproxy, Req(M("aiproxy", "data-error")));
+    t.Check(e5b is { ErrorType: "context_length_exceeded", ContextOverflow: true } && e5b.Message.Contains("context length exceeded"),
+        "a data-only error frame is the server's own error: " + e5b?.Message);
 
     using var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
     l.Start(); var port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port; l.Stop();
@@ -1224,6 +1261,46 @@ await t.Run("anthropic: errors and stop reasons (529, in-stream error, prompt to
     t.Check(mt.Usage is { InputTokens: 3, OutputTokens: 100 }, "usage");
 });
 
+// The project rule is "errors show up unchanged with the server's request id, and failed bodies are saved". Anthropic
+// did neither: no id in the message, nothing on disk to reproduce a backend bug from (idea-saljbd).
+await t.Run("anthropic: failures carry the server's request id and save the request", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "netpi-an-" + Guid.NewGuid().ToString("N"));
+    var p = new AN.AnthropicProvider(new HttpClient(), () => anCtx.SettingsImpl.GetNode("providers.anthropic") as JsonObject,
+        null, null, logsDir: dir);
+
+    var e = await Fails(p, Req(M("anthropic", "rejected-tools")));
+    t.Check(e!.Message.Contains("request req_rejected"), "the request id is in the message: " + e.Message);
+    t.Check(e.Detail?.Contains("req_rejected") == true && e.Message.EndsWith($"[{e.Detail}]"), "and named as Detail: " + e.Detail);
+
+    var dump = JsonNode.Parse(File.ReadAllText(Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Single()))!;
+    t.Check(dump["request"]?["messages"] is JsonArray && dump["requestId"]?.GetValue<string>() == "req_rejected", "the dump holds the request and the id");
+    t.Check((dump["response"]?.GetValue<string>() ?? "").Contains("maximum allowed"), "and the response body");
+    t.Eq("anthropic", dump["provider"]?.GetValue<string>(), "with the provider");
+    t.Eq("messages", dump["transport"]?.GetValue<string>(), "and the transport");
+
+    // An in-stream error frame carries its own request id, for a gateway that sends no header.
+    var stream = await Fails(p, Req(M("anthropic", "stream-error")));
+    t.Check(stream!.Message.Contains("request req_stream"), "the stream error's own request id: " + stream.Message);
+
+    // A rate limit (and an overloaded backend) repeats on every attempt: their dumps would rotate the interesting one
+    // out within a few calls, so only the request worth reproducing is saved.
+    var rate = await Fails(p, Req(M("anthropic", "rate-limited")));
+    t.Check(rate is { Transient: true, StatusCode: 429 } && rate.RetryAfter == System.TimeSpan.FromSeconds(4), "429 with Retry-After: " + rate?.Message);
+    t.Eq(1, Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Length, "only the 400 was saved");
+
+    Directory.Delete(dir, true);
+});
+
+// Frames the parser cannot read were dropped in silence, so a stream whose message_delta was mangled "completed"
+// with message_start's one-token usage and the ledger under-recorded the call (idea-saljbd).
+await t.Run("a malformed frame is counted and named in the error that ends the stream", async () =>
+{
+    var e = await Fails(anthropic, Req(M("anthropic", "malformed")));
+    t.Check(e is { ErrorType: "stream_truncated", Transient: true }, "the stream still ends truncated: " + e?.Message);
+    t.Check(e!.Message.Contains("2 malformed events") && e.Message.Contains("message_delta"), "how many and what the first looked like: " + e.Message);
+});
+
 await t.Run("anthropic plugin: registration and stop", async () =>
 {
     t.Eq("anthropic", anCtx.ServicesImpl.Get<IModelProvider>()?.Id, "registered");
@@ -1416,8 +1493,9 @@ await t.Run("openrouter: errors keep the server's text and add generation id, up
     var bad = await Fails(openrouter, Req(M("openrouter", "vendor/upstream-502")));
     t.Check(bad is { StatusCode: 502 } && bad.Message.Contains("upstream provider SomeHost") && bad.Message.Contains("upstream exploded"), "502: " + bad?.Message);
     var dumps = Directory.GetFiles(Path.Combine(orDumps, "failed-requests"), "*.json");
-    t.Eq(3, dumps.Length, "three failed requests saved");
-    t.Check(dumps.Select(f => JsonNode.Parse(File.ReadAllText(f))!).All(d => d["request"]?["messages"] is JsonArray && d["generationId"] is not null), "dumps have the body and the generation id");
+    // The 429 is not saved: it repeats on every attempt and its dumps rotate the interesting ones out (idea-saljbd).
+    t.Eq(2, dumps.Length, "the two failures worth reproducing are saved; the 429 is not");
+    t.Check(dumps.Select(f => JsonNode.Parse(File.ReadAllText(f))!).All(d => d["request"]?["messages"] is JsonArray && d["responseId"] is not null), "dumps have the body and the generation id");
     Directory.Delete(orDumps, true);
 });
 
@@ -1439,7 +1517,7 @@ await t.Run("openrouter: the failed-request dump keeps the whole response body, 
     t.Check(e is { StatusCode: 400 } && e.Message.Contains("3 tools rejected") && !e.Message.Contains("tr-or-7777"), "the message quotes the excerpt only");
     var dump = JsonNode.Parse(File.ReadAllText(Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Single()))!;
     t.Check((dump["response"]?.GetValue<string>() ?? "").Contains("tr-or-7777"), "the dump holds the whole body");
-    t.Check(dump["request"]?["messages"] is JsonArray && dump["generationId"] is not null, "with the request and the generation id");
+    t.Check(dump["request"]?["messages"] is JsonArray && dump["responseId"] is not null, "with the request and the generation id");
     Directory.Delete(dir, true);
 });
 

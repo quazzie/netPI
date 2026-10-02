@@ -289,6 +289,7 @@ internal sealed class AnthropicStreamParser(MessageAssembler asm, string provide
 
     private readonly Dictionary<int, Block> _blocks = [];
     private readonly Usage _usage = new();
+    private readonly DroppedFrames _dropped = new();
     private string? _stop;
 
     public bool Finished { get; private set; }
@@ -296,8 +297,10 @@ internal sealed class AnthropicStreamParser(MessageAssembler asm, string provide
     public void Handle(SseEvent sse)
     {
         JsonDocument doc;
+        // A frame that does not parse is counted, not swallowed: message_delta carries the stop reason and the final
+        // usage, so dropping one silently ends the call looking clean (idea-saljbd).
         try { doc = JsonDocument.Parse(sse.Data); }
-        catch (JsonException) { return; }
+        catch (JsonException) { _dropped.Add(sse.Data); return; }
         using (doc) HandleEvent(doc.RootElement, sse.Event);
     }
 
@@ -388,6 +391,9 @@ internal sealed class AnthropicStreamParser(MessageAssembler asm, string provide
             case "error":
             {
                 var err = e.Prop("error");
+                // The in-stream error carries the server's request id, which is the only way to find the failure in
+                // Anthropic's own logs; it was dropped with the frame (idea-saljbd).
+                RequestId ??= e.Str("request_id") ?? err.Str("request_id");
                 throw ProviderErrors.FromStream(provider, err.Str("type"), err.Str("message"));
             }
             // ping and unknown events: ignore
@@ -406,9 +412,12 @@ internal sealed class AnthropicStreamParser(MessageAssembler asm, string provide
         asm.SetUsage(MessageAssembler.Clone(_usage));
     }
 
+    /// <summary>The <c>request_id</c> an error frame carried, when the response had no header with one.</summary>
+    public string? RequestId { get; private set; }
+
     public void Finish()
     {
-        if (!Finished) throw ProviderErrors.UnexpectedEnd(provider);
+        if (!Finished) throw ProviderErrors.UnexpectedEnd(provider, _dropped.Note);
         asm.StopReason = _stop switch
         {
             null or "end_turn" or "stop_sequence" => asm.ToolCallCount > 0 ? "tool_use" : "stop",

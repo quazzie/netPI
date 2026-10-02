@@ -233,6 +233,10 @@ internal sealed class MockServer : IAsyncDisposable
             case "failed":
                 await Sse(ctx, [D(new { type = "response.failed", response = new { status = "failed", error = new { code = "server_error", message = "boom" } } })]);
                 return;
+            case "data-error":
+                // A gateway refusing the request mid-stream, with no `type` and no event line (idea-saljbd).
+                await Sse(ctx, [D(new { error = new { message = "context length exceeded", type = "context_length_exceeded" } })]);
+                return;
             case "slow":
                 await Sse(ctx, [D(new { type = "response.output_text.delta", item_id = "m", output_index = 0, delta = "tick" })]);
                 try { await Task.Delay(30_000, ctx.RequestAborted); } catch (OperationCanceledException) { }
@@ -486,12 +490,31 @@ internal sealed class MockServer : IAsyncDisposable
             case "prompt-too-long":
                 await Json(ctx, """{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 250000 tokens > 200000 maximum"}}""", 400);
                 return;
+            case "rate-limited":
+                ctx.Response.Headers["request-id"] = "req_rate";
+                ctx.Response.Headers["Retry-After"] = "4";
+                await Json(ctx, """{"type":"error","error":{"type":"rate_limit_error","message":"Number of requests has exceeded your rate limit"}}""", 429);
+                return;
+            case "malformed":
+                // The frames the parser cannot read are the ones that carry the terminal event (idea-saljbd): the
+                // stream then simply ends, and the error has to say what was lost.
+                await Sse(ctx,
+                [
+                    E("message_start", new { type = "message_start", message = new { id = "m", usage = new { input_tokens = 5, output_tokens = 1 } } }),
+                    "data: {\"type\":\"message_delta\", oops\n\n",
+                    "data: [not json at all\n\n",
+                ]);
+                return;
             case "stream-error":
                 await Sse(ctx,
                 [
                     E("message_start", new { type = "message_start", message = new { id = "msg_e", usage = new { input_tokens = 5, output_tokens = 1 } } }),
-                    E("error", new { type = "error", error = new { type = "overloaded_error", message = "Overloaded" } }),
+                    E("error", new { type = "error", request_id = "req_stream", error = new { type = "overloaded_error", message = "Overloaded" } }),
                 ]);
+                return;
+            case "rejected-tools":
+                ctx.Response.Headers["request-id"] = "req_rejected";
+                await Json(ctx, """{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: 64000 > 32000, which is the maximum allowed"}}""", 400);
                 return;
             case "cutoff":
                 await Sse(ctx, [E("message_start", new { type = "message_start", message = new { id = "m", usage = new { input_tokens = 5, output_tokens = 1 } } })]);

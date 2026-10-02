@@ -66,7 +66,7 @@ no SQL outside `src/NetPI.Host/Storage/Sqlite`, and nothing a plugin stores leav
 | `apiKey` | – | sent as Bearer; `"env:NAME"` / `"$NAME"` reads an environment variable |
 | `replayReasoning` | Responses: `true`, Chat: `false` | send previous reasoning back. Standard stateless Responses usage appends every output item of a response (reasoning → message → function calls) to the next input |
 | `includeEncryptedReasoning` | `false` | also request `include: ["reasoning.encrypted_content"]` (OpenAI-hosted reasoning models; nInfer rejects non-empty `include` with HTTP 400) |
-| `dumpFailedRequests` | `true` | save the request **and response** body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30, response capped at 16k chars) and add the server's `x-request-id` / response id to the error, for reproducing backend bugs |
+| `dumpFailedRequests` | `true` | save the request **and response** body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30, response capped at 16k chars) and add the server's `x-request-id` / response id to the error, for reproducing backend bugs. A rate limit or an overloaded backend is not saved: it repeats on every attempt and its dumps rotate the useful ones out |
 | `parseThinkTags` | `true` | split a leading inline `<think>…</think>` into thinking blocks; a tag after visible text stays text (it is content the model wrote) |
 | `defaultMaxOutputTokens` | `16384` | when the catalog says `max_output_tokens: null`. Every provider also cuts the value down to what the model's `contextWindow` has left beside the request, so it never sends more output than the window can hold |
 | `modelsCacheSeconds` | `10` | `/v1/models` cache |
@@ -99,7 +99,7 @@ model that produced them (required for tool calls with Claude, Gemini or OpenAI 
 | `replayReasoning` | `true` | send `reasoning_details` back |
 | `parseThinkTags` | `true` | split a leading inline `<think>…</think>` into thinking blocks; a tag after visible text stays text (it is content the model wrote) |
 | `headers` | – | extra HTTP headers, e.g. `HTTP-Referer` + `X-OpenRouter-Title` for OpenRouter's app attribution (creates a public app page) |
-| `dumpFailedRequests` | `true` | save the request **and response** body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30, response capped at 16k chars); errors carry the generation id |
+| `dumpFailedRequests` | `true` | save the request **and response** body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30, response capped at 16k chars); errors carry the generation id (`responseId` in the dump) |
 | `modelsCacheSeconds` | `600` | |
 | `enabled` | `true` | |
 
@@ -118,6 +118,7 @@ turned off; models without effort levels only get on/off. Free models are limite
 | `adaptiveEffort` | `true` | send `output_config.effort` with adaptive thinking |
 | `promptCaching` | `true` | cache_control on system prompt, tools and the rolling last message |
 | `defaultMaxOutputTokens` | `32000` | also cut to what the model's `contextWindow` has left beside the request |
+| `dumpFailedRequests` | `true` | save the request **and response** body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30) and add the server's `request-id` to the error, for reproducing backend bugs. A rate limit or an overloaded backend is not saved |
 | `betas` | `[]` | `anthropic-beta` header values |
 | `fallbackModels` | built-in list | used when `/v1/models` can't be listed |
 | `modelsCacheSeconds` | `600` | |

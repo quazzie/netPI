@@ -218,6 +218,7 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
     private readonly Dictionary<string, Item> _byId = new(StringComparer.Ordinal);
     private readonly Dictionary<int, Item> _byIndex = [];
     private readonly List<Item> _items = [];
+    private readonly DroppedFrames _dropped = new();
 
     public bool Finished { get; private set; }
 
@@ -228,8 +229,10 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
     {
         if (sse.IsDone) { if (asm.HasContent || _items.Count > 0) Finished = true; return; }
         JsonDocument doc;
+        // A frame that does not parse is counted, not swallowed: the terminal event and the usage live in the last
+        // frames, so dropping one silently ends the call looking clean (idea-saljbd).
         try { doc = JsonDocument.Parse(sse.Data); }
-        catch (JsonException) { return; } // tolerate junk lines
+        catch (JsonException) { _dropped.Add(sse.Data); return; } // tolerate junk lines
         using (doc) HandleEvent(doc.RootElement, sse.Event);
     }
 
@@ -250,7 +253,7 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
     public void Finish()
     {
         foreach (var it in _items) FlushText(it);
-        if (!Finished) throw ProviderErrors.UnexpectedEnd(provider);
+        if (!Finished) throw ProviderErrors.UnexpectedEnd(provider, _dropped.Note);
     }
 
     // ---------------------------------------------------------------- message text (optionally split at <think> tags)
@@ -294,6 +297,14 @@ internal sealed class ResponsesStreamParser(MessageAssembler asm, string provide
     {
         var type = e.Str("type") ?? sseEvent ?? "";
         if (e.Prop("response").Str("id") is { Length: > 0 } rid) ResponseId = rid;
+        // A gateway that refuses the request mid-stream can answer with a bare `data: {"error":{…}}` frame: no type,
+        // no event name, so nothing below matched it, the user saw "stream ended unexpectedly" and Retry spent six
+        // attempts at full price on a call the server had already refused (idea-saljbd).
+        if (type.Length == 0 && e.Prop("error").Has())
+        {
+            var (msg, errType) = ProviderErrors.ExtractError(e);
+            throw ProviderErrors.FromStream(provider, errType, msg);
+        }
         switch (type)
         {
             case "response.output_item.added":

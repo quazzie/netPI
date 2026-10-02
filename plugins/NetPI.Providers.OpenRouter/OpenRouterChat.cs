@@ -265,6 +265,7 @@ internal sealed class OpenRouterStreamParser(MessageAssembler asm, string provid
     private readonly Dictionary<int, Call> _calls = [];
     private readonly List<Call> _order = [];
     private readonly List<JsonObject> _details = [];
+    private readonly DroppedFrames _dropped = new();
     private string? _finish;
     private bool _done;
     private bool _anyChunk;
@@ -281,8 +282,10 @@ internal sealed class OpenRouterStreamParser(MessageAssembler asm, string provid
     {
         if (sse.IsDone) { _done = true; return; }
         JsonDocument doc;
+        // A frame that does not parse is counted, not swallowed: the finish reason and the usage arrive last, so
+        // dropping one silently ends the call looking clean (idea-saljbd).
         try { doc = JsonDocument.Parse(sse.Data); }
-        catch (JsonException) { return; }
+        catch (JsonException) { _dropped.Add(sse.Data); return; }
         using (doc) HandleChunk(doc.RootElement, streaming: true);
     }
 
@@ -464,8 +467,8 @@ internal sealed class OpenRouterStreamParser(MessageAssembler asm, string provid
             c.Part = asm.StartToolCall(c.Id, c.Name);
             asm.AppendToolArgs(c.Part, c.PendingArgs.ToString());
         }
-        if (!_done && _finish is null) throw ProviderErrors.UnexpectedEnd(provider);
-        if (!_anyChunk && !asm.HasContent) throw ProviderErrors.UnexpectedEnd(provider);
+        if (!_done && _finish is null) throw ProviderErrors.UnexpectedEnd(provider, _dropped.Note);
+        if (!_anyChunk && !asm.HasContent) throw ProviderErrors.UnexpectedEnd(provider, _dropped.Note);
 
         asm.StopReason = _finish switch
         {
