@@ -1,9 +1,9 @@
+// Compiled into each provider plugin from shared/ProviderKit (plugins do not reference each other): edit it here.
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-// NOTE: mirrored in NetPI.Providers.{AiProxy,Anthropic,OpenRouter}/Common (plugins cannot share code). Keep the copies in sync.
-namespace NetPI.Providers.OpenRouter;
+namespace NetPI.Providers.Kit;
 
 /// <summary>Tolerant accessors over JsonNode/JsonElement (servers disagree about types).</summary>
 internal static class J

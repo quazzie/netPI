@@ -22,6 +22,9 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
 - `plugins/<Name>` — one plugin per folder; minimal csproj, conventions in `plugins/Directory.Build.props`. Plugins
   never reference each other: they talk through services (`ctx.Services`), RPC (`ctx.Rpc`) and events (`ctx.Events`).
 - `plugins/<Name>/ui` — optional Svelte tab (built to `wwwroot/ui.js` by `npm run build:plugins`, committed).
+- `shared/` — source that several plugins compile in, not a shared assembly (plugins never reference each other):
+  each csproj lists it with `<Compile Include="$(RepoRoot)shared/<Kit>/*.cs" LinkBase="…" />`. `shared/ProviderKit/`
+  is the three provider plugins' common code (SSE reader, JSON accessors, error mapping, message assembler, secrets).
 - `web/` — the app UI (built to `web/dist`, committed; copied into the build output's `wwwroot` by the server build).
 - `tests/` — console test runners (no test framework; NuGet packages other than WebView2 are not used),
   `tests/MockLlm` (scripted model server), `tests/NetPI.E2E` (end-to-end suite).

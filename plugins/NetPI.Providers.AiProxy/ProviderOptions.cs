@@ -79,7 +79,7 @@ internal sealed class ProviderOptions
         return new ProviderOptions
         {
             BaseUrl = o.Str("baseUrl") is { Length: > 0 } url ? url : d.BaseUrl,
-            ApiKey = ResolveSecret(o.Str("apiKey")),
+            ApiKey = Secrets.Resolve(o.Str("apiKey")),
             Transport = ParseTransport(o.Str("transport")) ?? d.Transport,
             ReplayReasoning = BoolOrNull(o, "replayReasoning"),
             DumpFailedRequests = o.Bool("dumpFailedRequests", true),
@@ -120,18 +120,6 @@ internal sealed class ProviderOptions
         "chat" or "chat_completions" or "chatcompletions" or "completions" => OpenAiTransport.Chat,
         _ => null,
     };
-
-    /// <summary>"env:NAME" or "$NAME" reads an environment variable; anything else is the literal secret.</summary>
-    public static string? ResolveSecret(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-        value = value.Trim();
-        string? env = value.StartsWith("env:", StringComparison.OrdinalIgnoreCase) ? value[4..]
-            : value.StartsWith('$') && value.Length > 1 ? value[1..] : null;
-        if (env is null) return value;
-        var resolved = Environment.GetEnvironmentVariable(env.Trim());
-        return string.IsNullOrWhiteSpace(resolved) ? null : resolved.Trim();
-    }
 }
 
 /// <summary>Maps a requested reasoning effort onto what the model supports.</summary>

@@ -24,6 +24,7 @@
     { "path": "plugins/NetPI.Providers.AiProxy/", "tags": ["provider", "usage"] },
     { "path": "plugins/NetPI.Providers.Anthropic/", "tags": ["provider", "usage"] },
     { "path": "plugins/NetPI.Providers.OpenRouter/", "tags": ["provider"] },
+    { "path": "shared/ProviderKit/", "tags": ["provider", "usage"] },
     { "path": "plugins/NetPI.Retry/", "tags": ["retry"] },
     { "path": "plugins/NetPI.Runtime/", "tags": ["smoke", "control", "chat", "scheduling", "sessions"] },
     { "path": "plugins/NetPI.Skills/", "tags": ["skills"] },

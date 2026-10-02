@@ -58,7 +58,7 @@ internal sealed class AnthropicOptions
         return new AnthropicOptions
         {
             BaseUrl = o.Str("baseUrl") is { Length: > 0 } url ? url : DefaultBaseUrl,
-            ApiKey = ResolveSecret(o.Str("apiKey")) ?? ResolveSecret("env:ANTHROPIC_API_KEY"),
+            ApiKey = Secrets.Resolve(o.Str("apiKey")) ?? Secrets.Resolve("env:ANTHROPIC_API_KEY"),
             Thinking = o.Str("thinking")?.Trim().ToLowerInvariant() switch
             {
                 "adaptive" => ThinkingMode.Adaptive,
@@ -85,17 +85,6 @@ internal sealed class AnthropicOptions
         foreach (var n in arr)
             if (n is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s)) list.Add(s.Trim());
         return list;
-    }
-
-    public static string? ResolveSecret(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-        value = value.Trim();
-        string? env = value.StartsWith("env:", StringComparison.OrdinalIgnoreCase) ? value[4..]
-            : value.StartsWith('$') && value.Length > 1 ? value[1..] : null;
-        if (env is null) return value;
-        var resolved = Environment.GetEnvironmentVariable(env.Trim());
-        return string.IsNullOrWhiteSpace(resolved) ? null : resolved.Trim();
     }
 }
 

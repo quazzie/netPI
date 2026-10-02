@@ -347,6 +347,6 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
     private static void ApplyHeaders(HttpRequestMessage req, ProviderOptions o)
     {
         if (!string.IsNullOrEmpty(o.ApiKey)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", o.ApiKey);
-        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, ProviderOptions.ResolveSecret(v) ?? v);
+        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, Secrets.Resolve(v) ?? v);
     }
 }

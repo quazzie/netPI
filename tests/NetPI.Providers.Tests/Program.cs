@@ -1,10 +1,19 @@
+extern alias anthropic;
+extern alias aiproxy;
+extern alias openrouter;
+
 using System.Text;
 using System.Text.Json.Nodes;
 using NetPI;
 using NetPI.Providers.Tests;
-using AN = NetPI.Providers.Anthropic;
-using AP = NetPI.Providers.AiProxy;
-using OR = NetPI.Providers.OpenRouter;
+using AN = anthropic::NetPI.Providers.Anthropic;
+using AP = aiproxy::NetPI.Providers.AiProxy;
+using OR = openrouter::NetPI.Providers.OpenRouter;
+// The provider kit (shared/ProviderKit) is compiled into every provider, so it exists in all three assemblies;
+// these tests exercise one copy, which is the point of the sharing - except where a type is handed to a parser in
+// another assembly, which needs that assembly's copy.
+using Kit = aiproxy::NetPI.Providers.Kit;
+using OrKit = openrouter::NetPI.Providers.Kit;
 
 Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
 Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null);
@@ -108,8 +117,8 @@ await t.Run("JsonNode: a tool schema node cannot be re-parented, so the provider
 await t.Run("SSE reader: event names, multi-line data, comments, CRLF, missing separators, [DONE], EOF", async () =>
 {
     var raw = "event: a\r\ndata: {\"x\":\r\ndata: 1}\r\n\r\n: comment\n\nretry: 5\ndata: {\"y\":2}\ndata: {\"z\":3}\n\nid: 7\ndata:[DONE]\n\ndata: last";
-    var events = new List<AP.SseEvent>();
-    await foreach (var e in AP.SseReader.ReadAsync(new MemoryStream(Encoding.UTF8.GetBytes(raw)))) events.Add(e);
+    var events = new List<Kit.SseEvent>();
+    await foreach (var e in Kit.SseReader.ReadAsync(new MemoryStream(Encoding.UTF8.GetBytes(raw)))) events.Add(e);
     t.Eq(5, events.Count, "event count");
     t.Eq("a", events[0].Event, "event name");
     t.Eq("{\"x\":\n1}", events[0].Data, "multi-line data");
@@ -126,7 +135,7 @@ await t.Run("Think-tag splitter: tags split at every chunk boundary", () =>
     for (var i = 0; i <= s.Length; i++)
     for (var j = i; j <= s.Length; j++)
     {
-        var sp = new AP.ThinkTagSplitter();
+        var sp = new Kit.ThinkTagSplitter();
         var th = new StringBuilder(); var tx = new StringBuilder();
         void Emit(bool thinking, string text) => (thinking ? th : tx).Append(text);
         sp.Process(s[..i], Emit); sp.Process(s[i..j], Emit); sp.Process(s[j..], Emit); sp.Flush(Emit);
@@ -143,35 +152,61 @@ await t.Run("Think-tag splitter: tags split at every chunk boundary", () =>
 // idea-kc80o5). The live payload: the model was auditing this splitter and wrote its test vector into its answer.
 await t.Run("Think-tag splitter: a tag after visible text stays text, a leading block is reasoning", () =>
 {
-    static (string Thinking, string Text) Split(string s, int size, bool openRouter)
+    static (string Thinking, string Text) Split(string s, int size)
     {
         var th = new StringBuilder(); var tx = new StringBuilder();
         void Emit(bool thinking, string text) => (thinking ? th : tx).Append(text);
-        var ap = openRouter ? null : new AP.ThinkTagSplitter();
-        var or_ = openRouter ? new OR.ThinkTagSplitter() : null;
-        for (var i = 0; i < s.Length; i += size)
-        {
-            var chunk = s.Substring(i, Math.Min(size, s.Length - i));
-            if (ap is not null) ap.Process(chunk, Emit); else or_!.Process(chunk, Emit);
-        }
-        if (ap is not null) ap.Flush(Emit); else or_!.Flush(Emit);
+        var sp = new Kit.ThinkTagSplitter();
+        for (var i = 0; i < s.Length; i += size) sp.Process(s.Substring(i, Math.Min(size, s.Length - i)), Emit);
+        sp.Flush(Emit);
         return (th.ToString(), tx.ToString());
     }
 
     const string quoted = "Chunk 1: no \" (only \"<thi\") → hold=3 → emit \"I think \". Chunk 2: <think>nk> hello</think> world";
     const string leading = "  <think>abc</think>\n\nhello <b>x</b>";
     foreach (var size in new[] { 1, 3, 7, quoted.Length })
-    foreach (var openRouter in new[] { false, true })
     {
-        var copy = openRouter ? "openrouter" : "aiproxy";
-        var (thinking, text) = Split(quoted, size, openRouter);
-        t.Eq("", thinking, $"{copy} size {size}: nothing split out of an answer that quotes the tags");
-        t.Eq(quoted, text, $"{copy} size {size}: the answer verbatim, tags included");
+        var (thinking, text) = Split(quoted, size);
+        t.Eq("", thinking, $"size {size}: nothing split out of an answer that quotes the tags");
+        t.Eq(quoted, text, $"size {size}: the answer verbatim, tags included");
 
-        (thinking, text) = Split(leading, size, openRouter);
-        t.Eq("abc", thinking, $"{copy} size {size}: a leading block is still thinking");
-        t.Eq("hello <b>x</b>", text, $"{copy} size {size}: the answer after it");
+        (thinking, text) = Split(leading, size);
+        t.Eq("abc", thinking, $"size {size}: a leading block is still thinking");
+        t.Eq("hello <b>x</b>", text, $"size {size}: the answer after it");
     }
+    return Task.CompletedTask;
+});
+
+// The provider kit is shared SOURCE, not a shared assembly: one set of files under shared/ProviderKit, compiled
+// into each provider (plugins must not reference each other). It used to be five files copied into all three
+// providers with a comment asking for manual synchronisation - the copies had already drifted, and nothing could
+// see it (idea-f7o4yp). So: no copy anywhere else, every provider links the kit, all three carry the same types.
+await t.Run("provider kit: one shared source set, compiled into all three providers, no private copies", () =>
+{
+    var repo = PluginLoadTest.FindRepoRoot();
+    if (repo is null) t.Skip("repository root (NetPI.slnx) not found");
+
+    var plugins = Path.Combine(repo, "plugins");
+    var kitFiles = Directory.GetFiles(Path.Combine(repo, "shared", "ProviderKit"), "*.cs").Select(f => Path.GetFileName(f)!).Order().ToArray();
+    t.Check(kitFiles.Length > 0, "the kit has sources");
+    foreach (var file in kitFiles)
+        t.Eq(0, Directory.GetFiles(plugins, file, SearchOption.AllDirectories).Length, $"{file}: no copy under plugins/, only in shared/ProviderKit");
+
+    foreach (var provider in new[] { "AiProxy", "Anthropic", "OpenRouter" })
+    {
+        var csproj = Path.Combine(plugins, $"NetPI.Providers.{provider}", $"NetPI.Providers.{provider}.csproj");
+        var compiles = System.Xml.Linq.XDocument.Load(csproj).Descendants().Where(n => n.Name.LocalName == "Compile").ToArray();
+        t.Check(compiles.Length > 0, $"{provider}: compiles the kit");
+        foreach (var node in compiles)
+            t.Check(((string?)node.Attribute("Include"))?.Replace('\\', '/').Contains("shared/ProviderKit") == true,
+                $"{provider}: the only compiled-in shared source is the kit: {node.Attribute("Include")?.Value}");
+    }
+
+    var kit = typeof(Kit.ThinkTagSplitter).Assembly.GetTypes().Where(t => t.Namespace == "NetPI.Providers.Kit").Select(t => t.FullName!).ToArray();
+    t.Check(kit.Length > 0, "the kit has types");
+    foreach (var (provider, asm) in new[] { ("anthropic", typeof(AN.AnthropicPlugin).Assembly), ("openrouter", typeof(OR.OpenRouterPlugin).Assembly) })
+        foreach (var type in kit)
+            t.Check(asm.GetType(type) is not null, $"{provider} compiles {type}");
     return Task.CompletedTask;
 });
 
@@ -241,26 +276,26 @@ await t.Run("a malformed frame is counted by every parser and named in the trunc
 {
     var mangled = """{"choices":[{"delta":{"content":"x"}}""";   // cut mid-object
 
-    var chat = new AP.ChatStreamParser(new AP.MessageAssembler(), "P", false);
-    chat.Handle(new AP.SseEvent(null, mangled));
+    var chat = new AP.ChatStreamParser(new Kit.MessageAssembler(), "P", false);
+    chat.Handle(new Kit.SseEvent(null, mangled));
     ModelException? chatErr = null;
     try { chat.Finish(); } catch (ModelException ex) { chatErr = ex; }
     t.Check(chatErr?.Message.Contains("1 malformed event") == true && chatErr.Message.Contains("choices"), "chat: " + chatErr?.Message);
 
-    var responses = new AP.ResponsesStreamParser(new AP.MessageAssembler(), "P");
-    responses.Handle(new AP.SseEvent(null, mangled));
+    var responses = new AP.ResponsesStreamParser(new Kit.MessageAssembler(), "P");
+    responses.Handle(new Kit.SseEvent(null, mangled));
     ModelException? respErr = null;
     try { responses.Finish(); } catch (ModelException ex) { respErr = ex; }
     t.Check(respErr?.Message.Contains("1 malformed event") == true, "responses: " + respErr?.Message);
 
-    var router = new OR.OpenRouterStreamParser(new OR.MessageAssembler(), "OR", false);
-    router.Handle(new OR.SseEvent(null, mangled));
+    var router = new OR.OpenRouterStreamParser(new OrKit.MessageAssembler(), "OR", false);
+    router.Handle(new OrKit.SseEvent(null, mangled));
     ModelException? orErr = null;
     try { router.Finish(); } catch (ModelException ex) { orErr = ex; }
     t.Check(orErr?.Message.Contains("1 malformed event") == true, "openrouter: " + orErr?.Message);
 
     // A stream with no mangled frame says nothing about it.
-    var clean = new AP.ChatStreamParser(new AP.MessageAssembler(), "P", false);
+    var clean = new AP.ChatStreamParser(new Kit.MessageAssembler(), "P", false);
     ModelException? cleanErr = null;
     try { clean.Finish(); } catch (ModelException ex) { cleanErr = ex; }
     t.Check(cleanErr?.Message.EndsWith("ended unexpectedly") == true, "unchanged without one: " + cleanErr?.Message);
@@ -269,38 +304,38 @@ await t.Run("a malformed frame is counted by every parser and named in the trunc
 
 await t.Run("Error classification (HTTP)", () =>
 {
-    var e503 = AP.ProviderErrors.FromHttp("AiProxy", 503, "Service Unavailable", """{"error":{"type":"backend_unavailable"}}""");
+    var e503 = Kit.ProviderErrors.FromHttp("AiProxy", 503, "Service Unavailable", """{"error":{"type":"backend_unavailable"}}""");
     t.Check(e503.Transient && e503.StatusCode == 503 && e503.ErrorType == "backend_unavailable" && !e503.ContextOverflow, "503 backend_unavailable");
     t.Check(e503.Message.Contains("backend_unavailable"), "body in message");
     foreach (var s in new[] { 408, 409, 425, 429, 500, 502, 504, 529 })
-        t.Check(AP.ProviderErrors.FromHttp("X", s, null, "").Transient, $"{s} transient");
+        t.Check(Kit.ProviderErrors.FromHttp("X", s, null, "").Transient, $"{s} transient");
     foreach (var s in new[] { 400, 401, 403, 404, 422 })
-        t.Check(!AP.ProviderErrors.FromHttp("X", s, null, "{}").Transient, $"{s} not transient");
-    var ov = AP.ProviderErrors.FromHttp("X", 400, null, """{"error":{"message":"This model's maximum context length is 8192 tokens","type":"invalid_request_error","code":"context_length_exceeded"}}""");
+        t.Check(!Kit.ProviderErrors.FromHttp("X", s, null, "{}").Transient, $"{s} not transient");
+    var ov = Kit.ProviderErrors.FromHttp("X", 400, null, """{"error":{"message":"This model's maximum context length is 8192 tokens","type":"invalid_request_error","code":"context_length_exceeded"}}""");
     t.Check(ov.ContextOverflow && !ov.Transient && ov.ErrorType == "context_length_exceeded", "openai overflow");
-    var ov2 = AN.ProviderErrors.FromHttp("Anthropic", 413, null, """{"type":"error","error":{"type":"request_too_large","message":"prompt is too long: 250000 tokens > 200000 maximum"}}""");
+    var ov2 = Kit.ProviderErrors.FromHttp("Anthropic", 413, null, """{"type":"error","error":{"type":"request_too_large","message":"prompt is too long: 250000 tokens > 200000 maximum"}}""");
     t.Check(ov2.ContextOverflow, "413 prompt too long");
     // A body over the endpoint's limit (an oversize image, say) says nothing about the text: without its type it
     // stayed a dead end, and no compaction ran to shrink the request (idea-begg3v).
-    var tooBig = AN.ProviderErrors.FromHttp("Anthropic", 413, null, """{"type":"error","error":{"type":"request_too_large","message":"Request body is too large"}}""");
+    var tooBig = Kit.ProviderErrors.FromHttp("Anthropic", 413, null, """{"type":"error","error":{"type":"request_too_large","message":"Request body is too large"}}""");
     t.Check(tooBig.ContextOverflow && !tooBig.Transient, "413 request_too_large");
-    var notOv = AP.ProviderErrors.FromHttp("X", 400, null, """{"error":{"message":"invalid tool schema","type":"invalid_request_error"}}""");
+    var notOv = Kit.ProviderErrors.FromHttp("X", 400, null, """{"error":{"message":"invalid tool schema","type":"invalid_request_error"}}""");
     t.Check(!notOv.ContextOverflow && !notOv.Transient, "plain 400");
-    var ovl = AN.ProviderErrors.FromHttp("Anthropic", 529, null, """{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}""");
+    var ovl = Kit.ProviderErrors.FromHttp("Anthropic", 529, null, """{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}""");
     t.Check(ovl.Transient && ovl.ErrorType == "overloaded_error", "529 overloaded");
-    var big = AP.ProviderErrors.FromHttp("X", 500, null, new string('x', 10_000));
+    var big = Kit.ProviderErrors.FromHttp("X", 500, null, new string('x', 10_000));
     t.Check(big.Message.Length < 2200, "body truncated");
 
     // Retry-After, in seconds or as a date, goes onto the error for the retry plugin
     using var r429 = new HttpResponseMessage((System.Net.HttpStatusCode)429) { ReasonPhrase = "Too Many Requests" };
     r429.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(12));
-    var e429 = AN.ProviderErrors.FromHttp("Anthropic", r429, """{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}""");
+    var e429 = Kit.ProviderErrors.FromHttp("Anthropic", r429, """{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}""");
     t.Check(e429 is { Transient: true, StatusCode: 429, ErrorType: "rate_limit_error" } && e429.RetryAfter == TimeSpan.FromSeconds(12), "Retry-After in seconds: " + e429.RetryAfter);
     r429.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(DateTimeOffset.UtcNow.AddSeconds(30));
-    var byDate = AP.ProviderErrors.FromHttp("X", r429, "{}").RetryAfter;
+    var byDate = Kit.ProviderErrors.FromHttp("X", r429, "{}").RetryAfter;
     t.Check(byDate > TimeSpan.FromSeconds(25) && byDate <= TimeSpan.FromSeconds(30), "Retry-After as a date: " + byDate);
     r429.Headers.RetryAfter = null;
-    t.Check(AP.ProviderErrors.FromHttp("X", r429, "{}").RetryAfter is null, "no header: the retry plugin's own backoff");
+    t.Check(Kit.ProviderErrors.FromHttp("X", r429, "{}").RetryAfter is null, "no header: the retry plugin's own backoff");
     return Task.CompletedTask;
 });
 
@@ -313,9 +348,9 @@ await t.Run("a 200 whose body is not JSON is a transient, described provider err
     const string html = "<!doctype html>\n<html><body><h1>502 Bad Gateway</h1></body></html>";
     var cases = new (string Name, Action<string> Run)[]
     {
-        ("aiproxy chat", j => new AP.ChatStreamParser(new AP.MessageAssembler(), "AiProxy", false).HandleJsonBody(j)),
-        ("aiproxy responses", j => new AP.ResponsesStreamParser(new AP.MessageAssembler(), "AiProxy").HandleJsonBody(j)),
-        ("openrouter", j => new OR.OpenRouterStreamParser(new OR.MessageAssembler(), "OpenRouter", false).HandleJsonBody(j)),
+        ("aiproxy chat", j => new AP.ChatStreamParser(new Kit.MessageAssembler(), "AiProxy", false).HandleJsonBody(j)),
+        ("aiproxy responses", j => new AP.ResponsesStreamParser(new Kit.MessageAssembler(), "AiProxy").HandleJsonBody(j)),
+        ("openrouter", j => new OR.OpenRouterStreamParser(new OrKit.MessageAssembler(), "OpenRouter", false).HandleJsonBody(j)),
     };
     foreach (var (name, run) in cases)
     foreach (var body in new[] { html, "", "{\"choices\":[" }) // an error page, an empty body, a truncated one
@@ -327,7 +362,7 @@ await t.Run("a 200 whose body is not JSON is a transient, described provider err
         if (body.Length > 0) t.Check(caught!.Message.Contains(body[..Math.Min(24, body.Length)]), $"{name}: quotes the body");
     }
     var type = "";
-    try { new AP.ResponsesStreamParser(new AP.MessageAssembler(), "AiProxy").HandleJsonBody("""{"error":{"message":"boom","type":"server_error"}}"""); }
+    try { new AP.ResponsesStreamParser(new Kit.MessageAssembler(), "AiProxy").HandleJsonBody("""{"error":{"message":"boom","type":"server_error"}}"""); }
     catch (ModelException ex) { type = ex.ErrorType ?? ""; }
     t.Eq("server_error", type, "a well-formed error envelope is still the server's own error");
     return Task.CompletedTask;
@@ -648,7 +683,7 @@ await t.Run("errors: the failed-request dump keeps the response body, not only t
     var dump = JsonNode.Parse(File.ReadAllText(Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Single()))!;
     var response = dump["response"]?.GetValue<string>() ?? "";
     t.Check(response.Contains("tr-abc-9999") && response.Contains("tool_79"), "the dump holds the whole body, outside error.message");
-    t.Check(response.Length < AP.ProviderErrors.MaxBody + 1, $"and it is capped ({response.Length} chars)");
+    t.Check(response.Length < Kit.ProviderErrors.MaxBody + 1, $"and it is capped ({response.Length} chars)");
     t.Check(dump["request"]?["input"] is JsonArray, "the request is still in full");
 
     // and on the 200-with-a-broken-body path the body is what says what happened
@@ -682,12 +717,12 @@ await t.Run("errors: a 200 whose body is not JSON is described, saved with the r
 // without a reasoning parser leaked raw "<think>…</think>" text on the default (Responses) transport.
 await t.Run("responses: inline <think> tags in output_text become thinking (parseThinkTags), raw when off", () =>
 {
-    static AP.SseEvent Ev(object o) => new(null, System.Text.Json.JsonSerializer.Serialize(o));
+    static Kit.SseEvent Ev(object o) => new(null, System.Text.Json.JsonSerializer.Serialize(o));
     string[] deltas = ["<thi", "nk>plan ", "it</think>\n\nAnswer ", "<b>x</b>"];
     var full = string.Concat(deltas);
     foreach (var split in new[] { true, false })
     {
-        var asm = new AP.MessageAssembler();
+        var asm = new Kit.MessageAssembler();
         var p = new AP.ResponsesStreamParser(asm, "T", split);
         p.Handle(Ev(new { type = "response.output_item.added", output_index = 0, item = new { id = "msg_1", type = "message", content = Array.Empty<object>() } }));
         foreach (var d in deltas) p.Handle(Ev(new { type = "response.output_text.delta", item_id = "msg_1", output_index = 0, content_index = 0, delta = d }));
@@ -705,7 +740,7 @@ await t.Run("responses: inline <think> tags in output_text become thinking (pars
         else t.Eq(full, msg.Text, "parseThinkTags=false keeps the raw text");
     }
     // a server that only sends the finished item
-    var asm2 = new AP.MessageAssembler();
+    var asm2 = new Kit.MessageAssembler();
     var p2 = new AP.ResponsesStreamParser(asm2, "T");
     p2.Handle(Ev(new { type = "response.completed", response = new { status = "completed", output = new[] { new { id = "m", type = "message", content = new[] { new { type = "output_text", text = "<think>a</think>b" } } } } } }));
     p2.Finish();
@@ -953,9 +988,9 @@ await t.Run("per-model transport override with a dotted model id", async () =>
 
 await t.Run("chat: the completion id is kept, so a failure on a server without x-request-id has an id", async () =>
 {
-    var p = new AP.ChatStreamParser(new AP.MessageAssembler(), "P", false);
-    p.Handle(new AP.SseEvent(null, """{"id":"c1","choices":[{"index":0,"delta":{"content":"a"}}]}"""));
-    p.Handle(new AP.SseEvent(null, """{"id":"c2","choices":[{"index":0,"delta":{"content":"b"}}]}"""));
+    var p = new AP.ChatStreamParser(new Kit.MessageAssembler(), "P", false);
+    p.Handle(new Kit.SseEvent(null, """{"id":"c1","choices":[{"index":0,"delta":{"content":"a"}}]}"""));
+    p.Handle(new Kit.SseEvent(null, """{"id":"c2","choices":[{"index":0,"delta":{"content":"b"}}]}"""));
     t.Eq("c1", p.ResponseId, "the first id wins, like every other id the provider reports");
 
     // end to end: the vllm endpoint sends no x-request-id, and the err-chunk scenario fails after two chunks

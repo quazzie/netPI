@@ -217,6 +217,6 @@ public sealed class AnthropicProvider : IModelProvider
         if (o.ApiKey is not null) req.Headers.TryAddWithoutValidation("x-api-key", o.ApiKey);
         req.Headers.TryAddWithoutValidation("anthropic-version", ApiVersion);
         if (o.Betas.Count > 0) req.Headers.TryAddWithoutValidation("anthropic-beta", string.Join(",", o.Betas));
-        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, AnthropicOptions.ResolveSecret(v) ?? v);
+        foreach (var (k, v) in o.Headers) req.Headers.TryAddWithoutValidation(k, Secrets.Resolve(v) ?? v);
     }
 }

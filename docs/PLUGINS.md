@@ -36,6 +36,24 @@ leases, deferred tools, and the event names the plugins publish (`WorkspaceEvent
 `ProcessEvents`). A plugin that speaks none of those references only Abstractions. The kernel references only
 Abstractions, which is what keeps the core small (`node scripts/core-size.mjs`).
 
+Two plugins that need the same code cannot reference each other, so the code lives once under `shared/` and each
+plugin **compiles it in** — shared source, never a shared assembly:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="$(RepoRoot)shared/ProviderKit/*.cs" LinkBase="Kit" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="NetPI.Providers.Kit" />   <!-- $(RepoRoot) is set in Directory.Build.props -->
+  </ItemGroup>
+</Project>
+```
+
+`shared/ProviderKit/` is what the three provider plugins use (the SSE reader, JSON accessors, error mapping, the
+message assembler, secret resolution). Editing it changes all three, in one place, with no copies to fall out of
+step. A copy under `plugins/` instead is a bug waiting to happen: `tests/NetPI.Providers.Tests` fails on one.
+
 ```csharp
 using System.Text.Json;
 using System.Text.Json.Nodes;

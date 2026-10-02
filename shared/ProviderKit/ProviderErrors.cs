@@ -1,9 +1,9 @@
+// Compiled into each provider plugin from shared/ProviderKit (plugins do not reference each other): edit it here.
 using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-// NOTE: mirrored in NetPI.Providers.{AiProxy,Anthropic,OpenRouter}/Common (plugins cannot share code). Keep the copies in sync.
-namespace NetPI.Providers.AiProxy;
+namespace NetPI.Providers.Kit;
 
 /// <summary>Maps HTTP / in-stream / network failures to <see cref="ModelException"/> (transient, context overflow...).</summary>
 internal static partial class ProviderErrors
