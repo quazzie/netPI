@@ -104,16 +104,16 @@ internal sealed class MemoryStorage : IStorage
 
     /// <summary>
     /// Run <paramref name="work"/> as one atomic unit: an exception puts back every row it touched. Re-entrant, so a
-    /// nested call joins the transaction already in progress (and its own rollback is undone on its way out). The
-    /// lock is taken first, which is what makes the re-entrancy check safe: a second thread waits for the lock
-    /// instead of seeing this one's undo log.
+    /// nested call runs inside the transaction already in progress and keeps a log of its own. The lock is taken
+    /// first, which is what keeps the logs apart: a second thread waits for the lock instead of joining this one.
     /// </summary>
     internal T Atomic<T>(Func<T> work)
     {
         ArgumentNullException.ThrowIfNull(work);
         lock (Lock)
         {
-            if (_undo.Count > 0) return work();
+            // Every level keeps its own log, like a savepoint: a nested failure puts back what it wrote even when
+            // the caller catches the exception and lets the outer one commit.
             var log = new UndoLog();
             _undo.Push(log);
             try { return work(); }
@@ -130,6 +130,25 @@ internal sealed class MemoryStorage : IStorage
     {
         ArgumentNullException.ThrowIfNull(work);
         Atomic<object?>(() => { work(); return null; });
+    }
+
+    /// <summary>
+    /// A write: it joins the transaction in progress if there is one, and is an atomic unit of its own when there
+    /// is not (which is what the port promises about a call made outside a transaction). Only an explicit
+    /// <see cref="Atomic{T}"/> or <c>Transaction</c> starts a transaction of its own, so a write inside one can be
+    /// taken back by the exception that ends it.
+    /// </summary>
+    internal T Apply<T>(Func<T> work)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        lock (Lock)
+            return _undo.Count > 0 ? work() : Atomic(work);
+    }
+
+    internal void Apply(Action work)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        lock (Lock) Apply<object?>(() => { work(); return null; });
     }
 
     /// <summary>
@@ -186,9 +205,10 @@ internal sealed class MemoryStorage : IStorage
         }
         else
         {
-            var copy = new List<MessageRow>(rows);
-            Touch(() => (List<MessageRow>?)rows, was => { if (was is not null) Messages[row.SessionId] = was; });
-            rows = copy;
+            // a new list, so the one a reader may still be walking is never edited under it
+            var found = rows;
+            Touch(() => (List<MessageRow>?)found, was => { if (was is not null) Messages[row.SessionId] = was; });
+            rows = new List<MessageRow>(found);
             Messages[row.SessionId] = rows;
         }
         var at = rows.FindIndex(r => r.Id == row.Id);

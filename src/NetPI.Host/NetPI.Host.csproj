@@ -17,6 +17,7 @@
          against real temporary databases, not a fake that cannot roll back or enforce a unique index). -->
     <InternalsVisibleTo Include="NetPI.Host.Tests" />
     <InternalsVisibleTo Include="NetPI.Aux.Tests" />
+    <!-- the storage conformance suite (tests/NetPI.Storage.Tests) runs against the providers in here -->
     <InternalsVisibleTo Include="NetPI.Storage.Tests" />
     <!-- The one-off storage migration (scripts/migrations/001-storage-port) opens the sqlite provider and reads the old database. -->
     <InternalsVisibleTo Include="NetPI.Migration001" />

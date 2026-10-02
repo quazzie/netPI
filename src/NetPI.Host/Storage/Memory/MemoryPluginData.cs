@@ -51,7 +51,7 @@ internal sealed class MemoryPluginData(MemoryStorage store, string pluginId, Plu
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(spec);
         lock (store.Lock)
-            return store.Atomic(() =>
+            return store.Apply(() =>
             {
                 if (!data.Collections.TryGetValue(name, out var collection))
                 {
@@ -99,7 +99,7 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         lock (store.Lock)
-            return store.Atomic(() => collection.Docs.TryGetValue(key, out var doc) ? Copy(doc) : null);
+            return store.Read(() => collection.Docs.TryGetValue(key, out var doc) ? Copy(doc) : null);
     }
 
     public void Put(string key, JsonObject doc)
@@ -107,7 +107,7 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         ArgumentNullException.ThrowIfNull(doc);
         lock (store.Lock)
-            store.Atomic(() => Write(key, doc));
+            store.Apply(() => Write(key, doc));
     }
 
     public bool Insert(string key, JsonObject doc)
@@ -115,7 +115,7 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         ArgumentNullException.ThrowIfNull(doc);
         lock (store.Lock)
-            return store.Atomic(() =>
+            return store.Apply(() =>
             {
                 if (collection.Docs.ContainsKey(key)) return false;
                 Write(key, doc);
@@ -127,7 +127,7 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         lock (store.Lock)
-            return store.Atomic(() =>
+            return store.Apply(() =>
             {
                 if (!collection.Docs.ContainsKey(key)) return false;
                 Keep(key);
@@ -139,7 +139,7 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
     public IReadOnlyList<DataDoc> Find(DataQuery? query = null)
     {
         lock (store.Lock)
-            return store.Atomic<IReadOnlyList<DataDoc>>(() =>
+            return store.Read<IReadOnlyList<DataDoc>>(() =>
             {
                 var rows = Match(query);
                 if (query?.Offset is { } offset and > 0) rows = rows.Skip(offset).ToList();
@@ -151,13 +151,13 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
     public long Count(DataQuery? query = null)
     {
         lock (store.Lock)
-            return store.Atomic(() => (long)Match(query).Count);
+            return store.Read(() => (long)Match(query).Count);
     }
 
     public double Sum(string field, DataQuery? query = null)
     {
         lock (store.Lock)
-            return store.Atomic(() =>
+            return store.Read(() =>
             {
                 var type = FieldType(field);       // a field this collection does not declare is not a field here
                 if (type == DataFieldType.Text)
@@ -176,7 +176,7 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
     {
         ArgumentNullException.ThrowIfNull(query);
         lock (store.Lock)
-            return store.Atomic(() =>
+            return store.Apply(() =>
             {
                 // A query's order and its page are ignored: what is deleted is what matched.
                 var rows = Match(query);

@@ -66,6 +66,7 @@
     { "path": "tests/NetPI.Aux.Tests/", "ignore": true },
     { "path": "tests/NetPI.Host.Tests/", "ignore": true },
     { "path": "tests/NetPI.Providers.Tests/", "ignore": true },
+    { "path": "tests/NetPI.Storage.Tests/", "ignore": true },
     { "path": "tests/NetPI.Tools.Tests/", "ignore": true },
     { "path": "tests/SamplePlugin/", "ignore": true }
   ]

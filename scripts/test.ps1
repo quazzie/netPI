@@ -18,7 +18,7 @@
   how a surviving child process shows up. Anything over a second is called out.
 
 .EXAMPLE
-  .\scripts\test.ps1                                     # build, run all five suites, print a re-run command
+  .\scripts\test.ps1                                     # build, run all six suites, print a re-run command
   .\scripts\test.ps1 -Suite Aux -Suite Host              # two suites
   .\scripts\test.ps1 -Only "settings:", "goal:"          # only tests whose name contains these
   .\scripts\test.ps1 -Only "a failed write" -SkipBuild   # the fix loop: no rebuild if nothing changed
@@ -35,7 +35,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$suites = if ($Suite) { $Suite } else { @('Providers', 'Tools', 'Agent', 'Aux', 'Host') }
+$suites = if ($Suite) { $Suite } else { @('Providers', 'Tools', 'Agent', 'Aux', 'Host', 'Storage') }
 $repoRoot = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path
 Push-Location $repoRoot
 $previousAppDir = $env:NETPI_APP_DIR
@@ -94,7 +94,7 @@ try {
 
     # Longest first: with a fixed worker count that keeps the tail from being one long suite.
     $queue = [System.Collections.Generic.Queue[string]]::new()
-    foreach ($s in ($suites | Sort-Object { $known = @{ Tools = 3; Aux = 3; Agent = 2; Host = 2; Providers = 1 }[$_] } -Descending)) { $queue.Enqueue($s) }
+    foreach ($s in ($suites | Sort-Object { $known = @{ Tools = 3; Aux = 3; Agent = 2; Host = 2; Storage = 1; Providers = 1 }[$_] } -Descending)) { $queue.Enqueue($s) }
 
     $running = @{}
     $pending = $suites.Count
