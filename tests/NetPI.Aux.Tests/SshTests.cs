@@ -86,6 +86,9 @@ public static class SshTests
             var dir = T.TempDir("sshcfg");
             Directory.CreateDirectory(Path.Combine(dir, "conf.d"));
             File.WriteAllText(Path.Combine(dir, "conf.d", "a.conf"), "Host extra\n  HostName 10.0.0.9\n");
+            // a plain directory (no glob): ssh_config(5) includes the files inside it, not the directory
+            Directory.CreateDirectory(Path.Combine(dir, "plain"));
+            File.WriteAllText(Path.Combine(dir, "plain", "b.conf"), "Host fromdir\n  HostName 10.0.0.8\n");
             File.WriteAllText(Path.Combine(dir, "config"), """
                 # a comment
                 Host server
@@ -100,13 +103,15 @@ public static class SshTests
                 Match host nuc
                     User other
                 Include conf.d/*.conf
+                Include plain
                 host "quoted name"
                 """);
             var hosts = SshConfig.Read(Path.Combine(dir, "config"));
-            Check.Equal("server,nuc,extra,quoted name", string.Join(",", hosts.Select(h => h.Alias)));
+            Check.Equal("server,nuc,extra,fromdir,quoted name", string.Join(",", hosts.Select(h => h.Alias)));
             Check.Equal(new SshHost("server", "192.168.1.2", "quazzie", null), hosts[0]);
             Check.Equal(new SshHost("nuc", "192.168.1.3", null, 2222), hosts[1]);
             Check.Equal("10.0.0.9", hosts[2].HostName);
+            Check.Equal("10.0.0.8", hosts[3].HostName, "a host from a plain-directory Include is not dropped");
             Check.Equal(0, SshConfig.Read(Path.Combine(dir, "missing")).Count);
         });
 
