@@ -5,14 +5,15 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Ideas;
 
 /// <summary>
-/// The ideas backlog: plugin-owned tables in NetPI's own database (the <c>netpi.ideas</c> scope of <c>netpi.db</c>),
-/// every idea carrying a <c>project</c>. The agent tool <c>ideas</c> (list, get, add, update) stamps new ideas with the
-/// session's project by default and reaches other projects through its <c>project</c> argument; the ideas.* RPC serves
-/// the "Ideas" tab (which also deletes); <c>/idea</c> quick-adds. A card the checks leave for the user is answered in one
-/// transaction, and the answer is remembered so a retry or a second window cannot save the same idea twice.
+/// The ideas backlog: the plugin's own collections in the store (the <c>netpi.ideas</c> scope), every idea carrying a
+/// <c>project</c>. The agent tool <c>ideas</c> (list, get, add, update) stamps new ideas with the session's project by
+/// default and reaches other projects through its <c>project</c> argument; the ideas.* RPC serves the "Ideas" tab
+/// (which also deletes); <c>/idea</c> quick-adds. A card the checks leave for the user is answered in one transaction,
+/// and the answer is remembered so a retry or a second window cannot save the same idea twice.
 /// <para>
-/// The JSON files of the earlier versions (<c>ideas.json</c>, <c>ideas-pending.json</c>, <c>ideas-migration.json</c>) are
-/// read by the one-time cutover and are not written again: <c>ideas.fileName</c> is now the name that file had.
+/// The JSON files of the earlier versions (<c>ideas.json</c>, <c>ideas-pending.json</c>, <c>ideas-migration.json</c>)
+/// are neither read nor written by this build any more: <c>ideas.fileName</c> is the name that file had, kept so an
+/// older UI still has a hint.
 /// </para>
 /// </summary>
 [NetPiPlugin("netpi.ideas", Name = "Ideas", Description = "Backlog of ideas, research and plans (in NetPI's database, ideas carry a project)", Order = 80)]
@@ -38,7 +39,7 @@ public sealed class IdeasPlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Str("ideas.fileName", "Legacy ideas file name", "ideas.json",
-                    "The name the ideas file had before the backlog moved into NetPI's database. It is read once, by the cutover, and is the default name an export is written under. The backlog is not written there any more."),
+                    "The name the ideas file had before the backlog moved into the store. It is reported by ideas.list and ideas.changed so an older UI still has a hint. The backlog is not written there any more."),
                 SettingInfo.Bool("ideas.recall", "Suggest a matching idea", true,
                     "While the first message of a chat is typed, a decision looks for the open idea it continues and offers to add it to the chat (needs the Decide plugin)."),
                 SettingInfo.Number("ideas.recallThreshold", "Suggestion threshold", IdeaRecall.DefaultThreshold,
@@ -83,32 +84,10 @@ public sealed class IdeasPlugin : INetPiPlugin
             return;
         }
         var locator = new IdeasLocator(() => context.Sessions, context.Paths, () => context.Settings);
-        var migration = new IdeasMigration(repo, locator, () => context.Sessions.ListProjects(), context.Logger);
+        var snapshots = new IdeaSnapshots(repo);
 
         // A claim nobody owns any more (NetPI was stopped mid-check) is retryable again, before anything asks.
         try { repo.RecoverExpiredClaims(); } catch (Exception ex) { context.Logger.LogDebug("Ideas: the check claims could not be recovered: {Message}", ex.Message); }
-
-        // The one-time cutover of the JSON backlog. Deliberate, reported, and only when there is something to read.
-        if (!migration.IsCutOver && migration.Sources().Any(s => File.Exists(s.Path)))
-        {
-            context.Logger.LogInformation("Ideas: an ideas file from an earlier version was found; importing it (ideas.migration reports what was read)");
-            try
-            {
-                var report = await migration.RunAsync(ct: ct).ConfigureAwait(false);
-                foreach (var diagnostic in report.Diagnostics)
-                    context.Logger.LogWarning("Ideas: migration: {Diagnostic}", diagnostic.ToJsonString());
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // The old files are still exactly as they were: nothing was written, and the backlog starts empty.
-                context.Logger.LogError("Ideas: the ideas files were not imported ({Message}). They are untouched; fix what it says and reload the plugin.", ex.Message);
-            }
-        }
-        else if (!migration.IsCutOver)
-        {
-            // Nothing to import: an empty backlog is the whole history. The marker still says where the truth lives.
-            migration.MarkCutOver();
-        }
 
         // Every write announces itself once it has committed, so a second window re-reads the canonical state.
         var events = new IdeasEvents(context, repo, locator);
@@ -122,7 +101,7 @@ public sealed class IdeasPlugin : INetPiPlugin
 
         context.Tools.Register(new IdeasTool(repo, locator));
 
-        var rpc = new IdeasRpc(repo, locator, events, migration, context.Paths.Home);
+        var rpc = new IdeasRpc(repo, locator, events, snapshots, context.Paths.Home);
         rpc.Register(context.Rpc);
         context.Rpc.Register("ideas.verifyUpdate", async (request, token) =>
         {
@@ -183,12 +162,12 @@ public sealed class IdeasEvents(IPluginContext ctx, IdeasRepository repo, IdeasL
 }
 
 /// <summary>ideas.* RPC handlers (see docs/PLUGIN-IDEAS.md).</summary>
-public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEvents events, IdeasMigration migration, string home)
+public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEvents events, IdeaSnapshots snapshots, string home)
 {
     private readonly IdeasRepository _repo = repo;
     private readonly IdeasLocator _locator = locator;
     private readonly IdeasEvents _events = events;
-    private readonly IdeasMigration _migration = migration;
+    private readonly IdeaSnapshots _snapshots = snapshots;
     private readonly string _home = home;
 
     public void Register(IRpcRegistry rpc)
@@ -210,10 +189,6 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
         rpc.Register("ideas.reorder", Reorder, "{ ids: string[] } → true");
         rpc.Register("ideas.toPrompt", ToPrompt, "{ id } → markdown prompt text");
         rpc.Register("ideas.quickAdd", QuickAdd, "/idea command: { sessionId, args } → status text");
-        rpc.Register("ideas.migration", Migration,
-            "What the JSON-to-database cutover would read, and what it has already read: { } → { storage, cutover?, sources: [...], imports: [...], orphanedSources? } (read-only)");
-        rpc.Register("ideas.migrate", Migrate,
-            "Do the cutover, or (force) take in a file an older build wrote afterwards: { confirm: true, force? } → { counts, diagnostics, archive } — everything is written in one transaction or not at all");
         rpc.Register("ideas.export", Export,
             "A portable snapshot of the backlog as JSON: { path?, json? } → { file?, json, validated? } — a versioned document with stable ids, the user's order and unknown fields; nothing is written to disk unless a path is given");
         rpc.Register("ideas.import", Import,
@@ -368,24 +343,12 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
         });
     });
 
-    public Task<object?> Migration(RpcRequest req, CancellationToken ct) => Guard(async () => (object?)await _migration.PreflightAsync(ct).ConfigureAwait(false));
-
-    public Task<object?> Migrate(RpcRequest req, CancellationToken ct) => Guard(async () =>
-    {
-        // Deliberate, and said out loud: an automatic migration would be the one operation that must never happen
-        // because nobody asked.
-        if (req.Bool("confirm") != true)
-            throw new RpcException("bad_request", "The cutover moves your ideas into the database and moves the old files into the archive. Call it with { confirm: true } when that is what you want.");
-        var report = await _migration.RunAsync(force: req.Bool("force") == true, ct).ConfigureAwait(false);
-        return report.Details;
-    });
-
     public Task<object?> Export(RpcRequest req, CancellationToken ct) => Guard(async () =>
     {
-        var snapshot = _migration.Export();
+        var snapshot = _snapshots.Export();
         var path = req.Str("path");
         var answer = new JsonObject { ["json"] = snapshot };
-        if (path is { Length: > 0 }) answer["file"] = await _migration.ExportToFileAsync(path, ct).ConfigureAwait(false);
+        if (path is { Length: > 0 }) answer["file"] = await _snapshots.ExportToFileAsync(path, ct).ConfigureAwait(false);
         return answer;
     });
 
@@ -395,8 +358,8 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
             ? JsonObject.Create(json.Clone()) as JsonObject ?? []
             : ReadSnapshot(req.Required("path"));
         var mode = (req.Str("mode") ?? "merge").Trim().ToLowerInvariant();
-        if (mode == "validate") return Task.FromResult<object?>(_migration.ValidateSnapshot(snapshot));
-        var report = _migration.ImportSnapshot(snapshot, mode);
+        if (mode == "validate") return Task.FromResult<object?>(_snapshots.ValidateSnapshot(snapshot));
+        var report = _snapshots.ImportSnapshot(snapshot, mode);
         return Task.FromResult<object?>(report);
     });
 
