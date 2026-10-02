@@ -231,6 +231,47 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas: removing an image from an idea deletes the file only once the update commits", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var png = Convert.ToBase64String(new byte[] { 0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4 });
+            var shot = await env.Rpc("ideas.addImage", new JsonObject { ["data"] = png, ["mediaType"] = "image/png" });
+            var path = shot["path"].Str()!;
+            var file = Path.Combine(env.Ctx.Paths.Home, path.Replace('/', Path.DirectorySeparatorChar));
+            var added = await env.Rpc("ideas.add", new JsonObject
+            {
+                ["idea"] = new JsonObject { ["title"] = "With a shot", ["images"] = new JsonArray { shot.DeepClone() } },
+            });
+            var id = added["id"].Str()!;
+            Check.True(File.Exists(file), "the file is on disk: " + file);
+
+            // Someone else edits the idea after the card opened. The card's removal, still on the old revision, is
+            // refused: neither the document nor the file moves (idea-qpaghc).
+            await env.Rpc("ideas.update", new JsonObject { ["id"] = id, ["patch"] = new JsonObject { ["summary"] = "someone else's edit" } });
+            var refused = await Check.ThrowsAsync<RpcException>(() => env.Rpc("ideas.update", new JsonObject
+            {
+                ["id"] = id, ["expectedRevision"] = 1,
+                ["patch"] = new JsonObject { ["images"] = new JsonArray() },
+            }));
+            Check.Equal("conflict", refused.Code, refused.Message);
+            Check.True(File.Exists(file), "the refused update left the file on disk");
+            var doc = await env.Rpc("ideas.get", new JsonObject { ["id"] = id });
+            Check.Equal(1, ((JsonArray)doc["images"]!).Count, "…and the reference is still on the idea");
+
+            // The same removal, on the revision the idea is actually at: the reference goes and the file follows —
+            // after the write has committed.
+            await env.Rpc("ideas.update", new JsonObject
+            {
+                ["id"] = id, ["expectedRevision"] = 2,
+                ["patch"] = new JsonObject { ["images"] = new JsonArray() },
+            });
+            Check.False(File.Exists(file), "the file left the disk once the update committed");
+            doc = await env.Rpc("ideas.get", new JsonObject { ["id"] = id });
+            Check.Equal(0, ((JsonArray)doc["images"]!).Count, "and the reference is gone from the idea");
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas: a commit is recorded on the idea it works on, and only a clear 'finished' offers the card", async () =>
         {
             var env = new Env();

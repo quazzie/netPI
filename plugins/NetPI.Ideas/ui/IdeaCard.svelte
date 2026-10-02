@@ -40,10 +40,11 @@
     for (const img of shots) loadimage?.(img.path);
   });
 
-  // Removing an image drops the file (ideas.detach) and the reference in one patch. The idea keeps the rest.
+  // Removing an image replaces the image set in one patch. The server deletes the file the dropped reference named
+  // only once that write has committed — an update refused as stale leaves the file and the reference exactly where
+  // they were (idea-qpaghc). The idea keeps the rest.
   async function removeImage(path) {
     const kept = shots.filter((i) => i.path !== path).map(({ path: p, name, mediaType, bytes }) => ({ path: p, name, mediaType, bytes }));
-    await ondetachimage?.(path);
     await api.update(idea.id, { images: kept });
   }
 

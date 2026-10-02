@@ -292,6 +292,7 @@ public sealed class IdeasRepository
     public (JsonObject Doc, long Revision, List<string> Changes) Update(
         string id, JsonObject patch, bool fromUi, string? sessionId = null, long? expectedRevision = null, string? expectedUpdatedAt = null)
     {
+        var removedImages = new List<string>();
         var result = _db.Transaction(_ =>
         {
             var current = Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
@@ -309,12 +310,33 @@ public sealed class IdeasRepository
             var next = (JsonObject)current.Doc.DeepClone();
             var changes = IdeaOps.ApplyPatch(next, patch, fromUi, sessionId, _home);
             if (changes.Count == 0) return (current.Doc, current.Revision, changes); // nothing changed: no write, no revision
+            if (changes.Contains("images")) removedImages = ImagesLeaving(current.Doc, next);
             var revision = current.Revision + 1;
             Save_(storedId, next, revision);
             return (WithRevision(next, revision), revision, changes);
         });
-        if (result.Item3.Count > 0) Announce("update"); // a patch that changed nothing is not a change
+        if (result.Item3.Count > 0)
+        {
+            Announce("update"); // a patch that changed nothing is not a change
+            // The files an idea no longer references leave the disk only once the write has committed: an update
+            // refused as stale (or rolled back) leaves the document and every file exactly where they were
+            // (idea-qpaghc). A reference that is not a stored image is left alone by the delete itself.
+            if (_home is { } home) foreach (var gone in removedImages) IdeaImages.Delete(home, gone);
+        }
         return result;
+    }
+
+    /// <summary>The image references a document no longer carries — the files on disk that should follow them out.</summary>
+    private static List<string> ImagesLeaving(JsonObject before, JsonObject after)
+    {
+        var kept = new HashSet<string>(
+            (after["images"] as JsonArray ?? []).OfType<JsonObject>()
+                .Select(o => IdeaOps.Str(o["path"]))
+                .Where(p => p is { Length: > 0 }), StringComparer.Ordinal);
+        return (before["images"] as JsonArray ?? []).OfType<JsonObject>()
+            .Select(o => IdeaOps.Str(o["path"]))
+            .Where(p => p is { Length: > 0 } && !kept.Contains(p))
+            .ToList();
     }
 
     public bool Delete(string? id)
