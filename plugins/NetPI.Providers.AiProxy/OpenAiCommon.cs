@@ -19,6 +19,13 @@ internal static class OpenAiCommon
 {
     public const string ImageOmitted = "[image omitted: the selected model does not accept image input]";
 
+    /// <summary>
+    /// What the model is told about a tool's images when it cannot take them. They used to be dropped in silence,
+    /// so the model answered as if the image were empty rather than that it could not see it (idea-vgwg26).
+    /// </summary>
+    public static string ToolImagesOmitted(string callId, int count) =>
+        $"[{count} image{(count == 1 ? "" : "s")} returned by tool call {callId} omitted: the selected model does not accept image input]";
+
     /// <summary>Request max tokens: request value, else catalog value, else configured default; never above the catalog limit.</summary>
     public static int ResolveMaxTokens(ModelRequest req, ModelOptions mo)
     {

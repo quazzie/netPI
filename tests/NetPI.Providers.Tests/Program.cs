@@ -762,6 +762,39 @@ await t.Run("chat: request body (system, tool_calls, tool results, images, strea
     t.Check(msgs[5]!["content"]!.AsArray().Any(c => c!["type"]!.GetValue<string>() == "image_url"), "tool images after tool messages");
 });
 
+// A tool that returned images (a read on a PNG, a screenshot) told the model nothing when the model has no image
+// input: the images were dropped in silence, so the answer was written as if the image had been empty. The
+// user-message path already substituted an "[image omitted]" note; this is the same note for tool results, once
+// per call id, with the count (idea-vgwg26).
+List<ChatMessage> ToolImagesConvo() =>
+[
+    ChatMessage.UserText("what is in these?"),
+    new() { Role = MessageRole.Assistant, Provider = "x",
+            Parts = [new TextPart { Text = "Looking" },
+                     new ToolCallPart { Id = "call:img", Name = "read", Arguments = "{}" },
+                     new ToolCallPart { Id = "call:none", Name = "ls", Arguments = "{}" }] },
+    new() { Role = MessageRole.Tool, Parts =
+        [
+            new ToolResultPart { CallId = "call:img", Name = "read", Content = "chart.png", Images = [new ImagePart { MediaType = "image/png", Data = Img("a") }, new ImagePart { MediaType = "image/png", Data = Img("b") }] },
+            new ToolResultPart { CallId = "call:none", Name = "ls", Content = "a.txt", Images = [new ImagePart { MediaType = "image/png", Data = Img("c") }] },
+        ] },
+    ChatMessage.UserText("and now?"),
+];
+
+await t.Run("tool-result images are named as omitted for a text-only model (both aiproxy transports)", async () =>
+{
+    foreach (var transport in new[] { "responses", "chat" })
+    {
+        apCtx.SettingsImpl.Set("providers.aiproxy.transport", transport);
+        try { await Collect(aiproxy, Req(Cat("gemma-4"), ToolImagesConvo())); }
+        finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+        var all = mock.Last(transport == "chat" ? "/v1/chat/completions" : "/v1/responses").Json.ToJsonString();
+        t.Check(all.Contains("2 images returned by tool call call:img") && all.Contains("1 image returned by tool call call:none"),
+            $"aiproxy {transport}: both tool calls named as omitted");
+        t.Check(all.Contains("does not accept image input") && !all.Contains("data:image"), $"aiproxy {transport}: the note says why, and no image is sent");
+    }
+});
+
 await t.Run("chat: images dropped for a text-only catalog model (aiproxy gemma-4 via transport override)", async () =>
 {
     apCtx.SettingsImpl.Set("providers.aiproxy.transport", "chat");
@@ -1288,6 +1321,22 @@ await t.Run("openrouter: the failed-request dump keeps the whole response body, 
     t.Check((dump["response"]?.GetValue<string>() ?? "").Contains("tr-or-7777"), "the dump holds the whole body");
     t.Check(dump["request"]?["messages"] is JsonArray && dump["generationId"] is not null, "with the request and the generation id");
     Directory.Delete(dir, true);
+});
+
+await t.Run("openrouter: tool-result images are named as omitted for a text-only model", async () =>
+{
+    // vendor/plain:free lists text as its only input modality, so the two images its tool returned cannot be sent
+    await Collect(openrouter, Req(await OrModel("vendor/plain:free"), ToolImagesConvo()));
+    var sent = mock.Last("/openrouter/api/v1/chat/completions").Json;
+    var all = sent.ToJsonString();
+    t.Check(all.Contains("2 images returned by tool call call:img") && all.Contains("1 image returned by tool call call:none"),
+        "both tool calls named as omitted, with the count");
+    t.Check(all.Contains("does not accept image input") && !all.Contains("data:image"), "the note says why, and no image is sent");
+
+    // a model that does take images still gets them, without a note
+    await Collect(openrouter, Req(await OrModel("stealth/bunny"), ToolImagesConvo()));
+    all = mock.Last("/openrouter/api/v1/chat/completions").Json.ToJsonString();
+    t.Check(all.Contains("data:image") && !all.Contains("omitted:"), "an image-capable model gets the images and no note");
 });
 
 await t.Run("openrouter: without an API key no models are offered and calls fail clearly", async () =>

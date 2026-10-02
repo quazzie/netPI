@@ -60,6 +60,7 @@ internal static class ResponsesTransport
     {
         var input = new JsonArray();
         var toolImages = new List<(string CallId, ImagePart Image)>();
+        var toolImagesOmitted = new List<(string CallId, int Count)>();
 
         bool IsOurs(ChatMessage m) =>
             (m.Provider is null || providerId is null || string.Equals(m.Provider, providerId, StringComparison.OrdinalIgnoreCase))
@@ -67,15 +68,18 @@ internal static class ResponsesTransport
 
         void FlushToolImages()
         {
-            if (toolImages.Count == 0) return;
+            if (toolImages.Count == 0 && toolImagesOmitted.Count == 0) return;
             var content = new JsonArray();
             foreach (var group in toolImages.GroupBy(x => x.CallId))
             {
                 content.Add(new JsonObject { ["type"] = "input_text", ["text"] = $"[Image(s) returned by tool call {group.Key}]" });
                 foreach (var (_, img) in group) content.Add(InputImage(img));
             }
+            foreach (var (callId, count) in toolImagesOmitted)
+                content.Add(new JsonObject { ["type"] = "input_text", ["text"] = OpenAiCommon.ToolImagesOmitted(callId, count) });
             input.Add(new JsonObject { ["role"] = "user", ["content"] = content });
             toolImages.Clear();
+            toolImagesOmitted.Clear();
         }
 
         foreach (var m in messages)
@@ -133,6 +137,7 @@ internal static class ResponsesTransport
                         if (r.Images is { Count: > 0 } imgs)
                         {
                             if (allowImages) foreach (var img in imgs) toolImages.Add((r.CallId, img));
+                            else toolImagesOmitted.Add((r.CallId, imgs.Count));
                         }
                     }
                     break;

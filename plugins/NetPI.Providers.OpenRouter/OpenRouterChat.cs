@@ -9,6 +9,11 @@ internal static class OpenRouterChat
 {
     public const string Path = "/v1/chat/completions";
     public const string ImageOmitted = "[image omitted: the selected model does not accept image input]";
+
+    /// <summary>What the model is told about a tool's images when it cannot take them (they used to be dropped in
+    /// silence, so the model answered as if the image were empty; idea-vgwg26).</summary>
+    public static string ToolImagesOmitted(string callId, int count) =>
+        $"[{count} image{(count == 1 ? "" : "s")} returned by tool call {callId} omitted: the selected model does not accept image input]";
     /// <summary>Key of the replay data on a <see cref="ThinkingPart"/>: the response's merged <c>reasoning_details</c>.</summary>
     public const string DetailsKey = "reasoning_details";
 
@@ -114,17 +119,21 @@ internal static class OpenRouterChat
         if (!string.IsNullOrWhiteSpace(req.SystemPrompt)) list.Add(new JsonObject { ["role"] = "system", ["content"] = req.SystemPrompt });
 
         var toolImages = new List<(string CallId, ImagePart Image)>();
+        var toolImagesOmitted = new List<(string CallId, int Count)>();
         void FlushToolImages()
         {
-            if (toolImages.Count == 0) return;
+            if (toolImages.Count == 0 && toolImagesOmitted.Count == 0) return;
             var content = new JsonArray();
             foreach (var group in toolImages.GroupBy(x => x.CallId))
             {
                 content.Add(new JsonObject { ["type"] = "text", ["text"] = $"[Image(s) returned by tool call {group.Key}]" });
                 foreach (var (_, img) in group) content.Add(ImageUrl(img));
             }
+            foreach (var (callId, count) in toolImagesOmitted)
+                content.Add(new JsonObject { ["type"] = "text", ["text"] = ToolImagesOmitted(callId, count) });
             list.Add(new JsonObject { ["role"] = "user", ["content"] = content });
             toolImages.Clear();
+            toolImagesOmitted.Clear();
         }
 
         foreach (var m in req.Messages)
@@ -170,8 +179,11 @@ internal static class OpenRouterChat
                     foreach (var r in m.ToolResults)
                     {
                         list.Add(new JsonObject { ["role"] = "tool", ["tool_call_id"] = r.CallId, ["content"] = r.Content ?? "" });
-                        if (r.Images is { Count: > 0 } imgs && allowImages)
-                            foreach (var img in imgs) toolImages.Add((r.CallId, img));
+                        if (r.Images is { Count: > 0 } imgs)
+                        {
+                            if (allowImages) foreach (var img in imgs) toolImages.Add((r.CallId, img));
+                            else toolImagesOmitted.Add((r.CallId, imgs.Count));
+                        }
                     }
                     break;
 
