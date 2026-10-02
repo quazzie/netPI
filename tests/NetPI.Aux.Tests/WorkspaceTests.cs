@@ -321,8 +321,11 @@ public static class WorkspaceTests
     private static Task MissingWorkspaceFails()
     {
         using var env = new Env();
-        // No git needed: the failure is about a workspace that does not exist.
-        var session = env.Session("s", "wsp_does_not_exist");
+        // No git needed: the failure is about a workspace that does not exist. A stale binding (the record is gone,
+        // the session still names it) is written by hand — the store refuses to bind a session to a missing workspace,
+        // which WorkspaceStoreTests asserts separately.
+        var session = env.Session("s");
+        env.Ctx.SessionsFake.UpdateSession(session.Id, s => s.Meta = new JsonObject { ["workspaceId"] = "wsp_does_not_exist" });
         var ex = Check.Throws<WorkspaceUnavailableException>(() => env.Resolver.CwdOf(session));
         Check.Contains(ex.Message, "no longer exists");
         Check.Contains(ex.Message, "sessions.setWorkspace");

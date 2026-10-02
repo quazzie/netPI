@@ -624,7 +624,12 @@ public sealed class FakePluginContext : IPluginContext
         Home = Paths.Home, Logger = Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, Settings = SettingsFake,
     });
     public FakeSessionStore SessionsFake { get; } = new();
-    public ISessionStore Sessions => SessionsFake;
+    /// <summary>
+    /// A test that needs the real session service over the real store (there a stored session, an archived one and a
+    /// message-less one are three different things) hands it in here; everything else gets the recording double.
+    /// </summary>
+    public ISessionStore? RealSessions { get; set; }
+    public ISessionStore Sessions => RealSessions ?? SessionsFake;
     public FakeModelCatalog ModelsFake { get; } = new();
     public IModelCatalog Models => ModelsFake;
     public CancellationToken Stopping => _stopping.Token;
