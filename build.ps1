@@ -382,7 +382,7 @@ if ($Test) {
     # the suites load the built plugins from here (NETPI_APP_DIR); a worktree has no artifacts\app to fall back on
     $env:NETPI_APP_DIR = $dev
     $failed = 0
-    foreach ($t in 'Providers', 'Tools', 'Agent', 'Aux', 'Host') {
+    foreach ($t in 'Providers', 'Tools', 'Agent', 'Aux', 'Host', 'Storage') {
         $dll = "tests\NetPI.$t.Tests\bin\$Configuration\NetPI.$t.Tests.dll"
         Write-Host "-- $t"
         dotnet $dll

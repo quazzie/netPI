@@ -116,6 +116,6 @@ else
 fi
 
 if [ "$TEST" = 1 ]; then
-  for t in Providers Tools Agent Aux; do dotnet "tests/NetPI.$t.Tests/bin/Debug/NetPI.$t.Tests.dll"; done
+  for t in Providers Tools Agent Aux Storage; do dotnet "tests/NetPI.$t.Tests/bin/Debug/NetPI.$t.Tests.dll"; done
   tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests
 fi

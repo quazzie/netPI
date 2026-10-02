@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Console test runner for the storage port: the conformance suite every provider passes.
+       No test framework: NuGet is not available.
+       Build: dotnet build tests/NetPI.Storage.Tests (after building src/NetPI.Host)
+       Run:   dotnet tests/NetPI.Storage.Tests/bin/Debug/NetPI.Storage.Tests.dll [name filter...]
+       Every test runs against a store made by a factory (Providers.All), so the same scenario runs on
+       each provider; one is registered today, the next joins with one line. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>NetPI.Storage.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The runner, the assertions and the temp-dir helper are the host suite's, linked rather than copied: a
+         second copy of them would drift, and every suite has to print the line scripts/test.ps1 reads. -->
+    <Compile Include="../NetPI.Host.Tests/Harness.cs" Link="Harness.cs" />
+    <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
+    <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
+  </ItemGroup>
+</Project>

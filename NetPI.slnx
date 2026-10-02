@@ -44,6 +44,7 @@
     <Project Path="tests/NetPI.E2E/NetPI.E2E.csproj" />
     <Project Path="tests/NetPI.Host.Tests/NetPI.Host.Tests.csproj" />
     <Project Path="tests/NetPI.Providers.Tests/NetPI.Providers.Tests.csproj" />
+    <Project Path="tests/NetPI.Storage.Tests/NetPI.Storage.Tests.csproj" />
     <Project Path="tests/NetPI.Tools.Tests/NetPI.Tools.Tests.csproj" />
   </Folder>
 </Solution>

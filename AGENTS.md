@@ -60,7 +60,8 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   applies everything that piled up. This is the one thing a worktree cannot do: the running app is a single process
   that every session shares.
 - Unit suites: `dotnet tests/NetPI.<X>.Tests/bin/<Config>/NetPI.<X>.Tests.dll [filter]` for X in Providers, Tools,
-  Agent, Aux, Host. End-to-end (real server, mock model): `.\scripts\e2e.ps1` (below; `docs/TESTING.md`).
+  Agent, Aux, Host, Storage (the storage port's conformance suite; a provider is registered in its `Providers.All`).
+  End-to-end (real server, mock model): `.\scripts\e2e.ps1` (below; `docs/TESTING.md`).
 - **The test loop: one big run, then only the failures.** `.\scripts\test.ps1` builds the selected suites once
   (one generated solution), runs them (2 processes at once by default; `-Parallel 3` for three, `-Serial` for one),
   keeps the log and timings in `artifacts/testlogs`, and prints the failing names as a paste-ready `-Only` command.

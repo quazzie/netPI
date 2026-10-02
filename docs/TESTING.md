@@ -6,7 +6,7 @@ Three layers, all without NuGet packages (console runners, no test framework):
 
 | layer | where | what it needs |
 |---|---|---|
-| unit suites | `tests/NetPI.{Host,Providers,Tools,Agent,Aux}.Tests` | the built projects |
+| unit suites | `tests/NetPI.{Host,Providers,Tools,Agent,Aux,Storage}.Tests` | the built projects |
 | mock model server | `tests/MockLlm` | nothing (ASP.NET shared framework) |
 | end-to-end suite | `tests/NetPI.E2E` | the built app (`artifacts/dev/app`, which `scripts/e2e.ps1` builds as needed), the mock, and for the UI tests Node 22 + Playwright (`playwright-core` devDependency; falls back to an installed Edge/Chrome) |
 
@@ -43,13 +43,13 @@ Publishing while NetPI runs hot-reloads the changed plugins, which every chat ho
 
 ## Unit suites
 
-The loop that is fast: **one big run, then only what failed.** `scripts/test.ps1` builds the five suites, runs them
+The loop that is fast: **one big run, then only what failed.** `scripts/test.ps1` builds the six suites, runs them
 once, keeps the whole output in `artifacts/testlogs/<timestamp>.txt`, and finishes with the failing test names as a
 ready-to-paste `-Only` command. Re-running that while fixing takes seconds instead of the ~90 s of the full set; the
 full run belongs at the end, before a merge.
 
 ```powershell
-.\scripts\test.ps1                                   # build + run all five, print a re-run command for the failures
+.\scripts\test.ps1                                   # build + run all six, print a re-run command for the failures
 .\scripts\test.ps1 -Only "settings:", "goal:"        # just tests whose name contains these (substring, OR-ed)
 .\scripts\test.ps1 -Suite Aux -SkipBuild             # one suite, reusing the build (nothing changed)
 .\scripts\test.ps1 -Serial                           # one suite at a time, when a run misbehaves
@@ -80,6 +80,8 @@ dotnet tests/NetPI.Aux.Tests/bin/Debug/NetPI.Aux.Tests.dll ideas        # the id
                                                                          # commit tracking (IdeasCommitTests). They run against a real temporary
                                                                          # SQLite database, not a fake; the load tests load the built plugins from
                                                                          # artifacts/dev/app (what a plain build makes), or from NETPI_APP_DIR
+tests/NetPI.Storage.Tests/bin/Debug/NetPI.Storage.Tests.dll              # the storage port: one set of scenarios every provider passes
+                                                                     # (the memory provider today; a provider joins with one line in Providers.All)
 tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests                        # kernel: SQLite, settings, bus, registries, sessions, catalog, server, plugins
 dotnet tests/NetPI.Host.Tests/bin/Debug/NetPI.Host.Tests.dll backup  # the snapshot: the WAL copy, retention, manifest verification, an offline restore
                                                     # into a new home, and the SQLite-backed ideas backlog travelling in it and coming
