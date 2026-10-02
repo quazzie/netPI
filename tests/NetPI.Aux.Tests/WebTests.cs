@@ -646,5 +646,177 @@ public static class WebTests
                 try { user.Kill(entireProcessTree: true); } catch (Exception) { }
             }
         });
+
+        r.Add("web: the snapshot parser: ids and values from the DOM strings, a missing value (-1), passwords, duplicate text dropped", () =>
+        {
+            // a string index of -1 is the DOM's "no string" (an attribute without a value)
+            var ax = Ax(
+                ("AX_0", "RootWebArea", "Test", null, 1, null, ["AX_1", "AX_2", "AX_3", "AX_4"], []),
+                ("AX_1", "heading", "Welcome", null, 2, "AX_0", [], []),
+                ("AX_2", "StaticText", "Welcome", null, 3, "AX_0", [], []),
+                ("AX_3", "textbox", "Search", "cats", 4, "AX_0", [], []),
+                ("AX_4", "textbox", "pw", null, 5, "AX_0", [], []));
+            var dom = Dom(
+                (1, [], null),
+                (2, [("id", "intro")], [0, 10, 100, 20]),
+                (3, [], [0, 10, 60, 20]),
+                (4, [("id", null), ("type", "text")], [0, 40, 200, 24]),
+                (5, [("id", null), ("type", "password")], [0, 70, 200, 24]));
+            var snap = Snap(ax, dom);
+            Check.Equal(4, snap.Controls.Count, "the repeated text is dropped");
+            Check.Contains(snap.Controls[0].Text, "[document] Test value=\"https://example.com/page\"");
+            Check.Contains(snap.Controls[1].Text, "[heading] Welcome id=\"intro\"");
+            Check.NotContains(string.Join("\n", snap.Controls.Select(c => c.Text)), "[text] Welcome");
+            var search = snap.Controls.First(c => c.Role == "textbox" && c.Name == "Search");
+            Check.Contains(search.Text, "value=\"cats\"");
+            Check.NotContains(search.Text, "id=", "the id's value was missing (-1)");
+            Check.Equal(1, snap.Controls.Count(c => c.Password));
+            Check.Contains(snap.Controls.First(c => c.Password).Text, "(password)");
+        });
+
+        r.Add("web: the snapshot parser: a <select> lists its options only while clicked open", () =>
+        {
+            var ax = Ax(
+                ("AX_0", "RootWebArea", "Test", null, 1, null, ["AX_1"], []),
+                ("AX_1", "combobox", "Country", null, 2, "AX_0", ["AX_2"], []),
+                ("AX_2", "MenuListPopup", null, null, 3, "AX_1", ["AX_3", "AX_4"], []),
+                ("AX_3", "option", "Norway", "NO", 4, "AX_2", [], []),
+                ("AX_4", "option", "Sweden", "SE", 5, "AX_2", [], []));
+            var dom = Dom(
+                (1, [], null),
+                (2, [("id", "country")], [0, 80, 150, 24]),
+                (3, [], null),
+                (4, [], [0, 80, 150, 20]),
+                (5, [], [0, 100, 150, 20]));
+            var closed = Snap(ax, dom);
+            Check.Equal(2, closed.Controls.Count, "a closed <select> hides its options");
+            Check.Contains(closed.Controls[1].Text, "[combobox] Country id=\"country\" (collapsed)");
+            var open = Snap(ax, dom, open: [2]);
+            Check.Equal(4, open.Controls.Count, "an opened <select> lists its options");
+            Check.Contains(open.Controls[1].Text, "(expanded)");
+            Check.Contains(open.Controls[2].Text, "[option] Norway value=\"NO\"");
+            Check.Contains(open.Controls[3].Text, "[option] Sweden value=\"SE\"");
+        });
+
+        r.Add("web: the snapshot parser: zero-size nodes dropped, distances from the viewport, render lists the nearest", () =>
+        {
+            var ax = Ax(
+                ("AX_0", "RootWebArea", "Test", null, 1, null, ["AX_1", "AX_2", "AX_3", "AX_4"], []),
+                ("AX_1", "button", "Up", null, 2, "AX_0", [], []),
+                ("AX_2", "button", "Mid", null, 3, "AX_0", [], []),
+                ("AX_3", "button", "Down", null, 4, "AX_0", [], []),
+                ("AX_4", "button", "Ghost", null, 5, "AX_0", [], []));
+            var dom = Dom(
+                (1, [], null),
+                (2, [], [0, 10, 100, 20]),
+                (3, [], [0, 150, 100, 20]),
+                (4, [], [0, 400, 100, 20]),
+                (5, [], [0, 150, 0, 24]));
+            var snap = Snap(ax, dom, pageY: 100, clientHeight: 100);  // the visible part is y 100..200
+            Check.Equal(4, snap.Controls.Count, "the zero-width button is dropped");
+            Check.NotContains(string.Join("\n", snap.Controls.Select(c => c.Text)), "Ghost");
+            Check.Equal(70, snap.Controls[1].Dist, "above the viewport");
+            Check.Equal(0, snap.Controls[2].Dist, "inside the viewport");
+            Check.Equal(200, snap.Controls[3].Dist, "below the viewport");
+
+            // the RootWebArea line (dist 0, no bounds) takes one of the nearest slots
+            var shown = AxSnapshot.Render("snapshot", "", snap, 3);
+            Check.Contains(shown.Content, "(4 controls; the 3 nearest the visible part are listed: scroll or find for the others)");
+            Check.Contains(shown.Content, "[3] [button] Mid");
+            Check.Contains(shown.Content, "[2] [button] Up");
+            Check.NotContains(shown.Content, "Down");
+
+            Check.Contains(AxSnapshot.Found(snap, "Mid").Content, "1 control(s) contain \"Mid\"");
+            Check.Contains(AxSnapshot.Found(snap, "Mid").Content, "[3] [button] Mid");
+            Check.Contains(AxSnapshot.Found(snap, "nothing here").Content, "No control contains \"nothing here\" (4 controls).");
+        });
+
+        r.Add("web: the snapshot effect: what an action changed, focus marks ignored", () =>
+        {
+            BrowserControl C(string name, string extra = "") => new(1, "button", name, $"[button] {name}{extra}", 0, null, null, false);
+            var a = C("Save");
+            var b = C("Done");
+            Check.Equal("No visible change.", AxSnapshot.Effect([a], [a]));
+            Check.Equal("No visible change.", AxSnapshot.Effect([a], [C("Save", " (focused)")]), "a focus mark is not a change");
+            Check.Equal("Now shows [button] Done.", AxSnapshot.Effect([a], [a, b]));
+            Check.Equal("Now shows [button] X, 1 control(s) gone.", AxSnapshot.Effect([a, b], [a, C("X")]));
+            Check.Equal("The order of the controls changed.", AxSnapshot.Effect([a, b], [b, a]));
+            Check.Equal("Now shows [button] 1; [button] 2; [button] 3 (+1 more).", AxSnapshot.Effect([a], [a, C("1"), C("2"), C("3"), C("4")]));
+        });
+    }
+
+    // --- the snapshot parser, canned CDP answers (no browser): the three documents Parse joins ---
+
+    private static JsonObject Ax(params (string Id, string Role, string? Name, string? Value, int? Backend, string? Parent, string[] Children, (string, JsonNode)[] Props)[] nodes)
+    {
+        var list = new JsonArray();
+        foreach (var (id, role, name, value, backend, parent, children, props) in nodes)
+        {
+            var n = new JsonObject { ["nodeId"] = id, ["role"] = new JsonObject { ["value"] = role } };
+            if (name is not null) n["name"] = new JsonObject { ["value"] = name };
+            if (value is not null) n["value"] = new JsonObject { ["value"] = value };  // a top-level AX field, unlike the properties array
+            if (backend is { } b) n["backendDOMNodeId"] = b;
+            if (parent is not null) n["parentId"] = parent;
+            if (children.Length > 0) n["childIds"] = new JsonArray(children.Select(c => (JsonNode)c).ToArray());
+            if (props.Length > 0)
+                n["properties"] = new JsonArray(props.Select(p => new JsonObject { ["name"] = p.Item1, ["value"] = new JsonObject { ["value"] = p.Item2 } }).ToArray());
+            list.Add(n);
+        }
+        return new JsonObject { ["nodes"] = list };
+    }
+
+    private static JsonObject Dom(params (int Backend, (string, string?)[] Attrs, double[]? Bounds)[] nodes)
+    {
+        // an attribute is [stringIndex, stringIndex]; -1 is "no string" (an attribute without a value)
+        var strings = new List<string>();
+        int S(string s)
+        {
+            var i = strings.IndexOf(s);
+            if (i >= 0) return i;
+            strings.Add(s);
+            return strings.Count - 1;
+        }
+        var attrRows = new JsonArray();
+        var nodeIndex = new JsonArray();
+        var bounds = new JsonArray();
+        for (var i = 0; i < nodes.Length; i++)
+        {
+            var (_, attrs, b) = nodes[i];
+            var row = new JsonArray();
+            foreach (var (name, value) in attrs)
+            {
+                row.Add(S(name));
+                row.Add(value is null ? -1 : S(value));
+            }
+            attrRows.Add(row);
+            if (b is not null)
+            {
+                nodeIndex.Add(i);
+                bounds.Add(new JsonArray(b.Select(v => (JsonNode)v).ToArray()));
+            }
+        }
+        return new JsonObject
+        {
+            ["strings"] = new JsonArray(strings.Select(s => (JsonNode)s).ToArray()),
+            ["documents"] = new JsonArray(new JsonObject
+            {
+                ["nodes"] = new JsonObject
+                {
+                    ["backendNodeId"] = new JsonArray(nodes.Select(n => (JsonNode)n.Backend).ToArray()),
+                    ["attributes"] = attrRows,
+                },
+                ["layout"] = new JsonObject
+                {
+                    ["nodeIndex"] = nodeIndex,
+                    ["bounds"] = bounds,
+                },
+            }),
+        };
+    }
+
+    private static AxSnapshot.Snapshot Snap(JsonObject ax, JsonObject dom, string url = "https://example.com/page", string title = "Test", double pageY = 0, double clientHeight = 800, int[]? open = null)
+    {
+        var metrics = new JsonObject { ["cssVisualViewport"] = new JsonObject { ["pageX"] = 0.0, ["pageY"] = pageY, ["clientWidth"] = 1000.0, ["clientHeight"] = clientHeight } };
+        return AxSnapshot.Parse(System.Text.Json.JsonSerializer.SerializeToElement(ax), System.Text.Json.JsonSerializer.SerializeToElement(dom), System.Text.Json.JsonSerializer.SerializeToElement(metrics), url, title, open ?? []);
     }
 }
