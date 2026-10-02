@@ -942,6 +942,78 @@ public static class FileTests
             }
         });
 
+        r.Add("rpc: files.commits — with the git directories the caller already knows, only the git log runs", async () =>
+        {
+            var dir = T.TempDir("commits-known");
+            if (!await Git(dir, "init", "-q", "-b", "main"))
+            {
+                Console.WriteLine("    (no git on PATH: skipped)");
+                return;
+            }
+            await Git(dir, "config", "user.email", "test@example.com");
+            await Git(dir, "config", "user.name", "Test");
+            await File.WriteAllTextAsync(Path.Combine(dir, "a.txt"), "one");
+            await Git(dir, "add", "-A");
+            await Git(dir, "commit", "-q", "-m", "first");
+            await File.WriteAllTextAsync(Path.Combine(dir, "b.txt"), "two");
+            await Git(dir, "add", "-A");
+            await Git(dir, "commit", "-q", "-m", "second");
+
+            using var ctx = new FakePluginContext(dir);
+            await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
+            async Task<JsonObject?> Calls(object? p) =>
+                NetPiJson.ToNode(await ctx.RpcFake.InvokeAsync("files.commits", p)) as JsonObject;
+
+            var full = await Calls(new { cwd = dir }) ?? throw new AssertException("no commits");
+            var fullCommits = (JsonArray)full["commits"]!;
+            Check.Equal(2, fullCommits.Count);
+            Check.Equal("second", fullCommits[0]!["subject"]!.GetValue<string>());
+
+            // A caller that holds the directories from its first answer hands them back: the same history,
+            // and only the log runs — the repository and its directories are the ones it was told.
+            var known = await Calls(new
+            {
+                cwd = dir,
+                gitDir = full["gitDir"]!.GetValue<string>(),
+                commonDir = full["commonDir"]!.GetValue<string>(),
+                since = fullCommits[1]!["hash"]!.GetValue<string>(),
+            }) ?? throw new AssertException("no commits");
+            var knownCommits = (JsonArray)known["commits"]!;
+            Check.Equal(1, knownCommits.Count, "only what came after the cursor");
+            Check.Equal(fullCommits[0]!["hash"]!.GetValue<string>(), knownCommits[0]!["hash"]!.GetValue<string>());
+            Check.Equal(full["repo"]!.GetValue<string>(), known["repo"]!.GetValue<string>(), "the repository it was told, not a re-resolution");
+            Check.Equal(full["gitDir"]!.GetValue<string>(), known["gitDir"]!.GetValue<string>());
+            Check.Equal(full["commonDir"]!.GetValue<string>(), known["commonDir"]!.GetValue<string>());
+
+            // A directory the repository does not use is not re-resolved either: the answer's fields echo it,
+            // and the log itself still runs from the root.
+            var bogus = T.TempDir("bogus-git");
+            var stale = await Calls(new { cwd = dir, gitDir = bogus }) ?? throw new AssertException("no commits");
+            Check.Equal(bogus, stale["gitDir"]!.GetValue<string>(), "the rev-parse did not run: the answer echoes the directory it was given");
+            var staleCommits = (JsonArray)stale["commits"]!;
+            Check.Equal(2, staleCommits.Count, "the log itself still runs, from the root");
+            Check.Equal(fullCommits[0]!["hash"]!.GetValue<string>(), staleCommits[0]!["hash"]!.GetValue<string>());
+            Check.Equal(fullCommits[1]!["hash"]!.GetValue<string>(), staleCommits[1]!["hash"]!.GetValue<string>());
+
+            // A directory that is gone is not trusted: it is re-resolved, as on first contact.
+            var gone = await Calls(new { cwd = dir, gitDir = Path.Combine(dir, ".no-such") }) ?? throw new AssertException("no commits");
+            Check.Equal(full["gitDir"]!.GetValue<string>(), gone["gitDir"]!.GetValue<string>(), "the vanished directory is re-resolved");
+            Check.Equal(2, ((JsonArray)gone["commits"]!).Count);
+
+            static async Task<bool> Git(string cwd, params string[] args)
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("git") { WorkingDirectory = cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+                foreach (var a in args) psi.ArgumentList.Add(a);
+                try
+                {
+                    using var p = System.Diagnostics.Process.Start(psi)!;
+                    await p.WaitForExitAsync();
+                    return p.ExitCode == 0;
+                }
+                catch (System.ComponentModel.Win32Exception) { return false; }
+            }
+        });
+
         r.Add("rpc: files.git — branch and the changes since the last commit, staged or not, new files counted", async () =>
         {
             var dir = T.TempDir("git");

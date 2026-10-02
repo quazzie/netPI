@@ -25,6 +25,7 @@ public static class McpLifecycleTests
                 var d=e.As<JsonObject>();if(d?["status"]?.GetValue<string>()=="connected" && d["generation"]!.GetValue<long>()>1)reconnected.TrySetResult();
             });
             await using var manager=new ServerManager(ctx);await manager.StartAsync([],CancellationToken.None);
+            await McpTests.Connected(manager,"fixture");
             var tool=manager.Catalog().Single();var revision=tool.Definition.Revision;
             var result=await manager.CallAsync(tool,T.Args(new {city="malformed"}),CancellationToken.None);
             Check.True(result.IsError);

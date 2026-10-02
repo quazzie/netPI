@@ -20,6 +20,8 @@ public static class PanelTests
                 Check.True(snap.ContainsKey(key) && snap[key] is null, key);
             Check.True(DateTimeOffset.TryParse(snap["time"].Str(), out _));
             Check.False(snap.ContainsKey("errors"));
+            foreach (var gone in new[] { "physicalOwners", "resources", "ideasWork" })
+                Check.False(snap.ContainsKey(gone), $"{gone} is no longer a part");
         });
 
         r.Add("work: snapshot aggregates available RPCs and tolerates failures", async () =>
@@ -42,6 +44,35 @@ public static class PanelTests
             Check.True(snap["processes"] is null);
             Check.Contains(snap["errors"]!["processes"].Str(), "registry gone");
             Check.True(snap["usage"] is null);
+        });
+
+        r.Add("work: finished runs' task and result are truncated and the snapshot stays bounded", async () =>
+        {
+            var ctx = new FakePluginContext();
+            await new WorkPlugin().StartAsync(ctx, CancellationToken.None);
+            var runs = Enumerable.Range(1, 100).Select(i => new AgentInfo
+            {
+                Id = $"agt_{i:D3}",
+                Status = AgentStatus.Completed,
+                Task = $"task {i}\n" + new string('x', 5_000),
+                Result = $"result {i}\n" + new string('y', 5_000),
+            }).Append(new AgentInfo { Id = "agt_live", Status = AgentStatus.Running, Task = new string('z', 5_000) }).ToList();
+            ctx.Rpc.Register("runs.list", (_, _) => Task.FromResult<object?>(runs));
+
+            var snap = (JsonObject)(await ctx.RpcFake.Call("work.snapshot"))!;
+            var list = (JsonArray)snap["runs"]!;
+            Check.Equal(101, list.Count);
+            foreach (var run in list.OfType<JsonObject>().Where(r => r["id"].Str() != "agt_live"))
+            {
+                Check.Equal(400, run["task"]!.Str()!.Length, $"finished {run["id"]!.Str()} task truncated");
+                Check.Equal(400, run["result"]!.Str()!.Length, $"finished {run["id"]!.Str()} result truncated");
+            }
+            var first = (JsonObject)list[0]!;
+            Check.True(first["task"]!.Str()!.StartsWith("task 1\nx") && first["task"]!.Str()!.EndsWith("…"), "truncated text keeps its start");
+            var live = (JsonObject)list[100]!;
+            Check.Equal(5_000, live["task"]!.Str()!.Length, "active runs stay whole");
+            var size = snap.ToJsonString().Length;
+            Check.True(size < 200_000, $"100 finished runs with 5 KB texts stay bounded: {size} B");
         });
 
         r.Add("diagnostics: snapshot shape, event details, tab and /reload command", async () =>

@@ -130,6 +130,7 @@ public static class McpHttpTests
             }));
             var ctx=new FakePluginContext();ctx.Settings.Set("mcp.servers",new JsonObject {["http"]=Config(web.Url).Json()});
             await using var manager=new ServerManager(ctx);await manager.StartAsync([],CancellationToken.None);
+            await McpTests.Connected(manager,"http");
             Check.Equal(2,manager.Catalog().Count);Check.Equal(2,pages);
             var before=manager.Catalog().Select(t=>t.Definition.Name).ToArray();fail=true;
             await Check.ThrowsAsync<McpException>(()=>manager.CommandAsync("http",false,CancellationToken.None));

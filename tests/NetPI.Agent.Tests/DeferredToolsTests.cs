@@ -26,6 +26,7 @@ public static class DeferredToolsTests
             var config=new ServerConfig {Id="fixture",Command="dotnet",Args=[typeof(DeferredToolsTests).Assembly.Location,"--mcp-fixture","large"],Cwd=h.Workspace};
             h.Settings.Set("mcp.servers",new JsonObject {["fixture"]=config.Json()});
             await using var manager=new ServerManager(ctx);await manager.StartAsync([],CancellationToken.None);
+            await Wait.Until(() => manager.Catalog().Count > 0, "mcp fixture connected");
             ctx.Tools.Register(new McpSearchTool(ctx,manager));ctx.Tools.Register(new McpCallTool(ctx,manager));
             var target=manager.Catalog().Single(x=>x.RemoteName=="weather");
             var hook=new Hook {Arguments="""{"city":"Berlin"}"""};h.Services.Register<IAgentHook>(hook);
@@ -95,6 +96,7 @@ public static class DeferredToolsTests
             var config=new ServerConfig {Id="fixture",Command="dotnet",Args=[typeof(DeferredToolsTests).Assembly.Location,"--mcp-fixture"],Cwd=h.Workspace};
             h.Settings.Set("mcp.servers",new JsonObject {["fixture"]=config.Json()});
             await using var manager=new ServerManager(ctx);await manager.StartAsync([],CancellationToken.None);
+            await Wait.Until(() => manager.Catalog().Count > 0, "mcp fixture connected");
             ctx.Tools.Register(new McpSearchTool(ctx,manager));ctx.Tools.Register(new McpCallTool(ctx,manager));
             var target=manager.Catalog().Single();var session=h.NewSession();int stage=0;
             h.Catalog.Handler=(r,ct)=>stage++==0?Reply.Tools(Reply.Call("mcp_search",new {query=target.Definition.Name,detail="schema"})):Reply.Text("done");

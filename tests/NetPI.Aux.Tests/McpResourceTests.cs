@@ -44,6 +44,7 @@ public static class McpResourceTests
             ctx.Settings.Set("mcp.servers", new JsonObject { ["fixture"] = Config("resources").Json() });
             await using var manager = new ServerManager(ctx);
             await manager.StartAsync([], CancellationToken.None);
+            await McpTests.Connected(manager, "fixture");
             var search = new McpSearchTool(ctx, manager);
             var resource = new McpResourceTool(ctx, manager);
             ctx.Tools.Register(search); ctx.Tools.Register(resource);
@@ -100,6 +101,7 @@ public static class McpResourceTests
             using var sub = ctx.Events.Subscribe("mcp.serverChanged", _ => refreshed.TrySetResult());
             await using var manager = new ServerManager(ctx);
             await manager.StartAsync([], CancellationToken.None);
+            await McpTests.Connected(manager, "fixture");
             Check.Equal(4, manager.Resources(null).Count);
             // resources/list_changed re-reads the catalog, and the server renamed a resource when it did.
             await refreshed.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -115,6 +117,7 @@ public static class McpResourceTests
             });
             await using var only = new ServerManager(restricted);
             await only.StartAsync([], CancellationToken.None);
+            await McpTests.Connected(only, "fixture");
             Check.Equal(1, only.Resources(null).Count);
             Check.Equal("skill://demo/SKILL.md", only.Resources(null)[0].Uri);
             restricted.Settings.Set("mcp.servers", new JsonObject { ["fixture"] = (Config("resources") with { Resources = [] }).Json() });

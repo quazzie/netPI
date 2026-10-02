@@ -14,8 +14,8 @@ public sealed class WorkPlugin : INetPiPlugin
     {
         var rpc = context.Rpc;
         var logger = context.Logger;
-        context.Rpc.RegisterReadOnly("work.snapshot", async (_, rpcCt) => await SnapshotAsync(rpc, logger, rpcCt, context.Services.Get<IResourceLeases>()).ConfigureAwait(false),
-            "Aggregated overview for the Work tab → { agents, runs, processes, usage, time, errors? }");
+        context.Rpc.RegisterReadOnly("work.snapshot", async (_, rpcCt) => await SnapshotAsync(rpc, logger, rpcCt).ConfigureAwait(false),
+            "Aggregated overview for the Work tab → { agents, unassigned, runs, processes, usage, time, errors? }");
         context.Ui.AddTab(new UiTabInfo { Id = "work", Title = "Work", Panel = UiPanel.Right, Icon = "work", Order = 10, Module = "ui.js" });
         return Task.CompletedTask;
     }
@@ -25,14 +25,16 @@ public sealed class WorkPlugin : INetPiPlugin
     [
         ("agents", "agents.list", null),
         ("unassigned", "agents.unassigned", null),
-        ("resources", "agents.resources", null),
-        ("ideasWork", "ideas.work", null),
         ("runs", "runs.list", new JsonObject { ["includeFinished"] = true }),
         ("processes", "processes.list", null),
         ("usage", "usage.summary", null),
     ];
 
-    public static async Task<JsonObject> SnapshotAsync(IRpcRegistry rpc, ILogger? logger, CancellationToken ct, IResourceLeases? physical = null)
+    /// <summary>Longest task/result of a finished run in the snapshot: the tab shows them ellipsised, the full text is <c>agent.get</c>'s job.</summary>
+    private const int FinishedTextLimit = 400;
+    private static readonly string[] Finished = ["completed", "failed", "cancelled"];
+
+    public static async Task<JsonObject> SnapshotAsync(IRpcRegistry rpc, ILogger? logger, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
@@ -61,9 +63,22 @@ public sealed class WorkPlugin : INetPiPlugin
             snapshot[key] = value;
             if (error is not null) (errors ??= [])[key] = error;
         }
-        snapshot["physicalOwners"] = NetPiJson.ToNode(physical?.Snapshot());
+        ShrinkFinishedRuns(snapshot["runs"] as JsonArray);
         snapshot["time"] = DateTimeOffset.UtcNow.ToString("O");
         if (errors is not null) snapshot["errors"] = errors;
         return snapshot;
+    }
+
+    /// <summary>
+    /// A finished run carries its whole task and result (a history of 100 runs is several hundred KB the tab never shows in
+    /// full), so the snapshot truncates them; the active runs keep their text as is.
+    /// </summary>
+    private static void ShrinkFinishedRuns(JsonArray? runs)
+    {
+        if (runs is null) return;
+        foreach (var run in runs.OfType<JsonObject>().Where(r => Finished.Contains((string?)r["status"])))
+            foreach (var key in new[] { "task", "result" })
+                if (run[key]?.GetValue<string>() is { Length: > FinishedTextLimit } s)
+                    run[key] = s[..(FinishedTextLimit - 1)] + "…";
     }
 }

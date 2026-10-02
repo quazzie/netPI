@@ -635,14 +635,11 @@ const handlers = {
   },
   'agent.queue': (p) => agent.queue(need(p, 'sessionId')),
   'agent.dequeue': (p) => agent.dequeue(need(p, 'sessionId'), need(p, 'id')),
-  // like the Work plugin: agents.list and usage.summary; the ideas checks are the same list the Diagnostics tab's
-  // Ideas view reads via ideas.work (eleven in run order, oldest first — the view keeps the last 10)
+  // the background idea checks the Diagnostics tab's Ideas view reads via ideas.work (eleven in run order, oldest first — the view keeps the last 10)
   'ideas.work': () => ideasWorkList(),
+  // like the Work plugin: agents.list, runs.list, processes.list and usage.summary
   'work.snapshot': () => ({
     agents: agentPools(),
-    physicalOwners: [{ resource: 'local:aiproxy/qwen3.8-27b', key: 'qwen', holder: { leaseId: 'mock-retiring', agentId: 'old-run', label: 'Reloaded worker', since: new Date(Date.now() - 30_000).toISOString(), executorGeneration: 'previous', correlationId: 'mock-held-call', purpose: 'agent', retiring: true, cancellationRequestedAt: new Date().toISOString(), providerReturnedAt: null } }],
-    resources: [{ key: 'local:aiproxy/qwen3.8-27b', model: 'aiproxy/qwen3.8-27b', capacity: 2, busy: 2, queued: 1, available: true, owners: [] }],
-    ideasWork: ideasWorkList(),
     runs: [...store.agents.values()],
     processes: work.procList(),
     usage: { ...work.usageSummary(), budget: budgetStatus(), models: MOCK_SPEND },

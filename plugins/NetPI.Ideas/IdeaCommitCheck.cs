@@ -63,6 +63,11 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         public string Path { get; } = path;
         public string? ProjectId { get; } = projectId;
         public string? ProjectName { get; } = projectName;
+        /// <summary>The git directories of the first read (the sweeps pass them back, so a sweep runs only its git log).</summary>
+        public string? GitDir { get; set; }
+        public string? CommonDir { get; set; }
+        /// <summary>What the last periodic check saw in the git directories (path → last write); null until one has run.</summary>
+        public Dictionary<string, long>? Seen { get; set; }
         /// <summary>The git directories being watched (one in a plain repository, two in a worktree).</summary>
         public List<FileSystemWatcher> Watchers { get; } = [];
         /// <summary>One sweep at a time, and the last one is not lost while it runs.</summary>
@@ -152,11 +157,18 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                 foreach (var watch in Watches())
                 {
                     if (_stopped) break;
+                    var now = Markers(watch);
+                    if (now is not null && Unchanged(watch, now) && !FailureDue(watch))
+                    {
+                        ctx.Logger.LogDebug("Ideas: {Repo} has no new commit (its git directories keep the last check's marks); the sweep is skipped", watch.Repo);
+                        continue;
+                    }
                     await watch.Gate.WaitAsync(ctx.Stopping).ConfigureAwait(false);
                     try { await SweepAsync(watch).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (ctx.Stopping.IsCancellationRequested) { }
                     catch (Exception ex) { ctx.Logger.LogWarning("Ideas: the commit check on {Repo} failed: {Message}", watch.Repo, ex.Message); }
-                    finally { watch.Gate.Release(); }
+                    // The pre-sweep marks are the floor: a commit that lands during the sweep moves them and is read next.
+                    finally { watch.Gate.Release(); watch.Seen = now; }
                 }
             }
             while (_rescanQueued);
@@ -210,6 +222,55 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         }
     }
 
+    /// <summary>
+    /// The marks a periodic check looks at before paying for a sweep: the last writes of the files and directory that a
+    /// new commit touches — the repository's HEAD, the directory holding its branch refs (a ref update is a rename into
+    /// it) and the packed refs. Any of them moving is a commit or a branch switch worth reading; none of them moving is
+    /// not. (A commit that left them untouched does not exist: every commit moves a ref.)
+    /// </summary>
+    private static Dictionary<string, long>? Markers(Watch watch)
+    {
+        if (watch.GitDir is not { Length: > 0 } git) return null;
+        var common = watch.CommonDir is { Length: > 0 } c ? c : git;
+        var marks = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        Add(Path.Combine(git, "HEAD"));
+        Add(Path.Combine(git, "refs", "heads"));
+        Add(Path.Combine(common, "HEAD"));
+        Add(Path.Combine(common, "refs", "heads"));
+        Add(Path.Combine(common, "packed-refs"));
+        return marks;
+
+        void Add(string path)
+        {
+            try { marks[path] = Mark(path); } catch { marks[path] = 0; }   // a vanished git directory reads as "nothing changed since the start"
+        }
+
+        static long Mark(string path) =>
+            Directory.Exists(path) ? new DirectoryInfo(path).LastWriteTimeUtc.Ticks
+            : File.Exists(path) ? new FileInfo(path).LastWriteTimeUtc.Ticks
+            : 0;
+    }
+
+    /// <summary>Every mark the last check saw still at the same write: the sweep would only re-read what it just read.</summary>
+    private static bool Unchanged(Watch watch, Dictionary<string, long> now)
+    {
+        var seen = watch.Seen;
+        if (seen is null || seen.Count != now.Count) return false;
+        foreach (var (path, mark) in now)
+            if (!seen.TryGetValue(path, out var last) || last != mark) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// The one repository that gets swept with unchanged marks: a check that failed and is back off (idea-kooctc) waits
+    /// for its next attempt by the clock, not by a commit, and that attempt would be skipped until the next mark change.
+    /// </summary>
+    private bool FailureDue(Watch watch)
+    {
+        if (_repo.RepoFailure(watch.Repo) is not { Tries: > 0, At: { } failedAt } failure) return false;
+        return BackoffUntil(failure.Tries, failedAt) is not { } until || DateTimeOffset.UtcNow >= until;
+    }
+
     private Watch[] Watches()
     {
         lock (_watchLock) return [.. _watches.Values];
@@ -238,7 +299,9 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         lock (_watchLock)
         {
             if (_stopped || _watches.ContainsKey(repo)) return;
-            var watch = new Watch(repo, project.Path, project.Id, project.Name);
+            var gitDir = IdeaOps.Str(o?["gitDir"]);
+            var commonDir = IdeaOps.Str(o?["commonDir"]);
+            var watch = new Watch(repo, project.Path, project.Id, project.Name) { GitDir = gitDir, CommonDir = commonDir };
             // The watch is registered before, and even without, a file watcher: the periodic sweep is the floor, so a
             // repository whose git directory cannot be watched (a worktree, where .git is a file) is still read.
             ctx.Logger.LogInformation("Ideas: watching {Repo} for commits (project {Project})", repo, project.Name);
@@ -247,7 +310,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             // repository has a first commit, so watching *it* would miss every commit of a fresh one. Any write here
             // (an index, a ref, the reflog) wakes the sweep, which only acts on commits it has not seen. A worktree has
             // two of them: its own (HEAD) and the common one where the refs live.
-            foreach (var dir in new[] { IdeaOps.Str(o?["gitDir"]), IdeaOps.Str(o?["commonDir"]) }
+            foreach (var dir in new[] { gitDir, commonDir }
                 .OfType<string>()
                 .Where(d => d.Length > 0 && Directory.Exists(d))
                 .Distinct(StringComparer.OrdinalIgnoreCase))
@@ -276,10 +339,17 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         }
     }
 
-    /// <summary><c>files.commits</c> as the Files plugin answers it (a record, read through JSON).</summary>
-    private async Task<object?> AskCommitsAsync(string path, string? since, string? until, int limit)
+    /// <summary>
+    /// <c>files.commits</c> as the Files plugin answers it (a record, read through JSON). The first contact answers with
+    /// the repository's git directories; a later read passes them back (<paramref name="gitDir"/>/<paramref name="commonDir"/>),
+    /// so only the <c>git log</c> runs, not the three rev-parses.
+    /// </summary>
+    private async Task<object?> AskCommitsAsync(string path, string? since, string? until, int limit,
+        string? gitDir = null, string? commonDir = null)
     {
         var request = new JsonObject { ["cwd"] = path, ["limit"] = limit };
+        if (gitDir is { Length: > 0 }) request["gitDir"] = gitDir;
+        if (commonDir is { Length: > 0 }) request["commonDir"] = commonDir;
         if (since is { Length: > 0 }) request["since"] = since;
         if (until is { Length: > 0 }) request["until"] = until;
         if (ctx.Services.Get<IGitHistory>() is { } history)
@@ -353,7 +423,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         string? upper = null;
         for (var page = 0; page < MaxPages; page++)
         {
-            var found = await AskCommitsAsync(watch.Path, since, upper, MaxCommits).ConfigureAwait(false);
+            var found = await AskCommitsAsync(watch.Repo, since, upper, MaxCommits, watch.GitDir, watch.CommonDir).ConfigureAwait(false);
             var o = NetPiJson.ToNode(found) as JsonObject;
             var batch = (o?["commits"] as JsonArray ?? []).OfType<JsonObject>().ToList();
             if (o is null || batch.Count == 0)
@@ -697,7 +767,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// <summary>The newest commit of a repository (what a re-anchored cursor is set to).</summary>
     private async Task<string?> HeadAsync(Watch watch)
     {
-        var o = NetPiJson.ToNode(await AskCommitsAsync(watch.Path, null, null, 1).ConfigureAwait(false)) as JsonObject;
+        var o = NetPiJson.ToNode(await AskCommitsAsync(watch.Repo, null, null, 1, watch.GitDir, watch.CommonDir).ConfigureAwait(false)) as JsonObject;
         var newest = (o?["commits"] as JsonArray ?? []).OfType<JsonObject>().FirstOrDefault();
         return IdeaOps.Str(newest?["hash"]);
     }

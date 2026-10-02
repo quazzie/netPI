@@ -271,7 +271,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     private async Task LoadAndStartAsync(List<PluginEntry> list, CancellationToken ct)
     {
         var sets = EnabledSets.Read(_k.Settings);
-        var loaded = new List<PluginEntry>();
+        var enabled = new List<PluginEntry>();
         foreach (var e in list)
         {
             if (!IsEnabled(e, sets))
@@ -279,8 +279,12 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
                 e.State = "disabled";
                 continue;
             }
-            if (await LoadAssemblyAsync(e).ConfigureAwait(false)) loaded.Add(e);
+            enabled.Add(e);
         }
+        // Assembly loads are independent per plugin (its own shadow copy and load context), so they run in parallel;
+        // the start below stays in (Order, Name) sequence.
+        var loads = await Task.WhenAll(enabled.Select(async e => (Entry: e, Ok: await LoadAssemblyAsync(e).ConfigureAwait(false))));
+        var loaded = loads.Where(p => p.Ok).Select(p => p.Entry).ToList();
         foreach (var e in loaded.OrderBy(e => e.Order).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ThenBy(e => e.Id, StringComparer.Ordinal))
         {
             ct.ThrowIfCancellationRequested();

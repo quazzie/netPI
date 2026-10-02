@@ -29,6 +29,8 @@ Takes no parameters and returns:
 - A part is `null` when its method is not registered (the plugin is missing or disabled) or when the call failed. A failed
   call also leaves an entry in `errors`. The tab should render every section as optional and show a short "not
   available" line for a `null` part.
+- A finished run's `task` and `result` are truncated to 400 characters in the snapshot (the tab shows them ellipsised);
+  the full text is available on demand through `agent.get { id }`. Active runs are sent whole.
 - The shapes are the ones in `docs/PROTOCOL.md`:
 
 ```ts
@@ -71,5 +73,3 @@ Useful actions from the tab (other plugins' RPCs):
 - `ctx.app.openSession(agent.sessionId)`: jump to an agent's or subagent's session.
 
 Pause the event-driven updates while the tab is hidden (`onHide`) and take a fresh snapshot on `onShow`.
-
-Physical owners remain visible through executor replacement, including provider cancellation acknowledgement that exceeds the shutdown timeout. Work shows acquisition time and retirement/cancellation state and can inspect the correlated model call. A returned provider may still belong to a run holding its admission lease.
