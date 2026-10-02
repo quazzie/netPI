@@ -217,6 +217,12 @@ internal sealed class MockServer : IAsyncDisposable
                 // 200 + application/json, but an HTML page from whatever sits in front of the endpoint.
                 await Json(ctx, "<!doctype html>\n<html><body><h1>502 Bad Gateway</h1></body></html>");
                 return;
+            case "rejected-tools":
+                // The cause is outside error.message, and past the 2,000 characters the error message quotes.
+                await Json(ctx, """{"error":{"type":"invalid_request_error","message":"3 tools rejected"},"rejected_tools":[""" +
+                    string.Join(",", Enumerable.Range(0, 80).Select(i => $$"""{"name":"tool_{{i}}","reason":"schema too large for the model ({{i}} characters of explanation)"}""")) +
+                    """],"trace_id":"tr-abc-9999"}""", 400);
+                return;
             case "cutoff":
                 await Sse(ctx, [E("response.output_text.delta", new { type = "response.output_text.delta", item_id = "m", output_index = 0, delta = "par" })]);
                 ctx.Abort();
@@ -324,6 +330,11 @@ internal sealed class MockServer : IAsyncDisposable
             case "vendor/bad-json":
                 await Json(ctx, "<!doctype html>\n<html><body><h1>502 Bad Gateway</h1></body></html>");
                 return;
+            case "vendor/rejected-tools":
+                await Json(ctx, """{"error":{"type":"invalid_request_error","message":"3 tools rejected"},"rejected_tools":[""" +
+                    string.Join(",", Enumerable.Range(0, 80).Select(i => $$"""{"name":"tool_{{i}}","reason":"schema too large for the model ({{i}} characters of explanation)"}""")) +
+                    """],"trace_id":"tr-or-7777"}""", 400);
+                return;
             case "vendor/mid-error":
                 await Sse(ctx,
                 [
@@ -396,6 +407,11 @@ internal sealed class MockServer : IAsyncDisposable
                 return;
             case "bad-json":
                 await Json(ctx, "<!doctype html>\n<html><body><h1>502 Bad Gateway</h1></body></html>");
+                return;
+            case "rejected-tools":
+                await Json(ctx, """{"error":{"type":"invalid_request_error","message":"3 tools rejected"},"rejected_tools":[""" +
+                    string.Join(",", Enumerable.Range(0, 80).Select(i => $$"""{"name":"tool_{{i}}","reason":"schema too large for the model ({{i}} characters of explanation)"}""")) +
+                    """],"trace_id":"tr-or-7777"}""", 400);
                 return;
             case "overflow":
                 await Json(ctx, """{"error":{"message":"This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}""", 400);

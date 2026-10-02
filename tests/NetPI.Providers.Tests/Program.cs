@@ -551,6 +551,30 @@ await t.Run("errors: server ids are added to the message and the failed request 
     Directory.Delete(dir, true);
 });
 
+await t.Run("errors: the failed-request dump keeps the response body, not only the 2,000-char excerpt", async () =>
+{
+    // The error message quotes 2,000 characters of the body; a 400 that lists what it rejected says the rest
+    // there, so the file a bug report points at has to hold the body itself (idea-022jh1).
+    var dir = Path.Combine(Path.GetTempPath(), "netpi-dump-" + Guid.NewGuid().ToString("N"));
+    var p = new AP.OpenAiCompatibleProvider("aiproxy", "AiProxy", new HttpClient(), () => apCtx.SettingsImpl.GetNode("providers.aiproxy") as JsonObject,
+        null, null, null, dir);
+    var ex = await Fails(p, Req(M("aiproxy", "rejected-tools")));
+    t.Check(ex is { StatusCode: 400 } && ex.Message.Contains("3 tools rejected") && !ex.Message.Contains("tr-abc-9999"),
+        $"the message quotes the excerpt only: {ex?.Message.Length} chars, no trace id");
+    var dump = JsonNode.Parse(File.ReadAllText(Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Single()))!;
+    var response = dump["response"]?.GetValue<string>() ?? "";
+    t.Check(response.Contains("tr-abc-9999") && response.Contains("tool_79"), "the dump holds the whole body, outside error.message");
+    t.Check(response.Length < AP.ProviderErrors.MaxBody + 1, $"and it is capped ({response.Length} chars)");
+    t.Check(dump["request"]?["input"] is JsonArray, "the request is still in full");
+
+    // and on the 200-with-a-broken-body path the body is what says what happened
+    await Fails(p, Req(M("aiproxy", "bad-json")));
+    var dumps = Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json")
+        .Select(f => JsonNode.Parse(File.ReadAllText(f))!).ToList();
+    t.Check(dumps.Any(d => d["response"]?.GetValue<string>()?.Contains("502 Bad Gateway") == true), "a body that is not JSON is saved too");
+    Directory.Delete(dir, true);
+});
+
 await t.Run("errors: a 200 whose body is not JSON is described, saved with the request, and retried", async () =>
 {
     var dir = Path.Combine(Path.GetTempPath(), "netpi-dump-" + Guid.NewGuid().ToString("N"));
@@ -1251,6 +1275,18 @@ await t.Run("openrouter: a 200 whose body is not JSON is described, saved and re
     var e = await Fails(p, Req(M("openrouter", "vendor/bad-json")));
     t.Check(e is { Transient: true, ErrorType: "bad_json" } && e.Message.StartsWith("OpenRouter: bad_json"), "described: " + e?.Message);
     t.Check(e!.Message.Contains("502 Bad Gateway") && e.Message.Contains("saved"), "the body is quoted and the request saved");
+    Directory.Delete(dir, true);
+});
+
+await t.Run("openrouter: the failed-request dump keeps the whole response body, not the 2,000-char excerpt", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "netpi-or-" + Guid.NewGuid().ToString("N"));
+    var p = new OR.OpenRouterProvider(new HttpClient(), () => orCtx.SettingsImpl.GetNode("providers.openrouter") as JsonObject, null, orCtx.Bus, dir);
+    var e = await Fails(p, Req(M("openrouter", "vendor/rejected-tools")));
+    t.Check(e is { StatusCode: 400 } && e.Message.Contains("3 tools rejected") && !e.Message.Contains("tr-or-7777"), "the message quotes the excerpt only");
+    var dump = JsonNode.Parse(File.ReadAllText(Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Single()))!;
+    t.Check((dump["response"]?.GetValue<string>() ?? "").Contains("tr-or-7777"), "the dump holds the whole body");
+    t.Check(dump["request"]?["messages"] is JsonArray && dump["generationId"] is not null, "with the request and the generation id");
     Directory.Delete(dir, true);
 });
 
