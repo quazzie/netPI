@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -779,8 +779,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                     await finish.WaitAsync(CancellationToken.None).ConfigureAwait(false);
                     try
                     {
-                        await FinishAsync(turn, p, result, ct).ConfigureAwait(false);
-                        done.Add(p.Call.Id);
+                        await FinishAsync(turn, p, result, done, ct).ConfigureAwait(false);
                     }
                     finally { finish.Release(); }
                 })).ConfigureAwait(false);
@@ -796,8 +795,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                     started.Add(calls[i].Id);
                     argsChanged |= changed;
                     var result = await InvokeAsync(p, ct).ConfigureAwait(false);
-                    await FinishAsync(turn, p, result, ct).ConfigureAwait(false);
-                    done.Add(calls[i].Id);
+                    await FinishAsync(turn, p, result, done, ct).ConfigureAwait(false);
 
                     if (i < calls.Count - 1 && HasSteering())
                     {
@@ -1020,9 +1018,12 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                + content[^tail..];
     }
 
-    private async Task FinishAsync(AgentTurnContext turn, PreparedCall p, ToolResultPart result, CancellationToken ct)
+    private async Task FinishAsync(AgentTurnContext turn, PreparedCall p, ToolResultPart result, HashSet<string> done, CancellationToken ct)
     {
         Persist(result);
+        // the result is in the transcript: the call is done. A run cancelled in a hook below must not write a second
+        // result ("aborted") for the same call id (idea-3coif8).
+        done.Add(p.Call.Id);
         rt.Emit(EventTypes.ToolEnd, new JsonObject
         {
             ["sessionId"] = SessionId,
