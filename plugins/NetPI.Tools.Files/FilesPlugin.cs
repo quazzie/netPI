@@ -48,10 +48,10 @@ public sealed class FilesPlugin : INetPiPlugin
 
         context.Rpc.Register("files.open", (req, _) =>
         {
-            var (path, action) = FileOpener.Decide(context, ResolveRoot(context, req), req.Required("path"));
-            FileOpener.Run(path, action);
+            var (path, action) = FileOpener.Decide(context, ResolveRoot(context, req), req.Required("path"), req.Bool("confirm") ?? false);
+            if (action != "confirm") FileOpener.Run(path, action);
             return Task.FromResult<object?>(new { path, action });
-        }, "Open a path with the operating system (files in their default app, folders in the file manager, scripts for editing, executables only revealed): { path, sessionId?, cwd? } → { path, action }");
+        }, "Open a path with the operating system (files in their default app, folders in the file manager, scripts for editing, executables only revealed): { path, sessionId?, cwd?, confirm? } → { path, action }, where action 'confirm' is a path outside the session's workspace: ask the user, then call again with confirm: true");
 
         context.Rpc.RegisterReadOnly("files.git", async (req, token) =>
             await GitStatus.ReadAsync(ResolveRoot(context, req), token).ConfigureAwait(false),

@@ -22,7 +22,9 @@ export default defineConfig(({ mode }) => {
   return {
     root: webDir,
     envDir: webDir,
-    publicDir: false,
+    // public/ holds the one file the page needs before the bundle can run: theme.js applies the saved theme before the
+    // first paint, and it is a file rather than an inline <script> so a CSP without 'unsafe-inline' allows it.
+    publicDir: 'public',
     plugins: [svelte()],
     resolve: {
       alias: { '@netpi/kit': path.join(webDir, 'src/lib/kit/index.js') },

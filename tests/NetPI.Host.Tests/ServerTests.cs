@@ -266,6 +266,35 @@ public static class ServerTests
             Check.NotContains(traversal.Body, "defaultModel");
         });
 
+        r.Add("server: every response carries the content security policy, so model-written markdown cannot load or frame anything", async () =>
+        {
+            await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"), CreateWebRoot());
+            using var http = NewHttp();
+            void Auth(HttpRequestMessage q) => q.Headers.Add(WebServer.TokenHeader, server.Token);
+            var csp = WebServer.ContentSecurityPolicy;
+            var calls = new (HttpMethod Method, string Path, Action<HttpRequestMessage>? Configure)[]
+            {
+                (HttpMethod.Get, "/", null),                          // the page itself
+                (HttpMethod.Get, "/assets/app-Bx12cD34.js", null),     // a bundle
+                (HttpMethod.Get, "/api/health", null),                 // the open health check
+                (HttpMethod.Post, "/api/rpc/app.info", Auth),           // an rpc call
+            };
+            foreach (var (method, path, configure) in calls)
+            {
+                var res = await SendAsync(http, method, server.BaseUrl + path, method == HttpMethod.Post ? "{}" : null, configure);
+                var headers = res.Response.Headers;
+                Check.Equal(csp, headers.GetValues("Content-Security-Policy").Single(), path);
+                Check.Equal("no-referrer", headers.GetValues("Referrer-Policy").Single(), path);
+                Check.Equal("nosniff", headers.GetValues("X-Content-Type-Options").Single(), path);
+            }
+            // The parts that keep the model out of the page, not just the string's presence.
+            Check.Contains(csp, "default-src 'self'");
+            Check.Contains(csp, "object-src 'none'");
+            Check.Contains(csp, "base-uri 'none'");
+            Check.Contains(csp, "frame-ancestors 'none'");
+            Check.NotContains(csp, "script-src 'unsafe-inline'");
+        });
+
         r.Add("server: websocket hello/rpc, session-scoped events reach only subscribed clients, origin check", async () =>
         {
             await using var server = await PluginTests.StartAsync(T.TempDir("noplugins"), CreateWebRoot());

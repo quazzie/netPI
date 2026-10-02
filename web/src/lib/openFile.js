@@ -2,12 +2,25 @@
 // file of a read/write/edit tool call, the file tree. Relative paths resolve against the session's working directory.
 import { rpc } from './rpc.svelte.js';
 import { app } from './state/app.svelte.js';
-import { toast } from './state/ui.svelte.js';
+import { confirmDialog, toast } from './state/ui.svelte.js';
 
 export async function openFile(path, sessionId = app.activeId) {
   if (!path) return;
+  const call = (confirm) => rpc('files.open', { path, ...(sessionId ? { sessionId } : {}), ...(confirm ? { confirm: true } : {}) });
   try {
-    const res = await rpc('files.open', { path, ...(sessionId ? { sessionId } : {}) });
+    let res = await call(false);
+    // A path outside the session's workspace (a link the model wrote to somewhere else on the machine) is not opened
+    // until the user says so; the host answers 'confirm' and opens nothing itself.
+    if (res?.action === 'confirm') {
+      const ok = await confirmDialog({
+        title: 'Open a file outside the workspace?',
+        message: `${res.path}\n\nThis session works somewhere else, so opening it is your call.`,
+        confirmLabel: 'Open',
+        danger: true,
+      });
+      if (!ok) return;
+      res = await call(true);
+    }
     if (res?.action === 'reveal') toast(`Shown in the file manager: ${res.path}`);
   } catch (e) {
     toast(e.message, e.code === 'not_found' ? 'warn' : 'error');

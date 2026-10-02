@@ -26,6 +26,17 @@ internal sealed class WebServer : IAsyncDisposable
     public const string CookieName = "netpi_token";
     public const string TokenHeader = "X-NetPI-Token";
     private const string ImmutableCache = "public, max-age=31536000, immutable";
+
+    /// <summary>
+    /// The UI is model-written markdown in a WebView, so a page that reaches it can be one the model wrote: no script
+    /// and no frame may come from anywhere but this origin, no style is loaded from anywhere, and nothing may be framed
+    /// or used as a base. Images and styles are the exceptions the app itself needs (data:/blob: pictures, the inline
+    /// styles svelte components set), and a plain <c>ws:</c> for the socket.
+    /// </summary>
+    public const string ContentSecurityPolicy =
+        "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
+        "connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+
     private static readonly JsonDocumentOptions BodyOptions = new() { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip };
     private static readonly FileExtensionContentTypeProvider ContentTypes = CreateContentTypes();
 
@@ -111,6 +122,8 @@ internal sealed class WebServer : IAsyncDisposable
     {
         var path = ctx.Request.Path.Value ?? "/";
         ctx.Response.Headers.XContentTypeOptions = "nosniff";
+        ctx.Response.Headers.ContentSecurityPolicy = ContentSecurityPolicy;
+        ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
         try
         {
             if (path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase)) await ApiAsync(ctx, path).ConfigureAwait(false);

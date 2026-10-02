@@ -22,6 +22,7 @@ internal sealed class MainForm : Form
     private readonly WebView2 _web;
     private readonly Label _status;
     private NetPiServer? _server;
+    private string _origin = "";
     private IDisposable? _captureRpc;
     private IDisposable? _zoomRpc;
     private double _zoom = 1;
@@ -219,16 +220,17 @@ internal sealed class MainForm : Form
         core.Settings.IsPasswordAutosaveEnabled = false;
 
         var origin = new Uri(server.BaseUrl).GetLeftPart(UriPartial.Authority);
+        _origin = origin;
         core.NavigationStarting += (_, e) =>
         {
-            if (e.Uri.StartsWith(origin, StringComparison.OrdinalIgnoreCase) || e.Uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return;
+            if (IsOwnOrigin(e.Uri, origin) || e.Uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase)) return;
             e.Cancel = true;
             OpenExternal(e.Uri);
         };
         core.NewWindowRequested += (_, e) =>
         {
             e.Handled = true;
-            if (e.Uri.StartsWith(origin, StringComparison.OrdinalIgnoreCase)) core.Navigate(e.Uri);
+            if (IsOwnOrigin(e.Uri, origin)) core.Navigate(e.Uri);
             else OpenExternal(e.Uri);
         };
         core.DocumentTitleChanged += (_, _) =>
@@ -358,6 +360,9 @@ internal sealed class MainForm : Form
 
     private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
+        // These reach the folder picker, the shell and a notification, so only the app's own document may post them: a
+        // page that reached the window anyway (a frame, a devtools page) can ask for all three.
+        if (!IsOwnOrigin(e.Source, _origin)) return;
         JsonObject? msg;
         try
         {
@@ -389,6 +394,23 @@ internal sealed class MainForm : Form
 
     private static string? Str(JsonObject? o, string key) =>
         o?[key] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    /// <summary>
+    /// Whether <paramref name="url"/> really is the app's own origin. A prefix test is not enough: in
+    /// <c>http://127.0.0.1:7431@evil.example/</c> the string starts with the origin while the host is evil.example, so a
+    /// model answer carrying such a link would navigate the window itself to that page — with no address bar, and with
+    /// the bridge messages below it to post. The scheme, host and port are therefore compared as parsed, and any user
+    /// info (the <c>@</c> above) means another host.
+    /// </summary>
+    private static bool IsOwnOrigin(string? url, string origin)
+    {
+        if (string.IsNullOrEmpty(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var own)) return false;
+        return string.IsNullOrEmpty(uri.UserInfo)
+            && string.Equals(uri.Scheme, own.Scheme, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(uri.Host, own.Host, StringComparison.OrdinalIgnoreCase)
+            && uri.Port == own.Port;
+    }
 
     private void Post(JsonObject message)
     {

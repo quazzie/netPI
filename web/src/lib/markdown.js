@@ -26,14 +26,32 @@ const decode = (s) => {
   }
 };
 
+/** A link to a local file: opened with the OS by lib/openFile.js instead of navigating the app. */
+const fileLink = (path, inner) =>
+  `<a href="#" class="file-link" data-path="${esc(path)}" title="Open ${esc(path)}">${inner}</a>`;
+
 const marked = new Marked({ gfm: true, breaks: false, async: false });
 marked.use({
   renderer: {
+    // raw HTML is shown, not rendered: a message can carry anything the model copied out of a page, and the page is
+    // the app, so an <a style="position:fixed;inset:0"> or a forged copy button is a click on the user's behalf.
+    html({ text }) {
+      return esc(text);
+    },
+    // an image becomes the link it points at: an <img src> loads as the message renders (and again on every re-render
+    // while it streams), which is enough to exfiltrate whatever the model has read in a query string. A picture the
+    // answer carries itself (a data: URL, which fetches nothing and the policy allows) is still shown.
+    image({ href, title, text }) {
+      const label = text || href || '';
+      const titleAttr = title ? ` title="${esc(title)}"` : '';
+      if (isFileHref(href)) return fileLink(decode(href), esc(label));
+      if (/^data:image\//i.test(href)) return `<img src="${esc(href)}" alt="${esc(label)}"${titleAttr}>`;
+      return `<a href="${esc(href)}"${titleAttr} class="md-image">${esc(label)}</a>`;
+    },
     // links to files open with the OS (lib/openFile.js) instead of navigating the app
     link({ href, tokens }) {
       if (!isFileHref(href)) return false;
-      const path = decode(href);
-      return `<a href="#" class="file-link" data-path="${esc(path)}" title="Open ${esc(path)}">${this.parser.parseInline(tokens)}</a>`;
+      return fileLink(decode(href), this.parser.parseInline(tokens));
     },
     code({ text, lang }) {
       const l = (lang || '').trim().split(/\s+/)[0].toLowerCase();
@@ -58,7 +76,9 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 });
 
-const PURIFY = { ADD_ATTR: ['target'], FORBID_TAGS: ['style', 'form', 'iframe', 'object', 'embed'] };
+// 'style' is forbidden as well as <style> tags: a stored message that survives the chat can otherwise cover the
+// window with an invisible link, and the class/data-* that survive are what a forged code-copy button is made of.
+const PURIFY = { ADD_ATTR: ['target'], FORBID_ATTR: ['style'], FORBID_TAGS: ['style', 'form', 'iframe', 'object', 'embed'] };
 
 // The cache is budgeted in bytes, not entries: an entry holds the source text (as the Map's own key) and the
 // sanitized HTML, so a 100 KB answer is ~200 KB in here — the entry cap alone could not bound it. The entry cap

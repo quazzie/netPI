@@ -9,7 +9,9 @@ namespace NetPI.Tools.Files;
 /// (the "edit" verb) rather than running; a small allowlist of passive viewers (images without svg, pdf) opens with the
 /// default program; everything else — unknown binaries, Office documents, rdp/iso/vhd, add-ins, installers — is only
 /// revealed, never launched. Relative paths resolve against the session's working directory, like the file tools;
-/// <c>file://</c> URLs and a trailing <c>:line[:col]</c> or <c>#L…</c> are accepted.
+/// <c>file://</c> URLs and a trailing <c>:line[:col]</c> or <c>#L…</c> are accepted. A network path (<c>\\server\share</c>)
+/// is refused, and a path outside the session's workspace comes back as <c>confirm</c> instead of opening, so the caller
+/// asks the user first.
 /// </summary>
 internal static partial class FileOpener
 {
@@ -33,12 +35,18 @@ internal static partial class FileOpener
         ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".avif", ".tif", ".tiff", ".pdf",
     };
 
-    /// <summary>What to do: <c>folder</c>, <c>edit</c> (text/code), <c>open</c> (a known viewer) or <c>reveal</c> (everything else).</summary>
-    internal static (string Path, string Action) Decide(IPluginContext context, string root, string raw)
+    /// <summary>What to do: <c>folder</c>, <c>edit</c> (text/code), <c>open</c> (a known viewer), <c>reveal</c> (everything else)
+    /// or <c>confirm</c> (outside the workspace: the caller asks the user, then calls again with <paramref name="confirmed"/>).</summary>
+    internal static (string Path, string Action) Decide(IPluginContext context, string root, string raw, bool confirmed = false)
     {
         raw = raw.Trim().Trim('"', '\'', '`', '<', '>');
         if (raw.Length == 0) throw new RpcException("bad_request", "No path given");
         if (raw.StartsWith("file:", StringComparison.OrdinalIgnoreCase) && Uri.TryCreate(raw, UriKind.Absolute, out var fileUri)) raw = fileUri.LocalPath;
+        // A network path is refused before the path is even probed: resolving one makes Windows authenticate against the
+        // other machine with the user's credentials, and a model that read such a path off a page can ask for that
+        // behind a link the user believes is just text.
+        if (raw.StartsWith(@"\\", StringComparison.Ordinal) || raw.StartsWith("//", StringComparison.Ordinal))
+            throw new RpcException("bad_request", $"Not opened: {raw} is a network path (copy the file here first)");
         var resolver = new ToolContext { SessionId = "", AgentId = "", CallId = "", Cwd = root, Services = context.Services, Events = context.Events };
 
         string? full = null;
@@ -48,6 +56,8 @@ internal static partial class FileOpener
             if (File.Exists(p) || Directory.Exists(p)) { full = p; break; }
         }
         if (full is null) throw new RpcException("not_found", $"Not found: {resolver.ResolvePath(raw)}");
+        // Outside the workspace the session works in: nothing is opened until the user has said so.
+        if (!confirmed && !IsUnder(full, root)) return (full, "confirm");
         if (Directory.Exists(full)) return (full, "folder");
         var ext = Path.GetExtension(full);
         if (Executable.Contains(ext) || (!OperatingSystem.IsWindows() && IsUnixExecutable(full) && !Script.Contains(ext))) return (full, "reveal");
@@ -55,6 +65,21 @@ internal static partial class FileOpener
         if (!TextCodec.IsBinaryFile(full)) return (full, "edit");
         // A binary is launched only when its default program is a known passive viewer; any other binary is revealed.
         return (full, Viewable.Contains(ext) ? "open" : "reveal");
+    }
+
+    /// <summary>Whether <paramref name="path"/> is the root itself or below it (the comparison follows the platform's
+    /// case rules, and anything that cannot be resolved is not inside).</summary>
+    private static bool IsUnder(string path, string root)
+    {
+        try
+        {
+            var rel = Path.GetRelativePath(Path.GetFullPath(root), path);
+            return !Path.IsPathRooted(rel) && !rel.StartsWith("..", StringComparison.Ordinal);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     /// <summary>The path as given, then without a line suffix (<c>:12</c>, <c>:12:3</c>, <c>#L12</c>, <c>#L12-L20</c>).</summary>

