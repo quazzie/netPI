@@ -14,6 +14,7 @@ Exactly today's behaviour, with **storage as a part you can swap**, and **no spe
 3. **Only the owner's local setup is migrated**, by one one-off tool, after a snapshot, with the owner's say-so. Migration code never ships in the product.
 4. **The wire protocol is frozen.** No RPC renamed, no event changed, no payload shape changed, no new error codes. `web/` and the plugin tab bundles have no diff. Where something the kernel owns today moves into a plugin, the plugin registers or publishes the same names with the same shapes.
 5. **No dialect layer.** The port exposes no SQL and no engine-specific type. Each provider writes its own SQL natively, inside itself.
+6. **The core knows its abstractions, not what a plugin builds on them.** It knows nothing about money: no budget gate, no refusal of paid models, no budget vocabulary in the kernel or in the contract assembly. When this change is done, `budget` appears nowhere under `src/`.
 
 ## What is in the core, and why
 
@@ -33,7 +34,7 @@ A thing is core only if every part must speak it, or parts cannot exist without 
 | # | Finding | This plan |
 |---|---|---|
 | 1 | **Storage cannot be replaced.** The host builds the concrete `Database` and `SessionStore` before any plugin loads (`HostKernel.cs:70,84`); plugins get them (156 `ctx.Sessions`, 21 `ctx.Db` uses, 2 registry lookups); `IDatabase` is SQLite SQL (~102 sites in 5 plugins); Backup runs `VACUUM INTO`. | **In.** |
-| 2 | **Paid models need the Agents plugin.** `ModelCatalog.cs:150` refuses non-local models unless something registers the empty marker `IBudgetGate`; only Agents does. | **In:** delete the check and the marker. Budget is not core. |
+| 2 | **Paid models need the Agents plugin, and the core talks about budgets.** `ModelCatalog.cs:150` refuses non-local models unless something registers the empty marker `IBudgetGate`; only Agents does. The contract assembly carries `BudgetExceededException`, and the kernel's fork list (`SessionFork.RunState`) names the plugin-owned meta key `budgetAllowedFrom`. | **In:** all three go (see 3). Budget is not core. |
 | 3 | **Workspaces are kernel data** (table, `sessions.workspace_id`, RPCs, events; `SessionStore` implements `IWorkspaceStore`). | **In**, so the provider interface has no workspace methods. |
 | 4 | Policy statics in the contract assembly. | Not in this change. |
 | 5 | Tool arguments parsed many times; guards match names. | Not in this change (the guard bypass is already fixed in 9efaf19). |
@@ -79,7 +80,11 @@ The `workspaces` table and its CRUD move into the Workspaces plugin as a collect
 
 ### 3. Budget leaves the kernel
 
-Delete the `IBudgetGate` check in `ModelCatalog` and the marker interface. The ledger, caps and reservations stay in the Agents plugin as a normal model middleware (it already is one). The kernel keeps only descriptive data (`ModelInfo` price and `IsLocal`) and the generic middleware pipeline. Trade-off, stated plainly: if Agents fails to load, paid calls are no longer refused automatically. Instead Diagnostics reports "N paid models available and no metering active" as a visible problem. Paid providers already need an API key you set. Decide's direct calls to the model server stay outside the catalog, as they are today.
+The core stops knowing about money. Three things go, and nothing replaces them in the core:
+
+- **The check.** Delete the `IBudgetGate` test in `ModelCatalog` and the marker interface. The ledger, caps and reservations stay in the Agents plugin as a normal model middleware (it already is one). The kernel keeps `IsLocal` (a fact about a provider, used to pick a default model and by the resource leases) and the generic middleware pipeline; `Usage.CostUsd` stays too, as a figure a provider reports, like token counts. Trade-off, stated plainly: if Agents is absent or fails to load, paid calls are not metered or refused by anything. That is the decision: the core does not police it, and there is no Diagnostics warning either. Paid providers already need an API key you set. Decide's direct calls to the model server stay outside the catalog, as they are today.
+- **The exception.** `BudgetExceededException` becomes a neutral contract type, `CallRefusedException { Kind, CanOverride }`: a scheduler or a middleware refused a run or a call. Runtime and the agent tools catch it without knowing why; the Agents plugin sets `Kind = "budget"`, and Runtime puts `Kind` in the notice it appends, so the notice the UI receives is the same ("budget", `canOverride`). The agent-slot snapshot (`AgentSlots`: price, spent today, daily limit) is the optional agent-scheduler contract, which the Host does not use; its fields are what `agents.list` sends, so it keeps them.
+- **The fork key.** The "let this chat go over" allowance lives in the session's meta as `budgetAllowedFrom`, and the kernel's fork code has to know to drop it. Move it into the Agents plugin's own collection (keyed by session id, removed with the session), so the kernel's list no longer names it, a fork starts without an allowance by construction, and the one place that calls a plugin store inside `UpdateSession`'s `mutate` (`Ledger.Allow`, idea-7v22l8) is gone rather than patched. No key in the UI reads it (checked). Allowances already in meta are harmless leftovers: each is valid only for the period whose start it names.
 
 **What the Agents plugin is, and why it does not move into a "models" plugin.** It is two features in one: a **scheduler** (named agents = a model plus instances and config, and capacity slots: `agents.*`, `AgentScheduler.cs`) and a **budget ledger** (`budget.*`, `usage.*`, `Ledger.cs`, `Reservations.cs`). Talking to a model needs only a **provider** (the "model plugin": one per backend), the catalog and **Runtime** (the loop). Runtime already looks the scheduler up optionally, so chat works without Agents today for local models; with the kernel check gone it works for paid models too. Nobody needs a second kind of models plugin. Splitting Agents into a scheduler plugin and a budget plugin (so you could have either alone) is a sensible later cleanup and is not needed here.
 
@@ -91,11 +96,11 @@ Delete the `IBudgetGate` check in `ModelCatalog` and the marker interface. The l
 
 The order of **writing**, so each layer compiles against the one below. There is no UI step.
 
-1. **Contracts:** the storage interfaces and `ctx.Data`; delete `IDatabase`, `Migrate(DDL)`, `IBudgetGate`, `NetPiPaths.DatabaseFile`, the `ISessionStore` shims (`ForkSession`, `SessionIdsUsingWorkspace`). `IPluginContext` loses `Db`, gains `Data`; `Sessions` and `Models` stay.
+1. **Contracts:** the storage interfaces and `ctx.Data`; delete `IDatabase`, `Migrate(DDL)`, `IBudgetGate`, `NetPiPaths.DatabaseFile`; replace `BudgetExceededException` with `CallRefusedException`, the `ISessionStore` shims (`ForkSession`, `SessionIdsUsingWorkspace`). `IPluginContext` loses `Db`, gains `Data`; `Sessions` and `Models` stay.
 2. **Providers and the conformance suite:** `sqlite` (today's SQL moved) and `memory`, and the suite, written together with the port. It pins: id and seq allocation (message ids are global), search semantics (`LIKE ... ESCAPE`, ASCII case folding), list order (pinned, `updated_at`, id), cascades, fork-at-seq, the lock rules above, collection semantics (CAS, index filters, ordering), snapshot round trip, a stress test for the deadlocks the old code fixed, and unload of a plugin's load context. This suite is the contract a future MSSQL provider must pass; it is what makes writing one realistic.
 3. **Internal checkpoint** (below), right after step 2 and the core of the session service.
 4. **Kernel:** provider loading, the session service over the repository, workspaces extracted, the catalog without the budget check, `app.info` keeps its fields (the sqlite provider reports its version, `memory` reports none).
-5. **Plugins that change:** Agents (ledger and reservations onto `ctx.Data`; its middleware unchanged; drop the memory-charges fallback), Runtime (agent records), Context (prompts, fork copy), Ideas (its 8 tables; delete the finished legacy cutover, idea-2iz2bu), Workspaces (owns its collection, RPCs and events), Backup (snapshots), Diagnostics (the metering warning, storage info). **Every other plugin is untouched.**
+5. **Plugins that change:** Agents (ledger and reservations onto `ctx.Data`; its middleware unchanged; drop the memory-charges fallback), Runtime (agent records), Context (prompts, fork copy), Ideas (its 8 tables; delete the finished legacy cutover, idea-2iz2bu), Workspaces (owns its collection, RPCs and events), Backup (snapshots), Diagnostics (storage info), Tools.Agents (catches the neutral refusal). **Every other plugin is untouched.**
 6. **Tests, scripts and docs:** the test infrastructure above; the 35-boot independence matrix as `scripts/independence.mjs` (its paid-call probe now expects a paid provider to work with Agents removed); `restore-backup.mjs`; `PLUGINS`, `BACKUPS`, `SETTINGS` (`storage.provider`), `HANDOFF`, and the independence plan.
 
 ### Internal checkpoint (decides the plugin-data port; not a stage)
@@ -122,7 +127,7 @@ In this order, repeated until green (every failure fixed in the code it exercise
 6. The mock UI walkthrough and the UI e2e **unmodified** against the new kernel.
 7. A cutover rehearsal on a copy of your data.
 
-**Done means:** all green; **`git diff` shows nothing under `web/` and nothing in the wire protocol**; the rehearsal verified (row counts and message checksums equal before and after; per-collection document counts and ledger totals match; the migrated schema equals a fresh install's); zero skipped tests (idea-r4e8rf); and the deletion checklist empty: `IDatabase`, `ctx.Db`, `Migrate(`, `IBudgetGate`, `ForkSession`, `SessionIdsUsingWorkspace`, `NetPiPaths.DatabaseFile`, every `_dbReady`/`_memoryCharges` fallback, `FakeSessionStore`, `NullDatabase`, `new Database` in tests.
+**Done means:** all green; **`git diff` shows nothing under `web/` and nothing in the wire protocol**; the rehearsal verified (row counts and message checksums equal before and after; per-collection document counts and ledger totals match; the migrated schema equals a fresh install's); zero skipped tests (idea-r4e8rf); and the deletion checklist empty (and `budget` found nowhere under `src/`): `IDatabase`, `ctx.Db`, `Migrate(`, `IBudgetGate`, `BudgetExceededException`, `budgetAllowedFrom` in `SessionFork`, `ForkSession`, `SessionIdsUsingWorkspace`, `NetPiPaths.DatabaseFile`, every `_dbReady`/`_memoryCharges` fallback, `FakeSessionStore`, `NullDatabase`, `new Database` in tests.
 
 ## Cutover and rollback (your local setup)
 
@@ -137,12 +142,12 @@ One-off tool `scripts/migrations/001-storage-port`: a C# console referencing the
 ## Decisions
 
 Decided by the owner (2026-10-02):
-- **Budget leaves the kernel.** The Diagnostics warning is the only replacement for the refusal; the owner may drop it (it is one check in an existing plugin).
+- **Plugin data as documents in named collections** (`ctx.Data`, above). The checkpoint still proves it on Ideas and the ledger before the rest is built; SQL in the plugins is the fallback only if it fails.
+- **The core knows no budget.** Nothing replaces the refusal, not even a Diagnostics warning: the core knows its abstractions, and money is a plugin's business (rule 6, section 3).
 - **Permission granted** to copy `netpi.db` and `settings.json` read-only for the rehearsal. Nothing else under `%USERPROFILE%\.netpi` is touched, and the running NetPI is not stopped without asking.
 - **Freeze** the Host, the contract assembly and the plugins this change touches on master for the duration: nothing else is working on them.
 
-Left to the checkpoint (an engineering call, not a product one):
-- **Plugin data as documents in named collections** (what `ctx.Data` is above), or, if the checkpoint fails, the SQLite-dialect fallback. Recommended: documents. Plain-language version: the four plugins that keep their own data (Ideas, Agents' ledger, Context, Runtime) stop writing SQL and instead save, load and look up records by name and a few indexed fields, so any storage engine can hold them.
+Plain-language version of the first: the four plugins that keep their own data (Ideas, Agents' ledger, Context, Runtime) stop writing SQL and instead save, load and look up records by name and a few indexed fields, so any storage engine can hold them.
 
 ## Notes for a future MSSQL provider (not built now)
 
