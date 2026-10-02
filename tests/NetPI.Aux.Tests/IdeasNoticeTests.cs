@@ -294,7 +294,7 @@ public static class IdeasNoticeTests
         r.Add("notice: attribution: a relative cwd counts as the session's own directory", () =>
         {
             using var env = GitRepo();
-            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            if (!env.GitAvailable) Check.Skip("no git on PATH");
             var run = env.Run();
             Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", "plugins", run, env.Project), "relative: resolved against the run's cwd, which is the project");
             Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", null, run, env.Project), "no cwd: the run's own directory");
@@ -303,7 +303,7 @@ public static class IdeasNoticeTests
         r.Add("notice: attribution: git -C a worktree of the same repository is the project's commit", async () =>
         {
             using var env = GitRepo(probed: true);
-            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            if (!env.GitAvailable) Check.Skip("no git on PATH");
             var run = env.Run();
             Check.True(IdeaCommitNoticeHook.InProject($"git -C {env.Worktree} commit -m x", null, run, env.Project),
                 "the -C directory is another checkout of the session's repository");
@@ -317,7 +317,7 @@ public static class IdeasNoticeTests
         r.Add("notice: attribution: git -C an unrelated repository is not the project's", async () =>
         {
             using var env = GitRepo(probed: true);
-            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            if (!env.GitAvailable) Check.Skip("no git on PATH");
             var run = env.Run();
             Check.False(IdeaCommitNoticeHook.InProject($"git -C {env.Unrelated} commit -m x", null, run, env.Project),
                 "a different repository is another project's work");
@@ -330,7 +330,7 @@ public static class IdeasNoticeTests
         r.Add("notice: attribution: an absolute cwd in another worktree of the same repository is attributed", () =>
         {
             using var env = GitRepo(probed: true);
-            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            if (!env.GitAvailable) Check.Skip("no git on PATH");
             var run = env.Run();
             Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", env.Worktree, run, env.Project), "the worktree itself");
             Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", Path.Combine(env.Worktree, "sub"), run, env.Project), "a subdirectory of the worktree");
@@ -340,7 +340,7 @@ public static class IdeasNoticeTests
         r.Add("notice: attribution: the same path in different case is the same path", () =>
         {
             using var env = GitRepo(probed: true);
-            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            if (!env.GitAvailable) Check.Skip("no git on PATH");
             var run = env.Run();
             var flipped = MixedCase(env.Worktree);
             if (OperatingSystem.IsWindows())
@@ -352,7 +352,7 @@ public static class IdeasNoticeTests
         r.Add("notice: attribution: a session bound to a worktree attributes commits of its repository", () =>
         {
             using var env = GitRepo(probed: true);
-            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            if (!env.GitAvailable) Check.Skip("no git on PATH");
             var run = env.Run();
             run.Cwd = env.Worktree;                                   // a bound session works in its workspace
             run.SetWorkspace(new WorkspaceBinding("ws1", env.Worktree, RepoCommonDir: env.CommonDir, Kind: "worktree"));
@@ -367,7 +367,7 @@ public static class IdeasNoticeTests
         r.Add("notice: attribution: without a probe the path-containment fallback decides", () =>
         {
             using var env = GitRepo(probed: false);
-            if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            if (!env.GitAvailable) Check.Skip("no git on PATH");
             var run = env.Run();
             Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", null, run, env.Project), "no cwd: the run's own directory");
             Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", "plugins", run, env.Project), "a relative cwd: the session's own directory");

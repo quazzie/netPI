@@ -67,6 +67,16 @@ jobs:
           npm ci
           npm run build
 
+      # The bundles are committed and `dotnet build` ships them, so a fresh build that differs from what is committed
+      # is either a UI change without its bundle or a bundle that was committed by hand. 95 commits touched a bundle and
+      # 10 of them changed no source at all, which is what this catches (web/svelte.config.js and build-plugins.mjs
+      # set Svelte's rootDir, so the CSS class hashes no longer depend on where the build ran).
+      - name: The committed bundles are what a fresh build produces
+        run: |
+          git diff --exit-code -- web/dist "plugins/*/wwwroot"
+          $new = git status --porcelain -- web/dist "plugins/*/wwwroot"
+          if ($new) { Write-Error "fresh bundle files that are not committed:`n$new" }
+
       - name: Run the mock e2e
         run: npm run e2e
 

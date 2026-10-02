@@ -50,7 +50,9 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   - `.\build.ps1 -Pending` — what a restart would bring. `.\build.ps1 -Discard` — drop the staged build.
   - `.\build.ps1 -Run` — publish and start the desktop app. `./build.sh` takes `--publish`, `--next-start`,
     `--pending`, `--discard`, `--app-dir`.
-  - One plugin only, on purpose: `dotnet build plugins/<Name> -p:AppOutDir=<app>/plugins/<Name>/`.
+  - One plugin only, on purpose: `dotnet build plugins/<Name> -p:AppOutDir=<app>/ -p:BuildProjectReferences=false`.
+    `AppOutDir` is the **app folder**, not the plugin's: a plugin's `OutDir` is `$(AppOutDir)plugins/<Name>/`, the
+    folder the host loads it from.
 - **A change is not done until the running app has it.** Merging into `master` and building land in `artifacts/dev/app` only;
   the running NetPI loads from the app folder, and a restart consumes `.pending` — not `master`. Before telling the user a
   change is done (or "you'll see it after a restart"), install it: `.uild.ps1 -Publish` (plugins hot-swap immediately),
@@ -94,7 +96,10 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   after another has run, or that asserts a server-wide total). Do not tell a subagent to retry either: hand it the failure
   file and this rule. The mocks have knobs that hold a state for a test to observe: `hold=<ms>` in a MockLlm scenario tag,
   `mock.thinkDelay` / `mock.procTailDelay` / `mock.filesDelay` in the UI mock.
-- UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`. A worktree's `npm ci` can emit a cosmetically different bundle than the main checkout's `node_modules` did, so a plugin's committed `wwwroot/ui.js` (and `web/dist`) often comes out modified after a build you did not mean to change: revert those, and commit a bundle only when the *source* under `ui/` changed.
+- UI: `npm ci` once, then `npm run build` (app + plugin tabs) or `npm run dev` / `npm run mock`. The bundles are
+  reproducible — Svelte hashes scoped CSS from a path under the repository root, not from where the build ran, and CI
+  fails when a fresh build differs from the committed ones — so commit `web/dist` or a plugin's `wwwroot/ui.js` only
+  with the *source* change under `web/src` or `ui/`.
 
 ## Inspecting the running app
 - The **`diag` tool** (read-only, one action per method: overview, problems, calls, tools, journal, run, toolsets,

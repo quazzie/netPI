@@ -17,9 +17,15 @@
   difference is not noise: it is what the runner spent waiting for output that never arrived, which is
   how a surviving child process shows up. Anything over a second is called out.
 
+  A test that could not run here (no git, no browser, nothing built) reports itself as skipped: the runners
+  count those apart from the passes and this script prints how many there were. A skip is not a failure - it
+  says what was missing - but it is never read as a pass either. A filter that matches no test at all is a
+  broken selection and fails the run; a filter that matches nothing in one suite while another suite runs it
+  is normal, and the re-run command names the suites that failed.
+
 .EXAMPLE
   .\scripts\test.ps1                                     # build, run all six suites, print a re-run command
-  .\scripts\test.ps1 -Suite Aux -Suite Host              # two suites
+  .\scripts\test.ps1 -Suite Aux,Host                       # two suites (a [string[]] takes a comma, not a second -Suite)
   .\scripts\test.ps1 -Only "settings:", "goal:"          # only tests whose name contains these
   .\scripts\test.ps1 -Only "a failed write" -SkipBuild   # the fix loop: no rebuild if nothing changed
   .\scripts\test.ps1 -Parallel 3                         # run up to 3 suite processes at once
@@ -74,11 +80,21 @@ try {
         Write-Host "building $($suites.Count) suite project(s) in one graph" -ForegroundColor DarkGray
         $sw = [Diagnostics.Stopwatch]::StartNew()
         # Referenced projects outside the generated solution must keep the selected configuration.
-        dotnet build $sln -c $Config -p:ShouldUnsetParentConfigurationAndPlatform=false -v q | Out-Null
+        # The output goes to the log (and its tail is printed when the build fails): a build that failed with
+        # "exit 1" and no compiler error is the least helpful report there is.
+        $errFile = Join-Path $slnDir "build-$runId.err"
+        $buildOut = @(dotnet build $sln -c $Config -p:ShouldUnsetParentConfigurationAndPlatform=false -v q 2> $errFile)
         $code = $LASTEXITCODE
         $sw.Stop()
+        $buildOut += @(Get-Content $errFile -ErrorAction SilentlyContinue)
+        Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+        $buildOut | Add-Content $log
         $build = [ordered]@{ seconds = [math]::Round($sw.Elapsed.TotalSeconds, 2); built = $true; exitCode = $code }
-        if ($code) { throw "build of the test graph failed (exit $code)" }
+        if ($code) {
+            Write-Host "the test build failed (exit $code) - the last of its output:" -ForegroundColor Red
+            $buildOut | Select-Object -Last 25 | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+            throw "build of the test graph failed (exit $code)"
+        }
         Remove-Item $sln -Force -ErrorAction SilentlyContinue
     }
     else {
@@ -133,24 +149,24 @@ try {
             "== NetPI.$s.Tests (exit $code, $([math]::Round($entry.Sw.Elapsed.TotalSeconds, 1))s) ==" | Add-Content $log
             $out | Add-Content $log
 
-            # Two runners, two formats: the console runners print "12 passed, 0 failed, 59 total in 9.4s",
-            # the providers runner prints "Tests: 12 passed, 0 failed. Checks: ...".
+            # Two runners, two formats: the console runners print "12 passed, 0 failed, 1 skipped, 59 total in 9.4s",
+            # the providers runner prints "Tests: 12 passed, 0 failed, 1 skipped. Checks: ...".
             $line = @($out | Where-Object { $_ -match '^\d+ passed, \d+ failed' -or $_ -match '^Tests: ' })[-1]
             $bodies = if ($line -match 'in (\d+([.,]\d+)?)s') { [double]($Matches[1] -replace ',', '.') } else { $null }
             $wall = [math]::Round($entry.Sw.Elapsed.TotalSeconds, 2)
             $overhead = if ($null -ne $bodies) { [math]::Round($wall - $bodies, 2) } else { $null }
+            # A test that could not run (no git, no browser, nothing built) is a skip, not a pass and not a failure.
+            $skipped = if ($line -match '(\d+) skipped') { [int]$Matches[1] } else { 0 }
             # A filter that matched nothing is a broken selection, not a pass. The console runners say
             # so themselves; a crash before any output would report a zero total too.
             $noMatch = @($out | Where-Object { $_ -match 'No test matches the filter' }).Count -gt 0
-            if (-not $noMatch -and $line -and $line -match '^\d+ passed, \d+ failed, 0 total') { $noMatch = $true }
+            if (-not $noMatch -and $line -and $line -match '^\d+ passed, \d+ failed, \d+ skipped, 0 total') { $noMatch = $true }
 
             $results.Add([ordered]@{
                     suite = $s; exitCode = $code; wallSeconds = $wall; reportedBodySeconds = $bodies
-                    outsideTestTimersSeconds = $overhead; matchedNothing = $noMatch
+                    outsideTestTimersSeconds = $overhead; matchedNothing = $noMatch; skipped = $skipped
                     summary = if ($line) { $line } else { 'no summary line' }
                 })
-
-            if ($noMatch) { $failures.Add([pscustomobject]@{ Suite = $s; Name = "(no test matched the filter)" }) }
 
             $failedLines = @($out | Where-Object { $_ -match '^\s*FAIL\s{2}' })
             foreach ($f in $failedLines) {
@@ -170,14 +186,30 @@ try {
 
     # ---------------------------------------------------------------- report
     $total = [math]::Round(($results | ForEach-Object { $_.wallSeconds } | Measure-Object -Sum).Sum, 2)
+    # A filter that matched nothing anywhere is a broken selection. One that matched nothing in a single suite while
+    # another ran it is the normal "-Only <name of a test in another suite>" case and is not a failure: the suite said
+    # so in its own output, and it is the line in the table below that says it again.
+    $emptySuites = @($results | Where-Object { $_.matchedNothing } | ForEach-Object { $_.suite })
+    if ($results.Count -gt 0 -and $emptySuites.Count -eq $results.Count) {
+        $failures.Add([pscustomobject]@{ Suite = ($emptySuites -join '+'); Name = "(no test matched the filter in any suite)" })
+    }
     # Start-up and log collection cost about a second per suite; only a real stall is worth reporting.
     $slow = @($results | Where-Object { $_.outsideTestTimersSeconds -and $_.outsideTestTimersSeconds -gt 3.0 })
     Write-Host ''
     $results | Sort-Object -Property wallSeconds -Descending | ForEach-Object {
         $extra = if ($null -ne $_.outsideTestTimersSeconds) { " (+{0:0.0}s outside the tests)" -f $_.outsideTestTimersSeconds } else { '' }
+        if ($_.matchedNothing) { $extra += ' (nothing matched the filter here)' }
         Write-Host ("{0,-10} {1}{2}  ({3:0.0}s)" -f $_.suite, $_.summary, $extra, $_.wallSeconds)
     }
     Write-Host ("{0,-10} {1}  (build {2:0.0}s)" -f 'TOTAL', "$($results.Count) suites", $build.seconds)
+
+    # Skips are counted, not failed on: a test that could not run here (no git, no browser, nothing built) says so
+    # instead of quietly passing, and the number is here so a suite that quietly skips half of itself is visible.
+    $skippedSuites = @($results | Where-Object { $_.skipped } | ForEach-Object { "{0} {1}" -f $_.suite, $_.skipped })
+    if ($skippedSuites.Count) {
+        Write-Host ''
+        Write-Host ("Skipped (something was missing: git, a browser, a build): {0}" -f ($skippedSuites -join ', ')) -ForegroundColor DarkYellow
+    }
 
     if ($slow) {
         Write-Host ''
@@ -188,6 +220,7 @@ try {
     [ordered]@{
         run = $runId; config = $Config; only = $Only; build = $build
         suitesWallSeconds = $total; suites = $results
+        skippedTests = ($results | ForEach-Object { $_.skipped } | Measure-Object -Sum).Sum
         failures = @($failures | ForEach-Object { [ordered]@{ suite = $_.Suite; name = $_.Name } })
     } | ConvertTo-Json -Depth 6 | Set-Content $json
 
@@ -198,14 +231,19 @@ try {
 
     Write-Host ''
     foreach ($f in $failures) { Write-Host ("  [{0}] {1}" -f $f.Suite, $f.Name) -ForegroundColor Red }
-    # The re-run command: the same names as filters, so a fix is checked against the failures alone.
+    # The re-run command: the same names as filters, so a fix is checked against the failures alone, and the suites
+    # that failed, so it does not run the other four into a "no test matched the filter" (which is not a failure
+    # here, but only because a fix loop should not need to know that).
     # One -Only with an array of arguments — repeating -Only would only keep the last one.
-    # Only real test names make a usable filter: the "(suite process exited ...)" and
-    # "(no test matched ...)" entries are the script's own remarks about the run.
-    $quoted = ($failures | Select-Object -ExpandProperty Name -Unique | Where-Object { -not $_.StartsWith('(') } |
+    # Only real test names make a usable filter: the "(suite process exited ...)" and "(no test matched ...)"
+    # entries are the script's own remarks about the run.
+    $realFailures = @($failures | Where-Object { -not $_.Name.StartsWith('(') })
+    $quoted = ($realFailures | Select-Object -ExpandProperty Name -Unique |
         ForEach-Object { '"{0}"' -f ($_ -replace '"', '""') }) -join ' '
+    $suiteArgs = (@($realFailures | ForEach-Object { $_.Suite }) | Sort-Object -Unique) -join ','
+    $suiteArgs = if ($suiteArgs) { " -Suite $suiteArgs" } else { '' }
     Write-Host "`nRe-run just these:" -ForegroundColor Yellow
-    if ($quoted) { Write-Host "  .\scripts\test.ps1 -Only $quoted" } else { Write-Host "  (nothing to re-run: the run itself failed)" }
+    if ($quoted) { Write-Host "  .\scripts\test.ps1$suiteArgs -Only $quoted" } else { Write-Host "  (nothing to re-run: the run itself failed)" }
     Write-Host "Full log: $log"
     exit 1
 }

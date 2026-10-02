@@ -1571,8 +1571,9 @@ await t.Run("built plugins load, run and unload in a collectible AssemblyLoadCon
     var root = PluginLoadTest.FindRepoRoot();
     t.Check(root is not null, "repo root found");
     if (root is null) return;
-    // the build output (NETPI_APP_DIR, set by build.ps1 -Test); artifacts\app is the installed app and a worktree has none
-    var app = Environment.GetEnvironmentVariable("NETPI_APP_DIR") is { Length: > 0 } custom ? custom : Path.Combine(root, "artifacts/app");
+    // The plugins a plain build produces are in artifacts/dev/app (AppOutDir, Directory.Build.props): artifacts/app
+    // is only what build.ps1 -Publish installs, and a worktree's artifacts/ is its own. NETPI_APP_DIR overrides it.
+    var app = Environment.GetEnvironmentVariable("NETPI_APP_DIR") is { Length: > 0 } custom ? custom : Path.Combine(root, "artifacts/dev/app");
 
     var apDll = Path.Combine(app, "plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.dll");
     var apSettings = new JsonObject { ["providers"] = new JsonObject { ["aiproxy"] = new JsonObject { ["baseUrl"] = mock.BaseUrl } } };

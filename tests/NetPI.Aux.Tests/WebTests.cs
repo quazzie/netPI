@@ -410,9 +410,8 @@ public static class WebTests
 
             if (HeadlessBrowser.Find(null) is null)
             {
-                Console.WriteLine("    (no Edge/Chrome/Chromium: page screenshots skipped)");
                 env.Ctx.Unload();
-                return;
+                Check.Skip("no Edge/Chrome/Chromium: page screenshots");
             }
             await using var web = await LocalWeb.StartAsync(app =>
             {
@@ -452,9 +451,8 @@ public static class WebTests
             Check.Contains(none.Content, "use action open");
             if (HeadlessBrowser.Find(null) is null)
             {
-                Console.WriteLine("    (no Edge/Chrome/Chromium: browser skipped)");
                 env.Ctx.Unload();
-                return;
+                Check.Skip("no Edge/Chrome/Chromium: browser");
             }
             var submitted = new ConcurrentQueue<string>();
             await using var web = await LocalWeb.StartAsync(app =>
@@ -581,9 +579,8 @@ public static class WebTests
             var exe = HeadlessBrowser.Find(null);
             if (exe is null)
             {
-                Console.WriteLine("    (no Edge/Chrome/Chromium: attach skipped)");
                 env.Ctx.Unload();
-                return;
+                Check.Skip("no Edge/Chrome/Chromium: attach");
             }
             await using var web = await LocalWeb.StartAsync(app =>
             {

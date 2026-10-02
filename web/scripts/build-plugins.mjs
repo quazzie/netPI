@@ -22,6 +22,9 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const kit = path.join(repo, 'web/src/lib/kit/index.js');
+// Svelte hashes scoped CSS from a component's path relative to its rootDir (process.cwd() by default), so a build run
+// from another directory rewrote every plugin bundle for that alone. The repository root is the one root every
+// checkout shares, and it is what web/svelte.config.js uses for the app UI (idea-f6v1ex).
 const argv = process.argv.slice(2);
 const watch = argv.includes('--watch');
 const only = argv.includes('--only');
@@ -101,7 +104,7 @@ for (const dir of dirs) {
       logLevel: 'warn',
       publicDir: false,
       plugins: [
-        svelte({ configFile: false, emitCss: false, compilerOptions: { css: 'injected' } }),
+        svelte({ configFile: false, emitCss: false, compilerOptions: { css: 'injected', rootDir: repo } }),
         copyToArtifacts(dir),
       ],
       resolve: {
