@@ -303,10 +303,14 @@ processes are killed when the plugin stops.
 
 | tool | args | details |
 |---|---|---|
-| `process` `list` (reads only) | `{ action: "list" }` | `{ processes: ProcessInfo[] }` |
+| `process` `list` (reads only) | `{ action: "list", all? }` (all: every session's processes, each line with its session) | `{ processes: ProcessInfo[] }` |
 | `process` `output` (reads only) | `{ action: "output", id, tail? (200, max 2000) }` (the id may also be a pid) | `{ process: ProcessInfo, tail, truncated }` |
 | `process` `wait` (reads only) | `{ action: "wait", id, timeout? (120 s, max 1800), tail? }` | finished: `{ process, status, exitCode, durationMs, output, tail, truncated }` · still running: `{ process, status: "running", elapsedMs, waitedMs, lastLines: string[], tail, truncated }` |
 | `process` `kill` | `{ action: "kill", id }` | `{ process: ProcessInfo, killed: boolean }` |
+
+**`process` is scoped to the caller.** `list`, `output`, `wait` and `kill` reach only the caller's own session's
+processes and its subagents' (the session store carries the parent links; descendants included). A process from another
+chat is refused and the error says so — the UI's `processes.*` RPC stays global.
 
 `process` is one tool with four actions (`IReadOnlyCalls`: `list`, `output` and `wait` count as read-only, so several of
 them run in parallel).

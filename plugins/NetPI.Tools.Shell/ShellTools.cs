@@ -142,10 +142,12 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
         Label = "Processes",
         Category = "shell",
         SummaryArg = "action",
-        Description = "Background processes and recent shell commands: list, output {id, tail?} (the latest output), " +
-            "wait {id, timeout?} (blocks until the process exits, then returns its exit code and output) or kill {id}.",
+        Description = "Background processes and recent shell commands of your session (and its subagents): list, output {id, tail?} (the latest output), " +
+            "wait {id, timeout?} (blocks until the process exits, then returns its exit code and output) or kill {id}. " +
+            "list all:true shows every session's processes (read-only).",
         Help =
-            "list: every background process and recent command with its status (running / exited N / killed / timeout). " +
+            "list: every background process and recent command with its status (running / exited N / killed / timeout) — " +
+            "this session's and its subagents', not other chats'; all:true shows every session's, read-only, with the session on each line. " +
             $"output: the last lines of a process's output (tail, default {DefaultTail}, max {OutputFormat.ModelMaxLines}) and " +
             "whether it still runs. " +
             $"wait: blocks until the process exits, then returns its exit code, how long it ran and the last {DefaultTail} lines of " +
@@ -157,6 +159,7 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
         Parameters = Schema.Object(
             ("action", Schema.Str("", "list", "output", "wait", "kill"), true),
             ("id", Schema.Str(""), false),
+            ("all", Schema.Bool("list only: every session's processes, not just this session's (read-only)"), false),
             ("timeout", Schema.Int($"Seconds to block (default {DefaultWaitSeconds}, max {MaxWaitSeconds}); wait only"), false),
             ("tail", Schema.Int(""), false)),
         PromptGuidelines = [BackgroundProcesses],
@@ -175,25 +178,56 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
 
     internal override Task<ToolResult> RunAsync(ToolContext ctx, ToolArgs args, CancellationToken ct) => Action(args) switch
     {
-        "list" => Task.FromResult(List()),
-        "output" => Task.FromResult(Output(args)),
-        "wait" => WaitAsync(args, ct),
-        "kill" => KillAsync(args, ct),
+        "list" => Task.FromResult(List(ctx, args)),
+        "output" => Task.FromResult(Output(ctx, args)),
+        "wait" => WaitAsync(ctx, args, ct),
+        "kill" => KillAsync(ctx, args, ct),
         var a => Task.FromResult(ToolResult.Error($"Unknown action \"{a}\": use list, output, wait or kill.")),
     };
 
-    private ToolResult List()
+    private ToolResult List(ToolContext ctx, ToolArgs args)
     {
-        var list = registry.List();
-        if (list.Count == 0) return ToolResult.Ok("No processes.", new { processes = Array.Empty<ProcessInfo>() });
+        var all = args.Bool("all") ?? false;
+        var own = all ? null : VisibleSessions(ctx);
+        var list = registry.List().Where(p => own is null || own.Contains(p.SessionId ?? "")).ToList();
+        if (list.Count == 0) return ToolResult.Ok(all
+            ? "No processes."
+            : "No processes in your session (all:true lists every session's).", new { processes = Array.Empty<ProcessInfo>() });
         var sb = new StringBuilder();
-        foreach (var p in list) sb.Append(Describe(p)).Append('\n');
+        foreach (var p in list)
+        {
+            sb.Append(Describe(p));
+            if (all) sb.Append("  [").Append(p.SessionId ?? "?").Append("]");
+            sb.Append('\n');
+        }
         return ToolResult.Ok(sb.ToString().TrimEnd(), new { processes = list.Select(p => p.ToInfo()).ToList() });
     }
 
-    private ToolResult Output(ToolArgs args)
+    /// <summary>
+    /// The sessions a process call may reach: the caller's own and its subagent sessions (and their descendants), so a
+    /// cleanup in one chat never sees, reads or kills what another chat started. The session store carries the parent
+    /// links; without it a call reaches only its own session.
+    /// </summary>
+    private static HashSet<string> VisibleSessions(ToolContext ctx)
     {
-        if (!TryGet(args, out var p, out var error)) return ToolResult.Error(error!);
+        var visible = new HashSet<string>(StringComparer.Ordinal) { ctx.SessionId };
+        var store = ctx.Services.Get<ISessionStore>();
+        if (store is null) return visible;
+        var queue = new Queue<string>([ctx.SessionId]);
+        while (queue.Count > 0)
+        {
+            var id = queue.Dequeue();
+            foreach (var child in store.ListSessions(new SessionQuery { ParentSessionId = id, IncludeUnmaterialized = true }))
+            {
+                if (visible.Add(child.Id)) queue.Enqueue(child.Id);
+            }
+        }
+        return visible;
+    }
+
+    private ToolResult Output(ToolContext ctx, ToolArgs args)
+    {
+        if (!TryGet(ctx, args, out var p, out var error)) return ToolResult.Error(error!);
         var tail = Tail(args);
         var (shown, truncated, total, shownLines) = TailOf(p, tail);
         var sb = new StringBuilder();
@@ -209,9 +243,9 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
     /// one that finishes mid-wait returns the moment it does. Only a timeout ends the wait early, and then nothing is lost:
     /// the job keeps running, and the answer says so, with how long it has been going and its last lines.
     /// </summary>
-    private async Task<ToolResult> WaitAsync(ToolArgs args, CancellationToken ct)
+    private async Task<ToolResult> WaitAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
     {
-        if (!TryGet(args, out var p, out var error)) return ToolResult.Error(error!);
+        if (!TryGet(ctx, args, out var p, out var error)) return ToolResult.Error(error!);
         var timeout = Math.Clamp(args.Int("timeout", "timeoutSeconds", "seconds", "wait") ?? DefaultWaitSeconds, 1, MaxWaitSeconds);
         var tail = Tail(args);
         var done = await Task.WhenAny(p!.Completion, Task.Delay(TimeSpan.FromSeconds(timeout), ct)).ConfigureAwait(false) == p.Completion;
@@ -282,8 +316,8 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
         return (shown, truncated, total, shownLines);
     }
 
-    /// <summary>The process an id argument names, or the house-style error naming what is known.</summary>
-    private bool TryGet(ToolArgs args, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ManagedProcess? process, [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? error)
+    /// <summary>The process an id argument names — within the caller's own session and subagents — or the house-style error naming what is known.</summary>
+    private bool TryGet(ToolContext ctx, ToolArgs args, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ManagedProcess? process, [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? error)
     {
         var id = args.Str("id", "process_id", "processId", "pid", "proc");
         if (string.IsNullOrWhiteSpace(id))
@@ -298,13 +332,21 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
             error = $"No process with id {id}. Use action list to see known processes.";
             return false;
         }
+        if (!VisibleSessions(ctx).Contains(process.SessionId ?? ""))
+        {
+            var foreign = process.SessionId ?? "unknown";
+            process = null;
+            error = $"Process {id} belongs to another session ({foreign}). process reaches only your own session " +
+                    "and its subagents — list all:true shows every session's. ";
+            return false;
+        }
         error = null;
         return true;
     }
 
-    private async Task<ToolResult> KillAsync(ToolArgs args, CancellationToken ct)
+    private async Task<ToolResult> KillAsync(ToolContext ctx, ToolArgs args, CancellationToken ct)
     {
-        if (!TryGet(args, out var p, out var error)) return ToolResult.Error(error!);
+        if (!TryGet(ctx, args, out var p, out var error)) return ToolResult.Error(error!);
         if (!p!.Kill())
             return ToolResult.Ok($"{p.Id} is not running ({p.Status}{(p.ExitCode is { } c ? $", exit code {c}" : "")}).", new { process = p.ToInfo(), killed = false });
         try { await p.Completion.WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); } catch (TimeoutException) { }

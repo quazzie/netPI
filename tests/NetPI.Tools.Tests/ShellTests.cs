@@ -396,6 +396,86 @@ public static class ShellTests
             }
         });
 
+        r.Add("process: list, output, wait and kill reach only the caller's session and its subagents", async () =>
+        {
+            var (svc, registry, _) = NewService();
+            var dir = T.TempDir("scope");
+            using var pctx = new FakePluginContext(dir);
+            var store = pctx.Sessions;
+            store.CreateSession(new SessionInfo { Id = "ses_a", Kind = "chat" });
+            store.CreateSession(new SessionInfo { Id = "ses_sub", Kind = "subagent", ParentSessionId = "ses_a" });
+            store.CreateSession(new SessionInfo { Id = "ses_sub2", Kind = "subagent", ParentSessionId = "ses_sub" });
+            store.CreateSession(new SessionInfo { Id = "ses_b", Kind = "chat" });
+            store.CreateSession(new SessionInfo { Id = "ses_bsub", Kind = "subagent", ParentSessionId = "ses_b" });
+            using (T.Services.Register<ISessionStore>(store))
+            {
+                ToolContext Ctx(string sessionId) => new()
+                {
+                    SessionId = sessionId, AgentId = "agt", CallId = "call", Cwd = dir,
+                    Services = T.Services, Events = new FakeBus(),
+                };
+                var bash = Bash(svc);
+                async Task<string> Bg(string sessionId, string tag)
+                {
+                    var res = await bash.ExecuteAsync(Ctx(sessionId), T.Args(new { command = $"echo job-{tag}; sleep 30", background = true }), default);
+                    Check.Ok(res);
+                    return T.D(res).Str("processId");
+                }
+                var idA = await Bg("ses_a", "a");
+                var idSub = await Bg("ses_sub", "sub");
+                var idSub2 = await Bg("ses_sub2", "sub2");
+                var idB = await Bg("ses_b", "b");
+                var idBSub = await Bg("ses_bsub", "bsub");
+                try
+                {
+                    var tool = new ProcessTool(registry);
+
+                    // list: the caller's own and its subagents' jobs (both levels); none of another chat's —
+                    // not even that chat's subagents'.
+                    var list = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "list" }), default);
+                    Check.Ok(list);
+                    Check.Contains(list.Content, idA);
+                    Check.Contains(list.Content, idSub);
+                    Check.Contains(list.Content, idSub2);
+                    Check.NotContains(list.Content, idB);
+                    Check.NotContains(list.Content, idBSub);
+
+                    // list all:true is read-only and shows every session's, with the session on each line.
+                    var all = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "list", all = true }), default);
+                    Check.Ok(all);
+                    Check.Contains(all.Content, idA);
+                    Check.Contains(all.Content, idB);
+                    Check.Contains(all.Content, "[ses_a]");
+                    Check.Contains(all.Content, "[ses_b]");
+
+                    // output and wait on another chat's job are refused, and it is left running.
+                    Check.Error(await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "output", id = idB }), default), "another session");
+                    Check.Error(await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "wait", id = idB, timeout = 1 }), default), "another session");
+                    Check.Equal("running", registry.Get(idB)!.Status, "the foreign job was left running");
+
+                    // own and subagent jobs still work.
+                    var outSub = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "output", id = idSub }), default);
+                    Check.Ok(outSub);
+                    Check.Contains(outSub.Content, "job-sub");
+                    var waitSub2 = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "wait", id = idSub2, timeout = 1 }), default);
+                    Check.Ok(waitSub2);
+                    Check.Equal("running", T.D(waitSub2).Str("status"), "a subagent's subagent's job is waitable");
+
+                    // kill is refused for the foreign job and works on its own.
+                    Check.Error(await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "kill", id = idB }), default), "another session");
+                    Check.Equal("running", registry.Get(idB)!.Status, "the foreign job was left running after a refused kill");
+                    var killA = await tool.ExecuteAsync(Ctx("ses_a"), T.Args(new { action = "kill", id = idA }), default);
+                    Check.Ok(killA);
+                    Check.Equal("killed", registry.Get(idA)!.Status);
+                }
+                finally
+                {
+                    // A failed assertion must not leave sleep holding the suite's output pipe open.
+                    await registry.KillAllAsync(TimeSpan.FromSeconds(5));
+                }
+            }
+        });
+
         r.Add("process wait: returns the moment the job exits, with its code, duration and output", async () =>
         {
             var (svc, registry, _) = NewService();
