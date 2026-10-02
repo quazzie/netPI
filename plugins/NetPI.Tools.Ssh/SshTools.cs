@@ -146,8 +146,9 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) :
         var binding = context.Workspace();
         if (binding is null || !binding.Isolated) return null;
         var probe = context.Services?.Get<IWorkspaceRepoProbe>();
-        return WorkspacePaths.CheckMutation(binding, fullPath, probe) == WorkspacePathVerdict.ForeignCheckout
-            ? WorkspacePaths.Refusal(binding, fullPath, probe)
+        var verdict = WorkspacePaths.CheckMutation(binding, fullPath, probe);
+        return verdict is WorkspacePathVerdict.ForeignCheckout or WorkspacePathVerdict.Unverifiable
+            ? WorkspacePaths.Refusal(binding, fullPath, probe, verdict)
             : null;
     }
 

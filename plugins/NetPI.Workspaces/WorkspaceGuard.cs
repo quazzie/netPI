@@ -15,7 +15,8 @@ namespace NetPI.Workspaces;
 /// <para>
 /// Two things it is not: it does not parse shell commands (a shell can write anywhere the user can), and it does not
 /// refuse merely being outside the workspace — writing a log to the temp folder is ordinary work. It refuses the specific
-/// accident: another worker's checkout, or the primary one, in an isolated workspace.
+/// accident: another worker's checkout, or the primary one, in an isolated workspace — and, while git cannot answer,
+/// anything it cannot verify: an unverifiable path is not a pass.
 /// </para>
 /// </summary>
 internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
@@ -57,11 +58,11 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
             {
                 var full = turn.Resolve(call, target);
                 var verdict = WorkspacePaths.CheckMutation(binding, full, git);
-                if (verdict == WorkspacePathVerdict.ForeignCheckout)
+                if (verdict is WorkspacePathVerdict.ForeignCheckout or WorkspacePathVerdict.Unverifiable)
                     return ValueTask.FromResult<ToolCallDecision?>(new ToolCallDecision
                     {
                         Block = true,
-                        Reason = WorkspacePaths.Refusal(binding, full, git),
+                        Reason = WorkspacePaths.Refusal(binding, full, git, verdict),
                     });
             }
             return ValueTask.FromResult<ToolCallDecision?>(null);
@@ -73,13 +74,13 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
             if (cwd is null) return ValueTask.FromResult<ToolCallDecision?>(null);   // the default cwd is the workspace
             var full = turn.Resolve(call, cwd);
             var verdict = WorkspacePaths.CheckMutation(binding, full, git);
-            if (verdict != WorkspacePathVerdict.ForeignCheckout) return ValueTask.FromResult<ToolCallDecision?>(null);
+            if (verdict is not (WorkspacePathVerdict.ForeignCheckout or WorkspacePathVerdict.Unverifiable)) return ValueTask.FromResult<ToolCallDecision?>(null);
             // A shell command may write anything, so this is a judgement call: refuse the obvious accident (running in
             // another worker's checkout) and say plainly that this is not a sandbox.
             return ValueTask.FromResult<ToolCallDecision?>(new ToolCallDecision
             {
                 Block = true,
-                Reason = WorkspacePaths.Refusal(binding, full, git) +
+                Reason = WorkspacePaths.Refusal(binding, full, git, verdict) +
                     " (This guards where a command runs, not what it does: a shell command that names another path is not inspected.)",
             });
         }

@@ -21,14 +21,22 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
 
     private readonly TimeSpan _cacheFor = cacheFor ?? DefaultCache;
     private readonly Dictionary<string, CacheEntry> _cache = new(WorkspacePaths.Comparer);
+    /// <summary>
+    /// What a failed probe said, for as long as the cache is fresh. A failure is never cached as an answer — a broken
+    /// git cannot keep answering "outside" for a while — so an isolated workspace can tell the two apart: what git said
+    /// here is what <see cref="IWorkspaceRepoProbe.ProbeProblem"/> reports, and it is what a refusal quotes.
+    /// </summary>
+    private readonly Dictionary<string, ProblemEntry> _problems = new(WorkspacePaths.Comparer);
     private readonly object _gate = new();
+    private static readonly string[] CommonDirArgs = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
 
-    private sealed record CacheEntry(DateTime At, string? Value);
+    private sealed record CacheEntry(DateTime At, string Value);
+    private sealed record ProblemEntry(DateTime At, string Problem);
 
     /// <summary>Whether git answers at all on this machine (one probe, then cached forever).</summary>
     public static bool Available { get; set; } = true;
 
-    public string? CommonDirOf(string path) => Ask(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    public string? CommonDirOf(string path) => Ask(path, CommonDirArgs);
     public string? BranchOf(string path) => Ask(path, "rev-parse", "--abbrev-ref", "HEAD");
     public string? HeadOf(string path) => Ask(path, "rev-parse", "HEAD");
 
@@ -164,19 +172,69 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
     private string? Ask(string path, params string[] args)
     {
         var dir = DirectoryFor(path);
-        if (dir is null) return null;
+        if (dir is null) return null;    // no existing directory: the answer is "not in a repository", not a failure
         var key = string.Join(' ', args) + " " + dir;
         lock (_gate)
             if (_cache.TryGetValue(key, out var hit) && DateTime.UtcNow - hit.At < _cacheFor) return hit.Value;
         string? value = null;
-        try { if (Directory.Exists(dir) || File.Exists(dir)) value = Run(dir, args); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
+        try
+        {
+            if (Directory.Exists(dir) || File.Exists(dir))
+            {
+                var (code, output) = ExecAsync(dir, CancellationToken.None, args).GetAwaiter().GetResult();
+                if (code == 0) value = output.Trim();
+                else if (!NotARepository(output)) RememberProblem(key, output);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            RememberProblem(key, ex.Message);
+        }
         lock (_gate)
         {
-            _cache[key] = new CacheEntry(DateTime.UtcNow, value);
-            if (_cache.Count > 512) _cache.Clear();
+            if (value is not null)
+            {
+                _cache[key] = new CacheEntry(DateTime.UtcNow, value);
+                _problems.Remove(key);
+                if (_cache.Count > 512) _cache.Clear();
+            }
         }
         return value;
+    }
+
+    /// <summary>
+    /// Whether git's refusal is the definitive "this is not in a repository" — the message git gives for a directory
+    /// with no repository above it. A broken <c>.git</c> ("not a git repository: (NULL)") is the same words with that
+    /// clause missing: git ran and failed, which is a probe problem, not an answer.
+    /// </summary>
+    private static bool NotARepository(string output) =>
+        output.Contains("not a git repository (or any of the parent directories)", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Remember what a failed probe said, so <see cref="ProbeProblem"/> can report it while it is fresh.</summary>
+    private void RememberProblem(string key, string output)
+    {
+        var problem = output.Trim();
+        if (problem.Length == 0) problem = "git could not answer";
+        if (problem.Length > 300) problem = problem[..300] + "…";
+        lock (_gate)
+        {
+            _problems[key] = new ProblemEntry(DateTime.UtcNow, problem);
+            if (_problems.Count > 512) _problems.Clear();
+        }
+    }
+
+    /// <summary>
+    /// What this probe itself said when it could not answer for a path (git missing, timed out, or git's error): git's
+    /// words, fresh for the cache window. An answer — including "not a repository" — and a path never asked have nothing
+    /// to say, so the guard can decide; only a failure leaves an isolated workspace refusing.
+    /// </summary>
+    public string? ProbeProblem(string path)
+    {
+        var dir = DirectoryFor(path);
+        if (dir is null) return null;
+        var key = string.Join(' ', CommonDirArgs) + " " + dir;
+        lock (_gate)
+            return _problems.TryGetValue(key, out var p) && DateTime.UtcNow - p.At < _cacheFor ? p.Problem : null;
     }
 
     /// <summary>
@@ -202,8 +260,12 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
     {
         var dir = WorkspacePaths.Canonical(path);
         lock (_gate)
+        {
             foreach (var key in _cache.Keys.Where(k => k.EndsWith(" " + dir, StringComparison.OrdinalIgnoreCase)).ToList())
                 _cache.Remove(key);
+            foreach (var key in _problems.Keys.Where(k => k.EndsWith(" " + dir, StringComparison.OrdinalIgnoreCase)).ToList())
+                _problems.Remove(key);
+        }
     }
 
     /// <summary>Whether the repository has a commit (so a diff can be taken against it).</summary>

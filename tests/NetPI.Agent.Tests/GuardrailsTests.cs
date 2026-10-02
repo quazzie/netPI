@@ -17,6 +17,7 @@ public static class GuardrailsTests
         t.Add("guardrails: allowed for this chat, the rule stops asking there (not in other chats, never for a no)", AllowForSession);
         t.Add("guardrails: in a subagent an ask rule blocks; switched off, nothing is checked", SubagentAndOff);
         t.Add("guardrails: the default rules block the catastrophic, not everyday work; spellings of a path", DefaultRules);
+        t.Add("guardrails: a protected path in a long-path, admin-share or device spelling is the same path", ProtectedSpellings);
         t.Add("guardrails: second opinion: a confidently read-only command runs without asking, the rest ask with the model's view", SecondOpinionClears);
         t.Add("guardrails: second opinion never clears a path ask (it reads the command, not where it writes)", SecondOpinionSkipsPathRules);
         t.Add("guardrails: second opinion never relaxes a block or write/edit, is off by default, and asks when the model fails", SecondOpinionLimits);
@@ -222,6 +223,47 @@ public static class GuardrailsTests
         Check.Contains(results[3].Content, "is protected by the guardrail", "a shell command that names the path");
         Check.False(results[4].IsError, "a sibling folder with the same prefix is not protected");
         Check.Equal(2, ran.Count, "read and the sibling write ran: " + string.Join(" | ", ran));
+    }
+
+    /// <summary>
+    /// A rule's root and a write's target are compared as places, not spellings: the long-path prefix, this
+    /// machine's admin shares and the drive's device spelling all name the protected directory, and every one of
+    /// them is refused. On Unix the escapes are Windows spellings, so the one spelling that matters is the path.
+    /// </summary>
+    private static async Task ProtectedSpellings()
+    {
+        await using var h = await StartAsync();
+        var dir = Path.Combine(h.Workspace, "protected");
+        Directory.CreateDirectory(dir);
+        h.Settings.Set("guardrails.paths", new JsonArray(dir));
+        var ran = new List<string>();
+        h.AddTool(Recorder("write", ran));
+        var s = h.NewSession();
+
+        List<ToolCallPart> calls;
+        string[] spellings;
+        if (OperatingSystem.IsWindows())
+        {
+            spellings =
+            [
+                dir,
+                @"\\?\" + dir,
+                @"\\localhost\C$" + dir.Substring(2),
+                @"\\.\C:" + dir.Substring(2),
+            ];
+        }
+        else
+        {
+            spellings = [dir];
+        }
+        calls = spellings.Select(sp => Reply.Call("write", new { path = sp, content = "x" })).ToList();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done") : Reply.Tools([.. calls]);
+        await h.SendAsync(s.Id, "go");
+        await h.IdleAsync(s.Id);
+        var results = Results(h, s.Id);
+        for (var i = 0; i < spellings.Length; i++)
+            Check.Contains(results[i].Content, "is protected by the guardrail", "the spelling is the same path: " + spellings[i]);
+        Check.Equal(0, ran.Count, "no write through a spelling of the protected path ran: " + string.Join(" | ", ran));
     }
 
     private static async Task AskRules()

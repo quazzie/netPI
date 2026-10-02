@@ -421,6 +421,7 @@ public static class IdeasNoticeTests
         public string? CommonDirOf(string path) => GitOut(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
         public string? BranchOf(string path) => null;
         public string? HeadOf(string path) => null;
+        public string? ProbeProblem(string path) => null;   // real git answered: "not a repository" is an answer
     }
 
     private static bool Git(string cwd, params string[] args)

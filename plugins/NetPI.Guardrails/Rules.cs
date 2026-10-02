@@ -229,9 +229,15 @@ internal sealed partial class RuleSet
         catch (RegexMatchTimeoutException) { return true; }
     }
 
-    private static bool Under(string full, string root) =>
-        full.Equals(root, PathComparison)
-        || (full.Length > root.Length && full.StartsWith(root, PathComparison) && full[root.Length] is '\\' or '/');
+    private static bool Under(string full, string root)
+    {
+        // One canonical function for both sides: a long-path prefix, an admin share of this machine or a junction
+        // anywhere along the way is the same place, not a different spelling that slips past the rule.
+        full = WorkspacePaths.Canonical(full);
+        root = WorkspacePaths.Canonical(root);
+        return full.Equals(root, PathComparison)
+            || (full.Length > root.Length && full.StartsWith(root, PathComparison) && full[root.Length] is '\\' or '/');
+    }
 
     /// <summary>Whether a command names the path: a spelling of it, followed by the end, a separator or punctuation.</summary>
     private static bool Names(string command, PathRule rule)
@@ -256,7 +262,8 @@ internal sealed partial class RuleSet
         else if (text.StartsWith("~/", StringComparison.Ordinal) || text.StartsWith("~\\", StringComparison.Ordinal)) text = Path.Combine(home, text[2..]);
         text = Environment.ExpandEnvironmentVariables(text);
         if (!Path.IsPathRooted(text) || (OperatingSystem.IsWindows() && !Path.IsPathFullyQualified(text))) return null;
-        try { return Path.TrimEndingDirectorySeparator(Path.GetFullPath(text)); }
+        // The same canonical form the write side gets: a rule root and a write target are compared as places, not spellings.
+        try { return WorkspacePaths.Canonical(text); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return null; }
     }
 

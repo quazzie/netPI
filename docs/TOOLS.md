@@ -396,8 +396,15 @@ Only an isolated workspace (its own worktree) is guarded, and the guard runs bef
 refusal names the workspace rather than a bare path. It works from git evidence, not from spelling: a path is "another
 checkout of the same repository" when it is outside the session's workspace and its `--git-common-dir` is the
 repository's — so a relative `../` that climbs out, an absolute path into the primary checkout, a differently cased
-spelling, and a junction or symlink that points there all reach the same answer, because every path is resolved to its
-canonical form first.
+spelling, a junction or symlink that points there (at any depth, not only at the end), a long-path (`\\?\`), admin-share
+(`\\localhost\C$\`) or device spelling of a local path all reach the same answer, because every path is resolved to one
+canonical form first — and a share on another machine is a different place, never under a local root. The guardrails' own
+path rules use the same canonical function, so a protected path is reached in no spelling.
+
+An isolated workspace has no third answer: when git itself cannot say where a path lives (git missing, timed out, or an
+error — not "not a repository", which is an answer), the write is refused and the refusal says what git could not say.
+A plain "not a repository" still decides the ordinary outside, and a session that is bound but not isolated keeps the
+old behavior: nothing there is guarded by the repository question.
 
 - The native writing tools (`write`, `edit`, `write_file`, `edit_file`, `notebook_edit`, `patch`) refuse a path argument
   that resolves into another checkout of the same repository: another worker's tree, or the primary checkout the worker
