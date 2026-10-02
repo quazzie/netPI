@@ -780,9 +780,13 @@ details: { host, path /* "host:path" */, startLine, endLine, totalLines, truncat
 
 ### `ssh_write` (summary arg `path`)
 
-`{ host, path, content, append?, cwd? }`. The content goes to `cat >file` (or `>>` with `append`) as UTF-8 bytes, exactly
-as given (no line-ending conversion). Parent folders are created; an existing file is overwritten in place, so it keeps
-its owner and permissions. The text says Created, Wrote or Appended.
+`{ host, path, content, append?, cwd? }`. The content (UTF-8, exactly as given, no line-ending conversion) is at most 16 MB;
+over the cap the call is refused with what to do instead (`ssh_run` for host-side writes, `ssh_copy` to upload a local
+file). A replace streams to a temporary file in the target's own directory and is put in place with an atomic rename
+(`mv -f`), like `ssh_edit`, so an interrupted or timed-out transfer leaves the old content exactly as it was — the target
+is never truncated. An existing file keeps its owner and permissions; a new one gets mode 644. With `append` the content
+streams straight in (`cat >>`), which cannot shorten the file. Parent folders are created; the text says Created, Wrote or
+Appended.
 
 ```ts
 details: { host, path /* "host:path" */, created, append, bytes, lines }

@@ -129,6 +129,9 @@ internal sealed class SshTool : IAgentTool, IReadOnlyCalls
 internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) : IAgentTool
 {
     internal const int MaxReadBytes = 8 * 1024 * 1024;
+    /// <summary>The most <c>ssh_write</c> streams in one call. A slow link that stops the stream mid-way must not leave a
+    /// multi-megabyte half-written file behind, and a capped transfer cannot outgrow the tool's timeout.</summary>
+    internal const int MaxWriteBytes = 16 * 1024 * 1024;
     protected IPluginContext Ctx => ctx;
     protected ISshLauncher Launcher => launcher;
     public abstract ToolDefinition Definition { get; }
@@ -216,6 +219,11 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) :
     }
 
     protected static string Where(SshHost host, string path) => $"{host.Alias}:{path}";
+
+    /// <summary>123456 → "123.5 KB" (notes like "Line N is X long").</summary>
+    internal static string Size(long bytes) => bytes < 1024 * 1024
+        ? (bytes / 1024.0).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " KB"
+        : (bytes / (1024.0 * 1024)).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " MB";
 }
 
 // ---------------------------------------------------------------------------------------------------------------- hosts
@@ -575,8 +583,11 @@ internal sealed class SshWriteTool(IPluginContext ctx, ISshLauncher launcher) : 
         Category = "ssh",
         SummaryArg = "path",
         Description =
-            "Write a file on a remote host. The content is sent as it is, any size, with no escaping. " +
-            "Parent folders are created; the file keeps its permissions; append adds to the end instead of replacing.",
+            $"Write a file on a remote host. The content goes as it is (UTF-8, no escaping), up to {MaxWriteBytes / 1024 / 1024} MB; " +
+            "larger content is refused with what to do instead. The content streams to a temporary file in the target's own " +
+            "directory and is put in place by an atomic rename, so a slow or dropped transfer never leaves the target truncated " +
+            "or half-written. Parent folders are created; an existing file keeps its owner and permissions; " +
+            "append (cat >>) adds to the end instead of replacing.",
         Parameters = new JsonObject
         {
             ["type"] = "object",
@@ -599,9 +610,24 @@ internal sealed class SshWriteTool(IPluginContext ctx, ISshLauncher launcher) : 
         var content = A.Str(args, "content", "text", "data");
         if (content is null) return ToolResult.Error("ssh_write needs content (an empty string empties the file).");
         var append = A.Bool(args, "append") ?? false;
-        var remote = Sh.Cd(A.Str(args, "cwd")) +
-                     $"p={Sh.Path(path)}; if [ -e \"$p\" ]; then echo existed; fi; mkdir -p -- \"$(dirname -- \"$p\")\" && cat {(append ? ">>" : ">")}\"$p\"";
         var bytes = Encoding.UTF8.GetBytes(content);
+        if (bytes.Length > MaxWriteBytes)
+            return ToolResult.Error($"The content is {Size(bytes.Length)}; ssh_write streams at most {Size(MaxWriteBytes)} per call, so a transfer that stops short cannot leave a half-written file behind. " +
+                "For larger content, write it on the host with ssh_run (a heredoc, or a download and unpack), or upload a local file with ssh_copy.");
+        // A replace goes to a temporary file in the target's own directory and is put in place with an atomic rename (the
+        // target's mode copied over, 644 for a new file), like ssh_edit: an interruption before the rename leaves the old
+        // content exactly as it was — the target is never truncated. append streams straight in: cat >> cannot shorten it.
+        var remote = append
+            ? Sh.Cd(A.Str(args, "cwd")) +
+              $"p={Sh.Path(path)}; mkdir -p -- \"$(dirname -- \"$p\")\" && cat >>\"$p\""
+            : Sh.Cd(A.Str(args, "cwd")) +
+              $"p={Sh.Path(path)}; if [ -e \"$p\" ]; then echo existed; fi; " +
+              "mkdir -p -- \"$(dirname -- \"$p\")\" || exit 4; " +
+              "t=$(mktemp -- \"${p}.netpi.XXXXXX\") || exit 5; " +
+              "cat >\"$t\" || { echo \"writing the temporary copy failed\" >&2; rm -f -- \"$t\"; exit 6; }; " +
+              "if [ -e \"$p\" ]; then chmod -- \"$(stat -c '%a' -- \"$p\")\" \"$t\" || { echo \"restoring the mode failed\" >&2; rm -f -- \"$t\"; exit 7; }; " +
+              "else chmod 644 \"$t\" || { echo \"setting the mode failed\" >&2; rm -f -- \"$t\"; exit 7; }; fi; " +
+              "mv -f -- \"$t\" \"$p\" || { echo \"renaming into place failed\" >&2; rm -f -- \"$t\"; exit 8; }";
         var r = await Ssh(o, host, remote, bytes, TimeSpan.FromSeconds(Math.Max(60, o.Timeout)), ct).ConfigureAwait(false);
         if (r.ExitCode == 255) return ToolResult.Error(Failure(host, r));
         if (r.ExitCode == 125) return ToolResult.Error($"The working directory does not exist on {host.Alias}.");

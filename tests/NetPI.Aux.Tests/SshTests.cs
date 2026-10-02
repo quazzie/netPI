@@ -224,7 +224,12 @@ public static class SshTests
             Check.Equal("Created nuc:/tmp/a b/it's.txt (" + Encoding.UTF8.GetByteCount(content) + " bytes, 2 lines).", created.Content);
             var call = env.Fake.Calls[^1];
             Check.Equal(content, Utf8(call.Stdin));
-            Check.Contains(Remote(call.Args), "p='/tmp/a b/it'\\''s.txt'; if [ -e \"$p\" ]; then echo existed; fi; mkdir -p -- \"$(dirname -- \"$p\")\" && cat >\"$p\"");
+            Check.Contains(Remote(call.Args), "p='/tmp/a b/it'\\''s.txt'; if [ -e \"$p\" ]; then echo existed; fi; mkdir -p -- \"$(dirname -- \"$p\")\" || exit 4; ");
+            Check.Contains(Remote(call.Args), "t=$(mktemp -- \"${p}.netpi.XXXXXX\") || exit 5");
+            Check.Contains(Remote(call.Args), "cat >\"$t\"");
+            Check.Contains(Remote(call.Args), "chmod -- \"$(stat -c '%a' -- \"$p\")\" \"$t\"");
+            Check.Contains(Remote(call.Args), "mv -f -- \"$t\" \"$p\"");
+            Check.NotContains(Remote(call.Args), "cat >\"$p\"", "the target is never the stream's destination");
             env.Fake.Reply = (_, _) => new SshExec(0, "existed\n", "", false, false);
             Check.True((await env.Run("ssh_write", new { host = "nuc", path = "x.txt", content = "a" })).Content.StartsWith("Wrote nuc:x.txt"));
             await env.Run("ssh_write", new { host = "nuc", path = "log", content = "more\n", append = true });
@@ -593,6 +598,61 @@ public static class SshTests
             catch (EditException ex) { Check.Contains(ex.Message, "overlap"); }
         });
 
+        r.Add("ssh_write: the remote write script, run in a local bash (a new file gets 644, an existing one keeps its mode, an interrupted stream leaves the original intact)", async () =>
+        {
+            var bash = FindBash();
+            if (bash is null)
+            {
+                Console.WriteLine("    (no local bash found; the remote script is not run)");
+                return;
+            }
+            var env = new Env();
+            env.Fake.Reply = (_, _) => new SshExec(0, "", "", false, false);
+            var dir = T.TempDir("sshwrite");
+            var posix = PosixPath(dir);
+            var chmodWorks = ChmodWorks(bash);
+            async Task<(int Exit, string Out, string Err)> WriteScript(object contentArg, string? prelude = null)
+            {
+                await env.Run("ssh_write", new { host = "nuc", path = $"{posix}/doc.txt", content = contentArg });
+                return RunRemote(bash, Remote(env.Fake.Calls[^1].Args), env.Fake.Calls[^1].Stdin!, prelude);
+            }
+
+            // a new file: the temp is renamed into place, mode 644, nothing left behind
+            var (nex, nout, nerr) = await WriteScript("aaaa\nbbbb\n");
+            Check.Equal(0, nex, "a write to a new file succeeds: " + nerr);
+            Check.False(nout.Contains("existed"), "the target did not exist yet");
+            Check.Equal("aaaa\nbbbb\n", File.ReadAllText(Path.Combine(dir, "doc.txt")));
+            if (chmodWorks) Check.Equal("644", RunRemote(bash, $"stat -c '%a' '{posix}/doc.txt'", null).Out.Trim(), "a new file is world-readable");
+            Check.Equal(0, Directory.GetFiles(dir).Count(f => Path.GetFileName(f) != "doc.txt"), "no temp file left behind");
+
+            // an existing file keeps its mode and content is replaced atomically
+            if (chmodWorks) RunRemote(bash, $"chmod 0640 '{posix}/doc.txt'", null);
+            var (rex, rout, rerr) = await WriteScript("cccc\ndddd\n");
+            Check.Equal(0, rex, "a write over an existing file succeeds: " + rerr);
+            Check.Contains(rout, "existed", "the existing file was detected before the stream");
+            Check.Equal("cccc\ndddd\n", File.ReadAllText(Path.Combine(dir, "doc.txt")));
+            if (chmodWorks) Check.Equal("640", RunRemote(bash, $"stat -c '%a' '{posix}/doc.txt'", null).Out.Trim(), "the existing mode is preserved");
+
+            // an interrupted stream: the temp dies with the failure, the original stays exactly as it was
+            File.WriteAllText(Path.Combine(dir, "doc.txt"), "original\n");
+            const string prelude = "fb=$(mktemp -d); printf '#!/bin/sh\\necho \"fake cat: simulated write failure\" >&2\\nexit 1\\n' > \"$fb/cat\"; chmod +x \"$fb/cat\"; export PATH=\"$fb:$PATH\"";
+            var (iex, _, ierr) = await WriteScript("new\n", prelude);
+            Check.True(iex != 0, "a failed write exits non-zero (exit " + iex + ")");
+            Check.Contains(ierr, "simulated write failure");
+            Check.Contains(ierr, "writing the temporary copy failed");
+            Check.Equal("original\n", File.ReadAllText(Path.Combine(dir, "doc.txt")), "the original is intact, not truncated");
+            Check.Equal(0, Directory.GetFiles(dir).Where(f => Path.GetFileName(f) != "doc.txt").Count(), "the temp was removed");
+
+            // over the cap: refused without a single ssh call, with the alternatives
+            var before = env.Fake.Calls.Count;
+            var big = await env.Run("ssh_write", new { host = "nuc", path = "x", content = new string('a', SshToolBase.MaxWriteBytes + 1) });
+            Check.True(big.IsError);
+            Check.Contains(big.Content, $"ssh_write streams at most {SshToolBase.Size(SshToolBase.MaxWriteBytes)}");
+            Check.Contains(big.Content, "ssh_run");
+            Check.Contains(big.Content, "ssh_copy");
+            Check.Equal(before, env.Fake.Calls.Count, "nothing was sent over the wire");
+        });
+
         r.Add("ssh_copy: scp runs in the local folder with a relative name (no drive-letter colon)", async () =>
         {
             var env = new Env();
@@ -676,9 +736,9 @@ public static class SshTests
     }
 
     /// <summary>Runs a generated remote script in a local bash the way the ssh login shell would: -c script, stdin in, exit out.</summary>
-    private static (int Exit, string Out, string Err) RunRemote(string bash, string script, byte[]? stdin, string prelude = "")
+    private static (int Exit, string Out, string Err) RunRemote(string bash, string script, byte[]? stdin, string? prelude = null)
     {
-        var body = (prelude.Length > 0 ? prelude + "; " : "") + script;
+        var body = (prelude is { Length: > 0 } pre ? pre + "; " : "") + script;
         var psi = new ProcessStartInfo(bash)
         {
             UseShellExecute = false, CreateNoWindow = true,
