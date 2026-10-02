@@ -9,6 +9,7 @@ SettingsTests.Register(runner);
 EventBusTests.Register(runner);
 LogSinkTests.Register(runner);
 RegistryTests.Register(runner);
+CoreRpcTests.Register(runner);
 SessionStoreTests.Register(runner);
 ModelCatalogTests.Register(runner);
 ServerTests.Register(runner);
