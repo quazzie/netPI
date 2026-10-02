@@ -6,11 +6,14 @@ namespace NetPI.Tools.Tests;
 /// <summary>Loads the built plugin assemblies from artifacts/app/plugins the way the host does (collectible ALC, shared contracts).</summary>
 public static class LoadTests
 {
+    /// <summary>The contract assemblies the host preloads into the default context, so a plugin never ships a copy.</summary>
+    private static readonly string[] Shared = ["NetPI.Abstractions", "NetPI.Contracts"];
+
     private sealed class PluginLoadContext(string dir) : AssemblyLoadContext(isCollectible: true)
     {
         protected override Assembly? Load(AssemblyName name)
         {
-            if (name.Name == "NetPI.Abstractions") return null; // shared from the default context
+            if (Shared.Contains(name.Name)) return null; // shared from the default context
             var candidate = Path.Combine(dir, name.Name + ".dll");
             return File.Exists(candidate) ? LoadFromAssemblyPath(candidate) : null;
         }
@@ -23,7 +26,8 @@ public static class LoadTests
             r.Add($"load: {project} starts and stops in a collectible AssemblyLoadContext", async () =>
             {
                 var dir = FindPluginDir(project);
-                Check.False(File.Exists(Path.Combine(dir, "NetPI.Abstractions.dll")), "contracts must not be copied next to the plugin");
+                foreach (var contracts in Shared)
+                    Check.False(File.Exists(Path.Combine(dir, contracts + ".dll")), $"{contracts} must not be copied next to the plugin");
                 var alc = new PluginLoadContext(dir);
                 var asm = alc.LoadFromAssemblyPath(Path.Combine(dir, project + ".dll"));
                 var types = asm.GetTypes().Where(t => t.IsPublic && !t.IsAbstract && typeof(INetPiPlugin).IsAssignableFrom(t)).ToList();
@@ -31,7 +35,7 @@ public static class LoadTests
                 var attr = types[0].GetCustomAttribute<NetPiPluginAttribute>();
                 Check.True(attr is not null && attr.Order == 20 && attr.Id.StartsWith("netpi.tools."));
                 var plugin = (INetPiPlugin)Activator.CreateInstance(types[0])!;
-                var ctx = new FakePluginContext(T.TempDir("load"));
+                using var ctx = new FakePluginContext(T.TempDir("load"));
                 await plugin.StartAsync(ctx, CancellationToken.None);
                 Check.Equal(expectedTools, ctx.ToolsFake.Tools.Count);
                 Check.True(ctx.RpcFake.Handlers.Count >= 2);

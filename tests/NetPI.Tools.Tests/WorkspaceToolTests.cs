@@ -16,8 +16,7 @@ public static class WorkspaceToolTests
         r.Add("workspace: the files RPCs answer with the session's workspace root, not the project's", async () =>
         {
             using var env = new Env();
-            var ctx = new FakePluginContext(env.Project);
-            ctx.SessionsFake = env.Sessions;
+            var ctx = env.Context;
             ctx.Services.Register(env.Resolver);
             await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
             var session = env.Session();
@@ -28,7 +27,7 @@ public static class WorkspaceToolTests
             Check.Equal(workspace.Path, FilesPlugin.ResolveRoot(ctx, Req(new { sessionId = session.Id })));
 
             // The scope the tab keys its refreshes on names the root, the workspace and a version.
-            var scope = NetPiJson.ToElement(await ctx.RpcFake.InvokeAsync("files.scope", new { sessionId = session.Id }));
+            var scope = NetPiJson.ToElement(await env.Fake.RpcFake.InvokeAsync("files.scope", new { sessionId = session.Id }));
             Check.Equal(workspace.Path, scope.GetProperty("root").GetString());
             Check.Equal(workspace.Id, scope.GetProperty("workspaceId").GetString());
             Check.True(scope.GetProperty("identity").GetString()!.Contains(workspace.Id));
@@ -39,11 +38,10 @@ public static class WorkspaceToolTests
         r.Add("workspace: a session whose workspace cannot be used fails the files RPC instead of showing the project", () =>
         {
             using var env = new Env();
-            var ctx = new FakePluginContext(env.Project);
-            ctx.SessionsFake = env.Sessions;
+            var ctx = env.Context;
             ctx.Services.Register(env.Resolver);
             var session = env.Session();
-            env.Bind(session, "wsp_gone");
+            env.Bind(session, "wsp_gone", cwd: env.Project);
             var ex = Check.Throws<RpcException>(() => FilesPlugin.ResolveRoot(ctx, Req(new { sessionId = session.Id })));
             Check.Equal("workspace_unavailable", ex.Code);
         });
@@ -113,111 +111,108 @@ public static class WorkspaceToolTests
         Params = JsonSerializer.SerializeToElement(parameters),
     };
 
-    /// <summary>A project, a resolver over it, and the sessions bound to it.</summary>
+    /// <summary>A project, a workspace record, a resolver over them, and the real session service that holds the binding.</summary>
     private sealed class Env : IDisposable
     {
+        private readonly FakePluginContext _ctx;
+        private readonly Resolver _resolver;
+
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "netpi-tests", "ws-" + Guid.NewGuid().ToString("N")[..8]);
         public string Project { get; }
-        private readonly Resolver _resolver;
+        public string ProjectId { get; }
 
         public Env()
         {
             Project = Path.Combine(Root, "repo");
             Directory.CreateDirectory(Project);
-            _resolver = new Resolver(Project);
+            _ctx = new FakePluginContext(Project, home: Root);
+            // The session service is the kernel's own, over the memory provider: a binding is meta on a real session.
+            ProjectId = _ctx.Store.CreateProject("Repo", Project).Id;
+            _resolver = new Resolver(_ctx);
         }
 
-        public Resolver Sessions => _resolver;
+        public IPluginContext Context => _ctx;
+        /// <summary>The context as the fake, for the registries a test drives (the RPC registry, the tool registry).</summary>
+        public FakePluginContext Fake => _ctx;
         public IWorkspaceResolver Resolver => _resolver;
 
-        public SessionInfo Session() => _resolver.CreateSession(new SessionInfo { Title = "s", ProjectId = _resolver.ProjectId });
+        public SessionInfo Session() => _ctx.Store.CreateSession(new SessionInfo { Title = "s", ProjectId = ProjectId });
 
         public WorkspaceInfo Workspace(string name, string path)
         {
             Directory.CreateDirectory(path);
-            return _resolver.CreateWorkspace(new WorkspaceInfo { Name = name, Path = path, ProjectId = _resolver.ProjectId, Kind = "worktree" });
+            return _resolver.Create(new WorkspaceInfo { Name = name, Path = path, ProjectId = ProjectId, Kind = "worktree" });
         }
 
-        public void Bind(SessionInfo session, string workspaceId)
+        /// <summary>
+        /// Bind the session the way the Workspaces plugin does — <c>meta.workspaceId</c> and <c>meta.cwd</c> — through the
+        /// session service, so the file and shell surfaces read exactly what production writes.
+        /// </summary>
+        public void Bind(SessionInfo session, string workspaceId, string? cwd = null)
         {
-            _resolver.SetSessionWorkspace(session.Id, workspaceId);
-            session.WorkspaceId = workspaceId;   // this store returns the same object it holds
+            var root = cwd ?? _resolver.Get(workspaceId)?.Path;
+            _ctx.Store.UpdateSession(session.Id, s =>
+            {
+                s.Meta ??= new System.Text.Json.Nodes.JsonObject();
+                s.Meta[SessionWorkspace.MetaKey] = workspaceId;
+                if (root is not null) s.Meta[SessionCwd.MetaKey] = root;
+                else s.Meta.Remove(SessionCwd.MetaKey);
+            });
         }
 
-        public void Dispose() { try { Directory.Delete(Root, true); } catch { } }
+        public void Dispose() { _ctx.Dispose(); try { Directory.Delete(Root, true); } catch { } }
     }
 
-    /// <summary>The minimum the file and shell surfaces ask of a session store, with a workspace resolver over it.</summary>
-    private sealed class Resolver(string projectPath) : ISessionStore, IWorkspaceStore, IWorkspaceResolver
+    /// <summary>
+    /// The workspace records a test binds a session to, and the resolver the file and shell surfaces ask. A workspace
+    /// is a plugin's own concept (a collection), so a record set is a fair double here; what must not be a double is
+    /// the session side, and that is the kernel's own <see cref="SessionService"/> (see <see cref="Env"/>).
+    /// </summary>
+    private sealed class Resolver(IPluginContext ctx) : IWorkspaceResolver
     {
-        private readonly List<(ProjectInfo, SessionInfo, WorkspaceInfo)> _rows = [];
+        private readonly List<WorkspaceInfo> _workspaces = [];
         private long _n;
 
-        public ProjectInfo Project { get; } = new() { Id = "prj_1", Name = "Repo", Path = projectPath };
-        public string ProjectId => Project.Id;
-        public ISessionStore Sessions => this;
+        public WorkspaceInfo? Get(string id) => _workspaces.FirstOrDefault(w => w.Id == id);
+
+        public WorkspaceInfo Create(WorkspaceInfo template)
+        {
+            if (string.IsNullOrEmpty(template.Id)) template.Id = "wsp_" + ++_n;
+            template.CreatedAt = template.UpdatedAt = DateTimeOffset.UtcNow;
+            _workspaces.Add(template);
+            return template;
+        }
+
+        /// <summary>
+        /// The session's folder. Bound means this workspace's root, and a bound workspace that cannot be used is a
+        /// <see cref="WorkspaceUnavailableException"/> — never the project folder. Unbound is the core's own rule
+        /// (<c>meta.cwd</c>, else the project, else the default folder).
+        /// </summary>
+        public string CwdOf(SessionInfo session) =>
+            SessionWorkspace.Of(session) is not null ? Require(session).Root : ctx.Sessions.GetCwd(session);
 
         public WorkspaceBinding? Resolve(SessionInfo? session)
         {
-            if (session?.WorkspaceId is not { Length: > 0 } id) return null;
-            var w = GetWorkspace(id) ?? throw new WorkspaceUnavailableException($"workspace {id} is gone");
-            return new WorkspaceBinding(w.Id, w.Path, w.Branch, w.BaseCommit, w.RepoCommonDir, w.Kind, w.OwnerSessionId, w.OwnerAgentId, w.Managed, 1);
+            if (SessionWorkspace.Of(session) is not { } id) return null;
+            var w = Get(id) ?? throw new WorkspaceUnavailableException($"workspace {id} is gone");
+            return Bind(w);
         }
 
-        public WorkspaceBinding? ResolveById(string workspaceId) => GetWorkspace(workspaceId) is { } w ? Resolve(new SessionInfo { WorkspaceId = workspaceId }) : null;
-        public WorkspaceBinding Require(SessionInfo session) => Resolve(session)!;
-        public string CwdOf(SessionInfo session) => Resolve(session)?.Root ?? GetCwd(session);
-        public string IdentityOf(SessionInfo session) => session.WorkspaceId ?? $"project:{session.ProjectId}";
-
-        public IReadOnlyList<ProjectInfo> ListProjects() => [Project];
-        public ProjectInfo? GetProject(string id) => id == Project.Id ? Project : null;
-        public ProjectInfo CreateProject(string name, string path) => throw new NotSupportedException();
-        public ProjectInfo UpdateProject(string id, string? name, string? path) => throw new NotSupportedException();
-        public void DeleteProject(string id) => throw new NotSupportedException();
-
-        public IReadOnlyList<SessionInfo> ListSessions(SessionQuery query) => [.. _rows.Select(r => r.Item2)];
-        public SessionInfo? GetSession(string id) => _rows.FirstOrDefault(r => r.Item2.Id == id).Item2;
-        public SessionInfo CreateSession(SessionInfo template)
+        public WorkspaceBinding? ResolveLenient(SessionInfo? session)
         {
-            if (string.IsNullOrEmpty(template.Id)) template.Id = "ses_" + ++_n;
-            _rows.Add((Project, template, null));
-            return template;
+            try { return Resolve(session); }
+            catch (WorkspaceUnavailableException) { return null; }
         }
-        public SessionInfo UpdateSession(string id, Action<SessionInfo> mutate)
-        {
-            var s = GetSession(id)!;
-            mutate(s);
-            return s;
-        }
-        public void DeleteSession(string id) => _rows.RemoveAll(r => r.Item2.Id == id);
-        public SessionInfo SetSessionProject(string sessionId, string? projectId) => UpdateSession(sessionId, s => s.ProjectId = projectId);
-        public string GetCwd(SessionInfo session) =>
-            session.WorkspaceId is { Length: > 0 } id && GetWorkspace(id) is { } w ? w.Path
-            : session.ProjectId is { } p && GetProject(p) is { } proj ? proj.Path : Path.GetTempPath();
 
-        public ChatMessage AppendMessage(string sessionId, ChatMessage message) => message;
-        public void UpdateMessage(ChatMessage message) { }
-        public ChatMessage? GetMessage(long id) => null;
-        public IReadOnlyList<ChatMessage> GetMessages(string sessionId, long? beforeSeq = null, int? limit = null) => [];
-        public IReadOnlyList<ChatMessage> GetContextMessages(string sessionId) => [];
-        public void MarkCompacted(string sessionId, long upToSeq) { }
+        public WorkspaceBinding? ResolveById(string workspaceId) => Get(workspaceId) is { } w ? Bind(w) : null;
 
-        public IReadOnlyList<WorkspaceInfo> ListWorkspaces(string? projectId = null) => [.. _rows.Where(r => r.Item3 is not null).Select(r => r.Item3!)];
-        public WorkspaceInfo? GetWorkspace(string id) => _rows.FirstOrDefault(r => r.Item3?.Id == id).Item3;
-        public WorkspaceInfo CreateWorkspace(WorkspaceInfo template)
-        {
-            if (string.IsNullOrEmpty(template.Id)) template.Id = "wsp_" + ++_n;
-            _rows.Add((Project, new SessionInfo(), template));
-            return template;
-        }
-        public WorkspaceInfo UpdateWorkspace(string id, Action<WorkspaceInfo> mutate)
-        {
-            var w = GetWorkspace(id)!;
-            mutate(w);
-            return w;
-        }
-        public bool DeleteWorkspace(string id) => _rows.RemoveAll(r => r.Item3?.Id == id) > 0;
-        public WorkspaceInfo? GetSessionWorkspace(string sessionId) => GetSession(sessionId)?.WorkspaceId is { } id ? GetWorkspace(id) : null;
-        public void SetSessionWorkspace(string sessionId, string? workspaceId) => UpdateSession(sessionId, s => s.WorkspaceId = workspaceId);
+        public WorkspaceBinding Require(SessionInfo session) => Resolve(session)
+            ?? throw new WorkspaceUnavailableException("this session has no workspace");
+
+        public string IdentityOf(SessionInfo session) =>
+            SessionWorkspace.Of(session) is { } id ? $"workspace:{id}" : $"project:{session.ProjectId}";
+
+        private static WorkspaceBinding Bind(WorkspaceInfo w) =>
+            new(w.Id, w.Path, w.Branch, w.BaseCommit, w.RepoCommonDir, w.Kind, w.OwnerSessionId, w.OwnerAgentId, w.Managed, 1);
     }
 }
