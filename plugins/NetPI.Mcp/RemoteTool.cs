@@ -30,11 +30,14 @@ internal sealed class RemoteTool : IAgentTool
             Description = "[" + config.Id + "] " + (description.Length > 240 ? description[..240] + "…" : description),
             Help = description, Parameters = schema.DeepClone().AsObject(),
             Deferred = !config.Pinned.Contains(RemoteName, StringComparer.Ordinal),
-            ReadOnly = config.ReadOnly.Contains(RemoteName, StringComparer.Ordinal),
+            ReadOnly = config.ReadOnly.Contains(RemoteName, StringComparer.Ordinal) || DeclaredReadOnly(raw),
             Revision = Hash(Canonical(revisionInput)),
         };
         SearchText = config.Id + " " + RemoteName + " " + title + " " + description + " " + string.Join(' ', config.Synonyms) + " " + schema.ToJsonString();
     }
+    /// <summary>The server's own claim that the tool only reads (<c>annotations.readOnlyHint</c>); a tool that says nothing is not read-only.</summary>
+    internal static bool DeclaredReadOnly(JsonObject raw) =>
+        raw["annotations"]?["readOnlyHint"] is JsonValue hint && hint.TryGetValue<bool>(out var readOnly) && readOnly;
     internal static string Name(string server, string tool) => "mcp_" + Slug(server, 12) + "_" + Slug(tool, 24) + "_" + Hash(server + "\0" + tool)[..16];
     private static string Slug(string text, int length)
     {

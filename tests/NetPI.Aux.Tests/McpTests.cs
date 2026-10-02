@@ -44,6 +44,18 @@ public static class McpTests
             Check.False(a.Definition.Revision==new RemoteTool(manager,c with { ReadOnly=["A-b"] },Tool("A-b")).Definition.Revision);
             ctx.Unload();
         });
+        r.Add("mcp: a tool is read-only when its server says so (readOnlyHint) or the config lists it, and only then", () => {
+            var ctx=new FakePluginContext(); var manager=new ServerManager(ctx); var c=Config();
+            RemoteTool Annotated(string name, string annotations) { var t=Tool(name); t["annotations"]=JsonNode.Parse(annotations); return new RemoteTool(manager,c,t); }
+            Check.True(Annotated("get","""{"readOnlyHint":true}""").Definition.ReadOnly);
+            Check.False(Annotated("set","""{"readOnlyHint":false,"destructiveHint":true}""").Definition.ReadOnly);
+            Check.False(Annotated("quiet","""{"title":"Quiet"}""").Definition.ReadOnly);
+            Check.False(Annotated("odd","""{"readOnlyHint":"true"}""").Definition.ReadOnly);
+            Check.False(new RemoteTool(manager,c,Tool("plain")).Definition.ReadOnly);
+            Check.True(new RemoteTool(manager,c with { ReadOnly=["listed"] },Tool("listed")).Definition.ReadOnly);
+            Check.False(Annotated("get","""{"readOnlyHint":true}""").Definition.Revision==new RemoteTool(manager,c,Tool("get")).Definition.Revision);
+            ctx.Unload();
+        });
         r.Add("mcp: local schema validates refs combinations constraints and rejects unsupported assertions", () => {
             var schema=JsonNode.Parse("""{"type":"object","$defs":{"city":{"type":"string","minLength":2}},"properties":{"city":{"$ref":"#/$defs/city"},"n":{"type":"integer","minimum":1}},"required":["city"],"additionalProperties":false}""")!.AsObject();
             Schema.Check(schema); Schema.Validate(schema,JsonNode.Parse("""{"city":"Oslo","n":2}"""));

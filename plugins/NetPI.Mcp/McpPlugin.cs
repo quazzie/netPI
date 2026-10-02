@@ -50,6 +50,13 @@ public sealed class McpPlugin : INetPiPlugin
                     ["description"] = t.Definition.Description, ["revision"] = t.Definition.Revision, ["deferred"] = t.Definition.Deferred,
                     ["readOnly"] = t.Definition.ReadOnly, ["exposed"] = manager.Exposed(t), ["schema"] = t.Definition.Parameters.DeepClone() }).ToArray()) });
         }, "MCP tools for a server (UI catalog, not model context)", readOnly: true);
+        ctx.Rpc.Register("mcp.tool", (req, _) =>
+        {
+            var id = req.Required("id");
+            var tool = manager.Find(id) ?? throw new RpcException("not_found", "No MCP tool " + id);
+            return Task.FromResult<object?>(new JsonObject { ["id"] = tool.Definition.Name, ["serverId"] = tool.ServerId, ["name"] = tool.RemoteName,
+                ["readOnly"] = tool.Definition.ReadOnly, ["annotations"] = tool.Raw["annotations"]?.DeepClone() });
+        }, "One MCP tool by its id: { id } → { id, serverId, name, readOnly (the server's readOnlyHint, or the server's readOnly list), annotations }", readOnly: true);
         ctx.Rpc.Register("mcp.resources", (req, _) =>
         {
             var id = req.Str("serverId");

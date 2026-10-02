@@ -13,6 +13,8 @@ public static class McpTests
                 var tools=(await env.Rpc("mcp.tools",new {serverId="fixture"})).Arr("tools").ToList();
                 Check.Equal(count,tools.Count);
                 var target=tools.Single(t=>t.S("name")=="weather");
+                var info=await env.Rpc("mcp.tool",new {id=target.S("id")});
+                Check.Equal("weather",info.S("name")); Check.Equal("fixture",info.S("serverId")); Check.False(info.B("readOnly"));
                 var session=await env.NewSession(CoreTests.Qwen);
                 var mark=await env.MockMark();
                 var started = DateTimeOffset.UtcNow;
