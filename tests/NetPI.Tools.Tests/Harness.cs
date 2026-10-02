@@ -5,6 +5,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using NetPI.Host.Sessions;
+using NetPI.Host.Storage.Memory;
 using NetPI.Tools.Shell;
 
 namespace NetPI.Tools.Tests;
@@ -211,15 +213,40 @@ public sealed class FakeRpc : IRpcRegistry
     public bool Exists(string method) => Handlers.ContainsKey(method);
 }
 
-public sealed class FakePluginContext(string workspace) : IPluginContext
+/// <summary>
+/// A plugin context over the kernel's own code: a real <c>memory</c> store and a real <see cref="SessionService"/>
+/// over it, so what a plugin sees of a session is what production gives it. The registry, bus, RPC and tool
+/// registries stay doubles — those are the harness's, not storage's.
+/// </summary>
+public sealed class FakePluginContext : IPluginContext, IDisposable
 {
+    private readonly IStorage _storage;
+
+    public string Home { get; }
     public string PluginId => "test";
-    public string PluginDirectory => workspace;
-    public NetPiPaths Paths { get; } = new()
+    public string PluginDirectory => Home;
+    public NetPiPaths Paths { get; }
+
+    public FakePluginContext(string workspace, string? home = null)
     {
-        AppDir = workspace, Home = workspace, LogsDir = workspace, WebRoot = workspace, SettingsFile = "settings.json",
-        DatabaseFile = "db", TempDir = workspace, PluginDirs = [], DefaultWorkspace = workspace,
-    };
+        Home = home ?? workspace;
+        Directory.CreateDirectory(Home);
+        Paths = new()
+        {
+            AppDir = Home, Home = Home, LogsDir = Home, WebRoot = Home, SettingsFile = "settings.json",
+            TempDir = Home, PluginDirs = [], DefaultWorkspace = workspace,
+        };
+        _storage = new MemoryStorageProvider().Open(new StorageOpenOptions
+        {
+            Home = Home, Logger = NullLogger.Instance, Settings = SettingsFake,
+        });
+        Store = new SessionService(_storage, Bus, workspace);
+    }
+
+    /// <summary>The store behind <see cref="Data"/> and <see cref="Sessions"/>; dispose the context to release it.</summary>
+    public IStorage Storage => _storage;
+    /// <summary>The kernel's session service over <see cref="Storage"/> (projects, sessions, messages, the fork rules).</summary>
+    internal SessionService Store { get; }
     public ILogger Logger => NullLogger.Instance;
     public FakeBus Bus { get; } = new();
     public IEventBus Events => Bus;
@@ -233,13 +260,12 @@ public sealed class FakePluginContext(string workspace) : IPluginContext
     public IHttpRegistry Http => null!;
     public FakeSettings SettingsFake { get; } = new();
     public ISettings Settings => SettingsFake;
-    public IDatabase Db => null!;
-    /// <summary>Set by a test that needs a session (the workspace-aware roots); null otherwise, like before.</summary>
-    public ISessionStore SessionsFake { get; set; } = null!;
-    public ISessionStore Sessions => SessionsFake;
+    public IPluginData Data => _storage.Plugins.For(PluginId);
+    public ISessionStore Sessions => Store;
     public IModelCatalog Models => null!;
     public CancellationToken Stopping => CancellationToken.None;
     public T Track<T>(T disposable) where T : IDisposable => disposable;
+    public void Dispose() => _storage.Dispose();
 }
 
 public sealed class FakeUi : IUiRegistry
@@ -360,33 +386,28 @@ public static class T
 {
     public static readonly FakeServices Services = new();
 
-    public static ToolContext Ctx(string cwd, ModelInfo? model = null, Action<string>? output = null, IEventBus? bus = null) => Ctx(cwd, null, model, output, bus);
+    public static ToolContext Ctx(string cwd, ModelInfo? model = null, Action<string>? output = null, IEventBus? bus = null) => Build(cwd, null, model, output, bus);
 
-    /// <summary>A tool context for a session bound to a workspace (the workspace-aware file and shell tools).</summary>
-    public static ToolContext Ctx(string cwd, WorkspaceBinding? workspace, ModelInfo? model = null, Action<string>? output = null, IEventBus? bus = null) => new()
-    {
-        SessionId = "ses_test",
-        AgentId = "agt_test",
-        CallId = "call_" + Ids.Short(),
-        Cwd = cwd,
-        Workspace = workspace,
-        Model = model,
-        Services = Services,
-        Events = bus ?? new FakeBus(),
-        Output = output,
-    };
+    /// <summary>A tool context for a session bound to a workspace (the workspace-aware file and shell tools).
+    /// The binding travels in the context's feature bag, which is how the runtime hands it to a tool.</summary>
+    public static ToolContext Ctx(string cwd, WorkspaceBinding? workspace, ModelInfo? model = null, Action<string>? output = null, IEventBus? bus = null) => Build(cwd, workspace, model, output, bus);
 
-    private static ToolContext CtxUnused(string cwd, ModelInfo? model = null, Action<string>? output = null, IEventBus? bus = null) => new()
+    private static ToolContext Build(string cwd, WorkspaceBinding? workspace, ModelInfo? model, Action<string>? output, IEventBus? bus)
     {
-        SessionId = "ses_test",
-        AgentId = "agt_test",
-        CallId = "call_" + Ids.Short(),
-        Cwd = cwd,
-        Model = model,
-        Services = Services,
-        Events = bus ?? new FakeBus(),
-        Output = output,
-    };
+        var ctx = new ToolContext
+        {
+            SessionId = "ses_test",
+            AgentId = "agt_test",
+            CallId = "call_" + Ids.Short(),
+            Cwd = cwd,
+            Model = model,
+            Services = Services,
+            Events = bus ?? new FakeBus(),
+            Output = output,
+        };
+        ctx.Features.Set(workspace);
+        return ctx;
+    }
 
     public static JsonElement Args(object o) => o is string s ? JsonDocument.Parse(s).RootElement.Clone() : NetPiJson.ToElement(o);
 

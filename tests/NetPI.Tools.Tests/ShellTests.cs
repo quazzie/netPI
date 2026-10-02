@@ -522,7 +522,7 @@ public static class ShellTests
             Check.Equal("timeout", registry.Get(id)!.Status);
 
             // Plugin-level: StopAsync kills running background processes.
-            var ctx = new FakePluginContext(dir);
+            using var ctx = new FakePluginContext(dir);
             var plugin = new ShellPlugin();
             await plugin.StartAsync(ctx, default);
             var expectedTools = ShellLocator.FindPwsh(null, out _) is null

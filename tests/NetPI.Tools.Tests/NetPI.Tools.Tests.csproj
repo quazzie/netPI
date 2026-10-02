@@ -7,7 +7,13 @@
     <RootNamespace>NetPI.Tools.Tests</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
+    <ProjectReference Include="../../src/NetPI.Contracts/NetPI.Contracts.csproj" />
+    <!-- The real storage provider and the real session service, so the harness fake is built over the kernel's own code. -->
+    <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Files/NetPI.Tools.Files.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Tools.Shell/NetPI.Tools.Shell.csproj" />
   </ItemGroup>

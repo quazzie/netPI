@@ -87,14 +87,17 @@ $defer = $NextStart -and $Publish
 
 # ---- is NetPI running from artifacts\app? A running NetPI keeps its host DLLs open (plugins load from shadow copies).
 # A build made while it ran moved the files it replaced into .old, so the contracts a running NetPI uses are the open
-# NetPI.Abstractions.dll, here or in .old: their hashes, taken before this build moves anything.
+# NetPI.Abstractions.dll and NetPI.Contracts.dll (the two contract assemblies every plugin shares), here or in .old: their
+# hashes, taken before this build moves anything.
 function Test-FileLocked([string] $path) {
     if (-not (Test-Path -LiteralPath $path)) { return $false }
     try { [IO.File]::Open($path, 'Open', 'ReadWrite', 'None').Dispose(); return $false } catch { return $true }
 }
-$contracts = @(Join-Path $app 'NetPI.Abstractions.dll')
-if (Test-Path $oldDir) { $contracts += @(Get-ChildItem $oldDir -Recurse -File -Filter 'NetPI.Abstractions.dll' | ForEach-Object { $_.FullName }) }
-$runningContracts = @($contracts | Where-Object { Test-FileLocked $_ } | ForEach-Object { (Get-FileHash -LiteralPath $_).Hash })
+$contractNames = @('NetPI.Abstractions.dll', 'NetPI.Contracts.dll')
+$contracts = @($contractNames | ForEach-Object { Join-Path $app $_ })
+if (Test-Path $oldDir) { $contracts += @(Get-ChildItem $oldDir -Recurse -File | Where-Object { $contractNames -contains $_.Name } | ForEach-Object { $_.FullName }) }
+# "name:hash": a change of either assembly is a contract change
+$runningContracts = @($contracts | Where-Object { Test-FileLocked $_ } | ForEach-Object { (Split-Path $_ -Leaf) + ':' + (Get-FileHash -LiteralPath $_).Hash })
 $running = $runningContracts.Count -gt 0
 
 # ---- what a restart would bring, and dropping it
@@ -317,8 +320,8 @@ if ($Publish) {
 
         # what waits for the next start: -NextStart, and plugins built against contracts the running NetPI doesn't have
         # (then every plugin's output changes); this publish supersedes an earlier one's
-        $builtContracts = (Get-FileHash (Join-Path $dev 'NetPI.Abstractions.dll')).Hash
-        $newContracts = @($runningContracts | Where-Object { $_ -ne $builtContracts }).Count -gt 0
+        $builtContracts = @($contractNames | ForEach-Object { $_ + ':' + (Get-FileHash (Join-Path $dev $_)).Hash })
+        $newContracts = @($runningContracts | Where-Object { $builtContracts -notcontains $_ }).Count -gt 0
         if (Test-Path $pendingDir) { Remove-Item -Recurse -Force $pendingDir }
 
         # web UI: replaced as a whole, like a normal build does (a file being served may stay; it is overwritten then)
@@ -382,7 +385,7 @@ if ($Test) {
     # the suites load the built plugins from here (NETPI_APP_DIR); a worktree has no artifacts\app to fall back on
     $env:NETPI_APP_DIR = $dev
     $failed = 0
-    foreach ($t in 'Providers', 'Tools', 'Agent', 'Aux', 'Host') {
+    foreach ($t in 'Providers', 'Tools', 'Agent', 'Aux', 'Host', 'Storage') {
         $dll = "tests\NetPI.$t.Tests\bin\$Configuration\NetPI.$t.Tests.dll"
         Write-Host "-- $t"
         dotnet $dll

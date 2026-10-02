@@ -1360,6 +1360,7 @@ await t.Run("built plugins load, run and unload in a collectible AssemblyLoadCon
     var apDll = Path.Combine(app, "plugins/NetPI.Providers.AiProxy/NetPI.Providers.AiProxy.dll");
     var apSettings = new JsonObject { ["providers"] = new JsonObject { ["aiproxy"] = new JsonObject { ["baseUrl"] = mock.BaseUrl } } };
     t.Check(!File.Exists(Path.Combine(Path.GetDirectoryName(apDll)!, "NetPI.Abstractions.dll")), "Abstractions not copied next to the plugin");
+    t.Check(!File.Exists(Path.Combine(Path.GetDirectoryName(apDll)!, "NetPI.Contracts.dll")), "Contracts not copied next to the plugin");
     t.Check(File.Exists(Path.Combine(Path.GetDirectoryName(apDll)!, "plugin.json")), "plugin.json copied");
     var r1 = await PluginLoadTest.LoadRunUnloadAsync(apDll, apSettings, p => Req(M(p.Id, "qwen3.8-27b")));
     t.Check(r1 is { PluginId: "netpi.providers.aiproxy", Providers: 1, Models: 4, StreamedText: "Hello world", AbstractionsShared: true }, $"aiproxy ran in ALC ({r1})");

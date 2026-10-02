@@ -82,7 +82,9 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
             where.Add("title LIKE @search ESCAPE '\\'");
             args["search"] = "%" + query.Search.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
         }
-        var attached = query.AttachedKey is { Length: > 0 } key && query.AttachedValue is not null ? (Key: key, Value: query.AttachedValue) : default;
+        // An attached key with no value to compare it to matches nothing.
+        if (query.AttachedKey is { Length: > 0 } && query.AttachedValue is null) return [];
+        var attached = query.AttachedKey is { Length: > 0 } key ? (Key: key, Value: query.AttachedValue!) : default;
         if (attached.Key is not null)
         {
             // A cheap text prefilter; the exact test is below, on the parsed value (the sessions table is small, so no JSON function is needed).
@@ -155,12 +157,20 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
     {
         // The next seq is worked out by the insert itself and handed back with it: one statement per message. Safe under
         // the unique index on (session_id, seq) and the transaction.
-        var stored = db.QuerySingle<(long Id, long Seq)>("""
-            INSERT INTO messages(session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta)
-            SELECT @SessionId, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = @SessionId), 0) + 1,
-                @Role, @Parts, @CreatedAt, @Provider, @Model, @StopReason, @Usage, @DurationMs, @Compacted, @Meta
-            RETURNING id, seq
-            """, MessageArgs(message), r => (r.GetInt64("id"), r.GetInt64("seq")));
+        (long Id, long Seq) stored;
+        try
+        {
+            stored = db.QuerySingle<(long Id, long Seq)>("""
+                INSERT INTO messages(session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta)
+                SELECT @SessionId, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = @SessionId), 0) + 1,
+                    @Role, @Parts, @CreatedAt, @Provider, @Model, @StopReason, @Usage, @DurationMs, @Compacted, @Meta
+                RETURNING id, seq
+                """, MessageArgs(message), r => (r.GetInt64("id"), r.GetInt64("seq")));
+        }
+        catch (SqliteException ex) when (ex.Code == ConstraintViolation)
+        {
+            throw new KeyNotFoundException($"Session {message.SessionId} not found");
+        }
         message.Id = stored.Id;
         message.Seq = stored.Seq;
         return message;
@@ -204,11 +214,22 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
     public void MarkCompacted(string sessionId, long upToSeq) =>
         db.Execute("UPDATE messages SET compacted = 1 WHERE session_id = @sessionId AND seq <= @upToSeq AND compacted = 0", new { sessionId, upToSeq });
 
-    public int CopyMessages(string fromSessionId, string toSessionId, long upToSeq) => db.Execute("""
-        INSERT INTO messages(session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta)
-        SELECT @to, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta
-        FROM messages WHERE session_id = @from AND seq <= @upToSeq ORDER BY seq
-        """, new { to = toSessionId, from = fromSessionId, upToSeq });
+    public int CopyMessages(string fromSessionId, string toSessionId, long upToSeq)
+    {
+        try
+        {
+            return db.Execute("""
+                INSERT INTO messages(session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta)
+                SELECT @to, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta
+                FROM messages WHERE session_id = @from AND seq <= @upToSeq ORDER BY seq
+                """, new { to = toSessionId, from = fromSessionId, upToSeq });
+        }
+        catch (SqliteException ex) when (ex.Code == ConstraintViolation)
+        {
+            // the target session is missing (a foreign key), or already holds one of these seqs (the unique index)
+            throw new StorageException($"The messages of {fromSessionId} cannot be copied into {toSessionId}: {ex.Message}", ex);
+        }
+    }
 
     public IReadOnlyList<MessageStub> MessageStubs(string sessionId) =>
         db.Query("SELECT id, seq, role, compacted, meta FROM messages WHERE session_id = @sessionId ORDER BY seq", new { sessionId },
@@ -262,7 +283,7 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
     private static MessageRole ParseRole(string s) =>
         Enum.TryParse<MessageRole>(s, ignoreCase: true, out var r) ? r : MessageRole.Notice;
 
-    private static ChatMessage ReadMessage(IDbRow r) => new()
+    private static ChatMessage ReadMessage(ISqlRow r) => new()
     {
         Id = r.GetInt64("id"),
         SessionId = r.GetString("session_id"),
@@ -279,7 +300,7 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
         Meta = ParseObject(r.GetStringOrNull("meta")),
     };
 
-    private static SessionInfo ReadSession(IDbRow r) => new()
+    private static SessionInfo ReadSession(ISqlRow r) => new()
     {
         Id = r.GetString("id"),
         Title = r.GetString("title"),
@@ -297,7 +318,7 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
         Meta = ParseObject(r.GetStringOrNull("meta")),
     };
 
-    private static ProjectInfo ReadProject(IDbRow r) => new()
+    private static ProjectInfo ReadProject(ISqlRow r) => new()
     {
         Id = r.GetString("id"),
         Name = r.GetString("name"),

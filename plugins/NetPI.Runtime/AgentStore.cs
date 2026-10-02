@@ -8,7 +8,7 @@ namespace NetPI.Runtime;
 // The collection this plugin keeps in its own storage (ctx.Data); AgentStore is the only code that touches it. A one-off
 // migration of an existing home is written from this block: name, key, document fields, index fields.
 //   agent_records  key: the agent id
-//       index fields: sessionId (text), createdAt (text, the ISO timestamp it is written as)
+//       index fields: sessionId (text), createdAt (text, the ISO timestamp it is written as), status (text)
 //       { id, sessionId, parentAgentId, name, status, task, result, error, model, createdAt, finishedAt,
 //         stats: { info: AgentInfo, instructions: string|null, notifyParent: bool } }
 
@@ -24,7 +24,7 @@ internal sealed class AgentStore(IPluginContext ctx)
     private IDataCollection _records = null!;
 
     public void Initialize() =>
-        _records = ctx.Data.Collection("agent_records", new CollectionSpec().Text("sessionId").Text("createdAt"));
+        _records = ctx.Data.Collection("agent_records", new CollectionSpec().Text("sessionId").Text("createdAt").Text("status"));
 
     private static string Iso(DateTimeOffset t) => t.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
     private static string StatusText(AgentStatus s) => JsonNamingPolicy.CamelCase.ConvertName(s.ToString());

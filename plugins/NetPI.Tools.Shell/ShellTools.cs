@@ -283,7 +283,7 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
     }
 
     /// <summary>The process an id argument names, or the house-style error naming what is known.</summary>
-    private bool TryGet(ToolArgs args, out ManagedProcess? process, out string? error)
+    private bool TryGet(ToolArgs args, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ManagedProcess? process, [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? error)
     {
         var id = args.Str("id", "process_id", "processId", "pid", "proc");
         if (string.IsNullOrWhiteSpace(id))

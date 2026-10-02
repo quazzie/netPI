@@ -21,7 +21,7 @@ public static class PluginIndependenceTests
                     var include = (string?)node.Attribute("Include") ?? "";
                     var text = include.Replace('\\', '/');
                     if (node.Name.LocalName == "ProjectReference")
-                        Check.Contains(text, "NetPI.Abstractions", $"peer project reference in {file}: {include}");
+                        Check.True(text.Contains("NetPI.Abstractions") || text.Contains("NetPI.Contracts"), $"peer project reference in {file}: {include}");
                     if (node.Name.LocalName is "Reference" or "HintPath" or "Compile" or "Import")
                     {
                         var value = text + " " + (string?)node.Attribute("Project") + " " + (node.Name.LocalName == "HintPath" ? node.Value : "");

@@ -1,6 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using NetPI.Host.Data;
+using NetPI.Host.Storage.Sqlite;
 
 namespace NetPI.Host.Tests;
 

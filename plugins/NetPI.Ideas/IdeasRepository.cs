@@ -6,23 +6,54 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Ideas;
 
 /// <summary>
+/// The backlog collections in <c>ctx.Data</c> (plugin id "netpi.ideas"): JSON documents under a string key, with
+/// declared index fields — the only fields a query may filter or order by. The one-off migration of the old tables
+/// (scripts/migrations/001-storage-port) is written from this block, so keep it in step with the code:
+/// <code>
+///   items        key: the idea id
+///                doc: the idea's own JSON fields (the complete document it always was) + revision (long) +
+///                     ord (long) + idLower (the key, ASCII-lower-cased) + projectId (only when bound to a project)
+///                index: ord Integer, status Text, projectId Text, idLower Text
+///   cards        key: the card id
+///                doc: doc (the card's JSON), ord (long), kind, sessionId, ideaId, projectId, sourceRev (long),
+///                     title, at
+///                index: ord Integer, kind Text, sessionId Text, ideaId Text, title Text
+///   resolutions  key: the card id (the suggestion answered)
+///                doc: action, ideaId (only when the answer wrote or named an idea), at
+///                index: none
+///   checks       key: the session id
+///                doc: rev, n (long), state, tries (long), at, claim (only while a check runs),
+///                     claimUntil (long, only while a check runs), error (only when the last check failed)
+///                index: state Text, at Text, claimUntil Integer
+///   repos        key: the repository path
+///                doc: projectId, projectName, hash (only when one was read), at, tries (long), error (only after a failure)
+///                index: at Text
+///   imports      key: the import id
+///                doc: kind, source, checksum, schemaVersion (long), counts (object), at
+///                index: none
+///   meta         key: the key
+///                doc: value (a string)
+///                index: none
+///   unread       key: the repository path + '\n' + the commit hash
+///                doc: repo, hash, subject, tries (long), error (only when set), at
+///                index: at Text
+/// </code>
+/// An absent document property is the same as a NULL column the old tables had: no value, not matched by a
+/// comparison. A field the queries order or filter on is an index field and is always written when it has a value.
+/// </summary>
+
+/// <summary>
 /// The backlog changed under a writer: the idea it read is not the one it wanted to write (optimistic concurrency).
 /// The caller turns this into a <c>conflict</c>; the change the caller had in hand is its own, and the UI keeps it.
 /// </summary>
 public sealed class IdeasConflictException(string message) : Exception(message);
 
-/// <summary>
-/// The database holds a newer Ideas storage than this build understands. Nothing is written and the plugin refuses to
-/// serve, rather than reading a shape it would mangle on the next write.
-/// </summary>
-public sealed class IdeasStorageVersionException(string message) : Exception(message);
-
 /// <summary>What answering a card did: the idea it wrote (null for a discard), whether it had been answered before.</summary>
 public sealed record CardResolution(JsonObject? Idea, bool AlreadyResolved, string Action);
 
 /// <summary>
-/// An idea as it is stored, with the revision it is at. A class on purpose: a row that is not there has to be
-/// distinguishable from a row whose fields happen to be null, which a value tuple cannot express.
+/// An idea as it is stored, with the revision it is at. A class on purpose: a document that is not there has to be
+/// distinguishable from one whose fields happen to be null, which a value tuple cannot express.
 /// </summary>
 public sealed record IdeaRow(JsonObject Doc, long Revision);
 
@@ -33,29 +64,29 @@ public sealed record CardAnswer(string Action, string? IdeaId);
 public sealed record CheckMark(string Rev, string State, long Tries, string At, string? Claim);
 
 /// <summary>
-/// The Ideas backlog in SQLite: plugin-owned tables in the host's <c>netpi.db</c>, reached through <c>ctx.Db</c> and
-/// nothing else. One repository, one write path, one transaction per operation.
+/// The Ideas backlog in the store's plugin data: one collection per table, one repository, one write path, one
+/// transaction per operation.
 /// <para>
-/// An idea is one row: a stable id, a monotonically increasing <c>revision</c>, the manual <c>ord</c> (the order the
-/// user arranged), the columns the queries filter on (status, project, order) and <c>doc</c> — the complete idea JSON,
-/// exactly as the JSON backlog held it, with every field this build does not know about. The columns are projections
-/// of <c>doc</c> written in the same statement, so the two cannot drift apart. An idea is still only ever understood as
-/// the document it always was (<see cref="IdeaOps"/> works on <see cref="JsonObject"/>s), which is how a field another
-/// tool wrote by hand survives a save.
+/// An idea is one document: a stable id (the key), a monotonically increasing <c>revision</c>, the manual <c>ord</c>
+/// (the order the user arranged) and the complete idea JSON, exactly as the JSON backlog held it, with every field
+/// this build does not know about. <c>ord</c>, <c>idLower</c> and <c>projectId</c> are the index fields, written at
+/// the top level of the same document in the same operation, so they cannot drift apart from the document they
+/// describe. An idea is still only ever understood as the document it always was (<see cref="IdeaOps"/> works on
+/// <see cref="JsonObject"/>s), which is how a field another tool wrote by hand survives a save.
 /// </para>
 /// <para>
-/// Every method is short and synchronous. The host serializes one connection, so a transaction is held for the length
-/// of a few statements and never across a model call, a file read or anything else that can block.
+/// Every method is short and synchronous. A transaction is held for the length of a few calls and never across a
+/// model call, a file read or anything else that can block.
 /// </para>
 /// </summary>
 public sealed class IdeasRepository
 {
-    /// <summary>The migration scope: a plugin's tables live under their own name in the shared database.</summary>
+    /// <summary>The scope name: what <c>ideas.list</c> and an export say the backlog's data lives under.</summary>
     public const string Scope = "netpi.ideas";
 
     /// <summary>
-    /// The storage shape this build writes. A database at a higher version is refused: a build that does not know a
-    /// column must not read it as "absent" and write it back that way.
+    /// The storage shape this build writes. A newer shape must be read by a newer build: a revision is carried on
+    /// every idea, and a patch that does not know a field leaves it exactly as it was.
     /// </summary>
     public const int SchemaVersion = 2;
 
@@ -65,110 +96,11 @@ public sealed class IdeasRepository
     /// <summary>How long a "this conversation was checked" mark is kept, so one reopened months later is asked again.</summary>
     public const int CheckMarkKeepDays = 30;
 
-    private const string Migration1 = """
-        CREATE TABLE ideas_items (
-            id            TEXT PRIMARY KEY,
-            ord           INTEGER NOT NULL,
-            revision      INTEGER NOT NULL DEFAULT 1,
-            title         TEXT NOT NULL DEFAULT '',
-            status        TEXT NOT NULL DEFAULT 'open',
-            priority      TEXT NOT NULL DEFAULT 'medium',
-            project_id    TEXT,
-            project_name  TEXT,
-            created_at    TEXT,
-            updated_at    TEXT,
-            doc           TEXT NOT NULL
-        );
-        CREATE INDEX ideas_items_order ON ideas_items(ord, id);
-        CREATE INDEX ideas_items_project_status_order ON ideas_items(project_id, status, ord);
-        CREATE INDEX ideas_items_status_order ON ideas_items(status, ord);
-
-        CREATE TABLE ideas_suggestions (
-            id         TEXT PRIMARY KEY,
-            ord        INTEGER NOT NULL,
-            kind       TEXT NOT NULL DEFAULT 'save',
-            session_id TEXT,
-            idea_id    TEXT,
-            project_id TEXT,
-            source_rev INTEGER,
-            title      TEXT NOT NULL DEFAULT '',
-            at         TEXT NOT NULL DEFAULT '',
-            doc        TEXT NOT NULL
-        );
-        CREATE INDEX ideas_suggestions_order ON ideas_suggestions(ord, id);
-        CREATE INDEX ideas_suggestions_idea ON ideas_suggestions(idea_id);
-        CREATE INDEX ideas_suggestions_session ON ideas_suggestions(session_id, kind, title);
-
-        -- One answer per card, kept after the card is gone: a second window, a retry or a restart then reads the
-        -- outcome instead of producing it a second time.
-        CREATE TABLE ideas_resolutions (
-            suggestion_id TEXT PRIMARY KEY,
-            action        TEXT NOT NULL,
-            idea_id       TEXT,
-            at            TEXT NOT NULL DEFAULT ''
-        );
-
-        CREATE TABLE ideas_checks (
-            session_id   TEXT PRIMARY KEY,
-            rev          TEXT NOT NULL DEFAULT '',
-            n            INTEGER NOT NULL DEFAULT 0,
-            state        TEXT NOT NULL DEFAULT 'done',
-            tries        INTEGER NOT NULL DEFAULT 0,
-            at           TEXT NOT NULL DEFAULT '',
-            claim        TEXT,
-            claim_until  INTEGER,
-            error        TEXT
-        );
-        CREATE INDEX ideas_checks_state ON ideas_checks(state);
-
-        CREATE TABLE ideas_repos (
-            repo         TEXT PRIMARY KEY,
-            project_id   TEXT,
-            project_name TEXT,
-            hash         TEXT,
-            at           TEXT NOT NULL DEFAULT '',
-            tries        INTEGER NOT NULL DEFAULT 0,
-            error        TEXT
-        );
-
-        CREATE TABLE ideas_imports (
-            id             TEXT PRIMARY KEY,
-            kind           TEXT NOT NULL DEFAULT 'legacy',
-            source         TEXT NOT NULL DEFAULT '',
-            checksum       TEXT NOT NULL DEFAULT '',
-            schema_version INTEGER NOT NULL DEFAULT 1,
-            counts         TEXT NOT NULL DEFAULT '{}',
-            at             TEXT NOT NULL DEFAULT ''
-        );
-
-        CREATE TABLE ideas_metadata (
-            key   TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        """;
-
-    /// <summary>
-    /// Version 2 (idea-kooctc): a commit the sweep could not decide after its bound of attempts is recorded, so the
-    /// cursor can move past it without silently dropping the commit: it is listed (ideas.unread) and re-readable, and
-    /// later commits of the repository are read instead of being pinned behind it.
-    /// </summary>
-    private const string Migration2 = """
-        CREATE TABLE ideas_unread (
-            repo     TEXT NOT NULL,
-            hash     TEXT NOT NULL,
-            subject  TEXT NOT NULL DEFAULT '',
-            tries    INTEGER NOT NULL DEFAULT 0,
-            error    TEXT,
-            at       TEXT NOT NULL DEFAULT '',
-            PRIMARY KEY (repo, hash)
-        );
-        CREATE INDEX ideas_unread_at ON ideas_unread(at);
-        """;
-
-    private readonly IDatabase _db;
+    private readonly IPluginData _data;
+    private readonly IStorageAccess? _storage;
     private readonly ILogger? _log;
-    private readonly string _databaseName;
     private readonly string? _home;
+    private readonly IDataCollection _items, _cards, _resolutions, _checks, _repos, _imports, _meta, _unread;
 
     /// <summary>
     /// Announced after a write has committed (never before, and never for one that rolled back), so every window
@@ -179,65 +111,66 @@ public sealed class IdeasRepository
 
     private void Announce(string reason) => OnChanged?.Invoke(reason);
 
-    private IdeasRepository(IDatabase db, ILogger? log, string databaseName, string? home)
+    private IdeasRepository(IPluginData data, IStorageAccess? storage, ILogger? log, string? home)
     {
-        _db = db;
+        _data = data;
+        _storage = storage;
         _log = log;
-        _databaseName = databaseName;
         _home = home;
+        // The same plugin id sees the same collections across hot-reload generations, so a swap shares one backlog
+        // instead of two backends (the old code guaranteed the same with one set of tables).
+        _items = data.Collection("items", new CollectionSpec().Text("idLower").Integer("ord").Text("status").Text("projectId"));
+        _cards = data.Collection("cards", new CollectionSpec().Integer("ord").Text("kind").Text("sessionId").Text("ideaId").Text("title"));
+        _resolutions = data.Collection("resolutions", new CollectionSpec());
+        _checks = data.Collection("checks", new CollectionSpec().Text("state").Text("at").Integer("claimUntil"));
+        _repos = data.Collection("repos", new CollectionSpec().Text("at"));
+        _imports = data.Collection("imports", new CollectionSpec());
+        _meta = data.Collection("meta", new CollectionSpec());
+        _unread = data.Collection("unread", new CollectionSpec().Text("at"));
     }
 
     /// <summary>
-    /// Open the backlog: create the tables, and refuse a database written by a newer build. Called once per plugin
-    /// start, so two instances of this plugin (a reload swap) share one set of tables instead of two backends.
+    /// Open the backlog: the collections are created on first ask (idempotent, per plugin id). Called once per plugin
+    /// start.
     /// </summary>
-    public static IdeasRepository Open(IDatabase db, ILogger? log = null, string? databaseFile = null, string? home = null)
-    {
-        ArgumentNullException.ThrowIfNull(db);
-        var repository = new IdeasRepository(db, log, Path.GetFileName(databaseFile ?? "netpi.db"), home);
-        var version = repository.ScopeVersion();
-        if (version > SchemaVersion)
-            throw new IdeasStorageVersionException(
-                $"The Ideas tables in this database are at version {version}, and this build writes version {SchemaVersion}. " +
-                "Update NetPI: an older build must not write a storage it does not understand.");
-        db.Migrate(Scope, Migration1, Migration2);
-        return repository;
-    }
+    public static IdeasRepository Open(IPluginData data, IStorageAccess? storage = null, ILogger? log = null, string? home = null)
+        => new(data, storage, log, home);
 
-    /// <summary>Where this backlog lives, for <c>ideas.list</c> and the UI: a table in the app's database, not a file.</summary>
-    public JsonObject Storage() => new()
+    /// <summary>
+    /// Where this backlog lives, for <c>ideas.list</c> and the UI: the store the collections are in, not a file.
+    /// <c>backend</c> and <c>database</c> come from the store's own info (the kernel's <see cref="IStorageAccess"/>);
+    /// the rest is what this plugin owns.
+    /// </summary>
+    public JsonObject Storage()
     {
-        ["backend"] = "sqlite",
-        ["database"] = _databaseName,
-        ["scope"] = Scope,
-        ["schemaVersion"] = SchemaVersion,
-        ["editableFile"] = false,
-        ["importExport"] = "json",
-    };
-
-    /// <summary>What version this scope's tables are at (0: never migrated; the table itself is created by Migrate).</summary>
-    private int ScopeVersion()
-    {
-        if (_db.Scalar<long?>("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_migrations'") is not > 0) return 0;
-        return _db.Scalar<long?>("SELECT version FROM _migrations WHERE scope = @s", new { s = Scope }) is { } v ? (int)v : 0;
+        var info = _storage?.Info;
+        return new JsonObject
+        {
+            ["backend"] = info?.Provider,
+            ["database"] = info?.Location is { } location ? Path.GetFileName(location) : null,
+            ["scope"] = Scope,
+            ["schemaVersion"] = SchemaVersion,
+            ["editableFile"] = false,
+            ["importExport"] = "json",
+        };
     }
 
     /// <summary>
     /// Run several of these writes as one transaction. The import uses it: the ideas, cards, checks, cursors and the
     /// receipt that accounts for them commit together, or none of them does.
     /// </summary>
-    public T Transaction<T>(Func<IdeasRepository, T> work) => _db.Transaction(_ => work(this));
+    public T Transaction<T>(Func<IdeasRepository, T> work) => _data.Transaction(() => work(this));
 
     // ------------------------------------------------------------------ ideas
 
     /// <summary>Every idea as it is stored, in the user's order (each with the revision an editor submits back).</summary>
     public List<JsonObject> All() =>
-        _db.Query("SELECT doc, revision FROM ideas_items ORDER BY ord, id", null, r => Parse(r.GetString("doc"), r.GetInt64("revision")));
+        _items.Find(new DataQuery().Order("ord")).Select(d => Read(d.Doc)).ToList();
 
-    public int Count() => (int)(_db.Scalar<long?>("SELECT COUNT(*) FROM ideas_items") ?? 0);
+    public int Count() => (int)_items.Count();
 
     /// <summary>The ids in the backlog, for a new id that must not collide with one of them.</summary>
-    public List<string> TakenIds() => _db.Query("SELECT id FROM ideas_items", null, r => r.GetString("id"));
+    public List<string> TakenIds() => _items.Find().Select(d => d.Key).ToList();
 
     /// <summary>
     /// One idea and its revision, or null. The lookup is as forgiving as it has always been: exact, then with the
@@ -248,10 +181,17 @@ public sealed class IdeasRepository
     {
         if (string.IsNullOrWhiteSpace(id)) return null;
         var want = id.Trim();
-        return _db.QuerySingle(
-            "SELECT doc, revision FROM ideas_items WHERE id = @exact OR id = @pref OR lower(id) = lower(@exact) OR lower(id) = lower(@pref) LIMIT 1",
-            new { exact = want, pref = "idea-" + want },
-            r => new IdeaRow(Parse(r.GetString("doc"), r.GetInt64("revision")), r.GetInt64("revision")));
+        var row = ReadItem_(want) ?? ReadItem_("idea-" + want);
+        if (row is null)
+        {
+            // The case-insensitive halves: the id as typed, or with the prefix. idLower is ASCII-folded like the old
+            // lower() was, and compared ordinally, so the two folds agree.
+            var byId = _items.Find(new DataQuery().Eq("idLower", Lower(want)));
+            if (byId.Count > 0) return new IdeaRow(Read(byId[0].Doc), Rev(byId[0].Doc));
+            var byPref = _items.Find(new DataQuery().Eq("idLower", Lower("idea-" + want)));
+            if (byPref.Count > 0) return new IdeaRow(Read(byPref[0].Doc), Rev(byPref[0].Doc));
+        }
+        return row;
     }
 
     /// <summary>One idea as it is stored, or null — for a caller that does not care about the revision.</summary>
@@ -259,33 +199,29 @@ public sealed class IdeasRepository
 
     /// <summary>
     /// Store a new idea at the end of the backlog (or the top of it) and return it with its revision. An idea comes
-    /// in here as a whole document — the cutover and <c>ideas.import</b> bring in files this host did not write — so
-    /// its images are sanitized here, where the home is known, and a stored reference can never name a file outside
-    /// the images directory (idea-w6v48t).
+    /// in here as a whole document — <c>ideas.import</b> brings in documents this host did not write — so its images
+    /// are sanitized here, where the home is known, and a stored reference can never name a file outside the images
+    /// directory (idea-w6v48t).
     /// </summary>
     public (JsonObject Doc, long Revision) Add(JsonObject idea, bool prepend = false)
     {
-        var added = _db.Transaction(_ =>
+        var added = _data.Transaction(() =>
         {
             var doc = (JsonObject)idea.DeepClone();
             var id = IdeaOps.Str(doc["id"]);
             if (string.IsNullOrWhiteSpace(id)) throw new IdeaInputException("An idea needs an id.");
             if (Find(id) is not null) throw new IdeasConflictException($"Idea {id} is already in the backlog.");
             if (doc["images"] is { } images) doc["images"] = IdeaImages.Sanitize(_home, images);
-            var ord = prepend
-                ? _db.Scalar<long?>("SELECT MIN(ord) - 1 FROM ideas_items") ?? 0
-                : _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_items") ?? 0;
-            var (stored, revision) = Insert_(doc, ord);
-            return (WithRevision(stored, revision), revision);
+            PutItem_(id, doc, prepend ? MinOrd() : MaxOrd(), 1);
+            return (WithRevision(doc, 1), 1L);
         });
         Announce("add");
         return added;
     }
 
-
     /// <summary>
     /// Apply a patch and store the result, or store nothing at all. The patch runs on a detached copy, so a patch that
-    /// fails validation (an empty title, an unknown status) leaves neither the database nor any later writer's copy of
+    /// fails validation (an empty title, an unknown status) leaves neither the store nor any later writer's copy of
     /// the idea changed. <paramref name="expectedRevision"/> is the optimistic-concurrency check; without it the write is
     /// last-writer-wins, which is what the agent tool does.
     /// </summary>
@@ -293,7 +229,7 @@ public sealed class IdeasRepository
         string id, JsonObject patch, bool fromUi, string? sessionId = null, long? expectedRevision = null, string? expectedUpdatedAt = null)
     {
         var removedImages = new List<string>();
-        var result = _db.Transaction(_ =>
+        var result = _data.Transaction(() =>
         {
             var current = Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
             var storedId = IdeaOps.Str(current.Doc["id"]) ?? id;
@@ -312,7 +248,7 @@ public sealed class IdeasRepository
             if (changes.Count == 0) return (current.Doc, current.Revision, changes); // nothing changed: no write, no revision
             if (changes.Contains("images")) removedImages = ImagesLeaving(current.Doc, next);
             var revision = current.Revision + 1;
-            Save_(storedId, next, revision);
+            PutItem_(storedId, next, OrdOf(storedId), revision);
             return (WithRevision(next, revision), revision, changes);
         });
         if (result.Item3.Count > 0)
@@ -329,23 +265,25 @@ public sealed class IdeasRepository
     /// <summary>The image references a document no longer carries — the files on disk that should follow them out.</summary>
     private static List<string> ImagesLeaving(JsonObject before, JsonObject after)
     {
-        var kept = new HashSet<string>(
-            (after["images"] as JsonArray ?? []).OfType<JsonObject>()
-                .Select(o => IdeaOps.Str(o["path"]))
-                .Where(p => p is { Length: > 0 }), StringComparer.Ordinal);
-        return (before["images"] as JsonArray ?? []).OfType<JsonObject>()
-            .Select(o => IdeaOps.Str(o["path"]))
-            .Where(p => p is { Length: > 0 } && !kept.Contains(p))
-            .ToList();
+        var kept = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var path in (after["images"] as JsonArray ?? []).OfType<JsonObject>()
+            .Select(o => IdeaOps.Str(o["path"])))
+            if (path is { Length: > 0 }) kept.Add(path);
+        var leaving = new List<string>();
+        foreach (var path in (before["images"] as JsonArray ?? []).OfType<JsonObject>()
+            .Select(o => IdeaOps.Str(o["path"])))
+            if (path is { Length: > 0 } && !kept.Contains(path)) leaving.Add(path);
+        return leaving;
     }
 
     public bool Delete(string? id)
     {
-        var deleted = _db.Transaction(_ =>
+        var deleted = _data.Transaction(() =>
         {
             if (Find(id) is not { } found) return false;
-            _db.Execute("DELETE FROM ideas_items WHERE id = @id", new { id = IdeaOps.Str(found.Doc["id"]) });
-            return true;
+            // A document stored under a key it does not name has no id to delete by (the old WHERE id = NULL matched nothing).
+            if (IdeaOps.Str(found.Doc["id"]) is not { Length: > 0 } storedId) return false;
+            return _items.Delete(storedId);
         });
         if (deleted) Announce("delete");
         return deleted;
@@ -359,9 +297,9 @@ public sealed class IdeasRepository
     public void Reorder(IEnumerable<string> ids)
     {
         var wanted = ids.Where(i => !string.IsNullOrWhiteSpace(i)).Select(i => i.Trim()).ToList();
-        _db.Transaction(_ =>
+        _data.Transaction(() =>
         {
-            var stored = _db.Query("SELECT id FROM ideas_items ORDER BY ord, id", null, r => r.GetString("id"));
+            var stored = _items.Find(new DataQuery().Order("ord")).Select(d => d.Key).ToList();
             var ordered = new List<string>();
             foreach (var want in wanted)
             {
@@ -373,7 +311,12 @@ public sealed class IdeasRepository
             foreach (var id in stored)
                 if (!ordered.Contains(id)) ordered.Add(id);
             for (var i = 0; i < ordered.Count; i++)
-                _db.Execute("UPDATE ideas_items SET ord = @ord WHERE id = @id", new { ord = (long)i, id = ordered[i] });
+            {
+                var doc = _items.Get(ordered[i]);
+                if (doc is null) continue; // gone under a writer: leave the rest as they are
+                PutItem_(ordered[i], Read(doc), i, Rev(doc));
+            }
+            return 0;
         });
         Announce("reorder");
     }
@@ -381,11 +324,32 @@ public sealed class IdeasRepository
     /// <summary>
     /// The open ideas of a project plus the unbound ones (or, with <paramref name="unboundOnly"/>, only the unbound
     /// ones), in backlog order — what the two checks and the recall read, so every decision is offered the same ideas.
+    /// A document without a status is open: the old table gave it a default column, and a comparison never matches a
+    /// field with no value, so the "open" side of the filter is the NotIn and the IsNull together.
     /// </summary>
-    public List<JsonObject> OpenIdeas(string? projectId, bool unboundOnly = false) => _db.Query(
-        "SELECT doc, revision FROM ideas_items WHERE status NOT IN ('done', 'rejected') " +
-        (unboundOnly ? "AND project_id IS NULL " : "AND (project_id IS NULL OR project_id = @p) ") + "ORDER BY ord, id",
-        new { p = projectId }, r => Parse(r.GetString("doc"), r.GetInt64("revision")));
+    public List<JsonObject> OpenIdeas(string? projectId, bool unboundOnly = false)
+    {
+        var rows = new List<DataDoc>();
+        void AddFor(string? project)
+        {
+            foreach (var noStatus in new[] { false, true })
+            {
+                var q = new DataQuery();
+                if (noStatus) q.IsNull("status");
+                else q.NotIn("status", new object?[] { "done", "rejected" });
+                if (project is { Length: > 0 } p) q.Eq("projectId", p);
+                else q.IsNull("projectId");
+                rows.AddRange(_items.Find(q));
+            }
+        }
+        if (unboundOnly || projectId is not { Length: > 0 }) AddFor(null);
+        else { AddFor(null); AddFor(projectId); }
+        return rows
+            .OrderBy(d => Long_(d.Doc["ord"]))
+            .ThenBy(d => d.Key, StringComparer.Ordinal)
+            .Select(d => Read(d.Doc))
+            .ToList();
+    }
 
     /// <summary>The first idea this conversation is recorded on (a <c>sessions</c> entry), or null.</summary>
     public string? IdeaWithSession(string sessionId) => All()
@@ -396,12 +360,13 @@ public sealed class IdeasRepository
     /// <summary>Record that a conversation worked on an idea (a <c>sessions</c> entry, one per conversation).</summary>
     public bool AddSessionEntry(string id, JsonObject entry)
     {
-        var recorded = _db.Transaction(_ =>
+        var recorded = _data.Transaction(() =>
         {
             if (Find(id) is not { } found) return false;
+            var storedId = IdeaOps.Str(found.Doc["id"]) ?? id;
             var next = (JsonObject)found.Doc.DeepClone();
             IdeaOps.AddSessionEntry(next, entry);
-            Save_(IdeaOps.Str(found.Doc["id"])!, next, found.Revision + 1);
+            PutItem_(storedId, next, OrdOf(storedId), found.Revision + 1);
             return true;
         });
         if (recorded) Announce("session-recorded");
@@ -411,13 +376,14 @@ public sealed class IdeasRepository
     /// <summary>Add a conversation to an idea's provenance (the recall's "the user added this idea to that chat").</summary>
     public (JsonObject Doc, long Revision) AddSession(string id, string sessionId)
     {
-        var attached = _db.Transaction(_ =>
+        var attached = _data.Transaction(() =>
         {
             if (Find(id) is not { } found) throw new RpcException("not_found", $"Idea {id} not found");
+            var storedId = IdeaOps.Str(found.Doc["id"]) ?? id;
             var next = (JsonObject)found.Doc.DeepClone();
             IdeaOps.AddSession(next, sessionId);
             var revision = found.Revision + 1;
-            Save_(IdeaOps.Str(found.Doc["id"])!, next, revision);
+            PutItem_(storedId, next, OrdOf(storedId), revision);
             return (WithRevision(next, revision), revision);
         });
         Announce("attach");
@@ -430,15 +396,16 @@ public sealed class IdeasRepository
     /// </summary>
     public List<JsonObject> AddCommitEntries(IEnumerable<string?> ideaIds, JsonObject entry)
     {
-        var fresh = _db.Transaction(_ =>
+        var fresh = _data.Transaction(() =>
         {
             var written = new List<JsonObject>();
             foreach (var id in ideaIds)
             {
                 if (Find(id) is not { } found) continue;
+                var storedId = IdeaOps.Str(found.Doc["id"])!; // the key it was stored under, as the old path assumed
                 var next = (JsonObject)found.Doc.DeepClone();
                 IdeaOps.AddCommitEntry(next, entry);
-                Save_(IdeaOps.Str(found.Doc["id"])!, next, found.Revision + 1);
+                PutItem_(storedId, next, OrdOf(storedId), found.Revision + 1);
                 written.Add(WithRevision(next, found.Revision + 1));
             }
             return written;
@@ -450,7 +417,7 @@ public sealed class IdeasRepository
     /// <summary>Mark an idea done (a card's "done" answer) and return it as stored.</summary>
     public (JsonObject Doc, long Revision) MarkDone(string id)
     {
-        var done = _db.Transaction(_ => MarkDone_(id));
+        var done = _data.Transaction(() => MarkDone_(id));
         Announce("done");
         return done;
     }
@@ -458,22 +425,27 @@ public sealed class IdeasRepository
     private (JsonObject Doc, long Revision) MarkDone_(string id)
     {
         if (Find(id) is not { } found) throw new RpcException("not_found", $"No idea {id}.");
+        var storedId = IdeaOps.Str(found.Doc["id"]) ?? id;
         var next = (JsonObject)found.Doc.DeepClone();
         IdeaOps.ApplyPatch(next, new JsonObject { ["status"] = "done" }, fromUi: true, null, _home);
         var revision = found.Revision + 1;
-        Save_(IdeaOps.Str(found.Doc["id"])!, next, revision);
+        PutItem_(storedId, next, OrdOf(storedId), revision);
         return (WithRevision(next, revision), revision);
     }
 
     // ------------------------------------------------------------------ cards (suggestions)
 
-    public List<JsonObject> Cards() =>
-        _db.Query("SELECT doc FROM ideas_suggestions ORDER BY ord, id", null, r => Parse(r.GetString("doc"), 0));
+    public List<JsonObject> Cards()
+    {
+        var cards = new List<JsonObject>();
+        foreach (var d in _cards.Find(new DataQuery().Order("ord")))
+            if (CardDoc(d.Doc) is { } c) cards.Add(c);
+        return cards;
+    }
 
-    public JsonObject? Card(string? id) => string.IsNullOrWhiteSpace(id) ? null : _db.QuerySingle(
-        "SELECT doc FROM ideas_suggestions WHERE id = @id", new { id = id.Trim() }, r => Parse(r.GetString("doc"), 0));
+    public JsonObject? Card(string? id) => string.IsNullOrWhiteSpace(id) ? null : CardDoc(_cards.Get(id.Trim()));
 
-    public int CardCount() => (int)(_db.Scalar<long?>("SELECT COUNT(*) FROM ideas_suggestions") ?? 0);
+    public int CardCount() => (int)_cards.Count();
 
     /// <summary>
     /// Add a card unless it is one that is already waiting: a "save" card is one per conversation per plan (kind,
@@ -482,36 +454,32 @@ public sealed class IdeasRepository
     /// </summary>
     public bool AddCard(JsonObject card, bool dedupe = true)
     {
-        var added = _db.Transaction(_ =>
+        var added = _data.Transaction(() =>
         {
             var doc = (JsonObject)card.DeepClone();
             var id = IdeaOps.Str(doc["id"]);
             if (string.IsNullOrWhiteSpace(id)) throw new IdeaInputException("A card needs an id.");
             if (Card(id) is not null) return false;
-            var kind = IdeaOps.Str(doc["kind"]) ?? "save";
             var ideaId = IdeaOps.Str(doc["ideaId"]);
             var sessionId = IdeaOps.Str(doc["sessionId"]);
             var title = IdeaOps.Str(doc["title"]) ?? "";
             if (dedupe)
             {
-                if (ideaId is { Length: > 0 })
+                if (ideaId is { Length: > 0 } i)
                 {
-                    if (_db.Scalar<long?>("SELECT COUNT(*) FROM ideas_suggestions WHERE idea_id = @i", new { i = ideaId }) > 0) return false;
+                    if (_cards.Count(new DataQuery().Eq("ideaId", i)) > 0) return false;
                 }
-                else if (_db.Scalar<long?>("SELECT COUNT(*) FROM ideas_suggestions WHERE kind = 'save' AND session_id IS @s AND title = @t", new { s = (object?)sessionId, t = title }) > 0)
+                else
                 {
-                    return false;
+                    // "save" is the kind the old table checked (a card without an idea is the one it dedupes), and
+                    // "session_id IS @s": a card with no session is matched by IS NULL, one with one by equality.
+                    var q = new DataQuery().Eq("kind", "save").Eq("title", title);
+                    if (sessionId is { Length: > 0 } s) q.Eq("sessionId", s);
+                    else q.IsNull("sessionId");
+                    if (_cards.Count(q) > 0) return false;
                 }
             }
-            var ord = _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_suggestions") ?? 0;
-            var project = doc["project"] as JsonObject;
-            _db.Execute(
-                "INSERT INTO ideas_suggestions (id, ord, kind, session_id, idea_id, project_id, source_rev, title, at, doc) " +
-                "VALUES (@id, @ord, @kind, @s, @i, @p, @rev, @t, @at, @doc)", new
-                {
-                    id, ord, kind, s = (object?)sessionId, i = (object?)ideaId, p = (object?)IdeaOps.Str(project?["id"]),
-                    rev = (object?)SourceRevision(doc), t = title, at = IdeaOps.Str(doc["at"]) ?? IdeaOps.Now(), doc = doc.ToJsonString(),
-                });
+            PutCard_(id, doc, MaxCardOrd());
             return true;
         });
         if (added) Announce("card");
@@ -523,66 +491,421 @@ public sealed class IdeasRepository
     private static long? SourceRevision(JsonObject card) =>
         card["ideaRevision"] is JsonValue v && v.TryGetValue<long>(out var n) ? n : null;
 
-    public void RemoveCard(string id) => _db.Execute("DELETE FROM ideas_suggestions WHERE id = @id", new { id });
+    public void RemoveCard(string id) => _cards.Delete(id);
 
-    /// <summary>Restore a card exactly as it was (the import), including fields this build does not know.</summary>
-    public void ImportCard(JsonObject card) => _db.Execute(
-        "INSERT INTO ideas_suggestions (id, ord, kind, session_id, idea_id, project_id, source_rev, title, at, doc) " +
-        "VALUES (@id, @ord, @kind, @s, @i, @p, @rev, @t, @at, @doc) ON CONFLICT(id) DO NOTHING", new
-        {
-            id = IdeaOps.Str(card["id"]), ord = _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_suggestions") ?? 0,
-            kind = IdeaOps.Str(card["kind"]) ?? "save", s = (object?)IdeaOps.Str(card["sessionId"]),
-            i = (object?)IdeaOps.Str(card["ideaId"]), p = (object?)IdeaOps.Str((card["project"] as JsonObject)?["id"]),
-            rev = (object?)SourceRevision(card), t = IdeaOps.Str(card["title"]) ?? "",
-            at = IdeaOps.Str(card["at"]) ?? IdeaOps.Now(), doc = card.ToJsonString(),
-        });
-
-    /// <summary>Restore a per-conversation check mark (the import), as it was left.</summary>
-    public void ImportCheck(string sessionId, JsonObject mark) => _db.Execute(
-        "INSERT INTO ideas_checks (session_id, rev, n, state, tries, at, claim, claim_until, error) " +
-        "VALUES (@id, @rev, @n, @state, @tries, @at, NULL, NULL, @error) ON CONFLICT(session_id) DO NOTHING", new
-        {
-            id = sessionId, rev = IdeaOps.Str(mark["rev"]) ?? "", n = (long)(Number(mark["n"]) ?? 0),
-            // A "running" mark is a claim nobody holds any more once the process is gone: retryable, not blocking for good.
-            state = IdeaOps.Str(mark["state"]) is "running" ? "failed" : (IdeaOps.Str(mark["state"]) ?? "done"),
-            tries = (long)(Number(mark["tries"]) ?? 0), at = IdeaOps.Str(mark["at"]) ?? IdeaOps.Now(),
-            error = (object?)(IdeaOps.Str(mark["state"]) is "running" ? "NetPI stopped before the check finished" : IdeaOps.Str(mark["error"])),
-        });
-
-    /// <summary>Restore a repository cursor (the import).</summary>
-    public void ImportRepo(JsonObject repo) => _db.Execute(
-        "INSERT INTO ideas_repos (repo, project_id, project_name, hash, at, tries, error) VALUES (@r, @p, @n, @h, @at, 0, NULL) ON CONFLICT(repo) DO NOTHING", new
-        {
-            r = IdeaOps.Str(repo["repo"]) ?? IdeaOps.Str(repo["id"]) ?? "", p = (object?)IdeaOps.Str(repo["projectId"]),
-            n = (object?)IdeaOps.Str(repo["projectName"]), h = (object?)IdeaOps.Str(repo["hash"]),
-            at = IdeaOps.Str(repo["at"]) ?? IdeaOps.Now(),
-        });
-
-    /// <summary>Every check mark, for the export.</summary>
-    public List<JsonObject> Checks() => _db.Query("SELECT * FROM ideas_checks ORDER BY session_id", null, r => new JsonObject
+    /// <summary>Restore a card exactly as it was (the import), including fields this build does not know. A card that
+    /// is already here stays as it is.</summary>
+    public void ImportCard(JsonObject card)
     {
-        ["sessionId"] = r.GetString("session_id"), ["rev"] = r.GetString("rev"), ["n"] = r.GetInt64("n"),
-        ["state"] = r.GetString("state"), ["tries"] = r.GetInt64("tries"), ["at"] = r.GetString("at"), ["error"] = r.GetStringOrNull("error"),
-    });
+        if (IdeaOps.Str(card["id"]) is not { Length: > 0 } id) return; // no key: nowhere to put it
+        _cards.Insert(id, CardForm(id, card, MaxCardOrd()));
+    }
 
-    /// <summary>Every repository cursor, for the export.</summary>
-    public List<JsonObject> Repos() => _db.Query("SELECT * FROM ideas_repos ORDER BY repo", null, r => new JsonObject
-    {
-        ["repo"] = r.GetString("repo"), ["projectId"] = r.GetStringOrNull("project_id"), ["projectName"] = r.GetStringOrNull("project_name"),
-        ["hash"] = r.GetStringOrNull("hash"), ["at"] = r.GetString("at"), ["tries"] = r.GetInt64("tries"), ["error"] = r.GetStringOrNull("error"),
-    });
+    /// <summary>Every check mark, for the export (keyed by session, in the old table's order).</summary>
+    public List<JsonObject> Checks() =>
+        _checks.Find()
+            .OrderBy(d => d.Key, StringComparer.Ordinal)
+            .Select(d => new JsonObject
+            {
+                ["sessionId"] = d.Key,
+                ["rev"] = d.Doc["rev"],
+                ["n"] = d.Doc["n"],
+                ["state"] = d.Doc["state"],
+                ["tries"] = d.Doc["tries"],
+                ["at"] = d.Doc["at"],
+                ["error"] = Null(d.Doc, "error"),
+            }).ToList();
 
-    /// <summary>Every recorded answer, for the export.</summary>
-    public List<JsonObject> Resolutions() => _db.Query("SELECT * FROM ideas_resolutions ORDER BY suggestion_id", null, r => new JsonObject
-    {
-        ["suggestionId"] = r.GetString("suggestion_id"), ["action"] = r.GetString("action"),
-        ["ideaId"] = r.GetStringOrNull("idea_id"), ["at"] = r.GetString("at"),
-    });
+    /// <summary>Every repository cursor, for the export (keyed by repository, in the old table's order).</summary>
+    public List<JsonObject> Repos() =>
+        _repos.Find()
+            .OrderBy(d => d.Key, StringComparer.Ordinal)
+            .Select(d => new JsonObject
+            {
+                ["repo"] = d.Key,
+                ["projectId"] = Null(d.Doc, "projectId"),
+                ["projectName"] = Null(d.Doc, "projectName"),
+                ["hash"] = Null(d.Doc, "hash"),
+                ["at"] = d.Doc["at"],
+                ["tries"] = d.Doc["tries"],
+                ["error"] = Null(d.Doc, "error"),
+            }).ToList();
+
+    /// <summary>Every recorded answer, for the export (keyed by card, in the old table's order).</summary>
+    public List<JsonObject> Resolutions() =>
+        _resolutions.Find()
+            .OrderBy(d => d.Key, StringComparer.Ordinal)
+            .Select(d => new JsonObject
+            {
+                ["suggestionId"] = d.Key,
+                ["action"] = d.Doc["action"],
+                ["ideaId"] = Null(d.Doc, "ideaId"),
+                ["at"] = d.Doc["at"],
+            }).ToList();
 
     /// <summary>How a card was answered, if it was.</summary>
-    public CardAnswer? Resolution(string cardId) => _db.QuerySingle(
-        "SELECT action, idea_id FROM ideas_resolutions WHERE suggestion_id = @id", new { id = cardId },
-        r => new CardAnswer(r.GetString("action"), r.GetStringOrNull("idea_id")));
+    public CardAnswer? Resolution(string cardId)
+    {
+        var doc = _resolutions.Get(cardId);
+        if (doc is null) return null;
+        return new CardAnswer(IdeaOps.Str(doc["action"]) ?? "", IdeaOps.Str(doc["ideaId"]));
+    }
+
+    // ------------------------------------------------------------------ checks (the save check's per-conversation state)
+
+    /// <summary>
+    /// Take the check for one conversation revision, or say why not. The claim carries a token and an expiry: a second
+    /// close of an unchanged conversation sees the running claim, and a claim left behind by a plugin that died
+    /// expires and is retried (bounded by the caller's <paramref name="maxTries"/>) instead of blocking that
+    /// conversation forever. The read, the token compare and the write are one transaction, so two closes at once
+    /// cannot both start.
+    /// </summary>
+    public (bool Started, string Reason, string? Token) ClaimCheck(string sessionId, int users, string rev, int maxTries, TimeSpan retryAfter) => _data.Transaction(() =>
+    {
+        var now = DateTimeOffset.UtcNow;
+        var seen = ReadCheck(sessionId);
+        if (seen is { } row && row.Rev == rev)
+        {
+            if (row.State is "done" or "running") return (false, "already", (string?)null);
+            if (row.State == "failed" && row.Tries >= maxTries && Stamp(row.At) is { } at && now - at < retryAfter)
+                return (false, "already", (string?)null);
+        }
+        var token = Ids.Short(10);
+        // The attempts of a revision that is being retried are kept (a check that fails again has to reach its
+        // bound); a revision that is new starts counting again.
+        var existing = _checks.Get(sessionId);
+        var tries = existing is { } old && Str_(old, "rev") == rev ? Long_(old["tries"]) : 0;
+        var mark = new JsonObject
+        {
+            ["rev"] = rev,
+            ["n"] = users,
+            ["state"] = "running",
+            ["tries"] = tries,
+            ["at"] = IdeaOps.Now(),
+            ["claim"] = token,
+            ["claimUntil"] = now.Add(CheckClaimFor).ToUnixTimeMilliseconds(),
+        };
+        _checks.Put(sessionId, mark);
+        // Housekeeping in the same transaction: a mark of a conversation nobody checks any more goes away.
+        _checks.DeleteWhere(new DataQuery().Lt("at", StampOf(now.AddDays(-CheckMarkKeepDays))).Ne("state", "running"));
+        return (true, "started", token);
+    });
+
+    private CheckMark? ReadCheck(string sessionId)
+    {
+        var doc = _checks.Get(sessionId);
+        if (doc is null) return null;
+        return new CheckMark(
+            Str_(doc, "rev") ?? "",
+            Str_(doc, "state") ?? "",
+            Long_(doc["tries"]),
+            Str_(doc, "at") ?? "",
+            Str_(doc, "claim"));
+    }
+
+    /// <summary>
+    /// The outcome of a check. <paramref name="error"/> null means the check <b>ran</b> — "nothing worth keeping" is an
+    /// answer, not a failure — and only a check that could not run leaves the mark retryable. A worker whose claim was
+    /// taken over (it expired and a later close started the check again) cannot overwrite the newer outcome: the token
+    /// compare and the write are one transaction.
+    /// </summary>
+    public bool FinishCheck(string sessionId, string? token, string? error) => _data.Transaction(() =>
+    {
+        var doc = _checks.Get(sessionId);
+        if (doc is null || Str_(doc, "state") != "running") return false; // no mark, or a later close already took it
+        if (token is { Length: > 0 } mine && Str_(doc, "claim") is { Length: > 0 } current && current != mine) return false;
+        doc["state"] = error is null ? "done" : "failed";
+        doc["at"] = IdeaOps.Now();
+        doc["tries"] = Long_(doc["tries"]) + 1;
+        if (error is null) doc.Remove("error");
+        else doc["error"] = Clip(error, 200);
+        doc.Remove("claim");
+        doc.Remove("claimUntil");
+        _checks.Put(sessionId, doc);
+        return true;
+    });
+
+    /// <summary>
+    /// A claim nobody owns any more (the plugin was stopped mid-check): at the next start a "running" mark whose claim
+    /// has expired becomes a retryable failure, not a claim that blocks the conversation for good.
+    /// </summary>
+    public int RecoverExpiredClaims()
+    {
+        var recovered = _data.Transaction(() =>
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var at = IdeaOps.Now();
+            var n = 0;
+            foreach (var d in _checks.Find(new DataQuery().Eq("state", "running").Lt("claimUntil", now)))
+            {
+                var doc = d.Doc;
+                doc["state"] = "failed";
+                doc["at"] = at;
+                doc.Remove("claim");
+                doc.Remove("claimUntil");
+                if (Str_(doc, "error") is null) doc["error"] = "NetPI stopped before the check finished";
+                _checks.Put(d.Key, doc);
+                n++;
+            }
+            return n;
+        });
+        if (recovered > 0) _log?.LogInformation("Ideas: {Count} check claim(s) left behind by a stopped run are retryable again", recovered);
+        return recovered;
+    }
+
+    // ------------------------------------------------------------------ repositories (the commit sweep's cursor)
+
+    public string? LastSeen(string repo) => Str_(_repos.Get(repo), "hash");
+
+    /// <summary>
+    /// Remember a repository's newest read commit, with the project it belongs to. A read that succeeded clears the
+    /// failure state: <c>tries</c> counts the failed attempts at the commit that was just handled, and they do not
+    /// carry over to the next one. A project argument that is absent keeps the one that was stored.
+    /// </summary>
+    public void Remember(string repo, string? hash, string? projectId = null, string? projectName = null) => _data.Transaction(() =>
+    {
+        var doc = _repos.Get(repo) ?? new JsonObject();
+        if (projectId is not null) doc["projectId"] = projectId;
+        if (projectName is not null) doc["projectName"] = projectName;
+        if (hash is not null) doc["hash"] = hash;
+        else doc.Remove("hash"); // a successful read always says which commit it got to
+        doc["at"] = IdeaOps.Now();
+        doc["tries"] = 0;
+        doc.Remove("error");
+        _repos.Put(repo, doc);
+        return 0;
+    });
+
+    /// <summary>
+    /// The failure state of a repository's cursor: how many checks in a row failed at the next commit (0: healthy),
+    /// the last reason and when that was — what the sweep's backoff is computed from (idea-kooctc).
+    /// </summary>
+    public (long Tries, string? Error, string? At)? RepoFailure(string repo)
+    {
+        var doc = _repos.Get(repo);
+        if (doc is null) return null;
+        return (Long_(doc["tries"]), Str_(doc, "error"), Str_(doc, "at"));
+    }
+
+    /// <summary>
+    /// Record that the check on a repository's next commit failed, and return the attempt count. The count grows with
+    /// every failure and is cleared by a successful read (<see cref="Remember"/>), so it is the attempts at this one
+    /// commit: the sweep backs off with it, and a commit that cannot be decided is recorded unread once it reaches its
+    /// bound, instead of blocking every later commit of the repository (idea-kooctc).
+    /// </summary>
+    public int RecordCommitFailure(string repo, string? error) => _data.Transaction(() =>
+    {
+        var doc = _repos.Get(repo);
+        if (doc is { } existing)
+        {
+            var tries = Long_(existing["tries"]) + 1;
+            existing["at"] = IdeaOps.Now();
+            if (error is null) existing.Remove("error");
+            else existing["error"] = Clip(error, 200);
+            _repos.Put(repo, existing);
+            return (int)tries;
+        }
+        var fresh = new JsonObject { ["at"] = IdeaOps.Now(), ["tries"] = 1 };
+        if (error is not null) fresh["error"] = Clip(error, 200);
+        _repos.Put(repo, fresh);
+        return 1;
+    });
+
+    /// <summary>
+    /// Record a commit the sweep could not decide after its bound of attempts: the cursor has moved past it
+    /// (<see cref="Remember"/>), and the record stays, so the commit is seen (ideas.unread, the export) and later
+    /// commits are read instead of being blocked behind it forever (idea-kooctc).
+    /// </summary>
+    public void RecordUnread(string repo, string hash, string? subject, int tries, string? error)
+    {
+        var doc = new JsonObject
+        {
+            ["repo"] = repo,
+            ["hash"] = hash,
+            ["tries"] = tries,
+            ["at"] = IdeaOps.Now(),
+        };
+        if (subject is not null) doc["subject"] = Clip(subject, 200);
+        if (error is not null) doc["error"] = Clip(error, 200);
+        _unread.Put(UnreadKey(repo, hash), doc);
+    }
+
+    /// <summary>Every commit recorded unread, newest first.</summary>
+    public List<JsonObject> Unread() => _unread.Find(new DataQuery().Order("at", true))
+        .Select(d => new JsonObject
+        {
+            ["repo"] = d.Doc["repo"],
+            ["hash"] = d.Doc["hash"],
+            ["subject"] = d.Doc["subject"],
+            ["tries"] = d.Doc["tries"],
+            ["error"] = Null(d.Doc, "error"),
+            ["at"] = d.Doc["at"],
+        }).ToList();
+
+    /// <summary>
+    /// Anchor a repository this plugin has never read at HEAD — and only then. A stored cursor is the progress made
+    /// before a restart, and overwriting it would skip every commit made while NetPI was closed.
+    /// </summary>
+    public void RememberIfAbsent(string repo, string? hash, string? projectId = null, string? projectName = null)
+    {
+        if (hash is not { Length: > 0 }) return;
+        var doc = new JsonObject
+        {
+            ["hash"] = hash,
+            ["at"] = IdeaOps.Now(),
+            ["tries"] = 0,
+        };
+        if (projectId is not null) doc["projectId"] = projectId;
+        if (projectName is not null) doc["projectName"] = projectName;
+        _repos.Insert(repo, doc); // a stored cursor already is the progress: it stays
+    }
+
+    /// <summary>
+    /// Forget repositories nothing has read for a while, so the collection does not grow with deleted projects — and
+    /// the unread records of the repositories that go with them, so the two cannot drift apart.
+    /// </summary>
+    public int ForgetStaleRepos(int keepDays)
+    {
+        var cutoff = StampOf(DateTimeOffset.UtcNow.AddDays(-keepDays));
+        _unread.DeleteWhere(new DataQuery().Lt("at", cutoff));
+        // What is left is cleaned the way the old NOT IN did: an unread record whose repository is gone has no owner,
+        // and the repositories that go are the stale ones. The two collections cannot drift apart.
+        var kept = _repos.Find().Select(d => d.Key).ToHashSet();
+        foreach (var d in _unread.Find())
+            if (!kept.Contains(IdeaOps.Str(d.Doc["repo"]) ?? "")) _unread.Delete(d.Key);
+        return _repos.DeleteWhere(new DataQuery().Lt("at", cutoff));
+    }
+
+    // ------------------------------------------------------------------ imports and metadata
+
+    public string? Meta(string key) => Str_(_meta.Get(key), "value");
+
+    public void SetMeta(string key, string? value)
+    {
+        if (value is null) _meta.Delete(key);
+        else _meta.Put(key, new JsonObject { ["value"] = value });
+    }
+
+    public JsonObject? MetaObject(string key)
+    {
+        var raw = Meta(key);
+        if (raw is not { Length: > 0 }) return null;
+        try { return JsonNode.Parse(raw) as JsonObject; } catch (JsonException) { return null; }
+    }
+
+    /// <summary>Record an import in the caller's transaction: the receipt and the data it accounts for commit together.</summary>
+    public void RecordImport(string id, string kind, string source, string checksum, JsonObject counts, int schemaVersion = SchemaVersion)
+    {
+        _imports.Put(id, new JsonObject
+        {
+            ["kind"] = kind,
+            ["source"] = source,
+            ["checksum"] = checksum,
+            ["schemaVersion"] = (long)schemaVersion,
+            ["counts"] = (JsonObject)counts.DeepClone(),
+            ["at"] = IdeaOps.Now(),
+        });
+    }
+
+    // ------------------------------------------------------------------ the one write path for an idea
+
+    /// <summary>
+    /// Store an idea at a place in the user's order: its document plus the index fields at the top level, so the
+    /// document and what a query sees cannot drift apart. The key is the id; <c>idLower</c> is what the forgiving
+    /// lookup (<see cref="Find"/>) matches case-insensitively on.
+    /// </summary>
+    private void PutItem_(string id, JsonObject doc, long ord, long revision)
+    {
+        var stored = (JsonObject)doc.DeepClone();
+        stored.Remove("revision");
+        stored["revision"] = revision;
+        stored["ord"] = ord;
+        stored["idLower"] = Lower(id);
+        var project = IdeaOps.ProjectOf(doc);
+        if (project is { } p) stored["projectId"] = p.Id;
+        else stored.Remove("projectId"); // unbound: the field is absent, not empty
+        _items.Put(id, stored);
+    }
+
+    /// <summary>The stored document back to the idea it is: the index fields come off, the revision stays (the caller
+    /// reads it and submits it back).</summary>
+    private static JsonObject Read(JsonObject stored)
+    {
+        var doc = (JsonObject)stored.DeepClone();
+        doc.Remove("ord");
+        doc.Remove("idLower");
+        doc.Remove("projectId");
+        return doc;
+    }
+
+    private IdeaRow? ReadItem_(string key)
+    {
+        var doc = _items.Get(key);
+        if (doc is null) return null;
+        return new IdeaRow(Read(doc), Rev(doc));
+    }
+
+    private long OrdOf(string id) => Long_(_items.Get(id)?["ord"]);
+
+    /// <summary>Where a new idea lands: before the first or after the last, in the user's order.</summary>
+    private long MinOrd()
+    {
+        var first = _items.Find(new DataQuery().NotNull("ord").Order("ord").Take(1));
+        return first.Count == 0 ? 0 : Long_(first[0].Doc["ord"]) - 1;
+    }
+
+    private long MaxOrd()
+    {
+        var last = _items.Find(new DataQuery().Order("ord", true).Take(1));
+        return last.Count == 0 ? 0 : Long_(last[0].Doc["ord"]) + 1;
+    }
+
+    private long MaxCardOrd()
+    {
+        var last = _cards.Find(new DataQuery().Order("ord", true).Take(1));
+        return last.Count == 0 ? 0 : Long_(last[0].Doc["ord"]) + 1;
+    }
+
+    /// <summary>A card under its id, with the fields its queries filter on (the old table's projections).</summary>
+    private void PutCard_(string id, JsonObject card, long ord) => _cards.Put(id, CardForm(id, card, ord));
+
+    private static JsonObject CardForm(string id, JsonObject card, long ord)
+    {
+        var doc = new JsonObject { ["doc"] = (JsonObject)card.DeepClone() };
+        doc["ord"] = ord;
+        doc["kind"] = IdeaOps.Str(card["kind"]) ?? "save";
+        doc["title"] = IdeaOps.Str(card["title"]) ?? "";
+        if (IdeaOps.Str(card["sessionId"]) is { } s) doc["sessionId"] = s;
+        if (IdeaOps.Str(card["ideaId"]) is { } i) doc["ideaId"] = i;
+        if (IdeaOps.Str((card["project"] as JsonObject)?["id"]) is { } p) doc["projectId"] = p;
+        if (SourceRevision(card) is { } r) doc["sourceRev"] = r;
+        doc["at"] = IdeaOps.Str(card["at"]) ?? IdeaOps.Now();
+        return doc;
+    }
+
+    private static JsonObject? CardDoc(JsonObject? doc) => doc?["doc"] as JsonObject;
+
+    /// <summary>
+    /// The revision travels with the idea the caller reads, so an editor can submit the version it had. It is a field
+    /// of the stored document and of the one returned — the only bookkeeping that crosses into the idea's own shape.
+    /// </summary>
+    private static JsonObject WithRevision(JsonObject doc, long revision)
+    {
+        doc["revision"] = revision;
+        return doc;
+    }
+
+    /// <summary>How a card was answered, kept after the card is gone. One answer per card: the write is the exclusion.</summary>
+    private void PutResolution_(string cardId, string action, string? ideaId)
+    {
+        var doc = new JsonObject { ["action"] = action, ["at"] = IdeaOps.Now() };
+        if (ideaId is not null) doc["ideaId"] = ideaId;
+        _resolutions.Put(cardId, doc);
+    }
+
+    private static string UnreadKey(string repo, string hash) => repo + "\n" + hash;
+
+    // ------------------------------------------------------------------ answers
 
     /// <summary>
     /// Answer a card in one transaction: check what the card asks against what the user answered, write the idea (a new
@@ -600,7 +923,7 @@ public sealed class IdeasRepository
     /// </summary>
     public CardResolution ResolveCard(string cardId, string action, JsonObject? edit, Action<JsonObject>? afterCommit, bool requireCard)
     {
-        var result = _db.Transaction(_ =>
+        var result = _data.Transaction(() =>
         {
             if (Resolution(cardId) is { } done) // already answered: the same answer, not a second one
                 return new CardResolution(done.IdeaId is { Length: > 0 } id ? Find(id)?.Doc : null, true, done.Action);
@@ -615,43 +938,12 @@ public sealed class IdeasRepository
                 "done" => MarkDone_(IdeaOps.Str(card?["ideaId"]) ?? "").Doc,
                 _ => null,
             };
-            _db.Execute("INSERT INTO ideas_resolutions (suggestion_id, action, idea_id, at) VALUES (@id, @a, @i, @at)",
-                new { id = cardId, a = action, i = (object?)IdeaOps.Str(idea?["id"]), at = IdeaOps.Now() });
+            PutResolution_(cardId, action, IdeaOps.Str(idea?["id"]));
             RemoveCard(cardId);
             return new CardResolution(idea, false, action);
         });
         // Only after the commit: nothing is announced that did not happen.
         if (result.Idea is not null) afterCommit?.Invoke(result.Idea);
-        Announce("answer");
-        return result;
-    }
-
-    /// <summary>
-    /// Finish an answer an older version left in its journal: the entry carries the idea it wrote (with the id and the
-    /// timestamps it had), so the answer is completed exactly as it was meant, once. An idea that is already there is
-    /// not written again, and an id that is taken is given a new one rather than overwriting somebody's idea.
-    /// </summary>
-    public CardResolution FinishLegacyAnswer(string cardId, string action, JsonObject? wanted, string? ideaId)
-    {
-        var result = _db.Transaction(_ =>
-        {
-            if (Resolution(cardId) is { } done) return new CardResolution(done.IdeaId is { Length: > 0 } id ? Idea(id) : null, true, done.Action);
-            JsonObject? idea = null;
-            if (action == "save" && wanted is not null)
-            {
-                var doc = (JsonObject)wanted.DeepClone();
-                var wantedId = IdeaOps.Str(doc["id"]);
-                if (wantedId is not { Length: > 0 } || Find(wantedId) is not null)
-                    doc["id"] = IdeaOps.NewId("idea-", TakenIds(), 6);
-                idea = Insert_(doc, _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_items") ?? 0).Doc;
-            }
-            else if (action == "done" && ideaId is { Length: > 0 })
-                idea = MarkDone_(ideaId).Doc;
-            _db.Execute("INSERT INTO ideas_resolutions (suggestion_id, action, idea_id, at) VALUES (@id, @a, @i, @at)",
-                new { id = cardId, a = action, i = (object?)IdeaOps.Str(idea?["id"]), at = IdeaOps.Now() });
-            RemoveCard(cardId);
-            return new CardResolution(idea, false, action);
-        });
         Announce("answer");
         return result;
     }
@@ -698,261 +990,27 @@ public sealed class IdeasRepository
             ["at"] = IdeaOps.Now(),
             ["seen"] = true,
         });
-        return Insert_(idea, _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_items") ?? 0).Doc;
+        PutItem_(IdeaOps.Str(idea["id"])!, idea, MaxOrd(), 1);
+        return idea; // as the old path returned it: the document it wrote, without the revision the store keeps
     }
 
-    // ------------------------------------------------------------------ checks (the save check's per-conversation state)
+    // ------------------------------------------------------------------ helpers
 
-    /// <summary>
-    /// Take the check for one conversation revision, or say why not. The claim carries a token and an expiry: a second
-    /// close of an unchanged conversation sees the running claim, and a claim left behind by a plugin that died
-    /// expires and is retried (bounded by the caller's <paramref name="maxTries"/>) instead of blocking that
-    /// conversation forever.
-    /// </summary>
-    public (bool Started, string Reason, string? Token) ClaimCheck(string sessionId, int users, string rev, int maxTries, TimeSpan retryAfter) => _db.Transaction<(bool, string, string?)>(_ =>
+    /// <summary>SQLite's lower() folded ASCII only; idLower is compared ordinally, so the fold must match it.</summary>
+    private static string Lower(string s)
     {
-        var now = DateTimeOffset.UtcNow;
-        var seen = _db.QuerySingle("SELECT rev, state, tries, at, claim FROM ideas_checks WHERE session_id = @id", new { id = sessionId },
-            r => new CheckMark(r.GetString("rev"), r.GetString("state"), r.GetInt64("tries"), r.GetString("at"), r.GetStringOrNull("claim")));
-        if (seen is { } row && row.Rev == rev)
-        {
-            if (row.State is "done" or "running") return (false, "already", (string?)null);
-            if (row.State == "failed" && row.Tries >= maxTries && Stamp(row.At) is { } at && now - at < retryAfter)
-                return (false, "already", (string?)null);
-        }
-        var token = Ids.Short(10);
-        _db.Execute(
-            // The attempts of a revision that is being retried are kept (a check that fails again has to reach its
-            // bound); a revision that is new starts counting again.
-            "INSERT INTO ideas_checks (session_id, rev, n, state, tries, at, claim, claim_until, error) " +
-            "VALUES (@id, @rev, @n, 'running', 0, @at, @claim, @until, NULL) " +
-            "ON CONFLICT(session_id) DO UPDATE SET rev = excluded.rev, n = excluded.n, state = 'running', " +
-            "tries = CASE WHEN ideas_checks.rev = excluded.rev THEN ideas_checks.tries ELSE 0 END, " +
-            "at = excluded.at, claim = excluded.claim, claim_until = excluded.claim_until, error = NULL", new
-            {
-                id = sessionId, rev, n = (long)users, at = IdeaOps.Now(), claim = token,
-                until = now.Add(CheckClaimFor).ToUnixTimeMilliseconds(),
-            });
-        // Housekeeping in the same transaction: a mark of a conversation nobody checks any more goes away.
-        _db.Execute("DELETE FROM ideas_checks WHERE at < @cutoff AND state <> 'running'", new { cutoff = StampOf(now.AddDays(-CheckMarkKeepDays)) });
-        return (true, "started", token);
-    });
-
-    /// <summary>
-    /// The outcome of a check. <paramref name="error"/> null means the check <b>ran</b> — "nothing worth keeping" is an
-    /// answer, not a failure — and only a check that could not run leaves the mark retryable. A worker whose claim was
-    /// taken over (it expired and a later close started the check again) cannot overwrite the newer outcome.
-    /// </summary>
-    public bool FinishCheck(string sessionId, string? token, string? error) => _db.Transaction(_ =>
-    {
-        var seen = _db.QuerySingle("SELECT claim, state FROM ideas_checks WHERE session_id = @id", new { id = sessionId },
-            r => (Claim: r.GetStringOrNull("claim"), State: r.GetString("state")));
-        if (seen.State != "running") return false; // no mark, or a later close already took it
-        if (token is { Length: > 0 } mine && seen.Claim is { Length: > 0 } current && current != mine) return false;
-        _db.Execute(
-            "UPDATE ideas_checks SET state = @s, at = @at, tries = tries + 1, error = @e, claim = NULL, claim_until = NULL WHERE session_id = @id",
-            new { id = sessionId, s = error is null ? "done" : "failed", at = IdeaOps.Now(), e = (object?)Clip(error, 200) });
-        return true;
-    });
-
-    /// <summary>
-    /// A claim nobody owns any more (the plugin was stopped mid-check): at the next start a "running" mark whose claim
-    /// has expired becomes a retryable failure, not a claim that blocks the conversation for good.
-    /// </summary>
-    public int RecoverExpiredClaims()
-    {
-        var recovered = _db.Execute(
-            "UPDATE ideas_checks SET state = 'failed', claim = NULL, claim_until = NULL, at = @at, " +
-            "error = COALESCE(error, 'NetPI stopped before the check finished') " +
-            "WHERE state = 'running' AND claim_until IS NOT NULL AND claim_until < @now",
-            new { now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), at = IdeaOps.Now() });
-        if (recovered > 0) _log?.LogInformation("Ideas: {Count} check claim(s) left behind by a stopped run are retryable again", recovered);
-        return recovered;
+        var chars = s.Select(c => c is >= 'A' and <= 'Z' ? (char)(c + 32) : c).ToArray();
+        return new string(chars);
     }
 
-    // ------------------------------------------------------------------ repositories (the commit sweep's cursor)
+    private static string? Str_(JsonObject? doc, string field) => doc is null ? null : IdeaOps.Str(doc[field]);
 
-    public string? LastSeen(string repo) =>
-        _db.QuerySingle("SELECT hash FROM ideas_repos WHERE repo = @r", new { r = repo }, x => x.GetStringOrNull("hash"));
+    private static long Long_(JsonNode? n) => n is JsonValue v && v.TryGetValue<long>(out var l) ? l : 0;
 
-    /// <summary>
-    /// Remember a repository's newest read commit, with the project it belongs to. A read that succeeded clears the
-    /// failure state: <c>tries</c> counts the failed attempts at the commit that was just handled, and they do not
-    /// carry over to the next one.
-    /// </summary>
-    public void Remember(string repo, string? hash, string? projectId = null, string? projectName = null) => _db.Execute(
-        "INSERT INTO ideas_repos (repo, project_id, project_name, hash, at, tries, error) VALUES (@r, @p, @n, @h, @at, 0, NULL) " +
-        "ON CONFLICT(repo) DO UPDATE SET project_id = COALESCE(excluded.project_id, ideas_repos.project_id), " +
-        "project_name = COALESCE(excluded.project_name, ideas_repos.project_name), hash = excluded.hash, at = excluded.at, " +
-        "tries = 0, error = NULL",
-        new { r = repo, p = (object?)projectId, n = (object?)projectName, h = (object?)hash, at = IdeaOps.Now() });
+    private static long Rev(JsonObject doc) => doc["revision"] is JsonValue v && v.TryGetValue<long>(out var r) ? r : 1;
 
-    /// <summary>
-    /// The failure state of a repository's cursor: how many checks in a row failed at the next commit (0: healthy),
-    /// the last reason and when that was — what the sweep's backoff is computed from (idea-kooctc).
-    /// </summary>
-    public (long Tries, string? Error, string? At)? RepoFailure(string repo) =>
-        _db.QuerySingle("SELECT tries, error, at FROM ideas_repos WHERE repo = @r", new { r = repo },
-            r => (r.GetInt64("tries"), r.GetStringOrNull("error"), r.GetStringOrNull("at")));
-
-    /// <summary>
-    /// Record that the check on a repository's next commit failed, and return the attempt count. The count grows with
-    /// every failure and is cleared by a successful read (<see cref="Remember"/>), so it is the attempts at this one
-    /// commit: the sweep backs off with it, and a commit that cannot be decided is recorded unread once it reaches its
-    /// bound, instead of blocking every later commit of the repository (idea-kooctc).
-    /// </summary>
-    public int RecordCommitFailure(string repo, string? error)
-    {
-        var tries = _db.Scalar<long?>("SELECT tries FROM ideas_repos WHERE repo = @r", new { r = repo }) ?? 0;
-        _db.Execute(
-            "INSERT INTO ideas_repos (repo, project_id, project_name, hash, at, tries, error) VALUES (@r, NULL, NULL, NULL, @at, 1, @e) " +
-            "ON CONFLICT(repo) DO UPDATE SET at = excluded.at, tries = ideas_repos.tries + 1, error = excluded.error",
-            new { r = repo, at = IdeaOps.Now(), e = (object?)Clip(error, 200) });
-        return (int)tries + 1;
-    }
-
-    /// <summary>
-    /// Record a commit the sweep could not decide after its bound of attempts: the cursor has moved past it
-    /// (<see cref="Remember"/>), and the record stays, so the commit is seen (ideas.unread, the export) and later
-    /// commits are read instead of being blocked behind it forever (idea-kooctc).
-    /// </summary>
-    public void RecordUnread(string repo, string hash, string? subject, int tries, string? error) => _db.Execute(
-        "INSERT INTO ideas_unread (repo, hash, subject, tries, error, at) VALUES (@r, @h, @s, @t, @e, @at) " +
-        "ON CONFLICT(repo, hash) DO UPDATE SET subject = excluded.subject, tries = excluded.tries, error = excluded.error, at = excluded.at",
-        new { r = repo, h = hash, s = (object?)Clip(subject, 200), t = (long)tries, e = (object?)Clip(error, 200), at = IdeaOps.Now() });
-
-    /// <summary>Every commit recorded unread, newest first.</summary>
-    public List<JsonObject> Unread() => _db.Query(
-        "SELECT repo, hash, subject, tries, error, at FROM ideas_unread ORDER BY at DESC, repo, hash", null, r => new JsonObject
-        {
-            ["repo"] = r.GetString("repo"), ["hash"] = r.GetString("hash"), ["subject"] = r.GetString("subject"),
-            ["tries"] = r.GetInt64("tries"), ["error"] = r.GetStringOrNull("error"), ["at"] = r.GetString("at"),
-        });
-
-    /// <summary>
-    /// Anchor a repository this plugin has never read at HEAD — and only then. A stored cursor is the progress made
-    /// before a restart, and overwriting it would skip every commit made while NetPI was closed.
-    /// </summary>
-    public void RememberIfAbsent(string repo, string? hash, string? projectId = null, string? projectName = null)
-    {
-        if (hash is not { Length: > 0 }) return;
-        _db.Execute(
-            "INSERT INTO ideas_repos (repo, project_id, project_name, hash, at, tries, error) VALUES (@r, @p, @n, @h, @at, 0, NULL) ON CONFLICT(repo) DO NOTHING",
-            new { r = repo, p = (object?)projectId, n = (object?)projectName, h = hash, at = IdeaOps.Now() });
-    }
-
-    /// <summary>
-    /// Forget repositories nothing has read for a while, so the table does not grow with deleted projects — and the
-    /// unread records of the repositories that go with them, so the two tables cannot drift apart.
-    /// </summary>
-    public int ForgetStaleRepos(int keepDays)
-    {
-        var cutoff = StampOf(DateTimeOffset.UtcNow.AddDays(-keepDays));
-        _db.Execute("DELETE FROM ideas_unread WHERE at < @cutoff", new { cutoff });
-        _db.Execute("DELETE FROM ideas_unread WHERE repo NOT IN (SELECT repo FROM ideas_repos)");
-        return _db.Execute("DELETE FROM ideas_repos WHERE at < @cutoff", new { cutoff });
-    }
-
-    // ------------------------------------------------------------------ imports and metadata
-
-    public string? Meta(string key) =>
-        _db.QuerySingle("SELECT value FROM ideas_metadata WHERE key = @k", new { k = key }, r => r.GetString("value"));
-
-    public void SetMeta(string key, string? value)
-    {
-        if (value is null) _db.Execute("DELETE FROM ideas_metadata WHERE key = @k", new { k = key });
-        else _db.Execute("INSERT INTO ideas_metadata (key, value) VALUES (@k, @v) ON CONFLICT(key) DO UPDATE SET value = excluded.value", new { k = key, v = value });
-    }
-
-    public JsonObject? MetaObject(string key)
-    {
-        var raw = Meta(key);
-        if (raw is not { Length: > 0 }) return null;
-        try { return JsonNode.Parse(raw) as JsonObject; } catch (JsonException) { return null; }
-    }
-
-    /// <summary>Whether an import was committed before (a restart must not import the same source twice).</summary>
-    public bool HasImport(string id, string? checksum = null)
-    {
-        var found = _db.Scalar<string?>("SELECT checksum FROM ideas_imports WHERE id = @id", new { id });
-        return found is not null && (checksum is null || found == checksum);
-    }
-
-    /// <summary>Record an import in the caller's transaction: the receipt and the data it accounts for commit together.</summary>
-    public void RecordImport(string id, string kind, string source, string checksum, JsonObject counts, int schemaVersion = SchemaVersion) =>
-        _db.Execute(
-            "INSERT INTO ideas_imports (id, kind, source, checksum, schema_version, counts, at) VALUES (@id, @k, @s, @c, @v, @n, @at) " +
-            "ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, source = excluded.source, checksum = excluded.checksum, " +
-            "schema_version = excluded.schema_version, counts = excluded.counts, at = excluded.at",
-            new { id, k = kind, s = source, c = checksum, v = (long)schemaVersion, n = counts.ToJsonString(), at = IdeaOps.Now() });
-
-    public List<JsonObject> Imports() => _db.Query("SELECT id, kind, source, checksum, schema_version, at FROM ideas_imports ORDER BY at, id", null, r => new JsonObject
-    {
-        ["id"] = r.GetString("id"),
-        ["kind"] = r.GetString("kind"),
-        ["source"] = r.GetString("source"),
-        ["checksum"] = r.GetString("checksum"),
-        ["schemaVersion"] = r.GetInt64("schema_version"),
-        ["at"] = r.GetString("at"),
-    });
-
-    // ------------------------------------------------------------------ the one write path for an idea
-
-    private static readonly JsonDocumentOptions ReadOptions = new() { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip };
-
-    /// <summary>Insert a document at a place in the order, and read every projected column back out of it.</summary>
-    private (JsonObject Doc, long Revision) Insert_(JsonObject doc, long ord)
-    {
-        _db.Execute(
-            "INSERT INTO ideas_items (id, ord, revision, title, status, priority, project_id, project_name, created_at, updated_at, doc) " +
-            "VALUES (@id, @ord, 1, @title, @status, @priority, @pid, @pname, @created, @updated, @doc)", new
-            {
-                id = IdeaOps.Str(doc["id"]), ord, title = IdeaOps.Str(doc["title"]) ?? "", status = IdeaOps.Str(doc["status"]) ?? "open",
-                priority = IdeaOps.Str(doc["priority"]) ?? "medium", pid = (object?)IdeaOps.ProjectOf(doc)?.Id,
-                pname = (object?)IdeaOps.ProjectOf(doc)?.Name, created = (object?)IdeaOps.Str(doc["createdAt"]),
-                updated = (object?)IdeaOps.Str(doc["updatedAt"]), doc = DocText(doc),
-            });
-        return (doc, 1);
-    }
-
-    /// <summary>The same document at a new revision; the order is the user's, and a patch does not change it.</summary>
-    private void Save_(string id, JsonObject doc, long revision) => _db.Execute(
-        "UPDATE ideas_items SET revision = @revision, title = @title, status = @status, priority = @priority, " +
-        "project_id = @pid, project_name = @pname, created_at = @created, updated_at = @updated, doc = @doc WHERE id = @id", new
-        {
-            id, revision, title = IdeaOps.Str(doc["title"]) ?? "", status = IdeaOps.Str(doc["status"]) ?? "open",
-            priority = IdeaOps.Str(doc["priority"]) ?? "medium", pid = (object?)IdeaOps.ProjectOf(doc)?.Id,
-            pname = (object?)IdeaOps.ProjectOf(doc)?.Name, created = (object?)IdeaOps.Str(doc["createdAt"]),
-            updated = (object?)IdeaOps.Str(doc["updatedAt"]), doc = DocText(doc),
-        });
-
-    private static JsonObject Parse(string json, long revision) =>
-        WithRevision(JsonNode.Parse(json, documentOptions: ReadOptions) as JsonObject ?? [], revision);
-
-    /// <summary>
-    /// The revision travels with the idea the caller reads, so an editor can submit the version it had. The stored
-    /// document itself never carries it: it is a column, not content (see <see cref="DocText"/>).
-    /// </summary>
-    private static JsonObject WithRevision(JsonObject doc, long revision)
-    {
-        doc["revision"] = revision;
-        return doc;
-    }
-
-    /// <summary>The document as it is stored: the idea's own fields, without the projection the caller read it with.</summary>
-    private static string DocText(JsonObject doc)
-    {
-        var copy = (JsonObject)doc.DeepClone();
-        copy.Remove("revision");
-        return copy.ToJsonString();
-    }
-
-    private static long? Number(JsonNode? n) => n switch
-    {
-        JsonValue v when v.TryGetValue<long>(out var l) => l,
-        JsonValue v when v.TryGetValue<double>(out var d) => (long)d,
-        _ => null,
-    };
+    /// <summary>An explicit JSON null where the old column was NULL: the export lists read it back the same way.</summary>
+    private static JsonNode? Null(JsonObject doc, string field) => doc[field] is { } v ? v : JsonValue.Create((string?)null);
 
     private static string StampOf(DateTimeOffset when) =>
         when.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);

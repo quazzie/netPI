@@ -14,7 +14,9 @@ internal static class PluginLoadTest
 
         protected override Assembly? Load(AssemblyName name)
         {
-            if (name.Name == "NetPI.Abstractions") return null; // shared contracts from the default context
+            // Both contract assemblies are in the default context (the host preloads the second one by path), so a
+            // plugin resolves the same Type for them and never carries a private copy.
+            if (name.Name is "NetPI.Abstractions" or "NetPI.Contracts") return null;
             var path = _resolver.ResolveAssemblyToPath(name);
             return path is null ? null : LoadFromAssemblyPath(path);
         }

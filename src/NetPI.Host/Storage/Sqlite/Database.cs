@@ -26,6 +26,9 @@ internal sealed unsafe class Database : IDisposable
 
     public string FilePath { get; }
 
+    /// <summary>True while a transaction is open on this connection (it is the caller's own when the caller is inside one: the gate is re-entrant).</summary>
+    internal bool InTransaction { get { lock (_gate) return _txDepth > 0; } }
+
     public Database(string filePath, ILogger? log = null)
     {
         _log = log;
@@ -96,7 +99,7 @@ internal sealed unsafe class Database : IDisposable
         }
     }
 
-    public List<T> Query<T>(string sql, object? args, Func<IDbRow, T> map)
+    public List<T> Query<T>(string sql, object? args, Func<ISqlRow, T> map)
     {
         ArgumentNullException.ThrowIfNull(map);
         List<RowSnapshot>? rows = null;
@@ -109,7 +112,7 @@ internal sealed unsafe class Database : IDisposable
         return list;
     }
 
-    public T? QuerySingle<T>(string sql, object? args, Func<IDbRow, T> map)
+    public T? QuerySingle<T>(string sql, object? args, Func<ISqlRow, T> map)
     {
         ArgumentNullException.ThrowIfNull(map);
         List<RowSnapshot>? rows = null;
@@ -508,7 +511,7 @@ internal sealed unsafe class Database : IDisposable
     }
 
     /// <summary>A row's values, copied: strings and blobs are already fresh, so it stays valid after the lock is gone.</summary>
-    private sealed class RowSnapshot(string[] names, Dictionary<string, int> ordinals, object?[] values, string sql) : IDbRow
+    private sealed class RowSnapshot(string[] names, Dictionary<string, int> ordinals, object?[] values, string sql) : ISqlRow
     {
         public int FieldCount => values.Length;
 
@@ -544,7 +547,7 @@ internal sealed unsafe class Database : IDisposable
         };
     }
 
-    private sealed class Row(Statement st, string sql) : IDbRow
+    private sealed class Row(Statement st, string sql) : ISqlRow
     {
         /// <summary>The statement this row belongs to: its column names and ordinals, for a snapshot.</summary>
         internal Statement Statement => st;

@@ -123,7 +123,7 @@ public interface ISessionRepository
     /// <summary>
     /// Pinned first, then <c>UpdatedAt</c> descending, then id descending. <see cref="SessionQuery.Search"/> is a substring match on the title,
     /// case-insensitive for ASCII, with <c>%</c>, <c>_</c> and <c>\</c> taken literally. <see cref="SessionQuery.ProjectId"/> of "" means "no project".
-    /// <see cref="SessionQuery.AttachedKey"/> keeps the sessions whose <c>Meta[key]</c> is the string <see cref="SessionQuery.AttachedValue"/>.
+    /// <see cref="SessionQuery.AttachedKey"/> keeps the sessions whose <c>Meta[key]</c> is the string <see cref="SessionQuery.AttachedValue"/>: an empty key is no filter, and a key with no value matches nothing.
     /// <c>Limit</c> is clamped to 1..5000 (0 or less means 100).
     /// </summary>
     IReadOnlyList<SessionInfo> ListSessions(SessionQuery query);
@@ -141,7 +141,7 @@ public interface ISessionRepository
     /// Store the message: <c>Id</c> is allocated from one sequence for the whole store (ids are never reused and never shared between
     /// sessions), <c>Seq</c> is the session's highest plus one (1 for the first). Both are set on <paramref name="message"/>, which is returned.
     /// </summary>
-    ChatMessage AppendMessage(ChatMessage message);
+    ChatMessage AppendMessage(ChatMessage message);   // a session that does not exist: KeyNotFoundException
     /// <summary>Bookkeeping of an append: <c>UpdatedAt</c> = at, <c>MessageCount</c> + 1, <c>Title</c> = title.</summary>
     void RecordAppend(string sessionId, DateTimeOffset at, string title);
     /// <summary>Rewrite role, parts, provider, model, stop reason, usage, duration, compacted and meta of the message with that id; false when missing.</summary>
@@ -157,11 +157,15 @@ public interface ISessionRepository
     (IReadOnlyList<ChatMessage> Rows, long Newest) ReadContext(string sessionId);
     /// <summary>Mark every message of the session with <c>Seq</c> &lt;= <paramref name="upToSeq"/> compacted.</summary>
     void MarkCompacted(string sessionId, long upToSeq);
-    /// <summary>Copy the messages with <c>Seq</c> &lt;= <paramref name="upToSeq"/> into another existing session: same seq, time, parts, usage, flags and meta, new ids. The count.</summary>
+    /// <summary>
+    /// Copy the messages with <c>Seq</c> &lt;= <paramref name="upToSeq"/> into another existing session: same seq, time, parts, usage, flags and meta, new ids. The
+    /// count (0 when there is nothing to copy). A target that does not exist, or that already holds one of these seqs, throws and copies nothing.
+    /// </summary>
     int CopyMessages(string fromSessionId, string toSessionId, long upToSeq);
     IReadOnlyList<MessageStub> MessageStubs(string sessionId);
     /// <summary>Make exactly the messages with these seqs compacted and every other message of the session not.</summary>
     void SetCompacted(string sessionId, IReadOnlySet<long> compactedSeqs);
+    /// <summary>Replace the meta of the message with that id; a message that does not exist is a no-op, like the other single-row updates (<see cref="TouchProject"/>, <see cref="RecordAppend"/>).</summary>
     void UpdateMessageMeta(long id, JsonObject? meta);
 }
 
@@ -228,19 +232,19 @@ public sealed class DataQuery
 public sealed record DataDoc(string Key, JsonObject Doc);
 
 /// <summary>
-/// A named set of JSON documents, each under a string key (ordinal, case-sensitive). What comes back is the caller's own copy.
+/// A named set of JSON documents, each under a non-empty string key (ordinal, case-sensitive; compared by UTF-16 code unit, so keys outside the Basic Multilingual Plane may order differently between providers). What comes back is the caller's own copy.
 /// Calls outside <see cref="IPluginData.Transaction{T}"/> are each atomic.
 /// </summary>
 public interface IDataCollection
 {
     string Name { get; }
     JsonObject? Get(string key);
-    /// <summary>Insert or replace.</summary>
+    /// <summary>Insert or replace. A document whose value in a declared index field is not of that field's type is refused (<see cref="ArgumentException"/>) and nothing is stored.</summary>
     void Put(string key, JsonObject doc);
     /// <summary>Insert only: false, and nothing written, when the key exists.</summary>
     bool Insert(string key, JsonObject doc);
     bool Delete(string key);
-    /// <summary>The matching documents in the query's order. Filters and order may name index fields only (anything else throws <see cref="ArgumentException"/>).</summary>
+    /// <summary>The matching documents in the query's order (key ascending, ordinal, when it names none). Filters and order may name index fields only (anything else throws <see cref="ArgumentException"/>).</summary>
     IReadOnlyList<DataDoc> Find(DataQuery? query = null);
     long Count(DataQuery? query = null);
     /// <summary>The sum of an Integer or Real index field over the matching documents (0 when none; documents with no value add nothing).</summary>

@@ -68,7 +68,7 @@ public static class PluginTests
             Check.Equal("v1|test.sample|1|1", Inspect(server));
             Check.Equal("hello v1", await HttpGetAsync(server, "/api/p/test.sample/hello"));
             Check.Contains(await HttpGetAsync(server, "/plugins/test.sample/ui.js", auth: false), "sample plugin");
-            Check.Equal(1L, server.Kernel.Db.Scalar<long>("SELECT COUNT(*) FROM sample_items"));
+            Check.Equal(1L, server.Kernel.Storage.Plugins.For("test.sample").Collection("sample_items", new CollectionSpec().Text("variant")).Count());
             Check.Contains(await PingAsync(server), "\"version\":\"v1\"");
             Check.Equal("test.sample", server.Kernel.Rpc.List().Single(m => m.Method == "sample.value").PluginId);
         });
@@ -102,7 +102,7 @@ public static class PluginTests
             Check.Equal("hello v2", await HttpGetAsync(server, "/api/p/test.sample/hello"));
             Check.Contains(await PingAsync(server), "\"version\":\"v2\"");
             Check.False(tabVersion == TabVersion(server), "UI version changes on reload");
-            Check.Equal(2L, server.Kernel.Db.Scalar<long>("SELECT COUNT(*) FROM sample_items"));
+            Check.Equal(2L, server.Kernel.Storage.Plugins.For("test.sample").Collection("sample_items", new CollectionSpec().Text("variant")).Count());
 
             await Wait.UntilAsync(() => server.Kernel.Plugins.GetLoadState("test.sample").LastUnloadCollected is not null, "unload check finished", 30_000);
             Check.Equal(true, server.Kernel.Plugins.GetLoadState("test.sample").LastUnloadCollected, "host reports the old context collected");

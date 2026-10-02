@@ -130,7 +130,11 @@ internal sealed class SessionService : ISessionStore
         var (affected, now) = _repo.Atomic(r =>
         {
             if (r.GetProject(id) is null) throw new KeyNotFoundException($"Project {id} not found");
-            var detached = r.ListSessions(new SessionQuery { ProjectId = id, IncludeSubagents = true, IncludeArchived = true, Limit = 5000 }).ToList();
+            var detached = new List<SessionInfo>();
+            for (var page = r.ListSessions(new SessionQuery { ProjectId = id, IncludeSubagents = true, IncludeArchived = true, Limit = 5000 });
+                 page.Count > 0;
+                 page = page.Count < 5000 ? [] : r.ListSessions(new SessionQuery { ProjectId = id, IncludeSubagents = true, IncludeArchived = true, Limit = 5000, Offset = detached.Count }))
+                detached.AddRange(page);
             var stamp = Now();
             r.ClearProject(id, stamp);
             r.DeleteProject(id);
@@ -181,8 +185,8 @@ internal sealed class SessionService : ISessionStore
         if (q.ArchivedOnly) { if (!s.Archived) return false; }
         else if (!q.IncludeArchived && s.Archived) return false;
         if (!string.IsNullOrWhiteSpace(q.Search) && !s.Title.Contains(q.Search.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
-        if (q.AttachedKey is { Length: > 0 } key && q.AttachedValue is not null
-            && !(s.Meta?[key] is JsonValue v && v.TryGetValue<string>(out var text) && text == q.AttachedValue)) return false;
+        if (q.AttachedKey is { Length: > 0 } key
+            && !(q.AttachedValue is not null && s.Meta?[key] is JsonValue v && v.TryGetValue<string>(out var text) && text == q.AttachedValue)) return false;
         return true;
     }
 
@@ -477,7 +481,7 @@ internal sealed class SessionService : ISessionStore
         var (read, newest) = _repo.ReadContext(sessionId);
         var rows = read.ToList();
         if (rows.Count > ContextCacheMaxMessages) return rows;      // too big to be worth retaining
-        if (rows.Count > 0 && rows[^1].Seq != newest) return rows;  // a message landed during the read: do not cache a view without it
+        if (rows.Count == 0 ? newest != 0 : rows[^1].Seq != newest) return rows;  // a message landed during the read: do not cache a view without it
         lock (_contextLock)
         {
             // Only fill an empty slot: if an append extended the cache while this read ran, that entry knows more.
@@ -554,16 +558,15 @@ internal sealed class SessionService : ISessionStore
     public void DeclareForkReset(params string[] keys)
     {
         ArgumentNullException.ThrowIfNull(keys);
-        string? json = null;
+        // Written inside the lock: two declarations racing must not leave the smaller set stored last.
+        // Remembered even if the plugin is absent at the next fork: the key is dropped whether or not its owner is loaded.
         lock (_forkResetLock)
         {
             var added = false;
             foreach (var key in keys)
                 if (!string.IsNullOrWhiteSpace(key)) added |= _forkReset.Add(key.Trim());
-            if (added) json = new JsonArray(_forkReset.Order(StringComparer.Ordinal).Select(k => (JsonNode?)JsonValue.Create(k)).ToArray()).ToJsonString();
+            if (added) _values.Set(ForkResetKeysValue, new JsonArray(_forkReset.Order(StringComparer.Ordinal).Select(k => (JsonNode?)JsonValue.Create(k)).ToArray()).ToJsonString());
         }
-        // Remembered even if the plugin is absent at the next fork: the key is dropped whether or not its owner is loaded.
-        if (json is not null) _values.Set(ForkResetKeysValue, json);
     }
 
     /// <summary>The meta keys a fork drops: the core's own and every key a plugin has ever declared.</summary>

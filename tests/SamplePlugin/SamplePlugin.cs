@@ -48,8 +48,9 @@ public sealed class SamplePlugin : INetPiPlugin
         var temporary = context.Services.Register<IPromptSection>(new Section());
         temporary.Dispose();
 
-        context.Db.Migrate("test.sample", "CREATE TABLE sample_items (id INTEGER PRIMARY KEY, name TEXT NOT NULL, variant TEXT)");
-        context.Db.Insert("INSERT INTO sample_items(name, variant) VALUES(@name, @variant)", new { name = "started", variant = Value });
+        // A plugin's own data: a named collection in the plugin's storage, which outlives every reload of the plugin.
+        var items = context.Data.Collection("sample_items", new CollectionSpec().Text("variant"));
+        items.Put(Guid.NewGuid().ToString("N"), new System.Text.Json.Nodes.JsonObject { ["name"] = "started", ["variant"] = Value });
 
         _ = Task.Run(async () =>
         {

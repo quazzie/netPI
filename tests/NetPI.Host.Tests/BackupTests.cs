@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
 using NetPI.Backup;
-using NetPI.Host.Data;
+using NetPI.Host.Storage.Sqlite;
 using NetPI.Host.Plugins;
 
 namespace NetPI.Host.Tests;
@@ -78,118 +78,80 @@ public static class BackupTests
     }
 
     /// <summary>
-    /// The ideas backlog, the cards waiting for an answer and the commit cursors are plugin-owned tables in
-    /// <c>netpi.db</c>, so they travel inside the consistent database snapshot: restoring a snapshot into a fresh home
-    /// and querying the real ideas rows is what shows they came back (docs/plans/2026-09-29-ideas-sqlite-migration.md,
-    /// assignment D). An older snapshot that still carries the ideas files restores exactly what it has.
+    /// A plugin's data lives in the storage provider, so it travels inside the provider's consistent snapshot: restoring a snapshot into a
+    /// fresh home and reading the collection back is what shows it came back. A snapshot whose manifest names no provider is refused: it
+    /// was written by a build that stored things differently, and only that build restores it.
     /// </summary>
     private static async Task BackupIdeasRoundTrip(TestRunner r)
     {
-        r.Add("backup: the SQLite-backed ideas backlog, its cards and its cursors are in the snapshot and come back", async () =>
+        r.Add("backup: a plugin's collections are in the snapshot, the manifest names the provider, and they come back on restore", async () =>
         {
-            var home = T.TempDir("backup-ideas");
+            var home = T.TempDir("backup-data");
             await using var kernel = HostKernel.Create(new NetPiServerOptions { Home = home, ConsoleLogging = false });
             var scope = new PluginScope("netpi.backup", kernel.Log);
             var ctx = new PluginContext(kernel, "netpi.backup", home, scope, default, () => "test");
             var plugin = new BackupPlugin();
             kernel.Settings.Set("backup.enabled", JsonValue.Create(false));
 
-            // The backlog as the ideas plugin stores it: a table, an id, a revision and the document.
-            foreach (var statement in new[]
-            {
-                "CREATE TABLE ideas_items (id TEXT PRIMARY KEY, ord INTEGER NOT NULL, revision INTEGER NOT NULL," +
-                    " title TEXT NOT NULL, status TEXT NOT NULL, priority TEXT NOT NULL, project_id TEXT, project_name TEXT," +
-                    " created_at TEXT, updated_at TEXT, doc TEXT NOT NULL)",
-                """INSERT INTO ideas_items VALUES ('idea-keep01', 0, 1, 'Keep me', 'open', 'medium', NULL, NULL,""" +
-                    """ '2026-09-29T10:00:00Z', '2026-09-29T10:00:00Z', '{"id":"idea-keep01","title":"Keep me","custom":{"kept":true}}')""",
-                "CREATE TABLE ideas_suggestions (id TEXT PRIMARY KEY, ord INTEGER NOT NULL, kind TEXT NOT NULL, session_id TEXT," +
-                    " idea_id TEXT, project_id TEXT, source_rev INTEGER, title TEXT NOT NULL, at TEXT NOT NULL, doc TEXT NOT NULL)",
-                "INSERT INTO ideas_suggestions VALUES ('sg_keep001', 0, 'save', 'ses_1', NULL, NULL, NULL, 'Waiting'," +
-                    " '2026-09-29T10:00:00Z', '{\"id\":\"sg_keep001\",\"kind\":\"save\",\"title\":\"Waiting\"}')",
-                "CREATE TABLE ideas_repos (repo TEXT PRIMARY KEY, project_id TEXT, project_name TEXT, hash TEXT, at TEXT NOT NULL," +
-                    " tries INTEGER NOT NULL, error TEXT)",
-                "INSERT INTO ideas_repos VALUES ('C:/repo', 'prj_1', 'Demo', 'abc123', '2026-09-29T10:00:00Z', 1, NULL)",
-            }) kernel.Db.Execute(statement);
+            // Data as a plugin keeps it: a collection of documents with a declared index field.
+            var items = kernel.Storage.Plugins.For("test.keeper").Collection("items", new CollectionSpec().Text("title"));
+            items.Put("idea-keep01", new JsonObject { ["id"] = "idea-keep01", ["title"] = "Keep me", ["custom"] = new JsonObject { ["kept"] = true } });
 
             await plugin.StartAsync(ctx, default);
             try
             {
                 var manual = await plugin.CreateAsync(ctx, false, default);
                 var dir = manual["path"]!.GetValue<string>();
-                Check.Equal(2, manual["files"]!.AsObject().Count, "the database and the settings");
-                Check.False(manual.ContainsKey("noIdeas"), "a snapshot is never a snapshot that left the ideas out");
-                Check.False(File.Exists(Path.Combine(dir, "ideas.json")), "the ideas are not a file any more");
+                Check.Equal(2, manual["files"]!.AsObject().Count, "the provider's file and the settings");
+                Check.Equal("sqlite", manual["provider"]!.GetValue<string>(), "the manifest names the provider that reads the files");
                 BackupPlugin.Verify(home, manual["id"]!.GetValue<string>());
 
-                // The database in the snapshot really holds them (the ideas plugin is not running here at all).
-                var checkFile = Path.Combine(home, "check-ideas.db");
-                File.Copy(Path.Combine(dir, "netpi.db"), checkFile);
-                using (var snapshot = new Database(checkFile))
-                {
-                    Check.Equal("ok", snapshot.Scalar<string>("PRAGMA integrity_check"));
-                    Check.Equal("Keep me", snapshot.Scalar<string>("SELECT title FROM ideas_items WHERE id = 'idea-keep01'"));
-                    var doc = snapshot.Scalar<string>("SELECT doc FROM ideas_items WHERE id = 'idea-keep01'")!;
-                    Check.True(doc.Contains("\"kept\":true"), "a field the ideas plugin stores as it is: " + doc);
-                    Check.Equal(1L, snapshot.Scalar<long>("SELECT COUNT(*) FROM ideas_suggestions WHERE id = 'sg_keep001'"));
-                    Check.Equal("abc123", snapshot.Scalar<string>("SELECT hash FROM ideas_repos WHERE repo = 'C:/repo'"));
-                }
-
-                // Restore into a new home and start a host on it: the data is there to be read.
-                var restored = Path.Combine(home, "restored-ideas");
+                // Restore into a new home and read the collection back with a store opened on it.
+                var restored = Path.Combine(home, "restored-data");
                 var repo = FindRepo();
-                var info = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-                info.ArgumentList.Add(Path.Combine(repo, "scripts", "restore-backup.mjs"));
-                info.ArgumentList.Add(dir);
-                info.ArgumentList.Add(restored);
-                using var process = Process.Start(info)!;
-                var output = process.StandardOutput.ReadToEndAsync(); var error = process.StandardError.ReadToEndAsync();
-                await process.WaitForExitAsync();
-                if (process.ExitCode != 0) Console.WriteLine("    " + await error);
-                await output;
-                Check.Equal(0, process.ExitCode, "the snapshot restores");
-                using (var recovered = new Database(Path.Combine(restored, "netpi.db")))
+                var exit = await RunRestoreAsync(repo, dir, restored);
+                Check.Equal(0, exit, "the snapshot restores");
+                using (var storage = new SqliteStorageProvider().Open(new StorageOpenOptions
                 {
-                    Check.Equal("Keep me", recovered.Scalar<string>("SELECT title FROM ideas_items WHERE id = 'idea-keep01'"));
-                    Check.Equal(1L, recovered.Scalar<long>("SELECT COUNT(*) FROM ideas_suggestions"));
-                    Check.Equal(1L, recovered.Scalar<long>("SELECT COUNT(*) FROM ideas_repos"));
+                    Home = restored, Logger = Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, Settings = kernel.Settings,
+                }))
+                {
+                    var back = storage.Plugins.For("test.keeper").Collection("items", new CollectionSpec().Text("title")).Get("idea-keep01");
+                    Check.Equal("Keep me", back?["title"]?.GetValue<string>());
+                    Check.True(back?["custom"]?["kept"]?.GetValue<bool>() == true, "a field the plugin stores comes back as it was");
                 }
 
-                // An older snapshot, with the ideas as files, still restores exactly what it has.
+                // A snapshot whose manifest names no provider is refused, by Verify and by the restore script.
                 var old = Path.Combine(home, "backups", "20200101-000000-old");
                 Directory.CreateDirectory(old);
-                var backlog = "{ \"version\": 1, \"ideas\": [ { \"id\": \"idea-old001\", \"title\": \"From the file era\" } ] }\n";
-                File.WriteAllText(Path.Combine(old, "ideas.json"), backlog);
                 File.Copy(Path.Combine(dir, "netpi.db"), Path.Combine(old, "netpi.db"));
                 File.Copy(Path.Combine(dir, "settings.json"), Path.Combine(old, "settings.json"));
                 var hashes = new JsonObject();
-                foreach (var name in new[] { "netpi.db", "settings.json", "ideas.json" })
+                foreach (var name in new[] { "netpi.db", "settings.json" })
                     hashes[name] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(old, name)))).ToLowerInvariant();
                 File.WriteAllText(Path.Combine(old, "manifest.json"), new JsonObject
                 {
                     ["version"] = 1, ["id"] = "20200101-000000-old", ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"),
                     ["automatic"] = true, ["files"] = hashes,
                 }.ToJsonString());
-                BackupPlugin.Verify(home, "20200101-000000-old");
-                var oldHome = Path.Combine(home, "restored-old");
-                info = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-                info.ArgumentList.Add(Path.Combine(repo, "scripts", "restore-backup.mjs"));
-                info.ArgumentList.Add(old);
-                info.ArgumentList.Add(oldHome);
-                using var oldProcess = Process.Start(info)!;
-                var oldOutput = oldProcess.StandardOutput.ReadToEndAsync(); var oldError = oldProcess.StandardError.ReadToEndAsync();
-                await oldProcess.WaitForExitAsync();
-                if (oldProcess.ExitCode != 0) Console.WriteLine("    " + await oldError);
-                await oldOutput;
-                Check.Equal(0, oldProcess.ExitCode, "a snapshot of the file era still restores");
-                Check.Equal(backlog, File.ReadAllText(Path.Combine(oldHome, "ideas.json")), "with the backlog the cutover then imports");
-
-                // Retention keeps a snapshot this build would not write: its ideas files are the only copy.
-                kernel.Settings.Set("backup.keepCount", JsonValue.Create(1));
-                await plugin.CreateAsync(ctx, true, default);
-                Check.True(Directory.Exists(old), "an older snapshot with ideas files is kept rather than deleted");
+                Check.Throws<InvalidDataException>(() => BackupPlugin.Verify(home, "20200101-000000-old"), "no provider in the manifest");
+                Check.True(await RunRestoreAsync(repo, old, Path.Combine(home, "restored-old")) != 0, "the restore script refuses it too");
             }
             finally { await plugin.StopAsync(default); scope.DisposeAll(); }
         });
+    }
+
+    private static async Task<int> RunRestoreAsync(string repo, string snapshot, string destination)
+    {
+        var info = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+        info.ArgumentList.Add(Path.Combine(repo, "scripts", "restore-backup.mjs"));
+        info.ArgumentList.Add(snapshot);
+        info.ArgumentList.Add(destination);
+        using var process = Process.Start(info)!;
+        var output = process.StandardOutput.ReadToEndAsync(); var error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        await output; await error;
+        return process.ExitCode;
     }
 
     private static string FindRepo()

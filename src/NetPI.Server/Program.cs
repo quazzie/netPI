@@ -18,6 +18,7 @@ internal static class Program
           --token TOKEN   Fixed auth token (default: random per run)
           --open          Open the launch URL in the default browser
           --quiet         No log output on the console
+          --ephemeral     Keep everything in memory: nothing is stored in the home's database and nothing survives the run
           -h, --help      Show this help
         """;
 
@@ -40,6 +41,7 @@ internal static class Program
                     case "--token": options.Token = Next(); break;
                     case "--open": open = true; break;
                     case "--quiet": options.ConsoleLogging = false; break;
+                    case "--ephemeral": options.Ephemeral = true; break;
                     case "-h" or "--help" or "/?":
                         Console.WriteLine(Usage);
                         return 0;

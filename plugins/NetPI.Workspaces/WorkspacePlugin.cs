@@ -26,6 +26,8 @@ public sealed class WorkspacePlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        // A fork is a new writer and must not share its parent's checkout: it starts unbound (the core never copies meta.cwd either).
+        context.Sessions.DeclareForkReset(SessionWorkspace.MetaKey);
         var store = new WorkspaceStore(context);
         context.Services.Register<IWorkspaceStore>(store);
         var git = new GitProbe();
@@ -111,7 +113,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
                 projectPath = session?.ProjectId is { } pid ? ctx.Sessions.GetProject(pid)?.Path : null,
                 identity = session is null ? null : resolver.IdentityOf(session),
                 available = binding is not null || SessionWorkspace.Of(session) is null,
-                error = SessionWorkspace.Of(session) is { Length: > 0 } && binding is null ? Missing(session) : null,
+                error = SessionWorkspace.Of(session) is { Length: > 0 } && binding is null ? Missing(session!) : null,
             });
         }, "What a session's workspace resolves to: { sessionId } → { workspaceId, root, branch, baseCommit, kind, isolated, ownerSessionId, identity, projectId, available, error? }");
 
@@ -175,7 +177,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
             // The branch to merge and verify: the one the worktree is actually on. A record that has gone stale is
             // refused before anything is merged, so a no-op merge can never be reported as merged and verified.
             var (branch, problem) = provisioner.IntegrateBranch(workspace);
-            if (branch is null) throw new RpcException("integration_failed", problem);
+            if (branch is null) throw new RpcException("integration_failed", problem ?? "The workspace cannot be integrated.");
             var into = req.Str("into");
             var (ok, error) = await provisioner.IntegrateAsync(workspace, into, ct).ConfigureAwait(false);
             if (!ok) throw new RpcException("integration_failed", error!);

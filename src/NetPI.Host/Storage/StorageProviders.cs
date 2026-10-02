@@ -6,6 +6,7 @@ internal static class StorageProviders
     public static IStorageProvider Create(string id) => id.Trim().ToLowerInvariant() switch
     {
         "sqlite" => new Sqlite.SqliteStorageProvider(),
+        "memory" => new Memory.MemoryStorageProvider(),
         _ => throw new StorageException($"Unknown storage provider '{id}' (setting storage.provider). Built in: sqlite, memory."),
     };
 }

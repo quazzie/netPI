@@ -171,5 +171,55 @@ public static class ControlTests
             var files = await env.Rpc("files.list", new { sessionId = sid });
             Check.Equal(dir, files.S("root"), "files.list follows the session's project");
         });
+
+        r.Add("context.workspace-binding", "workspace binding: attached to the session's meta (workspaceId + cwd), tools run in the workspace, a fork starts unbound, deleting the workspace unbinds the session", async () =>
+        {
+            var p = await env.NewProject("ws-project", CoreTests.Seed);
+            var projectDir = p.S("path")!;
+            var s = await env.NewSession(projectId: p.S("id"));
+            var sid = s.S("id")!;
+            var ws = await env.Rpc("workspaces.create", new { projectId = p.S("id"), name = "e2e-ws", isolated = false });
+            var wsId = ws.S("workspaceId")!;
+            var wsDir = ws.S("path")!;
+
+            var bound = await env.Rpc("sessions.setWorkspace", new { id = sid, workspaceId = wsId });
+            Check.Equal(wsId, bound.P("meta").S("workspaceId"), "the binding is attached to the session's meta");
+            Check.Equal(wsDir, bound.P("meta").S("cwd"), "and so is the folder it runs in");
+            var resolved = await env.Rpc("workspaces.resolve", new { sessionId = sid });
+            Check.Equal(wsDir, resolved.S("root"));
+            Check.True(resolved.B("available"), "the resolver agrees with the session");
+
+            var run = await env.Run(sid, "where am I [s:where file=where-bound.txt]");
+            Check.Contains(run.FinalText, "PWD=" + Env.BashPath(wsDir));
+            Check.True(File.Exists(Path.Combine(wsDir, "where-bound.txt")), "the file was written in the workspace");
+            Check.False(File.Exists(Path.Combine(projectDir, "where-bound.txt")), "and not in the project's folder");
+
+            // A fork is a new writer: it starts in the project's folder, unbound.
+            var fork = await env.Rpc("sessions.fork", new { id = sid });
+            var forkMeta = fork.TryGetProperty("meta", out var fm) && fm.ValueKind == System.Text.Json.JsonValueKind.Object ? fm : default;
+            Check.True(forkMeta.ValueKind == default || (!forkMeta.TryGetProperty("workspaceId", out _) && !forkMeta.TryGetProperty("cwd", out _)), "the fork carries neither the workspace nor its folder");
+
+            // Unbinding puts the session back in its project's folder.
+            var unbound = await env.Rpc("sessions.setWorkspace", new { id = sid, workspaceId = (string?)null });
+            var unboundMeta = unbound.TryGetProperty("meta", out var um) && um.ValueKind == System.Text.Json.JsonValueKind.Object ? um : default;
+            Check.True(unboundMeta.ValueKind == default || (!unboundMeta.TryGetProperty("workspaceId", out _) && !unboundMeta.TryGetProperty("cwd", out _)), "unbound");
+            var back = await env.Run(sid, "and now? [s:where file=where-unbound.txt]");
+            Check.Contains(back.FinalText, "PWD=" + Env.BashPath(projectDir));
+
+            // Retiring a workspace is refused while a live session is bound to it; an archived one does not count, and is unbound by the delete.
+            var other = (await env.NewSession(projectId: p.S("id"))).S("id")!;
+            await env.Rpc("sessions.setWorkspace", new { id = other, workspaceId = wsId });
+            string? refusal = null;
+            try { await env.Rpc("workspaces.delete", new { id = wsId }); }
+            catch (RpcError ex) { refusal = ex.Message; }
+            Check.Contains(refusal ?? "", "bound", "refused while a live session is bound");
+            await env.Rpc("sessions.update", new { id = other, archived = true });
+            var mark = env.Client.Mark();
+            await env.Rpc("workspaces.delete", new { id = wsId });
+            await env.Client.WaitFor(mark, e => e.Type == "session.workspace" && e.D.S("sessionId") == other, "session.workspace after the delete");
+            var after = await env.Rpc("sessions.get", new { id = other });
+            var afterMeta = after.TryGetProperty("meta", out var am) && am.ValueKind == System.Text.Json.JsonValueKind.Object ? am : default;
+            Check.True(afterMeta.ValueKind == default || (!afterMeta.TryGetProperty("workspaceId", out _) && !afterMeta.TryGetProperty("cwd", out _)), "the deleted workspace's archived session is unbound");
+        });
     }
 }
