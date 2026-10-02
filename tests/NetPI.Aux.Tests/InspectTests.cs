@@ -14,6 +14,7 @@ public static class InspectTests
         r.Add("inspect: the journal leaves out per-token events and sums up messages; tool calls from tool.start/end", JournalAndTools);
         r.Add("inspect: problems (failed plugin, a broken settings file, waiters on an inactive agent, a long wait, errors in the log)", Problems);
         r.Add("inspect: settings without secrets, saved failed requests, the overview lists the diag methods", SettingsFailuresOverview);
+        r.Add("inspect: a secret hiding in a value is masked too — a token in a baseUrl, a header no name pattern knows", SecretsInValues);
         r.Add("inspect: the diag tool answers with the RPC's JSON, defaults to the calling session and refuses every write", DiagTool);
         r.Add("inspect: diag rpc reaches any read-only method and nothing else; a journal type query is global", DiagRpcAndJournalScope);
         r.Add("inspect: a reload says what it cost: the tools at stake, or that a hook-only plugin announces nothing", ReloadImpact);
@@ -79,6 +80,66 @@ public static class InspectTests
         Check.Equal("ses_caller", journal!.Str("sessionId"), "without a type it is this chat's timeline");
         await Call(tool, """{ "action": "journal", "type": "session.changed", "sessionId": "ses_other" }""");
         Check.Equal("ses_other", journal!.Str("sessionId"), "and a named session still wins");
+    }
+
+    // Redaction keyed on the setting path and the property name, so a credential carried by the *value* came through
+    // whole: a baseUrl with ?api_key=… (baseUrl is neither a secret path nor a secret-shaped name) and a headers map
+    // whose members were only tested for their names, so "X-Auth" was printed while the apiKey beside it was masked
+    // (idea-csuckr). The inspector's own contract is "the settings without secrets".
+    private static async Task SecretsInValues()
+    {
+        const string keyInQuery = "https://gw.example/v1?api_key=sk-live-1234567890";
+        const string userinfo = "https://admin:hunter2@gw.example/v1";
+        const string searchUrl = "http://127.0.0.1:8888/search?q=netpi";
+        const string proxyUrl = "socks5://127.0.0.1:1080?token=socks-secret-1234";
+        const string xAuth = "Bearer op-1234567890";
+        const string gatewayKey = "gk-9876543210";
+        const string accept = "application/json";
+        const string bearer = "bearer";
+        const string githubToken = "ghp-1234567890";
+        // The marker carries the length of the whole value, so a hand-written number would not catch a truncated one.
+        static string Masked(string value) => $"<secret, {value.Length} chars>";
+
+        var ctx = await StartAsync();
+        ctx.SettingsFake.Set("providers.gateway.baseUrl", keyInQuery);
+        ctx.SettingsFake.Set("providers.plain.baseUrl", "https://gw.example/v1");
+        ctx.SettingsFake.Set("providers.basic.baseUrl", userinfo);
+        ctx.SettingsFake.Set("tools.web.searxUrl", searchUrl);
+        ctx.SettingsFake.Set("providers.gateway.headers", new JsonObject
+        {
+            ["X-Auth"] = xAuth,
+            ["X-Gateway-Key"] = gatewayKey,
+            ["Accept"] = accept,                   // not a credential, but it is inside a headers map
+            ["X-Trace"] = "env:NETPI_TRACE",       // a reference stays a reference
+        });
+        ctx.SettingsFake.Set("providers.gateway.auth", new JsonObject { ["mode"] = bearer });
+        ctx.SettingsFake.Set("mcp.uvx.env", new JsonObject { ["MOCK_SPEED"] = "3", ["GITHUB_TOKEN"] = githubToken });
+        ctx.SettingsFake.Set("tools.web.proxy", proxyUrl);
+        ctx.SettingsFake.Set("tools.web.mirror", "https://mirror.example/list?page=2&limit=200");
+
+        var settings = ((JsonObject)(await ctx.RpcFake.Call("diag.settings"))!)["settings"]!;
+        var gateway = settings["providers"]!["gateway"]!;
+        Check.Equal(Masked(keyInQuery), gateway["baseUrl"].Str(), "a token in a baseUrl's query string is a secret");
+        Check.Equal(Masked(xAuth), gateway["headers"]!["X-Auth"].Str(), "a header whose name is not secret-shaped");
+        Check.Equal(Masked(gatewayKey), gateway["headers"]!["X-Gateway-Key"].Str());
+        Check.Equal(Masked(accept), gateway["headers"]!["Accept"].Str(), "every value inside a headers map is masked");
+        Check.Equal("env:NETPI_TRACE", gateway["headers"]!["X-Trace"].Str(), "an env: reference stays readable");
+        Check.Equal(Masked(bearer), gateway["auth"]!["mode"].Str(), "and every value inside an auth map");
+
+        Check.Equal("https://gw.example/v1", settings["providers"]!["plain"]!["baseUrl"].Str(), "a plain URL is still readable");
+        Check.Equal(Masked(userinfo), settings["providers"]!["basic"]!["baseUrl"].Str(), "userinfo in a URL is a secret");
+        Check.Equal(Masked(searchUrl), settings["tools"]!["web"]!["searxUrl"].Str(), "any query string in a url-ish setting");
+        Check.Equal(Masked(proxyUrl), settings["tools"]!["web"]!["proxy"].Str(), "a secret-shaped query parameter anywhere");
+        Check.Equal("https://mirror.example/list?page=2&limit=200", settings["tools"]!["web"]!["mirror"].Str(), "an ordinary query is not a secret");
+
+        var env = settings["mcp"]!["uvx"]!["env"]!;
+        Check.Equal("3", env["MOCK_SPEED"].Str(), "an env map is not a credentials map: its members are named");
+        Check.Equal(Masked(githubToken), env["GITHUB_TOKEN"].Str(), "and a secret-shaped one in it is still masked");
+
+        // Nothing the inspector prints may still carry the value it masked.
+        var printed = ((JsonObject)(await ctx.RpcFake.Call("diag.settings"))!).ToJsonString();
+        foreach (var secret in new[] { "sk-live-1234567890", "op-1234567890", "gk-9876543210", "hunter2", "socks-secret-1234", "ghp-1234567890" })
+            Check.NotContains(printed, secret);
     }
 
     // Only a plugin that registers tools can take a tool away. A hook-only reload (context, nudge) swaps under a

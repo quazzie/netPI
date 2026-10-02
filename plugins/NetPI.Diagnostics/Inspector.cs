@@ -482,35 +482,66 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
     [GeneratedRegex("(api[-_]?key|token|secret|password|passwd|authorization|bearer|cookie)", RegexOptions.IgnoreCase)]
     private static partial Regex SecretName();
 
-    internal static void Redact(JsonObject node, string path, HashSet<string> secretKeys)
+    /// <summary>A map whose members are credentials whatever they are called: a request header is named <c>X-Auth</c> or
+    /// <c>X-Gateway-Key</c>, and no name pattern can know that (idea-csuckr).</summary>
+    [GeneratedRegex("(headers?|credentials|secrets?|auth)$", RegexOptions.IgnoreCase)]
+    private static partial Regex SecretMap();
+
+    /// <summary>A setting whose value is a URL. A credential in its query string or its userinfo part is invisible to the
+    /// setting path and to the schema's secret keys, which is how a baseUrl with <c>?api_key=…</c> came through in full.</summary>
+    [GeneratedRegex("(url|uri|endpoint)$", RegexOptions.IgnoreCase)]
+    private static partial Regex UrlName();
+
+    internal static void Redact(JsonObject node, string path, HashSet<string> secretKeys) => Redact(node, path, secretKeys, false);
+
+    /// <summary><paramref name="inSecretMap"/>: everything below here is a credential, whatever it is named.</summary>
+    private static void Redact(JsonObject node, string path, HashSet<string> secretKeys, bool inSecretMap)
     {
         foreach (var (key, value) in node.ToList())
         {
             var p = path.Length == 0 ? key : path + "." + key;
+            var named = inSecretMap || secretKeys.Contains(p) || SecretName().IsMatch(key);
             switch (value)
             {
                 case JsonObject child:
-                    Redact(child, p, secretKeys);
+                    Redact(child, p, secretKeys, inSecretMap || SecretMap().IsMatch(key));
                     break;
                 case JsonArray array:
                     // An array of objects (providers.openaiCompatible[]): recurse into each element with an indexed path,
                     // or the objects inside it were never visited and their apiKey/headers leaked. A bare string element is
-                    // masked when the array's own name or path says it is a secret.
+                    // masked when the array's own name or path says it is a secret, or when the value carries one.
+                    var inElement = inSecretMap || SecretMap().IsMatch(key);
                     for (var i = 0; i < array.Count; i++)
                     {
                         var ep = $"{p}.{i}";
                         if (array[i] is JsonObject o)
-                            Redact(o, ep, secretKeys);
-                        else if (array[i] is JsonValue ev && ev.TryGetValue<string>(out var txt) && (secretKeys.Contains(ep) || SecretName().IsMatch(key)))
+                            Redact(o, ep, secretKeys, inElement);
+                        else if (array[i] is JsonValue ev && ev.TryGetValue<string>(out var txt) &&
+                                 (named || secretKeys.Contains(ep) || SecretValue(key, txt)))
                             array[i] = Mask(txt);
                     }
                     break;
                 default:
-                    if (value is JsonValue v && v.TryGetValue<string>(out var s) && (secretKeys.Contains(p) || SecretName().IsMatch(key)))
+                    if (value is JsonValue v && v.TryGetValue<string>(out var s) && (named || SecretValue(key, s)))
                         node[key] = Mask(s);
                     break;
             }
         }
+    }
+
+    /// <summary>A credential embedded in a value rather than named by it: the userinfo part of a URL, or a query string.
+    /// A url-ish setting is masked for any query at all (?limit=200 is not worth the risk of printing a key beside it);
+    /// anywhere else only a secret-shaped parameter name does. Any scheme counts — <c>socks5://host?token=…</c> carries a
+    /// credential like any other — but a value that is not a URI at all never does.</summary>
+    private static bool SecretValue(string key, string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
+        if (uri.UserInfo.Length > 0) return true;
+        if (uri.Query.Length == 0) return false;
+        if (UrlName().IsMatch(key)) return true;
+        return uri.Query.TrimStart('?').Split('&')
+            .Select(q => Uri.UnescapeDataString(q.Split('=', 2)[0]))
+            .Any(name => SecretName().IsMatch(name));
     }
 
     /// <summary>A secret value becomes a length marker; <c>env:</c> and <c>$</c> values are references, not secrets.</summary>
