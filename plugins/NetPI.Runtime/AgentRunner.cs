@@ -75,96 +75,15 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 throw new RunFailedException(msg);
             }
 
-            // 1. session, model, project, cwd: re-read every turn (they can change mid-run)
-            var session = Ctx.Sessions.GetSession(SessionId) ?? throw new RunFailedException("The session no longer exists.");
-            if (turnIndex == 0 && SessionAgent.IsAny(session) && run.Lease is not { IsReleased: false })
-            {
-                // the chat may use any agent: the first one with a free instance takes the run and its model becomes the chat's
-                try
-                {
-                    var (slot, _) = await rt.AcquireAnySlotAsync(state, 0, ct).ConfigureAwait(false);
-                    run.Lease = slot;
-                }
-                catch (CallRefusedException ex)
-                {
-                    rt.AppendNotice(state, ex.Message, "error");
-                    throw new RunFailedException(ex.Message, ex);
-                }
-                session = Ctx.Sessions.GetSession(SessionId) ?? throw new RunFailedException("The session no longer exists.");
-            }
-            var modelRef = await SessionModel.ResolveRefAsync(session, Ctx.Models, Ctx.Settings,
-                Ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
-            ModelInfo? model = null;
-            if (!string.IsNullOrWhiteSpace(modelRef))
-            {
-                try { model = await Ctx.Models.FindAsync(modelRef, ct).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is not OperationCanceledException) { Ctx.Logger.LogWarning(ex, "Model lookup failed for {Model}", modelRef); }
-            }
-            if (model is null)
-            {
-                var msg = modelRef is null
-                    ? "No model is configured. Pick a model for this session or set a default model in the settings."
-                    : $"Model '{modelRef}' is not available. Pick another model for this session.";
-                rt.AppendNotice(state, msg, "error");
-                throw new RunFailedException(msg);
-            }
-            var project = session.ProjectId is null ? null : Ctx.Sessions.GetProject(session.ProjectId);
-            // One resolver, asked once per turn: the run's workspace and its root. Every consumer of the run (the tools'
-            // Cwd, the guard, the notices, the UI) reads these two, so they cannot disagree about where this turn works.
-            var workspace = ResolveWorkspace(session);
-            var cwd = workspace?.Root ?? Ctx.Sessions.GetCwd(session);
-            rt.Update(state, i => i.Model = model.Ref);
+            // 1. session, model, project, cwd, slot: re-read every turn (they can change mid-run)
+            var resolved = await ResolveTurnAsync(turnIndex, ct).ConfigureAwait(false);
+            var (rc, session, model, project, cwd, workspace) = resolved;
 
-            if (_rc is null)
-            {
-                _rc = new AgentRunContext
-                {
-                    Agent = Info,
-                    Session = session,
-                    Project = project,
-                    Cwd = cwd,
-                    Model = model,
-                    ReasoningEffort = session.Reasoning,
-                    Services = Ctx.Services,
-                    Sessions = Ctx.Sessions,
-                    Models = Ctx.Models,
-                    Events = Ctx.Events,
-                    CancellationToken = ct,
-                };
-                _rc.SetWorkspace(workspace);
-                _lastContextTokens = session.ContextTokens;
-                foreach (var hook in rt.Hooks())
-                    await SafeAsync(Ctx, () => hook.OnRunStartAsync(_rc), "OnRunStart", ct).ConfigureAwait(false);
-                // a hook may have set up the session (the profiles plugin applies a new chat's profile here)
-                session = Ctx.Sessions.GetSession(SessionId) ?? session;
-                _rc.Session = session;
-            }
-            else
-            {
-                _rc.Session = session;
-                _rc.Project = project;
-                _rc.SetWorkspace(workspace);
-                _rc.Cwd = cwd;
-                _rc.Model = model;
-                _rc.ReasoningEffort = session.Reasoning;
-            }
-
-            // 2. a slot on the agent
-            try
-            {
-                await EnsureSlotAsync(model, ct).ConfigureAwait(false);
-            }
-            catch (CallRefusedException ex)
-            {
-                rt.AppendNotice(state, ex.Message, "error");
-                throw new RunFailedException(ex.Message, ex);
-            }
-
-            // 3. steering input → transcript
-            _rc.SetAdmissionLease(run.Lease);
+            // 2. steering input → transcript
+            rc.SetAdmissionLease(run.Lease);
             DrainSteering();
 
-            // 4. turn context + hooks
+            // 3. turn context + hooks
             var promptRevision = SessionPrompt.Revision(session);
             var tools = rt.ToolsFor(Info, session);
             var defs = ToolSelection.Visible(tools);
@@ -173,7 +92,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             AgentTurnContext turn = null!;
             turn = new AgentTurnContext
             {
-                Run = _rc,
+                Run = rc,
                 TurnIndex = turnIndex,
                 SystemPrompt = prompt,
                 Messages = [.. Ctx.Sessions.GetContextMessages(SessionId)],
@@ -203,81 +122,34 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
                 || !string.Equals(switchedCwd, cwd, StringComparison.Ordinal))
                 continue;
 
-            // 5. model call
+            // 4. model call
             if (Ctx.Sessions.GetSession(SessionId) is { } beforeCall && SessionPrompt.Revision(beforeCall) != promptRevision) continue;
-            ChatMessage assistant;
-            long contextTokens;
-            try
+            var call = await CallModelWithRecoveryAsync(turn, model, session, promptRevision, retries, ct).ConfigureAwait(false);
+            if (call.Assistant is not { } assistant)
             {
-                var afterSeq = Ctx.Sessions.GetMessages(SessionId, null, 1).LastOrDefault()?.Seq ?? 0;
-                Ctx.Sessions.UpdateSession(SessionId, s => SessionPrompt.RecordSent(s, turn.SystemPrompt, promptRevision, afterSeq));
-                (assistant, contextTokens) = await new ModelCall(rt, state, run).RunAsync(turn, model, session, ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (CallRefusedException ex)
-            {
-                // a middleware refused the call (the ledger stopping a paid one, say): the notice carries the reason's kind, and the UI offers "let this chat go over" when allowed
-                rt.AppendNotice(state, ex.Message, ex.Kind, new JsonObject { ["canOverride"] = ex.CanOverride });
-                throw new RunFailedException(ex.Message, ex);
-            }
-            catch (Exception ex)
-            {
-                // expected provider errors: one line without a stack trace; anything else with the full exception
-                if (ex is ModelException or HttpRequestException or IOException)
-                    Ctx.Logger.LogWarning("Model call failed ({Model}, session {Session}): {Error}", model.Ref, SessionId, ex.Message);
-                else
-                    Ctx.Logger.LogWarning(ex, "Model call failed ({Model}, session {Session})", model.Ref, SessionId);
-                ModelErrorDecision? decision = null;
-                foreach (var hook in rt.Hooks())
-                {
-                    decision = await SafeAsync(Ctx, () => hook.OnModelErrorAsync(turn, ex), "OnModelError", ct).ConfigureAwait(false);
-                    if (decision is not null) break;
-                }
-                if (decision?.Retry == true && retries < 2)
-                {
-                    retries++;
-                    continue; // re-run the turn (rebuilds the context)
-                }
-                var msg = ModelErrorText(ex);
-                rt.AppendNotice(state, msg, "error");
-                throw new RunFailedException(msg, ex);
+                retries++;
+                continue; // re-run the turn (rebuilds the context)
             }
             retries = 0;
-            if (contextTokens > 0) _lastContextTokens = contextTokens;
+            if (call.ContextTokens > 0) _lastContextTokens = call.ContextTokens;
             turnIndex++;
-            _rc.TurnCount++;
+            rc.TurnCount++;
 
-            // 6. after-call hooks: first non-null decision wins
-            turn.LatestAssistant = assistant;
-            TurnDecision? after = null;
-            foreach (var hook in rt.Hooks())
-            {
-                var a = assistant;
-                after = await SafeAsync(Ctx, () => hook.OnAfterModelCallAsync(turn, a), "OnAfterModelCall", ct).ConfigureAwait(false);
-                if (after is not null) break;
-            }
-            if (after is { Action: TurnAction.Replace, Replacement: { } replacement })
-                assistant = new ModelCall(rt, state, run).ReplaceAssistant(assistant, replacement);
-            turn.LatestAssistant = assistant;
-
-            // metering and diagnostics see every call, whoever decided it (a hook that only counts would sit behind
-            // the first decision and miss those calls: the goal's token budget is the case that bit us)
-            foreach (var observer in rt.CallObservers())
-                await SafeAsync(Ctx, () => observer.OnAfterModelCallAsync(turn, assistant), "OnAfterModelCall (observer)", ct).ConfigureAwait(false);
+            // 5. after-call hooks: first non-null decision wins
+            var decided = await RunAfterHooksAsync(turn, assistant, ct).ConfigureAwait(false);
+            assistant = decided.Assistant;
+            var after = decided.Decision;
 
             var calls = assistant.ToolCalls.ToList();
             if (after?.Action == TurnAction.Stop)
             {
-                var batch = new ToolBatch(rt, state, _rc, HasSteering);
+                var batch = new ToolBatch(rt, state, rc, HasSteering);
                 foreach (var c in calls) batch.PersistResult(c, NotExecutedStop, isError: true, publishEnd: false, skipped: "stopped");
                 break;
             }
 
-            // 7. tools
-            if (calls.Count > 0) await new ToolBatch(rt, state, _rc, HasSteering).RunAsync(assistant, turn, calls, tools, ct).ConfigureAwait(false);
+            // 6. tools
+            if (calls.Count > 0) await new ToolBatch(rt, state, rc, HasSteering).RunAsync(assistant, turn, calls, tools, ct).ConfigureAwait(false);
 
             if (after is { Action: TurnAction.Inject } && !string.IsNullOrWhiteSpace(after.Text))
             {
@@ -286,10 +158,180 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             }
             if (calls.Count > 0) continue;
 
-            // 8. no tool calls: pending steering or one queued follow-up keeps the run going
+            // 7. no tool calls: pending steering or one queued follow-up keeps the run going
             if (TakeNextInput()) continue;
             break;
         }
+    }
+
+    /// <summary>What one pass of the loop resolved for this turn: the run's context, the session as it is now, its
+    /// model, where the turn works, and the workspace the tools' guard must see.</summary>
+    private readonly record struct TurnResolution(AgentRunContext Run, SessionInfo Session, ModelInfo Model, ProjectInfo? Project, string Cwd, WorkspaceBinding? Workspace);
+
+    /// <summary>The assistant a model call produced and the context size it reported, or no assistant when a
+    /// model-error hook asked for the turn to be retried.</summary>
+    private readonly record struct ModelCallOutcome(ChatMessage? Assistant, long ContextTokens);
+
+    private async Task<TurnResolution> ResolveTurnAsync(int turnIndex, CancellationToken ct)
+    {
+        var session = Ctx.Sessions.GetSession(SessionId) ?? throw new RunFailedException("The session no longer exists.");
+        if (turnIndex == 0 && SessionAgent.IsAny(session) && run.Lease is not { IsReleased: false })
+        {
+            // the chat may use any agent: the first one with a free instance takes the run and its model becomes the chat's
+            try
+            {
+                var (slot, _) = await rt.AcquireAnySlotAsync(state, 0, ct).ConfigureAwait(false);
+                run.Lease = slot;
+            }
+            catch (CallRefusedException ex)
+            {
+                rt.AppendNotice(state, ex.Message, "error");
+                throw new RunFailedException(ex.Message, ex);
+            }
+            session = Ctx.Sessions.GetSession(SessionId) ?? throw new RunFailedException("The session no longer exists.");
+        }
+        var modelRef = await SessionModel.ResolveRefAsync(session, Ctx.Models, Ctx.Settings,
+            Ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
+        ModelInfo? model = null;
+        if (!string.IsNullOrWhiteSpace(modelRef))
+        {
+            try { model = await Ctx.Models.FindAsync(modelRef, ct).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { Ctx.Logger.LogWarning(ex, "Model lookup failed for {Model}", modelRef); }
+        }
+        if (model is null)
+        {
+            var msg = modelRef is null
+                ? "No model is configured. Pick a model for this session or set a default model in the settings."
+                : $"Model '{modelRef}' is not available. Pick another model for this session.";
+            rt.AppendNotice(state, msg, "error");
+            throw new RunFailedException(msg);
+        }
+        var project = session.ProjectId is null ? null : Ctx.Sessions.GetProject(session.ProjectId);
+        // One resolver, asked once per turn: the run's workspace and its root. Every consumer of the run (the tools'
+        // Cwd, the guard, the notices, the UI) reads these two, so they cannot disagree about where this turn works.
+        var workspace = ResolveWorkspace(session);
+        var cwd = workspace?.Root ?? Ctx.Sessions.GetCwd(session);
+        rt.Update(state, i => i.Model = model.Ref);
+
+        var context = await SyncRunContextAsync(session, model, project, cwd, workspace, ct).ConfigureAwait(false);
+
+        // a slot on the agent
+        try
+        {
+            await EnsureSlotAsync(model, ct).ConfigureAwait(false);
+        }
+        catch (CallRefusedException ex)
+        {
+            rt.AppendNotice(state, ex.Message, "error");
+            throw new RunFailedException(ex.Message, ex);
+        }
+        return new TurnResolution(context.Run, context.Session, model, project, cwd, workspace);
+    }
+
+    /// <summary>The run's context, built on the first turn (and run-start hooks) and kept in step with the session on
+    /// every later one. Returns that context and the session as the hooks left it.</summary>
+    private async Task<(AgentRunContext Run, SessionInfo Session)> SyncRunContextAsync(SessionInfo session, ModelInfo model, ProjectInfo? project,
+        string cwd, WorkspaceBinding? workspace, CancellationToken ct)
+    {
+        if (_rc is null)
+        {
+            _rc = new AgentRunContext
+            {
+                Agent = Info,
+                Session = session,
+                Project = project,
+                Cwd = cwd,
+                Model = model,
+                ReasoningEffort = session.Reasoning,
+                Services = Ctx.Services,
+                Sessions = Ctx.Sessions,
+                Models = Ctx.Models,
+                Events = Ctx.Events,
+                CancellationToken = ct,
+            };
+            _rc.SetWorkspace(workspace);
+            _lastContextTokens = session.ContextTokens;
+            foreach (var hook in rt.Hooks())
+                await SafeAsync(Ctx, () => hook.OnRunStartAsync(_rc), "OnRunStart", ct).ConfigureAwait(false);
+            // a hook may have set up the session (the profiles plugin applies a new chat's profile here)
+            session = Ctx.Sessions.GetSession(SessionId) ?? session;
+            _rc.Session = session;
+        }
+        else
+        {
+            _rc.Session = session;
+            _rc.Project = project;
+            _rc.SetWorkspace(workspace);
+            _rc.Cwd = cwd;
+            _rc.Model = model;
+            _rc.ReasoningEffort = session.Reasoning;
+        }
+        return (_rc, session);
+    }
+
+    /// <summary>The call itself, and what its failure means: a model-error hook that asks for a retry hands back no
+    /// assistant (the loop runs the turn again), anything else fails the run.</summary>
+    private async Task<ModelCallOutcome> CallModelWithRecoveryAsync(AgentTurnContext turn, ModelInfo model, SessionInfo session,
+        long promptRevision, int retries, CancellationToken ct)
+    {
+        try
+        {
+            var afterSeq = Ctx.Sessions.GetMessages(SessionId, null, 1).LastOrDefault()?.Seq ?? 0;
+            Ctx.Sessions.UpdateSession(SessionId, s => SessionPrompt.RecordSent(s, turn.SystemPrompt, promptRevision, afterSeq));
+            var (assistant, contextTokens) = await new ModelCall(rt, state, run).RunAsync(turn, model, session, ct).ConfigureAwait(false);
+            return new ModelCallOutcome(assistant, contextTokens);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (CallRefusedException ex)
+        {
+            // a middleware refused the call (the ledger stopping a paid one, say): the notice carries the reason's kind, and the UI offers "let this chat go over" when allowed
+            rt.AppendNotice(state, ex.Message, ex.Kind, new JsonObject { ["canOverride"] = ex.CanOverride });
+            throw new RunFailedException(ex.Message, ex);
+        }
+        catch (Exception ex)
+        {
+            // expected provider errors: one line without a stack trace; anything else with the full exception
+            if (ex is ModelException or HttpRequestException or IOException)
+                Ctx.Logger.LogWarning("Model call failed ({Model}, session {Session}): {Error}", model.Ref, SessionId, ex.Message);
+            else
+                Ctx.Logger.LogWarning(ex, "Model call failed ({Model}, session {Session})", model.Ref, SessionId);
+            ModelErrorDecision? decision = null;
+            foreach (var hook in rt.Hooks())
+            {
+                decision = await SafeAsync(Ctx, () => hook.OnModelErrorAsync(turn, ex), "OnModelError", ct).ConfigureAwait(false);
+                if (decision is not null) break;
+            }
+            if (decision?.Retry == true && retries < 2) return new ModelCallOutcome(null, 0);
+            var msg = ModelErrorText(ex);
+            rt.AppendNotice(state, msg, "error");
+            throw new RunFailedException(msg, ex);
+        }
+    }
+
+    /// <summary>The after-call hooks (the first decision wins) and the observers that see every call, whoever decided
+    /// it. Returns the assistant as it stands after a replacement, and that decision.</summary>
+    private async Task<(ChatMessage Assistant, TurnDecision? Decision)> RunAfterHooksAsync(AgentTurnContext turn, ChatMessage assistant, CancellationToken ct)
+    {
+        turn.LatestAssistant = assistant;
+        TurnDecision? after = null;
+        foreach (var hook in rt.Hooks())
+        {
+            var a = assistant;
+            after = await SafeAsync(Ctx, () => hook.OnAfterModelCallAsync(turn, a), "OnAfterModelCall", ct).ConfigureAwait(false);
+            if (after is not null) break;
+        }
+        if (after is { Action: TurnAction.Replace, Replacement: { } replacement })
+            assistant = new ModelCall(rt, state, run).ReplaceAssistant(assistant, replacement);
+        turn.LatestAssistant = assistant;
+
+        // metering and diagnostics see every call, whoever decided it (a hook that only counts would sit behind
+        // the first decision and miss those calls: the goal's token budget is the case that bit us)
+        foreach (var observer in rt.CallObservers())
+            await SafeAsync(Ctx, () => observer.OnAfterModelCallAsync(turn, assistant), "OnAfterModelCall (observer)", ct).ConfigureAwait(false);
+        return (assistant, after);
     }
 
     // One line for a person: DisplayMessage, not Message, so the provider's ids and the saved failed request stay in
