@@ -3,9 +3,9 @@
   "flakes": [
     {
       "id": "context.workspace-binding",
-      "runs": 4,
+      "runs": 5,
       "failures": 3,
-      "rate": 0.75,
+      "rate": 0.6,
       "firstSeen": "20261002-212304-85ab",
       "lastFailure": "20261002-212332-b31e",
       "cause": "timed out after 30000ms waiting for session.workspace after the delete. Last events: \u2014 responsive",
@@ -13,9 +13,9 @@
     },
     {
       "id": "ui.idea-image",
-      "runs": 7,
+      "runs": 8,
       "failures": 3,
-      "rate": 0.4286,
+      "rate": 0.375,
       "firstSeen": "20261002-164209-c9ca",
       "lastFailure": "20261002-164357-4982",
       "cause": "3 ui check(s) failed: \u2014 responsive",

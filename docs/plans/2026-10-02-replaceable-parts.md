@@ -172,6 +172,8 @@ In this order, repeated until green (every failure fixed in the code it exercise
 
 ## Cutover and rollback (your local setup)
 
+*Done on 2026-10-02: rehearsed, applied to the owner's home and verified, and the tool deleted afterwards (it is in git history at `c6480ff`, under `scripts/migrations/001-storage-port`). The text below is the plan as written.*
+
 One-off tool `scripts/migrations/001-storage-port`: a C# console referencing the sqlite provider (no script reads SQLite today, and a second copy of the DDL would drift). Dry-run by default; deleted once applied. `--apply` refuses while NetPI is running and refuses if the new collections already exist. It converts the plugin tables (Ideas, ledger, Context, Runtime) from rows into documents, moves the `workspaces` table into the Workspaces collection, writes `meta.workspaceId` and `meta.cwd` (the workspace's path) for each session whose `workspace_id` is set and rebuilds `sessions` without the column, seeds the remembered fork-reset keys with today's list (`goal`, `todo`, `budgetAllowedFrom`, `guardrailsAllowed`, `agentId`, `parentAgentId`, `agentInstructions`, `runtimeEnvironment`), and drops the dead tables and their `Migrate` version rows. The core tables (sessions, messages, projects, kv) do not move. `settings.json` keeps every key: only who declares a default changes.
 
 1. **Rehearse on a copy** of your data (needs your go): the same tool, the new build booted against the result, a chat, a backup and a restore.

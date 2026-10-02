@@ -10,7 +10,7 @@ namespace NetPI.Aux.Tests;
 /// <para>
 /// The one-off cutover of the JSON files of the earlier versions (ideas.json, ideas-pending.json, the per-project
 /// copies and their receipt) is not a test of this build any more: this build neither reads nor writes those files.
-/// The one-off migration of the owner's own store is a script (scripts/migrations/001-storage-port), not product code.
+/// The one-off migration of the owner's own store was a script outside the product (commit c6480ff), not product code.
 /// </para>
 /// </summary>
 public static class IdeasSnapshotTests

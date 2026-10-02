@@ -22,8 +22,10 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 The swap-over of [docs/plans/2026-10-02-replaceable-parts.md](plans/2026-10-02-replaceable-parts.md) is written and
 passed its final gate (zero-warning build, six unit suites, the whole e2e suite, `core-size`); the revert point is the
 tag **`pre-swapover-2026-10-02`** (master before it; `git reset --hard pre-swapover-2026-10-02` or branch from it). It
-is **not installed** in the owner's app: their `netpi.db` still has the old schema until the one-off migration
-(`scripts/migrations/001-storage-port`, cutover steps in the plan) has run against their home with NetPI closed.
+is **installed** in the owner's app: the one-off migration of their `netpi.db` ran on 2026-10-02 and was verified (every
+count and the messages' checksum equal); the tool is deleted and lives in git history at `c6480ff`
+(`scripts/migrations/001-storage-port`). The owner's home still holds `netpi.db.pre-storage-port` (the old database,
+the one-step rollback) and `%USERPROFILE%\netpi-pre-swapover-2026-10-02` holds a snapshot and the old app folder.
 Storage is now a port: `IStorageProvider` chosen by
 `storage.provider` (default `sqlite`, `--ephemeral` = `memory`), the only SQL lives in
 `src/NetPI.Host/Storage/Sqlite`, and a plugin keeps its data in `ctx.Data` as collections of JSON documents —

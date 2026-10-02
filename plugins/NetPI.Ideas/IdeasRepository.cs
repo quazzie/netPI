@@ -7,8 +7,7 @@ namespace NetPI.Ideas;
 
 /// <summary>
 /// The backlog collections in <c>ctx.Data</c> (plugin id "netpi.ideas"): JSON documents under a string key, with
-/// declared index fields — the only fields a query may filter or order by. The one-off migration of the old tables
-/// (scripts/migrations/001-storage-port) is written from this block, so keep it in step with the code:
+/// declared index fields — the only fields a query may filter or order by. The layout, in step with the code:
 /// <code>
 ///   items        key: the idea id
 ///                doc: the idea's own JSON fields (the complete document it always was) + revision (long) +
