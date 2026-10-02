@@ -209,7 +209,6 @@ public sealed class LsTool(ISettings? settings = null) : FileToolBase(settings)
     {
         var pathArg = args.Str(PathNames.Concat(["dir", "directory"]).ToArray());
         var dir = string.IsNullOrWhiteSpace(pathArg) ? ctx.Cwd : ctx.ResolvePath(pathArg);
-        var all = args.Bool("all", "a", "showAll", "show_all", "hidden", "includeIgnored") ?? false;
         if (File.Exists(dir))
         {
             var fi = new FileInfo(dir);
@@ -218,11 +217,13 @@ public sealed class LsTool(ISettings? settings = null) : FileToolBase(settings)
         }
         if (!Directory.Exists(dir)) return Task.FromResult(NotFound(ctx, dir));
 
-        var entries = FileWalker.ListDirectory(dir, respectIgnore: true);
-        var hidden = all ? 0 : entries.Count(e => e.Ignored);
-        var visible = entries.Where(e => all || !e.Ignored).ToList();
-        var dirs = visible.Where(e => e.IsDir).ToList();
-        var files = visible.Where(e => !e.IsDir).ToList();
+        var (entries, visibleTotal, ignoredTotal) = FileWalker.ListDirectory(dir, respectIgnore: true, maxEntries: MaxEntries);
+        var all = args.Bool("all", "a", "showAll", "show_all", "hidden", "includeIgnored") ?? false;
+
+        // The listing is already capped at MaxEntries; the totals (streamed, not materialised) say what was not listed.
+        var shownList = all ? entries : entries.Where(e => !e.Ignored).ToList();
+        var dirs = shownList.Where(e => e.IsDir).ToList();
+        var files = shownList.Where(e => !e.IsDir).ToList();
         var sb = new StringBuilder();
         var shown = 0;
         var width = Math.Min(48, files.Count == 0 ? 0 : files.Max(f => f.Name.Length));
@@ -238,11 +239,13 @@ public sealed class LsTool(ISettings? settings = null) : FileToolBase(settings)
             if (shown++ >= MaxEntries) break;
             sb.Append(f.Name.PadRight(width)).Append("  ").Append(PathDisplay.FormatSize(f.Size)).Append('\n');
         }
-        var truncated = visible.Count > MaxEntries;
-        if (visible.Count == 0) sb.Append("(empty directory)\n");
-        if (truncated) sb.Append($"\n[Showing {MaxEntries} of {visible.Count} entries. Use find with a pattern to narrow down.]\n");
-        if (hidden > 0) sb.Append($"\n[{hidden} ignored entr{(hidden == 1 ? "y" : "ies")} hidden (gitignored or build/dependency folders); use all=true to show them.]\n");
+        var hiddenTotal = all ? 0 : ignoredTotal;
+        var total = all ? visibleTotal + ignoredTotal : visibleTotal;
+        var truncated = total > shown;
+        if (shownList.Count == 0) sb.Append("(empty directory)\n");
+        if (truncated) sb.Append($"\n[Showing {shown} of {total} entries. Use find with a pattern to narrow down.]\n");
+        if (hiddenTotal > 0) sb.Append($"\n[{hiddenTotal} ignored entr{(hiddenTotal == 1 ? "y" : "ies")} hidden (gitignored or build/dependency folders); use all=true to show them.]\n");
         return Task.FromResult(ToolResult.Ok(sb.ToString().TrimEnd('\n'),
-            new { path = dir, entries = visible.Count, dirs = dirs.Count, files = files.Count, hidden, truncated }));
+            new { path = dir, entries = total, dirs = dirs.Count, files = files.Count, hidden = hiddenTotal, truncated }));
     }
 }

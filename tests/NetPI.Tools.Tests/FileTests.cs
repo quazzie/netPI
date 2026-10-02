@@ -679,6 +679,47 @@ public static class FileTests
             Check.True(new LsTool().Definition.ReadOnly);
         });
 
+        r.Add("ls / files.list: a big directory is only materialised to the cap, and the rest is counted", async () =>
+        {
+            var dir = T.TempDir("bigdir");
+            for (var i = 0; i < 1200; i++) File.WriteAllText(Path.Combine(dir, $"f{i:D4}.txt"), "x\n");
+
+            // a capped listing materialises only the cap; the directory's totals come from a streamed pass
+            var (entries, visible, ignored) = FileWalker.ListDirectory(dir, maxEntries: 100);
+            Check.Equal(100, entries.Count, "only the cap is materialised");
+            Check.Equal(1200, visible, "the total is counted, not the materialised subset");
+            Check.Equal(0, ignored);
+            var names = entries.Select(e => e.Name).ToList();
+            Check.True(names.SequenceEqual(names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase)), "the materialised part stays sorted");
+
+            // an uncapped listing is unchanged: the whole directory
+            var (full, fv, fi) = FileWalker.ListDirectory(dir);
+            Check.Equal(1200, full.Count);
+            Check.Equal(1200, fv);
+
+            // ls: shows the cap, names the total, flags truncation — without materialising the rest
+            var res = await T.Run(new LsTool(), dir, new { });
+            Check.Ok(res);
+            Check.Contains(res.Content, "[Showing 1000 of 1200 entries", res.Content);
+            var d = T.D(res);
+            Check.Equal(1200, d.Int("entries"), "entries is the total, not the materialised count");
+            Check.True(d.Bool("truncated"));
+
+            // files.list: the same bound at the RPC level, reported in the payload
+            var ctx = new FakePluginContext(dir);
+            await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
+            var old = FileIndex.MaxListedEntries;
+            FileIndex.MaxListedEntries = 500;
+            try
+            {
+                var list = (FileIndex.ListResult)await ctx.RpcFake.InvokeAsync("files.list", new { })!;
+                Check.Equal(500, list.Entries.Count, "the listing stops at the cap");
+                Check.True(list.Truncated);
+                Check.Equal(1200, list.Total);
+            }
+            finally { FileIndex.MaxListedEntries = old; }
+        });
+
         // ------------------------------------------------ RPC
         r.Add("rpc: files.search fuzzy ranking and files.list", async () =>
         {

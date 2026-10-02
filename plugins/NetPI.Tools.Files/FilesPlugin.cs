@@ -44,7 +44,7 @@ public sealed class FilesPlugin : INetPiPlugin
         {
             var root = ResolveRoot(context, req);
             return Task.FromResult<object?>(_index.List(root, req.Str("dir")));
-        }, "List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries: { name, rel, isDir, size?, mtime?, ignored? }[] }");
+        }, "List one directory for the file tree: { sessionId?, cwd?, dir? } → { root, dir, entries: { name, rel, isDir, size?, mtime?, ignored? }[], truncated, total } (one directory lists at most FileIndex.MaxListedEntries = 10000 entries; a bigger one is capped and the rest is counted)");
 
         context.Rpc.Register("files.open", (req, _) =>
         {
