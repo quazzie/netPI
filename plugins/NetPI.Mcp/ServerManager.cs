@@ -47,7 +47,19 @@ internal sealed class ServerManager : IAsyncDisposable
         foreach (var config in configs) _states[config.Id] = new State(config);
         try
         {
-            await Task.WhenAll(_states.Values.Where(s => s.Config.Enabled).Select(async state =>
+            var enabled = _states.Values.Where(s => s.Config.Enabled).ToList();
+            if (previouslyHealthy.Count == 0)
+            {
+                // Cold start: the app comes up without waiting for a remote. Each worker connects in the background
+                // and announces its tools (mcp.toolsChanged) the moment the catalog arrives.
+                foreach (var state in enabled)
+                {
+                    state.Commands.Writer.TryWrite(new Command("discovery", true));
+                    state.Worker = RunAsync(state);
+                }
+                return;
+            }
+            await Task.WhenAll(enabled.Select(async state =>
             {
                 try { await ConnectAsync(state, "discovery", ct).ConfigureAwait(false); }
                 catch (Exception ex)
@@ -56,7 +68,7 @@ internal sealed class ServerManager : IAsyncDisposable
                     if (previouslyHealthy.Contains(state.Config.Id)) throw new McpException("MCP replacement could not prepare healthy server " + state.Config.Id + "; the previous plugin must be kept.");
                 }
             })).ConfigureAwait(false);
-            foreach (var state in _states.Values.Where(s => s.Config.Enabled)) state.Worker = RunAsync(state);
+            foreach (var state in enabled) state.Worker = RunAsync(state);
         }
         catch { await DisposeAsync().ConfigureAwait(false); throw; }
     }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Builder;
@@ -10,6 +11,19 @@ public static class McpTests
         Id="fixture", Command="dotnet", Args=[typeof(McpTests).Assembly.Location, "--mcp-fixture", mode],
         Cwd=Path.GetTempPath(), ConnectTimeoutMs=5000, CallTimeoutMs=2000
     };
+    /// <summary>Wait for a server to report connected: since the cold start connects in the background, this is what StartAsync no longer guarantees.</summary>
+    internal static async Task Connected(ServerManager manager, string id, int ms = 15_000)
+    {
+        var sw = Stopwatch.StartNew();
+        while (Status(manager, id) != "connected")
+        {
+            if (sw.ElapsedMilliseconds > ms) throw new AssertException($"MCP server {id} did not connect: {Status(manager, id)}");
+            await Task.Delay(50);
+        }
+    }
+    internal static string? Status(ServerManager manager, string id) =>
+        (manager.Snapshot()["servers"] as JsonArray)?.OfType<JsonObject>()
+            .FirstOrDefault(s => (string?)s["id"] == id)?["status"]?.GetValue<string>();
     internal static JsonObject Tool(string name="weather") => JsonNode.Parse("""{"name":"weather","description":"Get weather for a city","inputSchema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}}""")!.AsObject().WithName(name);
     private static JsonObject WithName(this JsonObject tool, string name) { tool["name"]=name; return tool; }
     private static ToolContext Context(FakePluginContext ctx, string session="ses_1") => new() { SessionId=session, AgentId="agt_1", CallId="call_1", Cwd=ctx.Paths.DefaultWorkspace, Services=ctx.Services, Events=ctx.Events };
@@ -77,6 +91,7 @@ public static class McpTests
             ctx.Sessions.CreateSession(new SessionInfo {Id="ses_1"});
             ctx.Settings.Set("mcp.servers",new JsonObject {["fixture"]=Config("large").Json()});
             await using var manager=new ServerManager(ctx); await manager.StartAsync([],CancellationToken.None);
+            await Connected(manager,"fixture");
             var search=new McpSearchTool(ctx,manager); var call=new McpCallTool(ctx,manager);
             ctx.Tools.Register(search);ctx.Tools.Register(call);
             Check.Equal(250,manager.Catalog().Count);
@@ -102,6 +117,26 @@ public static class McpTests
             Check.False(ToolSelection.Eligible(ctx.Tools,agent,ctx.Sessions.GetSession("ses_1")).Contains(target));
             await manager.DisposeAsync();ctx.Unload();Check.Equal(0,ctx.Tools.All.Count);
         });
+        r.Add("mcp: a cold start does not wait for a slow server, which connects in the background",async () => {
+            var ctx=new FakePluginContext();
+            ctx.Settings.Set("mcp.servers",new JsonObject {["fixture"]=(Config("slow") with {ConnectTimeoutMs=15_000}).Json()});
+            await using var manager=new ServerManager(ctx);
+            var sw=Stopwatch.StartNew();
+            await manager.StartAsync([],CancellationToken.None);
+            Check.True(sw.ElapsedMilliseconds<2_000,$"cold start returned in {sw.ElapsedMilliseconds} ms (the fixture answers after 2500 ms)");
+            Check.Equal(0,manager.Catalog().Count,"the catalog is still empty right away");
+            await Connected(manager,"fixture");
+            Check.Equal(1,manager.Catalog().Count,"and the tools arrive once the connection lands");
+            ctx.Unload();
+        });
+        r.Add("mcp: a swap that loses a healthy server fails the start, so the old plugin is kept",async () => {
+            var ctx=new FakePluginContext();
+            ctx.Settings.Set("mcp.servers",new JsonObject {["fixture"]=(Config() with {Command="netpi-no-such-command"}).Json()});
+            await using var manager=new ServerManager(ctx);
+            var ex=await Check.ThrowsAsync<McpException>(()=>manager.StartAsync(new() {"fixture"},CancellationToken.None));
+            Check.Contains(ex.Message,"previous plugin must be kept");
+            ctx.Unload();
+        });
         r.Add("mcp: arguments a model wrote as text are re-read against the discovered schema",async ()=>{
             var ctx=new FakePluginContext();
             ctx.Sessions.CreateSession(new SessionInfo {Id="ses_1"});
@@ -109,6 +144,7 @@ public static class McpTests
             var config=Config("typed") with {Args=[typeof(McpTests).Assembly.Location,"--mcp-fixture","typed",counter]};
             ctx.Settings.Set("mcp.servers",new JsonObject {["fixture"]=config.Json()});
             await using var manager=new ServerManager(ctx);await manager.StartAsync([],CancellationToken.None);
+            await Connected(manager,"fixture");
             var search=new McpSearchTool(ctx,manager);var call=new McpCallTool(ctx,manager);
             ctx.Tools.Register(search);ctx.Tools.Register(call);
             var tool=manager.Catalog().Single();var context=Context(ctx);

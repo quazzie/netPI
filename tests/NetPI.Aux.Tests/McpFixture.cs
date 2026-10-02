@@ -32,6 +32,7 @@ internal static class McpFixture
             if (request["id"] is null) continue;
             if (method == "server/discover")
             {
+                if (mode == "slow") await Task.Delay(2500); // a LAN host on a bad day: the connection is slow, not broken
                 if (mode == "legacy") await Send(new JsonObject { ["jsonrpc"]="2.0", ["id"]=request["id"]?.DeepClone(), ["error"]=new JsonObject { ["code"]=-32601, ["message"]="Unknown method" } });
                 else await Send(Reply(request, new JsonObject { ["supportedVersions"]=new JsonArray("2026-07-28"),
                     ["capabilities"]=ResourcesOnly(mode)
@@ -40,7 +41,7 @@ internal static class McpFixture
                                            ["resources"]=new JsonObject { ["subscribe"]=false, ["listChanged"]=mode=="resources-subscribe" } },
                     ["instructions"]="UNTRUSTED_SERVER_INSTRUCTIONS" }));
             }
-            else if (method == "initialize") await Send(Reply(request, new JsonObject { ["protocolVersion"]="2025-11-25", ["capabilities"]=new JsonObject { ["tools"]=new JsonObject() } }));
+            else if (method == "initialize") { if (mode == "slow") await Task.Delay(2500); await Send(Reply(request, new JsonObject { ["protocolVersion"]="2025-11-25", ["capabilities"]=new JsonObject { ["tools"]=new JsonObject() } })); }
             else if (method == "tools/list")
             {
                 var count = int.TryParse(mode, out var size) ? size : mode == "large" ? 250 : 1;
