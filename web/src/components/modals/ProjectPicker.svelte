@@ -1,13 +1,13 @@
 <script>
   import Icon from '../../lib/kit/Icon.svelte';
   import Popover from '../Popover.svelte';
-  import { app, setSessionProject, noteProject } from '../../lib/state/app.svelte.js';
+  import { app, setSessionProject, noteProject, newSession } from '../../lib/state/app.svelte.js';
   import { toast, openProjects } from '../../lib/state/ui.svelte.js';
 
   /**
    * Project picker.
    * data: { sessionId, anchor }: attach the chosen project to that session (sessions.setProject).
-   * data: { select: true, anchor }: only choose the project new sessions start in (the start screen); nothing is created.
+   * data: { select: true, anchor }: start a new session in the picked project (the start screen's chevron).
    */
   let { data, onclose } = $props();
   let q = $state('');
@@ -35,7 +35,11 @@
     const sessionId = data?.sessionId;
     const was = current;
     onclose();
-    if (selecting) return noteProject(p.id);
+    if (selecting) {
+      noteProject(p.id);   // keep the start screen's hint current
+      newSession({ projectId: p.id ?? null });
+      return;
+    }
     if (!sessionId || was === p.id) return;
     const s = await setSessionProject(sessionId, p.id);
     if (s) toast(p.id ? `Project: ${p.name}` : 'Project detached');
@@ -73,7 +77,7 @@
 >
   <div class="head">
     <Icon name="search" size={13} />
-    <input placeholder={select ? 'Start new sessions in…' : 'Attach project…'} bind:value={q} oninput={() => (index = 0)} onkeydown={onKey} use:focus spellcheck="false" />
+    <input placeholder={select ? 'Start a session in…' : 'Attach project…'} bind:value={q} oninput={() => (index = 0)} onkeydown={onKey} use:focus spellcheck="false" />
   </div>
   <div class="list np-scroll">
     {#each items as p, i (p.id ?? '__none')}

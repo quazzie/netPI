@@ -15,7 +15,7 @@ import { editGoal } from './goal.js';
 const BUILTIN = [
   {
     name: 'new',
-    description: 'Start a new session (same project)',
+    description: 'Start a new session (no project)',
     argsHint: '[title]',
     source: 'builtin',
     run: (args) => newSession({ title: args || undefined }),

@@ -6,8 +6,8 @@
   import { conn } from '../lib/rpc.svelte.js';
 
   const recent = $derived(app.sessions.filter((s) => !s.archived && !s.parentSessionId).slice(0, 6));
-  // the project new sessions start in from the start screen: the one last worked in; the chip changes it (Ctrl+T and the
-  // + tab follow the active session instead, and a session made with no tab open gets no project)
+  // the project last worked in: shown as a hint on the project button, which opens the picker — picking a
+  // project starts a session in it (the + button and Ctrl+T always start without one)
   const target = $derived(app.lastProjectId ? (app.projectsById.get(app.lastProjectId) ?? null) : null);
   let targetEl = $state();
 
@@ -35,16 +35,16 @@
     {:else}
       <div class="start">
         <div class="actions">
-          <button class="np-btn np-btn-primary big" onclick={() => newSession({ projectId: target?.id ?? null })}>
+          <button class="np-btn np-btn-primary big" onclick={() => newSession()}>
             <Icon name="plus" size={15} /> New session <span class="np-kbd">Ctrl+T</span>
           </button>
-          <span class="in">in</span>
+          <span class="in">or</span>
           <button
             class="np-btn big target"
             bind:this={targetEl}
             onclick={pickTarget}
             aria-haspopup="dialog"
-            title="Choose the project new sessions start in"
+            title="Start a session in the project picked here"
           >
             <Icon name="folder" size={14} />
             <span class="np-ellipsis">{target?.name ?? 'No project'}</span>

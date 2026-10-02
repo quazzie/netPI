@@ -59,22 +59,17 @@
     moveTab(dragId, to);
   }
 
-  // favorite projects (Projects tab ★) that still exist, as quick new-session entries in the + menu
+  // favorite projects (Projects tab ★) that still exist: the chevron menu is the way to start a session
+  // in a project (the + button beside it always starts without one)
   const favorites = $derived(prefs.favorites.map((id) => app.projectsById.get(id)).filter(Boolean));
   const newSessionItems = $derived([
-    { label: 'New session', icon: 'plus', onclick: () => newSession() },
-    ...(favorites.length
-      ? [
-          { divider: true },
-          { header: 'Favorites' },
-          ...favorites.map((p) => ({
-            label: p.name,
-            icon: 'folder',
-            hint: p.path,
-            onclick: () => newSession({ projectId: p.id }),
-          })),
-        ]
-      : []),
+    { header: 'Favorites' },
+    ...favorites.map((p) => ({
+      label: p.name,
+      icon: 'folder',
+      hint: p.path,
+      onclick: () => newSession({ projectId: p.id }),
+    })),
   ]);
 
   function title(id) {

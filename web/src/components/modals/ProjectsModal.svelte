@@ -22,8 +22,8 @@
   /**
    * Projects dialog. data: { view: 'list' | 'new' | 'edit', id?, sessionId?, select? }
    * - list: every project, with new session / edit / remove
-   * - new: create a project; opened from a picker it is then attached to `sessionId`, or with `select` it becomes the
-   *   project new sessions start in
+   * - new: create a project; opened from a picker it is then attached to `sessionId`, or with `select` a new
+   *   session starts in it
    * - edit: one project (`id`): name and folder, its sessions, the instruction files and skills that apply to its folder
    */
   let { data, onclose } = $props();
@@ -133,6 +133,7 @@
       } else if (opened.select) {
         onclose();
         noteProject(p.id);
+        newSession({ projectId: p.id });
       } else if (fromList) showList();
       else onclose();
     } catch (err) {
@@ -264,7 +265,7 @@
       {#if opened.sessionId}
         <p class="hint">The current session moves into the new project.</p>
       {:else if opened.select}
-        <p class="hint">New sessions will start in it.</p>
+        <p class="hint">A new session starts in it.</p>
       {/if}
     </form>
   {:else if project}

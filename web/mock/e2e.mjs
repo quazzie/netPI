@@ -1326,13 +1326,13 @@ log('project picker + new session project');
   check('project picker (composer) posts the second notice', (await page.locator('.notice', { hasText: 'aiproxy' }).count()) > 0);
   check('the composer button shows the attached project', /aiproxy/.test(await projBtn.innerText()));
   check('no project chip left in the top bar or the chat header', (await page.locator('.topbar .chip, .header .chip').count()) === 0);
-  // a new session starts in the active session's project
+  // the plus button always starts a session without a project, even with a project session active
   await page.locator('.panel.left .head button[title^="New session"]').click();
   await page.waitForTimeout(500);
   const newId = await page.locator('.topbar .tab.active').getAttribute('data-tab');
   const ns = await rpcCall('sessions.get', { id: newId });
-  check('new session inherits the active project', ns.projectId === idOf('aiproxy'), String(ns.projectId));
-  // …and, with no session open, the project last worked in
+  check('new session from the plus button gets no project', ns.projectId === null, String(ns.projectId));
+  // …and, with no session open, still no project — the last project only preselects the pickers
   // close the other tabs first so no other session becomes active on the way
   while (await page.locator('.topbar .tab:not(.active)').count()) await page.locator('.topbar .tab:not(.active) .tab-close').first().click();
   await page.locator('.topbar .tab.active .tab-close').click();
@@ -1341,7 +1341,7 @@ log('project picker + new session project');
   await page.waitForTimeout(500);
   const id2 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
   const s2 = id2 ? await rpcCall('sessions.get', { id: id2 }) : null;
-  check('new session with no tab open uses the last project', s2?.projectId === idOf('aiproxy'), String(s2?.projectId));
+  check('new session with no tab open gets no project', s2?.projectId === null, String(s2?.projectId));
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
   await page.waitForTimeout(300);
 }
@@ -1363,21 +1363,22 @@ log('start screen: the project new sessions start in');
   await page.waitForTimeout(300);
   await shot(page, '12b-start-project-picker');
   await page.locator('.popover .item', { hasText: 'website' }).first().click();
-  await page.waitForTimeout(300);
-  check('choosing a project on the start screen creates no session', (await page.locator('.topbar .tab').count()) === 0 && (await page.locator('.welcome').count()) === 1);
-  check('the start screen shows the chosen project', /website/.test(await chip.innerText()), await chip.innerText());
-  check('the start screen shows its folder', /website/.test(await page.locator('.welcome .where').innerText()), await page.locator('.welcome .where').innerText());
-  await page.locator('.welcome .np-btn-primary').click();
   await page.waitForTimeout(500);
   const id = await page.locator('.topbar .tab.active').getAttribute('data-tab');
   const s = id ? await rpcCall('sessions.get', { id }) : null;
-  check('New session starts in the chosen project', s?.projectId === idOf('website'), String(s?.projectId));
+  check('picking a project on the start screen starts a session in it', s?.projectId === idOf('website'), String(s?.projectId));
 
-  // the other way round: with no tab open, Ctrl+T does not carry the last project over — the new session
-  // starts without one, even though the start screen still remembers it
+  // the last project is still remembered after the chevron pick, but the + button and Ctrl+T always start without one
   await page.locator('.topbar .tab .tab-close').first().click();
   await page.waitForSelector('.welcome .target');
   check('the last project is still remembered', await page.evaluate(() => JSON.parse(localStorage.getItem('netpi.lastProject') ?? 'null')) === idOf('website'), await page.evaluate(() => localStorage.getItem('netpi.lastProject')));
+  await page.locator('.welcome .np-btn-primary').click();
+  await page.waitForTimeout(500);
+  const idA = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const sA = idA ? await rpcCall('sessions.get', { id: idA }) : null;
+  check('the start screen plus button starts without a project', sA?.projectId === null, String(sA?.projectId));
+  await page.locator('.topbar .tab .tab-close').first().click();
+  await page.waitForSelector('.welcome .target');
   await page.keyboard.press('Control+t');
   await page.waitForTimeout(500);
   const id2 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
@@ -1389,8 +1390,6 @@ log('start screen: the project new sessions start in');
   await chip.click();
   await page.waitForSelector('.popover .item');
   await page.locator('.popover .item', { hasText: 'website' }).first().click();
-  await page.waitForTimeout(300);
-  await page.locator('.welcome .np-btn-primary').click();
   await page.waitForTimeout(500);
   const id3 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
   const s3 = id3 ? await rpcCall('sessions.get', { id: id3 }) : null;
@@ -1682,6 +1681,11 @@ log('budget: chat cost, Work tab, a chat stopped by the budget');
 if (want('profiles: settings, a project default, per chat')) {
 log('profiles: settings, a project default, per chat');
 {
+  // the section's project steps work from the netpi session; whatever the run's order left active, open it
+  await openStripTab('left', 'Sessions');
+  await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
+  await page.waitForTimeout(300);
+
   // a profile from the settings: a name, the instructions, tools switched off with checkboxes
   await page.keyboard.press('Control+,');
   await page.waitForSelector('.dialog');
@@ -1725,8 +1729,14 @@ log('profiles: settings, a project default, per chat');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
 
-  // a new chat in the project: no profile until its first message (the project's default arrives with it); the picker is free before it
-  await page.keyboard.press('Control+t');
+  // a new chat in the project: the start screen's chevron is the way to start a session in one — close the
+  // tabs, pick the project, and a session starts in it. No profile until its first message (the project's
+  // default arrives with it); the picker is free before it
+  while (await page.locator('.topbar .tab').count()) await page.locator('.topbar .tab .tab-close').first().click();
+  await page.waitForSelector('.welcome .target');
+  await page.locator('.welcome .target').first().click();
+  await page.waitForSelector('.popover .item');
+  await page.locator('.popover .item', { hasText: 'netpi' }).first().click();
   await page.waitForTimeout(500);
   const sid = await page.locator('.topbar .tab.active').getAttribute('data-tab');
   let s = await rpcCall('sessions.get', { id: sid });
