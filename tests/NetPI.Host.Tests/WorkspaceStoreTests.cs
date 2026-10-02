@@ -91,8 +91,8 @@ public static class WorkspaceStoreTests
             await using var f = new Fixture();
             var w = Workspace(f, "w");
             f.Store.UpdateWorkspace(w.Id, x => x.Branch = "b");
-            Check.Equal(1, (await f.EventsAsync(EventTypes.WorkspaceCreated)).Count);
-            Check.Equal(1, (await f.EventsAsync(EventTypes.WorkspaceUpdated)).Count);
+            Check.Equal(1, (await f.EventsAsync(WorkspaceEvents.Created)).Count);
+            Check.Equal(1, (await f.EventsAsync(WorkspaceEvents.Updated)).Count);
         });
 
         r.Add("workspaces: a bound session works in its workspace, not in its project", async () =>
@@ -187,7 +187,7 @@ public static class WorkspaceStoreTests
             Check.True(f.Store.DeleteWorkspace(w.Id));
             Check.False(f.Store.DeleteWorkspace(w.Id));
             // Three sessions were bound: the two stored ones and the message-less one (in memory only).
-            var events = await f.EventsAsync(EventTypes.SessionWorkspace);
+            var events = await f.EventsAsync(WorkspaceEvents.SessionBound);
             Check.Equal(3, events.Count);
             Check.Equal(null, f.Store.GetSession(s1.Id)!.WorkspaceId);
             Check.Equal(null, f.Store.GetSession(s2.Id)!.WorkspaceId);
@@ -279,11 +279,11 @@ public static class WorkspaceStoreTests
             lock (order)
             {
                 Check.Equal(7, order.Count);
-                Check.Equal(EventTypes.WorkspaceDeleted, order[0].Type);
+                Check.Equal(WorkspaceEvents.Deleted, order[0].Type);
                 for (var i = 1; i < 7; i += 2)
                 {
                     Check.Equal(EventTypes.SessionUpdated, order[i].Type);
-                    Check.Equal(EventTypes.SessionWorkspace, order[i + 1].Type);
+                    Check.Equal(WorkspaceEvents.SessionBound, order[i + 1].Type);
                 }
             }
         });

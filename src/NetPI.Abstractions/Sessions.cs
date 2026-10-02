@@ -72,16 +72,6 @@ public static class SessionMeta
 }
 
 /// <summary>
-/// The profile a session runs with: <c>meta.profile</c>, written by the profiles plugin (and by a project's default for a new
-/// chat). The key lives here, not in that plugin, because <c>session.changed</c> reports meta keys as data: a consumer of
-/// the event must be able to name the key without knowing which plugin wrote it (idea-m7vmue).
-/// </summary>
-public static class SessionProfile
-{
-    public const string MetaKey = "profile";
-}
-
-/// <summary>
 /// Tools switched off for one session: <c>meta.toolsOff</c> lists tool names its agent is not sent (the <c>agent.setTools</c>
 /// RPC; a subagent session starts with its parent's list). A change after the first model call applies from the next call.
 /// </summary>

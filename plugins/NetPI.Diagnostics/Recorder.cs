@@ -23,7 +23,7 @@ public sealed class Recorder
     /// <summary>Events too frequent to keep (every token, every output chunk).</summary>
     private static readonly HashSet<string> Skipped = new(StringComparer.Ordinal)
     {
-        EventTypes.StreamDelta, EventTypes.StreamTool, EventTypes.ToolOutput, EventTypes.ProcessOutput,
+        EventTypes.StreamDelta, EventTypes.StreamTool, EventTypes.ToolOutput, ProcessEvents.Output,
     };
 
     private readonly IPluginContext _ctx;
@@ -247,7 +247,7 @@ public sealed class Recorder
             case EventTypes.MessageUpdated:
                 if (d["message"] is JsonObject m) return SummarizeMessage(m);
                 break;
-            case EventTypes.AgentsChanged:
+            case AgentSchedulerEvents.Changed:
                 if (d["agents"] is JsonArray agents)
                     return JsonValue.Create(string.Join(" · ", agents.Select(a => a is JsonObject o
                         ? $"{o["key"]} {o["busy"]}/{o["capacity"]}{(Long(o["queued"]) is > 0 ? $"+{o["queued"]}" : "")}{(o["available"] is JsonValue av && av.TryGetValue<bool>(out var ok) && !ok ? " (" + ((string?)o["unavailable"] ?? "inactive") + ")" : "")}"

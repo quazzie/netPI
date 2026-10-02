@@ -33,6 +33,7 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
+    <Project Path="src/NetPI.Contracts/NetPI.Contracts.csproj" />
     <Project Path="src/NetPI.Desktop/NetPI.Desktop.csproj" />
     <Project Path="src/NetPI.Host/NetPI.Host.csproj" />
     <Project Path="src/NetPI.Server/NetPI.Server.csproj" />

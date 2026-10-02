@@ -11,8 +11,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Contracts live in the host's default load context: never copy them next to the plugin. -->
+    <!-- Contracts (the core's and the higher abstractions') live in the host's default load context: never copy them next to the plugin. -->
     <ProjectReference Include="$(RepoRoot)src/NetPI.Abstractions/NetPI.Abstractions.csproj" Private="false" ExcludeAssets="runtime" />
+    <ProjectReference Include="$(RepoRoot)src/NetPI.Contracts/NetPI.Contracts.csproj" Private="false" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>

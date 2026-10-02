@@ -82,17 +82,14 @@ public interface IAgentTool
 
 public sealed class ToolContext
 {
-    public IAgentSlot? AdmissionLease { get; init; }
+    /// <summary>What the part that built this context knows beyond the core's own concepts (the checkout the session works in, the slot the run holds): ask by type.</summary>
+    public FeatureSet Features { get; } = new();
     public required string SessionId { get; init; }
     public required string AgentId { get; init; }
     public required string CallId { get; init; }
     /// <summary>Working directory (project folder or default workspace). Relative paths resolve against it.</summary>
     public required string Cwd { get; init; }
     public ProjectInfo? Project { get; init; }
-    /// <summary>The session's workspace, when it is bound to one. Null is the pre-workspace behavior: relative paths
-    /// resolve in the project checkout and nothing is refused. A tool that mutates should ask
-    /// <see cref="WorkspacePaths.CheckMutation"/> rather than compare paths itself.</summary>
-    public WorkspaceBinding? Workspace { get; init; }
     public ModelInfo? Model { get; init; }
     public required IServiceRegistry Services { get; init; }
     public required IEventBus Events { get; init; }

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The vocabularies of the higher abstractions built on the core (agent slots, workspaces, decisions, resource leases...).
+       Not part of the core: the host does not reference it. It is a host file all the same: the host loads it once into
+       the default AssemblyLoadContext before any plugin, so every plugin that speaks one of these contracts shares the types.
+       It builds into the app folder next to NetPI.Abstractions.dll. -->
+  <PropertyGroup>
+    <RootNamespace>NetPI</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <OutDir>$(AppOutDir)</OutDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../NetPI.Abstractions/NetPI.Abstractions.csproj" />
+  </ItemGroup>
+</Project>

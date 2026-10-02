@@ -73,7 +73,7 @@ public sealed record WorkspaceBinding(
 /// <summary>
 /// The workspace a session is bound to: <c>meta.workspaceId</c> on the session, written by the workspace plugin and by
 /// <c>sessions.setWorkspace</c>. It lives in Abstractions because the key is the contract of
-/// <see cref="EventTypes.SessionWorkspace"/>, not an implementation detail of whichever plugin wrote it.
+/// <see cref="WorkspaceEvents.SessionBound"/>, not an implementation detail of whichever plugin wrote it.
 /// </summary>
 public static class SessionWorkspace
 {

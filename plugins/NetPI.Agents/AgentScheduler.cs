@@ -748,7 +748,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         try
         {
             var pools = Snapshot();
-            _ctx.Events.Publish(EventTypes.AgentsChanged, new JsonObject { ["agents"] = NetPiJson.ToNode(pools), ["resources"] = NetPiJson.ToNode(Resources()) });
+            _ctx.Events.Publish(AgentSchedulerEvents.Changed, new JsonObject { ["agents"] = NetPiJson.ToNode(pools), ["resources"] = NetPiJson.ToNode(Resources()) });
         }
         catch (Exception ex)
         {

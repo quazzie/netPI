@@ -68,7 +68,7 @@ public static class DecisionReworkTests
             };
             var verifying = new IdeaVerifier(ctx).VerifyAsync("Save plan", "An unfinished plan", null, null, CancellationToken.None);
             await started.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            scheduler.Queued = true; ctx.Events.Publish(EventTypes.AgentsChanged);
+            scheduler.Queued = true; ctx.Events.Publish(AgentSchedulerEvents.Changed);
             await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(3));
             Check.Equal(0, scheduler.Released, "request cancellation does not free active inference");
             acknowledged.SetResult();

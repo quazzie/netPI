@@ -68,19 +68,8 @@ public sealed class SpawnRequest
     public string? ParentAgentId { get; init; }
     /// <summary>Project for the subagent session (default: parent's project).</summary>
     public string? ProjectId { get; init; }
-    /// <summary>Workspace for the subagent session: an existing workspace id/name, or a request for a fresh isolated one.
-    /// Null = the parent's workspace (bound or not). Resolved and provisioned by the workspace plugin before the child runs;
-    /// when no workspace plugin is loaded the value is ignored and the child's project behaves as it did before.</summary>
-    public string? WorkspaceId { get; init; }
-    /// <summary>Give the subagent its own worktree and branch (a writing worker), instead of sharing the caller's checkout.</summary>
-    public bool Isolated { get; init; }
-    /// <summary>Name for a provisioned workspace (default: the subagent's name).</summary>
-    public string? WorkspaceName { get; init; }
-    /// <summary>Session that owns a provisioned workspace (default: the subagent's own session). Ownership belongs to the
-    /// worker, so a worker that is handed a second task keeps the checkout it already has.</summary>
-    public string? WorkspaceOwnerSessionId { get; init; }
-    /// <summary>Branch or commit a provisioned workspace starts from (default: the project's current HEAD).</summary>
-    public string? WorkspaceBase { get; init; }
+    /// <summary>What the spawner wants beyond the core's own concepts (a workspace for the child, say), by type; the part that knows the type acts on it before the child runs.</summary>
+    public FeatureSet Features { get; init; } = new();
     /// <summary>The agent (<c>agents.&lt;id&gt;</c>) the subagent runs on; its model is <see cref="Model"/>.</summary>
     public string? Agent { get; init; }
     /// <summary>The subagent's tools, chosen by its owner (null = the owner's tools: its allowlist and the tools switched off for its session).</summary>
@@ -150,13 +139,12 @@ public interface IAgentRuntime
 /// <summary>State of one agent run (from input until the agent stops).</summary>
 public sealed class AgentRunContext
 {
-    public IAgentSlot? AdmissionLease { get; set; }
+    /// <summary>What the loop knows beyond the core's own concepts (the checkout the session works in, the slot the run holds): ask by type.</summary>
+    public FeatureSet Features { get; } = new();
     public required AgentInfo Agent { get; init; }
     public required SessionInfo Session { get; set; }
     public ProjectInfo? Project { get; set; }
-    /// <summary>The session's workspace (null when it is not bound to one). <see cref="Cwd"/> is this workspace's root when it
-    /// is set, and the project's path otherwise — the two are resolved once, here, so every consumer of the run agrees.</summary>
-    public WorkspaceBinding? Workspace { get; set; }
+    /// <summary>The folder the run works in, resolved once so every consumer of the run agrees.</summary>
     public required string Cwd { get; set; }
     public required ModelInfo Model { get; set; }
     public string? ReasoningEffort { get; set; }

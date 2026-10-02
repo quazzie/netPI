@@ -146,7 +146,7 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         if (bus is null) return null;
         return chunk =>
         {
-            try { bus.Publish(EventTypes.ProcessOutput, new { id, chunk }); } catch { }
+            try { bus.Publish(ProcessEvents.Output, new { id, chunk }); } catch { }
         };
     }
 

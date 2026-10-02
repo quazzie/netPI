@@ -149,7 +149,6 @@ internal sealed class HostKernel : IAsyncDisposable
         _subscriptions.Add(Services.Register<ISettings>(Settings));
         _subscriptions.Add(Services.Register<IStorageAccess>(new StorageAccess(Storage)));
         _subscriptions.Add(Services.Register<IEventBus>(Bus));
-        _subscriptions.Add(Services.Register<IResourceLeases>(new ResourceLeases(Bus)));
         _subscriptions.Add(Services.Register<IToolRegistry>(Tools));
         _subscriptions.Add(Services.Register<IRpcRegistry>(Rpc));
         _subscriptions.Add(Services.Register<IUiRegistry>(Ui));

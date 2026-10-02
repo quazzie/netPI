@@ -145,10 +145,6 @@ internal sealed class ModelCatalog : IModelCatalog, IDisposable
     public IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
-        // Paid models need the budget gate (the ledger in the Agents plugin). Without it there is no reservation, no
-        // recording and no cap, so a disabled or failing Agents plugin fails closed instead of running un-metered.
-        if (!request.Model.IsLocal && _services.Get<IBudgetGate>() is null)
-            throw new ModelException($"Model {request.Model.Ref} is a paid model and the budget gate is not available (the Agents plugin is not loaded or failed to start); local and free models are unaffected.", transient: false);
         request.Messages = ModelMessages.Normalize(request.Messages);
         ModelCallDelegate pipeline = CallProvider;
         var middleware = _services.GetAll<IModelMiddleware>().OrderBy(m => m.Order).ToList(); // stable: priority order kept for ties

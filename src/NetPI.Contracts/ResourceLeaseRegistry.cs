@@ -1,4 +1,4 @@
-namespace NetPI.Host.Registries;
+namespace NetPI;
 
 /// <summary>No delegates or plugin objects are stored here; the leases and descriptors belong to the host.</summary>
 public sealed class ResourceLeases(IEventBus events) : IResourceLeases

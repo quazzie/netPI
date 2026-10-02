@@ -315,12 +315,12 @@ public sealed class ProcessRegistry(IEventBus? events = null)
     internal void Add(ManagedProcess p)
     {
         _all[p.Id] = p;
-        Publish(EventTypes.ProcessStarted, p);
+        Publish(ProcessEvents.Started, p);
     }
 
     internal void OnExited(ManagedProcess p)
     {
-        Publish(EventTypes.ProcessExited, p);
+        Publish(ProcessEvents.Exited, p);
         _finished.Enqueue(p.Id);
         while (_finished.Count > KeepFinished && _finished.TryDequeue(out var old))
         {

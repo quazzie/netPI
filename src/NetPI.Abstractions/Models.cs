@@ -122,15 +122,6 @@ public interface IModelMiddleware
     IAsyncEnumerable<ModelStreamEvent> InvokeAsync(ModelRequest request, ModelCallDelegate next, CancellationToken ct);
 }
 
-/// <summary>
-/// The budget gate: registered by the ledger (the Agents plugin) and required by the model catalog for non-local
-/// models. While no gate is registered — the Agents plugin disabled or failing — paid calls are refused, so a
-/// missing ledger can never run them un-metered.
-/// </summary>
-public interface IBudgetGate
-{
-}
-
 /// <summary>Aggregated model catalog over all registered providers (host service).</summary>
 public interface IModelCatalog
 {

@@ -54,7 +54,7 @@ public static class SchedulerTests
         Check.Equal(3, h.Catalog.Calls);
         await Task.Delay(250);
         await h.Bus.DrainAsync();
-        var last = FakeBus.Data(h.Bus.OfType(EventTypes.AgentsChanged).Last());
+        var last = FakeBus.Data(h.Bus.OfType(AgentSchedulerEvents.Changed).Last());
         Check.Equal(0, ((JsonArray)last["agents"]!).Count, "no agents, nothing running");
     }
 
@@ -349,22 +349,22 @@ public static class SchedulerTests
         await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.Agents);
         var s = h.Scheduler!;
         await Task.Delay(250);
-        var before = h.Bus.OfType(EventTypes.AgentsChanged).Count;
+        var before = h.Bus.OfType(AgentSchedulerEvents.Changed).Count;
         var pool = s.Resolve(TestHost.LocalModel());
         var leases = new List<IAgentSlot>();
         for (var i = 0; i < 2; i++) leases.Add(await s.AcquireAsync(Req(pool, "A" + i), CancellationToken.None));
         foreach (var l in leases) l.Dispose();
         await Task.Delay(300);
         await h.Bus.DrainAsync();
-        var after = h.Bus.OfType(EventTypes.AgentsChanged).Count;
+        var after = h.Bus.OfType(AgentSchedulerEvents.Changed).Count;
         Check.True(after - before is >= 1 and <= 2, $"coalesced into {after - before} event(s)");
-        var pools = (JsonArray)FakeBus.Data(h.Bus.OfType(EventTypes.AgentsChanged).Last())["agents"]!;
+        var pools = (JsonArray)FakeBus.Data(h.Bus.OfType(AgentSchedulerEvents.Changed).Last())["agents"]!;
         Check.Equal(0, pools.Count, "nothing busy");
         // a settings change that changes nothing here sends nothing
         h.Settings.Set("ui.theme", "dark");
         await Task.Delay(250);
         await h.Bus.DrainAsync();
-        Check.Equal(after, h.Bus.OfType(EventTypes.AgentsChanged).Count);
+        Check.Equal(after, h.Bus.OfType(AgentSchedulerEvents.Changed).Count);
     }
 
     private static async Task QueueCapAndTimeout()

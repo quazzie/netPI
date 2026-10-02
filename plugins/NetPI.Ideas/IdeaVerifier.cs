@@ -32,7 +32,7 @@ internal sealed class IdeaVerifier(IPluginContext ctx)
                 admission.Report("yielding", "Higher-priority work is queued; awaiting provider cancellation");
                 yielding.Cancel();
             }
-            using var changed = ctx.Events.Subscribe(EventTypes.AgentsChanged, _ => CheckQueue());
+            using var changed = ctx.Events.Subscribe(AgentSchedulerEvents.Changed, _ => CheckQueue());
             CheckQueue();
             try
             {

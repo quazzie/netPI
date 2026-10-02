@@ -15,7 +15,7 @@ public static class DecisionHints
         body["branches"] = new JsonArray(questions.Select(q => (JsonNode)new JsonObject
             { ["id"] = q.Key, ["content"] = q.Value + latest + "\nAnswer YES only when clearly supported; otherwise NO.", ["labels"] = new JsonArray("YES", "NO") }).ToArray());
         return await DecisionCapabilities.InvokeAsync(services, rpc, "decide.decision", body, ct,
-            turn.Run.AdmissionLease, turn.Run.Model.Ref).ConfigureAwait(false);
+            turn.Run.AdmissionLease(), turn.Run.Model.Ref).ConfigureAwait(false);
     }
 
     public static bool Yes(JsonObject? answer, string id, double threshold = 0.8)

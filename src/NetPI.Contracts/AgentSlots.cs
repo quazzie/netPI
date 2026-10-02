@@ -16,11 +16,11 @@ public interface IAgentScheduler
     /// <summary>
     /// The agent a run on <paramref name="model"/> goes to: <paramref name="agent"/> when it runs that model, else an agent on
     /// the model (a free one first). Null when no agents are set up (every model then runs on a slot per model). Throws
-    /// <see cref="AgentUnavailableException"/> when agents are set up and none runs the model.
+    /// <see cref="CallRefusedException"/> (<c>Kind = "unavailable"</c>) when agents are set up and none runs the model.
     /// </summary>
     string? ChooseAgent(ModelInfo model, string? agent) => null;
     IReadOnlyList<AgentSlots> Snapshot();
-    /// <summary>Wait for a slot (FIFO within priority). Throws <see cref="BudgetExceededException"/> if the provider is over budget.</summary>
+    /// <summary>Wait for a slot (FIFO within priority). Throws <see cref="CallRefusedException"/> when the run is refused (the provider is over a limit, or the agent is not available).</summary>
     ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct);
     bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease);
     IReadOnlyList<ModelResourceSlots> Resources() => [];
@@ -105,9 +105,6 @@ public sealed class AgentSlots
     public double? DailyLimitUsd { get; set; }
 }
 
-/// <summary>A run asked for an agent that can't take work now (disabled, or its model isn't loaded).</summary>
-public sealed class AgentUnavailableException(string message) : Exception(message);
-
 /// <summary>The agent (<c>agents.&lt;id&gt;</c>) a session runs on: <c>meta.agent</c>.</summary>
 public static class SessionAgent
 {
@@ -115,10 +112,4 @@ public static class SessionAgent
 
     public static string? Of(SessionInfo? session) =>
         session?.Meta?[MetaKey] is System.Text.Json.Nodes.JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;
-}
-
-public sealed class BudgetExceededException(string message) : Exception(message)
-{
-    /// <summary>budget.onLimit "ask" and a chat of the user: the user may let this chat go over (<c>budget.allow</c>).</summary>
-    public bool CanOverride { get; init; }
 }

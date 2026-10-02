@@ -140,8 +140,8 @@ public static class ShellTests
             // Foreground runs are recorded and published.
             Check.True(registry.List().Count >= 3);
             Check.True(registry.List().All(p => !p.IsRunning));
-            Check.True(bus.OfType(EventTypes.ProcessStarted).Count >= 3);
-            Check.True(bus.OfType(EventTypes.ProcessExited).Count >= 3);
+            Check.True(bus.OfType(ProcessEvents.Started).Count >= 3);
+            Check.True(bus.OfType(ProcessEvents.Exited).Count >= 3);
         });
 
         r.Add("bash: ANSI codes and progress carriage returns are cleaned", async () =>
@@ -373,7 +373,7 @@ public static class ShellTests
                 var outRes = await T.Run(new ProcessTool(registry), dir, new { action = "output", id });
                 Check.Contains(outRes.Content, "tick 1\ntick 2\ntick 3");
                 Check.Contains(outRes.Content, "running");
-                Check.True(bus.OfType(EventTypes.ProcessOutput).Count > 0, "process.output events for background processes");
+                Check.True(bus.OfType(ProcessEvents.Output).Count > 0, "process.output events for background processes");
 
                 var kill = await T.Run(new ProcessTool(registry), dir, new { action = "kill", id });
                 Check.Ok(kill);
@@ -383,9 +383,9 @@ public static class ShellTests
                 Check.Contains((await T.Run(new ProcessTool(registry), dir, new { action = "list" })).Content, $"{id}  killed");
                 Check.Contains((await T.Run(new ProcessTool(registry), dir, new { action = "kill", id })).Content, "not running");
 
-                var started = bus.OfType(EventTypes.ProcessStarted).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
+                var started = bus.OfType(ProcessEvents.Started).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
                 Check.True(started.Process.Background);
-                var exited = bus.OfType(EventTypes.ProcessExited).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
+                var exited = bus.OfType(ProcessEvents.Exited).Select(e => e.As<ProcEvt>()!).Single(e => e.Process.Id == id);
                 Check.Equal("killed", exited.Process.Status);
                 Check.Error(await T.Run(new ProcessTool(registry), dir, new { action = "output", id = "proc_nope" }), "No process");
             }
