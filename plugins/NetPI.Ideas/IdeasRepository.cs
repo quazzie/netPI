@@ -883,7 +883,11 @@ public sealed class IdeasRepository
         return doc;
     }
 
-    private static JsonObject? CardDoc(JsonObject? doc) => doc?["doc"] as JsonObject;
+    /// <summary>
+    /// The card as it was written, a document of its own: the store hands out copies, and a node that still has the row
+    /// it was read from as its parent cannot be put into an answer (a JSON node belongs to one parent).
+    /// </summary>
+    private static JsonObject? CardDoc(JsonObject? doc) => doc?["doc"] is JsonObject card ? (JsonObject)card.DeepClone() : null;
 
     /// <summary>
     /// The revision travels with the idea the caller reads, so an editor can submit the version it had. It is a field
