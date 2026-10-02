@@ -294,6 +294,26 @@ public static class SshTests
             Check.Contains((await env.Run("ssh_read", new { host = "nuc", path = "/var/log/huge.log" })).Content, "aborted");
         });
 
+        r.Add("ssh_read: a single line that outruns the page budget is clamped and named, not handed over whole", async () =>
+        {
+            var env = new Env();
+            var bigLine = new string('x', 60_000); // ~60 KB: more than the 50 KB page
+            var body = bigLine + "\nafter\n";
+            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_stat=" + body.Length + " 1700000000\n" + body, "", false, false);
+            var res = await env.Run("ssh_read", new { host = "nuc", path = "/etc/one-line" });
+            Check.False(res.IsError, res.Content);
+            Check.True(res.Content.StartsWith(bigLine[..SshReadTool.MaxChars]), "the line is cut to the budget");
+            Check.Equal(SshReadTool.MaxChars, res.Content.IndexOf('\n'), "nothing after the clamped line except the notes");
+            Check.Contains(res.Content, $"[Line 1 is {SshToolBase.Size(60_000)} long; showing its first {SshToolBase.Size(SshReadTool.MaxChars)}");
+            Check.Contains(res.Content, "cut -c");
+            Check.NotContains(res.Content, "after", "the rest of the file is not in this page");
+            Check.True(D(res).GetProperty("truncated").GetBoolean(), "a clamped page is truncated");
+            // the page after the huge line is reachable as usual
+            var next = await env.Run("ssh_read", new { host = "nuc", path = "/etc/one-line", offset = 2 });
+            Check.Equal("after", next.Content);
+            Check.False(D(next).GetProperty("truncated").GetBoolean());
+        });
+
         r.Add("ssh_edit: exact replacements keep CRLF, write only when the file is unchanged, diff for the UI", async () =>
         {
             var env = new Env();

@@ -499,14 +499,25 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
         var limit = Math.Clamp(A.Int(args, "limit", "lines", "count") ?? MaxLines, 1, MaxLines);
         var sb = new StringBuilder();
         var taken = 0;
+        string? lineNote = null;
         for (var i = offset - 1; i < total && taken < limit; i++)
         {
-            if (sb.Length + lines[i].Length + 1 > MaxChars && taken > 0) break;
+            if (sb.Length + lines[i].Length + 1 > MaxChars)
+            {
+                if (taken > 0) break;
+                // A single line that outruns the whole page budget (a minified bundle, a JSON dump): show its
+                // beginning and say so, the way the local read does — the page is not one line of 8 MB.
+                sb.Append(lines[i].Length > MaxChars ? lines[i][..MaxChars] : lines[i]);
+                taken = 1;
+                lineNote = $"[Line {i + 1} is {Size(Encoding.UTF8.GetByteCount(lines[i]))} long; showing its first {Size(MaxChars)}. Use ssh_run (e.g. cut -c, fold) to inspect the rest.]";
+                break;
+            }
             if (taken > 0) sb.Append('\n');
             sb.Append(lines[i]);
             taken++;
         }
         var end = offset + taken - 1;
+        var truncated = end < total || (file.Cut && offsetArg > 0) || lineNote is not null;
         // Beyond this window: a head window on a bigger file has content that no offset can reach (ssh_run's job),
         // a tail window at its end is the file's end.
         var more = end < total || (file.Cut && offsetArg > 0);
@@ -524,7 +535,8 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
                         : $"\n\n[Showing lines {offset}-{end}, the first {MaxReadBytes / 1024 / 1024} MB of a {file.Size / 1024 / 1024} MB file. ssh_read only sees the first {MaxReadBytes / 1024 / 1024} MB; read further with ssh_run (tail, sed -n).]")
                     : $"\n\n[Showing lines {offset}-{end} of {total}]");
         }
-        return ToolResult.Ok(sb.ToString(), Details(host, path, offset, end, total, more, file.Size));
+        if (lineNote is not null) sb.Append("\n\n").Append(lineNote);
+        return ToolResult.Ok(sb.ToString(), Details(host, path, offset, end, total, truncated, file.Size));
     }
 
     private static object Details(SshHost host, string path, int start, int end, int total, bool truncated, long size) =>

@@ -770,9 +770,11 @@ details: { host, command /* the script */, shell: 'ssh', cwd, exitCode: number|n
 ### `ssh_read` (read-only, summary arg `path`)
 
 `{ host, path, offset?, limit?, cwd? }`. Like `read`: LF-normalized text without line numbers, at most 2000 lines / 50KB
-per call, 1-based `offset` (negative counts from the end), the same "Use offset=N to continue" footer. Up to 8 MB of the
-file is fetched per call. A missing file, a directory or a binary file (NUL bytes) gives an error; binary files are for
-`ssh_copy`.
+per call, 1-based `offset` (negative counts from the end), the same "Use offset=N to continue" footer. A single line that
+outruns the 50KB budget is clamped to it and named (`[Line N is X long; showing its first Y. Use ssh_run (e.g. cut -c,
+fold) to inspect the rest.]`, like the local `read`), so one line of a minified bundle is not handed over whole. Up to
+8 MB of the file is fetched per call. A missing file, a directory or a binary file (NUL bytes) gives an error; binary
+files are for `ssh_copy`.
 
 ```ts
 details: { host, path /* "host:path" */, startLine, endLine, totalLines, truncated, bytes /* file size */ }
