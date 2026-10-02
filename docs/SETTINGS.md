@@ -311,7 +311,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `retry.baseDelayMs` / `retry.maxDelayMs` | `1000` / `30000` | exponential backoff with jitter; when the server says how long to wait (`Retry-After`, e.g. with a 429 or 529), at least that long |
 | `retry.firstEventTimeoutSeconds` | `600` | silence before the first token (slow prefill) |
 | `retry.stallTimeoutSeconds` | `180` | silence between tokens |
-| `retry.maxTotalSeconds` | `300` | give up after this long (AiProxy may hold each attempt 2 min) |
+| `retry.maxTotalSeconds` | `300` | give up once this much of the waiting between attempts has passed: the time a stream spent producing output does not count against it, and it is clamped to at least `firstEventTimeoutSeconds`, so a full first-token stall still gets its retry (AiProxy may hold each attempt 2 min) |
 
 ## Tools
 
