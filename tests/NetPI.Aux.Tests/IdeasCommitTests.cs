@@ -343,6 +343,31 @@ public static class IdeasCommitTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas commits: a skip is a decision, and the cursor moves past it (only a drop retries)", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            env.Ctx.SettingsFake.Set("ideas.model", "cloud-9"); // a paid model (IsLocal defaults to false)
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "cloud-9" });
+            // ideas.allowPaidModel is off (the default): a background check must never invoice.
+            var idea = await env.AddIdea("Skip me");
+            env.Repo.Commit("a commit about something, no id");
+            await env.Check!.SweepNowAsync();
+            Check.Equal(0, (await env.CommitsOn(idea)).Count, "nothing was linked (there is no model allowed to judge it)");
+            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "but the cursor moved past it: the same skip happens on every retry, so it is not retried");
+            var skipped = env.Ctx.Log.Lines.Where(l => l.Contains("is not linked")).ToList();
+            Check.Equal(1, skipped.Count, "and it says so, once");
+            Check.Contains(skipped[0]!, "paid model", "naming the reason");
+            Check.Equal(0, env.Decisions, "and no decision was ever asked");
+
+            // A commit that names an idea id is still linked: that path needs no model at all.
+            env.Repo.Commit($"named work ({idea})");
+            await env.Check.SweepNowAsync();
+            Check.Equal(1, (await env.CommitsOn(idea)).Count, "and a named commit is linked without the model");
+            Check.Equal(env.Repo.Commits[1].Hash, env.Cursor, "with the cursor past it");
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas commits: a failed check backs off instead of being retried on every trigger", async () =>
         {
             var env = new Env();
