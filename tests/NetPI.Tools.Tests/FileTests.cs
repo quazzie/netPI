@@ -17,7 +17,7 @@ public static class FileTests
         // ------------------------------------------------ rpc metadata
         r.Add("rpc: the files read surfaces are read-only; files.open is not (it hands the path to the OS)", async () =>
         {
-            var ctx = new FakePluginContext(T.TempDir("files-rpc"));
+            using var ctx = new FakePluginContext(T.TempDir("files-rpc"));
             await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
             var flags = ctx.RpcFake.List().ToDictionary(m => m.Method, m => m.ReadOnly);
             foreach (var m in new[] { "files.list", "files.search", "files.git", "files.commits" })
@@ -706,7 +706,7 @@ public static class FileTests
             Check.True(d.Bool("truncated"));
 
             // files.list: the same bound at the RPC level, reported in the payload
-            var ctx = new FakePluginContext(dir);
+            using var ctx = new FakePluginContext(dir);
             await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
             var old = FileIndex.MaxListedEntries;
             FileIndex.MaxListedEntries = 500;
@@ -724,7 +724,7 @@ public static class FileTests
         r.Add("rpc: files.search fuzzy ranking and files.list", async () =>
         {
             var dir = MakeTree();
-            var ctx = new FakePluginContext(dir);
+            using var ctx = new FakePluginContext(dir);
             var plugin = new FilesPlugin();
             await plugin.StartAsync(ctx, CancellationToken.None);
             Check.Equal("read,write,edit,grep,find,ls", string.Join(",", ctx.ToolsFake.Tools.Select(t => t.Definition.Name)));
@@ -838,7 +838,7 @@ public static class FileTests
                 Console.WriteLine("    (no git on PATH: skipped)");
                 return;
             }
-            var ctx = new FakePluginContext(dir);
+            using var ctx = new FakePluginContext(dir);
             await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
             async Task<JsonArray?> Commits(object? p)
             {
@@ -917,7 +917,7 @@ public static class FileTests
             T.WriteText(dir, "sub/fresh.md", "one\ntwo\nthree"); // new: 3 lines
             File.WriteAllBytes(Path.Combine(dir, "bin.dat"), [0, 1, 2]); // new, binary: no lines
 
-            var ctx = new FakePluginContext(dir);
+            using var ctx = new FakePluginContext(dir);
             await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
             var r = (GitStatus.Result?)await ctx.RpcFake.InvokeAsync("files.git", new { cwd = Path.Combine(dir, "sub") })
                     ?? throw new AssertException("no git status");
@@ -984,7 +984,7 @@ public static class FileTests
             await Git(dir, "add", "-A");
             await Git(dir, "commit", "-q", "-m", "first");
             T.WriteText(dir, "big.txt", string.Concat(Enumerable.Repeat("line\n", 200)));
-            var ctx = new FakePluginContext(dir);
+            using var ctx = new FakePluginContext(dir);
             await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
             var full = (GitStatus.Result?)await ctx.RpcFake.InvokeAsync("files.git", new { cwd = dir }) ?? throw new AssertException("no git status");
             Check.False(full.Truncated);

@@ -19,6 +19,8 @@
     <InternalsVisibleTo Include="NetPI.Aux.Tests" />
     <!-- the storage conformance suite (tests/NetPI.Storage.Tests) runs against the providers in here -->
     <InternalsVisibleTo Include="NetPI.Storage.Tests" />
+    <InternalsVisibleTo Include="NetPI.Tools.Tests" />
+    <InternalsVisibleTo Include="NetPI.Providers.Tests" />
     <!-- The one-off storage migration (scripts/migrations/001-storage-port) opens the sqlite provider and reads the old database. -->
     <InternalsVisibleTo Include="NetPI.Migration001" />
   </ItemGroup>
