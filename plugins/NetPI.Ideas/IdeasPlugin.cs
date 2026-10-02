@@ -340,7 +340,7 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
         var snapshot = _snapshots.Export();
         var path = req.Str("path");
         var answer = new JsonObject { ["json"] = snapshot };
-        if (path is { Length: > 0 }) answer["file"] = await _snapshots.ExportToFileAsync(path, ct).ConfigureAwait(false);
+        if (path is { Length: > 0 }) answer["file"] = await _snapshots.WriteToFileAsync(snapshot, path, ct).ConfigureAwait(false);
         return answer;
     });
 

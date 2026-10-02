@@ -941,11 +941,7 @@ public static class FileTests
         r.Add("rpc: files.commits — with the git directories the caller already knows, only the git log runs", async () =>
         {
             var dir = T.TempDir("commits-known");
-            if (!await Git(dir, "init", "-q", "-b", "main"))
-            {
-                Console.WriteLine("    (no git on PATH: skipped)");
-                return;
-            }
+            if (!await Git(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
             await Git(dir, "config", "user.email", "test@example.com");
             await Git(dir, "config", "user.name", "Test");
             await File.WriteAllTextAsync(Path.Combine(dir, "a.txt"), "one");

@@ -211,7 +211,7 @@ public static class ShellTests
             sw.Stop();
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(6), $"took {sw.Elapsed}");
             Check.Contains(res.Content, "quick");
-            Check.True(await child.IsAlive(), "the detached child should still be running when the tool returns");
+            Check.True(await child.IsAlive(5000), "the detached child should still be running when the tool returns");
             await child.RememberNativePid();
             Check.True(child.NativePid is > 0, "resolved the child's Windows pid (not the MSYS one)");
         });
@@ -235,7 +235,7 @@ public static class ShellTests
                 Check.Equal("exited", p.Status, "the shell reported its exit");
                 Check.False(p.OutputReachedEof, "the descendant still holds the pipes");
                 Check.True(p.TreeMayBeAlive, "the tree is still alive and killable");
-                Check.True(await child.IsAlive(), "the descendant is still running");
+                Check.True(await child.IsAlive(5000), "the descendant is still running");
 
                 // process kill reaches the surviving tree (the old code answered "not running" here).
                 var id = p.Id;

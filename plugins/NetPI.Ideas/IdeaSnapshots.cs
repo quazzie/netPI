@@ -102,12 +102,16 @@ public sealed class IdeaSnapshots(IdeasRepository repo)
         return report;
     }
 
-    /// <summary>Write a snapshot to a file (the user asked for it; the app never writes one by itself).</summary>
-    public async Task<string> ExportToFileAsync(string path, CancellationToken ct = default)
+    /// <summary>
+    /// Write a snapshot to a file (the user asked for it; the app never writes one by itself). The snapshot is the one the
+    /// caller already has, so the file and the answer to the RPC are the same document (a second export would carry its own
+    /// timestamp, and whatever changed in between).
+    /// </summary>
+    public async Task<string> WriteToFileAsync(JsonObject snapshot, string path, CancellationToken ct = default)
     {
         var full = Path.GetFullPath(path);
         Directory.CreateDirectory(Path.GetDirectoryName(full)!);
-        await File.WriteAllTextAsync(full, SnapshotFile.Render(Export()), ct).ConfigureAwait(false);
+        await File.WriteAllTextAsync(full, SnapshotFile.Render(snapshot), ct).ConfigureAwait(false);
         return full;
     }
 }

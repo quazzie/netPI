@@ -352,11 +352,20 @@ public sealed class ShellChild : IDisposable
         try { return File.Exists(AliveFile) ? new FileInfo(AliveFile).Length : 0; } catch { return 0; }
     }
 
-    /// <summary>True if the file grew during the sample window: the child is running.</summary>
+    /// <summary>
+    /// True if the file grows within the window: the child is running. It answers the moment the file grows, so a long window
+    /// costs nothing for a child that lives (a loaded machine can starve its 0.2 s loop for a second or more); only "it is
+    /// gone" waits the whole window, so a test that asserts death passes a short one.
+    /// </summary>
     public async Task<bool> IsAlive(int windowMs = 700)
     {
         var before = Bytes();
-        await Task.Delay(windowMs);
+        var until = DateTime.UtcNow.AddMilliseconds(windowMs);
+        while (DateTime.UtcNow < until)
+        {
+            await Task.Delay(50);
+            if (Bytes() > before) return true;
+        }
         return Bytes() > before;
     }
 
