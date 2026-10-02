@@ -185,6 +185,10 @@ public static class AgentReworkTests
         try
         {
             await h.StopPluginAsync("netpi.runtime");
+            // drain so the executor-gone event (which parks the still-active goal as execution-unavailable) is dispatched
+            // before the goal state is read below; the stuck run (its model call ignores cancellation) ends later, after
+            // the executor is gone, so the run-end hook sees the goal already parked
+            await h.Bus.DrainAsync();
             var owner = h.Services.Get<IResourceLeases>()!.Snapshot().Single().Holder;
             Check.True(owner.Retiring);
             Check.True(owner.CancellationRequestedAt is not null);

@@ -105,6 +105,12 @@ internal sealed class Goals(IPluginContext ctx)
 {
     public const int MaxObjective = 4000;
     public const string NoticeKind = "goal";
+    /// <summary>
+    /// The goal's pause reason when a plugin reload stopped its run: the executor is coming back, so the goal pauses
+    /// (resumable) instead of claiming "no executor capability", and <see cref="ExecutorChanged"/> resumes it when the
+    /// executor returns (idea-ydszpo).
+    /// </summary>
+    public const string ReloadPausedReason = "The runtime reloaded.";
 
     private sealed class RunTrack
     {
@@ -275,6 +281,7 @@ internal sealed class Goals(IPluginContext ctx)
         {
             "changed" => "The user changed the goal. Work on it until it is fully done:",
             "resumed" => "The user resumed the goal. Continue until it is fully done:",
+            "reloaded" => "The runtime reloaded while the goal was working. It is back: continue until it is fully done:",
             "continue" => $"The goal is not done yet (automatic continuation {g.Continuations}). Keep working until it is fully done:",
             "reminder" => "The goal you are working on (repeated because the earlier notices were compacted):",
             _ => "The user set a goal for this session. Work on it until it is fully done:",
@@ -361,7 +368,19 @@ internal sealed class Goals(IPluginContext ctx)
 
     public void ExecutorChanged()
     {
-        if (ctx.Services.Get<IAgentRuntime>() is not null) return; // capability return never resumes autonomous work
+        if (ctx.Services.Get<IAgentRuntime>() is not null)
+        {
+            // the executor is back: the goals a reload paused resume of their own; goals the user paused (or that never
+            // ran because no executor was loaded) stay where they are, for an explicit goal.resume
+            for (var offset = 0; ; offset += 100)
+            {
+                var sessions = ctx.Sessions.ListSessions(new SessionQuery { IncludeArchived = true, Offset = offset, Limit = 100 });
+                foreach (var session in sessions)
+                    if (Get(session.Id) is { Status: Goal.Paused, Reason: ReloadPausedReason } goal) ResumeReloaded(session.Id, goal);
+                if (sessions.Count < 100) break;
+            }
+            return;
+        }
         for (var offset = 0; ; offset += 100)
         {
             var sessions = ctx.Sessions.ListSessions(new SessionQuery { IncludeArchived = true, Offset = offset, Limit = 100 });
@@ -369,6 +388,23 @@ internal sealed class Goals(IPluginContext ctx)
                 if (Get(session.Id) is { Status: Goal.Active } goal) Unavailable(session.Id, goal);
             if (sessions.Count < 100) break;
         }
+    }
+
+    /// <summary>The executor returned: a goal the reload paused resumes like a user resume (counters reset, a run starts when idle).</summary>
+    private void ResumeReloaded(string sessionId, Goal goal)
+    {
+        var resumed = Update(sessionId, g =>
+        {
+            if (g is { Status: Goal.Paused, Reason: ReloadPausedReason } && g.Id == goal.Id)
+            {
+                g.Status = Goal.Active;
+                g.Reason = null;
+                g.Continuations = 0;
+                g.NoProgress = 0;
+            }
+            return g;
+        });
+        if (resumed is { Status: Goal.Active }) Kick(sessionId, resumed, "reloaded");
     }
 
     private async Task SendNoticeAsync(IAgentRuntime rt, string sessionId, Goal goal, string text, bool auto)
@@ -448,7 +484,15 @@ internal sealed class Goals(IPluginContext ctx)
         var goal = Get(sid);
         if (goal is not { Status: Goal.Active }) return;
 
-        if (run.CancelReason == "plugin reloaded" || ctx.Services.Get<IAgentRuntime>() is null)
+        if (run.CancelReason == "plugin reloaded")
+        {
+            // the reload stopped the run, not the capability: the executor comes back, so the goal pauses (and
+            // ExecutorChanged resumes it) instead of claiming "no executor capability" (idea-ydszpo)
+            PauseQuietly(sid, goal.Id, ReloadPausedReason);
+            return;
+        }
+
+        if (ctx.Services.Get<IAgentRuntime>() is null)
         {
             Unavailable(sid, goal);
             return;
