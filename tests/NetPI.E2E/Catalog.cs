@@ -36,6 +36,7 @@ public static class Catalog
         ["inspect.diag"] = "needs-node",
         ["ui.mcp-panel"] = "needs-node",
         ["ui.files-mount"] = "needs-node",
+        ["ui.idea-conflict"] = "needs-node ideas",
         ["ui.idea-image"] = "needs-node ideas",
         ["ui.smoke"] = "needs-node",
         // These three drive a playwright script too, but had no tag at all, so the catalog self-test ("every ui test is

@@ -25,6 +25,11 @@
   let editing = $state(false);
   let form = $state({ title: '', summary: '', priority: 'medium', tags: '' });
   let secEdit = $state(null); // section id | 'new'
+  // What an open editor was opened on: the revision it had when it opened, and nothing else. The list refetches on
+  // every ideas.changed, so the card's own idea is already the newer one — an editor that sent that would silently
+  // overwrite whoever wrote it (idea-c3hihl).
+  let editRev = $state(null);
+  let secRev = $state(null);
   let busy = $state(false);
 
   const statusItems = $derived(
@@ -51,6 +56,7 @@
   function startEdit(e) {
     e?.stopPropagation();
     form = { title: idea.title, summary: idea.summary ?? '', priority: idea.priority ?? 'medium', tags: (idea.tags ?? []).join(', ') };
+    editRev = idea.revision ?? null;
     editing = true;
     if (!open) ontoggle();
   }
@@ -63,7 +69,7 @@
       summary: form.summary.trim(),
       priority: form.priority,
       tags: parseTags(form.tags),
-    });
+    }, editRev);
     busy = false;
     if (r) editing = false;
   }
@@ -87,10 +93,18 @@
     { divider: true },
     { label: 'Delete idea…', icon: 'trash', danger: true, onclick: remove },
   ]);
+  function openSec(sec) {
+    secEdit = sec?.id ?? 'new';
+    secRev = idea.revision ?? null;
+  }
+  function closeSec() {
+    secEdit = null;
+    secRev = null;
+  }
   async function saveSection(sec) {
     const patch = sec.id ? { updateSections: [sec] } : { addSections: [sec] };
-    const r = await api.update(idea.id, patch);
-    if (r) secEdit = null;
+    const r = await api.update(idea.id, patch, secRev);
+    if (r) closeSec();
   }
   async function removeSection(sec) {
     const id = idea.id;
@@ -190,7 +204,7 @@
 
       {#each idea.sections ?? [] as sec (sec.id)}
         {#if secEdit === sec.id}
-          <SectionEditor section={sec} onsave={saveSection} oncancel={() => (secEdit = null)} />
+          <SectionEditor section={sec} onsave={saveSection} oncancel={closeSec} />
         {:else}
           <div class="sec">
             <div class="sec-head np-line">
@@ -198,7 +212,7 @@
               <span class="kind">{sec.kind}</span>
               <span class="stitle np-grow" title={sec.title}>{sec.title ?? ''}</span>
               <span class="sec-acts">
-                <IconButton icon="pencil" title="Edit section" size="sm" onclick={() => (secEdit = sec.id)} />
+                <IconButton icon="pencil" title="Edit section" size="sm" onclick={() => openSec(sec)} />
                 <IconButton icon="trash" title="Remove section" size="sm" onclick={() => removeSection(sec)} />
               </span>
             </div>
@@ -207,7 +221,7 @@
         {/if}
       {/each}
       {#if secEdit === 'new'}
-        <SectionEditor section={null} onsave={saveSection} oncancel={() => (secEdit = null)} />
+        <SectionEditor section={null} onsave={saveSection} oncancel={closeSec} />
       {/if}
 
       <!-- The evidence: which chats worked on this idea and which commits were recorded for it, as entries the user
@@ -242,7 +256,7 @@
 
       <div class="actions np-line">
         <Button variant="primary" size="sm" icon="steer" onclick={() => api.send(idea)} title="Stage a pointer to this idea in the composer — the agent reads the idea itself">Send<span class="to-chat">to chat</span></Button>
-        {#if secEdit !== 'new'}<Button size="sm" icon="plus" onclick={() => (secEdit = 'new')} title="Add section"><span class="wide">Section</span></Button>{/if}
+        {#if secEdit !== 'new'}<Button size="sm" icon="plus" onclick={() => openSec(null)} title="Add section"><span class="wide">Section</span></Button>{/if}
         <span class="np-grow"></span>
         {#if !editing}<IconButton icon="pencil" title="Edit title, summary, priority, tags" size="sm" onclick={startEdit} />{/if}
         <Menu items={moreItems} minWidth={160}>

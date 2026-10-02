@@ -312,7 +312,7 @@ height (for a footer at the bottom), give the tab's root `flex: 1 0 auto`; `min-
 
 | RPC | Parameters | Result |
 |---|---|---|
-| `backup.list` | `{}` | Snapshot manifests with `id`, `path`, `version`, `createdAt`, `automatic`, `files` (SHA-256 per file). Listing does not rehash every snapshot. |
+| `backup.list` | `{}` | Snapshot manifests with `id`, `path`, `version`, `createdAt`, `automatic`, `files` (SHA-256 per file) and `ideaImages` (file of the snapshot → `idea-images/<name>` in the home, when the snapshot carries images). Listing does not rehash every snapshot. |
 | `backup.create` | `{}` | Creates and verifies a manual snapshot; returns its manifest and path. Allow a long RPC timeout for large databases. |
 | `backup.verify` | `{ id }` | Checks the manifest version and both file hashes; returns the manifest or an error. |
 

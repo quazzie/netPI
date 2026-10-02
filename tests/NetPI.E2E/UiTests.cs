@@ -42,6 +42,28 @@ public static class UiTests
                 + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
             Check.Equal(0, proc.ExitCode, "files-mount exit code; stderr: " + err);
         }, 120);
+        r.Add("ui.idea-conflict", "ui: the Ideas tab saves with the revision its editor was opened on — a stale save is a conflict, not an overwrite, and an open editor survives a status change (idea-c3hihl)", async () =>
+        {
+            // No server needed: the script mounts the committed plugin bundle itself with a stub ctx whose
+            // ideas.update enforces the same expectedRevision rule as the host.
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            psi.ArgumentList.Add(Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "idea-conflict.mjs"));
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync(); var stderr = proc.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            try { await proc.WaitForExitAsync(timeout.Token); }
+            catch { if (!proc.HasExited) proc.Kill(true); throw; }
+            var output = await stdout;
+            var err = await stderr;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
+            Check.True(json is not null, "idea-conflict output: " + output + err);
+            using var doc = JsonDocument.Parse(json!);
+            var failedChecks = doc.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
+            Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
+                + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
+            Check.Equal(0, proc.ExitCode, "idea-conflict exit code; stderr: " + err);
+        }, 120);
         r.Add("ui.smoke", "ui: send [s:tools] in the browser, streamed text + tool rows, plugin tabs, no console errors (screenshots)", async () =>
         {
             var p = await env.NewProject("ui-demo", CoreTests.Seed);

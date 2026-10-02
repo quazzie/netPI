@@ -16,7 +16,7 @@
     { "path": "plugins/NetPI.Diagnostics/", "tags": ["inspect"] },
     { "path": "plugins/NetPI.Goal/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Guardrails/", "tags": ["smoke", "tools"] },
-    { "path": "plugins/NetPI.Ideas/", "tags": ["ideas"], "ids": ["ui.smoke"] },
+    { "path": "plugins/NetPI.Ideas/", "tags": ["ideas"], "ids": ["ui.smoke", "ui.idea-conflict"] },
     { "path": "plugins/NetPI.Loops/", "tags": ["smoke"] },
     { "path": "plugins/NetPI.Mcp/", "tags": ["mcp", "ui"] },
     { "path": "plugins/NetPI.Nudge/", "tags": ["nudge", "reload"] },

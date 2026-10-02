@@ -255,13 +255,14 @@ allowed and are flagged unknown. Free/local models keep running. An unavailable 
 
 | key | default | meaning |
 |---|---|---|
-| `backup.enabled` | `true` | Automatic database + settings snapshots, checked ten seconds after plugin start, then every minute |
+| `backup.enabled` | `true` | Automatic database + settings + idea-image snapshots, checked ten seconds after plugin start, then every minute |
 | `backup.intervalHours` | `24` | Time since the newest snapshot before another automatic one (1–720 hours) |
 | `backup.keepCount` | `7` | Automatic snapshots retained after successful creation (1–365); manual snapshots are never pruned |
 
 Settings → **Data & backups** provides **Back up now**, paths, and **Verify**. Snapshots live in `<home>/backups`.
-They include settings secrets and exclude project files, skills, plugins and external credentials. Copy snapshots
-to separate storage for disk-failure protection. See [BACKUPS.md](BACKUPS.md) for restore instructions.
+They include settings secrets and the images attached to ideas, and exclude project files, skills, plugins and external
+credentials. Copy snapshots to separate storage for disk-failure protection. See [BACKUPS.md](BACKUPS.md) for restore
+instructions.
 
 ## Context and AGENTS.md
 
