@@ -195,9 +195,9 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
     {
         if (!TryGet(args, out var p, out var error)) return ToolResult.Error(error!);
         var tail = Tail(args);
-        var (shown, truncated, total, shownLines) = TailOf(p!, tail);
+        var (shown, truncated, total, shownLines) = TailOf(p, tail);
         var sb = new StringBuilder();
-        sb.Append('[').Append(Describe(p!)).Append(']').Append('\n');
+        sb.Append('[').Append(Describe(p)).Append(']').Append('\n');
         if (truncated) sb.Append($"[showing the last {shownLines} of {total} buffered lines]\n");
         sb.Append(shown.Length > 0 ? shown : "(no output yet)");
         return ToolResult.Ok(sb.ToString(), new { process = p.ToInfo(), tail, truncated });
@@ -224,7 +224,7 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
     /// <summary>The job is done: the process line says its status, exit code and duration, then the tail of its output.</summary>
     private static ToolResult Exited(ManagedProcess p, int tail)
     {
-        var (shown, truncated, total, shownLines) = TailOf(p!, tail);
+        var (shown, truncated, total, shownLines) = TailOf(p, tail);
         var sb = new StringBuilder();
         sb.Append('[').Append(Describe(p)).Append(']').Append('\n');
         if (truncated) sb.Append($"[showing the last {shownLines} of {total} buffered lines]\n");
@@ -283,7 +283,7 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
     }
 
     /// <summary>The process an id argument names, or the house-style error naming what is known.</summary>
-    private bool TryGet(ToolArgs args, out ManagedProcess? process, out string? error)
+    private bool TryGet(ToolArgs args, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ManagedProcess? process, [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? error)
     {
         var id = args.Str("id", "process_id", "processId", "pid", "proc");
         if (string.IsNullOrWhiteSpace(id))
