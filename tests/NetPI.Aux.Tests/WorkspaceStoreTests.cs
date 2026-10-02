@@ -260,6 +260,27 @@ public static class WorkspaceStoreTests
             Check.Equal(0, f.Store.BoundSessions("").Count, "and an empty id asks for nothing");
         });
 
+        r.Add("workspaces: a fork is a new writer, so it does not work in the writer's checkout", () =>
+        {
+            using var f = new Fixture();
+            var resolver = new WorkspaceResolver(f.Ctx, f.Store, new GitProbe());
+            var w = f.Workspace();
+            var session = f.Stored();
+            f.Store.SetSessionWorkspace(session.Id, w.Id);
+            Check.Equal(w.Path, resolver.CwdOf(f.Sessions.GetSession(session.Id)!), "the writer works in its workspace");
+
+            var fork = f.Sessions.ForkSession(session.Id, 1, SessionFork.Template(f.Sessions.GetSession(session.Id)!, 1, 0, f.Sessions.ForkResetKeys()));
+            var forked = f.Sessions.GetSession(fork.Id)!;
+            Check.Equal(f.Project.Id, forked.ProjectId, "the fork stays in the project");
+            Check.Equal(null, SessionCwd.Of(forked), "a fork starts in its project folder: the core never copies meta.cwd");
+
+            // The workspace id travelled with the meta, but a binding whose folder is not this one is broken, and the
+            // resolver says so instead of handing the fork the checkout the writer had.
+            var ex = Check.Throws<WorkspaceUnavailableException>(() => resolver.CwdOf(forked));
+            Check.Contains(ex.Message, "sessions.setWorkspace");
+            Check.NotContains(ex.Message, "may be written", ex.Message);
+        });
+
         r.Add("workspaces: SessionWorkspace.Of reads the binding a plugin wrote, and nothing else", () =>
         {
             Check.Equal("wsp_x", SessionWorkspace.Of(new SessionInfo { Meta = new JsonObject { ["workspaceId"] = "wsp_x" } }));
