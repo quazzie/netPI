@@ -18,6 +18,7 @@ public static class ReservationTests
         t.Add("budget: budget.allow runs alongside reservations without wedging the gates", AllowParallel);
         t.Add("budget: the reservation holds what the provider can actually send beside a full window", WindowClamp);
         t.Add("budget: the output of a model without a limit comes from agent.defaultMaxOutputTokens", OutputLimitFromSetting);
+        t.Add("budget: a call that started before the ledger was stopped (a hot swap of the plugin) still settles into the store", SettlesAfterStop);
     }
 
     private static ModelRequest Request() => new()
@@ -242,6 +243,21 @@ public static class ReservationTests
         Check.True(room > 0 && room < 16_000, $"the window leaves {room} output tokens");
         Check.True(Math.Abs(estimate - (input * price.CacheRead + room * price.Output) / 1_000_000) < 1e-12,
             $"the reservation holds what the transport would send ({estimate})");
+    }
+
+    // A call that began before a hot swap keeps the old middleware, and so the old ledger, until it ends: stopping the ledger
+    // must not make its settlement vanish (the reserved estimate would stay as the call's cost, its real tokens unrecorded).
+    private static async Task SettlesAfterStop()
+    {
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
+        var l = Create(h);
+        var r = l.Reserve(Request(), "a", null);
+        l.Stop();
+        l.Settle(r, new Usage { CostUsd = 0.5 }, true, false);
+        Check.Equal(0.5, Math.Round(l.Spent().Period, 6), "the settlement after the stop reached the store");
+        var again = l.Reserve(Request(), "a", null);
+        l.Settle(again, new Usage { CostUsd = 0.25 }, true, false);
+        Check.Equal(0.75, Math.Round(l.Spent().Period, 6), "and a retry of the call reserves and settles on it");
     }
 
     private static async Task OutputLimitFromSetting()

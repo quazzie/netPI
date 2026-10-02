@@ -217,15 +217,14 @@ public static class RetryTests
             Check.True(events[^1] is StreamCompleted);
         });
 
-        r.Add("retry: the settings reader clamps maxTotalSeconds to at least firstEventTimeoutSeconds", () =>
+        r.Add("retry: the settings reader takes maxTotalSeconds as set, whatever firstEventTimeoutSeconds is", () =>
         {
             var ctx = new FakePluginContext();
-            Check.Equal(TimeSpan.FromSeconds(600), RetryOptions.From(ctx.Settings).MaxTotal); // the defaults agree
-            ctx.SettingsFake.Set("retry.firstEventTimeoutSeconds", 300);
+            Check.Equal(TimeSpan.FromSeconds(300), RetryOptions.From(ctx.Settings).MaxTotal); // the default
             ctx.SettingsFake.Set("retry.maxTotalSeconds", 100);
-            Check.Equal(TimeSpan.FromSeconds(300), RetryOptions.From(ctx.Settings).MaxTotal);
-            ctx.SettingsFake.Set("retry.maxTotalSeconds", 600);
-            Check.Equal(TimeSpan.FromSeconds(600), RetryOptions.From(ctx.Settings).MaxTotal); // a larger budget stays
+            Check.Equal(TimeSpan.FromSeconds(100), RetryOptions.From(ctx.Settings).MaxTotal); // a budget below the first-event wait is not silently raised
+            ctx.SettingsFake.Set("retry.maxTotalSeconds", 900);
+            Check.Equal(TimeSpan.FromSeconds(900), RetryOptions.From(ctx.Settings).MaxTotal);
         });
 
         r.Add("retry: stall between events (stallTimeout) → reset + retry", async () =>
@@ -386,7 +385,7 @@ public static class RetryTests
             var o = RetryOptions.From(ctx.Settings);
             Check.Equal(TimeSpan.FromSeconds(600), o.FirstEventTimeout);
             Check.Equal(TimeSpan.FromSeconds(180), o.StallTimeout);
-            Check.Equal(TimeSpan.FromSeconds(600), o.MaxTotal); // the budget clamps to the first-token wait, so the defaults agree
+            Check.Equal(TimeSpan.FromSeconds(300), o.MaxTotal); // the budget is the waiting between attempts: it is not raised to the first-token wait
         });
     }
 }

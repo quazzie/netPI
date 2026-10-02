@@ -189,9 +189,13 @@ public static class BuildTests
         Check.True(sleep > lockFn.IndexOf("catch [IO.IOException]", StringComparison.Ordinal) && sleep < lockFn.IndexOf("throw", StringComparison.Ordinal),
             "a lock that survives the delete is still waited for");
 
-        // the chat report runs inside the lock, so its call must be bounded
+        // the chat report runs inside the lock, so its calls must be bounded: netpi.mjs can bound a call (--timeout), the
+        // script asks for it, and an ordinary call is not cut off (a backup or a compaction takes longer than any default)
         var mjs = File.ReadAllText(Path.Combine(T.RepoRoot, "scripts", "netpi.mjs"));
-        Check.Contains(mjs, "signal: AbortSignal.timeout(", "scripts/netpi.mjs does not hang a publish forever");
+        Check.Contains(mjs, "AbortSignal.timeout(", "scripts/netpi.mjs can bound a call");
+        Check.Contains(mjs, "CALL_TIMEOUT_MS > 0", "and only when asked to: an ordinary call waits for the server");
+        Check.Contains(ps, "netpi.mjs diag.overview --compact --timeout", "the publish's report does not hang the install lock forever");
+        Check.Contains(ps, "netpi.mjs tools.list --compact --timeout", "nor does the tool lookup");
 
         // what the install changed is counted before the copy, not after it (after: everything matches, so "none")
         var names = ps.IndexOf("$pluginNames = @((Get-ChildItem", StringComparison.Ordinal);

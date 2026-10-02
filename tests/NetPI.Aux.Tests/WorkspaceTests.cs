@@ -803,6 +803,10 @@ public static class WorkspaceTests
             Check.Equal(@"C:\x", WorkspacePaths.Canonical(@"\\localhost\C$\x"));
             Check.Equal(@"C:\x", WorkspacePaths.Canonical(@"\\127.0.0.1\C$\x"));
             Check.Equal(@"C:\x", WorkspacePaths.Canonical(@"\\.\C:\x"));
+            // the extended spelling of a share is the share: through this machine's admin share it is the drive, a share elsewhere is left alone
+            Check.Equal(@"C:\x", WorkspacePaths.Canonical(@"\\?\UNC\localhost\C$\x"));
+            Check.Equal(@"\\server\share\out.txt", WorkspacePaths.Canonical(@"\\?\UNC\server\share\out.txt"));
+            Check.True(WorkspacePaths.IsInside(@"C:\x", @"\\?\UNC\localhost\C$\x\deep"), "the extended admin-share spelling is the same place: under the root");
             // A device that is not a drive stays a device: nothing local to compare it with, and no root may claim it.
             Check.Equal(@"\\.\COM1", WorkspacePaths.Canonical(@"\\.\COM1"));
             // A share that is not this machine's drive: canonical to itself, under no local root.
@@ -871,6 +875,18 @@ public static class WorkspaceTests
                 File.WriteAllText(Path.Combine(broken, ".git"), "gitdir: C:/definitely/not/here\n");
                 Check.Equal(null, git.CommonDirOf(broken), "a broken .git is not an answer");
                 Check.True(git.ProbeProblem(broken) is { Length: > 0 }, "what git said is reported");
+
+                // The answer is git's stdout alone: a git that talks on stderr (a warning, a trace) still answers cleanly,
+                // and what it says is not taken for part of the commit id or the common directory.
+                var talkative = T.TempDir("ws-unv-talk");
+                GitInit(talkative);
+                Environment.SetEnvironmentVariable("GIT_TRACE", "1");
+                try
+                {
+                    var clean = new GitProbe(TimeSpan.Zero).CommonDirOf(talkative);
+                    Check.True(clean is { Length: > 0 } && !clean.Contains("trace", StringComparison.OrdinalIgnoreCase) && !clean.Contains('\n'), $"stdout only, got: {clean}");
+                }
+                finally { Environment.SetEnvironmentVariable("GIT_TRACE", null); }
 
                 // The failure is not remembered as an answer: point the .git file at a live repository, and it answers.
                 var repo = T.TempDir("ws-unv-repo");

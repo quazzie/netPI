@@ -12,7 +12,9 @@
 //   node scripts/netpi.mjs diag.journal '{"sessionId":"ses_abc","limit":200}'
 //
 // Options: --home <dir> (default: NETPI_HOME, else ~/.netpi), --write (allow methods that change something: they are
-// refused without it, so looking around never changes the app), --compact (one-line JSON).
+// refused without it, so looking around never changes the app), --compact (one-line JSON), --timeout <seconds> (give up
+// on a server that does not answer in that time; without it a call waits as long as the server works: backup.create,
+// compaction.run and the model-backed methods take minutes, and abandoning one that is still running invites a rerun).
 // Exit codes: 0 ok, 1 the call failed, 2 NetPI isn't running or can't be reached.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -39,9 +41,10 @@ const compact = flag('--compact');
 let declared = null;
 const home = option('--home') ?? process.env.NETPI_HOME ?? path.join(os.homedir(), '.netpi');
 
-// Every call is bounded: build.ps1 runs this inside the install lock to say what a publish would disturb, and a server
-// that never answers (half-dead, or a port held by something else) must not hold the lock forever.
-const CALL_TIMEOUT_MS = 5000;
+// A bounded call is opt-in (--timeout <seconds>): build.ps1 passes it, because it runs this inside the install lock to say
+// what a publish would disturb, and a server that never answers (half-dead, or a port held by something else) must not
+// hold the lock forever. An ordinary call waits for the server.
+const CALL_TIMEOUT_MS = Math.max(0, Number(option('--timeout') ?? 0)) * 1000;
 let method = args.shift() ?? 'diag.overview';
 let params = {};
 
@@ -121,12 +124,17 @@ async function call(m, p) {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-NetPI-Token': server.token },
       body: JSON.stringify(p ?? {}),
-      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+      signal: CALL_TIMEOUT_MS > 0 ? AbortSignal.timeout(CALL_TIMEOUT_MS) : undefined,
     });
   } catch (e) {
     fail(2, `NetPI at ${server.url} (pid ${server.pid}) doesn't answer: ${e.cause?.code ?? e.message}. The file may be left from a crash: ${file}`);
   }
-  const text = await res.text();
+  let text;
+  try {
+    text = await res.text();
+  } catch (e) {
+    fail(2, `NetPI at ${server.url} (pid ${server.pid}) stopped answering ${m}: ${e.cause?.code ?? e.message}.`);
+  }
   let body;
   try {
     body = text ? JSON.parse(text) : null;

@@ -110,11 +110,21 @@ internal static class PathUtil
         return new FileStream(path, options);
     }
 
-    /// <summary>On Unix, the home is owner-only: it holds the server token, the API keys and the database. On Windows there is no such mode.</summary>
-    public static void OwnerOnly(string path)
+    /// <summary>
+    /// On Unix, the home is owner-only: it holds the server token, the API keys and the database. On Windows there is no
+    /// such mode. Best effort: a home the user can write to but does not own (a group-shared directory, a mounted
+    /// volume) refuses the change, and refusing to start over it would be worse; the files in it are created owner-only
+    /// regardless (<see cref="CreateOwnerOnly"/>). Returns whether the home is now owner-only.
+    /// </summary>
+    public static bool OwnerOnly(string path)
     {
-        if (OperatingSystem.IsWindows()) return;
-        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        if (OperatingSystem.IsWindows()) return true;
+        try
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or PlatformNotSupportedException) { return false; }
     }
 
     /// <summary>Combine <paramref name="root"/> with a relative URL path, refusing anything that escapes the root.</summary>

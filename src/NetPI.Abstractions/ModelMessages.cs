@@ -177,12 +177,16 @@ public static class ModelMessages
     public const int WindowMargin = 1024;
     /// <summary>Share of the window the margin grows with, for the same reason.</summary>
     public const double WindowMarginShare = 0.05;
+    /// <summary>The least room worth clamping to: below it the context is full, and a one-token answer helps nobody.</summary>
+    public const int MinClampedOutput = 512;
 
     /// <summary>
     /// The largest <c>max_tokens</c> a request may send: what the caller asked for, never above the model's own
     /// maximum, and never above what is left of the context window once its input is counted. A provider asked for
     /// more than the window has answers HTTP 400 ("input length and max_tokens exceed context limit") — read as a
-    /// context overflow, so every attempt pays for a compaction round and dumps a body (idea-begg3v).
+    /// context overflow, so every attempt pays for a compaction round and dumps a body (idea-begg3v). When what is left
+    /// is less than <see cref="MinClampedOutput"/> the context really is full: the value is left alone, so the provider's
+    /// own context-limit answer stands and compaction answers it, instead of a successful answer cut after a token or two.
     /// </summary>
     public static int ClampMaxTokens(ModelRequest request, int desired)
     {
@@ -193,7 +197,8 @@ public static class ModelMessages
         if (window <= 0) return value;
         var margin = Math.Max(WindowMargin, (long)(window * WindowMarginShare));
         var room = window - EstimateInputTokens(request) - margin;
-        return value <= room ? value : (int)Math.Max(1, room);
+        if (value <= room) return value;
+        return room >= MinClampedOutput ? (int)room : value;
     }
 
     /// <summary>The largest image the transports accept, in bytes. Anthropic's 5 MB per image is the smallest limit we know.</summary>

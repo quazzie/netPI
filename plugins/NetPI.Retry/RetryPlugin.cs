@@ -21,7 +21,7 @@ public sealed class RetryPlugin : INetPiPlugin
                 SettingInfo.Int("retry.maxAttempts", "Attempts", 6, null, 1, 20),
                 SettingInfo.Int("retry.firstEventTimeoutSeconds", "Wait for the first token", 600, "A slow prefill of a long context can take minutes.", 10, 3600, "s"),
                 SettingInfo.Int("retry.stallTimeoutSeconds", "Silence between tokens", 180, null, 10, 3600, "s"),
-                SettingInfo.Int("retry.maxTotalSeconds", "Give up after", 300, "The waiting between attempts; time a stream spent producing output does not count against it. At least firstEventTimeoutSeconds.", 10, 7200, "s"),
+                SettingInfo.Int("retry.maxTotalSeconds", "Give up after", 300, "The waiting between attempts (the backoff and any Retry-After); the time an attempt ran or stalled does not count against it.", 10, 7200, "s"),
                 SettingInfo.Int("retry.baseDelayMs", "First delay", 1000, "Exponential backoff with jitter.", 100, 60000, "ms"),
                 SettingInfo.Int("retry.maxDelayMs", "Longest delay", 30000, null, 100, 600000, "ms"),
             ],
@@ -59,8 +59,8 @@ public sealed class RetryOptions
             MaxDelay = TimeSpan.FromMilliseconds(s is null ? 30_000 : Math.Max(0, Get(s, "retry.maxDelayMs", 30_000.0))),
             FirstEventTimeout = firstEvent,
             StallTimeout = s is null ? TimeSpan.FromSeconds(180) : Seconds(Get(s, "retry.stallTimeoutSeconds", 180.0)),
-            // a first-token stall alone may wait the whole first-event timeout, so the budget must cover it (idea-ohk2bz)
-            MaxTotal = firstEvent == Timeout.InfiniteTimeSpan ? maxTotal : (maxTotal >= firstEvent ? maxTotal : firstEvent),
+            // the budget is the waiting between attempts, not the time an attempt ran or stalled, so it is taken as set (idea-ohk2bz)
+            MaxTotal = maxTotal,
         };
     }
 

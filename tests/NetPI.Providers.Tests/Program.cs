@@ -208,7 +208,10 @@ await t.Run("max_tokens is clamped to what the context window has left beside th
     var tight = ModelMessages.ClampMaxTokens(Small(16_384, 64_000, 2000), 999_999);
     var input = ModelMessages.EstimateInputTokens(Small(16_384, 64_000, 2000));
     t.Check(tight < 999_999 && input + tight <= 16_384, $"input {input} + max_tokens {tight} fits the 16384 window");
-    t.Eq(1, ModelMessages.ClampMaxTokens(Small(16_384, 64_000, 100_000), 999_999), "a prompt over the window still asks for something");
+    // a context that already fills the window is not papered over with a one-token answer: the value is left as it is, the
+    // provider says the context is full, and that is what compaction answers
+    t.Eq(64_000, ModelMessages.ClampMaxTokens(Small(16_384, 64_000, 100_000), 999_999), "a prompt over the window is left to the provider's own answer");
+    t.Eq(64_000, ModelMessages.ClampMaxTokens(Small(16_384, 64_000, 14_900), 999_999), "less than a useful answer's room is the same: the context is full");
     // No window in the catalog: nothing to clamp against, the model's own maximum stands.
     t.Eq(4096, ModelMessages.ClampMaxTokens(Small(0, 4096, 1000), 999_999), "unknown window");
     t.Eq(256, ModelMessages.ClampMaxTokens(Small(0, 0, 1000), 256), "no maximum and no window: the caller's value");

@@ -297,7 +297,11 @@ public static class WorkspacePaths
     {
         if (!OperatingSystem.IsWindows()) return full;
         if (full.StartsWith(@"\\?\", StringComparison.Ordinal) || full.StartsWith(@"\\?/", StringComparison.Ordinal))
-            return full.Length > 4 ? full[4..] : full;
+        {
+            var plain = full.Length > 4 ? full[4..] : full;
+            // \\?\UNC\server\share is the share \\server\share, and then it is spelled like any other (an admin share of this machine is the drive)
+            return plain.StartsWith(@"UNC\", StringComparison.OrdinalIgnoreCase) ? LocalSpelling(@"\\" + plain[4..]) : plain;
+        }
         if (!full.StartsWith(@"\\", StringComparison.Ordinal) || full.Length <= 4) return full;
         var rest = full[2..];
         var slash = rest.IndexOf('\\');

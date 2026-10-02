@@ -55,15 +55,16 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
     folder the host loads it from.
 - **A change is not done until the running app has it.** Merging into `master` and building land in `artifacts/dev/app` only;
   the running NetPI loads from the app folder, and a restart consumes `.pending` — not `master`. Before telling the user a
-  change is done (or "you'll see it after a restart"), install it: `.uild.ps1 -Publish` (plugins hot-swap immediately),
+  change is done (or "you'll see it after a restart"), install it: `.\build.ps1 -Publish` (plugins hot-swap immediately),
   `-Publish -NextStart` (nothing moves under a live chat; the next start applies it), or the one-plugin dll copy above.
   If you cannot install it (no access to the app folder, or the user should choose when the host restarts), say so in the
   report and name the exact command. "It'll come in on your next restart" with nothing staged in `.pending` is false:
   that restart just restarts.
-- **A publish from a worktree stages plugins instead of swapping them.** The built `NetPI.Abstractions.dll` never hash-matches
-  the one the running app holds open, so `-Publish` reports "the contracts changed" and puts every plugin in `.pending` for the
-  next start. To hot-swap one plugin anyway, copy its `.dll` and `.pdb` from the worktree's `artifacts\dev\app\plugins\<Name>\`
-  into `<app>\plugins\<Name>\` — the running app reloads it (same contracts, so it is safe when only that plugin's source changed).
+- **A publish from a worktree swaps plugins like any other.** The same sources build the same bytes from any checkout (the
+  build maps its paths to `/_/`), so the contract DLLs hash-match the installed ones unless a contract really changed, and then
+  `-Publish` hot-swaps the plugins of **whatever branch you built**, merged or not, into the owner's running app. Merge into
+  `master` first (the app should run what `master` has), and use `-NextStart` when the owner is in the middle of something.
+  When a contract changed, the plugins wait in `.pending` for the next start instead.
 - **Want nothing to move under a running chat?** Set `plugins.quiet` (Settings or settings.json). Reloads are then
   recorded and not applied — the running versions keep serving, nothing swaps, no state is lost — and switching it off
   applies everything that piled up. This is the one thing a worktree cannot do: the running app is a single process

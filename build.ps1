@@ -194,7 +194,7 @@ function Enter-InstallLock([string] $path) {
 function Get-LiveChats {
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $null }
     try {
-        $o = node scripts/netpi.mjs diag.overview --compact 2>$null | ConvertFrom-Json
+        $o = node scripts/netpi.mjs diag.overview --compact --timeout 5 2>$null | ConvertFrom-Json
         if (-not $o) { return $null }
         $busy = @($o.runs | Where-Object { $_.status -in 'running', 'queued' })
         return [pscustomobject]@{ Busy = $busy; Total = @($o.runs).Count }
@@ -205,7 +205,7 @@ function Get-LiveChats {
 function Get-PluginTools([string[]] $pluginNames) {
     if (-not $pluginNames.Count -or -not (Get-Command node -ErrorAction SilentlyContinue)) { return $null }
     try {
-        $tools = node scripts/netpi.mjs tools.list --compact 2>$null | ConvertFrom-Json
+        $tools = node scripts/netpi.mjs tools.list --compact --timeout 5 2>$null | ConvertFrom-Json
         if (-not $tools) { return $null }
         return @($tools | Where-Object { $pluginNames -contains $_.pluginId -and $_.active } |
             Select-Object -ExpandProperty name | Sort-Object -Unique)

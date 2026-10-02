@@ -279,17 +279,12 @@ internal sealed partial class Ledger
     }
 
     /// <summary>
-    /// The plugin is stopping: nothing scheduled may touch the store after this. The in-flight
-    /// <c>usage.changed</c> checks <see cref="_stopped"/> before publishing, and the reads below are null-guarded.
+    /// The plugin is stopping: the debounced <c>usage.changed</c> that is still scheduled checks <see cref="_stopped"/> before
+    /// it publishes, so it does not run after the unload. The collections stay: a call that started before a hot swap keeps
+    /// the old middleware (and so this ledger) until it ends, and its settlement must still reach the store, which is the
+    /// shared one and outlives the load context.
     /// </summary>
-    public void Stop()
-    {
-        Volatile.Write(ref _stopped, 1);
-        _calls = null;
-        _lanesUsage = null;
-        _laneUsage = null;
-        _counters = null;
-    }
+    public void Stop() => Volatile.Write(ref _stopped, 1);
 
     // ---------------------------------------------------------------- budget
 

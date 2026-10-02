@@ -99,12 +99,19 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
     /// <summary>Run git and return (exit code, combined output), for the operations whose failure has to be reported.</summary>
     public async Task<(int Code, string Output)> ExecAsync(string cwd, CancellationToken ct, params string[] args)
     {
+        var (code, stdout, stderr) = await ExecSplitAsync(cwd, ct, args).ConfigureAwait(false);
+        return (code, stdout + stderr);
+    }
+
+    /// <summary>Run git and return (exit code, stdout, stderr) apart: an answer is stdout, a warning on stderr is not part of it.</summary>
+    public async Task<(int Code, string Stdout, string Stderr)> ExecSplitAsync(string cwd, CancellationToken ct, params string[] args)
+    {
         var psi = NewPsi(cwd);
         psi.RedirectStandardInput = true;
         foreach (var a in args) psi.ArgumentList.Add(a);
         Process process;
         try { process = Process.Start(psi)!; }
-        catch (Exception ex) { return (127, ex.Message); }
+        catch (Exception ex) { return (127, "", ex.Message); }
         using (process)
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -115,14 +122,13 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
                 var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
                 try { process.StandardInput.Close(); } catch { }
                 await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-                var output = await stdout.ConfigureAwait(false) + await stderr.ConfigureAwait(false);
-                return (process.ExitCode, output);
+                return (process.ExitCode, await stdout.ConfigureAwait(false), await stderr.ConfigureAwait(false));
             }
             catch (OperationCanceledException)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
                 if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
-                return (124, "git timed out");
+                return (124, "", "git timed out");
             }
         }
     }
@@ -181,9 +187,9 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
         {
             if (Directory.Exists(dir) || File.Exists(dir))
             {
-                var (code, output) = ExecAsync(dir, CancellationToken.None, args).GetAwaiter().GetResult();
-                if (code == 0) value = output.Trim();
-                else if (!NotARepository(output)) RememberProblem(key, output);
+                var (code, stdout, stderr) = ExecSplitAsync(dir, CancellationToken.None, args).GetAwaiter().GetResult();
+                if (code == 0) value = stdout.Trim();   // the answer is stdout: a warning git prints on stderr must not become a commit id
+                else if (!NotARepository(dir, code)) RememberProblem(key, stderr + stdout);
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
@@ -203,12 +209,25 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
     }
 
     /// <summary>
-    /// Whether git's refusal is the definitive "this is not in a repository" — the message git gives for a directory
-    /// with no repository above it. A broken <c>.git</c> ("not a git repository: (NULL)") is the same words with that
-    /// clause missing: git ran and failed, which is a probe problem, not an answer.
+    /// Whether git's refusal is the definitive "this is not in a repository": git exited 128 and there is no <c>.git</c>
+    /// (a directory, or the file of a worktree) in the directory or any above it. Judged from the file system, not from
+    /// git's words, which change with the locale and with the platform ("or any parent up to mount point /tmp"). A broken
+    /// <c>.git</c> is there and git still fails: git ran and failed, which is a probe problem, not an answer.
     /// </summary>
-    private static bool NotARepository(string output) =>
-        output.Contains("not a git repository (or any of the parent directories)", StringComparison.OrdinalIgnoreCase);
+    private static bool NotARepository(string dir, int code)
+    {
+        if (code != 128) return false;
+        try
+        {
+            for (var d = new DirectoryInfo(dir); d is not null; d = d.Parent)
+            {
+                var entry = Path.Combine(d.FullName, ".git");
+                if (Directory.Exists(entry) || File.Exists(entry)) return false;
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+    }
 
     /// <summary>Remember what a failed probe said, so <see cref="ProbeProblem"/> can report it while it is fresh.</summary>
     private void RememberProblem(string key, string output)

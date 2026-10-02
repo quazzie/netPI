@@ -146,7 +146,7 @@ internal static unsafe class Sqlite3
 
     // The online backup API: a consistent copy of one database into a fresh one, in interruptible batches.
     [DllImport(Lib, ExactSpelling = true)] public static extern IntPtr sqlite3_backup_init(IntPtr dest, byte* destName, IntPtr source, byte* sourceName);
-    [DllImport(Lib, ExactSpelling = true), SuppressGCTransition] public static extern int sqlite3_backup_step(IntPtr backup, int nPage);
+    [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_backup_step(IntPtr backup, int nPage);
     [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_backup_finish(IntPtr backup);
 }
 
