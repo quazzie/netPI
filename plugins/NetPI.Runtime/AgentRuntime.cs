@@ -486,7 +486,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     {
         if (_stopping) throw new InvalidOperationException("The agent runtime is stopping.");
         RunState? run = null;
-        var signal = false;
+        CancellationTokenSource? sig = null;
         lock (s.Gate)
         {
             if (s.Run is not null)
@@ -495,7 +495,9 @@ internal sealed class AgentRuntime : IAgentRuntime
                 else
                 {
                     s.Steering.Add(input);
-                    signal = string.Equals(input.Source, "user", StringComparison.Ordinal);
+                    // The signal this steer belongs to, taken with the add: a drain that replaces it before the Cancel below
+                    // has already taken the steer, and the late Cancel must not land on the fresh signal.
+                    if (string.Equals(input.Source, "user", StringComparison.Ordinal)) sig = s.SteerSignal;
                 }
                 s.Info.QueuedMessages = s.Steering.Count + s.FollowUps.Count;
             }
@@ -507,10 +509,8 @@ internal sealed class AgentRuntime : IAgentRuntime
 
         if (run is null)
         {
-            if (signal)
+            if (sig is not null)
             {
-                CancellationTokenSource sig;
-                lock (s.Gate) sig = s.SteerSignal;
                 try { sig.Cancel(); } catch (ObjectDisposedException) { }
             }
             PublishQueue(s);
@@ -614,7 +614,12 @@ internal sealed class AgentRuntime : IAgentRuntime
             final = info.Clone();
             s.Run = null;
             done = s.RunDone;
-            if (!run.Aborted && !run.Stopping && !_stopping && (s.Steering.Count > 0 || s.FollowUps.Count > 0))
+            // Input that is still queued starts the next run, unless this run failed without taking any: the run steps that
+            // can fail (the model is gone, the budget is spent, the agent is unavailable) come before the queue is drained, so
+            // another run would fail the same way, append the same error, and start again for as long as the cause lasts. The
+            // queue stays as it is (the chips and "send" are there for it) until the user acts or a run gets further.
+            if (!run.Aborted && !run.Stopping && !_stopping && (s.Steering.Count > 0 || s.FollowUps.Count > 0)
+                && (outcome == "completed" || run.Delivered))
                 next = BeginRunLocked(s);
         }
 
@@ -1211,7 +1216,13 @@ internal sealed class AgentRuntime : IAgentRuntime
         lock (s.Gate)
         {
             removed = s.Steering.RemoveAll(i => i.Id == inputId) + s.FollowUps.RemoveAll(i => i.Id == inputId) > 0;
-            if (removed) s.Info.QueuedMessages = s.Steering.Count + s.FollowUps.Count;
+            if (removed)
+            {
+                s.Info.QueuedMessages = s.Steering.Count + s.FollowUps.Count;
+                // The steer that cancelled the signal is gone: with nothing left to steer to, a guard approval, ask_user or
+                // agent wait must not read the old cancel as "the user wrote a new message" and return at once.
+                if (s.Steering.Count == 0 && s.SteerSignal.IsCancellationRequested) s.SteerSignal = new CancellationTokenSource();
+            }
         }
         if (removed)
         {

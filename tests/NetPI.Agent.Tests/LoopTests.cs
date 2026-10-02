@@ -22,6 +22,8 @@ public static class LoopTests
         t.Add("loop: abort during a tool call", AbortDuringTool);
         t.Add("loop: abort during a tool that swallows cancellation stops the batch", AbortDuringSwallowingTool);
         t.Add("loop: an abort keeps the queue: dequeue it, then send it as the next turn", AbortKeepsQueue);
+        t.Add("loop: a run that fails before it takes the queue does not start itself again for it", FailedRunKeepsQueue);
+        t.Add("loop: taking a steer back from the queue lifts its cancel, so a wait is not interrupted by nothing", StaleSteerSignal);
         t.Add("loop: unknown tool and invalid JSON arguments", ToolErrors);
         t.Add("loop: {\"help\": true} on any tool returns its manual and does not run it", ToolHelpCall);
         t.Add("loop: tool exceptions and result truncation", ToolExceptionAndTruncation);
@@ -450,6 +452,87 @@ public static class LoopTests
     // sends the same text as the next turn. The queue must survive the abort, the removal is what authorizes
     // the send (a second removal reports "gone", so the text is never sent twice), and the resent text starts
     // its own run.
+    /// <summary>
+    /// The steps of a turn that can fail (the model is gone, the budget is spent, no slot) come before the queue is taken, so
+    /// a run that failed there still holds the input. It used to start the next run for it at once, which failed the same
+    /// way, appended the same error and started again, for as long as the cause lasted.
+    /// </summary>
+    private static async Task FailedRunKeepsQueue()
+    {
+        await using var h = await TestHost.StartAsync();
+        var gate = new TaskCompletionSource();
+        string? model = null;
+        var breakOnce = 1;
+        h.AddTool(new FakeTool("work", async (ctx, args, ct) =>
+        {
+            await gate.Task.WaitAsync(ct);
+            // The model goes away mid-run: the next turn fails before the queue is read. Once only: the second run must work.
+            if (Interlocked.Exchange(ref breakOnce, 0) == 1) h.SetModel(ctx.SessionId, "fake/gone");
+            return ToolResult.Ok("done");
+        }));
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("ok") : Reply.Tool("work", new { });
+        var s = h.NewSession();
+        model = h.Sessions.GetSession(s.Id)!.Model;
+        await h.SendAsync(s.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 1, "first call");
+        await h.SendAsync(s.Id, "steer now", DeliveryMode.Steer);
+        await h.SendAsync(s.Id, "later", DeliveryMode.Queue);
+        gate.SetResult();
+        var a = await h.IdleAsync(s.Id);
+
+        int ErrorNotices() => h.Messages(s.Id).Count(m => m.MetaString("kind") == "error");
+        Check.Equal(AgentStatus.Idle, a.Status);
+        Check.Contains(a.Error ?? "", "not available");
+        Check.Equal(1, a.Runs, "no run was started for the queue");
+        Check.Equal(1, ErrorNotices());
+        await Task.Delay(300);   // a negative: the old behaviour restarted at once, so a short wait is enough to see it
+        a = h.Runtime.GetBySession(s.Id)!;
+        Check.Equal(1, a.Runs, "still one run");
+        Check.Equal(AgentStatus.Idle, a.Status);
+        Check.Equal(1, ErrorNotices());
+        Check.Equal(2, h.Runtime.GetQueue(s.Id).Count, "the queue is as the user left it: the steer and the follow-up");
+        Check.Equal(2, a.QueuedMessages);
+
+        // the cause is fixed and the user writes again: the same run takes what was waiting, in order
+        h.Sessions.UpdateSession(s.Id, x => x.Model = model);
+        await h.SendAsync(s.Id, "try again");
+        a = await h.IdleAsync(s.Id);
+        Check.Equal(0, h.Runtime.GetQueue(s.Id).Count, "the queue was taken");
+        var said = h.Messages(s.Id).Where(m => m.Role == MessageRole.User).Select(m => m.Text).ToList();
+        Check.Equal("go,try again,steer now,later", string.Join(",", said));
+    }
+
+    /// <summary>A steer cancels the agent's signal so a guard approval, ask_user or agent wait stops waiting for it. Taking the
+    /// steer back leaves nothing to steer to: the old cancel must not make every later wait return at once.</summary>
+    private static async Task StaleSteerSignal()
+    {
+        await using var h = await TestHost.StartAsync();
+        var gate = new TaskCompletionSource();
+        h.Catalog.Handler = (r, ct) => Reply.Text("first", c => gate.Task.WaitAsync(c));
+        var s = h.NewSession();
+        await h.SendAsync(s.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 1, "first call");
+        var state = ((NetPI.Runtime.AgentRuntime)h.Runtime).FindState(s.Id)!;
+        Check.False(state.SteerSignal.IsCancellationRequested, "nothing steered yet");
+
+        await h.SendAsync(s.Id, "one", DeliveryMode.Steer);
+        await h.SendAsync(s.Id, "two", DeliveryMode.Steer);
+        Check.True(state.SteerSignal.IsCancellationRequested, "a steer cancels the signal");
+        var queued = h.Runtime.GetQueue(s.Id);
+        Check.True(h.Runtime.RemoveQueued(s.Id, queued[0].Id), "take one back");
+        Check.True(state.SteerSignal.IsCancellationRequested, "one steer is still queued: the cancel stands");
+        Check.True(h.Runtime.RemoveQueued(s.Id, queued[1].Id), "take the other back");
+        Check.False(state.SteerSignal.IsCancellationRequested, "nothing left to steer to: a wait is not interrupted by nothing");
+
+        // a steer that is not taken back is delivered as before
+        await h.SendAsync(s.Id, "three", DeliveryMode.Steer);
+        Check.True(state.SteerSignal.IsCancellationRequested);
+        gate.SetResult();
+        await h.IdleAsync(s.Id);
+        Check.Equal(0, h.Runtime.GetQueue(s.Id).Count);
+        Check.True(h.Messages(s.Id).Any(m => m.Text == "three"), "the steer was delivered");
+    }
+
     private static async Task AbortKeepsQueue()
     {
         await using var h = await TestHost.StartAsync();

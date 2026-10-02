@@ -130,6 +130,11 @@ Anthropic's prompt cache alike). So nothing that was sent is ever changed; new i
   first user message, but the model reads it before that message (`ContextOrder` in the runtime; nothing is cached yet at
   that call, so every later request has the same order) and the chat shows it there too (`chatItems.js`). Notices that
   answer the message (a skill loaded with `/skill:name`) stay after it, and so does every later notice.
+- **A notice stored while tools run follows their results.** The assistant message and each tool result are stored as they
+  happen, so a notice appended mid-batch (a profile switch, an attached idea, a commit check) sits between the calls and
+  results that are not in yet. `ModelMessages.Normalize` holds it behind the results of that batch, instead of closing the
+  calls as "not executed" and dropping the real results when they arrive; the stored order is unchanged. Calls that never
+  get a result are still closed with the synthetic "not executed" result, before the notice.
 - **Tools are sent sorted by name**, so a plugin reload does not reorder them. Every request carries the tools that are
   registered right now, so a tool from a plugin loaded mid-session is callable at the next model call. Its guidelines
   are not in the frozen prompt, so the context plugin appends a `tools` notice ("Your tools changed. New: …", with the

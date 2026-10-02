@@ -45,8 +45,62 @@ public static class ModelCatalogTests
     private static ModelInfo Model(string provider, string id, string? status = null) =>
         new() { Provider = provider, Id = id, Status = status, IsLocal = true };
 
+    private static ChatMessage Calls(params string[] ids) => new()
+    {
+        Role = MessageRole.Assistant, Parts = [.. ids.Select(id => (MessagePart)new ToolCallPart { Id = id, Name = "bash", Arguments = "{}" })],
+    };
+
+    private static ChatMessage Result(string id, string content) => new()
+    {
+        Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = id, Name = "bash", Content = content }],
+    };
+
+    /// <summary>The assistant message and each tool result are stored as they happen, so a notice can land between a call and
+    /// a result that is not in yet: the real result must survive, and the notice follows it.</summary>
+    private static Task NoticeDuringTools()
+    {
+        var sent = ModelMessages.Normalize(
+        [
+            ChatMessage.UserText("build it"),
+            Calls("c1", "c2"),
+            Result("c1", "built"),
+            ChatMessage.NoticeText("project changed", "project"),   // appended while c2 still ran
+            Result("c2", "tested"),
+            ChatMessage.UserText("thanks"),
+        ]);
+        Check.Equal("User,Assistant,Tool,User,User", string.Join(",", sent.Select(m => m.Role)));
+        var results = sent[2].ToolResults.ToList();
+        Check.Equal(2, results.Count);
+        Check.Equal("built,tested", string.Join(",", results.Select(x => x.Content)), "both real results are kept");
+        Check.False(results.Any(x => x.IsError), "nothing is closed as not executed");
+        Check.Contains(sent[3].Text, "project changed");
+        Check.Equal("thanks", sent[4].Text);
+
+        // a notice before any result, at the end of the history (the tools have finished by the next model call, but the
+        // normaliser must not depend on it)
+        var tail = ModelMessages.Normalize([ChatMessage.UserText("go"), Calls("c1"), ChatMessage.NoticeText("n", "project")]);
+        Check.Equal("User,Assistant,Tool,User", string.Join(",", tail.Select(m => m.Role)));
+        Check.True(tail[2].ToolResults.Single().IsError, "a call that never got a result is still closed");
+        Check.Contains(tail[2].ToolResults.Single().Content, "not executed");
+
+        // several notices keep their order, all behind the results; a notice with no call open is placed where it is
+        var many = ModelMessages.Normalize(
+        [
+            ChatMessage.NoticeText("first", "a"), ChatMessage.UserText("go"), Calls("c1"),
+            ChatMessage.NoticeText("second", "b"), ChatMessage.NoticeText("third", "c"), Result("c1", "ok"), Calls("c2"), Result("c2", "ok2"),
+        ]);
+        Check.Equal("User,User,Assistant,Tool,User,User,Assistant,Tool", string.Join(",", many.Select(m => m.Role)));
+        Check.Contains(many[0].Text, "first");
+        Check.Equal("ok", many[3].ToolResults.Single().Content);
+        Check.Contains(many[4].Text, "second");
+        Check.Contains(many[5].Text, "third");
+        Check.Equal("ok2", many[7].ToolResults.Single().Content);
+        return Task.CompletedTask;
+    }
+
     public static void Register(TestRunner r)
     {
+        r.Add("model messages: a notice stored while tools ran waits behind their results; unanswered calls are still closed", NoticeDuringTools);
         r.Add("models: aggregate, find, default model, models.changed on provider registration", async () =>
         {
             var dir = T.TempDir("models");

@@ -299,9 +299,15 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
         List<UserInput> items;
         lock (state.Gate)
         {
-            if (state.Steering.Count == 0) return;
+            if (state.Steering.Count == 0)
+            {
+                // A cancelled signal with nothing queued is a steer that was taken back: nothing is waiting to be steered to.
+                if (state.SteerSignal.IsCancellationRequested) state.SteerSignal = new CancellationTokenSource();
+                return;
+            }
             items = [.. state.Steering];
             state.Steering.Clear();
+            run.Delivered = true;
             Info.QueuedMessages = state.FollowUps.Count;
             if (state.SteerSignal.IsCancellationRequested) state.SteerSignal = new CancellationTokenSource();
         }
@@ -325,6 +331,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             if (state.FollowUps.Count == 0) return false;
             next = state.FollowUps[0];
             state.FollowUps.RemoveAt(0);
+            run.Delivered = true;
             Info.QueuedMessages = state.Steering.Count + state.FollowUps.Count;
         }
         rt.PersistInput(state, next, "queue");

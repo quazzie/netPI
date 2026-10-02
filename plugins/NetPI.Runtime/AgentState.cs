@@ -71,6 +71,12 @@ internal sealed class RunState
     public string? CancelReason { get; set; }
     /// <summary>Last non-empty assistant text of this run (the subagent's result).</summary>
     public string? LastAssistantText { get; set; }
+    /// <summary>
+    /// This run took queued input into the conversation (a steer drained, a follow-up delivered). Read and written under the
+    /// agent's gate. A run that failed before taking any leaves the queue as it found it, and starting another run for the
+    /// same queue would fail the same way: see <c>AgentRuntime.EndRunAsync</c>.
+    /// </summary>
+    public bool Delivered { get; set; }
 }
 
 internal static class AgentInfoExtensions

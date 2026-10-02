@@ -19,23 +19,32 @@ public static class ModelMessages
         var pendingCalls = new List<ToolCallPart>();
         var answered = new HashSet<string>(StringComparer.Ordinal);
         var resultsBuffer = new List<ToolResultPart>();
+        // Notices stored while the calls of the last assistant message were still open: they follow the results, see below.
+        var held = new List<ChatMessage>();
 
         void FlushPending()
         {
-            if (pendingCalls.Count == 0) return;
-            var parts = new List<MessagePart>();
-            foreach (var r in resultsBuffer) parts.Add(r);
-            foreach (var call in pendingCalls)
+            if (pendingCalls.Count > 0)
             {
-                if (answered.Contains(call.Id)) continue;
-                parts.Add(new ToolResultPart
+                var parts = new List<MessagePart>();
+                foreach (var r in resultsBuffer) parts.Add(r);
+                foreach (var call in pendingCalls)
                 {
-                    CallId = call.Id, Name = call.Name, IsError = true,
-                    Content = "Tool call was not executed (the run was interrupted).",
-                });
+                    if (answered.Contains(call.Id)) continue;
+                    parts.Add(new ToolResultPart
+                    {
+                        CallId = call.Id, Name = call.Name, IsError = true,
+                        Content = "Tool call was not executed (the run was interrupted).",
+                    });
+                }
+                if (parts.Count > 0) output.Add(new ChatMessage { Role = MessageRole.Tool, Parts = parts, SessionId = "" });
+                pendingCalls.Clear(); answered.Clear(); resultsBuffer.Clear();
             }
-            if (parts.Count > 0) output.Add(new ChatMessage { Role = MessageRole.Tool, Parts = parts, SessionId = "" });
-            pendingCalls.Clear(); answered.Clear(); resultsBuffer.Clear();
+            if (held.Count > 0)
+            {
+                output.AddRange(held);
+                held.Clear();
+            }
         }
 
         foreach (var m in input)
@@ -65,9 +74,14 @@ public static class ModelMessages
                     break;
 
                 case MessageRole.Notice:
-                    FlushPending();
                     var kind = m.MetaString("kind");
-                    output.Add(Clone(m, MessageRole.User, [new TextPart { Text = WrapNotice(m.Text, kind) }]));
+                    var notice = Clone(m, MessageRole.User, [new TextPart { Text = WrapNotice(m.Text, kind) }]);
+                    // The assistant message and each tool result are stored as they happen, so a notice appended while a tool
+                    // runs sits between the call and a result that is not in yet. Closing the calls here would answer them
+                    // "not executed" and then drop the real results when they arrive (the model reruns what already ran).
+                    // The notice waits behind the results instead; if none ever arrive, the calls are closed as before.
+                    if (pendingCalls.Count > 0) held.Add(notice);
+                    else output.Add(notice);
                     break;
 
                 case MessageRole.Summary:
