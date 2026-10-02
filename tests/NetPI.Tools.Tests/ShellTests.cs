@@ -214,6 +214,55 @@ public static class ShellTests
             Check.True(child.NativePid is > 0, "resolved the child's Windows pid (not the MSYS one)");
         });
 
+        // The shell exits while a descendant still holds the output pipes: it must stay killable (the tree is alive)
+        // and the pumps must keep draining, so the descendant neither goes un-killable nor clogs on a full pipe.
+        r.Add("bash: a shell that exits leaving a pipe-holding descendant stays killable", async () =>
+        {
+            var (svc, registry, _) = NewService();
+            var dir = T.TempDir("zombie");
+            using var child = ShellChild.For(svc, dir, "zombie");
+            try
+            {
+                var sw = Stopwatch.StartNew();
+                var res = await T.Run(Bash(svc), dir, new { command = child.Preamble + "echo quick" });
+                sw.Stop();
+                Check.True(sw.Elapsed < TimeSpan.FromSeconds(6), $"returned promptly ({sw.Elapsed})");
+                Check.Contains(res.Content, "quick");
+                Check.Contains(res.Content, "still running and holding its output", "the result names the surviving descendant");
+                var p = registry.Get(T.D(res).Str("processId"))!;
+                Check.Equal("exited", p.Status, "the shell reported its exit");
+                Check.False(p.OutputReachedEof, "the descendant still holds the pipes");
+                Check.True(p.TreeMayBeAlive, "the tree is still alive and killable");
+                Check.True(await child.IsAlive(), "the descendant is still running");
+
+                // process kill reaches the surviving tree (the old code answered "not running" here).
+                var id = p.Id;
+                var kill = await T.Run(new ProcessTool(registry), dir, new { action = "kill", id });
+                Check.Ok(kill);
+                Check.Contains(kill.Content, "Killed");
+                Check.True(T.D(kill).Bool("killed"));
+                Check.Equal("killed", p.Status, "the status reflects the kill");
+
+                var stopped = false;
+                for (var i = 0; i < 25 && !stopped; i++) { await Task.Delay(200); stopped = await child.IsAlive(400) == false; }
+                Check.True(stopped, "the descendant was actually killed");
+                Check.Contains((await T.Run(new ProcessTool(registry), dir, new { action = "kill", id })).Content, "not running");
+
+                // KillAllAsync reaches a shell that exited leaving a descendant, too (plugin stop).
+                using var child2 = ShellChild.For(svc, dir, "zombie2");
+                var res2 = await T.Run(Bash(svc), dir, new { command = child2.Preamble + "echo quick2" });
+                var p2 = registry.Get(T.D(res2).Str("processId"))!;
+                Check.True(p2.TreeMayBeAlive, "second descendant still holding the pipes");
+                await registry.KillAllAsync(TimeSpan.FromSeconds(5));
+                Check.False(await child2.IsAlive(400), "KillAllAsync reached the surviving descendant");
+            }
+            finally
+            {
+                child.Kill();
+                await registry.KillAllAsync(TimeSpan.FromSeconds(5));
+            }
+        });
+
         r.Add("bash: output truncation keeps the tail and spills the full output", async () =>
         {
             var (svc, _, _) = NewService();

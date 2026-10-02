@@ -186,7 +186,13 @@ public sealed class ManagedProcess : IDisposable
         // Drain what is left; do not wait forever for grandchildren that inherited the pipes.
         var pumps = Task.WhenAll(_pumps);
         OutputReachedEof = await Task.WhenAny(pumps, Task.Delay(DrainGrace)).ConfigureAwait(false) == pumps;
-        if (!OutputReachedEof) _pumpCts.Cancel();
+        if (!OutputReachedEof)
+        {
+            // A descendant outlived the shell and is still holding the output pipes. Do not cancel the pumps:
+            // stopping the read side would fill the pipes and clog the descendant. They keep draining (the capture
+            // is bounded) until the pipes reach EOF, at which point the tree is done and no longer killable.
+            _ = WatchTreeDeathAsync(pumps);
+        }
         int? code = null;
         try { code = _process.ExitCode; } catch { }
         lock (_statusLock)
@@ -208,14 +214,26 @@ public sealed class ManagedProcess : IDisposable
         _exited.TrySetResult();
     }
 
-    /// <summary>Kill the whole process tree. <paramref name="status"/>: killed | timeout. Returns false when it had already exited.</summary>
+    /// <summary>
+    /// True while the process tree may still have live members: the parent shell has not exited, or a descendant
+    /// is still holding the output pipes (the capture has not reached EOF). Such a process is still killable even
+    /// though the shell itself has already reported an exit.
+    /// </summary>
+    public bool TreeMayBeAlive
+    {
+        get { lock (_statusLock) return _status == "running" || !OutputReachedEof; }
+    }
+
+    /// <summary>Kill the whole process tree. <paramref name="status"/>: killed | timeout. Returns false when there is nothing left to kill.</summary>
     public bool Kill(string status = "killed")
     {
         lock (_statusLock)
         {
-            if (_status != "running") return false;
-            try { if (_process.HasExited) return false; } catch { }
+            // Nothing left to kill: the shell has exited and the pipes reached EOF, so the tree is gone.
+            if (_status != "running" && OutputReachedEof) return false;
             _requestedStatus ??= status;
+            // The shell already reported its exit but a descendant is still alive: reflect the kill in the status now.
+            if (_status != "running") _status = _requestedStatus;
         }
         if (_tree is not null) _tree.Kill();
         else
@@ -252,6 +270,17 @@ public sealed class ManagedProcess : IDisposable
         _tree?.Dispose();
         try { _process.Dispose(); } catch { }
         _pumpCts.Dispose();
+    }
+
+    /// <summary>
+    /// The shell exited but a descendant is still holding the output pipes: wait in the background (never blocking
+    /// the exit) until the pipes reach EOF, then record that the tree is done so it stops counting as killable.
+    /// Killing in the meantime still works and ends this sooner.
+    /// </summary>
+    private async Task WatchTreeDeathAsync(Task pumpsDone)
+    {
+        await pumpsDone.ConfigureAwait(false);
+        OutputReachedEof = true;
     }
 }
 
@@ -304,12 +333,12 @@ public sealed class ProcessRegistry(IEventBus? events = null)
         try { Events?.Publish(type, new { process = p.ToInfo() }); } catch { }
     }
 
-    /// <summary>Kill every running process (plugin stop).</summary>
+    /// <summary>Kill every process whose tree may still be alive (running, or a shell that exited leaving descendants holding the pipes). Best effort, bounded by <paramref name="wait"/> (plugin stop).</summary>
     public async Task KillAllAsync(TimeSpan wait)
     {
-        var running = _all.Values.Where(p => p.IsRunning).ToList();
-        foreach (var p in running) p.Kill();
-        if (running.Count > 0)
-            await Task.WhenAny(Task.WhenAll(running.Select(p => p.Completion)), Task.Delay(wait)).ConfigureAwait(false);
+        var active = _all.Values.Where(p => p.TreeMayBeAlive).ToList();
+        foreach (var p in active) p.Kill();
+        if (active.Count > 0)
+            await Task.WhenAny(Task.WhenAll(active.Select(p => p.Completion)), Task.Delay(wait)).ConfigureAwait(false);
     }
 }
