@@ -17,6 +17,7 @@ public static class GuardrailsTests
         t.Add("guardrails: in a subagent an ask rule blocks; switched off, nothing is checked", SubagentAndOff);
         t.Add("guardrails: the default rules block the catastrophic, not everyday work; spellings of a path", DefaultRules);
         t.Add("guardrails: second opinion: a confidently read-only command runs without asking, the rest ask with the model's view", SecondOpinionClears);
+        t.Add("guardrails: second opinion never clears a path ask (it reads the command, not where it writes)", SecondOpinionSkipsPathRules);
         t.Add("guardrails: second opinion never relaxes a block or write/edit, is off by default, and asks when the model fails", SecondOpinionLimits);
         t.Add("guardrails: the call that runs is the call that is checked: tool-name case, argument aliases and their order, arrays, spaced keys, string-encoded arguments", RunsWhatIsChecked);
         t.Add("guardrails: a redirection, comment, quotes, sudo or a wrapper do not hide a blocked command; a rule that times out blocks", Decorations);
@@ -450,6 +451,34 @@ public static class GuardrailsTests
         Check.True(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 0.1, ["destructive"] = 0, ["stops_process"] = 0, ["remote_change"] = 0 }, 0.2), "read-only is shown, not required");
         Check.False(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 1 }, 0.2), "a missing answer never clears");
         Check.False(SecondOpinion.IsHarmless(new Dictionary<string, double> { ["read_only"] = 1, ["destructive"] = 0, ["stops_process"] = 0 }, 0.2), "every risk must be answered");
+    }
+
+    private static async Task SecondOpinionSkipsPathRules()
+    {
+        await using var h = await StartAsync();
+        var dir = Path.Combine(h.Workspace, "guarded");
+        Directory.CreateDirectory(dir);
+        var fwd = dir.Replace('\\', '/');
+        h.Settings.Set("guardrails.paths", new JsonArray("ask: " + dir));
+        h.Settings.Set("guardrails.secondOpinion", JsonValue.Create(true));
+        // The decision model would clear this: if it is consulted for a path rule, the call would run without asking.
+        var decided = FakeDecide(h, _ => (0.99, 0.01));
+        var ran = new List<string>();
+        h.AddTool(Recorder("bash", ran));
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done") : Reply.Tool("bash", new { command = $"echo x >> \"{fwd}/a.txt\"" });
+
+        // A local shell command writing into the protected path: a path-kind ask verdict.
+        await h.SendAsync(s.Id, "write");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count == 1, "the path rule asks the user");
+        Check.Equal(0, decided.Count, "the second opinion was never consulted for a path rule");
+        Check.Equal(0, h.Bus.OfType("guard.cleared").Count, "a path ask is not cleared by the model");
+        Check.Equal(0, ran.Count, "it did not run before the user answered");
+
+        // It is still a real ask: the user's yes lets it run.
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)FakeBus.Data(h.Bus.OfType("guard.asked").Single())["approvalId"]!, allow = true });
+        await h.IdleAsync(s.Id);
+        Check.Equal(1, ran.Count, "allowed by the user");
     }
 
     private static async Task SecondOpinionLimits()

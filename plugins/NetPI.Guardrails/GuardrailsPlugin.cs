@@ -212,10 +212,11 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
                 });
                 return null;
             }
-            // An ask rule on a shell command: a decision model may clear a confidently read-only one (SecondOpinion). A path
-            // verdict on anything but a local shell is about where the call writes (an ssh download), not the command text.
+            // An ask rule on a command: a decision model may clear a confidently read-only one (SecondOpinion). A path
+            // verdict never does: it is about where the call writes, and the model reads the command text, which can look
+            // harmless while still writing into a protected path — so a path ask always asks the user.
             Opinion? opinion = null;
-            if ((verdict.Kind != "path" || RuleSet.LocalShellTools.Contains(call.Name)) && RuleSet.CommandOf(call.Name, args) is { Length: > 0 } command)
+            if (verdict.Kind != "path" && RuleSet.CommandOf(call.Name, args) is { Length: > 0 } command)
             {
                 opinion = await secondOpinion.AskAsync(call.Name, command, run.Cwd, RuleSet.HostOf(args), ct, run).ConfigureAwait(false);
                 if (opinion is { Harmless: true })
