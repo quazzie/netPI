@@ -302,12 +302,12 @@ public static class IdeasNoticeTests
             if (!env.GitAvailable) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
             var run = env.Run();
             run.Cwd = env.Worktree;                                   // a bound session works in its workspace
-            run.Workspace = new WorkspaceBinding("ws1", env.Worktree, RepoCommonDir: env.CommonDir, Kind: "worktree");
+            run.SetWorkspace(new WorkspaceBinding("ws1", env.Worktree, RepoCommonDir: env.CommonDir, Kind: "worktree"));
             Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", null, run, env.Project), "a commit in the session's own worktree");
             Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", env.Main, run, env.Project), "a commit in the main checkout of the same repository");
             Check.False(IdeaCommitNoticeHook.InProject("git commit -m x", env.Unrelated, run, env.Project), "a commit in another repository is not");
             // The binding recorded no common dir: the probe fills the gap.
-            run.Workspace = new WorkspaceBinding("ws2", env.Worktree, Kind: "worktree");
+            run.SetWorkspace(new WorkspaceBinding("ws2", env.Worktree, Kind: "worktree"));
             Check.True(IdeaCommitNoticeHook.InProject("git commit -m x", env.Main, run, env.Project), "the probe finds the worktree's repository");
         });
 
