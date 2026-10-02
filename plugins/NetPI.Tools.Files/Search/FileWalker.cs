@@ -30,7 +30,8 @@ public static class FileWalker
 
     /// <summary>
     /// Walk <paramref name="root"/> (not included in the output). Relative paths use '/' and are relative to
-    /// <paramref name="relativeTo"/> (default: root).
+    /// <paramref name="relativeTo"/> (default: root). Each directory is materialised only as far as the walk can
+    /// still emit entries, so a tree that stops at <c>MaxEntries</c> inside a huge directory never reads the rest of it.
     /// </summary>
     public static IEnumerable<WalkEntry> Walk(string root, WalkOptions? options = null, string? relativeTo = null, CancellationToken ct = default)
     {
@@ -40,7 +41,7 @@ public static class FileWalker
         var rootIgnores = options.RespectIgnore ? IgnoreStack.ForRoot(root).Enter(root) : IgnoreStack.Empty;
         var count = 0;
         var pending = new Stack<(List<WalkEntry> Entries, int Index, IgnoreStack Ignores)>();
-        pending.Push((ReadDir(root, rootIgnores, options, relativeTo), 0, rootIgnores));
+        pending.Push((ReadDir(root, rootIgnores, options, relativeTo, options.MaxEntries), 0, rootIgnores));
         while (pending.Count > 0)
         {
             ct.ThrowIfCancellationRequested();
@@ -57,57 +58,88 @@ public static class FileWalker
             if (e.IsDir && !e.Ignored && !e.IsLink && options.Recursive && pending.Count <= options.MaxDepth)
             {
                 var child = options.RespectIgnore ? ignores.Enter(e.FullPath) : ignores;
-                pending.Push((ReadDir(e.FullPath, child, options, relativeTo), 0, child));
+                // Materialise only what the walk can still emit: beyond that the rest of the directory is never yielded.
+                pending.Push((ReadDir(e.FullPath, child, options, relativeTo, Math.Max(0, options.MaxEntries - count)), 0, child));
             }
         }
     }
 
-    /// <summary>List one directory (sorted by name, case-insensitive), applying ignore rules. Ignored entries are flagged, not removed.</summary>
-    public static List<WalkEntry> ListDirectory(string dir, bool respectIgnore = true, string? relativeTo = null)
+    /// <summary>
+    /// List one directory (sorted by name, case-insensitive), applying ignore rules. Ignored entries are flagged, not
+    /// removed. At most <paramref name="maxEntries"/> entries are materialised; <c>visible</c> and <c>ignored</c> are the
+    /// directory's totals, counted in one streamed pass when the cap was reached, so a caller can say how many entries
+    /// it did not list.
+    /// </summary>
+    public static (List<WalkEntry> Entries, int Visible, int Ignored) ListDirectory(string dir, bool respectIgnore = true, string? relativeTo = null, int maxEntries = int.MaxValue)
     {
         dir = Path.GetFullPath(dir);
         var ignores = respectIgnore ? IgnoreStack.ForRoot(dir).Enter(dir) : IgnoreStack.Empty;
-        return ReadDir(dir, ignores, new WalkOptions { RespectIgnore = respectIgnore }, relativeTo ?? dir);
+        var options = new WalkOptions { RespectIgnore = respectIgnore };
+        var entries = ReadDir(dir, ignores, options, relativeTo ?? dir, maxEntries);
+        var visible = entries.Count(e => !e.Ignored);
+        var ignored = entries.Count - visible;
+        if (maxEntries < int.MaxValue && entries.Count >= maxEntries)
+            (visible, ignored) = CountEntries(dir, ignores, options);
+        return (entries, visible, ignored);
     }
 
-    private static List<WalkEntry> ReadDir(string dir, IgnoreStack ignores, WalkOptions options, string relativeTo)
+    /// <summary>One streamed pass over a directory (nothing is materialised): the totals behind a capped listing.</summary>
+    private static (int Visible, int Ignored) CountEntries(string dir, IgnoreStack ignores, WalkOptions options)
     {
-        var result = new List<WalkEntry>();
-        List<FileSystemInfo> infos;
+        int visible = 0, ignored = 0;
         try
         {
-            infos = new DirectoryInfo(dir).EnumerateFileSystemInfos("*", EnumOptions).ToList();
+            foreach (var fsi in new DirectoryInfo(dir).EnumerateFileSystemInfos("*", EnumOptions))
+            {
+                try
+                {
+                    var isDir = (fsi.Attributes & FileAttributes.Directory) != 0;
+                    var isIgnored = options.RespectIgnore &&
+                                   ((isDir && IgnoreStack.DefaultSkipDirs.Contains(fsi.Name)) || ignores.IsIgnored(fsi.FullName, isDir));
+                    if (isIgnored) ignored++; else visible++;
+                }
+                catch { /* entry vanished or is inaccessible */ }
+            }
         }
-        catch
+        catch { /* the directory vanished or is inaccessible */ }
+        return (visible, ignored);
+    }
+
+    /// <summary>The entries of one directory, materialised up to <paramref name="maxEntries"/> and sorted by name.</summary>
+    internal static List<WalkEntry> ReadDir(string dir, IgnoreStack ignores, WalkOptions options, string relativeTo, int maxEntries = int.MaxValue)
+    {
+        var result = new List<WalkEntry>();
+        try
         {
-            return result;
+            foreach (var fsi in new DirectoryInfo(dir).EnumerateFileSystemInfos("*", EnumOptions))
+            {
+                try
+                {
+                    var isDir = (fsi.Attributes & FileAttributes.Directory) != 0;
+                    // Only symlinks/junctions: other reparse points (OneDrive placeholders, dedup) are regular directories.
+                    var isLink = isDir && (fsi.Attributes & FileAttributes.ReparsePoint) != 0 && fsi.LinkTarget is not null;
+                    var ignored = options.RespectIgnore &&
+                                  ((isDir && IgnoreStack.DefaultSkipDirs.Contains(fsi.Name)) || ignores.IsIgnored(fsi.FullName, isDir));
+                    long size = 0;
+                    if (!isDir && fsi is FileInfo fi)
+                    {
+                        try { size = fi.Length; } catch { }
+                    }
+                    DateTime mtime = default;
+                    try { mtime = fsi.LastWriteTimeUtc; } catch { }
+                    var rel = Path.GetRelativePath(relativeTo, fsi.FullName).Replace('\\', '/');
+                    result.Add(new WalkEntry(fsi.FullName, rel, fsi.Name, isDir, size, mtime, ignored, isLink));
+                }
+                catch { /* entry vanished or is inaccessible */ }
+                if (result.Count >= maxEntries) break; // the rest is counted, not materialised
+            }
         }
-        infos.Sort((a, b) =>
+        catch { /* the directory vanished or is inaccessible */ }
+        result.Sort((a, b) =>
         {
             var c = StringComparer.OrdinalIgnoreCase.Compare(a.Name, b.Name);
             return c != 0 ? c : StringComparer.Ordinal.Compare(a.Name, b.Name);
         });
-        foreach (var fsi in infos)
-        {
-            try
-            {
-                var isDir = (fsi.Attributes & FileAttributes.Directory) != 0;
-                // Only symlinks/junctions: other reparse points (OneDrive placeholders, dedup) are regular directories.
-                var isLink = isDir && (fsi.Attributes & FileAttributes.ReparsePoint) != 0 && fsi.LinkTarget is not null;
-                var ignored = options.RespectIgnore &&
-                              ((isDir && IgnoreStack.DefaultSkipDirs.Contains(fsi.Name)) || ignores.IsIgnored(fsi.FullName, isDir));
-                long size = 0;
-                if (!isDir && fsi is FileInfo fi)
-                {
-                    try { size = fi.Length; } catch { }
-                }
-                DateTime mtime = default;
-                try { mtime = fsi.LastWriteTimeUtc; } catch { }
-                var rel = Path.GetRelativePath(relativeTo, fsi.FullName).Replace('\\', '/');
-                result.Add(new WalkEntry(fsi.FullName, rel, fsi.Name, isDir, size, mtime, ignored, isLink));
-            }
-            catch { /* entry vanished or is inaccessible */ }
-        }
         return result;
     }
 }

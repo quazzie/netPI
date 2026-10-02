@@ -91,7 +91,11 @@ internal static class SshConfig
         return (key, args);
     }
 
-    /// <summary>Include targets: <c>~</c> expanded, relative paths against the including file's folder, <c>*</c>/<c>?</c> in the file name.</summary>
+    /// <summary>
+    /// Include targets: <c>~</c> expanded, relative paths against the including file's folder, <c>*</c>/<c>?</c> in the
+    /// file name, and a plain directory — whose regular files are included, as in ssh_config(5) — enumerated instead of
+    /// the directory itself (which would fail the include's file check and drop every host in it).
+    /// </summary>
     private static IEnumerable<string> Expand(string pattern, string includingFile)
     {
         if (pattern.StartsWith("~/") || pattern.StartsWith("~\\"))
@@ -99,7 +103,15 @@ internal static class SshConfig
         if (!Path.IsPathRooted(pattern)) pattern = Path.Combine(Path.GetDirectoryName(includingFile) ?? ".", pattern);
         var dir = Path.GetDirectoryName(pattern) ?? ".";
         var name = Path.GetFileName(pattern);
-        if (name.IndexOfAny(['*', '?']) < 0) return [pattern];
+        if (name.IndexOfAny(['*', '?']) < 0)
+        {
+            if (Directory.Exists(pattern))
+            {
+                try { return Directory.EnumerateFiles(pattern).Order(StringComparer.Ordinal).ToList(); }
+                catch (IOException) { return []; }
+            }
+            return [pattern];
+        }
         try { return Directory.Exists(dir) ? Directory.GetFiles(dir, name).Order(StringComparer.Ordinal) : []; }
         catch (IOException) { return []; }
     }
