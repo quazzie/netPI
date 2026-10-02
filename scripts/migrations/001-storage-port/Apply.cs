@@ -14,12 +14,6 @@ internal static class Apply
 {
     public static int Run(string home, string newDb)
     {
-        if (IdeasMigration.Pending)
-        {
-            Console.WriteLine("refusing to apply: the Ideas mapping is not in this build (IdeasMigration.Pending) — " +
-                "applying would move in a database with no ideas, and the backlog would live only in the renamed old one.");
-            return 2;
-        }
         var oldDb = Path.Combine(home, "netpi.db");
         try
         {

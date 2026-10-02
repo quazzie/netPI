@@ -65,14 +65,18 @@ internal static class Verify
             countersOk, $"usage_calls counter = {counterText} (old max id {maxIdText})"));
         checks.Add(CollectionCheck(storage, RuntimeMigration.PluginId, RuntimeMigration.Collection, RuntimeMigration.Spec(), Count(old, "agent_records")));
 
-        // The Ideas tables: counted for the report, not migrated until the mapping arrives (the stub keeps --apply refused).
-        var ideasOld = OldSchema.IdeasTables
-            .Select(t => Count(old, t))
-            .Where(c => c > 0)
-            .Select(c => Num(c))
-            .Aggregate(string.Empty, (a, b) => a + (a.Length > 0 ? " " : "") + b);
-        checks.Add(new Check($"{IdeasMigration.PluginId} (ideas_*)", ideasOld.Length > 0 ? ideasOld : "none", "—", true,
-            "PENDING: the collection mapping is not in this build (IdeasMigration stub)"));
+        // ------------------------------------------------------------ the ideas backlog: one collection per old table
+        var ideas = storage.Plugins.For(IdeasMigration.PluginId);
+        checks.Add(PluginCheck(ideas, "items", IdeasMigration.ItemsSpec(), Count(old, "ideas_items")));
+        checks.Add(PluginCheck(ideas, "cards", IdeasMigration.CardsSpec(), Count(old, "ideas_suggestions")));
+        checks.Add(PluginCheck(ideas, "resolutions", IdeasMigration.ResolutionsSpec(), Count(old, "ideas_resolutions")));
+        checks.Add(PluginCheck(ideas, "checks", IdeasMigration.ChecksSpec(), Count(old, "ideas_checks")));
+        checks.Add(PluginCheck(ideas, "repos", IdeasMigration.ReposSpec(), Count(old, "ideas_repos")));
+        checks.Add(PluginCheck(ideas, "imports", IdeasMigration.ImportsSpec(), Count(old, "ideas_imports")));
+        checks.Add(PluginCheck(ideas, "meta", IdeasMigration.MetaSpec(), Count(old, "ideas_metadata")));
+        checks.Add(PluginCheck(ideas, "unread", IdeasMigration.UnreadSpec(), Count(old, "ideas_unread")));
+        checks.Add(OrdCheck("netpi.ideas items (id, ord) in id order", old, "ideas_items", ideas.Collection("items", IdeasMigration.ItemsSpec())));
+        checks.Add(OrdCheck("netpi.ideas cards (id, ord) in id order", old, "ideas_suggestions", ideas.Collection("cards", IdeasMigration.CardsSpec())));
 
         // ------------------------------------------------------------ the messages, bit for bit
         var oldHash = MessageHash(old);
@@ -152,6 +156,47 @@ internal static class Verify
     {
         var newCount = storage.Plugins.For(plugin).Collection(name, spec).Count();
         return new Check($"{plugin} {name}", Num(oldCount), Num(newCount), oldCount == newCount);
+    }
+
+    private static Check PluginCheck(NetPI.IPluginData data, string name, CollectionSpec spec, long oldCount)
+    {
+        var newCount = data.Collection(name, spec).Count();
+        return new Check($"{IdeasMigration.PluginId} {name}", Num(oldCount), Num(newCount), oldCount == newCount);
+    }
+
+    /// <summary>The (id, ord) of every row, in id order, hashed — the user's order must survive the move.</summary>
+    private static Check OrdCheck(string name, Database old, string table, NetPI.IDataCollection col)
+    {
+        var oldHash = OrdHash(old, table);
+        var pairs = new List<(string, long)>();
+        foreach (var d in col.Find(null))
+            pairs.Add((d.Key, L(d.Doc["ord"])));
+        pairs.Sort((a, b) => string.CompareOrdinal(a.Item1, b.Item1));
+        var newHash = HashPairs(pairs);
+        return new Check(name, Short(oldHash), Short(newHash), oldHash == newHash);
+    }
+
+    private static string OrdHash(Database db, string table)
+    {
+        List<(string, long)> pairs;
+        try
+        {
+            pairs = db.Query($"SELECT id, ord FROM {table} ORDER BY id", null, r => (r.GetString("id"), r.GetInt64("ord"))).ToList();
+        }
+        catch (SqliteException) { pairs = []; }
+        return HashPairs(pairs);
+    }
+
+    private static string HashPairs(List<(string, long)> pairs)
+    {
+        using var sha = SHA256.Create();
+        foreach (var (id, ord) in pairs)
+        {
+            Write(sha, id);
+            Write(sha, ord.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        sha.TransformFinalBlock([], 0, 0);
+        return Convert.ToHexString(sha.Hash!);
     }
 
     /// <summary>The SHA-256 of (id, session_id, seq, role, parts, meta) of every message, in id order.</summary>

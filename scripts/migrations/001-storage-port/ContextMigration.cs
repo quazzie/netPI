@@ -78,7 +78,7 @@ internal static class ContextMigration
         doc["tools"] = node;
     }
 
-    private static List<T> TryRead<T>(Database old, string table, List<string> notes, string format, Func<IDbRow, T> map)
+    private static List<T> TryRead<T>(Database old, string table, List<string> notes, string format, Func<ISqlRow, T> map)
     {
         try
         {

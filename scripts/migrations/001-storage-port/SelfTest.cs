@@ -121,22 +121,42 @@ internal static class SelfTest
             Ins(db, "INSERT INTO agent_records(id, session_id, parent_agent_id, name, status, task, result, error, model, created_at, finished_at, stats) VALUES(@id, @session, @parent, @name, @status, @task, @result, @error, @model, @created, @finished, @stats)",
                 new { id = "ag_2", session = "ses_4", parent = "ag_1", name = "Helper", status = "running", task = "help", result = (object?)null, error = (object?)null, model = (object?)null, created = "2026-10-02T09:00:00.0000000Z", finished = (object?)null, stats = (object?)null });
 
-            // ---- the Ideas tables (the stub does not migrate them; they only count in the report)
+            // ---- the Ideas tables: every row a migration must carry (an unbound idea, a bare project id, a
+            //      card with no bindings, an answer with no idea, a running check, a failing repo, an empty subject)
             Ins(db, "INSERT INTO ideas_items(id, ord, revision, title, status, priority, project_id, project_name, created_at, updated_at, doc) VALUES(@id, @ord, @rev, @title, @status, @prio, @projectId, @projectName, @created, @updated, @doc)",
-                new { id = "idea_1", ord = 1L, rev = 1L, title = "first idea", status = "open", prio = "medium", projectId = "prj_a", projectName = "A", created = "2026-10-01T00:00:00Z", updated = "2026-10-01T00:00:00Z", doc = "{\"id\":\"idea_1\",\"title\":\"first idea\"}" });
+                new { id = "idea_1", ord = 1L, rev = 1L, title = "first idea", status = "open", prio = "medium", projectId = "prj_a", projectName = "A", created = "2026-10-01T00:00:00Z", updated = "2026-10-01T00:00:00Z", doc = "{\"id\":\"idea_1\",\"title\":\"first idea\",\"status\":\"open\",\"project\":{\"id\":\"prj_a\",\"name\":\"A\"}}" });
+            // an unbound idea (no project at all) and one whose project is a bare id, not an object
+            Ins(db, "INSERT INTO ideas_items(id, ord, revision, title, status, priority, project_id, project_name, created_at, updated_at, doc) VALUES(@id, @ord, @rev, @title, @status, @prio, @projectId, @projectName, @created, @updated, @doc)",
+                new { id = "idea_2", ord = 0L, rev = 4L, title = "second idea", status = "done", prio = "low", projectId = (object?)null, projectName = (object?)null, created = (object?)null, updated = (object?)null, doc = "{\"id\":\"idea_2\",\"title\":\"second idea\",\"status\":\"done\"}" });
+            Ins(db, "INSERT INTO ideas_items(id, ord, revision, title, status, priority, project_id, project_name, created_at, updated_at, doc) VALUES(@id, @ord, @rev, @title, @status, @prio, @projectId, @projectName, @created, @updated, @doc)",
+                new { id = "idea_3", ord = 2L, rev = 1L, title = "third idea", status = "open", prio = "medium", projectId = "prj_b", projectName = "B", created = (object?)null, updated = (object?)null, doc = "{\"id\":\"idea_3\",\"title\":\"third idea\",\"status\":\"open\",\"project\":\"prj_b\"}" });
             Ins(db, "INSERT INTO ideas_suggestions(id, ord, kind, session_id, idea_id, project_id, source_rev, title, at, doc) VALUES(@id, @ord, @kind, @session, @idea, @projectId, @sourceRev, @title, @at, @doc)",
-                new { id = "sg_1", ord = 1L, kind = "save", session = "ses_1", idea = "idea_1", projectId = "prj_a", sourceRev = 1L, title = "save this", at = "2026-10-01T00:00:00Z", doc = "{}" });
+                new { id = "sg_1", ord = 1L, kind = "save", session = "ses_1", idea = "idea_1", projectId = "prj_a", sourceRev = 1L, title = "save this", at = "2026-10-01T00:00:00Z", doc = "{\"id\":\"sg_1\",\"kind\":\"save\",\"sessionId\":\"ses_1\",\"ideaId\":\"idea_1\",\"project\":{\"id\":\"prj_a\"},\"ideaRevision\":1,\"title\":\"save this\",\"at\":\"2026-10-01T00:00:00Z\"}" });
+            // a card with no session, idea or project (a recall)
+            Ins(db, "INSERT INTO ideas_suggestions(id, ord, kind, session_id, idea_id, project_id, source_rev, title, at, doc) VALUES(@id, @ord, @kind, @session, @idea, @projectId, @sourceRev, @title, @at, @doc)",
+                new { id = "sg_2", ord = 2L, kind = "recall", session = (object?)null, idea = (object?)null, projectId = (object?)null, sourceRev = (object?)null, title = "recall me", at = "2026-10-01T00:00:10Z", doc = "{\"id\":\"sg_2\",\"kind\":\"recall\",\"title\":\"recall me\",\"at\":\"2026-10-01T00:00:10Z\"}" });
             Ins(db, "INSERT INTO ideas_resolutions(suggestion_id, action, idea_id, at) VALUES(@sg, @action, @idea, @at)",
                 new { sg = "sg_1", action = "saved", idea = "idea_1", at = "2026-10-01T00:00:01Z" });
+            // an answer that named no idea
+            Ins(db, "INSERT INTO ideas_resolutions(suggestion_id, action, idea_id, at) VALUES(@sg, @action, @idea, @at)",
+                new { sg = "sg_2", action = "discarded", idea = (object?)null, at = "2026-10-01T00:00:11Z" });
             Ins(db, "INSERT INTO ideas_checks(session_id, rev, n, state, tries, at, claim, claim_until, error) VALUES(@session, @rev, @n, @state, @tries, @at, @claim, @claimUntil, @error)",
                 new { session = "ses_1", rev = "r1", n = 2L, state = "done", tries = 0L, at = "2026-10-01T00:00:02Z", claim = (object?)null, claimUntil = (object?)null, error = (object?)null });
+            // a check still running: the claim and its expiry are part of the document
+            Ins(db, "INSERT INTO ideas_checks(session_id, rev, n, state, tries, at, claim, claim_until, error) VALUES(@session, @rev, @n, @state, @tries, @at, @claim, @claimUntil, @error)",
+                new { session = "ses_2", rev = "r2", n = 1L, state = "running", tries = 1L, at = "2026-10-01T00:00:12Z", claim = "tok", claimUntil = T + 600_000L, error = (object?)null });
             Ins(db, "INSERT INTO ideas_repos(repo, project_id, project_name, hash, at, tries, error) VALUES(@repo, @projectId, @projectName, @hash, @at, @tries, @error)",
                 new { repo = @"C:\w\a", projectId = "prj_a", projectName = "A", hash = "deadbeef", at = "2026-10-01T00:00:03Z", tries = 0L, error = (object?)null });
+            // a repository nobody read (no hash), failing its checks
+            Ins(db, "INSERT INTO ideas_repos(repo, project_id, project_name, hash, at, tries, error) VALUES(@repo, @projectId, @projectName, @hash, @at, @tries, @error)",
+                new { repo = @"C:\w\b", projectId = (object?)null, projectName = (object?)null, hash = (object?)null, at = "2026-10-01T00:00:06Z", tries = 2L, error = "boom" });
             Ins(db, "INSERT INTO ideas_imports(id, kind, source, checksum, schema_version, counts, at) VALUES(@id, @kind, @source, @checksum, @version, @counts, @at)",
                 new { id = "imp_1", kind = "legacy", source = "file", checksum = "x", version = 1L, counts = "{\"ideas\":1}", at = "2026-10-01T00:00:04Z" });
             Ins(db, "INSERT INTO ideas_metadata(key, value) VALUES(@key, @value)", new { key = "cursor", value = "abc" });
             Ins(db, "INSERT INTO ideas_unread(repo, hash, subject, tries, error, at) VALUES(@repo, @hash, @subject, @tries, @error, @at)",
                 new { repo = @"C:\w\a", hash = "f00d", subject = "a commit", tries = 0L, error = (object?)null, at = "2026-10-01T00:00:05Z" });
+            Ins(db, "INSERT INTO ideas_unread(repo, hash, subject, tries, error, at) VALUES(@repo, @hash, @subject, @tries, @error, @at)",
+                new { repo = @"C:\w\a", hash = "beef", subject = "", tries = 3L, error = "e2", at = "2026-10-01T00:00:07Z" });
         }
         finally { db.Dispose(); }
     }
@@ -191,6 +211,43 @@ internal static class SelfTest
 
         Expect(storage.Plugins.For(ContextMigration.PluginId).Collection("context_sent", ContextMigration.SentSpec()).Count(null), 3L, "context_sent documents");
         Expect(storage.Plugins.For(RuntimeMigration.PluginId).Collection(RuntimeMigration.Collection, RuntimeMigration.Spec()).Count(null), 2L, "agent_records documents");
+
+        // ------------------------------------------------------------------ ideas
+        var ideas = storage.Plugins.For(IdeasMigration.PluginId);
+        var items = ideas.Collection("items", IdeasMigration.ItemsSpec());
+        Expect(items.Count(null), 3L, "items documents");
+        var item1 = items.Get("idea_1");
+        Expect(item1?["idLower"] is JsonValue v && v.TryGetValue<string>(out var idl) && idl == "idea_1", true, "item idLower (the key, ASCII-lower)");
+        Expect(item1?["ord"] is JsonValue vo && vo.TryGetValue<long>(out var o1) && o1 == 1, true, "item ord");
+        Expect(item1?["revision"] is JsonValue vr && vr.TryGetValue<long>(out var r1) && r1 == 1, true, "item revision");
+        Expect(item1?["projectId"] is JsonValue vp && vp.TryGetValue<string>(out var pid1) && pid1 == "prj_a", true, "item projectId (the bound idea)");
+        Expect(item1?["title"] is JsonValue vt && vt.TryGetValue<string>(out var t1) && t1 == "first idea", true, "the idea's own fields survive");
+        Expect(items.Get("idea_2")?["projectId"] is null, true, "the unbound idea carries no projectId");
+        Expect(items.Get("idea_3")?["projectId"] is JsonValue vp3 && vp3.TryGetValue<string>(out var pid3) && pid3 == "prj_b", true, "a bare project id in the doc");
+        var cards = ideas.Collection("cards", IdeasMigration.CardsSpec());
+        Expect(cards.Count(null), 2L, "cards documents");
+        var card1 = cards.Get("sg_1");
+        Expect(card1?["sourceRev"] is JsonValue vs && vs.TryGetValue<long>(out var sr) && sr == 1, true, "card sourceRev");
+        Expect(card1?["sessionId"] is JsonValue cse && cse.TryGetValue<string>(out var c1s) && c1s == "ses_1", true, "card sessionId");
+        Expect(card1?["ideaId"] is JsonValue ci && ci.TryGetValue<string>(out var c1i) && c1i == "idea_1", true, "card ideaId");
+        Expect(card1?["doc"]?["ideaRevision"] is JsonValue cr && cr.TryGetValue<long>(out var crv) && crv == 1, true, "the card's own JSON under doc");
+        Expect(cards.Get("sg_2")?["sessionId"] is null, true, "a card with no session carries no sessionId");
+        var resolutions = ideas.Collection("resolutions", IdeasMigration.ResolutionsSpec());
+        Expect(resolutions.Count(null), 2L, "resolutions documents");
+        Expect(resolutions.Get("sg_2")?["ideaId"] is null, true, "an answer that named no idea");
+        var checksCol = ideas.Collection("checks", IdeasMigration.ChecksSpec());
+        Expect(checksCol.Count(null), 2L, "checks documents");
+        Expect(checksCol.Get("ses_2")?["claim"] is JsonValue cl && cl.TryGetValue<string>(out var clv) && clv == "tok", true, "the running check's claim");
+        Expect(checksCol.Get("ses_1")?["claim"] is null, true, "a done check keeps no claim");
+        var reposCol = ideas.Collection("repos", IdeasMigration.ReposSpec());
+        Expect(reposCol.Count(null), 2L, "repos documents");
+        Expect(reposCol.Get(@"C:\w\b")?["hash"] is null, true, "an unread repo keeps no hash");
+        Expect(reposCol.Get(@"C:\w\b")?["error"] is JsonValue re && re.TryGetValue<string>(out var rv) && rv == "boom", true, "the repo's failure state");
+        Expect(ideas.Collection("imports", IdeasMigration.ImportsSpec()).Count(null), 1L, "imports documents");
+        Expect(ideas.Collection("meta", IdeasMigration.MetaSpec()).Count(null), 1L, "meta documents");
+        var unread = ideas.Collection("unread", IdeasMigration.UnreadSpec());
+        Expect(unread.Count(null), 2L, "unread documents");
+        Expect(unread.Get(@"C:\w\a" + "\n" + "beef")?["error"] is JsonValue ue && ue.TryGetValue<string>(out var uev) && uev == "e2", true, "the unread key (repo + '\n' + hash)");
     }
 
     private static string? Workspace(Database db, string sessionId)

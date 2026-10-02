@@ -252,11 +252,4 @@ internal static class OldSchema
             if (part.Trim().Length > 0) list.Add(part.Trim());
         return [.. list];
     }
-
-    /// <summary>The Ideas tables, for the report (the mapping of them arrives with the Ideas collections).</summary>
-    public static readonly string[] IdeasTables =
-    [
-        "ideas_items", "ideas_suggestions", "ideas_resolutions", "ideas_checks",
-        "ideas_repos", "ideas_imports", "ideas_metadata", "ideas_unread",
-    ];
 }
