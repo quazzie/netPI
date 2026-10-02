@@ -2,9 +2,11 @@
 
 The agent rework introduces shared `IDecisionService`, `IGitHistory`, `IResourceLeases` and `IBackgroundWork` contracts. Resolve plugin-owned capabilities per operation; a caller may retain one only while that operation runs. Decide and Files implement decision/Git capabilities and preserve their RPC adapters. Ideas, Loops and Guardrails keep their base behavior without optional decision/history providers. Decision admission belongs at the capability boundary; a trusted caller can supply its actual same-model lease. External RPC callers always obtain their own admission.
 
-Profiles writes `SessionPrompt.RevisionKey` alongside identity/tool metadata for explicit switches. Context and Runtime fallback honor it; missing revision is zero for legacy sessions. Ordinary settings, model and project changes keep the sent prefix. The host's resource store retains only host/shared DTOs and host-owned lease handles, so an old scheduler's running requests stay counted without retaining its queues or delegates in a host registry.
+Profiles writes `SessionPrompt.RevisionKey` alongside identity/tool metadata for explicit switches. Context and Runtime fallback honor it; missing revision is zero for legacy sessions. Ordinary settings, model and project changes keep the sent prefix. The registry of physical leases holds only plain data and host-owned lease handles, so an old scheduler's running requests stay counted without retaining its queues or delegates.
 
 The full plugin base/optional/operation-required matrix is in [the independence plan](plans/2026-10-01-plugin-independence.md). The test gate scans all plugin and imported build declarations for peer dependencies and starts/stops every plugin with no peers. Executor-dependent actions explicitly report unavailable; optional UI sections remain independently usable. `diag.capabilities` reports base registrations and optional presence without claiming network endpoints are healthy.
+
+`IResourceLeases` counts what is physically running on a shared model resource. Its implementation (`ResourceLeases`) is a plain class in the shared contracts that the agents plugin registers, so a new generation adopts the same instance and the count carries across a hot swap; with that plugin absent nothing limits admission and consumers treat "no registry" as unlimited. It holds plain data only — no plugin queues or delegates — so an unloaded plugin's running requests stay counted.
 
 Everything in NetPI except the small host kernel is a plugin: providers, tools, the agent loop, agents, compaction,
 the right-panel tabs. A plugin is a .NET assembly in its own folder under `<app>/plugins/` (or `~/.netpi/plugins/`),
@@ -22,9 +24,17 @@ plugins/MyPlugin/
 ```
 
 `plugins/Directory.Build.props` does the rest: output to `$(AppOutDir)plugins/MyPlugin/` (the dev tree,
-`artifacts/dev/app/plugins/MyPlugin/`), a reference to
-`NetPI.Abstractions` that is *not* copied (contract types must come from the host), dynamic-loading settings and
-copying `wwwroot/**`. Add the project to `NetPI.slnx` (`dotnet sln NetPI.slnx add plugins/MyPlugin/MyPlugin.csproj`).
+`artifacts/dev/app/plugins/MyPlugin/`), references to `NetPI.Abstractions` and `NetPI.Contracts` that are *not*
+copied (contract types must come from the host, and a plugin that shipped its own copy would fail to resolve another
+plugin's service with no error), dynamic-loading settings and copying `wwwroot/**`. Add the project to `NetPI.slnx`
+(`dotnet sln NetPI.slnx add plugins/MyPlugin/MyPlugin.csproj`).
+
+Two shared assemblies, both in `src/` and both in the host's default load context: **`NetPI.Abstractions`** is the
+harness's own vocabulary (tools, context, sessions, models, the loop's contract, the storage port), and
+**`NetPI.Contracts`** holds what is built on it — agent slots and the scheduler, workspaces, decisions, resource
+leases, deferred tools, and the event names the plugins publish (`WorkspaceEvents`, `AgentSchedulerEvents`,
+`ProcessEvents`). A plugin that speaks none of those references only Abstractions. The kernel references only
+Abstractions, which is what keeps the core small (`node scripts/core-size.mjs`).
 
 ```csharp
 using System.Text.Json;
@@ -146,7 +156,7 @@ Exceptions by necessity: compaction replaces old messages with a summary when th
 repair turns a tool call the model wrote as text into a real call, and a profile switch in a started chat (the user's
 choice) renders the system prompt again (`context.reset`; the next call re-reads the conversation once).
 
-## Extension points (all in `src/NetPI.Abstractions`)
+## Extension points (`src/NetPI.Abstractions` and `src/NetPI.Contracts`)
 
 | contract | register with | used for |
 |---|---|---|
@@ -159,19 +169,79 @@ choice) renders the system prompt again (`context.reset`; the next call re-reads
 | `ToolResultLimit` | `ToolResultLimit.Fit(ctx.Settings, ownCap)` | a tool that pages or tails its own output stays under the tool result limit (the runner saves longer results to a file) |
 | `IAgentRuntime.WaitYieldedAsync` | `context.Services.Get<IAgentRuntime>()` in a tool | a tool that waits for something outside the run (the user's answer: `ask_user`) gives its agent's instance back meanwhile, like `agent_wait`; false when the user steered instead |
 | `SettingsSection` | `ctx.Services.Register(new SettingsSection { … })` | the plugin's settings as controls in the settings dialog (`settings.schema`): `SettingInfo.Bool/Int/Number/Str/Text/Secret/Choice/List/ModelRef/Folder/FilePath`; `Group` picks the page (General, Models, Agents, Context, Tools); `Applies` says when a change takes effect (`"restart"`, `"new sessions"`). Show the real default: `Default` for fixed values and built-in texts (the dialog shows a text in full, to edit), `Placeholder` for what is found at runtime (the path found), never a vague "built in" |
-| `ISystemPromptBuilder`, `IAgentScheduler`, `IAgentRuntime` | `ctx.Services.Register<…>(impl, priority)` | replace a core plugin's service |
+| `ISystemPromptBuilder`, `IAgentScheduler`, `IAgentRuntime` | `ctx.Services.Register<…>(impl, priority)` | replace a core plugin's service (`IAgentScheduler` and the slot types it hands out are in `NetPI.Contracts`) |
 | RPC / events / HTTP | `ctx.Rpc`, `ctx.Events`, `ctx.Http` | UI and inter-plugin communication |
 | UI tabs / commands | `ctx.Ui` | left/right panel tabs, slash commands |
 
 Services from other plugins can be reloaded at any time: resolve them per use (`ctx.Services.Get<T>()`), don't
-cache them. Use `ctx.Db.Migrate("my.plugin", "CREATE TABLE …")` for your own SQLite tables and `ctx.Settings` for
-settings (read them at use time; `settings.changed` is published on every change).
+cache them. `ctx.Settings` holds your settings (read them at use time; `settings.changed` is published on every
+change), and every default is the one your own `SettingsSection` declares — the host seeds nothing for a plugin.
+
+### Storage (`ctx.Data`)
+
+Your own data goes into **named collections of JSON documents**, not into tables. `ctx.Data` is `IPluginData` from
+the storage port (`src/NetPI.Abstractions/StoragePort.cs`), which is the core's whole idea of storage: no SQL, no
+provider, no engine type. A repository class of your own is the only code that touches it.
+
+```csharp
+var items = ctx.Data.Collection("items", new CollectionSpec().Integer("ord").Text("status").Text("projectId"));
+
+ctx.Data.Transaction(() =>                       // one atomic unit, exclusive for this plugin id across hot reloads
+{
+    var doc = items.Get(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
+    items.Put(id, doc);                          // Put replaces; Insert writes nothing and returns false when the key exists
+});
+```
+
+- **Declare what you query.** `CollectionSpec` names the collection's index fields, and they are the only fields a
+  `DataQuery` may filter or order by (`Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`, `In`, `NotIn`, `IsNull`, `NotNull`, plus
+  `Order`, `Take` and the paging it sets, and `Count`/`Sum`/`DeleteWhere` over the same filters). A filter or an order on
+  anything else throws, so declare every field the queries touch.
+- A field with no value in a document matches no comparison (`Ne` and `NotIn` included) and sorts first ascending,
+  last descending; ask for it with `IsNull`.
+- `Transaction` is the compare-and-set: read, decide and write inside it, so a second writer cannot slip in between
+  the read and the write. It is exclusive per plugin id **across hot-reload generations**, so two versions of your
+  plugin never interleave. Never call the session store or another plugin's data from inside one.
+- Documents are `JsonObject`s and your types never cross the port (a provider would pin your load context and block
+  unloading): serialize with `NetPiJson.For(type)` and write the shapes down in a comment block at the top of the
+  repository class, the way Ideas, the ledger and Context keep theirs.
+- `ctx.Services.Get<IStorageAccess>()` is the two facts a plugin may ask without touching the store: `Info` (which
+  provider, its version, where it is) and `Snapshot` (a consistent copy). Backup and Diagnostics use it.
+
+A **new storage provider** is a class implementing `IStorageProvider`, chosen by the `storage.provider` setting at
+startup, and it has to pass `tests/NetPI.Storage.Tests` — the same scenarios run against every provider, which is the
+port's contract in executable form. It writes its own SQL inside itself; nothing else in the repository may know its
+engine.
+
+### What a session carries, and what a fork forgets
 
 **Per-session state:** sessions are not a bounded set — every subagent spawn creates one — so a dictionary keyed by
 session id has to drop its entry when the session is deleted. Keep such a map in `SessionState<T>`
 (`src/NetPI.Abstractions`): `new SessionState<T>(ctx.Events)` takes the plugin's bus and drops the entry on
 `session.deleted` itself, and `Forget`/`Clear` do it by hand. Six plugins kept a raw dictionary with no removal at
 all and tracked every session the process had ever seen (idea-bv3iw4).
+
+What belongs **to a chat** is its `meta` bag: write it with `ctx.Sessions.UpdateSession(id, s => …)` — the core
+stores it, copies it on a fork and announces the keys whose value changed as `session.changed { keys }` — and find the
+sessions that carry something with
+`ctx.Sessions.ListSessions(new SessionQuery { AttachedKey = "…", AttachedValue = "…" })`, an equality filter on one
+meta key (add `IncludeUnmaterialized` to match chats that have no message yet). The core understands one key itself,
+`meta.cwd`: the folder the session runs in, which `ISessionStore.GetCwd` returns (this, else the project folder, else
+`workspace.default`) and which **a fork never inherits**, because a fork is a new writer. The workspaces plugin binds
+a checkout this way, with `meta.workspaceId` and `meta.cwd` (`SessionWorkspace.MetaKey`, `SessionCwd.MetaKey`).
+
+Keys that are **run state** — a goal, a checklist, a granted permission, the agent a chat runs on, an allowance to go
+over a budget — are named to the store when your plugin starts:
+`ctx.Sessions.DeclareForkReset("goal", "…")`. A fork then starts without them, and the store remembers every key ever
+declared, so they are dropped even when your plugin is absent, disabled or throwing at that moment.
+
+### What a tool may know about the run
+
+`ToolContext` and `AgentRunContext` carry a typed bag (`Features`) instead of naming what a run sits in, so the core
+names none of those concepts. Read what you understand and nothing else: `ctx.Workspace()` — the checkout this session
+works in, `null` when it is not bound to one; a tool that mutates asks `WorkspacePaths.CheckMutation` instead of
+comparing paths — and `ctx.AdmissionLease()`, the slot the run holds. A spawner asks the same question of its child
+with `SpawnRequest.Workspace()` (`SpawnWorkspace`). These extensions are in `src/NetPI.Contracts`.
 
 **Hot-reload rule:** don't hand your plugin's own types to long-lived host caches. Event payloads and RPC results may
 be anonymous objects, records or `JsonObject`s — but don't put your types inside `object`-typed containers
