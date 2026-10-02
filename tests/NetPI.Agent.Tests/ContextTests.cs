@@ -324,13 +324,11 @@ public static class ContextTests
     }
 
     // A fork (sessions.fork) takes the prompt the original was sent at the fork point, so its next call starts with the
-    // prefix the backend saw. Here the store is the fake one, whose ForkSession publishes no session.forked: the first
-    // call of the fork copies it (the event only does it sooner).
+    // prefix the backend saw. The real store publishes session.forked, which the context plugin answers by copying the
+    // fork point's prompt into the new session; the first call of the fork then reuses it.
     private static async Task ForkPrompt()
     {
-        using var db = TestSqlite.TryCreate();
-        if (db is null) { Console.WriteLine("    (no SQLite library: skipped)"); return; }
-        await using var h = await TestHost.StartAsync(db: db);
+        await using var h = await TestHost.StartAsync();
         var s = h.NewSession();
         await Turn(h, s.Id, "hi");
         var p1 = h.Catalog.Requests.Last().SystemPrompt;
@@ -342,11 +340,7 @@ public static class ContextTests
         var p2 = h.Catalog.Requests.Last().SystemPrompt;
         Check.True(p2!.EndsWith("AFTER THE SWITCH") && p1 != p2, "the original has a second prompt now");
 
-        ISessionStore store = h.Sessions;
-        SessionInfo Fork(long seq) => store.ForkSession(s.Id, seq, new SessionInfo
-        {
-            Title = "fork", Meta = new JsonObject { ["forkedFrom"] = new JsonObject { ["sessionId"] = s.Id, ["seq"] = seq } },
-        });
+        SessionInfo Fork(long seq) => h.Fork(s.Id, seq);
         var early = Fork(upTo);
         await Turn(h, early.Id, "in the fork");
         var sent = h.Catalog.Requests.Last();
@@ -365,9 +359,7 @@ public static class ContextTests
     // (a profile switch), which leaves the earlier ones as they were.
     private static async Task SentPrompts()
     {
-        using var db = TestSqlite.TryCreate();
-        if (db is null) { Console.WriteLine("    (no SQLite library: skipped)"); return; }
-        await using var h = await TestHost.StartAsync(db: db);
+        await using var h = await TestHost.StartAsync();
         var s = h.NewSession();
         JsonArray Prompts() => (JsonArray)h.Rpc.CallAsync("context.prompts", new { sessionId = s.Id }).GetAwaiter().GetResult()!["prompts"]!;
         Check.Equal(0, Prompts().Count, "nothing sent yet");
