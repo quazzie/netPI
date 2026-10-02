@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -585,6 +585,7 @@ internal sealed class AgentRuntime : IAgentRuntime
 
         AgentInfo final;
         bool notify;
+        UserInput? notice = null;
         RunState? next = null;
         TaskCompletionSource done;
         lock (s.Gate)
@@ -614,6 +615,12 @@ internal sealed class AgentRuntime : IAgentRuntime
             final = info.Clone();
             s.Run = null;
             done = s.RunDone;
+            // The agent-result notice the parent gets (and the id a wait needs to drop it from the parent's
+            // queue) is decided here, with the run's clearing: a WaitAsync that sees Run gone reads under this
+            // same lock, so it must find the id there, or it removes nothing and the parent gets the report
+            // twice (with the wait's result and as the notice).
+            if (notify) notice = ParentNotice(final);
+            if (notice is not null) s.PendingNotificationId = notice.Id;
             // Input that is still queued starts the next run, unless this run failed without taking any: the run steps that
             // can fail (the model is gone, the budget is spent, the agent is unavailable) come before the queue is drained, so
             // another run would fail the same way, append the same error, and start again for as long as the cause lasts. The
@@ -631,7 +638,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         }
         catch { }
 
-        if (notify) await NotifyParentAsync(s, final).ConfigureAwait(false);
+        if (notice is not null) await NotifyParentAsync(s, final, notice).ConfigureAwait(false);
         if (next is not null) LaunchRun(s, next);
         Prune();
     }
@@ -651,10 +658,9 @@ internal sealed class AgentRuntime : IAgentRuntime
 
     internal static string StatusName(AgentStatus s) => JsonNamingPolicy.CamelCase.ConvertName(s.ToString());
 
-    private async Task NotifyParentAsync(AgentState child, AgentInfo final)
+    /// <summary>The agent-result notice a finished subagent's parent gets (built where its id is recorded).</summary>
+    private static UserInput ParentNotice(AgentInfo final)
     {
-        var parent = FindState(final.ParentAgentId);
-        if (parent is null) return;
         var sb = new StringBuilder();
         sb.Append("<agent-result id=\"").Append(final.Id).Append("\" name=\"").Append(Escape(final.Name))
           .Append("\" status=\"").Append(StatusName(final.Status)).Append("\">\n");
@@ -662,8 +668,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         var report = string.IsNullOrWhiteSpace(final.Result) ? "(no final report)" : final.Result.Trim();
         sb.Append(Truncate(report, ResultNoticeChars, $"Use agent with action result and id {final.Id} for the full report."));
         sb.Append("\n</agent-result>");
-
-        var input = new UserInput
+        return new UserInput
         {
             Text = sb.ToString(),
             AsNotice = true,
@@ -675,10 +680,23 @@ internal sealed class AgentRuntime : IAgentRuntime
                 ["status"] = StatusName(final.Status),
             },
         };
-        lock (child.Gate) child.PendingNotificationId = input.Id;
+    }
+
+    private async Task NotifyParentAsync(AgentState child, AgentInfo final, UserInput notice)
+    {
+        var parent = FindState(final.ParentAgentId);
+        if (parent is null)
+        {
+            lock (child.Gate) child.PendingNotificationId = null;
+            return;
+        }
         try
         {
-            await DeliverAsync(parent, input, DeliveryMode.Auto).ConfigureAwait(false);
+            await DeliverAsync(parent, notice, DeliveryMode.Auto).ConfigureAwait(false);
+            // A wait may have consumed the result while this delivery was in flight: its removal of the queued
+            // input then ran before the input was queued and found nothing to drop.
+            lock (child.Gate)
+                if (child.ResultConsumed) RemoveQueuedInput(parent, notice.Id);
         }
         catch (Exception ex)
         {
@@ -1118,7 +1136,20 @@ internal sealed class AgentRuntime : IAgentRuntime
             if (caller is not null && !ct.IsCancellationRequested)
             {
                 if (yielded is not null && run is not null && model is not null)
-                    run.Lease = await AcquireSlotAsync(caller, run, model, YieldPriority, ct).ConfigureAwait(false);
+                {
+                    try
+                    {
+                        run.Lease = await AcquireSlotAsync(caller, run, model, YieldPriority, ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // the re-acquire is bookkeeping, not the result of the wait: a model that went offline, or a
+                        // budget spent while the user was typing, must not throw away the answer (idea-633b6n). The
+                        // next turn's slot check reports the failure with its own message.
+                        Ctx.Logger.LogWarning(ex, "Re-acquiring the slot of {Agent} after a wait failed", caller.Info.Id);
+                        SetStatus(caller, AgentStatus.Queued, ex.Message);
+                    }
+                }
                 else if (yielded is null)
                     SetActivity(caller, null);
             }

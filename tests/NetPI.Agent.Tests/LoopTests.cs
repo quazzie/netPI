@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -21,6 +21,7 @@ public static class LoopTests
         t.Add("loop: abort persists partial message", AbortPartial);
         t.Add("loop: abort during a tool call", AbortDuringTool);
         t.Add("loop: abort during a tool that swallows cancellation stops the batch", AbortDuringSwallowingTool);
+        t.Add("loop: a run cancelled in an after-tool hook keeps one result per call id", OneResultWhenCancelledInAfterHook);
         t.Add("loop: an abort keeps the queue: dequeue it, then send it as the next turn", AbortKeepsQueue);
         t.Add("loop: a run that fails before it takes the queue does not start itself again for it", FailedRunKeepsQueue);
         t.Add("loop: taking a steer back from the queue lifts its cancel, so a wait is not interrupted by nothing", StaleSteerSignal);
@@ -448,6 +449,54 @@ public static class LoopTests
         Check.Equal(1, h.Catalog.Calls);
     }
  
+    /// <summary>
+    /// A call's result is persisted before its after-hooks run: a run cancelled in an after-hook must not write a second,
+    /// contradictory result ("aborted") for the same call id - the transcript keeps the one real result (idea-3coif8).
+    /// </summary>
+    private static async Task OneResultWhenCancelledInAfterHook()
+    {
+        await using var h = await TestHost.StartAsync();
+        var hook = new AfterToolGate();
+        h.Services.Register<IAgentHook>(hook);
+        h.AddTool(Echo());
+        var s = h.NewSession();
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done") : Reply.Tool("echo", new { text = "x" });
+        await h.SendAsync(s.Id, "go");
+        await Wait.Until(() => hook.Entered.IsCompleted, "the after-hook is running: the result is persisted");
+        await h.Runtime.AbortAsync(s.Id);
+        await h.IdleAsync(s.Id);
+
+        var results = h.Messages(s.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).ToList();
+        Check.Equal(1, results.Count, "one result per call id");
+        Check.Equal("echo:x", results[0].Content, "the real result, not 'aborted'");
+        Check.False(results[0].IsError);
+        Check.Equal(1, h.Bus.OfType(EventTypes.ToolEnd).Count, "one tool.end, no skipped one for the same call");
+        Check.Equal(1, h.Catalog.Calls);
+    }
+
+    /// <summary>An after-tool hook that signals entry, then blocks until the run's token is cancelled.</summary>
+    private sealed class AfterToolGate : IAgentHook
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task Entered => _entered.Task;
+        public int Order => 0;
+        public ValueTask OnRunStartAsync(AgentRunContext run) => ValueTask.CompletedTask;
+        public ValueTask OnBeforeModelCallAsync(AgentTurnContext turn) => ValueTask.CompletedTask;
+        public ValueTask<TurnDecision?> OnAfterModelCallAsync(AgentTurnContext turn, ChatMessage assistant) => ValueTask.FromResult<TurnDecision?>(null);
+        public ValueTask<ModelErrorDecision?> OnModelErrorAsync(AgentTurnContext turn, Exception error) => ValueTask.FromResult<ModelErrorDecision?>(null);
+        public ValueTask<ToolCallDecision?> OnBeforeToolCallAsync(AgentTurnContext turn, ToolCallPart call) => ValueTask.FromResult<ToolCallDecision?>(null);
+        public ValueTask OnAfterToolCallAsync(AgentTurnContext turn, ToolCallPart call, ToolResultPart result)
+        {
+            async Task Body()
+            {
+                _entered.TrySetResult();
+                await Task.Delay(Timeout.Infinite, turn.Run.CancellationToken).ConfigureAwait(false); // throws when the run is cancelled
+            }
+            return new ValueTask(Body());
+        }
+        public ValueTask OnRunEndAsync(AgentRunContext run) => ValueTask.CompletedTask;
+    }
+
     // A stop leaves the queued input with no run left to run in: the UI's chip send action dequeues it and
     // sends the same text as the next turn. The queue must survive the abort, the removal is what authorizes
     // the send (a second removal reports "gone", so the text is never sent twice), and the resent text starts

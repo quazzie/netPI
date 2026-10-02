@@ -13,6 +13,7 @@ public static class GuardrailsTests
         t.Add("guardrails: protected paths: write and edit refuse them, shell commands that name them too", ProtectedPaths);
         t.Add("guardrails: ask rules wait for the user's OK with the instance given back (allow, no, a message instead)", AskRules);
         t.Add("guardrails: a pending ask refused by the plugin stopping is a reload, not a user no", RefusedByStop);
+        t.Add("guardrails: an approval given while the provider's budget is spent lets the call run - the failure lands on the next turn", ApprovalSurvivesSlotFailure);
         t.Add("guardrails: allowed for this chat, the rule stops asking there (not in other chats, never for a no)", AllowForSession);
         t.Add("guardrails: in a subagent an ask rule blocks; switched off, nothing is checked", SubagentAndOff);
         t.Add("guardrails: the default rules block the catastrophic, not everyday work; spellings of a path", DefaultRules);
@@ -273,6 +274,40 @@ public static class GuardrailsTests
         Check.Contains(Results(h, s.Id).Last().Content, "the user wrote a new message instead");
         Check.Equal("stopped", h.Messages(s.Id)[^1].Text);
         Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("guard.answer", new { approvalId = "call_x", allow = true }))).Code);
+    }
+
+    /// <summary>
+    /// The guard wait yields the slot the same way an ask does: while the user is deciding, the provider's budget is
+    /// spent, so the slot cannot be re-acquired. The approval must not be lost to that failure: the call the user
+    /// approved runs, and the failure is reported by the next turn's slot check, not as a denied-by-omission (idea-633b6n).
+    /// </summary>
+    private static async Task ApprovalSurvivesSlotFailure()
+    {
+        await using var h = await StartAsync();
+        h.Settings.Set("guardrails.commands", new JsonArray("ask: ^git push"));
+        var ran = new List<string>();
+        h.AddTool(Recorder("bash", ran));
+        var s = h.NewSession(model: "fake/solo");
+        h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("done") : Reply.Tool("bash", new { command = "git push origin main" });
+        await h.SendAsync(s.Id, "push");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count >= 1, "the call waits for the OK");
+        var asked = FakeBus.Data(h.Bus.OfType("guard.asked")[0]);
+        await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the call waits with the slot given back");
+        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy), "the instance is free meanwhile");
+
+        // the provider's daily budget is spent while the user is deciding (turn 1 already used tokens)
+        h.Settings.Set("budget.providers", new JsonObject { ["fake"] = new JsonObject { ["dailyTokens"] = 1 } });
+        await h.Bus.DrainAsync();
+
+        await h.Rpc.InvokeAsync("guard.answer", new { approvalId = (string)asked["approvalId"]!, allow = true });
+        await h.IdleAsync(s.Id);
+
+        Check.Equal(1, ran.Count, "the approved call ran - the approval was not lost to a slot failure");
+        Check.Contains(ran[0], "git push");
+        Check.Equal("allowed", (string?)FakeBus.Data(h.Bus.OfType("guard.closed").Single())["status"]);
+        Check.Equal(1, h.Catalog.Calls, "the next turn's slot check failed before a model call");
+        Check.Contains(h.Runtime.GetBySession(s.Id)!.Error ?? "", "daily token budget", "the real failure is reported by the next turn");
+        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy), "the slot is free");
     }
 
     private static async Task RefusedByStop()

@@ -18,6 +18,7 @@ public static class GoalTests
         t.Add("goal: a call a hook decided (nudge) is metered too, with the nudge plugin running", NudgedCallsCounted);
         t.Add("goal: blocked by the model stops the loop; goal_set is refused while a goal is open", BlockedAndSetRefused);
         t.Add("goal: paused by the user mid-run, the model hears it at its next call and no run follows", PausedMidRun);
+        t.Add("goal: a runtime reload pauses it with the reload reason, and the executor's return resumes it", ReloadPauseAndResume);
         t.Add("goal: goal_set on the user's request starts the loop", SetByModel);
         t.Add("goal: announced again after compaction, once; changes and resumes are announced", Notices);
         t.Add("goal: RPC validation (empty, too long, subagent sessions, nothing to pause)", RpcValidation);
@@ -282,6 +283,34 @@ public static class GoalTests
         await SettledAsync(h, s.Id, "paused");
         Check.Contains(afterTool, "The goal is paused (Paused by the user). It no longer restarts you");
         Check.Equal(1, h.Runtime.GetBySession(s.Id)!.Runs);
+    }
+
+    /// <summary>
+    /// A reload of the runtime stops the run, not the capability: the goal pauses with the reload reason (not
+    /// execution-unavailable, whose message would be false), and resumes by itself when the executor is back (idea-ydszpo).
+    /// </summary>
+    private static async Task ReloadPauseAndResume()
+    {
+        var (h, _) = await Start();
+        await using var _h = h;
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (r.Messages.Any(m => m.MetaString("kind") == "goal" && (m.Text?.Contains("reloaded while the goal was working") == true)))
+                return Reply.Tool("goal_update", new { status = "complete", summary = "Done." });
+            if (Reply.HasToolResult(r)) return Reply.Text("working");
+            return Reply.Text("working", ct => gate.Task.WaitAsync(ct)); // the reload cancels this call
+        };
+        var s = h.NewSession();
+        await h.Rpc.CallAsync("goal.set", new { sessionId = s.Id, objective = "Reload me" });
+        await Wait.Until(() => h.Catalog.Calls == 1, "the goal run reached the model");
+        await h.StopPluginAsync("netpi.runtime");
+        Check.Equal("paused", StatusOf(h, s.Id), "the reload pauses the goal, it is not execution-unavailable");
+        Check.Equal(Goals.ReloadPausedReason, (string?)GoalOf(h, s.Id)?["reason"]);
+        Check.True(h.Services.Get<IAgentRuntime>() is null, "the executor is gone");
+        await h.StartPluginAsync(new RuntimePlugin());
+        await SettledAsync(h, s.Id, "complete");
+        Check.Equal("Done.", (string?)GoalOf(h, s.Id)!["reason"]);
     }
 
     private static async Task SetByModel()
