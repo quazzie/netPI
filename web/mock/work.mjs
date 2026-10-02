@@ -223,9 +223,43 @@ export function createWork({ publish, log, agentsView }) {
     clearInterval(timer);
   }
 
+  // e2e helpers for the fixed-slot layout: a job ends (its slot goes to the first waiter of the pool, if any) and a job starts
+  function releaseOwner(sessionId) {
+    for (const p of pools) {
+      const i = p.owners.findIndex((o) => o.sessionId === sessionId);
+      if (i < 0) continue;
+      const [gone] = p.owners.splice(i, 1);
+      const next = p.waiters.shift();
+      if (next) {
+        p.owners.push({ ...next, since: iso(Date.now()) });
+        const run = agentFor(next.sessionId);
+        Object.assign(run, { status: 'running', activity: 'thinking' });
+        publish('agent.status', { agent: run });
+      }
+      agentsChanged();
+      return { pool: p.key, owner: gone, promoted: next?.sessionId ?? null, promotedOwner: next ?? null };
+    }
+    return null;
+  }
+  function takeSlot(poolKey, owner, waiting = false) {
+    const p = pools.find((x) => x.key === poolKey);
+    if (!p) return false;
+    const entry = { ...owner, since: owner.since ?? iso(Date.now()) };
+    if (waiting) {
+      p.waiters.push(entry);
+      const run = agentFor(owner.sessionId);
+      Object.assign(run, { status: 'queued', activity: 'waiting for agent qwen' });
+      publish('agent.status', { agent: run });
+    } else p.owners.push(entry);
+    agentsChanged();
+    return true;
+  }
+
   return {
     slots,
     agentsChanged,
+    releaseOwner,
+    takeSlot,
     procStart,
     procOutput,
     procEnd,

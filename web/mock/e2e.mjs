@@ -666,25 +666,56 @@ log('plugin tab: Work');
   await openStripTab('right', 'Work');
   await page.waitForSelector('.plugin-root .work .pool', { timeout: 10_000 });
   await page.waitForTimeout(400);
-  const qwen = page.locator('.work .pool', { hasText: 'qwen3.8-27b' }).first();
-  const nums = (await qwen.locator('.nums').innerText().catch(() => '')).replace(/\s+/g, '');
-  check('work: qwen pool 2/2 busy', nums.includes('2/2'), nums);
-  check('work: pool shows queued waiter', (await qwen.locator('.owner.waiting').count()) > 0);
-  check('work: the Model capacity, Physical owners and Idea checks sections are gone', (await page.locator('.work [data-resource]').count()) === 0 && (await page.locator('.work [data-lease]').count()) === 0 && (await page.locator('.work .np-section-label[title="Model capacity"]').count()) === 0 && (await page.locator('.work .np-section-label[title="Physical owners"]').count()) === 0 && (await page.locator('.work .np-section-label[title="Idea checks"]').count()) === 0);
-  const ownerNames = await qwen.locator('.owner .name').allInnerTexts();
-  check('work: a top-level lane owner shows its session title, not "main"',
+  const qwen = page.locator('.work .pool[data-agent="qwen"]');
+  const summary = async () => (await page.locator('.work .summary').innerText()).replace(/\s+/g, ' ');
+  check('work: one row per instance, busy or free', (await qwen.locator('.slot').count()) === 2 && (await qwen.locator('.slot.busy').count()) === 2);
+  check('work: the summary counts working, waiting and free', /2 working/.test(await summary()) && /1 waiting/.test(await summary()) && /0 free/.test(await summary()), await summary());
+  check('work: the waiting runs are one line under the agent', (await qwen.locator('.waiting').count()) === 1 && /1 waiting/.test(await qwen.locator('.waiting').innerText()));
+  await qwen.locator('.waiting').click();
+  check('work: the waiting line opens the names in a menu that floats', (await page.locator('.np-menu .np-menu-item', { hasText: 'reviewer: check backoff math' }).count()) === 1);
+  await page.keyboard.press('Escape');
+  check('work: the old Runs, Model capacity, Physical owners and Idea checks sections are gone', (await page.locator('.work .node').count()) === 0 && (await page.locator('.work .np-section-label[title="Runs"]').count()) === 0 && (await page.locator('.work [data-resource]').count()) === 0 && (await page.locator('.work [data-lease]').count()) === 0 && (await page.locator('.work .np-section-label[title="Model capacity"]').count()) === 0 && (await page.locator('.work .np-section-label[title="Physical owners"]').count()) === 0 && (await page.locator('.work .np-section-label[title="Idea checks"]').count()) === 0);
+  const ownerNames = await qwen.locator('.slot.busy .name').allInnerTexts();
+  check('work: a top-level lane owner shows its session title, not "main"; a subagent its name',
     ownerNames.includes('Index docs for semantic search') && !ownerNames.includes('main') && ownerNames.includes('surveyor'), ownerNames.join(' | '));
+  check('work: a subagent says whose work it is', /for Refactor provider retry policy/.test(await qwen.locator('.slot.busy', { hasText: 'surveyor' }).innerText()));
   // the agents are always listed; an inactive one says why; each has a switch
   const gemma = page.locator('.work .pool[data-agent="gemma"]');
-  check('work: an agent whose model is not loaded is listed as such', (await gemma.locator('.st').innerText()) === 'not loaded' && /isn't loaded/.test(await gemma.locator('.why').innerText()));
+  check('work: an agent whose model is not loaded is listed as such', (await gemma.locator('.st').innerText()) === 'not loaded' && /isn't loaded/.test(await gemma.locator('.second').innerText()));
   await gemma.locator('input.np-switch').click();
   await page.waitForTimeout(300);
   check('work: the switch takes an agent off (agents.setEnabled)', (await rpcCall('settings.get')).settings.agents?.gemma?.disabled === true && (await gemma.locator('.st').innerText()) === 'off');
   await gemma.locator('input.np-switch').click();
   await page.waitForTimeout(300);
   check('work: and back on', !(await rpcCall('settings.get')).settings.agents?.gemma?.disabled);
-  const nodes = await page.locator('.work .node').count();
-  check('work: agent tree incl. subagents', nodes >= 3 && (await page.locator('.work .node .kids .node').count()) > 0, `${nodes} nodes`);
+  // fixed slots: a job ending, or another taking its place, moves nothing in the tab
+  const geometry = () => page.evaluate(() => {
+    const top = (e) => Math.round(e.getBoundingClientRect().top);
+    return {
+      pools: [...document.querySelectorAll('.work .pool')].map((p) => [top(p), Math.round(p.getBoundingClientRect().height)]),
+      rows: [...document.querySelectorAll('.work .pool[data-agent="qwen"] .slot')].map((r) => [top(r), Math.round(r.getBoundingClientRect().height)]),
+      sections: [...document.querySelectorAll('.work .np-section-title')].map(top),
+    };
+  });
+  const rowNames = () => qwen.locator('.slot').evaluateAll((els) => els.map((e) => (e.classList.contains('free') ? 'free' : e.querySelector('.name')?.textContent)));
+  const g0 = await geometry();
+  const surveyor = await rpcCall('mock.workRelease', { sessionId: 'ses_bg_explore' }); // the subagent ends: the waiting reviewer takes its slot
+  await page.waitForTimeout(500);
+  const g1 = await geometry();
+  check('work: a waiter takes the slot that ended, in the same row, and nothing moves', JSON.stringify(g0) === JSON.stringify(g1) && (await rowNames())[0] === 'reviewer', JSON.stringify([g0, g1, await rowNames()]));
+  check('work: the waiting line stays, saying no one waits', /no one waiting/.test(await qwen.innerText()) && (await qwen.locator('.waiting').count()) === 0);
+  const index = await rpcCall('mock.workRelease', { sessionId: 'ses_index' }); // nobody waits: its row turns into a free one, in place
+  await page.waitForTimeout(500);
+  const g2 = await geometry();
+  check('work: a slot that ended turns free in place, the same height as a busy one, and nothing moves', JSON.stringify(g0) === JSON.stringify(g2) && (await rowNames()).join() === 'reviewer,free', JSON.stringify([g0, g2, await rowNames()]));
+  check('work: the summary and the agent say what is free', /1 working/.test(await summary()) && /1 free/.test(await summary()) && (await qwen.locator('.st').innerText()) === '1 free', await summary());
+  // put the pools back for the checks that follow: both jobs running, the reviewer waiting again
+  await rpcCall('mock.workRelease', { sessionId: 'ses_bg_review' });
+  await rpcCall('mock.workTake', { pool: surveyor.pool, owner: surveyor.owner });
+  await rpcCall('mock.workTake', { pool: index.pool, owner: index.owner });
+  await rpcCall('mock.workTake', { pool: surveyor.pool, owner: surveyor.promotedOwner, waiting: true });
+  await page.waitForTimeout(500);
+  check('work: the pools are back as they were', (await rowNames()).join() === 'surveyor,Index docs for semantic search' && /1 waiting/.test(await summary()), (await rowNames()).join() + ' | ' + (await summary()));
   await shot(page, '25-work-tab');
   // expand the foreground process and watch its output grow (processes.output + live process.output)
   const proc = page.locator('.work .proc', { hasText: 'embed.py' }).first();
@@ -724,9 +755,9 @@ log('plugin tab: Work');
   const killed = ((await rpcCall('processes.list')) ?? []).find((p) => p.command?.includes('npm run dev'));
   check('work: kill process (processes.kill)', killed?.status === 'killed', killed?.status);
   // clicking an agent opens its session
-  await page.locator('.work .node .row', { hasText: 'surveyor' }).first().click();
+  await page.locator('.work .slot.busy', { hasText: 'surveyor' }).first().click();
   await page.waitForTimeout(400);
-  check('work: agent click opens its session', (await page.locator('.topbar .tab.active[data-tab="ses_bg_explore"]').count()) > 0, await page.locator('.topbar .tab.active').innerText().catch(() => ''));
+  check('work: a busy slot opens its session', (await page.locator('.topbar .tab.active[data-tab="ses_bg_explore"]').count()) > 0, await page.locator('.topbar .tab.active').innerText().catch(() => ''));
   await page.locator('.srow', { hasText: 'Lane scheduler hardening' }).first().click();
 }
 
@@ -1619,6 +1650,9 @@ log('budget: chat cost, Work tab, a chat stopped by the budget');
 
   // the Work tab: this month against the budget set above ($50)
   await openStripTab('right', 'Work');
+  const usageSection = page.locator('.work .np-section', { has: page.locator('.np-section-title', { hasText: 'Usage today' }) });
+  await usageSection.waitFor({ timeout: 5000 });
+  if ((await usageSection.locator('.np-section-toggle').getAttribute('aria-expanded')) !== 'true') await usageSection.locator('.np-section-toggle').click(); // collapsed until opened
   await page.waitForSelector('.work .usage.budget', { timeout: 5000 }).catch(() => {});
   await page.waitForFunction(() => (document.querySelector('.work .usage.budget')?.innerText ?? '').replace(/ /g, ' ').includes('$0.68 / $50'), null, { timeout: 5000 }).catch(() => {});
   const wb = page.locator('.work .usage.budget');

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// UI test: the Work tab (right panel) — the "Model capacity" and "Physical owners" sections are gone, the
-// "Idea checks" section is still there, and clicking an agent's name in the Agents section opens
-// Settings → Agents with that agent's dialog on top.
+// UI test: the Work tab (right panel) — the agents are one list at the top (no Agents/Runs sections), the "Model capacity",
+// "Physical owners" and "Idea checks" sections are gone, and clicking an agent's name opens Settings → Agents with that
+// agent's dialog on top.
 //
 // The agent is seeded by the C# test (ui.work-tab) before this script runs.
 //
@@ -84,8 +84,8 @@ try {
   if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click();
   if (!(await page.locator('.panel.right.open').count())) await tab.click();
 
-  // the tab's sections are titled spans (a title attribute each); the two removed ones must not exist
-  await page.waitForSelector('.panel.right .np-section-label[title="Agents"]', { timeout: 15_000 });
+  // the agents are the block at the top; the other sections are titled spans (a title attribute each)
+  await page.waitForSelector('.panel.right .work .pool', { timeout: 15_000 });
   await page.waitForTimeout(500);
   check('the Work tab has no Model capacity section', (await page.locator('.panel.right .np-section-label[title="Model capacity"]').count()) === 0);
   check('the Work tab has no Physical owners section', (await page.locator('.panel.right .np-section-label[title="Physical owners"]').count()) === 0);
@@ -93,12 +93,16 @@ try {
   await page.waitForTimeout(500);
   check('the Work tab has no Idea checks section', (await page.locator('.panel.right .np-section-label[title="Idea checks"]').count()) === 0);
   const labelTitles = await page.locator('.panel.right .np-section-label').evaluateAll((els) => els.map((e) => e.getAttribute('title')));
-  check('the Work tab keeps its other sections', ['Agents', 'Runs', 'Processes', 'Usage today'].every((t) => labelTitles.includes(t)), `labels: ${labelTitles.join(', ')}`);
+  check('the Work tab has Processes, Finished and Usage today, and no Agents or Runs section', ['Processes', 'Finished', 'Usage today'].every((t) => labelTitles.includes(t)) && !labelTitles.includes('Agents') && !labelTitles.includes('Runs'), `labels: ${labelTitles.join(', ')}`);
 
   // the agent the C# side seeded, listed by name in the Agents section
   const nameBtn = page.locator('.panel.right button.key', { hasText: AGENT });
   await nameBtn.first().waitFor({ timeout: 15_000 });
-  check('the agent is listed in the Agents section', true);
+  const pool = page.locator('.panel.right .pool', { hasText: AGENT }).first();
+  const chip = (await pool.locator('.st').innerText()).trim();
+  const rows = await pool.locator('.slot').count();
+  // a usable agent has a row per instance (busy or free); one that cannot take work (its model is not loaded) has none, and says why
+  check('the agent is listed with a state and, when it can take work, a row per instance', chip.length > 0 && (/free|full/.test(chip) ? rows >= 1 : rows === 0), `state "${chip}", ${rows} rows`);
 
   // clicking its name opens Settings → Agents with the agent's dialog on top
   await nameBtn.first().click();

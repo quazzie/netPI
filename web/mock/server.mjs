@@ -758,6 +758,9 @@ const handlers = {
   // test helpers: slow the process tails and observe who asks for them (the e2e leak check)
   'mock.procTailDelay': (p) => ((procTailDelayMs = p.ms ?? 0), true),
   'mock.procStats': () => work.procStats(),
+  // test helpers for the Work tab's fixed slots: a job ends (the first waiter takes its slot) / a job starts on a pool
+  'mock.workRelease': (p = {}) => work.releaseOwner(need(p, 'sessionId')),
+  'mock.workTake': (p = {}) => work.takeSlot(need(p, 'pool'), need(p, 'owner'), !!p.waiting),
   // e2e test helpers: slow the files.* responses and observe the served order (the workspace-switch checks)
   'mock.filesDelay': (p) => ((filesDelayMs = p.ms ?? 0), true),
   'mock.filesCalls': () => filesCalls,

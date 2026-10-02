@@ -173,7 +173,7 @@ public static class UiTests
                 await env.Rpc("settings.set", new { path = $"agents.{agent}", value = (object?)null });
             }
         }, 120);
-        r.Add("ui.work-tab", "ui: work tab — no Model capacity, Physical owners or Idea checks sections; the agent's name opens Settings → Agents on its dialog", async () =>
+        r.Add("ui.work-tab", "ui: work tab — one list of agents with a row per instance, no Runs, Model capacity, Physical owners or Idea checks sections; the agent name opens Settings → Agents on its dialog", async () =>
         {
             // The agent the script clicks on, unique per run (shared servers keep settings between runs).
             var agent = $"e2e-wt-{Guid.NewGuid().ToString("N")[..6]}";

@@ -1,11 +1,10 @@
 <script>
   import { onMount } from 'svelte';
-  import { Section, Empty, IconButton, tokens, usd } from '@netpi/kit';
+  import { Section, Empty, IconButton, Menu, tokens, usd } from '@netpi/kit';
   import AgentPool from './AgentPool.svelte';
-  import AgentNode from './AgentNode.svelte';
   import RecentAgent from './RecentAgent.svelte';
   import ProcessRow from './ProcessRow.svelte';
-  import { ACTIVE, TERMINAL, upsert } from './util.js';
+  import { TERMINAL, upsert } from './util.js';
 
   /** ctx: host plugin API (docs/PROTOCOL.md → Plugin UI tabs) */
   let { ctx } = $props();
@@ -125,30 +124,14 @@
   });
 
   // ------------------------------------------------------------------ derived views
+  // `agents` here are the runs (what each chat or subagent is doing); the agent rows join them to the instances by run id
   const agentById = $derived(new Map((agents ?? []).map((a) => [a.id, a])));
-  const active = $derived((agents ?? []).filter((a) => ACTIVE.has(a.status)));
-  const activeIds = $derived(new Set(active.map((a) => a.id)));
-  const roots = $derived(
-    active
-      .filter((a) => !a.parentAgentId || !activeIds.has(a.parentAgentId))
-      .sort((a, b) => (Date.parse(a.startedAt ?? a.createdAt) || 0) - (Date.parse(b.startedAt ?? b.createdAt) || 0)),
-  );
-  const childrenOf = $derived.by(() => {
-    const m = new Map();
-    for (const a of active) {
-      if (!a.parentAgentId || !activeIds.has(a.parentAgentId)) continue;
-      let arr = m.get(a.parentAgentId);
-      if (!arr) m.set(a.parentAgentId, (arr = []));
-      arr.push(a);
-    }
-    return m;
-  });
   const recent = $derived(
     (agents ?? [])
       .filter((a) => TERMINAL.has(a.status))
       .sort((a, b) => (Date.parse(b.finishedAt ?? b.createdAt) || 0) - (Date.parse(a.finishedAt ?? a.createdAt) || 0)),
   );
-  const idleCount = $derived((agents ?? []).filter((a) => a.status === 'idle').length);
+  const failedCount = $derived(recent.filter((a) => a.status === 'failed').length);
 
   const running = $derived((processes ?? []).filter((p) => p.status === 'running'));
   const finished = $derived(
@@ -157,14 +140,20 @@
       .sort((a, b) => (Date.parse(b.endedAt ?? b.startedAt) || 0) - (Date.parse(a.endedAt ?? a.startedAt) || 0)),
   );
 
-  const busySlots = $derived((slots ?? []).reduce((n, p) => n + (p.busy ?? 0), 0));
-  const queuedSlots = $derived((slots ?? []).reduce((n, p) => n + (p.queued ?? 0), 0));
-  // the agents the user set up (always listed) and model calls without an agent (listed while they run)
+  // the agents the user set up (always listed) and model calls without an agent (a chip in the summary while they run)
   const setUp = $derived((slots ?? []).filter((p) => p.configured));
   const others = $derived((slots ?? []).filter((p) => !p.configured));
-  const activeCapacity = $derived(setUp.filter((p) => p.available !== false).reduce((n, p) => n + (p.capacity ?? 0), 0));
-  const todayTokens = $derived(
-    (usage?.providers ?? []).reduce((n, p) => n + (p.inputTokens ?? 0) + (p.outputTokens ?? 0), 0),
+  const usableAgents = $derived(setUp.filter((p) => p.available !== false && !p.disabled));
+  const working = $derived(usableAgents.reduce((n, p) => n + (p.owners?.length ?? 0), 0));
+  const waiting = $derived(usableAgents.reduce((n, p) => n + (p.waiters?.length ?? 0), 0));
+  const free = $derived(usableAgents.reduce((n, p) => n + Math.max(0, (p.capacity ?? 0) - (p.owners?.length ?? 0)), 0));
+  const otherCalls = $derived(others.flatMap((p) => (p.owners ?? []).map((o) => ({ pool: p, o }))));
+  const otherItems = $derived(
+    otherCalls.map(({ pool, o }) => ({
+      label: titles.get(o.sessionId ?? agentById.get(o.agentId)?.sessionId) ?? agentById.get(o.agentId)?.name ?? o.label ?? o.agentId,
+      hint: pool.key,
+      onclick: () => o.sessionId && ctx.app.openSession(o.sessionId),
+    })),
   );
 </script>
 
@@ -172,12 +161,16 @@
   <div class="summary">
     <!-- stats that do not fit are dropped whole, least important last -->
     <span class="stats np-fit">
-      <span class="stat" title="Active runs (running, queued or waiting)"><b>{active.length}</b> runs</span>
-      <span class="stat" title="Busy agent instances{queuedSlots ? ` · ${queuedSlots} waiting for one` : ''}"
-        ><b>{busySlots}</b> busy{#if queuedSlots}<span class="warn">&nbsp;+{queuedSlots}</span>{/if}</span
-      >
-      <span class="stat" title="Running shell processes"><b>{running.length}</b> proc</span>
-      <span class="stat" title="Input + output tokens today"><b>{tokens(todayTokens) || 0}</b> tok</span>
+      <span class="stat" title="Instances running a chat or subagent"><b>{working}</b> working</span>
+      <span class="stat" class:warn={waiting > 0} title="Runs waiting for a free instance"><b>{waiting}</b> waiting</span>
+      <span class="stat" class:ok={free > 0} title="Free instances, ready for work"><b>{free}</b> free</span>
+      {#if otherCalls.length}
+        <Menu items={otherItems} minWidth={220} placement="bottom-start">
+          {#snippet trigger({ toggle })}
+            <button class="stat other" title="Model calls that run without an agent (a summarizer on another model)" onclick={toggle}><b>+{otherCalls.length}</b> other</button>
+          {/snippet}
+        </Menu>
+      {/if}
     </span>
     <IconButton icon="refresh" title={updatedAt ? `Refresh (updated ${new Date(updatedAt).toLocaleTimeString()})` : 'Refresh'} size="sm" onclick={refresh} />
   </div>
@@ -187,8 +180,8 @@
   {:else if loading && !agents && !slots}
     <Empty><span class="np-spinner"></span></Empty>
   {:else}
-    <!-- ---------------------------------------------------------------- agents (the ones the user set up) -->
-    <Section title="Agents" count={setUp.length ? `${busySlots}/${activeCapacity} instances` : null} collapsible storageKey="work.agentSlots">
+    <!-- ---------------------------------------------------------------- agents: who works on what, and what is free -->
+    <div class="agents">
       {#if !slots}
         <div class="na">Agents not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
       {:else}
@@ -200,41 +193,12 @@
             {#if ctx.app.openSettings}<button class="link" onclick={() => ctx.app.openSettings('agents')}>Set up agents</button>{/if}
           </div>
         {/each}
-        {#if others.length}
-          <div class="sub">{setUp.length ? 'Other model calls' : 'Model calls'}</div>
-          {#each others as pool (pool.key)}
-            <AgentPool {pool} {agentById} {titles} {ctx} />
-          {/each}
-        {/if}
       {/if}
-    </Section>
+      {#if errors.runs}<div class="na">Runs not available — {errors.runs}</div>{/if}
+    </div>
 
-    <!-- ---------------------------------------------------------------- runs -->
-    <Section title="Runs" count={active.length || null} collapsible storageKey="work.runs">
-      {#if !agents}
-        <div class="na">Runs not available{errors.runs ? ` — ${errors.runs}` : ''}</div>
-      {:else}
-        {#each roots as a (a.id)}
-          <AgentNode agent={a} {childrenOf} {titles} {ctx} depth={0} />
-        {:else}
-          <div class="na">Nothing running{idleCount ? ` · ${idleCount} idle` : ''}</div>
-        {/each}
-        {#if recent.length}
-          <div class="sub">Recent</div>
-          {#each showAllRecent ? recent : recent.slice(0, 6) as a (a.id)}
-            <RecentAgent agent={a} {titles} {ctx} />
-          {/each}
-          {#if recent.length > 6}
-            <button class="more" onclick={() => (showAllRecent = !showAllRecent)}>
-              {showAllRecent ? 'Show less' : `Show all ${recent.length}`}
-            </button>
-          {/if}
-        {/if}
-      {/if}
-    </Section>
-
-    <!-- ---------------------------------------------------------------- processes -->
-    <Section title="Processes" count={processes ? (running.length ? `${running.length} running` : processes.length || null) : null} collapsible storageKey="work.processes">
+    <!-- ---------------------------------------------------------------- processes (below the agents: it is what changes size) -->
+    <Section title="Processes" count={processes ? (running.length ? `${running.length} running` : processes.length || null) : null} collapsible storageKey="work.v2.processes">
       {#if !processes}
         <div class="na">Processes not available{errors.processes ? ` — ${errors.processes}` : ''}</div>
       {:else if !processes.length}
@@ -257,8 +221,26 @@
       {/if}
     </Section>
 
+    <!-- ---------------------------------------------------------------- finished work -->
+    <Section title="Finished" count={recent.length ? `${recent.length}${failedCount ? ` · ${failedCount} failed` : ''}` : null} collapsible open={false} storageKey="work.v2.finished">
+      {#if !agents}
+        <div class="na">Runs not available{errors.runs ? ` — ${errors.runs}` : ''}</div>
+      {:else if !recent.length}
+        <div class="na">Nothing has finished yet</div>
+      {:else}
+        {#each showAllRecent ? recent : recent.slice(0, 6) as a (a.id)}
+          <RecentAgent agent={a} {titles} {ctx} />
+        {/each}
+        {#if recent.length > 6}
+          <button class="more" onclick={() => (showAllRecent = !showAllRecent)}>
+            {showAllRecent ? 'Show less' : `Show all ${recent.length}`}
+          </button>
+        {/if}
+      {/if}
+    </Section>
+
     <!-- ---------------------------------------------------------------- usage -->
-    <Section title="Usage today" count={usage?.providers?.length || null} collapsible storageKey="work.usage">
+    <Section title="Usage today" count={usage?.providers?.length || null} collapsible open={false} storageKey="work.v2.usage">
       {#if usage?.budget && (usage.budget.monthlyUsd || usage.budget.dailyUsd || usage.budget.spentUsd > 0)}
         {@const b = usage.budget}
         {@const frac = b.monthlyUsd ? Math.min(1, b.spentUsd / b.monthlyUsd) : null}
@@ -338,6 +320,28 @@
   }
   .warn {
     color: var(--warn);
+  }
+  .ok {
+    color: var(--ok);
+  }
+  .stat.warn b,
+  .stat.ok b {
+    color: inherit;
+  }
+  .other {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .other:hover {
+    text-decoration: underline;
+  }
+  .agents {
+    padding: 4px 12px 6px;
+    border-bottom: 1px solid var(--border);
   }
   .err {
     color: var(--err);
