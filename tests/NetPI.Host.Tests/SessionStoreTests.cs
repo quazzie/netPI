@@ -596,6 +596,78 @@ public static class SessionStoreTests
             Check.Equal(1, evs.Count);
         });
 
+        r.Add("sessions: a pinned session stays at the top of the list and inside its newest-first window", async () =>
+        {
+            await using var f = new Fixture();
+            // Pinned before its first message: the pin rides into the row at materialization
+            var ancient = f.Store.CreateSession(new SessionInfo { Title = "Ancient" });
+            f.Store.UpdateSession(ancient.Id, x => x.Pinned = true);
+            f.Store.AppendMessage(ancient.Id, ChatMessage.UserText("old news"));
+
+            var old = f.Store.CreateSession(new SessionInfo { Title = "Old chat" });
+            f.Store.AppendMessage(old.Id, ChatMessage.UserText("hello"));
+            f.Store.UpdateSession(old.Id, x => x.Pinned = true);
+
+            for (var i = 1; i <= 29; i++)
+            {
+                var s = f.Store.CreateSession(new SessionInfo { Title = $"Newer {i:D2}" });
+                f.Store.AppendMessage(s.Id, ChatMessage.UserText("m" + i));
+            }
+
+            Check.True(f.Store.GetSession(ancient.Id)!.Pinned, "a pin set while transient survives materialization");
+            Check.True(f.Store.GetSession(old.Id)!.Pinned, "pinned round-trips through the store");
+            var list = f.Store.ListSessions(new SessionQuery { Limit = 5000 });
+            Check.Equal(31, list.Count);
+            Check.Equal(old.Id, list[0].Id, "pinned first, newest first within the group");
+            Check.Equal(ancient.Id, list[1].Id, "the older pinned one after it");
+            Check.True(list.Skip(2).All(s => !s.Pinned));
+            Check.True(list.Skip(2).Zip(list.Skip(3)).All(p => p.First.UpdatedAt >= p.Second.UpdatedAt), "newest first overall after the pinned prefix");
+
+            // The point of the ordering: a small newest-first window still holds the pinned sessions
+            var page = f.Store.ListSessions(new SessionQuery { Limit = 10 });
+            Check.Equal(2, page.Count(s => s.Pinned), "both pinned fit the first page");
+            var second = f.Store.ListSessions(new SessionQuery { Limit = 10, Offset = 10 });
+            Check.Equal(10, second.Count);
+            Check.True(second.All(s => !s.Pinned), "pinned rows only live on the first page");
+        });
+
+        r.Add("sessions: pinning is a session field — session.updated, not session.changed", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo());
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("hello"));
+            await f.Bus.FlushAsync();
+            lock (f.Events) f.Events.Clear();
+
+            f.Store.UpdateSession(s.Id, x => x.Pinned = true);
+            Check.Equal(1, (await f.EventsAsync(EventTypes.SessionUpdated)).Count);
+            Check.Equal(0, (await f.EventsAsync(EventTypes.SessionChanged)).Count, "pinned is a column, not a meta key");
+            lock (f.Events) f.Events.Clear();
+
+            f.Store.UpdateSession(s.Id, x => x.Pinned = false);
+            Check.Equal(1, (await f.EventsAsync(EventTypes.SessionUpdated)).Count);
+            Check.Equal(0, (await f.EventsAsync(EventTypes.SessionChanged)).Count);
+        });
+
+        r.Add("sessions: the pinned column is added by a migration to a database that predates it", async () =>
+        {
+            await using var f = new Fixture();
+            var dir = T.TempDir("pinmig");
+            var db = new Database(Path.Combine(dir, "netpi.db"));
+            // The database as it was before the pin migration: every earlier migration applied
+            db.Migrate("core", SessionStore.Migrations[..^1]);
+            db.Execute(
+                "INSERT INTO sessions(id, title, kind, created_at, updated_at, archived, message_count, context_tokens) " +
+                "VALUES('ses_old', 'Before pinning', 'chat', 1, 2, 0, 0, 0)");
+
+            var store = new SessionStore(db, f.Bus, Path.Combine(dir, "ws"));
+            Check.Equal(false, store.GetSession("ses_old")!.Pinned, "a pre-existing row is not pinned");
+            Check.Equal("ses_old", store.ListSessions(new SessionQuery()).Single().Id);
+            store.UpdateSession("ses_old", x => x.Pinned = true);
+            Check.True(store.GetSession("ses_old")!.Pinned);
+            db.Dispose();
+        });
+
         r.Add("sessions: a meta change publishes session.changed with the keys that changed; a no-op or a field outside meta does not", async () =>
         {
             await using var f = new Fixture();

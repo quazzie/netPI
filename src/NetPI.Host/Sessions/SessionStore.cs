@@ -13,7 +13,7 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
     public const string DefaultTitle = "New session";
     private const int MaxTitleLength = 60;
 
-    private static readonly string[] Migrations =
+    internal static readonly string[] Migrations =
     [
         """
         CREATE TABLE projects (
@@ -89,10 +89,12 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
         """,
         // the checkout a session is bound to; null (every existing row) keeps its project's path
         "ALTER TABLE sessions ADD COLUMN workspace_id TEXT;",
+        // a pinned session stays in the list's window and tops the UI's session tab (idea-k8nghc)
+        "ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;",
     ];
 
     private const string SessionColumns =
-        "id, title, project_id, parent_session_id, kind, model, reasoning, created_at, updated_at, archived, message_count, context_tokens, meta, workspace_id";
+        "id, title, project_id, parent_session_id, kind, model, reasoning, created_at, updated_at, archived, pinned, message_count, context_tokens, meta, workspace_id";
     private const string MessageColumns =
         "id, session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta";
 
@@ -264,7 +266,7 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
         }
         var sql = $"SELECT {SessionColumns} FROM sessions" +
                   (where.Count > 0 ? " WHERE " + string.Join(" AND ", where) : "") +
-                  " ORDER BY updated_at DESC, id DESC LIMIT @limit OFFSET @offset";
+                  " ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT @limit OFFSET @offset";
         return _db.Query(sql, args, ReadSession);
     }
 
@@ -282,7 +284,7 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
     {
         Id = s.Id, Title = s.Title, ProjectId = s.ProjectId, WorkspaceId = s.WorkspaceId, ParentSessionId = s.ParentSessionId, Kind = s.Kind,
         Model = s.Model, Reasoning = s.Reasoning, CreatedAt = s.CreatedAt, UpdatedAt = s.UpdatedAt, Archived = s.Archived,
-        MessageCount = s.MessageCount, ContextTokens = s.ContextTokens, Meta = s.Meta?.DeepClone() as JsonObject,
+        Pinned = s.Pinned, MessageCount = s.MessageCount, ContextTokens = s.ContextTokens, Meta = s.Meta?.DeepClone() as JsonObject,
     };
 
     public SessionInfo CreateSession(SessionInfo template)
@@ -302,6 +304,7 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
             CreatedAt = now,
             UpdatedAt = now,
             Archived = template.Archived,
+            Pinned = template.Pinned,
             MessageCount = 0,
             ContextTokens = template.ContextTokens,
             Meta = template.Meta?.DeepClone() as JsonObject,
@@ -344,7 +347,7 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
             if (string.IsNullOrWhiteSpace(s.Kind)) s.Kind = "chat";
             _db.Execute("""
                 UPDATE sessions SET title = @Title, project_id = @ProjectId, workspace_id = @WorkspaceId, parent_session_id = @ParentSessionId, kind = @Kind,
-                    model = @Model, reasoning = @Reasoning, updated_at = @UpdatedAt, archived = @Archived,
+                    model = @Model, reasoning = @Reasoning, updated_at = @UpdatedAt, archived = @Archived, pinned = @Pinned,
                     message_count = @MessageCount, context_tokens = @ContextTokens, meta = @Meta
                 WHERE id = @Id
                 """, s);
@@ -641,7 +644,7 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
                 }
                 _db.Execute($"""
                     INSERT INTO sessions({SessionColumns})
-                    VALUES(@Id, @Title, @ProjectId, @ParentSessionId, @Kind, @Model, @Reasoning, @CreatedAt, @UpdatedAt, @Archived, @MessageCount, @ContextTokens, @Meta, @WorkspaceId)
+                    VALUES(@Id, @Title, @ProjectId, @ParentSessionId, @Kind, @Model, @Reasoning, @CreatedAt, @UpdatedAt, @Archived, @Pinned, @MessageCount, @ContextTokens, @Meta, @WorkspaceId)
                     """, transient);
                 _transient.Remove(sessionId);
                 AppendMessageCore(sessionId, message, out session);
@@ -884,7 +887,7 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
             }
             _db.Execute($"""
                 INSERT INTO sessions({SessionColumns})
-                VALUES(@Id, @Title, @ProjectId, @ParentSessionId, @Kind, @Model, @Reasoning, @CreatedAt, @UpdatedAt, @Archived, @MessageCount, @ContextTokens, @Meta, @WorkspaceId)
+                VALUES(@Id, @Title, @ProjectId, @ParentSessionId, @Kind, @Model, @Reasoning, @CreatedAt, @UpdatedAt, @Archived, @Pinned, @MessageCount, @ContextTokens, @Meta, @WorkspaceId)
                 """, fork);
             fork.MessageCount = _db.Execute("""
                 INSERT INTO messages(session_id, seq, role, parts, created_at, provider, model, stop_reason, usage, duration_ms, compacted, meta)
@@ -1026,6 +1029,7 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
         CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64("created_at")),
         UpdatedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64("updated_at")),
         Archived = r.GetInt64("archived") != 0,
+        Pinned = r.GetInt64("pinned") != 0,
         MessageCount = r.GetInt64("message_count"),
         ContextTokens = r.GetInt64("context_tokens"),
         Meta = ParseObject(r.GetStringOrNull("meta")),
