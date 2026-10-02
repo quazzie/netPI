@@ -431,6 +431,29 @@ public static class ShellTests
             Check.Equal("exited", T.D(clamped).Str("status"));
         });
 
+        r.Add("process wait: a cancelled call says the wait was cancelled, not that the job timed out", async () =>
+        {
+            var (svc, registry, _) = NewService();
+            var dir = T.TempDir("waitc");
+            var res = await T.Run(Bash(svc), dir, new { command = "echo start; sleep 30", background = true });
+            var id = T.D(res).Str("processId");
+            var tool = new ProcessTool(registry);
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
+                var w = await T.Run(tool, dir, new { action = "wait", id, timeout = 30 }, ct: cts.Token);
+                Check.Ok(w);
+                Check.Contains(w.Content, "cancelled", "says the wait was cancelled");
+                Check.NotContains(w.Content, "Still running after", "does not claim the timeout ran out");
+                Check.True(T.D(w).Bool("cancelled"));
+                Check.Equal("running", registry.Get(id)!.Status, "the job is left running, not lost");
+            }
+            finally
+            {
+                await T.Run(tool, dir, new { action = "kill", id });
+            }
+        });
+
         r.Add("process wait: a timeout is not a lost job — it says still running, for how long, with the last lines", async () =>
         {
             var (svc, registry, _) = NewService();

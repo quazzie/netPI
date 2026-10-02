@@ -213,9 +213,11 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
         if (!TryGet(args, out var p, out var error)) return ToolResult.Error(error!);
         var timeout = Math.Clamp(args.Int("timeout", "timeoutSeconds", "seconds", "wait") ?? DefaultWaitSeconds, 1, MaxWaitSeconds);
         var tail = Tail(args);
-        return await Task.WhenAny(p!.Completion, Task.Delay(TimeSpan.FromSeconds(timeout), ct)).ConfigureAwait(false) == p.Completion
-            ? Exited(p, tail)
-            : StillRunning(p, tail, timeout);
+        var done = await Task.WhenAny(p!.Completion, Task.Delay(TimeSpan.FromSeconds(timeout), ct)).ConfigureAwait(false) == p.Completion;
+        if (done) return Exited(p, tail);
+        // The wait ended because the call was cancelled, not because the job hit its timeout: say that, and leave the job running.
+        if (ct.IsCancellationRequested) return Aborted(p, tail);
+        return StillRunning(p, tail, timeout);
     }
 
     /// <summary>The job is done: the process line says its status, exit code and duration, then the tail of its output.</summary>
@@ -247,6 +249,24 @@ public sealed class ProcessTool(ProcessRegistry registry) : ShellToolBase, IRead
         return ToolResult.Ok(sb.ToString(), new
         {
             process = p.ToInfo(), status = "running", elapsedMs = (int)p.Elapsed.TotalMilliseconds, waitedMs = timeout * 1000,
+            lastLines = last.Split('\n', StringSplitOptions.RemoveEmptyEntries), tail, truncated,
+        });
+    }
+
+    /// <summary>The wait was cancelled (the call was aborted), not the job timing out: the process was left running.
+    /// Same shape as <see cref="StillRunning"/>, but it says the wait was cancelled, not that the timeout ran out.</summary>
+    private static ToolResult Aborted(ManagedProcess p, int tail)
+    {
+        var (last, truncated, total, shownLines) = TailOf(p, tail);
+        var sb = new StringBuilder();
+        sb.Append('[').Append(Describe(p)).Append(']').Append('\n');
+        sb.Append("The wait was cancelled — the process was left running. ")
+            .Append("Wait again with a longer timeout, or kill it.\n");
+        if (truncated) sb.Append($"[showing the last {shownLines} of {total} buffered lines]\n");
+        sb.Append(last.Length > 0 ? last : "(no output yet)");
+        return ToolResult.Ok(sb.ToString(), new
+        {
+            process = p.ToInfo(), status = p.Status, cancelled = true, elapsedMs = (int)p.Elapsed.TotalMilliseconds,
             lastLines = last.Split('\n', StringSplitOptions.RemoveEmptyEntries), tail, truncated,
         });
     }

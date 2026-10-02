@@ -12,6 +12,7 @@ public static class GuardrailsTests
         t.Add("guardrails: a blocked command never runs, and the model reads why", BlockedCommand);
         t.Add("guardrails: protected paths: write and edit refuse them, shell commands that name them too", ProtectedPaths);
         t.Add("guardrails: ask rules wait for the user's OK with the instance given back (allow, no, a message instead)", AskRules);
+        t.Add("guardrails: a pending ask refused by the plugin stopping is a reload, not a user no", RefusedByStop);
         t.Add("guardrails: allowed for this chat, the rule stops asking there (not in other chats, never for a no)", AllowForSession);
         t.Add("guardrails: in a subagent an ask rule blocks; switched off, nothing is checked", SubagentAndOff);
         t.Add("guardrails: the default rules block the catastrophic, not everyday work; spellings of a path", DefaultRules);
@@ -271,6 +272,33 @@ public static class GuardrailsTests
         Check.Contains(Results(h, s.Id).Last().Content, "the user wrote a new message instead");
         Check.Equal("stopped", h.Messages(s.Id)[^1].Text);
         Check.Equal("not_found", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("guard.answer", new { approvalId = "call_x", allow = true }))).Code);
+    }
+
+    private static async Task RefusedByStop()
+    {
+        await using var h = await StartAsync();
+        h.Settings.Set("guardrails.commands", new JsonArray("ask: ^git push"));
+        var ran = new List<string>();
+        h.AddTool(Recorder("bash", ran));
+        var s = h.NewSession(model: "fake/solo");
+        h.Catalog.Handler = (r, ct) =>
+            Reply.HasToolResult(r) ? Reply.Text("done")
+            : Reply.Tool("bash", new { command = "git push origin main" });
+
+        await h.SendAsync(s.Id, "push");
+        await Wait.Until(() => h.Bus.OfType("guard.asked").Count >= 1, "a tool call waits for the OK");
+        await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the call waits with the slot given back");
+
+        // The guardrails plugin stops (a reload): the pending approval is refused, not answered by the user.
+        await h.StopPluginAsync("netpi.guardrails");
+        await Wait.Until(() => h.Bus.OfType("guard.closed").Any(), "the waiting call is released");
+        await h.IdleAsync(s.Id);
+
+        Check.Equal(0, ran.Count, "the call did not run");
+        Check.Equal("stopped", (string?)FakeBus.Data(h.Bus.OfType("guard.closed").Last())["status"]);
+        var result = Results(h, s.Id).Last().Content;
+        Check.Contains(result, "guardrails", "names the plugin, not the user");
+        Check.NotContains(result, "the user said no", "a reload is not a user denial");
     }
 
     private static async Task AllowForSession()

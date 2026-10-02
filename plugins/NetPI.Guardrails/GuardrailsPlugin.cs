@@ -77,6 +77,8 @@ internal sealed class Approvals(IPluginContext ctx)
         public required Verdict Verdict { get; init; }
         public Opinion? Opinion { get; init; }
         public DateTimeOffset AskedAt { get; } = DateTimeOffset.UtcNow;
+        /// <summary>Set by <see cref="RefuseAll"/> when the plugin stops: the waiting run then reports a reload, not a user denial.</summary>
+        public bool Stopped { get; set; }
         public TaskCompletionSource<bool> Allowed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
@@ -88,7 +90,7 @@ internal sealed class Approvals(IPluginContext ctx)
         return e;
     }
 
-    /// <summary>Stops waiting: <paramref name="status"/> is allowed | denied | steered | cancelled.</summary>
+    /// <summary>Stops waiting: <paramref name="status"/> is allowed | denied | steered | cancelled | stopped (the plugin stopped).</summary>
     public bool Close(Entry e, string status, bool forSession = false)
     {
         if (!_byApproval.TryRemove(new KeyValuePair<string, Entry>(e.ApprovalId, e))) return false;
@@ -137,7 +139,9 @@ internal sealed class Approvals(IPluginContext ctx)
 
     public void RefuseAll()
     {
-        foreach (var e in _byApproval.Values) e.Allowed.TrySetResult(false);
+        // The plugin is stopping (a reload): the answer cannot come, so the wait is refused — but it is not a user
+        // "no", and the waiting run must not be told the user denied it.
+        foreach (var e in _byApproval.Values) { e.Stopped = true; e.Allowed.TrySetResult(false); }
     }
 
     private static JsonObject Json(Entry e) => new()
@@ -252,6 +256,11 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
                 return Block("the user wrote a new message instead of answering whether it may run; the message follows. Nothing ran.");
             }
             var allowed = await entry.Allowed.Task.ConfigureAwait(false);
+            if (!allowed && entry.Stopped)
+            {
+                status = "stopped";
+                return Block($"the guardrails plugin stopped (it was reloaded) while this waited for your OK, so it could not be approved. Nothing ran; if guardrails is back, the call can be retried against {Subject(verdict)}.");
+            }
             status = allowed ? "allowed" : "denied";
             return allowed ? null : Block($"the user said no to {Subject(verdict)}. Nothing ran.");
         }
