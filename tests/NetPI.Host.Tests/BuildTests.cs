@@ -28,7 +28,7 @@ public static class BuildTests
     private static void ScriptsParse()
     {
         var shell = new[] { "pwsh", "powershell" }.FirstOrDefault(Shell.Exists);
-        if (shell is null) { Console.WriteLine("        (skipped: no PowerShell to parse build.ps1 with)"); return; }
+        if (shell is null) Check.Skip("no PowerShell to parse build.ps1 with");
         foreach (var script in new[] { "build.ps1" })
         {
             var path = Path.Combine(T.RepoRoot, script);

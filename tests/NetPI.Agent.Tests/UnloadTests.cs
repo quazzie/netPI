@@ -4,7 +4,7 @@ using System.Runtime.Loader;
 
 namespace NetPI.Agent.Tests;
 
-/// <summary>Loads the built plugins from artifacts/app/plugins into collectible load contexts (like the host), runs them, unloads them.</summary>
+/// <summary>Loads the built plugins from artifacts/dev/app/plugins into collectible load contexts (like the host), runs them, unloads them.</summary>
 public static class UnloadTests
 {
     public static void Register(TestRunner t)
@@ -36,13 +36,13 @@ public static class UnloadTests
     private static async Task LoadRunUnload()
     {
         var root = FindRepoRoot();
-        // the build output (NETPI_APP_DIR, set by build.ps1 -Test); artifacts\app is the installed app, and a worktree has none
-        var app = root is null ? "" : Environment.GetEnvironmentVariable("NETPI_APP_DIR") is { Length: > 0 } custom ? custom : Path.Combine(root, "artifacts", "app");
+        // The plugins a plain build produces are in artifacts/dev/app (AppOutDir, Directory.Build.props): artifacts/app
+        // is only what build.ps1 -Publish installs, and a worktree's artifacts/ is its own. NETPI_APP_DIR overrides it.
+        var app = root is null ? "" : Environment.GetEnvironmentVariable("NETPI_APP_DIR") is { Length: > 0 } custom ? custom : Path.Combine(root, "artifacts", "dev", "app");
         var dlls = PluginNames.Select(n => app.Length == 0 ? "" : Path.Combine(app, "plugins", n, n + ".dll")).ToList();
         if (dlls.Any(d => !File.Exists(d)))
         {
-            Console.WriteLine("        (skipped: build the plugins first)");
-            return;
+            Check.Skip("the plugins are not built in " + app);
         }
         var refs = await RunAsync(dlls);
         NetPiJson.ResetCollectibleCache();

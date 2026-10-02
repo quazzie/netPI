@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -14,8 +15,17 @@ namespace NetPI.Aux.Tests;
 
 public sealed class AssertException(string message) : Exception(message);
 
+/// <summary>A test that could not run here (no git, no browser, nothing built): a skip ends the test,
+/// is counted apart from the passes and prints a SKIP line scripts/test.ps1 counts. Not a pass, and
+/// not a failure either: it says what was missing (idea-r4e8rf).</summary>
+public sealed class SkipException(string reason) : Exception(reason);
+
 public static class Check
 {
+    /// <summary>End the test as skipped, with the reason it could not run.</summary>
+    [DoesNotReturn]
+    public static void Skip(string reason) => throw new SkipException(reason);
+
     public static void True(bool condition, string message = "expected true", [CallerArgumentExpression(nameof(condition))] string? expr = null)
     {
         if (!condition) throw new AssertException($"{message} ({expr})");
@@ -90,7 +100,7 @@ public sealed class TestRunner
     public async Task<int> RunAsync(string[] filters)
     {
         var selected = _tests.Where(t => filters.Length == 0 || filters.Any(f => t.Name.Contains(f, StringComparison.OrdinalIgnoreCase))).ToList();
-        int passed = 0, failed = 0;
+        int passed = 0, failed = 0, skipped = 0;
         var failures = new List<string>();
         var total = Stopwatch.StartNew();
         foreach (var (name, body) in selected)
@@ -105,6 +115,11 @@ public sealed class TestRunner
                 passed++;
                 Console.WriteLine($"  PASS  {name} ({sw.ElapsedMilliseconds}ms)");
             }
+            catch (SkipException ex)
+            {
+                skipped++;
+                Console.WriteLine($"  SKIP  {name} ({ex.Message})");
+            }
             catch (Exception ex)
             {
                 failed++;
@@ -116,7 +131,7 @@ public sealed class TestRunner
         Console.WriteLine();
         var nothing = selected.Count == 0;
         if (nothing) Console.WriteLine("No test matches the filter.");
-        Console.WriteLine($"{passed} passed, {failed} failed, {selected.Count} total in {total.Elapsed.TotalSeconds:0.0}s");
+        Console.WriteLine($"{passed} passed, {failed} failed, {skipped} skipped, {selected.Count} total in {total.Elapsed.TotalSeconds:0.0}s");
         if (failed > 0)
         {
             Console.WriteLine("Failures:");

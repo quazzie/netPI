@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 
 namespace NetPI.Providers.Tests;
 
-/// <summary>Loads a built plugin from artifacts/app/plugins into a collectible ALC (like the host), runs it, unloads it.</summary>
+/// <summary>Loads a built plugin from artifacts/dev/app/plugins into a collectible ALC (like the host), runs it, unloads it.</summary>
 internal static class PluginLoadTest
 {
     private sealed class PluginAlc(string mainAssembly) : AssemblyLoadContext(isCollectible: true)

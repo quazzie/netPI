@@ -53,8 +53,14 @@ full run belongs at the end, before a merge.
 .\scripts\test.ps1                                   # build + run all six, print a re-run command for the failures
 .\scripts\test.ps1 -Only "settings:", "goal:"        # just tests whose name contains these (substring, OR-ed)
 .\scripts\test.ps1 -Suite Aux -SkipBuild             # one suite, reusing the build (nothing changed)
+.\scripts\test.ps1 -Suite Aux,Host -SkipBuild        # two: a [string[]] takes a comma, not a second -Suite
 .\scripts\test.ps1 -Serial                           # one suite at a time, when a run misbehaves
 ```
+
+A test that cannot run here (no git on PATH, no Edge/Chrome/Chromium, the plugins not built) calls `Check.Skip(reason)`
+instead of returning quietly: it prints `SKIP  <test> (<reason>)`, the suite's summary counts it apart from the
+passes (`12 passed, 0 failed, 3 skipped, 15 total`), and the script prints how many there were per suite. A skip is
+not a failure — it says what was missing — but it is never counted as a pass either.
 
 The suites are built **once**, as one generated solution holding just the requested projects (`artifacts/test-speed`),
 so shared dependencies are compiled once instead of once per suite. Up to three suite *processes* then run at a
@@ -65,8 +71,11 @@ differently), so two invocations of the same suite never delete each other's fil
 Next to each suite's result the script prints the **process time** and the time the suite's own timers reported, and
 calls out any suite that spent more than three seconds outside its own tests. That gap is not noise: it is the
 runner waiting for output that never arrived, which is what a child process outliving its command looks like. A
-suite that exits non-zero without reporting a failure is reported as a crash, and a filter that matched nothing is
-reported as such — neither is ever green. `artifacts/testlogs/<timestamp>.json` holds the same numbers machine-readably.
+suite that exits non-zero without reporting a failure is reported as a crash, and a filter that matched nothing at
+all is reported as such — neither is ever green. A filter that matches nothing in *one* suite while another suite ran
+it is normal (`-Suite Host,Storage -Only "settings:"`), so the suite is marked in the table instead of failing the
+run, and the re-run command names the suites that failed. `artifacts/testlogs/<timestamp>.json` holds the same
+numbers machine-readably.
 
 Each suite can also be run directly, which is what the script does:
 

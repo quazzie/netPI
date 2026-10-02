@@ -275,7 +275,7 @@ public static class IdeasTests
         {
             var env = new Env();
             // A real repository, so the watcher watches a real reflog.
-            if (!await Git(env.ProjectDir, "init", "-q", "-b", "main")) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+            if (!await Git(env.ProjectDir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
             await Git(env.ProjectDir, "config", "user.email", "test@example.com");
             await Git(env.ProjectDir, "config", "user.name", "Test");
             var calls = 0;

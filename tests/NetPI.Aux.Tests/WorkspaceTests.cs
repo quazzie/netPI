@@ -179,14 +179,14 @@ public static class WorkspaceTests
         catch (System.ComponentModel.Win32Exception) { return null; }
     }
 
-    private static void Skip(string what) => Console.WriteLine($"    (no git on PATH: {what} not checked)");
+    private static void Skip(string what) => Check.Skip($"no git on PATH: {what} not checked");
 
     // ------------------------------------------------------------------ the tests
 
     private static Task TwoWriters()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("two writers"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("two writers"); }
 
         var a = env.Provision("writer-a", "ses_a");
         var b = env.Provision("writer-b", "ses_b");
@@ -217,7 +217,7 @@ public static class WorkspaceTests
     private static Task PrimaryUntouched()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("primary untouched"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("primary untouched"); }
         var w = env.Provision("w", "ses_w");
         Check.True(w.Ok, w.Error ?? "");
         env.Write(w.Binding!.Root, "only-here.txt", "worker's");
@@ -276,7 +276,7 @@ public static class WorkspaceTests
     private static async Task SshDownloadRefused()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("ssh download"); return; }
+        if (!env.GitAvailable) { Skip("ssh download"); }
         var w = env.Provision("w", "ses_w");
         var session = env.Session("w", w.Binding!.WorkspaceId);
         var config = Path.Combine(env.Root, "ssh-config");
@@ -306,7 +306,7 @@ public static class WorkspaceTests
     private static Task StalePathRefused()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("stale absolute path"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("stale absolute path"); }
         var w = env.Provision("w", "ses_w");
         var session = env.Session("w", w.Binding!.WorkspaceId);
         env.Write(env.ProjectPath, "target.txt", "primary's copy");
@@ -347,11 +347,11 @@ public static class WorkspaceTests
     private static Task OtherRepositoryRefused()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("other repository"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("other repository"); }
         // A second repository, and a workspace bound to it while the session belongs to the first project.
         var otherRoot = Path.Combine(Path.GetDirectoryName(env.Root)!, "other-repo");
         Directory.CreateDirectory(otherRoot);
-        if (!Git_(otherRoot, "init", "-q", "-b", "main")) { Skip("other repository"); return Task.CompletedTask; }
+        if (!Git_(otherRoot, "init", "-q", "-b", "main")) { Skip("other repository"); }
         try
         {
             File.WriteAllText(Path.Combine(otherRoot, "x.txt"), "x");
@@ -374,7 +374,7 @@ public static class WorkspaceTests
     private static Task CleanStart()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("clean start"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("clean start"); }
         // The parent's checkout has an uncommitted change; the worker's worktree must not contain it.
         File.WriteAllText(Path.Combine(env.ProjectPath, "README.md"), "base\nuncommitted parent edit\n");
         var head = GitOut(env.ProjectPath, "rev-parse", "HEAD");
@@ -390,7 +390,7 @@ public static class WorkspaceTests
     private static Task ReusePerWorker()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("reuse per worker"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("reuse per worker"); }
         var first = env.Provision("tests", "ses_worker");
         var second = env.Provision("tests", "ses_worker");
         Check.True(first.Ok && second.Ok);
@@ -419,7 +419,7 @@ public static class WorkspaceTests
     private static Task WorktreesInsideProject()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("worktree layout"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("worktree layout"); }
         var a = env.Provision("tests", "ses_a");
         var b = env.Provision("docs", "ses_b");
         Check.True(a.Ok && b.Ok, a.Error ?? b.Error ?? "");
@@ -458,7 +458,7 @@ public static class WorkspaceTests
     private static Task FailedProvisioning()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("failed provisioning"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("failed provisioning"); }
         // The target folder is already taken: provisioning must refuse rather than reuse it silently.
         var target = Path.Combine(env.ProjectPath, WorkspaceProvisioner.DefaultWorktreeFolder, "taken");
         Directory.CreateDirectory(target);
@@ -475,7 +475,7 @@ public static class WorkspaceTests
     private static async Task IntegrationSerializes()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("integration"); return; }
+        if (!env.GitAvailable) { Skip("integration"); }
         var a = env.Provision("a", "ses_a");
         var b = env.Provision("b", "ses_b");
         Check.True(a.Ok && b.Ok);
@@ -515,7 +515,7 @@ public static class WorkspaceTests
     private static async Task IntegrateRefusesStaleRecord()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("integrate, stale record"); return; }
+        if (!env.GitAvailable) { Skip("integrate, stale record"); }
         var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
         var w = env.Provision("work", "ses_w");
         Check.True(w.Ok, w.Error ?? "");
@@ -567,7 +567,7 @@ public static class WorkspaceTests
     private static async Task CleanupSafety()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("cleanup"); return; }
+        if (!env.GitAvailable) { Skip("cleanup"); }
         var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
 
         // Attached: never deleted, whatever its state.
@@ -627,7 +627,7 @@ public static class WorkspaceTests
     private static Task BackgroundProcessHoldsWorkspace()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("background process"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("background process"); }
         var w = env.Provision("bg", "ses_bg").Binding!;
         var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
         var record = store.GetWorkspace(w.WorkspaceId)!;
@@ -649,7 +649,7 @@ public static class WorkspaceTests
     private static async Task RetirementIgnoresArchived()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("retirement, archived"); return; }
+        if (!env.GitAvailable) { Skip("retirement, archived"); }
         var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
         var w = env.Provision("arch", "ses_arch");
         Check.True(w.Ok, w.Error ?? "");
@@ -679,7 +679,7 @@ public static class WorkspaceTests
     private static Task GuardSpellings()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("guard spellings"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("guard spellings"); }
         var w = env.Provision("g", "ses_g").Binding!;
         var session = env.Session("g", w.WorkspaceId);
         env.Write(env.ProjectPath, "victim.txt", "primary");
@@ -810,7 +810,7 @@ public static class WorkspaceTests
     private static async Task SwitchVisibleToNextModelCall()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("switch, next model call"); return; }
+        if (!env.GitAvailable) { Skip("switch, next model call"); }
 
         // The real host registers the session store as a service (the tools ask for it by contract).
         env.Ctx.Services.Register<ISessionStore>(env.Ctx.Sessions);
@@ -898,7 +898,7 @@ public static class WorkspaceTests
     private static Task ConsumersAgree()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("consumers agree"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("consumers agree"); }
         var w = env.Provision("agree", "ses_ag").Binding!;
         var session = env.Session("ag");
         env.Ctx.Services.Get<IWorkspaceStore>()!.SetSessionWorkspace(session.Id, w.WorkspaceId);   // what sessions.setWorkspace does
@@ -948,7 +948,7 @@ public static class WorkspaceTests
     private static Task ResolveCacheIsPerProject()
     {
         using var env = new Env();
-        if (!env.GitAvailable) { Skip("resolve cache"); return Task.CompletedTask; }
+        if (!env.GitAvailable) { Skip("resolve cache"); }
         var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
 
         // A second repository, its own project, and a workspace of the first project's repository.
@@ -956,7 +956,7 @@ public static class WorkspaceTests
         try
         {
             Directory.CreateDirectory(otherRoot);
-            if (!Git_(otherRoot, "init", "-q", "-b", "main")) { Skip("resolve cache"); return Task.CompletedTask; }
+            if (!Git_(otherRoot, "init", "-q", "-b", "main")) { Skip("resolve cache"); }
             File.WriteAllText(Path.Combine(otherRoot, "x.txt"), "x");
             Git_(otherRoot, "add", "-A");
             Git_(otherRoot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");

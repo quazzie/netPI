@@ -41,7 +41,7 @@ public static class SubagentWorkspaceTests
     private static async Task InheritsWorkspace()
     {
         using var repo = new GitRepo();
-        if (!repo.Available) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+        if (!repo.Available) Check.Skip("no git on PATH");
         var (h, store) = await HostAsync(repo);
         await using var _ = h;
         var parent = h.NewSession(projectId: repo.ProjectId);
@@ -61,7 +61,7 @@ public static class SubagentWorkspaceTests
     private static async Task IsolatedChild()
     {
         using var repo = new GitRepo();
-        if (!repo.Available) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+        if (!repo.Available) Check.Skip("no git on PATH");
         var (h, store) = await HostAsync(repo);
         await using var _ = h;
         var parent = h.NewSession(projectId: repo.ProjectId);
@@ -84,7 +84,7 @@ public static class SubagentWorkspaceTests
     private static async Task UnknownWorkspace()
     {
         using var repo = new GitRepo();
-        if (!repo.Available) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+        if (!repo.Available) Check.Skip("no git on PATH");
         var (h, store) = await HostAsync(repo);
         await using var _ = h;
         var parent = h.NewSession(projectId: repo.ProjectId);
@@ -107,7 +107,7 @@ public static class SubagentWorkspaceTests
     private static async Task BatchWorkspaceRefused()
     {
         using var repo = new GitRepo();
-        if (!repo.Available) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+        if (!repo.Available) Check.Skip("no git on PATH");
         var (h, store) = await HostAsync(repo);
         await using var _ = h;
         var parent = h.NewSession(projectId: repo.ProjectId);
@@ -138,7 +138,7 @@ public static class SubagentWorkspaceTests
     private static async Task ProvisioningFailure()
     {
         using var repo = new GitRepo();
-        if (!repo.Available) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
+        if (!repo.Available) Check.Skip("no git on PATH");
         await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.a", JsonNode.Parse("""{ "model": "fake/local" }""")));
         await h.StartPluginAsync(new NetPI.Workspaces.WorkspacePlugin());
         h.Services.Register<IWorkspaceProvisioner>(new FailingProvisioner(), priority: 10);   // provisioning cannot work here

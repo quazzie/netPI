@@ -833,11 +833,7 @@ public static class FileTests
         r.Add("rpc: files.commits — the history newest first, only what came after a hash, null outside a repository", async () =>
         {
             var dir = T.TempDir("commits");
-            if (!await Git(dir, "init", "-q", "-b", "main"))
-            {
-                Console.WriteLine("    (no git on PATH: skipped)");
-                return;
-            }
+            if (!await Git(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
             using var ctx = new FakePluginContext(dir);
             await new FilesPlugin().StartAsync(ctx, CancellationToken.None);
             async Task<JsonArray?> Commits(object? p)
@@ -899,11 +895,7 @@ public static class FileTests
         r.Add("rpc: files.git — branch and the changes since the last commit, staged or not, new files counted", async () =>
         {
             var dir = T.TempDir("git");
-            if (!await Git(dir, "init", "-q", "-b", "main"))
-            {
-                Console.WriteLine("    (no git on PATH: skipped)");
-                return;
-            }
+            if (!await Git(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
             await Git(dir, "config", "user.email", "test@example.com");
             await Git(dir, "config", "user.name", "Test");
             T.WriteText(dir, "a.txt", "1\n2\n3\n");
@@ -973,11 +965,7 @@ public static class FileTests
             Check.Equal("kept.txt", half.Files[0].Rel);
 
             // 3) End to end: a real repository, and the bound set below the real status read's size.
-            if (!await Git(dir, "init", "-q", "-b", "main"))
-            {
-                Console.WriteLine("    (no git on PATH: skipped)");
-                return;
-            }
+            if (!await Git(dir, "init", "-q", "-b", "main")) Check.Skip("no git on PATH");
             await Git(dir, "config", "user.email", "test@example.com");
             await Git(dir, "config", "user.name", "Test");
             T.WriteText(dir, "a.txt", "1\n2\n3\n");
