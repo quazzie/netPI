@@ -78,13 +78,14 @@ public sealed class ShellTool : ShellToolBase
 
     private static System.Text.Json.Nodes.JsonObject Parameters(string commandHelp) => Schema.Object(
         ("command", Schema.Str(commandHelp), true),
-        ("timeout", Schema.Int($"Seconds (default {ShellService.DefaultTimeoutSeconds}, max {ShellService.MaxTimeoutSeconds})"), false),
+        ("timeout", Schema.Int($"Seconds (default {ShellService.DefaultTimeoutSeconds}, max {ShellService.MaxTimeoutSeconds}; timeout_ms takes milliseconds)"), false),
         ("background", Schema.Bool("Returns a process id at once"), false),
         ("cwd", Schema.Str(""), false));
 
     private static readonly string ShellHelp =
         $"stdout and stderr are merged; the output's tail is returned, with a note of the exit code when it is not 0. timeout: " +
-        $"default {ShellService.DefaultTimeoutSeconds} s, max {ShellService.MaxTimeoutSeconds}; the whole process tree is killed " +
+        $"seconds (default {ShellService.DefaultTimeoutSeconds} s, max {ShellService.MaxTimeoutSeconds}, and a value over the max is clamped to it — " +
+        "timeout_ms is the entry point for milliseconds); the whole process tree is killed " +
         "on timeout. background: starts the command and returns a process id at once (servers, watchers, long builds); see " +
         "process (list, output, wait, kill). cwd: default the session working directory.";
 

@@ -268,8 +268,9 @@ The root is chosen in this order: `cwd`, then the session's cwd (`ISessionStore.
   - If PowerShell is not installed, the tool is still registered and returns a clear error.
 - stdin is closed. Output is decoded as UTF-8, ANSI/VT escape codes are stripped, and live output goes to
   `ToolContext.Output` in batches of about 50ms.
-- Timeout: `timeout` is in seconds. Values over 3600 are read as milliseconds, and `timeout_ms` is also accepted. The default
-  comes from `shell.timeoutSeconds`, and the maximum is 1800. On timeout or cancellation the **whole process tree** is killed
+- Timeout: `timeout` is in **seconds**, clamped to the maximum (1800) — a value over the max is clamped, never read as
+  milliseconds, so a 7200 s request waits the max, not 8 s. `timeout_ms` is the entry point for milliseconds. The default
+  comes from `shell.timeoutSeconds`. On timeout or cancellation the **whole process tree** is killed
   (`Process.Kill(entireProcessTree: true)`). If an orphaned grandchild keeps the pipes open, the call still returns about
   0.75s after the shell exits.
 - Model-facing output:
