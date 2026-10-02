@@ -527,10 +527,13 @@ open or closed state of each section is remembered (`storageKey`).
 - Reordering uses the grip (shown on hover; HTML5 drag with a drop indicator) or **Move up / Move down** in the
   ⋯ menu, and sends the full id order to `ideas.reorder`. Delete is in the ⋯ menu too.
 - **Send to chat** calls `ideas.toPrompt` and `ctx.app.insertText`.
-- **Edits carry a revision.** An update sends the `revision` the idea had when its card was opened
+- **Edits carry a revision.** An editor sends the `revision` the idea had when the editor was opened
   (`expectedRevision`), so a change made elsewhere in the meantime comes back as a `conflict` instead of overwriting
-  it. The editor keeps what was typed, a toast says the idea changed somewhere else, and a line at the foot of the tab
-  names it — reopen the card, see the other version, apply the change again. Nothing typed is thrown away.
+  it; the one-line actions (status, image removal, section removal) send none and apply to the idea as it is now.
+  The editor keeps what was typed, a toast says the idea changed somewhere else, and a line at the foot of the tab
+  names it — reopen the card, see the other version, apply the change again. Nothing typed is thrown away. The cards
+  are one keyed list (group heads, closed-status folds and cards together), so an idea that changes status is moved
+  within it and keeps the editor it has open.
 - The list refetches on `ideas.changed`, which now arrives after every committed write (from this window too, and from
   the agent). It is a notification rather than a guarantee, so the tab treats `ideas.list` as the canonical read: a
   missed event costs one more refetch, never a stale card. The default filter follows the active project on

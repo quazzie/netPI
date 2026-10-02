@@ -170,6 +170,21 @@
     for (const i of shown) if (CLOSED_ORDER.includes(i.status)) n.set(i.status, (n.get(i.status) ?? 0) + 1);
     return CLOSED_ORDER.filter((s) => n.has(s)).map((status) => ({ status, n: n.get(status) }));
   });
+  // The whole list as one flat sequence of rows — a group head, a closed-status fold, or a card — so an idea that
+  // moves to another status group is moved in this list rather than destroyed and made again: the card keeps the open
+  // editor and everything typed into it (idea-c3hihl).
+  const rows = $derived.by(() => {
+    const out = [];
+    for (const g of groups) {
+      out.push({ key: `g:${g.status}`, head: g.status, n: g.items.length });
+      for (const idea of g.items) out.push({ key: `i:${idea.id}`, idea });
+    }
+    for (const c of closed) {
+      const open = openGroups.has(c.status);
+      out.push({ key: `c:${c.status}`, fold: c, open, items: open ? shown.filter((i) => i.status === c.status) : [] });
+    }
+    return out;
+  });
   // The order the cards are actually rendered in: what move up/down and drag-to-reorder move within.
   const order = $derived([...groups.flatMap((g) => g.items), ...[...openGroups].flatMap((s) => shown.filter((i) => i.status === s))]);
   const pos = $derived(new Map(order.map((i, n) => [i.id, n])));
@@ -193,12 +208,14 @@
   }
 
   const api = {
-    // The revision the card had when it was opened: another window (or the agent) changing the idea in the meantime is
-    // a conflict, not something to overwrite. The editor keeps what was typed and says what happened.
+    // The revision the card had when its editor was opened: another window (or the agent) changing the idea in the
+    // meantime is a conflict, not something to overwrite. An editor passes the revision it captured; the one-line
+    // actions (status, images, section removal) pass none and apply to the idea as it is now. Falling back to the
+    // list's revision would make the check unreachable, because the list is refetched on every ideas.changed
+    // (idea-c3hihl).
     update: async (id, patch, revision) => {
       const params = { id, patch };
-      const had = revision ?? list?.ideas?.find((i) => i.id === id)?.revision;
-      if (had != null) params.expectedRevision = had;
+      if (revision != null) params.expectedRevision = revision;
       let r = null;
       try {
         r = await ctx.rpc('ideas.update', params);
@@ -480,25 +497,23 @@
           ondragend={end}
         />
       {/snippet}
-      {#each groups as g (g.status)}
-        <div class="ghead" data-tone={STATUS_TONE[g.status]}>
-          <span class="gname">{g.status}</span>
-          <span class="gn">{g.items.length}</span>
-        </div>
-        {#each g.items as idea (idea.id)}
-          {@render card(idea)}
-        {/each}
-      {/each}
-      {#each closed as c (c.status)}
-        <button class="gfold" data-tone={STATUS_TONE[c.status]} aria-expanded={openGroups.has(c.status)} onclick={() => toggleGroup(c.status)}>
-          <Icon name={openGroups.has(c.status) ? 'chevron-down' : 'chevron-right'} size={11} />
-          <span class="gname">{c.status}</span>
-          <span class="gn">{c.n}</span>
-        </button>
-        {#if openGroups.has(c.status)}
-          {#each shown.filter((i) => i.status === c.status) as idea (idea.id)}
+      {#each rows as row (row.key)}
+        {#if row.head}
+          <div class="ghead" data-tone={STATUS_TONE[row.head]}>
+            <span class="gname">{row.head}</span>
+            <span class="gn">{row.n}</span>
+          </div>
+        {:else if row.fold}
+          <button class="gfold" data-tone={STATUS_TONE[row.fold.status]} aria-expanded={row.open} onclick={() => toggleGroup(row.fold.status)}>
+            <Icon name={row.open ? 'chevron-down' : 'chevron-right'} size={11} />
+            <span class="gname">{row.fold.status}</span>
+            <span class="gn">{row.fold.n}</span>
+          </button>
+          {#each row.items as idea (idea.id)}
             {@render card(idea)}
           {/each}
+        {:else}
+          {@render card(row.idea)}
         {/if}
       {/each}
     {/if}
