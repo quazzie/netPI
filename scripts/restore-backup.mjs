@@ -14,6 +14,14 @@ function inside(dir, name) {
   return full;
 }
 
+/** An idea image belongs at one plain file name inside the images directory of the home, and nowhere else. */
+function imageTarget(name) {
+  const parts = typeof name === 'string' ? name.split('/') : [];
+  if (parts.length !== 2 || parts[0] !== 'idea-images' || !parts[1] || parts[1] === '.' || parts[1] === '..' || parts[1] !== path.posix.basename(parts[1]))
+    throw new Error(`The manifest names an idea image at ${JSON.stringify(name)}, which is not a file of the images directory`);
+  return parts[1];
+}
+
 export async function restoreBackup(backup, destination) {
   backup = path.resolve(backup);
   destination = path.resolve(destination);
@@ -45,10 +53,24 @@ export async function restoreBackup(backup, destination) {
   if (!contents.has('settings.json')) throw new Error('The snapshot has no settings.json');
   const settings = JSON.parse(contents.get('settings.json').toString('utf8'));
   if (!settings || Array.isArray(settings) || typeof settings !== 'object') throw new Error('Invalid settings');
+  // The idea images are files under the home, not in the store: the snapshot carries each one as a file of its own and
+  // the manifest says which file of the images directory it is, so a restored backlog keeps the pictures its cards show.
+  // A snapshot from before this has no ideaImages and simply has none to put back.
+  const images = manifest.ideaImages ?? {};
+  if (!images || typeof images !== 'object' || Array.isArray(images)) throw new Error('Invalid ideaImages');
+  const imageFiles = new Map();
+  for (const [name, target] of Object.entries(images)) {
+    if (!contents.has(name)) throw new Error(`The manifest lists an idea image, ${name}, that the snapshot does not have`);
+    imageFiles.set(imageTarget(target), contents.get(name));
+  }
   // Exclusive creation rejects existing homes, including symlinks. On a write failure keep the partial directory
   // for inspection; another restore must choose a different destination.
   await fs.mkdir(destination);
   for (const [name, data] of contents) await fs.writeFile(inside(destination, name), data, { flag: 'wx', mode: 0o600 });
+  if (imageFiles.size) {
+    await fs.mkdir(path.join(destination, 'idea-images'), { mode: 0o700 });
+    for (const [target, data] of imageFiles) await fs.writeFile(path.join(destination, 'idea-images', target), data, { flag: 'wx', mode: 0o600 });
+  }
   return destination;
 }
 

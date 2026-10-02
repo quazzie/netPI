@@ -11,6 +11,7 @@ public static class BackupTests
     public static void Register(TestRunner r)
     {
         BackupIdeasRoundTrip(r);
+        BackupIdeaImages(r);
 
         r.Add("backup: WAL snapshot, retention, corruption check and offline restore", async () =>
         {
@@ -136,6 +137,58 @@ public static class BackupTests
                 }.ToJsonString());
                 Check.Throws<InvalidDataException>(() => BackupPlugin.Verify(home, "20200101-000000-old"), "no provider in the manifest");
                 Check.True(await RunRestoreAsync(repo, old, Path.Combine(home, "restored-old")) != 0, "the restore script refuses it too");
+            }
+            finally { await plugin.StopAsync(default); scope.DisposeAll(); }
+        });
+    }
+
+    /// <summary>
+    /// The idea images are files under the home, not rows in the store, so the snapshot copies them itself: each one into a
+    /// file of its own (with a checksum, like every other file) and the manifest says which file of the images directory it
+    /// is. Restoring puts them back where the ideas that reference them look for them (idea-3m2h1g).
+    /// </summary>
+    private static void BackupIdeaImages(TestRunner r)
+    {
+        r.Add("backup: the idea images travel in the snapshot and come back on restore", async () =>
+        {
+            var home = T.TempDir("backup-images");
+            var shot = new byte[] { 0x89, 0x50, 0x4e, 0x47, 1, 2, 3 };
+            Directory.CreateDirectory(Path.Combine(home, "idea-images"));
+            File.WriteAllBytes(Path.Combine(home, "idea-images", "img-abc12345.png"), shot);
+            await using var kernel = HostKernel.Create(new NetPiServerOptions { Home = home, ConsoleLogging = false });
+            var scope = new PluginScope("netpi.backup", kernel.Log);
+            var ctx = new PluginContext(kernel, "netpi.backup", home, scope, default, () => "test");
+            var plugin = new BackupPlugin();
+            kernel.Settings.Set("backup.enabled", JsonValue.Create(false));
+            await plugin.StartAsync(ctx, default);
+            try
+            {
+                var manual = await plugin.CreateAsync(ctx, false, default);
+                var dir = manual["path"]!.GetValue<string>();
+                Check.Equal("idea-images/img-abc12345.png", manual["ideaImages"]!.AsObject()["idea-images.img-abc12345.png"]!.GetValue<string>(),
+                    "the manifest says which file of the images directory the copy is");
+                Check.True(manual["files"]!.AsObject().ContainsKey("idea-images.img-abc12345.png"), "and the copy is a checksummed file of the snapshot");
+                BackupPlugin.Verify(home, manual["id"]!.GetValue<string>());
+
+                var repo = FindRepo();
+                var restored = Path.Combine(home, "restored-images");
+                Check.Equal(0, await RunRestoreAsync(repo, dir, restored), "the snapshot restores");
+                var back = Path.Combine(restored, "idea-images", "img-abc12345.png");
+                Check.True(File.Exists(back) && shot.SequenceEqual(File.ReadAllBytes(back)), "the picture comes back where the idea that references it looks for it");
+
+                // A manifest is a file anything can write, so where it says an image belongs is checked before a restore
+                // builds a path from it: a target that climbs out of the images directory is refused, and refused before
+                // any destination is touched.
+                var tamperedId = "20200101-000000-tampered";
+                var tampered = Path.Combine(home, "backups", tamperedId);
+                T.CopyDir(dir, tampered);
+                var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(tampered, "manifest.json")))!.AsObject();
+                manifest["ideaImages"]!.AsObject()["idea-images.img-abc12345.png"] = "idea-images/../../escape.png";
+                File.WriteAllText(Path.Combine(tampered, "manifest.json"), manifest.ToJsonString());
+                Check.Throws<InvalidDataException>(() => BackupPlugin.Verify(home, tamperedId), "Verify refuses a target that climbs out of the images directory");
+                var refused = Path.Combine(home, "restored-tampered");
+                Check.True(await RunRestoreAsync(repo, tampered, refused) != 0, "the restore script refuses it too");
+                Check.False(Directory.Exists(refused), "verify before touching destination");
             }
             finally { await plugin.StopAsync(default); scope.DisposeAll(); }
         });

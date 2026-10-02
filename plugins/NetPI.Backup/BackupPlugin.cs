@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NetPI.Backup;
 
-[NetPiPlugin("netpi.backup", Name = "Backups", Description = "Database and settings snapshots with checksums and retention (the ideas backlog travels in the database)", Order = 95)]
+[NetPiPlugin("netpi.backup", Name = "Backups", Description = "Database, settings and idea-image snapshots with checksums and retention (the ideas backlog travels in the database)", Order = 95)]
 public sealed class BackupPlugin : INetPiPlugin
 {
     private CancellationTokenSource? _stop;
@@ -17,7 +17,7 @@ public sealed class BackupPlugin : INetPiPlugin
         {
             Id = "backup", Title = "Backups", Group = "Data", Order = 10,
             Settings = [
-                SettingInfo.Bool("backup.enabled", "Automatic backups", true, "A consistent snapshot of the database (which holds the ideas backlog, its cards and its commit cursors) and of your settings, stored in your NetPI home. Project files and skills are not included."),
+                SettingInfo.Bool("backup.enabled", "Automatic backups", true, "A consistent snapshot of the database (which holds the ideas backlog, its cards and its commit cursors), of your settings and of the images attached to ideas, stored in your NetPI home. Project files and skills are not included."),
                 SettingInfo.Int("backup.intervalHours", "Interval", 24, "Checked at startup and every minute.", 1, 720, "hours"),
                 SettingInfo.Int("backup.keepCount", "Automatic backups to keep", 7, "Manual backups are kept until you remove them.", 1, 365),
             ],
@@ -73,6 +73,10 @@ public sealed class BackupPlugin : INetPiPlugin
             var written = store.Snapshot.Write(staging).ToList();
             File.WriteAllText(Path.Combine(staging, SettingsFile), ctx.Settings.Snapshot().ToJsonString(NetPiJson.Indented));
             written.Add(SettingsFile);
+            // The idea images are the one thing a plugin keeps outside the store, so the snapshot carries them itself:
+            // a restored backlog whose screenshots are gone is a broken backlog (idea-3m2h1g).
+            var images = CopyIdeaImages(ctx.Paths.Home, staging);
+            written.AddRange(images.Select(p => p.Key));
             var files = new JsonObject();
             foreach (var name in written)
             {
@@ -85,6 +89,8 @@ public sealed class BackupPlugin : INetPiPlugin
                 // the store that wrote it, so a restore knows what reads the files the provider named
                 ["provider"] = store.Info.Provider, ["files"] = files,
             };
+            // what each copied image is, in the home it restores into (absent when there are none to carry)
+            if (images.Count > 0) manifest["ideaImages"] = images;
             File.WriteAllText(Path.Combine(staging, "manifest.json"), manifest.ToJsonString(NetPiJson.Indented));
             ct.ThrowIfCancellationRequested();
             var destination = Path.Combine(root, id);
@@ -124,6 +130,32 @@ public sealed class BackupPlugin : INetPiPlugin
     /// <summary>The one file a snapshot has that is not the store's: the settings, which the store does not hold.</summary>
     private const string SettingsFile = "settings.json";
 
+    /// <summary>The folder under the home the idea images live in — the only plugin-owned files a snapshot carries.</summary>
+    private const string IdeaImagesDir = "idea-images";
+
+    /// <summary>How a copied image is named inside a snapshot: a snapshot holds flat file names, so the folder is a prefix.</summary>
+    private const string IdeaImagesPrefix = IdeaImagesDir + ".";
+
+    /// <summary>
+    /// The idea images, each copied into the staging snapshot under a name of its own and mapped to the home-relative
+    /// path it comes from. A home without the folder has none: nothing is written and the manifest says nothing.
+    /// </summary>
+    private static JsonObject CopyIdeaImages(string home, string staging)
+    {
+        var copied = new JsonObject();
+        var dir = Path.Combine(home, IdeaImagesDir);
+        if (!Directory.Exists(dir)) return copied;
+        foreach (var file in Directory.EnumerateFiles(dir))
+        {
+            var name = Path.GetFileName(file);
+            if (name.Length == 0) continue;
+            var inSnapshot = IdeaImagesPrefix + name;
+            File.Copy(file, Path.Combine(staging, inSnapshot));
+            copied[inSnapshot] = $"{IdeaImagesDir}/{name}";
+        }
+        return copied;
+    }
+
     public static JsonObject Verify(string home, string id)
     {
         var dir = SnapshotPath(home, id);
@@ -151,7 +183,27 @@ public sealed class BackupPlugin : INetPiPlugin
             throw new InvalidDataException("The backup manifest does not say which storage provider wrote it");
         if (!files.ContainsKey(SettingsFile)) throw new InvalidDataException($"The backup manifest does not list {SettingsFile}");
         if (files.Count < 2) throw new InvalidDataException("The backup manifest lists no file of the store: a snapshot without its data is not a snapshot");
+        // An image the manifest carries has to be one of the files above (so it has a checksum that was checked) and has
+        // to belong at a plain file name inside the images directory of the home it restores into.
+        foreach (var (name, node) in manifest["ideaImages"] as JsonObject ?? [])
+        {
+            var target = node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+            IdeaImage(target);
+            if (!files.ContainsKey(name)) throw new InvalidDataException($"The backup manifest lists an idea image, {name}, that the snapshot does not have");
+        }
         return manifest;
+    }
+
+    /// <summary>
+    /// The file of the images directory an idea image belongs at. A manifest is a file anything can write, so the place
+    /// it names is checked before a restore builds a path from it: one directory, then a plain file name in it.
+    /// </summary>
+    internal static string IdeaImage(string? target)
+    {
+        var parts = (target ?? "").Replace('\\', '/').Split('/');
+        if (parts.Length != 2 || parts[0] != IdeaImagesDir || parts[1].Length == 0 || parts[1] is "." or ".." || parts[1] != Path.GetFileName(parts[1]))
+            throw new InvalidDataException($"The backup manifest names an idea image at '{target}', which is not a file of the images directory");
+        return parts[1];
     }
 
     /// <summary>
