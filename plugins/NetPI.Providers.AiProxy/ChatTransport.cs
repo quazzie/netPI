@@ -54,7 +54,7 @@ internal static class ChatTransport
             foreach (var group in toolImages.GroupBy(x => x.CallId))
             {
                 content.Add(new JsonObject { ["type"] = "text", ["text"] = $"[Image(s) returned by tool call {group.Key}]" });
-                foreach (var (_, img) in group) content.Add(ImageUrl(img));
+                foreach (var (_, img) in group) content.Add(Image(img));
             }
             foreach (var (callId, count) in toolImagesOmitted)
                 content.Add(new JsonObject { ["type"] = "text", ["text"] = OpenAiCommon.ToolImagesOmitted(callId, count) });
@@ -119,7 +119,7 @@ internal static class ChatTransport
                     {
                         if (p is TextPart t && t.Text.Length > 0) content.Add(new JsonObject { ["type"] = "text", ["text"] = t.Text });
                         else if (p is ImagePart img)
-                            content.Add(allowImages ? ImageUrl(img) : new JsonObject { ["type"] = "text", ["text"] = OpenAiCommon.ImageOmitted });
+                            content.Add(allowImages ? Image(img) : new JsonObject { ["type"] = "text", ["text"] = OpenAiCommon.ImageOmitted });
                     }
                     if (content.Count > 0) list.Add(new JsonObject { ["role"] = "user", ["content"] = content });
                     break;
@@ -135,6 +135,12 @@ internal static class ChatTransport
         ["type"] = "image_url",
         ["image_url"] = new JsonObject { ["url"] = $"data:{img.MediaType};base64,{img.Data}" },
     };
+
+    /// <summary>The image, or the note that replaces one no transport takes: it would fail every later call too (idea-begg3v).</summary>
+    private static JsonObject Image(ImagePart img) =>
+        ModelMessages.OversizedImage(img) is { } tooBig
+            ? new JsonObject { ["type"] = "text", ["text"] = tooBig }
+            : ImageUrl(img);
 }
 
 /// <summary>Parses Chat Completions chunks (content, reasoning_content/reasoning, inline think tags, tool_calls by index).</summary>
@@ -151,6 +157,7 @@ internal sealed class ChatStreamParser(MessageAssembler asm, string provider, bo
     private readonly ThinkTagSplitter? _think = parseThinkTags ? new ThinkTagSplitter() : null;
     private readonly Dictionary<int, Call> _calls = [];
     private readonly List<Call> _order = [];
+    private readonly DroppedFrames _dropped = new();
     private string? _finish;
     private bool _done;
     private bool _anyChunk;
@@ -166,8 +173,10 @@ internal sealed class ChatStreamParser(MessageAssembler asm, string provider, bo
     {
         if (sse.IsDone) { _done = true; return; }
         JsonDocument doc;
+        // A frame that does not parse is counted, not swallowed: the finish reason and the usage live in the last
+        // chunks, so dropping one silently ends the call looking clean (idea-saljbd).
         try { doc = JsonDocument.Parse(sse.Data); }
-        catch (JsonException) { return; }
+        catch (JsonException) { _dropped.Add(sse.Data); return; }
         using (doc) HandleChunk(doc.RootElement, streaming: true);
     }
 
@@ -312,8 +321,8 @@ internal sealed class ChatStreamParser(MessageAssembler asm, string provider, bo
             c.Part = asm.StartToolCall(c.Id, c.Name);
             asm.AppendToolArgs(c.Part, c.PendingArgs.ToString());
         }
-        if (!_done && _finish is null) throw ProviderErrors.UnexpectedEnd(provider);
-        if (!_anyChunk && !asm.HasContent) throw ProviderErrors.UnexpectedEnd(provider);
+        if (!_done && _finish is null) throw ProviderErrors.UnexpectedEnd(provider, _dropped.Note);
+        if (!_anyChunk && !asm.HasContent) throw ProviderErrors.UnexpectedEnd(provider, _dropped.Note);
 
         asm.StopReason = _finish switch
         {

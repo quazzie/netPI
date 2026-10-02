@@ -30,13 +30,16 @@ public sealed class AnthropicPlugin : INetPiPlugin
                 SettingInfo.Bool("providers.anthropic.adaptiveEffort", "Send the effort with adaptive thinking", true),
                 SettingInfo.Bool("providers.anthropic.promptCaching", "Prompt caching", true),
                 SettingInfo.Int("providers.anthropic.defaultMaxOutputTokens", "Output limit", 32000, null, 256, null, "tokens"),
+                SettingInfo.Bool("providers.anthropic.dumpFailedRequests", "Save failed requests", true,
+                    "Write the request and response body of a failed call to logs/failed-requests, for reproducing backend bugs."),
                 SettingInfo.List("providers.anthropic.betas", "anthropic-beta headers", []),
                 SettingInfo.Str("providers.anthropic.baseUrl", "Server URL", "https://api.anthropic.com"),
                 SettingInfo.Int("providers.anthropic.modelsCacheSeconds", "Model list cache", 600, null, 0, 86400, "s"),
             ],
         });
         _http = HttpFactory.Create();
-        Provider = new AnthropicProvider(_http, () => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger, context.Events);
+        Provider = new AnthropicProvider(_http, () => context.Settings.GetNode(SettingsPath) as JsonObject, context.Logger,
+            context.Events, logsDir: context.Paths.LogsDir);
         context.Services.Register<IModelProvider>(Provider);
         _settingsSub = context.Events.Subscribe(EventTypes.SettingsChanged, evt =>
         {

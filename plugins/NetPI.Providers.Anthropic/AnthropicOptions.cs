@@ -8,7 +8,7 @@ public enum ThinkingMode { Budget, Adaptive, Off }
 /// Snapshot of <c>providers.anthropic</c>: apiKey (fallback env ANTHROPIC_API_KEY; "env:NAME"/"$NAME" supported),
 /// baseUrl, thinking (budget|adaptive|off), promptCaching, defaultMaxOutputTokens, enabled, betas [..] (anthropic-beta
 /// header), headers {k:v}, adaptiveEffort (send output_config.effort in adaptive mode), thinkingBudgets {low,medium,high,max},
-/// fallbackModels [ids] (used when the model list call fails), modelsCacheSeconds.
+/// dumpFailedRequests, fallbackModels [ids] (used when the model list call fails), modelsCacheSeconds.
 /// </summary>
 internal sealed class AnthropicOptions
 {
@@ -19,6 +19,7 @@ internal sealed class AnthropicOptions
     public ThinkingMode Thinking { get; init; } = ThinkingMode.Budget;
     public bool PromptCaching { get; init; } = true;
     public int DefaultMaxOutputTokens { get; init; } = 32000;
+    public bool DumpFailedRequests { get; init; } = true;
     public bool Enabled { get; init; } = true;
     public bool AdaptiveEffort { get; init; } = true;
     public List<string> Betas { get; init; } = [];
@@ -66,6 +67,7 @@ internal sealed class AnthropicOptions
             },
             PromptCaching = o.Bool("promptCaching", true),
             DefaultMaxOutputTokens = o.Int("defaultMaxOutputTokens") is > 0 and var m ? m : 32000,
+            DumpFailedRequests = o.Bool("dumpFailedRequests", true),
             Enabled = o.Bool("enabled", true),
             AdaptiveEffort = o.Bool("adaptiveEffort", true),
             Betas = Strings(o.Arr("betas")),

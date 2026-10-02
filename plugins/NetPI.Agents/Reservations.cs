@@ -67,13 +67,13 @@ internal sealed partial class Ledger
     // The input is counted in tokens (a conversation serialised to JSON is 3-5x its token count, and base64 images
     // would count at full size), priced at the cache-read rate — in an agent loop the context is re-read, not
     // re-sent, and a call that misses the cache is corrected by the settlement, while a 3-5x over-reservation
-    // locks a tight budget for nothing. The output is the effective maximum the provider would accept.
+    // locks a tight budget for nothing. The output is the effective maximum the provider would accept: the same
+    // clamp the transports send, so what is reserved is what the call can spend (idea-begg3v).
     internal static double Estimate(ModelRequest request, Price? price)
     {
         if (price is null || price.Free) return 0;
         var input = EstimateInput(request);
-        var output = request.MaxOutputTokens is > 0 and var max ? max : request.Model.MaxOutputTokens ?? 16384;
-        if (request.Model.MaxOutputTokens is > 0 and var cap && output > cap) output = cap;   // the provider clamps to its own maximum
+        var output = ModelMessages.ClampMaxTokens(request, request.MaxOutputTokens is > 0 and var max ? max : request.Model.MaxOutputTokens ?? 16384);
         return (input * price.CacheRead + output * price.Output) / 1_000_000;
     }
 

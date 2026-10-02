@@ -26,6 +26,9 @@ internal static partial class ProviderErrors
     {
         "context_length_exceeded", "exceed_context_size_error", "context_window_exceeded", "prompt_too_long",
         "model_context_window_exceeded",
+        // The request itself is too big (an oversize image, a body over the endpoint's limit): compaction is what
+        // shrinks it, so it belongs with the other overflows instead of failing every turn unrecoverably (idea-begg3v).
+        "request_too_large",
     };
 
     [GeneratedRegex(@"prompt is too long|prompt too long|too many tokens|context[ _-]?(length|window|size)|maximum context|exceeds? (the )?(available |maximum |model'?s? )?(context|token limit)|input is too long|exceed_context|reduce the length|too long for (the )?context|tokens? > \d+ maximum", RegexOptions.IgnoreCase)]
@@ -98,8 +101,11 @@ internal static partial class ProviderErrors
         return new ModelException(text, transient, status, type) { ContextOverflow = overflow };
     }
 
-    public static ModelException UnexpectedEnd(string provider) =>
-        new($"{provider}: the response stream ended unexpectedly", transient: true, null, "stream_truncated");
+    /// <summary>The stream ended before its terminal event. <paramref name="dropped"/> says how many frames could
+    /// not be parsed and what the first looked like, so a mangled stream is not silently a clean one (idea-saljbd).</summary>
+    public static ModelException UnexpectedEnd(string provider, string? dropped = null) =>
+        new(dropped is null ? $"{provider}: the response stream ended unexpectedly"
+            : $"{provider}: the response stream ended unexpectedly ({dropped})", transient: true, null, "stream_truncated");
 
     /// <summary>Translate a transport exception. User cancellation is re-thrown as <see cref="OperationCanceledException"/>.</summary>
     public static Exception Translate(Exception ex, string provider, CancellationToken ct)

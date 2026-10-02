@@ -225,24 +225,6 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
 
     // ================================================================ streaming
 
-    /// <summary>What one call sent and got back, for error messages and failed-request dumps.</summary>
-    private sealed class CallInfo
-    {
-        public string? Url;
-        public string? Transport;
-        public JsonObject? Body;
-        public string? RequestId;
-        /// <summary>The response body as received, capped (16k) by <see cref="ProviderErrors.ReadBodySafeAsync"/>. The
-        /// dump used to keep only the 2,000-char excerpt the error message carries, so a cause outside
-        /// <c>error.message</c> was unreproducible from the file (idea-022jh1).</summary>
-        public string? ResponseBody;
-        public IOpenAiStreamParser? Parser;
-        public bool Dump;
-        /// <summary>Both transports report the server's id for the response (Responses: <c>response.id</c>,
-        /// Chat: the completion id); a backend with no <c>x-request-id</c> header offers only this.</summary>
-        public string? ResponseId => Parser?.ResponseId;
-    }
-
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
     {
         // Errors are reported as they are (no retries or workarounds here): the message is only extended with the
@@ -259,68 +241,10 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
             }
             catch (ModelException ex) when (!ct.IsCancellationRequested)
             {
-                throw Describe(ex, request, call);
+                throw await FailedRequests.DescribeAsync(ex, request, call, Id, _dumpDir, _log, ct).ConfigureAwait(false);
             }
             yield return current;
         }
-    }
-
-    private ModelException Describe(ModelException ex, ModelRequest request, CallInfo call)
-    {
-        var ids = new List<string>();
-        if (call.RequestId is { Length: > 0 } rq) ids.Add("request " + rq);
-        if (call.ResponseId is { Length: > 0 } rs) ids.Add("response " + rs);
-        string? dump = null;
-        if (call.Dump && call.Body is not null && ex.ErrorType is not ("network_error" or "provider_disabled" or "invalid_config"))
-            dump = DumpFailedRequest(ex, request, call);
-        if (dump is not null) ids.Add("saved " + dump);
-        if (ids.Count == 0) return ex;
-        // The ids stay in the message (the log, diag and a bug report want them) and are handed over as Detail, so the
-        // retry notice can show the reason without them (idea-qz1a5z).
-        var detail = string.Join(", ", ids);
-        return new ModelException($"{ex.Message} [{detail}]", ex.Transient, ex.StatusCode, ex.ErrorType, ex)
-        {
-            ContextOverflow = ex.ContextOverflow,
-            RetryAfter = ex.RetryAfter,
-            Detail = detail,
-        };
-    }
-
-    private string? DumpFailedRequest(ModelException ex, ModelRequest request, CallInfo call)
-    {
-        if (_dumpDir is null) return null;
-        try
-        {
-            Directory.CreateDirectory(_dumpDir);
-            var name = $"{DateTime.Now:yyyyMMdd-HHmmss-fff}-{Safe(request.Model.Id)}.json";
-            var path = Path.Combine(_dumpDir, name);
-            var doc = new JsonObject
-            {
-                ["time"] = DateTimeOffset.Now.ToString("O"),
-                ["provider"] = Id,
-                ["model"] = request.Model.Id,
-                ["sessionId"] = request.SessionId,
-                ["url"] = call.Url,
-                ["transport"] = call.Transport,
-                ["requestId"] = call.RequestId,
-                ["responseId"] = call.ResponseId,
-                ["error"] = new JsonObject { ["message"] = ex.Message, ["type"] = ex.ErrorType, ["status"] = ex.StatusCode },
-                ["request"] = call.Body!.DeepClone(),
-            };
-            if (!string.IsNullOrEmpty(call.ResponseBody)) doc["response"] = call.ResponseBody;
-            File.WriteAllText(path, doc.ToJsonString(NetPiJson.Indented));
-            // keep the newest 30
-            foreach (var old in new DirectoryInfo(_dumpDir).GetFiles("*.json").OrderByDescending(f => f.Name).Skip(30))
-                try { old.Delete(); } catch { }
-            return path;
-        }
-        catch (Exception e)
-        {
-            _log.LogDebug(e, "{Provider}: could not save the failed request", Id);
-            return null;
-        }
-
-        static string Safe(string s) => string.Concat(s.Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_'));
     }
 
     private async IAsyncEnumerable<ModelStreamEvent> StreamCoreAsync(ModelRequest request, CallInfo call, [EnumeratorCancellation] CancellationToken ct)
@@ -378,7 +302,6 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
             IOpenAiStreamParser parser = chat
                 ? new ChatStreamParser(asm, DisplayName, mo.ParseThinkTags)
                 : new ResponsesStreamParser(asm, DisplayName, mo.ParseThinkTags);
-            call.Parser = parser;
 
             var mediaType = resp.Content.Headers.ContentType?.MediaType;
             if (mediaType is "application/json")
@@ -387,7 +310,8 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
                 try { text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false); }
                 catch (Exception ex) when (ex is not ModelException) { throw Rethrow(ex, ct); }
                 call.ResponseBody = ProviderErrors.Cap(text); // same cap as the non-2xx path
-                parser.HandleJsonBody(text);
+                try { parser.HandleJsonBody(text); }
+                finally { call.ResponseId ??= parser.ResponseId; }
             }
             else
             {
@@ -397,7 +321,10 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
 
                 await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct), DisplayName, ct).ConfigureAwait(false))
                 {
-                    parser.Handle(sse);
+                    // Both transports report the server's id for the response (Responses: response.id, Chat: the
+                    // completion id); a backend with no x-request-id header offers only this (idea-uab5a4).
+                    try { parser.Handle(sse); }
+                    finally { call.ResponseId ??= parser.ResponseId; }
                     foreach (var ev in asm.Drain()) yield return ev;
                     if (parser.Finished) break;
                 }

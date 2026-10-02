@@ -492,6 +492,13 @@ public static class FileTests
             Check.Ok(res);
             Check.True(res.Images is null);
             Check.Contains(res.Content, "cannot view images");
+
+            // Over the limit a transport takes, an attached image is refused by the provider on this call and on every
+            // later one (it stays in the history), so read refuses it here and says what the limit is (idea-begg3v).
+            T.WriteBytes(dir, "huge.png", new byte[ModelMessages.MaxImageBytes + 1]);
+            res = await T.Run(Read, dir, new { path = "huge.png" }, vision);
+            Check.Error(res, "too large to attach");
+            Check.Contains(res.Content, PathDisplay.FormatSize(ModelMessages.MaxImageBytes));
         });
 
         // ------------------------------------------------ diff

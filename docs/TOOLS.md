@@ -116,8 +116,11 @@ when you change it.
   2000). `offset` is 1-based; a negative offset counts from the end (`-100` = last 100 lines).
 - When the output is cut, it ends with a footer: `[Showing lines 1-2000 of 5230. Use offset=2001 to continue.]`.
 - If a single line is longer than 50KB (minified files), the start of that line is shown with a note.
-- Images (`png jpg jpeg gif webp`, ≤ 20MB) come back as an `ImagePart` when `context.Model.SupportsImages`. Otherwise the result
-  is a text note. A directory gives an error that suggests `ls`, and a missing file gives an error with “Did you mean” names.
+- Images (`png jpg jpeg gif webp`, ≤ 5MB — the smallest per-image limit the transports document) come back as an `ImagePart`
+  when `context.Model.SupportsImages`. Otherwise the result is a text note. A directory gives an error that suggests `ls`, and
+  a missing file gives an error with “Did you mean” names. An image that reached a request from anywhere else (a paste, a
+  tool) and is over the limit is sent as `[image omitted: N MB exceeds the provider limit]` instead of being rejected by
+  every later call.
 - Files over 32MB are streamed instead of loaded, and a page of one **stops at the end of the page**: it is not read to
   the end to count lines. Such a page reports `totalLines: null` and says `[Showing lines 100-104; more lines follow. Use
   offset=105 to continue.]`; a page that reaches the end of the file knows the exact total, and so does any negative offset.

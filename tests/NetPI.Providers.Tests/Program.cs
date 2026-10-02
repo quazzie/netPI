@@ -52,6 +52,9 @@ static async Task<ModelException?> Fails(IModelProvider p, ModelRequest r)
 
 static string Img(string data) => Convert.ToBase64String(Encoding.UTF8.GetBytes(data));
 
+/// <summary>An image one base64 character over what a transport takes (idea-begg3v).</summary>
+static ImagePart BigImage() => new() { MediaType = "image/png", Data = new string('x', ModelMessages.MaxImageChars + 4) };
+
 // A conversation exercising every part type (normalized: tool results directly after their calls).
 List<ChatMessage> Conversation(string assistantProvider) =>
 [
@@ -187,6 +190,80 @@ await t.Run("Effort mapping to catalog efforts", () =>
     return Task.CompletedTask;
 });
 
+// A provider asked for more output than its window has beside the prompt answers HTTP 400 whatever the model does:
+// "input length and max_tokens exceed context limit". It reads as a context overflow, so every attempt pays for a
+// compaction round and a body dump before the conversation is shortened (idea-begg3v).
+await t.Run("max_tokens is clamped to what the context window has left beside the request", () =>
+{
+    static ModelRequest Small(int window, int maxOut, int words) => new()
+    {
+        Model = new ModelInfo { Provider = "p", Id = "m", ContextWindow = window, MaxOutputTokens = maxOut },
+        SystemPrompt = new string('s', 400),
+        Messages = [ChatMessage.UserText(new string('w', words * 4))],
+    };
+
+    // 16k window, 4k catalog maximum, a ~4k-token prompt: the request fits with room to spare.
+    t.Eq(4000, ModelMessages.ClampMaxTokens(Small(16_384, 4000, 1000), 999_999), "a request that fits keeps its value");
+    // 16k window, 64k requested: the caller's value is above what the window can hold, so it is cut to the room.
+    var tight = ModelMessages.ClampMaxTokens(Small(16_384, 64_000, 2000), 999_999);
+    var input = ModelMessages.EstimateInputTokens(Small(16_384, 64_000, 2000));
+    t.Check(tight < 999_999 && input + tight <= 16_384, $"input {input} + max_tokens {tight} fits the 16384 window");
+    t.Eq(1, ModelMessages.ClampMaxTokens(Small(16_384, 64_000, 100_000), 999_999), "a prompt over the window still asks for something");
+    // No window in the catalog: nothing to clamp against, the model's own maximum stands.
+    t.Eq(4096, ModelMessages.ClampMaxTokens(Small(0, 4096, 1000), 999_999), "unknown window");
+    t.Eq(256, ModelMessages.ClampMaxTokens(Small(0, 0, 1000), 256), "no maximum and no window: the caller's value");
+
+    // The tools travel with every call, so they count against the room.
+    var withTools = Small(16_384, 64_000, 500);
+    withTools.Tools = [Tool("read"), Tool("ls")];
+    t.Check(ModelMessages.ClampMaxTokens(withTools, 999_999) < ModelMessages.ClampMaxTokens(Small(16_384, 64_000, 500), 999_999),
+        "tool definitions shrink the room");
+    return Task.CompletedTask;
+});
+
+// An image over the provider's per-image limit is a 400 for the call and for every later one (it stays in the
+// history), and nothing compacts it away. It is replaced by a note instead, so the turn still runs (idea-begg3v).
+await t.Run("an oversize image is replaced by a note, a fitting one is sent as it is", () =>
+{
+    var ok = new ImagePart { MediaType = "image/png", Data = new string('x', ModelMessages.MaxImageChars) };
+    t.Check(ModelMessages.OversizedImage(ok) is null, "at the limit: sent as it is");
+    var big = new ImagePart { MediaType = "image/png", Data = new string('x', ModelMessages.MaxImageChars + 4) };
+    t.Eq("[image omitted: 5 MB exceeds the provider limit]", ModelMessages.OversizedImage(big), "over the limit: a deterministic note");
+    return Task.CompletedTask;
+});
+
+// Every stream parser swallowed a frame it could not read, so a stream whose terminal event was mangled ended as a
+// clean truncation and the error said nothing about what was lost (idea-saljbd).
+await t.Run("a malformed frame is counted by every parser and named in the truncation", () =>
+{
+    var mangled = """{"choices":[{"delta":{"content":"x"}}""";   // cut mid-object
+
+    var chat = new AP.ChatStreamParser(new AP.MessageAssembler(), "P", false);
+    chat.Handle(new AP.SseEvent(null, mangled));
+    ModelException? chatErr = null;
+    try { chat.Finish(); } catch (ModelException ex) { chatErr = ex; }
+    t.Check(chatErr?.Message.Contains("1 malformed event") == true && chatErr.Message.Contains("choices"), "chat: " + chatErr?.Message);
+
+    var responses = new AP.ResponsesStreamParser(new AP.MessageAssembler(), "P");
+    responses.Handle(new AP.SseEvent(null, mangled));
+    ModelException? respErr = null;
+    try { responses.Finish(); } catch (ModelException ex) { respErr = ex; }
+    t.Check(respErr?.Message.Contains("1 malformed event") == true, "responses: " + respErr?.Message);
+
+    var router = new OR.OpenRouterStreamParser(new OR.MessageAssembler(), "OR", false);
+    router.Handle(new OR.SseEvent(null, mangled));
+    ModelException? orErr = null;
+    try { router.Finish(); } catch (ModelException ex) { orErr = ex; }
+    t.Check(orErr?.Message.Contains("1 malformed event") == true, "openrouter: " + orErr?.Message);
+
+    // A stream with no mangled frame says nothing about it.
+    var clean = new AP.ChatStreamParser(new AP.MessageAssembler(), "P", false);
+    ModelException? cleanErr = null;
+    try { clean.Finish(); } catch (ModelException ex) { cleanErr = ex; }
+    t.Check(cleanErr?.Message.EndsWith("ended unexpectedly") == true, "unchanged without one: " + cleanErr?.Message);
+    return Task.CompletedTask;
+});
+
 await t.Run("Error classification (HTTP)", () =>
 {
     var e503 = AP.ProviderErrors.FromHttp("AiProxy", 503, "Service Unavailable", """{"error":{"type":"backend_unavailable"}}""");
@@ -200,6 +277,10 @@ await t.Run("Error classification (HTTP)", () =>
     t.Check(ov.ContextOverflow && !ov.Transient && ov.ErrorType == "context_length_exceeded", "openai overflow");
     var ov2 = AN.ProviderErrors.FromHttp("Anthropic", 413, null, """{"type":"error","error":{"type":"request_too_large","message":"prompt is too long: 250000 tokens > 200000 maximum"}}""");
     t.Check(ov2.ContextOverflow, "413 prompt too long");
+    // A body over the endpoint's limit (an oversize image, say) says nothing about the text: without its type it
+    // stayed a dead end, and no compaction ran to shrink the request (idea-begg3v).
+    var tooBig = AN.ProviderErrors.FromHttp("Anthropic", 413, null, """{"type":"error","error":{"type":"request_too_large","message":"Request body is too large"}}""");
+    t.Check(tooBig.ContextOverflow && !tooBig.Transient, "413 request_too_large");
     var notOv = AP.ProviderErrors.FromHttp("X", 400, null, """{"error":{"message":"invalid tool schema","type":"invalid_request_error"}}""");
     t.Check(!notOv.ContextOverflow && !notOv.Transient, "plain 400");
     var ovl = AN.ProviderErrors.FromHttp("Anthropic", 529, null, """{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}""");
@@ -673,6 +754,11 @@ await t.Run("responses: errors (503, context overflow, cut-off, EOF, response.fa
     t.Check(e4 is { Transient: true, ErrorType: "stream_truncated" }, "EOF before completed -> transient");
     var e5 = await Fails(aiproxy, Req(M("aiproxy", "failed")));
     t.Check(e5 is { Transient: true, ErrorType: "server_error" }, "response.failed server_error transient");
+    // A data-only {"error":{...}} frame has no type and no event line: it used to match no case at all, so the user saw
+    // "the stream ended unexpectedly" and Retry spent six attempts at full price on a call already refused (idea-saljbd).
+    var e5b = await Fails(aiproxy, Req(M("aiproxy", "data-error")));
+    t.Check(e5b is { ErrorType: "context_length_exceeded", ContextOverflow: true } && e5b.Message.Contains("context length exceeded"),
+        "a data-only error frame is the server's own error: " + e5b?.Message);
 
     using var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
     l.Start(); var port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port; l.Stop();
@@ -808,6 +894,43 @@ await t.Run("chat: images dropped for a text-only catalog model (aiproxy gemma-4
         t.Check(b["max_tokens"]!.GetValue<int>() == 16384, "max_tokens default when catalog null");
     }
     finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+});
+
+// Both aiproxy transports and OpenRouter sent the catalog's output maximum whatever the prompt left of the window,
+// so a model whose window is smaller than that failed every call until compaction ran (idea-begg3v).
+await t.Run("max_tokens is clamped to the window beside the request (all three transports)", async () =>
+{
+    var model = M("vllm", "narrow");
+    model.ContextWindow = 16_384;
+    model.MaxOutputTokens = 64_000;
+    var long0 = new List<ChatMessage> { ChatMessage.UserText(new string('w', 8000)) };
+    foreach (var (transport, path, field) in new[] { ("chat", "/v1/chat/completions", "max_tokens"), ("responses", "/v1/responses", "max_output_tokens") })
+    {
+        apCtx.SettingsImpl.Set("providers.aiproxy.transport", transport);
+        try { await Collect(aiproxy, Req(model, long0)); }
+        finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+        var sent = mock.Last(path).Json[field]!.GetValue<int>();
+        t.Check(sent < 64_000 && ModelMessages.EstimateInputTokens(Req(model, long0)) + sent <= 16_384,
+            $"aiproxy {transport}: {sent} output tokens beside the prompt fit the 16384 window");
+    }
+});
+
+// An oversize image is refused by the provider and stays in the history, so every later call failed the same way. It
+// is replaced by a note instead, on both aiproxy transports (idea-begg3v).
+await t.Run("an oversize image becomes a note (aiproxy both transports)", async () =>
+{
+    var messages = new List<ChatMessage> { new() { Role = MessageRole.User, Parts = [new TextPart { Text = "what is this?" }, BigImage()] } };
+    var vision = M("aiproxy", "qwen3.8-27b");
+    vision.InputModalities = ["text", "image"];
+    foreach (var (transport, path) in new[] { ("chat", "/v1/chat/completions"), ("responses", "/v1/responses") })
+    {
+        apCtx.SettingsImpl.Set("providers.aiproxy.transport", transport);
+        try { await Collect(aiproxy, Req(vision, messages)); }
+        finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+        var json = mock.Last(path).Json.ToJsonString();
+        t.Check(json.Contains("[image omitted: 5 MB exceeds the provider limit]") && !json.Contains("data:image"),
+            $"aiproxy {transport}: noted, no image sent");
+    }
 });
 
 await t.Run("per-model transport override with a dotted model id", async () =>
@@ -1073,6 +1196,40 @@ await t.Run("anthropic: thinking modes (foreign assistant turn, adaptive, off, m
     anCtx.SettingsImpl.Set("providers.anthropic.promptCaching", null);
 });
 
+// A caller that names its own max_tokens (the budget ledger reserves exactly that, and a compaction summary counts
+// on the rest) must not have it raised under it: thinking is fitted inside the cap, or dropped when it does not fit.
+// It used to be sent as budget + 4096, so the ledger held 13107 and the call spent 20480 (idea-begg3v).
+await t.Run("anthropic: thinking never raises max_tokens over an explicit caller cap", async () =>
+{
+    var r = Req(sonnet, effort: "high");
+    r.MaxOutputTokens = 13107;                       // the compaction summarizer's budget
+    await Collect(anthropic, r);
+    var b = mock.Last("/v1/messages").Json;
+    var budget = b["thinking"]?["budget_tokens"]?.GetValue<int>() ?? 0;
+    t.Eq(13107, b["max_tokens"]!.GetValue<int>(), "max_tokens is the caller's, unchanged");
+    t.Check(budget > 0 && budget < 13107, $"thinking fitted inside the cap: {budget}");
+
+    // A cap with no room for both: no thinking, and the caller's cap is still what is sent.
+    var tiny = Req(sonnet, effort: "high");
+    tiny.MaxOutputTokens = 1500;
+    await Collect(anthropic, tiny);
+    b = mock.Last("/v1/messages").Json;
+    t.Check(b["thinking"] is null && b["max_tokens"]!.GetValue<int>() == 1500, "too small for both: no thinking, cap kept");
+});
+
+await t.Run("anthropic: an oversize image is replaced by a note instead of a 400 on every later call", async () =>
+{
+    var messages = new List<ChatMessage>
+    {
+        new() { Role = MessageRole.User, Parts = [new TextPart { Text = "what is this?" }, BigImage()] },
+        new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "c1", Name = "read", Content = "chart.png", Images = [BigImage()] }] },
+    };
+    await Collect(anthropic, Req(sonnet, messages));
+    var json = mock.Last("/v1/messages").Json.ToJsonString();
+    t.Check(json.Contains("[image omitted: 5 MB exceeds the provider limit]"), "both images noted");
+    t.Check(!json.Contains("\"type\":\"image\""), "no image block is sent");
+});
+
 await t.Run("anthropic: no tools defined -> tool blocks flattened to text; short explicit max tokens -> no thinking", async () =>
 {
     var r = Req(sonnet, Conversation("anthropic"));
@@ -1102,6 +1259,46 @@ await t.Run("anthropic: errors and stop reasons (529, in-stream error, prompt to
     var mt = ((StreamCompleted)(await Collect(anthropic, Req(M("anthropic", "max-tokens"))))[^1]).Message;
     t.Eq("length", mt.StopReason, "max_tokens -> length");
     t.Check(mt.Usage is { InputTokens: 3, OutputTokens: 100 }, "usage");
+});
+
+// The project rule is "errors show up unchanged with the server's request id, and failed bodies are saved". Anthropic
+// did neither: no id in the message, nothing on disk to reproduce a backend bug from (idea-saljbd).
+await t.Run("anthropic: failures carry the server's request id and save the request", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "netpi-an-" + Guid.NewGuid().ToString("N"));
+    var p = new AN.AnthropicProvider(new HttpClient(), () => anCtx.SettingsImpl.GetNode("providers.anthropic") as JsonObject,
+        null, null, logsDir: dir);
+
+    var e = await Fails(p, Req(M("anthropic", "rejected-tools")));
+    t.Check(e!.Message.Contains("request req_rejected"), "the request id is in the message: " + e.Message);
+    t.Check(e.Detail?.Contains("req_rejected") == true && e.Message.EndsWith($"[{e.Detail}]"), "and named as Detail: " + e.Detail);
+
+    var dump = JsonNode.Parse(File.ReadAllText(Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Single()))!;
+    t.Check(dump["request"]?["messages"] is JsonArray && dump["requestId"]?.GetValue<string>() == "req_rejected", "the dump holds the request and the id");
+    t.Check((dump["response"]?.GetValue<string>() ?? "").Contains("maximum allowed"), "and the response body");
+    t.Eq("anthropic", dump["provider"]?.GetValue<string>(), "with the provider");
+    t.Eq("messages", dump["transport"]?.GetValue<string>(), "and the transport");
+
+    // An in-stream error frame carries its own request id, for a gateway that sends no header.
+    var stream = await Fails(p, Req(M("anthropic", "stream-error")));
+    t.Check(stream!.Message.Contains("request req_stream"), "the stream error's own request id: " + stream.Message);
+
+    // A rate limit (and an overloaded backend) repeats on every attempt: their dumps would rotate the interesting one
+    // out within a few calls, so only the request worth reproducing is saved.
+    var rate = await Fails(p, Req(M("anthropic", "rate-limited")));
+    t.Check(rate is { Transient: true, StatusCode: 429 } && rate.RetryAfter == System.TimeSpan.FromSeconds(4), "429 with Retry-After: " + rate?.Message);
+    t.Eq(1, Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Length, "only the 400 was saved");
+
+    Directory.Delete(dir, true);
+});
+
+// Frames the parser cannot read were dropped in silence, so a stream whose message_delta was mangled "completed"
+// with message_start's one-token usage and the ledger under-recorded the call (idea-saljbd).
+await t.Run("a malformed frame is counted and named in the error that ends the stream", async () =>
+{
+    var e = await Fails(anthropic, Req(M("anthropic", "malformed")));
+    t.Check(e is { ErrorType: "stream_truncated", Transient: true }, "the stream still ends truncated: " + e?.Message);
+    t.Check(e!.Message.Contains("2 malformed events") && e.Message.Contains("message_delta"), "how many and what the first looked like: " + e.Message);
 });
 
 await t.Run("anthropic plugin: registration and stop", async () =>
@@ -1296,8 +1493,9 @@ await t.Run("openrouter: errors keep the server's text and add generation id, up
     var bad = await Fails(openrouter, Req(M("openrouter", "vendor/upstream-502")));
     t.Check(bad is { StatusCode: 502 } && bad.Message.Contains("upstream provider SomeHost") && bad.Message.Contains("upstream exploded"), "502: " + bad?.Message);
     var dumps = Directory.GetFiles(Path.Combine(orDumps, "failed-requests"), "*.json");
-    t.Eq(3, dumps.Length, "three failed requests saved");
-    t.Check(dumps.Select(f => JsonNode.Parse(File.ReadAllText(f))!).All(d => d["request"]?["messages"] is JsonArray && d["generationId"] is not null), "dumps have the body and the generation id");
+    // The 429 is not saved: it repeats on every attempt and its dumps rotate the interesting ones out (idea-saljbd).
+    t.Eq(2, dumps.Length, "the two failures worth reproducing are saved; the 429 is not");
+    t.Check(dumps.Select(f => JsonNode.Parse(File.ReadAllText(f))!).All(d => d["request"]?["messages"] is JsonArray && d["responseId"] is not null), "dumps have the body and the generation id");
     Directory.Delete(orDumps, true);
 });
 
@@ -1319,7 +1517,7 @@ await t.Run("openrouter: the failed-request dump keeps the whole response body, 
     t.Check(e is { StatusCode: 400 } && e.Message.Contains("3 tools rejected") && !e.Message.Contains("tr-or-7777"), "the message quotes the excerpt only");
     var dump = JsonNode.Parse(File.ReadAllText(Directory.GetFiles(Path.Combine(dir, "failed-requests"), "*.json").Single()))!;
     t.Check((dump["response"]?.GetValue<string>() ?? "").Contains("tr-or-7777"), "the dump holds the whole body");
-    t.Check(dump["request"]?["messages"] is JsonArray && dump["generationId"] is not null, "with the request and the generation id");
+    t.Check(dump["request"]?["messages"] is JsonArray && dump["responseId"] is not null, "with the request and the generation id");
     Directory.Delete(dir, true);
 });
 
@@ -1337,6 +1535,25 @@ await t.Run("openrouter: tool-result images are named as omitted for a text-only
     await Collect(openrouter, Req(await OrModel("stealth/bunny"), ToolImagesConvo()));
     all = mock.Last("/openrouter/api/v1/chat/completions").Json.ToJsonString();
     t.Check(all.Contains("data:image") && !all.Contains("omitted:"), "an image-capable model gets the images and no note");
+});
+
+await t.Run("openrouter: max_tokens is clamped to the window, an oversize image becomes a note", async () =>
+{
+    var vision = await OrModel("stealth/bunny");
+    var narrow = M("openrouter", vision.Id);
+    narrow.ContextWindow = 16_384;
+    narrow.MaxOutputTokens = 64_000;
+    var longPrompt = new List<ChatMessage> { ChatMessage.UserText(new string('w', 8000)) };
+    await Collect(openrouter, Req(narrow, longPrompt));
+    var sent = mock.Last("/openrouter/api/v1/chat/completions").Json["max_tokens"]!.GetValue<int>();
+    t.Check(sent < 64_000 && ModelMessages.EstimateInputTokens(Req(narrow, longPrompt)) + sent <= 16_384,
+        $"{sent} output tokens beside the prompt fit the 16384 window");
+
+    var big = new List<ChatMessage> { new() { Role = MessageRole.User, Parts = [new TextPart { Text = "what is this?" }, BigImage()] } };
+    await Collect(openrouter, Req(vision, big));
+    var json = mock.Last("/openrouter/api/v1/chat/completions").Json.ToJsonString();
+    t.Check(json.Contains("[image omitted: 5 MB exceeds the provider limit]") && !json.Contains("data:image"),
+        "the oversize image is noted, not sent");
 });
 
 await t.Run("openrouter: without an API key no models are offered and calls fail clearly", async () =>

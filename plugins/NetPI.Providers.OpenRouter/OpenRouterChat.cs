@@ -50,13 +50,16 @@ internal static class OpenRouterChat
     public static bool IsAnthropic(string modelId) =>
         modelId.StartsWith("anthropic/", StringComparison.OrdinalIgnoreCase) || modelId.StartsWith("~anthropic/", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>The request's value (else the catalog's), capped by <c>maxOutputTokens</c> (or the model's override) and the catalog.</summary>
+    /// <summary>
+    /// The request's value (else the catalog's), capped by <c>maxOutputTokens</c> (or the model's override), the
+    /// catalog and what the model's context window has room for beside this request (idea-begg3v).
+    /// </summary>
     public static int MaxTokens(ModelRequest req, OpenRouterOptions o)
     {
         var cap = o.ModelOverride(req.Model.Id).Int("maxOutputTokens") is > 0 and var ov ? ov : o.MaxOutputTokens;
         if (req.Model.MaxOutputTokens is > 0 and var catalog) cap = Math.Min(cap, catalog);
         var value = req.MaxOutputTokens is > 0 ? req.MaxOutputTokens.Value : cap;
-        return Math.Min(value, cap);
+        return Math.Min(ModelMessages.ClampMaxTokens(req, value), cap);
     }
 
     private static readonly string[] Scale = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -127,7 +130,7 @@ internal static class OpenRouterChat
             foreach (var group in toolImages.GroupBy(x => x.CallId))
             {
                 content.Add(new JsonObject { ["type"] = "text", ["text"] = $"[Image(s) returned by tool call {group.Key}]" });
-                foreach (var (_, img) in group) content.Add(ImageUrl(img));
+                foreach (var (_, img) in group) content.Add(Image(img));
             }
             foreach (var (callId, count) in toolImagesOmitted)
                 content.Add(new JsonObject { ["type"] = "text", ["text"] = ToolImagesOmitted(callId, count) });
@@ -199,7 +202,8 @@ internal static class OpenRouterChat
                     foreach (var p in m.Parts)
                     {
                         if (p is TextPart t && t.Text.Length > 0) content.Add(new JsonObject { ["type"] = "text", ["text"] = t.Text });
-                        else if (p is ImagePart img) content.Add(allowImages ? ImageUrl(img) : new JsonObject { ["type"] = "text", ["text"] = ImageOmitted });
+                        else if (p is ImagePart img)
+                            content.Add(allowImages ? Image(img) : new JsonObject { ["type"] = "text", ["text"] = ImageOmitted });
                     }
                     if (content.Count > 0) list.Add(new JsonObject { ["role"] = "user", ["content"] = content });
                     break;
@@ -215,6 +219,12 @@ internal static class OpenRouterChat
         ["type"] = "image_url",
         ["image_url"] = new JsonObject { ["url"] = $"data:{img.MediaType};base64,{img.Data}" },
     };
+
+    /// <summary>The image, or the note that replaces one no transport takes: it would fail every later call too (idea-begg3v).</summary>
+    private static JsonObject Image(ImagePart img) =>
+        ModelMessages.OversizedImage(img) is { } tooBig
+            ? new JsonObject { ["type"] = "text", ["text"] = tooBig }
+            : ImageUrl(img);
 
     /// <summary>
     /// OpenRouter usage: <c>prompt_tokens</c> includes cache reads and writes, <c>completion_tokens</c> includes reasoning.
@@ -255,6 +265,7 @@ internal sealed class OpenRouterStreamParser(MessageAssembler asm, string provid
     private readonly Dictionary<int, Call> _calls = [];
     private readonly List<Call> _order = [];
     private readonly List<JsonObject> _details = [];
+    private readonly DroppedFrames _dropped = new();
     private string? _finish;
     private bool _done;
     private bool _anyChunk;
@@ -271,8 +282,10 @@ internal sealed class OpenRouterStreamParser(MessageAssembler asm, string provid
     {
         if (sse.IsDone) { _done = true; return; }
         JsonDocument doc;
+        // A frame that does not parse is counted, not swallowed: the finish reason and the usage arrive last, so
+        // dropping one silently ends the call looking clean (idea-saljbd).
         try { doc = JsonDocument.Parse(sse.Data); }
-        catch (JsonException) { return; }
+        catch (JsonException) { _dropped.Add(sse.Data); return; }
         using (doc) HandleChunk(doc.RootElement, streaming: true);
     }
 
@@ -454,8 +467,8 @@ internal sealed class OpenRouterStreamParser(MessageAssembler asm, string provid
             c.Part = asm.StartToolCall(c.Id, c.Name);
             asm.AppendToolArgs(c.Part, c.PendingArgs.ToString());
         }
-        if (!_done && _finish is null) throw ProviderErrors.UnexpectedEnd(provider);
-        if (!_anyChunk && !asm.HasContent) throw ProviderErrors.UnexpectedEnd(provider);
+        if (!_done && _finish is null) throw ProviderErrors.UnexpectedEnd(provider, _dropped.Note);
+        if (!_anyChunk && !asm.HasContent) throw ProviderErrors.UnexpectedEnd(provider, _dropped.Note);
 
         asm.StopReason = _finish switch
         {

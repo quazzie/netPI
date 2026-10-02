@@ -23,17 +23,20 @@ public sealed class AnthropicProvider : IModelProvider
     private readonly Func<JsonObject?> _config;
     private readonly ILogger _log;
     private readonly IEventBus? _events;
+    private readonly string? _dumpDir;
     private readonly SemaphoreSlim _listLock = new(1, 1);
     private volatile CacheEntry? _cache;
     private string? _signature;
 
-    public AnthropicProvider(HttpClient http, Func<JsonObject?> config, ILogger? logger = null, IEventBus? events = null, string id = "anthropic")
+    public AnthropicProvider(HttpClient http, Func<JsonObject?> config, ILogger? logger = null, IEventBus? events = null,
+        string id = "anthropic", string? logsDir = null)
     {
         Id = id;
         _http = http;
         _config = config;
         _log = logger ?? NullLogger.Instance;
         _events = events;
+        _dumpDir = logsDir is null ? null : Path.Combine(logsDir, "failed-requests");
     }
 
     public string Id { get; }
@@ -128,6 +131,28 @@ public sealed class AnthropicProvider : IModelProvider
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
     {
+        // Errors are reported as they are (no retries or workarounds here): the message is only extended with the
+        // server's request id, and the request body is saved so the failure can be reproduced.
+        var call = new CallInfo { Transport = "messages" };
+        await using var e = StreamCoreAsync(request, call, ct).GetAsyncEnumerator(ct);
+        while (true)
+        {
+            ModelStreamEvent current;
+            try
+            {
+                if (!await e.MoveNextAsync().ConfigureAwait(false)) yield break;
+                current = e.Current;
+            }
+            catch (ModelException ex) when (!ct.IsCancellationRequested)
+            {
+                throw await FailedRequests.DescribeAsync(ex, request, call, Id, _dumpDir, _log, ct).ConfigureAwait(false);
+            }
+            yield return current;
+        }
+    }
+
+    private async IAsyncEnumerable<ModelStreamEvent> StreamCoreAsync(ModelRequest request, CallInfo call, [EnumeratorCancellation] CancellationToken ct)
+    {
         var started = Stopwatch.GetTimestamp();
         var o = Options();
         if (!o.Enabled) throw new ModelException("Anthropic: provider is disabled in settings.", false, null, "provider_disabled");
@@ -139,6 +164,9 @@ public sealed class AnthropicProvider : IModelProvider
         httpReq.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         httpReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         ApplyHeaders(httpReq, o);
+        call.Url = httpReq.RequestUri?.ToString();
+        call.Body = body;
+        call.Dump = o.DumpFailedRequests;
 
         HttpResponseMessage resp;
         try { resp = await _http.SendAsync(httpReq, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false); }
@@ -146,9 +174,12 @@ public sealed class AnthropicProvider : IModelProvider
 
         using (resp)
         {
+            // The id Anthropic puts on every response and every error page: the only way to find the failure in their logs.
+            if (resp.Headers.TryGetValues("request-id", out var rid)) call.RequestId = rid.FirstOrDefault();
             if (!resp.IsSuccessStatusCode)
             {
                 var errBody = await ProviderErrors.ReadBodySafeAsync(resp, ct).ConfigureAwait(false);
+                call.ResponseBody = errBody;
                 ct.ThrowIfCancellationRequested();
                 throw ProviderErrors.FromHttp("Anthropic", resp, errBody);
             }
@@ -161,7 +192,9 @@ public sealed class AnthropicProvider : IModelProvider
             var parser = new AnthropicStreamParser(asm, "Anthropic");
             await foreach (var sse in ProviderErrors.Guard(SseReader.ReadAsync(stream, ct), "Anthropic", ct).ConfigureAwait(false))
             {
-                parser.Handle(sse);
+                // An error frame carries its own request id, for a gateway that sends no header.
+                try { parser.Handle(sse); }
+                finally { call.RequestId ??= parser.RequestId; }
                 foreach (var ev in asm.Drain()) yield return ev;
                 if (parser.Finished) break;
             }

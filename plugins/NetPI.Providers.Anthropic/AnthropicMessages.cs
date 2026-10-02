@@ -26,9 +26,7 @@ internal static partial class AnthropicRequest
     /// <summary>Resolve max_tokens and the thinking configuration for a request.</summary>
     public static ThinkingPlan PlanThinking(ModelRequest req, AnthropicOptions o)
     {
-        var modelMax = req.Model.MaxOutputTokens is > 0 ? req.Model.MaxOutputTokens : null;
-        var maxTokens = req.MaxOutputTokens is > 0 ? req.MaxOutputTokens.Value : o.DefaultMaxOutputTokens;
-        if (modelMax is { } mm && maxTokens > mm) maxTokens = mm;
+        var maxTokens = ModelMessages.ClampMaxTokens(req, req.MaxOutputTokens is > 0 ? req.MaxOutputTokens.Value : o.DefaultMaxOutputTokens);
 
         var supported = req.Model.Reasoning is { Supported: true };
         var effort = (req.ReasoningEffort ?? req.Model.Reasoning?.Default)?.Trim().ToLowerInvariant();
@@ -53,12 +51,24 @@ internal static partial class AnthropicRequest
         if (req.ReasoningEffort is null && req.MaxOutputTokens is > 0 && req.MaxOutputTokens <= budget) return new(null, null, maxTokens);
         if (maxTokens <= budget)
         {
-            maxTokens = budget + 4096;
-            if (modelMax is { } cap && maxTokens > cap)
+            if (req.MaxOutputTokens is > 0)
             {
-                maxTokens = cap;
-                budget = Math.Max(1024, cap - 4096);
-                if (budget >= maxTokens) return new(null, null, maxTokens);
+                // An explicit caller cap is a promise: the budget ledger reserved exactly it, and a summary that
+                // needs the room counts on it. Thinking is fitted inside the cap instead of max_tokens being raised
+                // over it, or the call spends more than the ledger holds for it (idea-begg3v).
+                budget = Math.Min(budget, maxTokens - Math.Max(1024, maxTokens / 4));
+                if (budget < 1024) return new(null, null, maxTokens);
+            }
+            else
+            {
+                // No cap of the caller's: max_tokens grows to leave the budget room, as far as the model's own
+                // maximum and its context window allow.
+                maxTokens = ModelMessages.ClampMaxTokens(req, budget + 4096);
+                if (maxTokens <= budget)
+                {
+                    budget = Math.Max(1024, maxTokens - 4096);
+                    if (budget >= maxTokens) return new(null, null, maxTokens);
+                }
             }
         }
         return new(new JsonObject { ["type"] = "enabled", ["budget_tokens"] = budget }, null, maxTokens);
@@ -254,14 +264,16 @@ internal static partial class AnthropicRequest
 
     private static JsonObject Text(string text) => new() { ["type"] = "text", ["text"] = text };
 
-    private static JsonObject Image(ImagePart img) =>
-        ImageTypes.Contains(img.MediaType)
-            ? new JsonObject
-            {
-                ["type"] = "image",
-                ["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = img.MediaType.ToLowerInvariant(), ["data"] = img.Data },
-            }
-            : Text($"[image omitted: unsupported media type {img.MediaType}]");
+    private static JsonObject Image(ImagePart img)
+    {
+        if (!ImageTypes.Contains(img.MediaType)) return Text($"[image omitted: unsupported media type {img.MediaType}]");
+        if (ModelMessages.OversizedImage(img) is { } tooBig) return Text(tooBig);
+        return new JsonObject
+        {
+            ["type"] = "image",
+            ["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = img.MediaType.ToLowerInvariant(), ["data"] = img.Data },
+        };
+    }
 }
 
 /// <summary>Parses the Messages API event stream.</summary>
@@ -277,6 +289,7 @@ internal sealed class AnthropicStreamParser(MessageAssembler asm, string provide
 
     private readonly Dictionary<int, Block> _blocks = [];
     private readonly Usage _usage = new();
+    private readonly DroppedFrames _dropped = new();
     private string? _stop;
 
     public bool Finished { get; private set; }
@@ -284,8 +297,10 @@ internal sealed class AnthropicStreamParser(MessageAssembler asm, string provide
     public void Handle(SseEvent sse)
     {
         JsonDocument doc;
+        // A frame that does not parse is counted, not swallowed: message_delta carries the stop reason and the final
+        // usage, so dropping one silently ends the call looking clean (idea-saljbd).
         try { doc = JsonDocument.Parse(sse.Data); }
-        catch (JsonException) { return; }
+        catch (JsonException) { _dropped.Add(sse.Data); return; }
         using (doc) HandleEvent(doc.RootElement, sse.Event);
     }
 
@@ -376,6 +391,9 @@ internal sealed class AnthropicStreamParser(MessageAssembler asm, string provide
             case "error":
             {
                 var err = e.Prop("error");
+                // The in-stream error carries the server's request id, which is the only way to find the failure in
+                // Anthropic's own logs; it was dropped with the frame (idea-saljbd).
+                RequestId ??= e.Str("request_id") ?? err.Str("request_id");
                 throw ProviderErrors.FromStream(provider, err.Str("type"), err.Str("message"));
             }
             // ping and unknown events: ignore
@@ -394,9 +412,12 @@ internal sealed class AnthropicStreamParser(MessageAssembler asm, string provide
         asm.SetUsage(MessageAssembler.Clone(_usage));
     }
 
+    /// <summary>The <c>request_id</c> an error frame carried, when the response had no header with one.</summary>
+    public string? RequestId { get; private set; }
+
     public void Finish()
     {
-        if (!Finished) throw ProviderErrors.UnexpectedEnd(provider);
+        if (!Finished) throw ProviderErrors.UnexpectedEnd(provider, _dropped.Note);
         asm.StopReason = _stop switch
         {
             null or "end_turn" or "stop_sequence" => asm.ToolCallCount > 0 ? "tool_use" : "stop",
