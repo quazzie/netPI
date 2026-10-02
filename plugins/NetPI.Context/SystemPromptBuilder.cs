@@ -3,6 +3,16 @@ using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
+// The collections this plugin keeps in its own storage (ctx.Data); PromptStore is the only code that touches them. A one-off
+// migration of an existing home is written from this block: name, key, document fields, index fields.
+//   context_prompts  key: session id                     index fields: (none)
+//       { prompt: string, createdAt: string, promptRevision: int }
+//   context_tools    key: session id                     index fields: (none)
+//       { tools: string[], sinceSeq: int }
+//   context_sent     key: "<sessionId>:<version>"        index fields: sessionId (text), version (int), afterSeq (int)
+//       { sessionId: string, version: int, afterSeq: int, prompt: string, createdAt: string,
+//         tools: [{ name: string, description: string, parameters: object, revision: string }] }
+
 namespace NetPI.Context;
 
 /// <summary>
@@ -77,7 +87,11 @@ internal sealed class SystemPromptBuilder(IPluginContext ctx, PromptStore prompt
     }
 }
 
-/// <summary>The system prompt each session got at its first model call (table <c>context_prompts</c>, cached in memory).</summary>
+/// <summary>
+/// The system prompt each session got at its first model call, in the plugin's own collections (see the file's header for
+/// their shape), cached in memory. Every call is best effort: the store is required, a failing one only costs what it
+/// wrote.
+/// </summary>
 internal sealed class PromptStore(IPluginContext ctx)
 {
     private readonly ConcurrentDictionary<string, string> _cache = new(StringComparer.Ordinal);
@@ -85,38 +99,36 @@ internal sealed class PromptStore(IPluginContext ctx)
     private readonly ConcurrentDictionary<string, byte> _reset = new(StringComparer.Ordinal);
     public bool WasReset(string sessionId) => _reset.ContainsKey(sessionId);
     private readonly ConcurrentDictionary<string, ToolBaseline> _tools = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, List<SentPrompt>> _sent = new(StringComparer.Ordinal); // without a database
-    private IDatabase? _db;
+    private IDataCollection _prompts = null!;
+    private IDataCollection _baselines = null!;
+    private IDataCollection _sent = null!;
 
+    /// <summary>Open the collections (the store creates what it does not have).</summary>
     public void Initialize()
     {
-        try
-        {
-            var db = ctx.Db;
-            db.Migrate("context",
-                "CREATE TABLE IF NOT EXISTS context_prompts (session_id TEXT PRIMARY KEY, prompt TEXT NOT NULL, created_at TEXT NOT NULL)",
-                // the tool names of a session's first model call: the baseline for "tools" notices
-                "CREATE TABLE IF NOT EXISTS context_tools (session_id TEXT PRIMARY KEY, tools TEXT NOT NULL)",
-                // a baseline taken later (after context.reset) ignores the "tools" notices up to this seq
-                "ALTER TABLE context_tools ADD COLUMN since_seq INTEGER NOT NULL DEFAULT 0",
-                // every prompt a session was sent (the first, and one after each context.reset) with its tool definitions
-                "CREATE TABLE IF NOT EXISTS context_sent (session_id TEXT NOT NULL, version INTEGER NOT NULL, after_seq INTEGER NOT NULL, " +
-                    "prompt TEXT NOT NULL, tools TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (session_id, version))",
-                "ALTER TABLE context_prompts ADD COLUMN prompt_revision INTEGER NOT NULL DEFAULT 0");
-            _db = db;
-        }
-        catch (Exception ex)
-        {
-            ctx.Logger.LogWarning(ex, "Session prompts table unavailable; frozen prompts are kept in memory only");
-        }
+        _prompts = ctx.Data.Collection("context_prompts", new CollectionSpec());
+        // the tool names of a session's first model call: the baseline for "tools" notices. A baseline taken later
+        // (after context.reset) ignores the "tools" notices up to its sinceSeq.
+        _baselines = ctx.Data.Collection("context_tools", new CollectionSpec());
+        // every prompt a session was sent (the first, and one after each context.reset) with its tool definitions
+        _sent = ctx.Data.Collection("context_sent", new CollectionSpec().Text("sessionId").Integer("version").Integer("afterSeq"));
     }
+
+    private static long Number(JsonObject? doc, string field, long fallback = 0) =>
+        doc?[field] is JsonValue v && v.TryGetValue<long>(out var n) ? n : fallback;
+
+    private static string? Text(JsonObject? doc, string field) =>
+        doc?[field] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    /// <summary>The key of one sent prompt: the session and the version it was sent as (session ids are a prefix and 12 alphanumerics).</summary>
+    private static string SentKey(string sessionId, int version) => $"{sessionId}:{version}";
 
     public string? GetCompatible(SessionInfo session)
     {
         if (Get(session.Id) is not { } prompt) return null;
         try
         {
-            var stored = _revisions.GetOrAdd(session.Id, id => _db?.Scalar<long?>("SELECT prompt_revision FROM context_prompts WHERE session_id = @id", new { id }) ?? 0);
+            var stored = _revisions.GetOrAdd(session.Id, id => Number(_prompts.Get(id), "promptRevision"));
             if (stored == SessionPrompt.Revision(session)) return prompt;
             Reset(session.Id);
         }
@@ -127,8 +139,7 @@ internal sealed class PromptStore(IPluginContext ctx)
     public string? Get(string sessionId)
     {
         if (_cache.TryGetValue(sessionId, out var prompt)) return prompt;
-        if (_db is null) return null;
-        try { prompt = _db.Scalar<string>("SELECT prompt FROM context_prompts WHERE session_id = @sessionId", new { sessionId }); }
+        try { prompt = Text(_prompts.Get(sessionId), "prompt"); }
         catch (Exception ex)
         {
             ctx.Logger.LogWarning(ex, "Reading the stored prompt of {Session} failed", sessionId);
@@ -143,11 +154,13 @@ internal sealed class PromptStore(IPluginContext ctx)
         var stored = _cache.GetOrAdd(sessionId, prompt);
         var revision = capturedRevision ?? (ctx.Sessions.GetSession(sessionId) is { } session ? SessionPrompt.Revision(session) : 0);
         _revisions.TryAdd(sessionId, revision);
-        if (!ReferenceEquals(stored, prompt) || _db is null) return stored;
+        if (!ReferenceEquals(stored, prompt)) return stored;
         try
         {
-            _db.Execute("INSERT OR IGNORE INTO context_prompts (session_id, prompt, created_at, prompt_revision) VALUES (@sessionId, @prompt, @now, @revision)",
-                new { sessionId, prompt, revision, now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) });
+            _prompts.Insert(sessionId, new JsonObject
+            {
+                ["prompt"] = prompt, ["createdAt"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture), ["promptRevision"] = revision,
+            });
         }
         catch (Exception ex) { ctx.Logger.LogWarning(ex, "Storing the prompt of {Session} failed", sessionId); }
         return stored;
@@ -157,14 +170,12 @@ internal sealed class PromptStore(IPluginContext ctx)
     public ToolBaseline? GetTools(string sessionId)
     {
         if (_tools.TryGetValue(sessionId, out var baseline)) return baseline;
-        if (_db is null) return null;
         try
         {
-            var row = _db.QuerySingle("SELECT tools, since_seq FROM context_tools WHERE session_id = @sessionId", new { sessionId },
-                r => (Tools: r.GetString("tools"), Since: r.GetInt64("since_seq")));
-            if (row.Tools is null) return null;
-            var names = (JsonNode.Parse(row.Tools) as JsonArray)?.Select(n => n?.GetValue<string>()).OfType<string>().ToList() ?? [];
-            return _tools.GetOrAdd(sessionId, new ToolBaseline(names, row.Since));
+            var doc = _baselines.Get(sessionId);
+            if (doc is null) return null;
+            var names = (doc["tools"] as JsonArray)?.Select(n => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : null).OfType<string>().ToList() ?? [];
+            return _tools.GetOrAdd(sessionId, new ToolBaseline(names, Number(doc, "sinceSeq")));
         }
         catch (Exception ex)
         {
@@ -181,11 +192,13 @@ internal sealed class PromptStore(IPluginContext ctx)
     {
         var baseline = new ToolBaseline(names, sinceSeq);
         var stored = _tools.GetOrAdd(sessionId, baseline);
-        if (!ReferenceEquals(stored, baseline) || _db is null) return stored;
+        if (!ReferenceEquals(stored, baseline)) return stored;
         try
         {
-            _db.Execute("INSERT OR IGNORE INTO context_tools (session_id, tools, since_seq) VALUES (@sessionId, @tools, @sinceSeq)",
-                new { sessionId, tools = new JsonArray(names.Select(n => (JsonNode?)n).ToArray()).ToJsonString(), sinceSeq });
+            _baselines.Insert(sessionId, new JsonObject
+            {
+                ["tools"] = new JsonArray(names.Select(n => (JsonNode?)n).ToArray()), ["sinceSeq"] = sinceSeq,
+            });
         }
         catch (Exception ex) { ctx.Logger.LogWarning(ex, "Storing the tool baseline of {Session} failed", sessionId); }
         return stored;
@@ -197,26 +210,24 @@ internal sealed class PromptStore(IPluginContext ctx)
     /// </summary>
     public int RecordSent(string sessionId, string prompt, IReadOnlyList<ToolDefinition> tools, long afterSeq)
     {
-        var toolsJson = new JsonArray([.. tools.Select(t => (JsonNode?)new JsonObject
+        var definitions = new JsonArray([.. tools.Select(t => (JsonNode?)new JsonObject
         {
             ["name"] = t.Name, ["description"] = t.Description, ["parameters"] = t.Parameters.DeepClone(), ["revision"] = t.Revision,
-        })]).ToJsonString();
+        })]);
         var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
-        if (_db is null)
-        {
-            var list = _sent.GetOrAdd(sessionId, _ => []);
-            lock (list)
-            {
-                list.Add(new SentPrompt(list.Count + 1, afterSeq, now, prompt, toolsJson));
-                return list.Count;
-            }
-        }
         try
         {
-            var version = (int)(_db.Scalar<long?>("SELECT MAX(version) FROM context_sent WHERE session_id = @sessionId", new { sessionId }) ?? 0) + 1;
-            _db.Execute("INSERT INTO context_sent (session_id, version, after_seq, prompt, tools, created_at) VALUES (@sessionId, @version, @afterSeq, @prompt, @toolsJson, @now)",
-                new { sessionId, version, afterSeq, prompt, toolsJson, now });
-            return version;
+            // the version is the highest the session has plus one: read it and write the row in one transaction
+            return ctx.Data.Transaction(() =>
+            {
+                var version = NextVersion(sessionId);
+                _sent.Insert(SentKey(sessionId, version), new JsonObject
+                {
+                    ["sessionId"] = sessionId, ["version"] = version, ["afterSeq"] = afterSeq,
+                    ["prompt"] = prompt, ["tools"] = definitions, ["createdAt"] = now,
+                });
+                return version;
+            });
         }
         catch (Exception ex)
         {
@@ -225,19 +236,19 @@ internal sealed class PromptStore(IPluginContext ctx)
         }
     }
 
+    /// <summary>The version the next prompt a session is sent gets: one past the highest it already has.</summary>
+    private int NextVersion(string sessionId) =>
+        (int)(_sent.Find(new DataQuery().Eq("sessionId", sessionId).Order("version", descending: true).Take(1))
+            .Select(d => Number(d.Doc, "version")).FirstOrDefault()) + 1;
+
     /// <summary>The prompts the session was sent, oldest first (see <see cref="RecordSent"/>).</summary>
     public List<SentPrompt> Sent(string sessionId)
     {
-        if (_db is null)
-        {
-            if (!_sent.TryGetValue(sessionId, out var list)) return [];
-            lock (list) return [.. list];
-        }
         try
         {
-            return _db.Query("SELECT version, after_seq, created_at, prompt, tools FROM context_sent WHERE session_id = @sessionId ORDER BY version",
-                new { sessionId }, r => new SentPrompt((int)r.GetInt64("version"), r.GetInt64("after_seq"), r.GetString("created_at"),
-                    r.GetString("prompt"), r.GetString("tools")));
+            return [.. _sent.Find(new DataQuery().Eq("sessionId", sessionId).Order("version")).Select(d => new SentPrompt(
+                (int)Number(d.Doc, "version"), Number(d.Doc, "afterSeq"), Text(d.Doc, "createdAt") ?? "",
+                Text(d.Doc, "prompt") ?? "", d.Doc["tools"]?.ToJsonString() ?? "[]"))];
         }
         catch (Exception ex)
         {
@@ -253,11 +264,10 @@ internal sealed class PromptStore(IPluginContext ctx)
         _cache.TryRemove(sessionId, out _);
         _revisions.TryRemove(sessionId, out _);
         _tools.TryRemove(sessionId, out _);
-        if (_db is null) return;
         try
         {
-            _db.Execute("DELETE FROM context_prompts WHERE session_id = @sessionId", new { sessionId });
-            _db.Execute("DELETE FROM context_tools WHERE session_id = @sessionId", new { sessionId });
+            _prompts.Delete(sessionId);
+            _baselines.Delete(sessionId);
         }
         catch (Exception ex) { ctx.Logger.LogDebug(ex, "Resetting the prompt of {Session} failed", sessionId); }
     }
@@ -304,20 +314,19 @@ internal sealed class PromptStore(IPluginContext ctx)
 
         Freeze(to, prompt);
         if (tools is not null) FreezeTools(to, tools.Names, tools.SinceSeq);
-        if (_db is null)
-        {
-            if (sent.Count == 0) return;
-            var list = _sent.GetOrAdd(to, _ => []);
-            lock (list)
-                if (list.Count == 0) list.AddRange(sent);
-            return;
-        }
         try
         {
-            _db.Execute("""
-                INSERT OR IGNORE INTO context_sent (session_id, version, after_seq, prompt, tools, created_at)
-                SELECT @to, version, after_seq, prompt, tools, created_at FROM context_sent WHERE session_id = @from AND after_seq <= @upToSeq
-                """, new { to, from, upToSeq });
+            // the prompts sent up to the fork point, with the versions they were sent as: one transaction, and a
+            // version the fork already has is kept
+            ctx.Data.Transaction(() =>
+            {
+                foreach (var row in _sent.Find(new DataQuery().Eq("sessionId", from).Le("afterSeq", upToSeq).Order("version")))
+                {
+                    var copy = (JsonObject)row.Doc.DeepClone();
+                    copy["sessionId"] = to;
+                    _sent.Insert(SentKey(to, (int)Number(copy, "version")), copy);
+                }
+            });
         }
         catch (Exception ex) { ctx.Logger.LogWarning(ex, "Copying the prompts of {Session} to its fork failed", from); }
     }
@@ -327,9 +336,7 @@ internal sealed class PromptStore(IPluginContext ctx)
     {
         Reset(sessionId);
         _reset.TryRemove(sessionId, out _);   // Reset only ever writes it: without this it was the one entry a deleted chat left behind
-        _sent.TryRemove(sessionId, out _);
-        if (_db is null) return;
-        try { _db.Execute("DELETE FROM context_sent WHERE session_id = @sessionId", new { sessionId }); }
+        try { _sent.DeleteWhere(new DataQuery().Eq("sessionId", sessionId)); }
         catch (Exception ex) { ctx.Logger.LogDebug(ex, "Deleting the prompts of {Session} failed", sessionId); }
     }
 }
