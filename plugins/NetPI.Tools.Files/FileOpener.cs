@@ -5,9 +5,11 @@ namespace NetPI.Tools.Files;
 
 /// <summary>
 /// <c>files.open</c>: open a path from the chat or the file tree with the operating system, the way a double click in the
-/// file manager would. Folders open in the file manager; scripts open for editing (the "edit" verb) rather than running;
-/// executables and installers are only revealed. Relative paths resolve against the session's working directory, like
-/// the file tools; <c>file://</c> URLs and a trailing <c>:line[:col]</c> or <c>#L…</c> are accepted.
+/// file manager would. Folders open in the file manager; text and code (any extension) open for editing in an editor
+/// (the "edit" verb) rather than running; a small allowlist of passive viewers (images without svg, pdf) opens with the
+/// default program; everything else — unknown binaries, Office documents, rdp/iso/vhd, add-ins, installers — is only
+/// revealed, never launched. Relative paths resolve against the session's working directory, like the file tools;
+/// <c>file://</c> URLs and a trailing <c>:line[:col]</c> or <c>#L…</c> are accepted.
 /// </summary>
 internal static partial class FileOpener
 {
@@ -21,7 +23,17 @@ internal static partial class FileOpener
         ".bat", ".cmd", ".ps1", ".psm1", ".psd1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".py", ".pyw", ".sh", ".bash",
     };
 
-    /// <summary>What to do: <c>folder</c>, <c>open</c>, <c>edit</c> (scripts) or <c>reveal</c> (executables).</summary>
+    /// <summary>
+    /// The only binary types whose default program is a passive viewer and is therefore safe to launch. Everything else
+    /// that is not text (Office with or without macros, rdp, iso/vhd, chm, jnlp, xll/wll add-ins, …) is revealed, not
+    /// opened — an allowlist, not a blocklist of the known-bad.
+    /// </summary>
+    private static readonly HashSet<string> Viewable = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".avif", ".tif", ".tiff", ".pdf",
+    };
+
+    /// <summary>What to do: <c>folder</c>, <c>edit</c> (text/code), <c>open</c> (a known viewer) or <c>reveal</c> (everything else).</summary>
     internal static (string Path, string Action) Decide(IPluginContext context, string root, string raw)
     {
         raw = raw.Trim().Trim('"', '\'', '`', '<', '>');
@@ -39,7 +51,10 @@ internal static partial class FileOpener
         if (Directory.Exists(full)) return (full, "folder");
         var ext = Path.GetExtension(full);
         if (Executable.Contains(ext) || (!OperatingSystem.IsWindows() && IsUnixExecutable(full) && !Script.Contains(ext))) return (full, "reveal");
-        return (full, Script.Contains(ext) ? "edit" : "open");
+        // A text file — any code, config or script extension — opens in an editor: the editor shows it, it does not run it.
+        if (!TextCodec.IsBinaryFile(full)) return (full, "edit");
+        // A binary is launched only when its default program is a known passive viewer; any other binary is revealed.
+        return (full, Viewable.Contains(ext) ? "open" : "reveal");
     }
 
     /// <summary>The path as given, then without a line suffix (<c>:12</c>, <c>:12:3</c>, <c>#L12</c>, <c>#L12-L20</c>).</summary>
