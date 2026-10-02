@@ -257,7 +257,7 @@ public static class IdeaOps
         if (Array(Pick(input, "sections")) is { } given)
             foreach (var s in given) sections.Add(CreateSection(s, sections));
         // Images are references to files the host wrote (ideas.attach); anything else in the array is dropped here.
-        if (input["images"] is { } images) idea["images"] = IdeaImages.Sanitize(images);
+        if (input["images"] is { } images) idea["images"] = IdeaImages.Sanitize(null, images);
         if (keepExtraFields)
             foreach (var (k, v) in input)
                 if (!Protected.Contains(k) && !idea.ContainsKey(k) && Norm(k) != "description") idea[k] = v?.DeepClone();
@@ -305,7 +305,7 @@ public static class IdeaOps
     /// fields are set (null removes them); from a tool <c>sections</c> is treated like addSections and extra fields are ignored.
     /// Returns human-readable change descriptions.
     /// </summary>
-    public static List<string> ApplyPatch(JsonObject idea, JsonObject patch, bool fromUi, string? sessionId = null)
+    public static List<string> ApplyPatch(JsonObject idea, JsonObject patch, bool fromUi, string? sessionId = null, string? home = null)
     {
         var changes = new List<string>();
         if (Has(patch, "title"))
@@ -341,8 +341,9 @@ public static class IdeaOps
         {
             // The whole set is replaced, not merged: the card sends what it kept after the user removed one. The files
             // the dropped references named are the caller's to delete (ideas.detach), so an idea document never
-            // decides what leaves the disk.
-            var next = IdeaImages.Sanitize(Pick(patch, "images"));
+            // decides what leaves the disk. The set is sanitized with the home, so a reference that resolves outside
+            // the images directory never reaches the document (idea-3m2h1g).
+            var next = IdeaImages.Sanitize(home, Pick(patch, "images"));
             if (!JsonNode.DeepEquals(idea["images"], next)) { idea["images"] = next; changes.Add("images"); }
         }
 

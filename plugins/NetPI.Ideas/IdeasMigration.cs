@@ -503,8 +503,9 @@ public sealed class IdeasMigration(IdeasRepository repo, IdeasLocator locator, F
 
     /// <summary>
     /// A portable snapshot: stable ids, the user's order, every field the ideas carry, the cards waiting for an
-    /// answer, the answers already given, the check marks and the repository cursors. This is the format to hand to
-    /// somebody else or to keep — it is not a live file the backlog is written to.
+    /// answer, the answers already given, the check marks, the repository cursors and the commits recorded unread
+    /// (the ones the sweep could not decide, so a new home sees them as skipped, not silently dropped).
+    /// This is the format to hand to somebody else or to keep — it is not a live file the backlog is written to.
     /// </summary>
     public JsonObject Export() => new()
     {
@@ -519,6 +520,7 @@ public sealed class IdeasMigration(IdeasRepository repo, IdeasLocator locator, F
         ["resolutions"] = new JsonArray(_repo.Resolutions().Select(r => (JsonNode?)r).ToArray()),
         ["checks"] = new JsonArray(_repo.Checks().Select(c => (JsonNode?)c).ToArray()),
         ["repos"] = new JsonArray(_repo.Repos().Select(r => (JsonNode?)r).ToArray()),
+        ["unread"] = new JsonArray(_repo.Unread().Select(r => (JsonNode?)r).ToArray()),
         ["root"] = _repo.MetaObject(RootMetaKey)?.DeepClone(),
     };
 

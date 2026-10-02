@@ -35,6 +35,7 @@ public static class Catalog
         ["sessions.delete-orchestrator"] = "scheduling",
         ["inspect.diag"] = "needs-node",
         ["ui.mcp-panel"] = "needs-node",
+        ["ui.idea-image"] = "needs-node ideas",
         ["ui.smoke"] = "needs-node",
     };
 

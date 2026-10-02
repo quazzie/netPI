@@ -302,6 +302,7 @@ public static class IdeasCommitTests
         {
             var env = new Env();
             await env.StartAsync();
+            env.Ctx.SettingsFake.Set("ideas.commitRetrySeconds", 0); // no backoff: this test drives the retries back to back
             var idea = await env.AddIdea("Retry me");
             env.Repo.Commit("first");
             env.Repo.Commit("second");
@@ -324,6 +325,7 @@ public static class IdeasCommitTests
             var full = new FullScheduler();
             env.Ctx.ServicesFake.Register<IAgentScheduler>(full);
             await env.StartAsync();
+            env.Ctx.SettingsFake.Set("ideas.commitRetrySeconds", 0); // no backoff: this test drives the retries back to back
             var idea = await env.AddIdea("Bound the sweep");
             env.Repo.Commit("a commit the sweep cannot afford right now");
             env.Ctx.SettingsFake.Set("ideas.checkWaitSeconds", 1);
@@ -338,6 +340,91 @@ public static class IdeasCommitTests
             await env.Check.SweepNowAsync();
             Check.Equal(1, (await env.CommitsOn(idea)).Count, "the next sweep reads it");
             Check.Equal(env.Repo.Commits[0].Hash, env.Cursor);
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: a skip is a decision, and the cursor moves past it (only a drop retries)", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            env.Ctx.SettingsFake.Set("ideas.model", "cloud-9"); // a paid model (IsLocal defaults to false)
+            env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "aiproxy", Id = "cloud-9" });
+            // ideas.allowPaidModel is off (the default): a background check must never invoice.
+            var idea = await env.AddIdea("Skip me");
+            env.Repo.Commit("a commit about something, no id");
+            await env.Check!.SweepNowAsync();
+            Check.Equal(0, (await env.CommitsOn(idea)).Count, "nothing was linked (there is no model allowed to judge it)");
+            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "but the cursor moved past it: the same skip happens on every retry, so it is not retried");
+            var skipped = env.Ctx.Log.Lines.Where(l => l.Contains("is not linked")).ToList();
+            Check.Equal(1, skipped.Count, "and it says so, once");
+            Check.Contains(skipped[0]!, "paid model", "naming the reason");
+            Check.Equal(0, env.Decisions, "and no decision was ever asked");
+
+            // A commit that names an idea id is still linked: that path needs no model at all.
+            env.Repo.Commit($"named work ({idea})");
+            await env.Check.SweepNowAsync();
+            Check.Equal(1, (await env.CommitsOn(idea)).Count, "and a named commit is linked without the model");
+            Check.Equal(env.Repo.Commits[1].Hash, env.Cursor, "with the cursor past it");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: a failed check backs off instead of being retried on every trigger", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            env.Ctx.SettingsFake.Set("ideas.commitRetrySeconds", 3600); // an hour: the next attempt is long past due
+            var idea = await env.AddIdea("Back off");
+            env.Repo.Commit("a commit whose check will not answer");
+            env.FailDecisions = 1; // the model is down for this one
+            await env.Check!.SweepNowAsync();
+            Check.Equal(0, (await env.CommitsOn(idea)).Count, "nothing was linked");
+            Check.Equal(null, env.Cursor, "and the cursor did not move");
+
+            // A trigger that would have retried it (the timer, an agent-status change, a burst of file events):
+            // the failed check backs off instead of re-paying the decision on every one of them (idea-kooctc).
+            var asked = env.Decisions;
+            await env.Check.SweepNowAsync();
+            Check.Equal(asked, env.Decisions, "the backoff held: the same commit was not asked again");
+            Check.Equal(null, env.Cursor, "and it is still at the same place");
+
+            env.Ctx.SettingsFake.Set("ideas.commitRetrySeconds", 0); // the backoff off: the sweep retries
+            env.FailDecisions = 0;
+            await env.Check.SweepNowAsync();
+            Check.Equal(1, (await env.CommitsOn(idea)).Count, "and the next allowed sweep reads it");
+            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor);
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: a commit that cannot be decided is recorded unread after its bound, and later commits are read", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            env.Ctx.SettingsFake.Set("ideas.commitRetrySeconds", 0); // no backoff: the attempts run back to back
+            var idea = await env.AddIdea("Read me once");
+            env.Repo.Commit("a commit that will never be judged");
+            env.FailDecisions = 999; // the decision never answers
+
+            for (var attempt = 1; attempt < IdeaCommitCheck.MaxTries; attempt++)
+            {
+                await env.Check!.SweepNowAsync();
+                Check.Equal(null, env.Cursor, $"attempt {attempt} leaves the cursor at the commit");
+            }
+            await env.Check.SweepNowAsync(); // the last allowed attempt
+            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "after the bound the cursor moves past the commit");
+            Check.Contains(string.Join("|", env.Ctx.Log.Lines), "recorded unread", "and it says so in the log");
+            var repo = IdeasRepository.Open(env.Ctx.Db, env.Ctx.Log, env.Ctx.Paths.DatabaseFile);
+            var unread = repo.Unread().Single(u => u["hash"]!.Str() == env.Repo.Commits[0].Hash);
+            Check.Equal(IdeaCommitCheck.MaxTries, unread["tries"]!.GetValue<long>(), "with its attempts");
+            Check.Equal(1, ((JsonArray)await env.Ctx.RpcFake.Call("ideas.unread", new JsonObject()))!.Count, "and it is listed in ideas.unread");
+
+            // A later commit is read while the first one stays unread: it names the idea, so the link needs no model
+            // at all (the done question runs on the recovered model and is refused: the verifier does not bless it).
+            env.FailDecisions = 0;
+            env.Repo.Commit($"read the second one ({idea})");
+            await env.Check.SweepNowAsync();
+            Check.Equal(env.Repo.Commits[1].Hash, env.Cursor, "the later commit is read, not blocked by the unread one");
+            Check.Equal(1, (await env.CommitsOn(idea)).Count, "and it is linked on the idea it names");
+            Check.Equal(1, repo.Unread().Count, "the first commit is still recorded unread");
             env.Ctx.Unload();
         });
 

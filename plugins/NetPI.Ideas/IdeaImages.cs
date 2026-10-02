@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -62,19 +61,22 @@ public static class IdeaImages
         };
     }
 
-    /// <summary>The idea's images, as a clean array: only references inside the images directory, at most
-    /// <see cref="MaxPerIdea"/>. A hand-written or migrated document cannot make the host touch a file elsewhere.</summary>
-    public static JsonArray Sanitize(JsonNode? images)
+    /// <summary>
+    /// The idea's images, as a clean array: only references that resolve inside the images directory, at most
+    /// <see cref="MaxPerIdea"/>, each kept in the clean home-relative shape. A hand-written or migrated document cannot
+    /// make the host touch a file elsewhere (idea-3m2h1g).
+    /// </summary>
+    public static JsonArray Sanitize(string? home, JsonNode? images)
     {
         var kept = new JsonArray();
         foreach (var node in images as JsonArray ?? [])
         {
             if (kept.Count >= MaxPerIdea) break;
-            if (node is not JsonObject o || !IsInside(IdeaOps.Str(o["path"]))) continue;
+            if (node is not JsonObject o || Inside(home, IdeaOps.Str(o["path"])) is not { } clean) continue;
             kept.Add(new JsonObject
             {
-                ["path"] = IdeaOps.Str(o["path"])!,
-                ["name"] = IdeaOps.Str(o["name"]) ?? Path.GetFileName(IdeaOps.Str(o["path"])!),
+                ["path"] = clean,
+                ["name"] = IdeaOps.Str(o["name"]) ?? Path.GetFileName(clean),
                 ["mediaType"] = IsImage(IdeaOps.Str(o["mediaType"])) ? IdeaOps.Str(o["mediaType"])! : "image/png",
                 ["bytes"] = o["bytes"] is { } b && b.GetValueKind() == System.Text.Json.JsonValueKind.Number ? b.GetValue<int>() : 0,
             });
@@ -91,13 +93,32 @@ public static class IdeaImages
         _ => "image/png",
     };
 
-    /// <summary>Home-relative paths, with the separators Windows and the rest of the world both understand.</summary>
-    private static bool IsInside([NotNullWhen(true)] string? rel) =>
-        rel is { Length: > 0 } && rel.Replace('\\', '/').StartsWith(Dir + "/", StringComparison.Ordinal);
+    /// <summary>The images directory under the home, in canonical form — what every stored reference must resolve into.</summary>
+    public static string DirOf(string home) => WorkspacePaths.Canonical(Path.Combine(home, Dir));
 
-    /// <summary>Absolute path of a stored image, or null when the reference is not one of ours.</summary>
+    /// <summary>
+    /// The clean home-relative spelling of a stored reference, or null when the reference is not one of ours. With a
+    /// home it is <em>resolved</em>: it must land strictly inside the images directory, so <c>idea-images/../settings.json</c>
+    /// (which is <c>home/settings.json</c>), an absolute reference, and a symlink inside the directory that points out of
+    /// it are all refused, with the platform's case handling — on Windows <c>IDEA-IMAGES/x</c> names the same files
+    /// (idea-3m2h1g). Without a home the old shape check stands: the reference starts with <c>idea-images/</c>.
+    /// </summary>
+    public static string? Inside(string? home, string? rel)
+    {
+        if (rel is not { Length: > 0 }) return null;
+        var flat = rel.Replace('\\', '/');
+        if (home is not { Length: > 0 })
+            return flat.StartsWith(Dir + "/", StringComparison.Ordinal) ? flat : null;
+        var candidate = Path.Combine(home, rel.Replace('/', Path.DirectorySeparatorChar));
+        var dir = DirOf(home);
+        var full = WorkspacePaths.Canonical(candidate);
+        if (!WorkspacePaths.IsInside(dir, full) || string.Equals(full, dir, WorkspacePaths.Comparison)) return null; // not a file in the directory
+        return Path.GetRelativePath(home, full).Replace(Path.DirectorySeparatorChar, '/');
+    }
+
+    /// <summary>Absolute path of a stored image, or null when the reference is not one of ours (see <see cref="Inside"/>).</summary>
     public static string? Absolute(string home, string? rel) =>
-        IsInside(rel) ? Path.Combine(home, rel.Replace('/', Path.DirectorySeparatorChar)) : null;
+        Inside(home, rel) is { } clean ? Path.Combine(home, clean.Replace('/', Path.DirectorySeparatorChar)) : null;
 
     public static void Delete(string home, string? rel)
     {

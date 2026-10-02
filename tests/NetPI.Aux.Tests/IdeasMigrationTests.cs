@@ -271,6 +271,46 @@ public static class IdeasMigrationTests
             env.Ctx.Unload();
         });
 
+        r.Add("ideas migration: an imported document is stored sanitized — no escape, no more images than the cap", async () =>
+        {
+            var env = new Env();
+            var images = new JsonArray();
+            images.Add(new JsonObject { ["path"] = "idea-images/../settings.json", ["name"] = "leak", ["mediaType"] = "image/png", ["bytes"] = 10 });
+            images.Add(new JsonObject { ["path"] = "C:/Windows/win.ini", ["name"] = "abs", ["mediaType"] = "image/png", ["bytes"] = 10 });
+            for (var i = 1; i <= 8; i++)
+                images.Add(new JsonObject { ["path"] = $"idea-images/img-{i:00}.png", ["name"] = $"img-{i:00}.png", ["mediaType"] = "image/png", ["bytes"] = 10 });
+            void CheckSanitized(JsonObject stored)
+            {
+                var kept = ((JsonArray)stored["images"]!).OfType<JsonObject>().Select(o => o["path"]!.Str()).ToList();
+                Check.Equal(IdeaImages.MaxPerIdea, kept.Count, "the escape and the absolute reference are out, and the cap stands: " + string.Join(", ", kept));
+                Check.Equal("idea-images/img-01.png", kept[0], "and it starts with the first image that is in");
+                Check.Equal("idea-images/img-06.png", kept[^1]);
+                Check.True(kept.All(p => p!.StartsWith(IdeaImages.Dir + "/")), "every stored reference stays in the images directory");
+            }
+
+            // Path one: the cutover brings in a whole legacy document.
+            File.WriteAllText(env.PathOf(), new JsonObject
+            {
+                ["version"] = 1,
+                ["ideas"] = new JsonArray(new JsonObject { ["id"] = "idea-cut0001", ["title"] = "Cut over", ["images"] = images.DeepClone() }),
+            }.ToJsonString());
+            await env.StartAsync();
+            CheckSanitized((await env.Ideas()).Single(i => i["id"].Str() == "idea-cut0001"));
+
+            // Path two: ideas.import takes a snapshot in.
+            var snapshot = new JsonObject
+            {
+                ["version"] = 1, ["format"] = "netpi.ideas.export", ["exportedAt"] = "2026-09-01T00:00:00Z",
+                ["ideas"] = new JsonArray(new JsonObject { ["id"] = "idea-imp0001", ["title"] = "Imported", ["images"] = images.DeepClone() }),
+            };
+            var file = Path.Combine(env.Home, "snapshot.json");
+            File.WriteAllText(file, snapshot.ToJsonString());
+            var report = await env.Rpc("ideas.import", new JsonObject { ["path"] = file, ["mode"] = "merge" });
+            Check.Equal(1, report["imported"]!["ideas"]!.GetValue<int>(), "the idea is in");
+            CheckSanitized((await env.Ideas()).Single(i => i["id"].Str() == "idea-imp0001"));
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas migration: a restart after the commit does not import the old files again", async () =>
         {
             var env = new Env();

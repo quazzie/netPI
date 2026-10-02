@@ -33,12 +33,16 @@
     const picked = [...files].filter((f) => f.type.startsWith('image/')).slice(0, room);
     if (!picked.length) return;
     attaching = true;
-    for (const file of picked) {
-      const stored = await onattach(file);
-      if (stored?.image) images = [...images, stored.image];
-      if (stored?.note) note = stored.note;
+    try {
+      for (const file of picked) {
+        const stored = await onattach(file);
+        if (stored?.image) images = [...images, stored.image];
+        if (stored?.note) note = stored.note;
+      }
+    } finally {
+      // Whatever the attach did to each file (stored, refused, or the tab toasted an error), the button comes back.
+      attaching = false;
     }
-    attaching = false;
   }
 
   function onPaste(e) {

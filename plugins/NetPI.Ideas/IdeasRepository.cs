@@ -57,7 +57,7 @@ public sealed class IdeasRepository
     /// The storage shape this build writes. A database at a higher version is refused: a build that does not know a
     /// column must not read it as "absent" and write it back that way.
     /// </summary>
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 
     /// <summary>How long a running check owns its claim; an older claim is recoverable after a restart.</summary>
     public static readonly TimeSpan CheckClaimFor = TimeSpan.FromMinutes(10);
@@ -147,9 +147,28 @@ public sealed class IdeasRepository
         );
         """;
 
+    /// <summary>
+    /// Version 2 (idea-kooctc): a commit the sweep could not decide after its bound of attempts is recorded, so the
+    /// cursor can move past it without silently dropping the commit: it is listed (ideas.unread) and re-readable, and
+    /// later commits of the repository are read instead of being pinned behind it.
+    /// </summary>
+    private const string Migration2 = """
+        CREATE TABLE ideas_unread (
+            repo     TEXT NOT NULL,
+            hash     TEXT NOT NULL,
+            subject  TEXT NOT NULL DEFAULT '',
+            tries    INTEGER NOT NULL DEFAULT 0,
+            error    TEXT,
+            at       TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (repo, hash)
+        );
+        CREATE INDEX ideas_unread_at ON ideas_unread(at);
+        """;
+
     private readonly IDatabase _db;
     private readonly ILogger? _log;
     private readonly string _databaseName;
+    private readonly string? _home;
 
     /// <summary>
     /// Announced after a write has committed (never before, and never for one that rolled back), so every window
@@ -160,27 +179,28 @@ public sealed class IdeasRepository
 
     private void Announce(string reason) => OnChanged?.Invoke(reason);
 
-    private IdeasRepository(IDatabase db, ILogger? log, string databaseName)
+    private IdeasRepository(IDatabase db, ILogger? log, string databaseName, string? home)
     {
         _db = db;
         _log = log;
         _databaseName = databaseName;
+        _home = home;
     }
 
     /// <summary>
     /// Open the backlog: create the tables, and refuse a database written by a newer build. Called once per plugin
     /// start, so two instances of this plugin (a reload swap) share one set of tables instead of two backends.
     /// </summary>
-    public static IdeasRepository Open(IDatabase db, ILogger? log = null, string? databaseFile = null)
+    public static IdeasRepository Open(IDatabase db, ILogger? log = null, string? databaseFile = null, string? home = null)
     {
         ArgumentNullException.ThrowIfNull(db);
-        var repository = new IdeasRepository(db, log, Path.GetFileName(databaseFile ?? "netpi.db"));
+        var repository = new IdeasRepository(db, log, Path.GetFileName(databaseFile ?? "netpi.db"), home);
         var version = repository.ScopeVersion();
         if (version > SchemaVersion)
             throw new IdeasStorageVersionException(
                 $"The Ideas tables in this database are at version {version}, and this build writes version {SchemaVersion}. " +
                 "Update NetPI: an older build must not write a storage it does not understand.");
-        db.Migrate(Scope, Migration1);
+        db.Migrate(Scope, Migration1, Migration2);
         return repository;
     }
 
@@ -237,7 +257,12 @@ public sealed class IdeasRepository
     /// <summary>One idea as it is stored, or null — for a caller that does not care about the revision.</summary>
     public JsonObject? Idea(string? id) => Find(id)?.Doc;
 
-    /// <summary>Store a new idea at the end of the backlog (or the top of it) and return it with its revision.</summary>
+    /// <summary>
+    /// Store a new idea at the end of the backlog (or the top of it) and return it with its revision. An idea comes
+    /// in here as a whole document — the cutover and <c>ideas.import</b> bring in files this host did not write — so
+    /// its images are sanitized here, where the home is known, and a stored reference can never name a file outside
+    /// the images directory (idea-w6v48t).
+    /// </summary>
     public (JsonObject Doc, long Revision) Add(JsonObject idea, bool prepend = false)
     {
         var added = _db.Transaction(_ =>
@@ -246,6 +271,7 @@ public sealed class IdeasRepository
             var id = IdeaOps.Str(doc["id"]);
             if (string.IsNullOrWhiteSpace(id)) throw new IdeaInputException("An idea needs an id.");
             if (Find(id) is not null) throw new IdeasConflictException($"Idea {id} is already in the backlog.");
+            if (doc["images"] is { } images) doc["images"] = IdeaImages.Sanitize(_home, images);
             var ord = prepend
                 ? _db.Scalar<long?>("SELECT MIN(ord) - 1 FROM ideas_items") ?? 0
                 : _db.Scalar<long?>("SELECT MAX(ord) + 1 FROM ideas_items") ?? 0;
@@ -266,6 +292,7 @@ public sealed class IdeasRepository
     public (JsonObject Doc, long Revision, List<string> Changes) Update(
         string id, JsonObject patch, bool fromUi, string? sessionId = null, long? expectedRevision = null, string? expectedUpdatedAt = null)
     {
+        var removedImages = new List<string>();
         var result = _db.Transaction(_ =>
         {
             var current = Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
@@ -281,14 +308,35 @@ public sealed class IdeasRepository
                     $"Idea {storedId} changed since {stamp} (it is now {IdeaOps.Str(current.Doc["updatedAt"]) ?? "untouched"}). Reload it and apply your change again.");
 
             var next = (JsonObject)current.Doc.DeepClone();
-            var changes = IdeaOps.ApplyPatch(next, patch, fromUi, sessionId);
+            var changes = IdeaOps.ApplyPatch(next, patch, fromUi, sessionId, _home);
             if (changes.Count == 0) return (current.Doc, current.Revision, changes); // nothing changed: no write, no revision
+            if (changes.Contains("images")) removedImages = ImagesLeaving(current.Doc, next);
             var revision = current.Revision + 1;
             Save_(storedId, next, revision);
             return (WithRevision(next, revision), revision, changes);
         });
-        if (result.Item3.Count > 0) Announce("update"); // a patch that changed nothing is not a change
+        if (result.Item3.Count > 0)
+        {
+            Announce("update"); // a patch that changed nothing is not a change
+            // The files an idea no longer references leave the disk only once the write has committed: an update
+            // refused as stale (or rolled back) leaves the document and every file exactly where they were
+            // (idea-qpaghc). A reference that is not a stored image is left alone by the delete itself.
+            if (_home is { } home) foreach (var gone in removedImages) IdeaImages.Delete(home, gone);
+        }
         return result;
+    }
+
+    /// <summary>The image references a document no longer carries — the files on disk that should follow them out.</summary>
+    private static List<string> ImagesLeaving(JsonObject before, JsonObject after)
+    {
+        var kept = new HashSet<string>(
+            (after["images"] as JsonArray ?? []).OfType<JsonObject>()
+                .Select(o => IdeaOps.Str(o["path"]))
+                .Where(p => p is { Length: > 0 }), StringComparer.Ordinal);
+        return (before["images"] as JsonArray ?? []).OfType<JsonObject>()
+            .Select(o => IdeaOps.Str(o["path"]))
+            .Where(p => p is { Length: > 0 } && !kept.Contains(p))
+            .ToList();
     }
 
     public bool Delete(string? id)
@@ -411,7 +459,7 @@ public sealed class IdeasRepository
     {
         if (Find(id) is not { } found) throw new RpcException("not_found", $"No idea {id}.");
         var next = (JsonObject)found.Doc.DeepClone();
-        IdeaOps.ApplyPatch(next, new JsonObject { ["status"] = "done" }, fromUi: true);
+        IdeaOps.ApplyPatch(next, new JsonObject { ["status"] = "done" }, fromUi: true, null, _home);
         var revision = found.Revision + 1;
         Save_(IdeaOps.Str(found.Doc["id"])!, next, revision);
         return (WithRevision(next, revision), revision);
@@ -727,13 +775,59 @@ public sealed class IdeasRepository
     public string? LastSeen(string repo) =>
         _db.QuerySingle("SELECT hash FROM ideas_repos WHERE repo = @r", new { r = repo }, x => x.GetStringOrNull("hash"));
 
-    /// <summary>Remember a repository's newest read commit, with the project it belongs to.</summary>
-    public void Remember(string repo, string? hash, string? projectId = null, string? projectName = null, string? error = null) => _db.Execute(
-        "INSERT INTO ideas_repos (repo, project_id, project_name, hash, at, tries, error) VALUES (@r, @p, @n, @h, @at, 1, @e) " +
+    /// <summary>
+    /// Remember a repository's newest read commit, with the project it belongs to. A read that succeeded clears the
+    /// failure state: <c>tries</c> counts the failed attempts at the commit that was just handled, and they do not
+    /// carry over to the next one.
+    /// </summary>
+    public void Remember(string repo, string? hash, string? projectId = null, string? projectName = null) => _db.Execute(
+        "INSERT INTO ideas_repos (repo, project_id, project_name, hash, at, tries, error) VALUES (@r, @p, @n, @h, @at, 0, NULL) " +
         "ON CONFLICT(repo) DO UPDATE SET project_id = COALESCE(excluded.project_id, ideas_repos.project_id), " +
         "project_name = COALESCE(excluded.project_name, ideas_repos.project_name), hash = excluded.hash, at = excluded.at, " +
-        "tries = ideas_repos.tries + 1, error = excluded.error",
-        new { r = repo, p = (object?)projectId, n = (object?)projectName, h = (object?)hash, at = IdeaOps.Now(), e = (object?)Clip(error, 200) });
+        "tries = 0, error = NULL",
+        new { r = repo, p = (object?)projectId, n = (object?)projectName, h = (object?)hash, at = IdeaOps.Now() });
+
+    /// <summary>
+    /// The failure state of a repository's cursor: how many checks in a row failed at the next commit (0: healthy),
+    /// the last reason and when that was — what the sweep's backoff is computed from (idea-kooctc).
+    /// </summary>
+    public (long Tries, string? Error, string? At)? RepoFailure(string repo) =>
+        _db.QuerySingle("SELECT tries, error, at FROM ideas_repos WHERE repo = @r", new { r = repo },
+            r => (r.GetInt64("tries"), r.GetStringOrNull("error"), r.GetStringOrNull("at")));
+
+    /// <summary>
+    /// Record that the check on a repository's next commit failed, and return the attempt count. The count grows with
+    /// every failure and is cleared by a successful read (<see cref="Remember"/>), so it is the attempts at this one
+    /// commit: the sweep backs off with it, and a commit that cannot be decided is recorded unread once it reaches its
+    /// bound, instead of blocking every later commit of the repository (idea-kooctc).
+    /// </summary>
+    public int RecordCommitFailure(string repo, string? error)
+    {
+        var tries = _db.Scalar<long?>("SELECT tries FROM ideas_repos WHERE repo = @r", new { r = repo }) ?? 0;
+        _db.Execute(
+            "INSERT INTO ideas_repos (repo, project_id, project_name, hash, at, tries, error) VALUES (@r, NULL, NULL, NULL, @at, 1, @e) " +
+            "ON CONFLICT(repo) DO UPDATE SET at = excluded.at, tries = ideas_repos.tries + 1, error = excluded.error",
+            new { r = repo, at = IdeaOps.Now(), e = (object?)Clip(error, 200) });
+        return (int)tries + 1;
+    }
+
+    /// <summary>
+    /// Record a commit the sweep could not decide after its bound of attempts: the cursor has moved past it
+    /// (<see cref="Remember"/>), and the record stays, so the commit is seen (ideas.unread, the export) and later
+    /// commits are read instead of being blocked behind it forever (idea-kooctc).
+    /// </summary>
+    public void RecordUnread(string repo, string hash, string? subject, int tries, string? error) => _db.Execute(
+        "INSERT INTO ideas_unread (repo, hash, subject, tries, error, at) VALUES (@r, @h, @s, @t, @e, @at) " +
+        "ON CONFLICT(repo, hash) DO UPDATE SET subject = excluded.subject, tries = excluded.tries, error = excluded.error, at = excluded.at",
+        new { r = repo, h = hash, s = (object?)Clip(subject, 200), t = (long)tries, e = (object?)Clip(error, 200), at = IdeaOps.Now() });
+
+    /// <summary>Every commit recorded unread, newest first.</summary>
+    public List<JsonObject> Unread() => _db.Query(
+        "SELECT repo, hash, subject, tries, error, at FROM ideas_unread ORDER BY at DESC, repo, hash", null, r => new JsonObject
+        {
+            ["repo"] = r.GetString("repo"), ["hash"] = r.GetString("hash"), ["subject"] = r.GetString("subject"),
+            ["tries"] = r.GetInt64("tries"), ["error"] = r.GetStringOrNull("error"), ["at"] = r.GetString("at"),
+        });
 
     /// <summary>
     /// Anchor a repository this plugin has never read at HEAD — and only then. A stored cursor is the progress made
@@ -747,9 +841,17 @@ public sealed class IdeasRepository
             new { r = repo, p = (object?)projectId, n = (object?)projectName, h = hash, at = IdeaOps.Now() });
     }
 
-    /// <summary>Forget repositories nothing has read for a while, so the table does not grow with deleted projects.</summary>
-    public int ForgetStaleRepos(int keepDays) =>
-        _db.Execute("DELETE FROM ideas_repos WHERE at < @cutoff", new { cutoff = StampOf(DateTimeOffset.UtcNow.AddDays(-keepDays)) });
+    /// <summary>
+    /// Forget repositories nothing has read for a while, so the table does not grow with deleted projects — and the
+    /// unread records of the repositories that go with them, so the two tables cannot drift apart.
+    /// </summary>
+    public int ForgetStaleRepos(int keepDays)
+    {
+        var cutoff = StampOf(DateTimeOffset.UtcNow.AddDays(-keepDays));
+        _db.Execute("DELETE FROM ideas_unread WHERE at < @cutoff", new { cutoff });
+        _db.Execute("DELETE FROM ideas_unread WHERE repo NOT IN (SELECT repo FROM ideas_repos)");
+        return _db.Execute("DELETE FROM ideas_repos WHERE at < @cutoff", new { cutoff });
+    }
 
     // ------------------------------------------------------------------ imports and metadata
 

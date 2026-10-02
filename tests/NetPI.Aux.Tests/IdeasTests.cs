@@ -176,6 +176,102 @@ public static class IdeasTests
             Check.False(File.Exists(Path.Combine(env.Ctx.Paths.Home, again["path"].Str()!.Replace('/', Path.DirectorySeparatorChar))), "deleting the idea deleted its image");
         });
 
+        r.Add("ideas: an image reference that escapes the images directory is not read and not deleted", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var home = env.Ctx.Paths.Home;
+            var settings = Path.Combine(home, "settings.json");
+            File.WriteAllText(settings, "{\"api_key\": \"sekret\"}");
+            Directory.CreateDirectory(Path.Combine(home, IdeaImages.Dir));
+            File.WriteAllBytes(Path.Combine(home, IdeaImages.Dir, "shot.png"), new byte[] { 0x89, 0x50, 0x4e, 0x47, 1 });
+
+            // The escape from the report (idea-3m2h1g): a reference that steps out of the images directory names a
+            // file the host must not touch — neither for reading nor for deleting.
+            var bad = await Check.ThrowsAsync<RpcException>(() => env.Rpc("ideas.image", new JsonObject { ["path"] = "idea-images/../settings.json" }));
+            Check.Contains(bad.Message, "not a stored idea image");
+            await env.Ctx.RpcFake.Call("ideas.removeImage", new JsonObject { ["path"] = "idea-images/../settings.json" });
+            Check.True(File.Exists(settings), "the file outside the directory is still there");
+
+            // Absolute references, references that walk up, and the directory itself are not stored images either.
+            foreach (var outside in new[] { settings.Replace('\\', '/'), "../../secrets.txt", "idea-images", "IDEA-IMAGES/../settings.json", "idea-images/shot.png/../../settings.json" })
+            {
+                Check.True(IdeaImages.Inside(home, outside) is null, $"refused: {outside}");
+                Check.True(IdeaImages.Absolute(home, outside) is null, $"no absolute path for: {outside}");
+            }
+
+            // A reference that stays in the directory resolves — with the directory's own spelling, a walk that ends
+            // inside normalized, and on case-insensitive platforms under either case.
+            Check.Equal("idea-images/shot.png", IdeaImages.Inside(home, "idea-images/shot.png"));
+            Check.Equal("idea-images/shot.png", IdeaImages.Inside(home, "idea-images/shot.png/../shot.png"), "a walk that ends inside stays inside");
+            if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+                Check.True(IdeaImages.Inside(home, "IDEA-IMAGES/shot.png") is not null, "the platform's case handling");
+            else
+                Check.True(IdeaImages.Inside(home, "IDEA-IMAGES/shot.png") is null, "the platform's case handling");
+
+            // A link inside the directory that points out of it is a file outside the directory.
+            var link = Path.Combine(home, IdeaImages.Dir, "outward");
+            try
+            {
+                File.CreateSymbolicLink(link, settings);
+                Check.True(IdeaImages.Inside(home, "idea-images/outward") is null, "a symlink out of the directory is refused");
+                Check.True(IdeaImages.Absolute(home, "idea-images/outward") is null);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine("    (no symlink privilege on this machine: the symlink case is not checked)");
+            }
+            finally
+            {
+                try { if (File.Exists(link) || new FileInfo(link).LinkTarget is not null) File.Delete(link); } catch { }
+            }
+
+            Check.True(File.Exists(Path.Combine(home, IdeaImages.Dir, "shot.png")), "and nothing inside the directory was touched");
+            Check.True(File.Exists(settings), "the file outside is still there");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas: removing an image from an idea deletes the file only once the update commits", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var png = Convert.ToBase64String(new byte[] { 0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4 });
+            var shot = await env.Rpc("ideas.addImage", new JsonObject { ["data"] = png, ["mediaType"] = "image/png" });
+            var path = shot["path"].Str()!;
+            var file = Path.Combine(env.Ctx.Paths.Home, path.Replace('/', Path.DirectorySeparatorChar));
+            var added = await env.Rpc("ideas.add", new JsonObject
+            {
+                ["idea"] = new JsonObject { ["title"] = "With a shot", ["images"] = new JsonArray { shot.DeepClone() } },
+            });
+            var id = added["id"].Str()!;
+            Check.True(File.Exists(file), "the file is on disk: " + file);
+
+            // Someone else edits the idea after the card opened. The card's removal, still on the old revision, is
+            // refused: neither the document nor the file moves (idea-qpaghc).
+            await env.Rpc("ideas.update", new JsonObject { ["id"] = id, ["patch"] = new JsonObject { ["summary"] = "someone else's edit" } });
+            var refused = await Check.ThrowsAsync<RpcException>(() => env.Rpc("ideas.update", new JsonObject
+            {
+                ["id"] = id, ["expectedRevision"] = 1,
+                ["patch"] = new JsonObject { ["images"] = new JsonArray() },
+            }));
+            Check.Equal("conflict", refused.Code, refused.Message);
+            Check.True(File.Exists(file), "the refused update left the file on disk");
+            var doc = await env.Rpc("ideas.get", new JsonObject { ["id"] = id });
+            Check.Equal(1, ((JsonArray)doc["images"]!).Count, "…and the reference is still on the idea");
+
+            // The same removal, on the revision the idea is actually at: the reference goes and the file follows —
+            // after the write has committed.
+            await env.Rpc("ideas.update", new JsonObject
+            {
+                ["id"] = id, ["expectedRevision"] = 2,
+                ["patch"] = new JsonObject { ["images"] = new JsonArray() },
+            });
+            Check.False(File.Exists(file), "the file left the disk once the update committed");
+            doc = await env.Rpc("ideas.get", new JsonObject { ["id"] = id });
+            Check.Equal(0, ((JsonArray)doc["images"]!).Count, "and the reference is gone from the idea");
+            env.Ctx.Unload();
+        });
+
         r.Add("ideas: a commit is recorded on the idea it works on, and only a clear 'finished' offers the card", async () =>
         {
             var env = new Env();
