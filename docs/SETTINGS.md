@@ -9,6 +9,11 @@ with `NETPI_HOME`). The file is created with sensible defaults on first start, a
 commas, and is watched: edits apply live. Keys are shown as dotted paths — `providers.aiproxy.baseUrl` means
 `{ "providers": { "aiproxy": { "baseUrl": … } } }`.
 
+If the file does not parse (a hand edit that dropped a comma), the app keeps serving the last valid document, no
+`settings.set` or `settings.replace` is saved over the broken file (it would be replaced by defaults plus one change,
+losing providers, API keys, agents and MCP servers), and `diag.problems` names the parse error until the file is fixed.
+Writes succeed again as soon as it parses.
+
 One NetPI runs per home (`<home>/netpi.lock`): a second one on the same home refuses to start. A running NetPI also
 writes `<home>/server.json` (its URL and this run's token) for tools that inspect it (`docs/DEBUGGING.md`).
 

@@ -16,6 +16,14 @@ public interface ISettings
     void Set(string path, JsonNode? value);
     /// <summary>Replace the whole document (validated JSON object).</summary>
     void Replace(JsonObject root);
+    /// <summary>
+    /// True while <see cref="FilePath"/> does not parse: the store serves the last valid document (or first-run
+    /// defaults) and <see cref="Set"/>/<see cref="Replace"/> throw until the file is fixed, so a broken file is never
+    /// silently replaced. <see cref="InvalidOnDiskError"/> carries the parse error.
+    /// </summary>
+    bool InvalidOnDisk { get; }
+    /// <summary>The settings file's parse error while <see cref="InvalidOnDisk"/>, else null.</summary>
+    string? InvalidOnDiskError { get; }
 }
 
 /// <summary>

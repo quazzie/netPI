@@ -9,8 +9,10 @@ namespace NetPI.Host.Settings;
 /// <see cref="ISettings"/> backed by <c>settings.json</c> (comments and trailing commas allowed). Values are read and
 /// written by dotted path. Writes are serialized and atomic (a writer gate, then a unique temp file + move): a failed
 /// write changes nothing, so a value is either on disk and live or neither. External edits are picked up by a debounced
-/// FileSystemWatcher; invalid JSON is logged and the last good document is kept. Every change publishes
-/// <c>settings.changed</c> (<c>{ path }</c> for single-value writes, <c>{ source: "file" }</c> for external edits).
+/// FileSystemWatcher; an invalid file is logged and the last good document is kept, and while the file does not parse no
+/// write is saved over it (the store would replace the user's broken file with defaults plus one change, losing providers,
+/// API keys, agents and MCP servers). Every change publishes <c>settings.changed</c> (<c>{ path }</c> for single-value
+/// writes, <c>{ source: "file" }</c> for external edits).
 /// </summary>
 internal sealed class SettingsStore : ISettings, IDisposable
 {
@@ -27,6 +29,8 @@ internal sealed class SettingsStore : ISettings, IDisposable
     private FileSystemWatcher? _watcher;
     private Debouncer? _reload;
     private bool _disposed;
+    /// <summary>Set (with the parse error) while the file on disk does not parse, so a write cannot replace it; null when it parses.</summary>
+    private string? _invalidError;
 
     public SettingsStore(string filePath, ILogger log)
     {
@@ -40,7 +44,8 @@ internal sealed class SettingsStore : ISettings, IDisposable
             if (TryParse(text, out var root, out var error)) _root = root;
             else
             {
-                _log.LogError("Settings file {File} is not valid JSON ({Error}); using defaults until it is fixed", filePath, error);
+                _invalidError = error;
+                _log.LogError("Settings file {File} is not valid JSON ({Error}); using defaults until it is fixed — no settings write is saved over it", filePath, error);
                 _root = DefaultSettings.Create();
             }
         }
@@ -53,6 +58,9 @@ internal sealed class SettingsStore : ISettings, IDisposable
     }
 
     public string FilePath { get; }
+
+    public bool InvalidOnDisk { get { lock (_gate) return _invalidError is not null; } }
+    public string? InvalidOnDiskError { get { lock (_gate) return _invalidError; } }
 
     /// <summary>Raised after any change (path, or null for whole-document changes). Runs on the writer's thread.</summary>
     public event Action<string?>? Changed;
@@ -124,6 +132,7 @@ internal sealed class SettingsStore : ISettings, IDisposable
             string text;
             lock (_gate)
             {
+                ThrowIfFileBroken();
                 var parent = _root;
                 for (var i = 0; i < segments.Length - 1; i++)
                 {
@@ -173,6 +182,7 @@ internal sealed class SettingsStore : ISettings, IDisposable
             string text;
             lock (_gate)
             {
+                ThrowIfFileBroken();
                 if (JsonNode.DeepEquals(_root, clone)) return;
                 previous = _root;
                 previousText = _lastText;
@@ -191,6 +201,16 @@ internal sealed class SettingsStore : ISettings, IDisposable
     }
 
     // ------------------------------------------------------------------ internals
+
+    /// <summary>
+    /// A write over a broken file would save defaults plus one change and lose everything the file still holds (providers,
+    /// keys, agents), so the file is fixed first. Caller holds <c>_gate</c>.
+    /// </summary>
+    private void ThrowIfFileBroken()
+    {
+        if (_invalidError is { } error)
+            throw new InvalidOperationException($"the settings file {FilePath} is not valid JSON ({error}); fix it first — no settings change is saved until it parses");
+    }
 
     private static JsonNode? Walk(JsonNode? node, string path)
     {
@@ -278,7 +298,11 @@ internal sealed class SettingsStore : ISettings, IDisposable
             {
                 try
                 {
-                    File.WriteAllText(tmp, text, Utf8NoBom);
+                    using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                    {
+                        fs.Write(Utf8NoBom.GetBytes(text));
+                        fs.Flush(flushToDisk: true);   // the move must never rename a file the disk has not received
+                    }
                     File.Move(tmp, FilePath, overwrite: true);
                     return;
                 }
@@ -339,9 +363,11 @@ internal sealed class SettingsStore : ISettings, IDisposable
                 _lastText = text;
                 if (!TryParse(text, out var root, out var error))
                 {
-                    _log.LogWarning("Ignoring invalid settings file {File}: {Error} (keeping the last valid settings)", FilePath, error);
+                    _invalidError = error;
+                    _log.LogWarning("Ignoring invalid settings file {File}: {Error} (keeping the last valid settings; no write is saved over it until it parses)", FilePath, error);
                     return;
                 }
+                _invalidError = null;
                 if (JsonNode.DeepEquals(_root, root)) return;
                 _root = root;
             }

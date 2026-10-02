@@ -9,6 +9,8 @@ internal sealed class FakeSettings(JsonObject root) : ISettings
 {
     public JsonObject Root { get; private set; } = root;
     public string FilePath => "memory://settings.json";
+    public bool InvalidOnDisk => false;
+    public string? InvalidOnDiskError => null;
     public JsonObject Snapshot() => (JsonObject)Root.DeepClone();
 
     public JsonNode? GetNode(string path)

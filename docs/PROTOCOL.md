@@ -125,8 +125,8 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `plugins.setEnabled` | `{ id, enabled }` | `true` |
 | `plugins.rescan` | – | `true` |
 | `settings.get` | – | `{ path, settings: object }` |
-| `settings.set` | `{ path, value }` | `true` (dotted path; a null value removes the key) |
-| `settings.replace` | `{ settings: object }` | `true` |
+| `settings.set` | `{ path, value }` | `true` (dotted path; a null value removes the key). Fails while `settings.json` does not parse: the broken file is kept, not replaced |
+| `settings.replace` | `{ settings: object }` | `true`; same refusal while the file does not parse |
 | `settings.schema` | – | `SettingsSection[]`: the settings the host and the loaded plugins declare, for the settings dialog |
 | `fs.dirs` | `{ path? }` | `{ path, parent, dirs: {name,path}[], roots: string[] }` (folder picker) |
 | `tools.list` | – | `{ name, label, description, category, readOnly, pluginId, active, disabled, priority }[]` |

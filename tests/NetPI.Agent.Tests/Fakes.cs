@@ -129,6 +129,8 @@ public sealed class FakeSettings(IEventBus bus) : ISettings
     private readonly Lock _gate = new();
     private JsonObject _root = new();
     public string FilePath => "memory://settings.json";
+    public bool InvalidOnDisk => false;
+    public string? InvalidOnDiskError => null;
 
     public JsonObject Snapshot()
     {

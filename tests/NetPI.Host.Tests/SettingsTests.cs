@@ -196,5 +196,53 @@ public static class SettingsTests
             Check.Equal("light", JsonNode.Parse(File.ReadAllText(file))!["ui"]!["theme"]!.GetValue<string>());
             Check.Equal(1, Volatile.Read(ref changes), "one event, for the write that happened");
         });
+
+        r.Add("settings: a broken file at start is kept as-is, and writes are refused until it parses", () =>
+        {
+            var file = Path.Combine(T.TempDir("settings"), "settings.json");
+            const string broken = "{ \"providers\": { \"anthropic\": { \"apiKey\": \"sk-1\" } }";
+            File.WriteAllText(file, broken);   // the closing brace dropped in a hand edit
+            using var s = new SettingsStore(file, NullLogger.Instance);
+            Check.True(s.InvalidOnDisk, "the store knows the file does not parse");
+            Check.True(s.InvalidOnDiskError is { Length: > 0 }, "and it keeps the parse error");
+            Check.Equal("", s.Get<string>("providers.anthropic.apiKey"), "defaults are live");
+
+            Check.Throws<InvalidOperationException>(() => s.Set("a.b", JsonValue.Create(1)), "Set over the broken file is refused");
+            Check.Throws<InvalidOperationException>(() => s.Replace(new JsonObject { ["x"] = true }), "Replace is refused too");
+            Check.Equal(broken, File.ReadAllText(file), "the broken file survives: it is not replaced by defaults plus one change");
+
+            File.WriteAllText(file, "{ \"providers\": { \"anthropic\": { \"apiKey\": \"sk-1\" } } }");
+            s.ReloadFromDisk();
+            Check.False(s.InvalidOnDisk, "the fixed file clears the state");
+            Check.Equal("sk-1", s.Get<string>("providers.anthropic.apiKey"), "and the user's value is live again");
+            s.Set("ui.theme", JsonValue.Create("dark"));
+            Check.Equal("sk-1", JsonNode.Parse(File.ReadAllText(file))!["providers"]!["anthropic"]!["apiKey"]!.GetValue<string>());
+            Check.Equal("dark", JsonNode.Parse(File.ReadAllText(file))!["ui"]!["theme"]!.GetValue<string>(), "the fix plus the new write, on disk");
+        });
+
+        r.Add("settings: an external edit that breaks the file is not overwritten either", () =>
+        {
+            var file = Path.Combine(T.TempDir("settings"), "settings.json");
+            File.WriteAllText(file, "{ \"providers\": { \"anthropic\": { \"apiKey\": \"sk-1\" } } }");
+            using var s = new SettingsStore(file, NullLogger.Instance);
+            s.Set("ui.theme", JsonValue.Create("dark"));
+            Check.Equal("dark", s.Get<string>("ui.theme"));
+            Check.False(s.InvalidOnDisk);
+
+            var onDisk = File.ReadAllText(file).TrimEnd();
+            File.WriteAllText(file, onDisk[..^1]);   // the hand edit drops the last brace (the file ends in a newline)
+            s.ReloadFromDisk();
+            Check.True(s.InvalidOnDisk, "the broken reload is noticed");
+            Check.Equal("dark", s.Get<string>("ui.theme"), "the last valid document stays live");
+            Check.Throws<InvalidOperationException>(() => s.Set("ui.theme", JsonValue.Create("blue")), "a write over the broken file is refused");
+            Check.Equal(onDisk[..^1], File.ReadAllText(file), "the file the user was editing survives");
+
+            File.WriteAllText(file, "{ \"providers\": { \"anthropic\": { \"apiKey\": \"sk-1\" } }, \"ui\": { \"theme\": \"light\" } }");
+            s.ReloadFromDisk();
+            Check.False(s.InvalidOnDisk);
+            Check.Equal("light", s.Get<string>("ui.theme"), "the fixed file is live");
+            s.Set("ui.theme", JsonValue.Create("blue"));   // writes work again once it parses
+            Check.Equal("blue", JsonNode.Parse(File.ReadAllText(file))!["ui"]!["theme"]!.GetValue<string>());
+        });
     }
 }

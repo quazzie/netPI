@@ -143,6 +143,8 @@ public sealed class FakeSettings : ISettings
 {
     private readonly JsonObject _root = new();
     public string FilePath => "(memory)";
+    public bool InvalidOnDisk => false;
+    public string? InvalidOnDiskError => null;
     public JsonObject Snapshot() => (JsonObject)_root.DeepClone();
 
     public JsonNode? GetNode(string path)

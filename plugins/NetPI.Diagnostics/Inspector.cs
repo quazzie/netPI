@@ -213,6 +213,11 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         foreach (var p in ctx.Services.Get<IPluginManager>()?.List() ?? [])
             if (p.State == "failed") Add("error", "plugins", $"Plugin {p.Id} failed: {p.Error}", "diag.logs { contains: \"" + p.Id + "\" }; plugins.reload { id }");
 
+        // the settings file does not parse: the app runs on the last valid document, and no settings change can be saved
+        if (ctx.Settings is { InvalidOnDisk: true } settings)
+            Add("error", "settings", $"settings.json does not parse ({settings.InvalidOnDiskError}); the app runs on the last valid document, and no settings change is saved until the file is fixed.",
+                $"fix the file in place — it is reloaded as soon as it parses; {ctx.Paths.SettingsFile}");
+
         // a reload takes every running chat's tools away for a moment: say who did it, and what it cost
         foreach (var r in reloads.Recent(RecentWindow))
             Add("info", "plugins", $"{r.Summary} {Ago(now - r.Time)} ago — {r.Impact}.",
