@@ -97,6 +97,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
     {
         await _op.WaitAsync(ct).ConfigureAwait(false);
         var changed = false;
+        var removed = new List<string>();
         try
         {
             if (_disposed) return;
@@ -107,6 +108,7 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
                 await StopInstanceAsync(e, track: true).ConfigureAwait(false);
                 lock (_gate) _entries.Remove(e);
                 e.DisposeTimers();
+                removed.Add(e.Id);
                 changed = true;
             }
             var found = Discover();
@@ -119,6 +121,9 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         }
         finally { _op.Release(); }
         EnsureWatchers();
+        // A plugin whose folder went away takes its tools with it, so say so like every other removal: otherwise the cause
+        // of a vanished tool falls back to unknown and the model is told a tool is gone with nothing to explain it.
+        if (removed.Count > 0) PublishReloaded(removed, "removed");
         if (changed) PublishChanged();
     }
 

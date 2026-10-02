@@ -11,28 +11,45 @@ public sealed record LogEntry(DateTimeOffset Time, LogLevel Level, string Catego
 /// <summary>
 /// Log destination shared by every logger of a host instance: a daily rolling file
 /// (<c>Home/logs/netpi-YYYYMMDD.log</c>), an in-memory ring buffer and optionally the console.
-/// Writes are queued and flushed by a single background task so logging never blocks callers on IO.
+/// Writes are queued and flushed by a single background task so logging never blocks callers on IO. That queue is
+/// bounded: the file is written synchronously by that one task, so a log folder on a share that stalls must not let it
+/// grow without limit — past <see cref="QueueCapacity"/> the oldest waiting line is dropped, counted, and said in
+/// <see cref="Recent"/> (the ring buffer keeps every line, so that is where the gap is visible).
 /// </summary>
 internal sealed class LogSink : IDisposable
 {
     private const int RingSize = 2000;
     private const int RetentionDays = 14;
+    /// <summary>How many lines may wait for the log file. Last-resort ceiling, like the bus's: a stalled share must not grow the queue forever.</summary>
+    public const int QueueCapacity = 10_000;
 
     private readonly string? _dir;
     private readonly bool _console;
-    private readonly Channel<LogEntry> _queue = Channel.CreateUnbounded<LogEntry>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly int _capacity;
+    private readonly Channel<LogEntry> _queue;
     private readonly LogEntry?[] _ring = new LogEntry?[RingSize];
     private readonly Lock _ringLock = new();
     private readonly Task _writer;
     private int _ringNext, _ringCount;
+    private int _queued;      // lines in the queue, as far as this side can tell (capped at QueueCapacity: see Write)
+    private long _dropped;
     private StreamWriter? _file;
     private DateOnly _fileDate;
     private volatile bool _disposed;
 
-    public LogSink(string? logsDir, bool console)
+    public LogSink(string? logsDir, bool console, int queueCapacity = QueueCapacity)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(queueCapacity, 1);
         _dir = logsDir;
         _console = console;
+        _capacity = queueCapacity;
+        // DropOldest, never Wait: a logger is called on the thread that logs (a plugin's, a request's), and it must not
+        // wait for a file on a share that is not answering.
+        _queue = Channel.CreateBounded<LogEntry>(new BoundedChannelOptions(queueCapacity)
+        {
+            SingleReader = true,
+            FullMode = BoundedChannelFullMode.DropOldest,
+        });
         if (_dir is not null)
         {
             Directory.CreateDirectory(_dir);
@@ -44,6 +61,12 @@ internal sealed class LogSink : IDisposable
     /// <summary>Minimum level for non-framework categories (framework categories are filtered to Warning by the factory).</summary>
     public LogLevel MinLevel { get; set; } = LogLevel.Information;
 
+    /// <summary>Tests only: awaited by the writer before it takes a line off the queue, so a full queue (and a drop) is deterministic.</summary>
+    internal Func<Task>? BeforeWriteAsync { get; set; }
+
+    /// <summary>Log lines dropped before they reached the file because the queue was full (a log folder that stopped answering).</summary>
+    public long Dropped => Interlocked.Read(ref _dropped);
+
     public void Write(LogEntry entry)
     {
         lock (_ringLock)
@@ -52,7 +75,14 @@ internal sealed class LogSink : IDisposable
             _ringNext = (_ringNext + 1) % RingSize;
             if (_ringCount < RingSize) _ringCount++;
         }
-        if (!_disposed) _queue.Writer.TryWrite(entry);
+        if (_disposed || !_queue.Writer.TryWrite(entry)) return;
+        // DropOldest accepts the line and throws the oldest one away, silently — so this side keeps its own count of what
+        // is waiting: over the ceiling means this write cost us a line, and the line it cost is not waiting any more.
+        if (Interlocked.Increment(ref _queued) > _capacity)
+        {
+            Interlocked.Decrement(ref _queued);
+            Interlocked.Increment(ref _dropped);
+        }
     }
 
     public IReadOnlyList<LogEntry> Recent(int max = 200)
@@ -60,7 +90,13 @@ internal sealed class LogSink : IDisposable
         lock (_ringLock)
         {
             var n = Math.Clamp(max, 0, _ringCount);
-            var result = new List<LogEntry>(n);
+            var result = new List<LogEntry>(n + 1);
+            var dropped = Interlocked.Read(ref _dropped);
+            // The ring keeps every line, including the ones the file queue had to drop: say so here, or a reader of the
+            // log (the panel, diag) sees lines that are in no file and never learns why.
+            if (dropped > 0)
+                result.Add(new LogEntry(DateTimeOffset.Now, LogLevel.Warning, "NetPI.Host.Logging",
+                    $"{dropped} log line(s) were dropped before they reached the log file: the log folder is not keeping up", null));
             var start = (_ringNext - n + RingSize) % RingSize;
             for (var i = 0; i < n; i++) result.Add(_ring[(start + i) % RingSize]!);
             return result;
@@ -75,6 +111,8 @@ internal sealed class LogSink : IDisposable
         {
             while (reader.TryRead(out var e))
             {
+                Interlocked.Decrement(ref _queued);
+                if (BeforeWriteAsync is { } gate) await gate().ConfigureAwait(false);
                 sb.Clear();
                 Format(sb, e);
                 var line = sb.ToString();

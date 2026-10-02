@@ -235,7 +235,14 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
             sub.Completed = true;
             sub.Queue.Writer.TryComplete();   // the worker finishes what is queued, then exits
             lock (_subsLock) _subs = Array.FindAll(_subs, s => !ReferenceEquals(s, sub));
-            lock (_debtLock) _debt.RemoveAll(d => ReferenceEquals(d.Sub, sub));
+            lock (_debtLock)
+            {
+                // A marker still owed to this line can never reach it now: ack it for every such marker, or the
+                // flush it belongs to waits for a line that no longer exists (and says so for as long as it lives).
+                foreach (var (debtSub, marker) in _debt)
+                    if (ReferenceEquals(debtSub, sub)) marker.Drop(sub);
+                _debt.RemoveAll(d => ReferenceEquals(d.Sub, sub));
+            }
         });
     }
 

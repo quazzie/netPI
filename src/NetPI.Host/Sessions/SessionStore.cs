@@ -202,13 +202,14 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
 
     public void DeleteProject(string id)
     {
-        var affected = _db.Transaction(_ =>
+        var (affected, now) = _db.Transaction(_ =>
         {
             if (GetProject(id) is null) throw new KeyNotFoundException($"Project {id} not found");
             var detached = _db.Query($"SELECT {SessionColumns} FROM sessions WHERE project_id = @id", new { id }, ReadSession);
-            _db.Execute("UPDATE sessions SET project_id = NULL WHERE project_id = @id", new { id });
+            var stamp = Now();
+            _db.Execute("UPDATE sessions SET project_id = NULL, updated_at = @updated_at WHERE project_id = @id", new { updated_at = stamp, id });
             _db.Execute("DELETE FROM projects WHERE id = @id", new { id });
-            return detached;
+            return (detached, stamp);
         });
         // Transient (no-message) sessions have no row: detach them in memory, like the ones above
         List<SessionInfo> detachedTransient = [];
@@ -217,14 +218,19 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
             var t = _transient.Values.Where(s => s.ProjectId == id).ToList();
             if (t.Count > 0)
             {
-                var now = Now();
                 foreach (var s in t) { s.ProjectId = null; s.UpdatedAt = now; }
                 detachedTransient = t;
             }
         }
         Publish(EventTypes.ProjectDeleted, new { id });
-        // The sessions were read whole above: one query, not a GetSession per detached session.
-        foreach (var s in affected) Publish(EventTypes.SessionUpdated, new { session = s });
+        // The sessions were read whole above: one query, not a GetSession per detached session. They were read before the
+        // UPDATE, so the copies carry what is now stale — say what the row says now, or the UI keeps showing the deleted project.
+        foreach (var s in affected)
+        {
+            s.ProjectId = null;
+            s.UpdatedAt = now;
+            Publish(EventTypes.SessionUpdated, new { session = s });
+        }
         foreach (var s in detachedTransient) Publish(EventTypes.SessionUpdated, new { session = s });
     }
 
