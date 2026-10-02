@@ -11,17 +11,20 @@ internal sealed partial class Ledger
 
     /// <summary>
     /// Record one call (a reservation, or a final charge) with a fresh id, and add its cost to the lane's day.
-    /// Runs inside the caller's storage transaction, so the id, the call and the roll-up commit together; a failed
+    /// Runs inside the caller's storage transaction, so the id, the call and the roll-ups commit together; a failed
     /// write fails the call, rather than silently disabling the budget.
     /// </summary>
     private long AddCharge(ModelRequest request, string? agent, string? root, Usage u, double cost, string source)
     {
-        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var day = Today;
+        var now = DateTime.Now;
+        var ts = new DateTimeOffset(now).ToUnixTimeMilliseconds();
+        var day = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var period = PeriodKey(now, Options().ResetDay);
         var doc = new JsonObject
         {
             ["ts"] = ts,
             ["day"] = day,
+            ["period"] = period,
             ["provider"] = request.Model.Provider,
             ["model"] = request.Model.Id,
             ["purpose"] = request.Purpose,
@@ -40,7 +43,7 @@ internal sealed partial class Ledger
         if (!_calls!.Insert(id.ToString(CultureInfo.InvariantCulture), doc))
             throw new StorageException("The usage call id " + id + " is already taken");
         // The lane's day counts the call at its recorded cost (a reservation at its estimate); Settle replaces the
-        // estimate with the settled cost.
+        // estimate with the settled cost. The period's roll-up does the same, per model.
         if (agent is not null)
         {
             var laneKey = agent.ToLowerInvariant();
@@ -51,7 +54,99 @@ internal sealed partial class Ledger
             laneDoc["costUsd"] = D(laneDoc["costUsd"]) + cost;
             _laneUsage.Put(key, laneDoc);
         }
+        PeriodUsageAdd(period, agent, request.Model.Provider, request.Model.Id, 1,
+            u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, cost, source == "unknown" ? 1 : 0);
         return id;
+    }
+
+    /// <summary>
+    /// The period's per-model roll-up, upserted in the caller's storage transaction: a call adds its recorded cost
+    /// and tokens, a settlement corrects the reservation's estimate to the settled cost, so the read is the document,
+    /// never a scan of the period's calls. Deltas may be negative (a settlement that prices below the reservation).
+    /// </summary>
+    private void PeriodUsageAdd(string period, string? agent, string provider, string model, int calls,
+        long input, long output, long cacheRead, long cacheWrite, double cost, int unknown)
+    {
+        var key = period + "|" + (agent?.ToLowerInvariant() ?? "") + "|" + provider + "|" + model;
+        var doc = _periodUsage!.Get(key);
+        if (doc is null)
+            doc = new JsonObject
+            {
+                ["period"] = period,
+                ["provider"] = provider,
+                ["model"] = model,
+                ["calls"] = 0L,
+                ["inputTokens"] = 0L,
+                ["outputTokens"] = 0L,
+                ["cacheReadTokens"] = 0L,
+                ["cacheWriteTokens"] = 0L,
+                ["costUsd"] = 0.0,
+                ["unknownCalls"] = 0L,
+            };
+        if (agent is not null) doc["lane"] = agent;
+        doc["calls"] = L(doc["calls"]) + calls;
+        doc["inputTokens"] = L(doc["inputTokens"]) + input;
+        doc["outputTokens"] = L(doc["outputTokens"]) + output;
+        doc["cacheReadTokens"] = L(doc["cacheReadTokens"]) + cacheRead;
+        doc["cacheWriteTokens"] = L(doc["cacheWriteTokens"]) + cacheWrite;
+        doc["costUsd"] = D(doc["costUsd"]) + cost;
+        doc["unknownCalls"] = L(doc["unknownCalls"]) + unknown;
+        _periodUsage.Put(key, doc);
+    }
+
+    /// <summary>
+    /// Rebuild the current period's roll-up from the calls when it has not caught up: the store pre-dates the roll-up
+    /// (an upgrade), or a changed budget.resetDay moved the period's border. One transaction, so no call's own write
+    /// interleaves: the check and the rebuild are the read of the roll-up the next period starts from.
+    /// </summary>
+    private void CatchUpPeriodUsage()
+    {
+        var now = DateTime.Now;
+        var (start, _) = Period(now, Options().ResetDay);
+        var period = start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var from = new DateTimeOffset(start).ToUnixTimeMilliseconds();
+        var calls = _calls!.Count(new DataQuery().Ge("ts", from));
+        if (_periodUsage!.Sum("calls", new DataQuery().Eq("period", period)) == calls) return;
+
+        static void Add(JsonObject g, JsonObject call, double cost, long unknown)
+        {
+            g["calls"] = L(g["calls"]) + 1;
+            g["inputTokens"] = L(g["inputTokens"]) + L(call["inputTokens"]);
+            g["outputTokens"] = L(g["outputTokens"]) + L(call["outputTokens"]);
+            g["cacheReadTokens"] = L(g["cacheReadTokens"]) + L(call["cacheReadTokens"]);
+            g["cacheWriteTokens"] = L(g["cacheWriteTokens"]) + L(call["cacheWriteTokens"]);
+            g["costUsd"] = D(g["costUsd"]) + cost;
+            g["unknownCalls"] = L(g["unknownCalls"]) + unknown;
+        }
+
+        var groups = new Dictionary<(string? Lane, string? Provider, string? Model), JsonObject>();
+        foreach (var d in _calls.Find(new DataQuery().Ge("ts", from)))
+        {
+            var call = d.Doc;
+            var key = (Lane: call["lane"]?.GetValue<string>(), Provider: call["provider"]?.GetValue<string>(), Model: call["model"]?.GetValue<string>());
+            if (!groups.TryGetValue(key, out var g))
+            {
+                g = new JsonObject
+                {
+                    ["period"] = period,
+                    ["provider"] = key.Provider,
+                    ["model"] = key.Model,
+                    ["calls"] = 0L,
+                    ["inputTokens"] = 0L,
+                    ["outputTokens"] = 0L,
+                    ["cacheReadTokens"] = 0L,
+                    ["cacheWriteTokens"] = 0L,
+                    ["costUsd"] = 0.0,
+                    ["unknownCalls"] = 0L,
+                };
+                if (key.Lane is not null) g["lane"] = key.Lane;
+                groups[key] = g;
+            }
+            Add(g, call, D(call["costUsd"]), call["costSource"]?.GetValue<string>() == "unknown" ? 1L : 0L);
+        }
+        _periodUsage.DeleteWhere(new DataQuery().Eq("period", period));
+        foreach (var (k, g) in groups)
+            _periodUsage.Put(period + "|" + (k.Lane?.ToLowerInvariant() ?? "") + "|" + k.Provider + "|" + k.Model, g);
     }
 
     /// <summary>The next call id: a stored sequence, so ids never repeat across hot reloads.</summary>
@@ -194,6 +289,11 @@ internal sealed partial class Ledger
             if (doc is not null)
             {
                 var oldCost = D(doc["costUsd"]);
+                var oldSource = doc["costSource"]?.GetValue<string>() ?? "";
+                var oldInput = L(doc["inputTokens"]);
+                var oldOutput = L(doc["outputTokens"]);
+                var oldCacheRead = L(doc["cacheReadTokens"]);
+                var oldCacheWrite = L(doc["cacheWriteTokens"]);
                 doc["costUsd"] = cost;
                 doc["costSource"] = source;
                 doc["inputTokens"] = u.InputTokens;
@@ -213,6 +313,14 @@ internal sealed partial class Ledger
                         _laneUsage.Put(day + "|" + laneKey, laneDoc);
                     }
                 }
+                // The period's roll-up carries it the same way: the corrected cost and the tokens the reservation
+                // did not record. A call recorded before the roll-up existed (no period of its own) is caught up
+                // from its row on the next start.
+                if (doc["period"]?.GetValue<string>() is { } period)
+                    PeriodUsageAdd(period, reservation.Agent, model.Provider, model.Id, 0,
+                        u.InputTokens - oldInput, u.OutputTokens - oldOutput,
+                        u.CacheReadTokens - oldCacheRead, u.CacheWriteTokens - oldCacheWrite,
+                        cost - oldCost, (source == "unknown" ? 1 : 0) - (oldSource == "unknown" ? 1 : 0));
             }
             RecordTx(model.Provider, model.Id, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens);
         });

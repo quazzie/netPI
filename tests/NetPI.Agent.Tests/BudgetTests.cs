@@ -14,6 +14,7 @@ public static class BudgetTests
         t.Add("budget: the period starts on budget.resetDay", Period);
         t.Add("budget: settings changes refresh usage without a model call, including file reloads", SettingsRefresh);
         t.Add("ledger: the in-flight usage.changed does not outlive the plugin's stop", StopMidNotification);
+        t.Add("ledger: the period's per-model view is a roll-up: rebuilt for the calls it missed, corrected by each settlement", PeriodRollup);
     }
 
     /// <summary>The ledger's call collection, read by the tests the way the migration tool will (the same declaration the ledger makes).</summary>
@@ -31,6 +32,10 @@ public static class BudgetTests
             ["pricing"] = new JsonObject { ["prompt"] = "0.000003", ["completion"] = "0.000015" },
         };
 
+    /// <summary>The period_usage collection, read the way the ledger declares it.</summary>
+    private static IDataCollection PeriodUsage(TestHost h) =>
+        h.Storage.Plugins.For("netpi.agents").Collection("period_usage", new CollectionSpec().Text("period").Integer("calls"));
+
     /// <summary>A text reply whose usage carries a cost the provider reported.</summary>
     private static IAsyncEnumerable<ModelStreamEvent> Costing(string text, double costUsd)
     {
@@ -42,6 +47,72 @@ public static class BudgetTests
     private static JsonNode Summary(TestHost h) => h.Rpc.CallAsync("usage.summary").GetAwaiter().GetResult()!;
 
     private static double Num(JsonNode? n) => double.Parse(n!.ToJsonString(), System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// The per-model view of the period is a roll-up the calls maintain, not a scan of them: a store that pre-dates
+    /// it is rebuilt once when the ledger starts, and each call afterwards updates it without a restart.
+    /// </summary>
+    private static async Task PeriodRollup()
+    {
+        await using var h = await TestHost.StartAsync(x => Priced(x));
+        var calls = Calls(h);
+        var periodKey = NetPI.Agents.Ledger.Period(DateTime.Now, 1).Start.ToString("yyyy-MM-dd");
+        var ts0 = new DateTimeOffset(NetPI.Agents.Ledger.Period(DateTime.Now, 1).Start).ToUnixTimeMilliseconds();
+
+        // Nine thousand calls of the period as the store held them before the roll-up existed: no period of their own.
+        for (var i = 0; i < 9000; i++)
+        {
+            var doc = new JsonObject
+            {
+                ["ts"] = ts0 + i,
+                ["day"] = NetPI.Agents.Ledger.Today,
+                ["provider"] = i >= 3000 && i < 6000 ? "fake" : "cloud",
+                ["model"] = i >= 3000 && i < 6000 ? "local" : "big",
+                ["purpose"] = "agent",
+                ["inputTokens"] = 100L,
+                ["outputTokens"] = 10L,
+                ["cacheReadTokens"] = 50L,
+                ["cacheWriteTokens"] = 5L,
+                ["costUsd"] = i < 3000 ? 0.001 : 0.0,
+                ["costSource"] = i < 3000 ? "estimated" : i < 6000 ? "free" : "unknown",
+                ["sessionId"] = "ses_" + i,
+                ["rootSessionId"] = "ses_" + i,
+            };
+            if (i < 3000) doc["lane"] = "Alpha";
+            else if (i < 6000) doc["lane"] = "Beta";
+            calls.Put("8" + i, doc);
+        }
+
+        // The restart is what catches the roll-up up: before it the store's rows are invisible to it.
+        Check.Equal(0, ((JsonArray)Summary(h)["models"]!).Count, "the raw rows are not in the roll-up yet");
+        await h.StopPluginAsync("netpi.agents");
+        await h.StartPluginAsync(new NetPI.Agents.AgentsPlugin());
+        Check.Equal(3, PeriodUsage(h).Count(new DataQuery().Eq("period", periodKey)), "the rebuild wrote one document per group");
+
+        JsonNode Group(string? lane) => ((JsonArray)Summary(h)["models"]!)
+            .Single(m => (m!["agent"]?.GetValue<string>()) == lane);
+        var alpha = Group("Alpha");
+        Check.Equal(3000, (long)alpha!["calls"]!);
+        Check.Equal(3.0, Math.Round(Num(alpha["costUsd"]), 6));
+        Check.Equal(300000L, (long)alpha["inputTokens"]!);
+        Check.True(!alpha["unknownCost"]!.GetValue<bool>(), "none of the group's costs are unknown");
+        Check.Equal(3000, (long)Group("Beta")!["calls"]!);
+        var laneLess = Group((string?)null)!;
+        Check.Equal(3000, (long)laneLess["calls"]!);
+        Check.True(laneLess["unknownCost"]!.GetValue<bool>(), "the lane-less group kept its unknown costs");
+
+        // A call recorded now updates the roll-up without a restart: it runs on the model's own slot (no agent
+        // configured), 100 in / 10 out at $3 / $15, estimated.
+        var s = h.NewSession(model: "cloud/big");
+        h.Catalog.Handler = (r, ct) => Reply.Text("ok");
+        await h.SendAsync(s.Id, "hi");
+        await h.IdleAsync(s.Id);
+        Check.Equal(periodKey, CallOf(h, s.Id).Doc["period"]?.GetValue<string>(), "the call carries the period it was charged to");
+        var cloud = Group("cloud")!;
+        Check.Equal(1, (long)cloud["calls"]!);
+        Check.Equal(0.00045, Math.Round(Num(cloud["costUsd"]), 8), "the settlement replaced the reservation's estimate");
+        Check.Equal(3000, (long)Group((string?)null)!["calls"]!, "the other groups are untouched");
+    }
 
     private static async Task SettingsRefresh()
     {
