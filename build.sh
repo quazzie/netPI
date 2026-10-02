@@ -66,6 +66,7 @@ echo "== dotnet build (every project except the Windows desktop shell) into $DEV
 rm -rf "$DEV"
 B="dotnet build -nologo -v q -clp:ErrorsOnly -p:BuildProjectReferences=false"
 $B src/NetPI.Abstractions/NetPI.Abstractions.csproj
+$B src/NetPI.Contracts/NetPI.Contracts.csproj
 $B src/NetPI.Host/NetPI.Host.csproj
 $B src/NetPI.Server/NetPI.Server.csproj
 for p in plugins/*/*.csproj tests/*/*.csproj; do

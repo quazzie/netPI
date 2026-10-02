@@ -144,6 +144,7 @@ try {
     $shared = @('Directory.Build.props', 'plugins\Directory.Build.props')
     $projects = [System.Collections.Generic.List[object]]::new()
     $projects.Add(@{ Name = 'NetPI.Abstractions'; Dir = 'src\NetPI.Abstractions'; Out = "$dev\NetPI.Abstractions.dll"; Inputs = @('src\NetPI.Abstractions') + $shared; Core = $true })
+    $projects.Add(@{ Name = 'NetPI.Contracts'; Dir = 'src\NetPI.Contracts'; Out = "$dev\NetPI.Contracts.dll"; Inputs = @('src\NetPI.Contracts') + $shared; Core = $true })
     $projects.Add(@{ Name = 'NetPI.Host'; Dir = 'src\NetPI.Host'; Out = "$dev\NetPI.Host.dll"; Inputs = @('src\NetPI.Host') + $shared; Core = $true })
     $projects.Add(@{ Name = 'NetPI.Server'; Dir = 'src\NetPI.Server'; Out = "$dev\netpi-server.dll"; Inputs = @('src\NetPI.Server', 'web\dist') + $shared })
     foreach ($d in Get-ChildItem plugins -Directory) {
