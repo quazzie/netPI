@@ -42,6 +42,8 @@ All other events are broadcast.
 
 HTTP fallback: `POST /api/rpc/{method}` with the params object as body → result JSON (`{ "error": {code,message} }` with 4xx on failure).
 
+A single response that would not fit into the per-client WebSocket backlog (32 MiB) is not sent: it would trip the queue limit on the next message and cut off a reading client, and it would not fit into a client that is not. Such a request is answered with `e.code "too_large"` instead, and the client requests less (a shorter or earlier page). The host keeps normal pages below the limit (the byte budget of `sessions.messages`), so a response only becomes `too_large` when one message by itself is that big.
+
 A method's parameters are read leniently where it is unambiguous: a number or boolean that arrives **quoted** (`"2"`,
 `"true"`) is read as the value, because a model quotes a number it nests inside an object and a filter that is silently
 ignored is worse than one that errors. Everything else is strict: an absent parameter is the method's default, a string
@@ -116,7 +118,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `workspaces.list` | `{ projectId? }` | `WorkspaceInfo[]` newest first (all, without `projectId`) — registered by the Workspaces plugin |
 | `workspaces.get` | `{ id }` | `WorkspaceInfo` (`not_found` when it does not exist) — registered by the Workspaces plugin |
 | `sessions.setWorkspace` | `{ id, workspaceId: string\|null }` | `SessionInfo`: binds a session to a workspace (at most one), or unbinds it with null (it works in its project's path again); publishes `session.workspace` with the resolved binding. Registered by the Workspaces plugin, which writes `meta.workspaceId` and `meta.cwd`. Binding a workspace that does not exist is an error: a bound session never falls back to the project checkout, it gets a clear failure instead |
-| `sessions.messages` | `{ id, beforeSeq?, limit? (default 60) }` | `{ messages: ChatMessage[], hasMore: boolean }` ascending by seq |
+| `sessions.messages` | `{ id, beforeSeq?, limit? (default 60) }` | `{ messages: ChatMessage[], hasMore: boolean }` ascending by seq. The page is bounded in messages AND in serialized size (8 MiB): an image-heavy page comes back shorter, `hasMore` set, keeping the NEWEST messages and dropping the oldest — the client follows with `beforeSeq` at the page's oldest seq, the same call its load-earlier already makes |
 | `models.list` | `{ refresh? }` | `{ models: ModelInfo[], defaultModel: string\|null }` |
 | `ui.tabs` | – | `UiTabInfo[]` |
 | `ui.commands` | – | `SlashCommandInfo[]` |
@@ -128,7 +130,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `plugins.rescan` | – | `true` |
 | `settings.get` | – | `{ path, settings: object }` |
 | `settings.set` | `{ path, value }` | `true` (dotted path; a null value removes the key). Fails while `settings.json` does not parse: the broken file is kept, not replaced |
-| `settings.replace` | `{ settings: object }` | `true`; same refusal while the file does not parse |
+| `settings.replace` | `{ settings: object, base?: the document as loaded }` | `true`. With `base`, a document that changed since the load is a `conflict` (409) instead of a lost update — the raw editor sends the document it loaded; same refusal while the file does not parse |
 | `settings.schema` | – | `SettingsSection[]`: the settings the host and the loaded plugins declare, for the settings dialog |
 | `fs.dirs` | `{ path? }` | `{ path, parent, dirs: {name,path}[], roots: string[] }` (folder picker) |
 | `tools.list` | – | `{ name, label, description, category, readOnly, pluginId, active, disabled, priority }[]` |

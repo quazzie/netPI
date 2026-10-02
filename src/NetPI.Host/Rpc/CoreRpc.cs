@@ -11,6 +11,11 @@ internal static class CoreRpc
 {
     private const string UiStatePrefix = "ui.";
 
+    /// <summary>The serialized size a message page may grow to before it is split (see <c>sessions.messages</c>):
+    /// well under the largest single WebSocket message a client can take (<c>WsClient.MaxPendingBytes</c>), the rest
+    /// of the page comes back on the next <c>beforeSeq</c>.</summary>
+    private const int MaxPageBytes = 8 * 1024 * 1024;
+
     public static void Register(HostKernel k, List<IDisposable> registrations)
     {
         void Add(string method, string description, Func<RpcRequest, object?> handler, bool readOnly = false) =>
@@ -111,14 +116,31 @@ internal static class CoreRpc
         Add("sessions.setProject", "Attach/detach a project: { id, projectId: string|null } → SessionInfo (publishes session.project)",
             req => k.Sessions.SetSessionProject(req.Required("id"), req.Str("projectId")));
 
-        Add("sessions.messages", "Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore } ascending by seq", req =>
+        Add("sessions.messages", "Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore } ascending by seq. The page is bounded in messages AND in serialized size: when the page overflows its byte budget it comes back shorter, with hasMore set and ending at an earlier seq, which the client follows with beforeSeq.", req =>
         {
             var id = req.Required("id");
             if (k.Sessions.GetSession(id) is null) throw new RpcException("not_found", $"Session {id} not found");
             var limit = Math.Clamp(req.Int("limit") ?? 60, 1, 2000);
             var page = k.Sessions.GetMessages(id, req.Int64("beforeSeq"), limit + 1);
             var hasMore = page.Count > limit;
-            return new { messages = hasMore ? page.Skip(1).ToList() : page, hasMore };
+            if (hasMore) page = page.Skip(1).ToList();
+
+            // A page whose messages carry inline images can far exceed what one client can take in a single message
+            // (~25 images of 1.3 MB in 60 messages is already ~33 MB): keep the NEWEST whole messages while they fit
+            // the budget (a page is what a client views now; the oldest is what it can still page back for with
+            // beforeSeq) and let the first one that would not fit set hasMore.
+            var taken = new List<ChatMessage>(page.Count);
+            var size = 0;
+            for (var i = page.Count - 1; i >= 0; i--)
+            {
+                var m = page[i];
+                var len = Wire.SerializeValue(m).Length;
+                if (taken.Count > 0 && size + len > MaxPageBytes) { hasMore = true; break; }
+                taken.Add(m);
+                size += len;
+            }
+            taken.Reverse();
+            return new { messages = taken, hasMore };
         }, readOnly: true);
 
         // ------------------------------------------------------------ models
@@ -186,10 +208,13 @@ internal static class CoreRpc
             return true;
         });
 
-        Add("settings.replace", "Replace the whole document: { settings: object } → true", req =>
+        Add("settings.replace", "Replace the whole document: { settings: object, base?: the document as loaded } → true. With base, a document that changed since the load is a conflict (409) instead of a lost update.", req =>
         {
             if (req.Prop("settings") is not { ValueKind: JsonValueKind.Object } s)
                 throw new RpcException("bad_request", "'settings' must be a JSON object");
+            if (req.Prop("base") is { ValueKind: JsonValueKind.Object } baseDoc &&
+                !JsonNode.DeepEquals(k.Settings.Snapshot(), JsonNode.Parse(baseDoc.GetRawText())))
+                throw new RpcException("conflict", "The settings changed after you loaded them; reload and save again");
             k.Settings.Replace((JsonObject)JsonNode.Parse(s.GetRawText())!);
             return true;
         });

@@ -10,6 +10,17 @@ public sealed class BackupPlugin : INetPiPlugin
     private CancellationTokenSource? _stop;
     private Task? _worker;
     private readonly SemaphoreSlim _gate = new(1);
+    private readonly TimeSpan _retryBase, _checkEvery, _startupDelay;
+
+    public BackupPlugin() : this(null, null, null) { }
+
+    /// <summary>The timings of the automatic loop, with the production cadence as default (a test compresses them).</summary>
+    internal BackupPlugin(TimeSpan? retryBase, TimeSpan? checkEvery, TimeSpan? startupDelay)
+    {
+        _retryBase = retryBase ?? TimeSpan.FromHours(1);
+        _checkEvery = checkEvery ?? TimeSpan.FromMinutes(1);
+        _startupDelay = startupDelay ?? TimeSpan.FromSeconds(10);
+    }
 
     public Task StartAsync(IPluginContext ctx, CancellationToken ct)
     {
@@ -35,9 +46,12 @@ public sealed class BackupPlugin : INetPiPlugin
         // Let startup migrations complete before the initial snapshot.
         try
         {
-            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+            SweepPending(ctx.Paths.Home);   // a kill mid-backup leaves a DB-sized .pending-*: nothing else deletes it
+            await Task.Delay(_startupDelay, ct);
+            var backoff = TimeSpan.Zero;
             while (!ct.IsCancellationRequested)
             {
+                var wait = _checkEvery;
                 try
                 {
                     if (ctx.Settings.Get("backup.enabled", true))
@@ -46,12 +60,72 @@ public sealed class BackupPlugin : INetPiPlugin
                         if (DateTimeOffset.UtcNow - latest >= TimeSpan.FromHours(Math.Clamp(ctx.Settings.Get("backup.intervalHours", 24), 1, 720)))
                             await CreateAsync(ctx, true, ct);
                     }
+                    backoff = TimeSpan.Zero;   // it came back: the regular cadence is back
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException) { ctx.Logger.LogError(ex, "Automatic backup failed"); }
-                await Task.Delay(TimeSpan.FromMinutes(1), ct);
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // A failing backup is not retried every minute (a full disk does not un-full in a minute):
+                    // the wait starts at an hour and doubles, until the next try is a day away.
+                    backoff = NextBackoff(backoff, _retryBase);
+                    wait = backoff;
+                    ctx.Logger.LogError(ex, "Automatic backup failed; the next try is in {Backoff}", backoff);
+                }
+                await Task.Delay(wait, ct);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+    }
+
+    /// <summary>The wait after a failed automatic backup: an hour at first, then doubling, capped at a day.</summary>
+    internal static TimeSpan NextBackoff(TimeSpan current, TimeSpan baseBackoff)
+    {
+        var next = current <= TimeSpan.Zero ? baseBackoff : current * 2;
+        return next > TimeSpan.FromDays(1) ? TimeSpan.FromDays(1) : next;
+    }
+
+    /// <summary>A snapshot is a full copy of the store: it is refused before it starts when the disk cannot hold it.</summary>
+    internal static void EnsureFreeSpace(long need, string root)
+    {
+        if (need <= 0) return;   // the store does not report a size: nothing to reserve
+        var driveRoot = Path.GetPathRoot(root);
+        if (driveRoot is null) return;
+        try
+        {
+            var free = new DriveInfo(driveRoot).AvailableFreeSpace;
+            if (free < need)
+                throw new IOException($"Not enough free space for a backup: {need:N0} bytes are needed and {free:N0} are free");
+        }
+        catch (IOException) { throw; }
+        catch { return; }   // the platform does not say how much is free: the copy is allowed
+    }
+
+    /// <summary>A kill mid-backup leaves a DB-sized .pending-* behind: it is swept at startup.</summary>
+    internal static void SweepPending(string home)
+    {
+        var root = Path.Combine(home, "backups");
+        if (!Directory.Exists(root)) return;
+        foreach (var dir in Directory.EnumerateDirectories(root))
+        {
+            if (!Path.GetFileName(dir).StartsWith(".pending-", StringComparison.Ordinal)) continue;
+            try { Directory.Delete(dir, true); }
+            catch { /* something else holds it: it stays */ }
+        }
+    }
+
+    /// <summary>
+    /// A snapshot only counts once it verifies: when the Verify after the move fails, the moved destination is deleted,
+    /// or a bad snapshot would count as the latest and hold the next backup for a whole interval.
+    /// </summary>
+    internal static void FinalizeSnapshot(string home, string id)
+    {
+        var destination = Path.Combine(home, "backups", id);
+        try { Verify(home, id); }
+        catch
+        {
+            try { Directory.Delete(destination, true); }
+            catch { /* it is gone or held: the failure below is the point */ }
+            throw;
+        }
     }
 
     public async Task<JsonObject> CreateAsync(IPluginContext ctx, bool automatic, CancellationToken ct)
@@ -63,13 +137,14 @@ public sealed class BackupPlugin : INetPiPlugin
             var root = Path.Combine(ctx.Paths.Home, "backups");
             Directory.CreateDirectory(root);
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(root, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            var store = ctx.Services.Require<IStorageAccess>();
+            EnsureFreeSpace(store.Info.SizeBytes ?? 0, root);   // a copy that does not fit is refused before it starts
             var id = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N");
             staging = Path.Combine(root, ".pending-" + id);
             Directory.CreateDirectory(staging);
             // The provider takes a consistent copy of the whole store, committed writes included, and names the files it
             // wrote. The ideas backlog, the cards waiting for an answer and the commit cursors are in it, so a backup
             // does not need the ideas plugin to be running, and it cannot be a snapshot that quietly left the ideas out.
-            var store = ctx.Services.Require<IStorageAccess>();
             var written = store.Snapshot.Write(staging).ToList();
             File.WriteAllText(Path.Combine(staging, SettingsFile), ctx.Settings.Snapshot().ToJsonString(NetPiJson.Indented));
             written.Add(SettingsFile);
@@ -90,7 +165,7 @@ public sealed class BackupPlugin : INetPiPlugin
             var destination = Path.Combine(root, id);
             Directory.Move(staging, destination);
             staging = null;
-            Verify(ctx.Paths.Home, id);
+            FinalizeSnapshot(ctx.Paths.Home, id);   // a snapshot that does not verify is deleted, not kept as the latest
             // Never remove manual backups. Retention happens only after a successful new snapshot.
             var expected = new HashSet<string>(written, StringComparer.Ordinal) { "manifest.json" };
             foreach (var old in List(ctx.Paths.Home).Where(n => n!["automatic"]?.GetValue<bool>() == true)

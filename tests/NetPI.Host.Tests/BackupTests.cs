@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
 using NetPI.Backup;
+using NetPI.Host.Logging;
 using NetPI.Host.Storage.Sqlite;
 using NetPI.Host.Plugins;
 
@@ -8,6 +9,16 @@ namespace NetPI.Host.Tests;
 
 public static class BackupTests
 {
+    private static async Task WaitFor(Func<bool> condition, string what)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline) throw new AssertException("timed out waiting for: " + what);
+            await Task.Delay(20);
+        }
+    }
+
     public static void Register(TestRunner r)
     {
         BackupIdeasRoundTrip(r);
@@ -74,6 +85,147 @@ public static class BackupTests
                 Check.Throws<RpcException>(() => BackupPlugin.Verify(home, "../escape"));
             }
             finally { await plugin.StopAsync(default); scope.DisposeAll(); }
+        });
+
+        r.Add("backup: a failing automatic backup backs off (doubling, capped) and comes back at the regular cadence", async () =>
+        {
+            var home = T.TempDir("backup-backoff");
+            await using var kernel = HostKernel.Create(new NetPiServerOptions { Home = home, ConsoleLogging = false });
+            var scope = new PluginScope("netpi.backup", kernel.Log);
+            var ctx = new PluginContext(kernel, "netpi.backup", home, scope, default, () => "test");
+            kernel.Settings.Set("backup.enabled", JsonValue.Create(true));
+            // `backups` as a file: every attempt dies at the first Directory.CreateDirectory
+            File.WriteAllText(Path.Combine(home, "backups"), "not a directory");
+            // compressed cadence: a 300 ms retry base instead of an hour, a 50 ms check instead of a minute
+            var plugin = new BackupPlugin(TimeSpan.FromMilliseconds(300), TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(20));
+            var created = new List<DateTimeOffset>();
+            using var _ = kernel.Bus.Subscribe("backup.created", e => { lock (created) created.Add(DateTimeOffset.UtcNow); });
+            await plugin.StartAsync(ctx, default);
+            try
+            {
+                List<LogEntry> failures() => kernel.LogSink.Recent(200).Where(l => l.Category == "plugin:netpi.backup" && l.Message.StartsWith("Automatic backup failed")).ToList();
+                await WaitFor(() => failures().Count >= 3, "three failed attempts with growing waits");
+                var f = failures();
+                Check.Contains(f[0].Message, "00:00:00.300", "the first failure waits the retry base: " + f[0].Message);
+                Check.Contains(f[1].Message, "00:00:00.600", "the second doubles it: " + f[1].Message);
+                Check.True(f[1].Time - f[0].Time >= TimeSpan.FromMilliseconds(250), "the loop really waited the base, not the check cadence: " + (f[1].Time - f[0].Time));
+                Check.True(f[2].Time - f[1].Time > f[1].Time - f[0].Time, "the wait keeps doubling: " + (f[2].Time - f[1].Time) + " after " + (f[1].Time - f[0].Time));
+
+                // the path is fixed: the in-flight attempt (after the accumulated backoff) succeeds
+                File.Delete(Path.Combine(home, "backups"));
+                Directory.CreateDirectory(Path.Combine(home, "backups"));
+                await WaitFor(() => created.Count >= 1, "the automatic backup to succeed once the path is fixed");
+                var success = created[0];
+
+                // broken again: the failure after a success waits the base, not the accumulated backoff
+                Directory.Delete(Path.Combine(home, "backups"), true);
+                File.WriteAllText(Path.Combine(home, "backups"), "not a directory");
+                var before = failures().Count;
+                await WaitFor(() => failures().Count > before, "the next failure after the success");
+                Check.True(failures()[before].Time - success < TimeSpan.FromMilliseconds(900),
+                    "the backoff was reset by the success (" + (failures()[before].Time - success) + " later, not the accumulated backoff)");
+            }
+            finally { await plugin.StopAsync(default); scope.DisposeAll(); }
+        });
+
+        r.Add("backup: a copy that does not fit on the disk is refused before it starts", () =>
+        {
+            var root = T.TempDir("backup-space");
+            Check.Throws<IOException>(() => BackupPlugin.EnsureFreeSpace(long.MaxValue, root), "an absurd size cannot fit");
+            BackupPlugin.EnsureFreeSpace(1024, root);   // a size the disk can hold is allowed
+            BackupPlugin.EnsureFreeSpace(0, root);      // a store that reports no size reserves nothing
+        });
+
+        r.Add("backup: a .pending-* left by a kill mid-backup is swept, the snapshots are not", () =>
+        {
+            var home = T.TempDir("backup-sweep");
+            var root = Path.Combine(home, "backups");
+            Directory.CreateDirectory(Path.Combine(root, ".pending-20200101-000000-aaaaaaaa"));
+            Directory.CreateDirectory(Path.Combine(root, ".pending-20200101-000001-bbbbbbbb"));
+            Directory.CreateDirectory(Path.Combine(root, "20200101-000002-keep"));
+            BackupPlugin.SweepPending(home);
+            Check.False(Directory.Exists(Path.Combine(root, ".pending-20200101-000000-aaaaaaaa")), "the stale pending one is gone");
+            Check.False(Directory.Exists(Path.Combine(root, ".pending-20200101-000001-bbbbbbbb")));
+            Check.True(Directory.Exists(Path.Combine(root, "20200101-000002-keep")), "a real snapshot is untouched");
+        });
+
+        r.Add("backup: a snapshot that fails to verify is deleted, a verified one stays", () =>
+        {
+            var home = T.TempDir("backup-verify");
+            var root = Path.Combine(home, "backups");
+            // a bad snapshot: the manifest names a file that is not there
+            var bad = Path.Combine(root, "bad");
+            Directory.CreateDirectory(bad);
+            File.WriteAllText(Path.Combine(bad, "manifest.json"), new JsonObject
+            {
+                ["version"] = 1, ["id"] = "bad", ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"), ["automatic"] = true,
+                ["provider"] = "sqlite", ["files"] = new JsonObject { ["netpi.db"] = new string('0', 64) },
+            }.ToJsonString());
+            Check.Throws<InvalidDataException>(() => BackupPlugin.FinalizeSnapshot(home, "bad"));
+            Check.False(Directory.Exists(bad), "the failed snapshot is deleted: it must not count as the latest");
+
+            // a good snapshot verifies and stays
+            var good = Path.Combine(root, "good");
+            Directory.CreateDirectory(good);
+            File.WriteAllText(Path.Combine(good, "netpi.db"), "the store's file");
+            File.WriteAllText(Path.Combine(good, "settings.json"), "{}");
+            var files = new JsonObject();
+            foreach (var name in new[] { "netpi.db", "settings.json" })
+                files[name] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(good, name)))).ToLowerInvariant();
+            File.WriteAllText(Path.Combine(good, "manifest.json"), new JsonObject
+            {
+                ["version"] = 1, ["id"] = "good", ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"), ["automatic"] = true,
+                ["provider"] = "sqlite", ["files"] = files,
+            }.ToJsonString());
+            BackupPlugin.FinalizeSnapshot(home, "good");
+            Check.True(Directory.Exists(good), "a verified snapshot stays");
+        });
+
+        r.Add("backup: a long copy runs in batches: the store's lock is free between them, and the copy is still consistent", async () =>
+        {
+            var home = T.TempDir("backup-batch");
+            await using var kernel = HostKernel.Create(new NetPiServerOptions { Home = home, ConsoleLogging = false });
+            // grow the store so a copy takes a while: 100 MB of plugin data
+            var items = kernel.Storage.Plugins.For("test.batch").Collection("big", new CollectionSpec().Text("k"));
+            var chunk = new string('x', 1_000_000);
+            for (var i = 0; i < 100; i++)
+                items.Put("k" + i, new JsonObject { ["k"] = "k" + i, ["blob"] = chunk });
+
+            var staging = T.TempDir("backup-batch-snapshot");
+            // hold the store's lock and start the copy: it cannot take its first batch until we let it
+            Monitor.Enter(kernel.Storage.Lock);
+            var copy = Task.Run(() => kernel.Storage.Snapshot.Write(staging));
+            var deadline = DateTime.UtcNow.AddSeconds(2);
+            while (!File.Exists(Path.Combine(staging, "netpi.db")) && !copy.IsCompleted && DateTime.UtcNow < deadline)
+                Thread.Sleep(1);   // the batched copy opens its destination before it needs the lock
+            Monitor.Exit(kernel.Storage.Lock);
+            if (copy.IsCompleted) throw new AssertException("the copy finished before it was seen running: the store is not big enough for the test");
+            // while the copy is still running, the store's lock must come back free: a batch is being copied, not the whole store.
+            // The probe checks in userland the way the copy's own loop re-acquires the lock; a waiter blocked in the kernel
+            // would lose the race to that re-acquisition, so this is what the test can see.
+            var holding = false;
+            while (!holding && !copy.IsCompleted)
+            {
+                if (Monitor.TryEnter(kernel.Storage.Lock, 0)) { holding = true; break; }
+                Thread.SpinWait(8);
+            }
+            var sawFreeWhileRunning = false;
+            if (holding)
+            {
+                Thread.Sleep(50);   // the copy, if still running, is a batch away and must wait for us
+                sawFreeWhileRunning = !copy.IsCompleted;
+                Monitor.Exit(kernel.Storage.Lock);
+            }
+            Check.True(sawFreeWhileRunning, "the store's lock was seen free between batches, while the copy was still running (a single-statement copy holds it for the whole length)");
+            await copy.WaitAsync(TimeSpan.FromSeconds(30));
+
+            // and the copy is a consistent store with everything that was in before it started
+            using var recovered = new SqliteStorageProvider().Open(new StorageOpenOptions
+            {
+                Home = staging, Logger = Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, Settings = kernel.Settings,
+            });
+            Check.Equal(100L, recovered.Plugins.For("test.batch").Collection("big", new CollectionSpec().Text("k")).Count(),
+                "every document written before the copy is in it");
         });
     }
 

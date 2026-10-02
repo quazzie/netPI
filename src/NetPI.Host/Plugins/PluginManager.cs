@@ -712,7 +712,11 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
         }
         if (parts[1].Equals("wwwroot", StringComparison.OrdinalIgnoreCase))
         {
-            (e.UiTimer ??= new Debouncer(TimeSpan.FromMilliseconds(300), () => BumpUiVersion(e))).Trigger();
+            // ??= is not atomic: two events for one plugin racing would each create a timer, and the loser would
+            // keep firing forever (nothing puts the field back to null). The entry guards its own timers.
+            Debouncer timer;
+            lock (e) timer = e.UiTimer ??= new Debouncer(TimeSpan.FromMilliseconds(300), () => BumpUiVersion(e));
+            timer.Trigger();
             return;
         }
         var file = parts[^1];
@@ -721,7 +725,10 @@ internal sealed class PluginManager : IPluginManager, IAsyncDisposable
             file.Equals("plugin.json", StringComparison.OrdinalIgnoreCase) ||
             file.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase))
         {
-            (e.ReloadTimer ??= new Debouncer(ReloadDelay, () => _ = Guard(ReloadEntryAsync(e, _shutdown.Token), "reload " + e.Id))).Trigger();
+            // Same race as the UI timer above, same guard.
+            Debouncer timer;
+            lock (e) timer = e.ReloadTimer ??= new Debouncer(ReloadDelay, () => _ = Guard(ReloadEntryAsync(e, _shutdown.Token), "reload " + e.Id));
+            timer.Trigger();
         }
     }
 

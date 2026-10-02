@@ -18,6 +18,7 @@ internal static unsafe class Sqlite3
     public const int OK = 0;
     public const int ROW = 100;
     public const int DONE = 101;
+    public const int BUSY = 5;
 
     public const int INTEGER = 1;
     public const int FLOAT = 2;
@@ -141,6 +142,12 @@ internal static unsafe class Sqlite3
     [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_exec(IntPtr db, byte* sql, IntPtr callback, IntPtr arg, byte** errmsg);
     [DllImport(Lib, ExactSpelling = true)] public static extern void sqlite3_free(void* p);
     [DllImport(Lib, ExactSpelling = true)] public static extern byte* sqlite3_libversion();
+
+    // The online backup API: a consistent copy of one database into a fresh one, in interruptible batches.
+    [DllImport(Lib, ExactSpelling = true)] public static extern IntPtr sqlite3_backup_init(IntPtr dest, byte* destName, IntPtr source, byte* sourceName);
+    [DllImport(Lib, ExactSpelling = true), SuppressGCTransition] public static extern int sqlite3_backup_step(IntPtr backup, int nPage);
+    [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_backup_finish(IntPtr backup);
+    [DllImport(Lib, ExactSpelling = true), SuppressGCTransition] public static extern int sqlite3_errcode(IntPtr db);
 }
 
 /// <summary>UTF-8 helpers for native strings.</summary>

@@ -15,7 +15,7 @@ internal static class Program
           --home DIR      Data directory (default: NETPI_HOME or ~/.netpi)
           --plugins DIR   Extra plugin directory (repeatable)
           --webroot DIR   Web UI directory (default: <app>/wwwroot)
-          --token TOKEN   Fixed auth token (default: random per run)
+          --token TOKEN   Fixed auth token (default: the NETPI_TOKEN environment variable, else random per run)
           --open          Open the launch URL in the default browser
           --quiet         No log output on the console
           --ephemeral     Keep everything in memory: nothing is stored in the home's database and nothing survives the run
@@ -56,6 +56,8 @@ internal static class Program
             return 2;
         }
         options.ExtraPluginDirs = plugins;
+        // The environment keeps the token out of argv (visible to every local user on a shared box through /proc).
+        options.Token ??= Environment.GetEnvironmentVariable("NETPI_TOKEN");
 
         using var stop = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>

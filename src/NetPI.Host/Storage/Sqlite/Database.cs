@@ -74,6 +74,60 @@ internal sealed unsafe class Database : IDisposable
         }
     }
 
+    /// <summary>
+    /// A consistent copy of this database into a fresh file at <paramref name="destinationFile"/> (which must not exist),
+    /// in batches of a few hundred pages: the gate is released between batches, so a long copy does not hold every other
+    /// statement for its whole length. The copy is consistent even while this database is being written to.
+    /// </summary>
+    public void BackupTo(string destinationFile)
+    {
+        ThrowIfDisposed();
+        var main = Utf8.ToZ("main");
+        var file = Utf8.ToZ(destinationFile);
+        IntPtr dest;
+        int rc;
+        fixed (byte* p = file)
+            rc = Sqlite3.sqlite3_open_v2(p, &dest, Sqlite3.OPEN_READWRITE | Sqlite3.OPEN_CREATE, null);
+        if (rc != Sqlite3.OK)
+        {
+            var ex = SqliteException.From(dest, rc, null, $"Cannot open backup destination '{destinationFile}'");
+            if (dest != IntPtr.Zero) Sqlite3.sqlite3_close_v2(dest);
+            throw ex;
+        }
+        fixed (byte* name = main)
+        {
+            // init and finish touch the source connection, so they run under the gate like every other statement
+            IntPtr backup;
+            lock (_gate) backup = Sqlite3.sqlite3_backup_init(dest, name, _db, name);
+            if (backup == IntPtr.Zero)
+            {
+                Sqlite3.sqlite3_close_v2(dest);
+                throw SqliteException.From(dest, Sqlite3.sqlite3_errcode(dest), null, "The backup could not be started");
+            }
+            var finished = false;
+            try
+            {
+                while (true)
+                {
+                    lock (_gate) rc = Sqlite3.sqlite3_backup_step(backup, 256);
+                    if (rc == Sqlite3.DONE) { finished = true; break; }
+                    if (rc is not (Sqlite3.OK or Sqlite3.BUSY))
+                        throw SqliteException.From(_db, rc, null, "The backup failed");
+                    Thread.Yield();   // the gate is free: a statement that was waiting takes the slice this one just gave up
+                }
+                lock (_gate) rc = Sqlite3.sqlite3_backup_finish(backup);
+                finished = true;
+            }
+            finally
+            {
+                if (!finished) { try { lock (_gate) Sqlite3.sqlite3_backup_finish(backup); } catch { } }
+                Sqlite3.sqlite3_close_v2(dest);
+            }
+        }
+        if (rc != Sqlite3.OK)
+            throw SqliteException.From(_db, rc, null, "Finishing the backup failed");
+    }
+
     public long Insert(string sql, object? args = null)
     {
         lock (_gate)
@@ -335,7 +389,9 @@ internal sealed unsafe class Database : IDisposable
                 cur = tail;
             }
         }
-        if (list.Count == 0) throw new ArgumentException("SQL contains no statement: " + sql);
+        // A programmer error, not a caller's: the SQL came from this process. As an ArgumentException it would reach
+        // a client as a 400 "bad_request" and stay out of the log; as an InvalidOperationException it is a 500 with a log line.
+        if (list.Count == 0) throw new InvalidOperationException("SQL contains no statement: " + sql);
         return [.. list];
     }
 
@@ -346,7 +402,7 @@ internal sealed unsafe class Database : IDisposable
         var names = st.ParameterNames;
         if (names.Length == 0) return;
         if (args is null)
-            throw new ArgumentException($"SQL has parameters ({string.Join(", ", names.Select(n => n ?? "?"))}) but no arguments were given\n  SQL: {sql}");
+            throw new InvalidOperationException($"SQL has parameters ({string.Join(", ", names.Select(n => n ?? "?"))}) but no arguments were given\n  SQL: {sql}");
 
         var positional = SqlArgs.IsPositional(args);
         for (var i = 0; i < names.Length; i++)
@@ -355,7 +411,7 @@ internal sealed unsafe class Database : IDisposable
             object? value;
             if (raw is null || raw[0] == '?')
             {
-                if (!positional) throw new ArgumentException($"Positional parameter #{i + 1} needs an array/list argument\n  SQL: {sql}");
+                if (!positional) throw new InvalidOperationException($"Positional parameter #{i + 1} needs an array/list argument\n  SQL: {sql}");
                 var index = raw is { Length: > 1 } && int.TryParse(raw.AsSpan(1), out var n) ? n - 1 : i;
                 value = SqlArgs.GetPositional(args, index, sql);
             }
@@ -365,7 +421,7 @@ internal sealed unsafe class Database : IDisposable
             }
             else if (!SqlArgs.TryGet(args, raw[1..], out value))
             {
-                throw new ArgumentException($"Missing SQL parameter '{raw}'\n  SQL: {sql}");
+                throw new InvalidOperationException($"Missing SQL parameter '{raw}'\n  SQL: {sql}");
             }
             var rc = BindValue(st.Handle, i + 1, value);
             if (rc != Sqlite3.OK) throw SqliteException.From(_db, rc, sql, $"Binding parameter '{raw ?? "?"}' failed");

@@ -93,6 +93,30 @@ internal static class PathUtil
         return trimmed.Length == 0 ? full : trimmed;
     }
 
+    /// <summary>
+    /// A file that holds secrets (the server token, the API keys in settings.json), open for writing: on Unix it is
+    /// created owner-only from the moment of creation — a file made with the umask is readable by every other local
+    /// user for as long as it exists, and a moved token file keeps the mode of the file that held it. On Windows there
+    /// is no such mode.
+    /// </summary>
+    public static FileStream CreateOwnerOnly(string path)
+    {
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None,
+            BufferSize = 4096, Options = FileOptions.None,
+        };
+        if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        return new FileStream(path, options);
+    }
+
+    /// <summary>On Unix, the home is owner-only: it holds the server token, the API keys and the database. On Windows there is no such mode.</summary>
+    public static void OwnerOnly(string path)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+    }
+
     /// <summary>Combine <paramref name="root"/> with a relative URL path, refusing anything that escapes the root.</summary>
     public static string? SafeCombine(string root, string relative)
     {

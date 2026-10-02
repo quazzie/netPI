@@ -92,7 +92,7 @@ public static class SqliteTests
             // Same parameter referenced twice, and a reused cached statement.
             Check.Equal(2L, db.Scalar<long>("SELECT COUNT(*) FROM p WHERE b >= @min AND b <= @min + 1", new { min = 2 }));
             Check.Equal(2L, db.Scalar<long>("SELECT COUNT(*) FROM p WHERE b >= @min AND b <= @min + 1", new { min = 3 }));
-            var missing = Check.Throws<ArgumentException>(() => db.Execute("INSERT INTO p VALUES(@a, @b, @c)", new { a = "x", b = 1 }));
+            var missing = Check.Throws<InvalidOperationException>(() => db.Execute("INSERT INTO p VALUES(@a, @b, @c)", new { a = "x", b = 1 }));
             Check.Contains(missing.Message, "@c");
         });
 
@@ -107,6 +107,23 @@ public static class SqliteTests
             Check.Equal(19, ex.PrimaryCode);
             var syntax = Check.Throws<SqliteException>(() => db.Query("SELEC nonsense", null, x => 1));
             Check.Contains(syntax.Message, "syntax error");
+        });
+
+        r.Add("sqlite: a programmer's SQL error is an internal error, not a 400 for the caller", () =>
+        {
+            using var db = Open(out _);
+            db.Execute("CREATE TABLE p (id INTEGER PRIMARY KEY, v TEXT)");
+            // The SQL comes from this process, not from a client: it must surface as a 500 with a log line
+            // (InvalidOperationException falls to MapError's default), not as a 400 "bad_request" blaming the
+            // caller of the RPC that happened to be running.
+            var noArgs = Check.Throws<InvalidOperationException>(() => db.Query("SELECT v FROM p WHERE id = @id", null, x => x.GetString("v")));
+            Check.Contains(noArgs.Message, "no arguments were given");
+            var missing = Check.Throws<InvalidOperationException>(() => db.Query("SELECT v FROM p WHERE id = @id", new { other = 1 }, x => 1));
+            Check.Contains(missing.Message, "Missing SQL parameter");
+            var noStatement = Check.Throws<InvalidOperationException>(() => db.Scalar<long>("-- nothing but a comment"));
+            Check.Contains(noStatement.Message, "no statement");
+            var positional = Check.Throws<InvalidOperationException>(() => db.Query("SELECT ? FROM p", 42, x => 1));
+            Check.Contains(positional.Message, "needs an array/list argument");
         });
 
         r.Add("sqlite: transactions commit, roll back and nest (reentrant lock)", () =>

@@ -37,8 +37,10 @@ internal static class ServerFile
         var path = PathIn(paths);
         try
         {
+            // The token in it must not be readable by other local users: on Unix the tmp is created owner-only, and
+            // the move keeps the mode.
             var tmp = path + ".tmp";
-            File.WriteAllText(tmp, doc.ToJsonString(NetPiJson.Indented));
+            using (var fs = PathUtil.CreateOwnerOnly(tmp)) fs.Write(System.Text.Encoding.UTF8.GetBytes(doc.ToJsonString(NetPiJson.Indented)));
             File.Move(tmp, path, overwrite: true);
         }
         catch (Exception ex) { log.LogWarning(ex, "Writing {File} failed: tools can't find this instance", path); }

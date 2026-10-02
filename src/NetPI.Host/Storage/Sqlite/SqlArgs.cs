@@ -66,7 +66,7 @@ internal static class SqlArgs
     {
         var list = (IList)args;
         if (index >= list.Count)
-            throw new ArgumentException($"SQL expects at least {index + 1} positional arguments, got {list.Count}\n  SQL: {sql}");
+            throw new InvalidOperationException($"SQL expects at least {index + 1} positional arguments, got {list.Count}\n  SQL: {sql}");
         return list[index];
     }
 

@@ -29,6 +29,13 @@ internal sealed class SessionService : ISessionStore
     private readonly Dictionary<string, SessionInfo> _transient = new();
 
     /// <summary>
+    /// An abandoned empty chat is dropped once this many exist, oldest first. They are UI scratchpads — a "new
+    /// chat" that never got its first message — and an abandoned one never materializes, so keeping them forever
+    /// is a leak, not a memory.
+    /// </summary>
+    private const int MaxTransientSessions = 100;
+
+    /// <summary>
     /// Guards <see cref="_transient"/>, and it is the STORE'S lock (<see cref="IStorage.Lock"/>). It used to be a lock of its own, and that is
     /// a deadlock: the first message of a session took it and then the store's lock (to store the session), while any transaction —
     /// which holds the store's lock — reads a session, and reading one looks the transient sessions up under it. A thread in each order
@@ -55,6 +62,14 @@ internal sealed class SessionService : ISessionStore
     private readonly object _contextLock = new();
     private long _contextHits;
     private long _contextReads;
+
+    /// <summary>
+    /// A generation per cached session, bumped by every drop: a cold read captures its value before it reads
+    /// storage, and may fill the slot only if nothing dropped in the meantime. That is the check the seq compare
+    /// cannot give: rows and newest are read as two separate statements, and a write that changes a message in
+    /// place (or compacts) commits between them with the seq still matching, leaving pre-write rows in the cache.
+    /// </summary>
+    private readonly Dictionary<string, long> _contextGeneration = new(StringComparer.Ordinal);
 
     private readonly HashSet<string> _forkReset = new(StringComparer.Ordinal);
     private readonly object _forkResetLock = new();
@@ -215,7 +230,11 @@ internal sealed class SessionService : ISessionStore
         s.Pinned = template.Pinned;
         if (s.ProjectId is not null && _repo.GetProject(s.ProjectId) is null) throw new KeyNotFoundException($"Project {s.ProjectId} not found");
         // No row, no session.created, no project last_used_at: the first message materializes the session (AppendMessage).
-        lock (_transientLock) _transient[s.Id] = s;
+        lock (_transientLock)
+        {
+            _transient[s.Id] = s;
+            EvictTransientLocked();
+        }
         return s;
     }
 
@@ -291,6 +310,7 @@ internal sealed class SessionService : ISessionStore
             if (_transient.Remove(id))
             {
                 // No row to delete (and nothing can be a child: a subagent materializes with its task message, a fork has no parent).
+                ForgetContext(id);
                 Publish(EventTypes.SessionDeleted, new { id });
                 return;
             }
@@ -299,7 +319,7 @@ internal sealed class SessionService : ISessionStore
         if (deleted.Count == 0) throw new KeyNotFoundException($"Session {id} not found");
         // Children first so a UI never sees an orphaned child of a deleted parent.
         for (var i = deleted.Count - 1; i >= 0; i--) Publish(EventTypes.SessionDeleted, new { id = deleted[i] });
-        foreach (var sid in deleted) DropContext(sid);
+        foreach (var sid in deleted) ForgetContext(sid);
     }
 
     /// <summary>
@@ -421,8 +441,13 @@ internal sealed class SessionService : ISessionStore
     public void UpdateMessage(ChatMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        DropContext(message.SessionId);
+        // The drop goes AFTER the write. With it before, a reader that starts between the drop and the commit re-fills
+        // the slot with the old row — the generation it captured is only bumped by the drop, and the seq check cannot
+        // see a content change at the same seq. Written this way, a reader that started before the write captured its
+        // generation before the bump and must not fill after it, and one that fills in between the commit and the drop
+        // is removed by the drop itself.
         if (!_repo.UpdateMessage(message)) throw new KeyNotFoundException($"Message {message.Id} not found");
+        DropContext(message.SessionId);
         if (string.IsNullOrEmpty(message.SessionId) || message.Seq == 0)
         {
             var stored = _repo.GetMessage(message.Id)!;
@@ -478,6 +503,8 @@ internal sealed class SessionService : ISessionStore
     private List<ChatMessage> ContextRows(string sessionId)
     {
         Interlocked.Increment(ref _contextReads);
+        long generation;
+        lock (_contextLock) generation = _contextGeneration.GetValueOrDefault(sessionId);
         var (read, newest) = _repo.ReadContext(sessionId);
         var rows = read.ToList();
         if (rows.Count > ContextCacheMaxMessages) return rows;      // too big to be worth retaining
@@ -485,7 +512,9 @@ internal sealed class SessionService : ISessionStore
         lock (_contextLock)
         {
             // Only fill an empty slot: if an append extended the cache while this read ran, that entry knows more.
-            if (!_context.ContainsKey(sessionId))
+            // And only if nothing dropped since the read started — the generation is the check the seq compare
+            // cannot give (a same-seq update or a compaction commits between the rows and the newest).
+            if (generation == _contextGeneration.GetValueOrDefault(sessionId) && !_context.ContainsKey(sessionId))
             {
                 _context[sessionId] = new ContextEntry(rows, newest);
                 _contextLru.AddLast(sessionId);
@@ -524,12 +553,37 @@ internal sealed class SessionService : ISessionStore
         }
     }
 
+    /// <summary>
+    /// The caller holds <see cref="_transientLock"/>: an abandoned empty chat is dropped (oldest first) once the
+    /// cap is passed. Nothing is lost that a restart would not already have lost (a transient session has no row),
+    /// and <c>session.deleted</c> keeps a UI's list from ghosting the dropped chat.
+    /// </summary>
+    private void EvictTransientLocked()
+    {
+        while (_transient.Count > MaxTransientSessions)
+        {
+            var oldest = _transient.Values.OrderBy(s => s.UpdatedAt).First();
+            if (_transient.Remove(oldest.Id)) Publish(EventTypes.SessionDeleted, new { id = oldest.Id });
+        }
+    }
+
     /// <summary>Forget a session's cached context. Every write that changes a message calls it.</summary>
     private void DropContext(string sessionId)
     {
         lock (_contextLock)
         {
             if (_context.Remove(sessionId)) _contextLru.Remove(sessionId);
+            _contextGeneration[sessionId] = _contextGeneration.GetValueOrDefault(sessionId) + 1;
+        }
+    }
+
+    /// <summary>A session that is going away: forget its cached context and let its generation go with it.</summary>
+    private void ForgetContext(string sessionId)
+    {
+        lock (_contextLock)
+        {
+            if (_context.Remove(sessionId)) _contextLru.Remove(sessionId);
+            _contextGeneration.Remove(sessionId);
         }
     }
 
@@ -590,7 +644,11 @@ internal sealed class SessionService : ISessionStore
         if (!_repo.MessageStubs(sessionId).Any(m => m.Seq <= upToSeq))
         {
             // Nothing to copy: the fork stays transient, like a fresh empty chat — no row, no session.created, no session.forked.
-            lock (_transientLock) _transient[fork.Id] = fork;
+            lock (_transientLock)
+            {
+                _transient[fork.Id] = fork;
+                EvictTransientLocked();
+            }
             return fork;
         }
         _repo.Atomic(r =>

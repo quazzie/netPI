@@ -47,6 +47,9 @@ internal sealed class HostKernel : IAsyncDisposable
         var logsDir = Path.Combine(home, "logs");
         foreach (var dir in new[] { home, logsDir, Path.Combine(home, "plugins"), Path.Combine(home, "workspace") })
             Directory.CreateDirectory(dir);
+        // The home holds the server token (server.json), the API keys (settings.json) and the database: on Unix it is
+        // owner-only, so another local user on a shared box cannot read it or call the server with its token.
+        PathUtil.OwnerOnly(home);
 
         // one NetPI per home: a second one stops here, before it touches the logs, the settings or the database
         var homeLock = HomeLock.Acquire(home);
@@ -157,7 +160,12 @@ internal sealed class HostKernel : IAsyncDisposable
         CoreRpc.Register(this, _subscriptions);
     }
 
-    private static string ResolveHome(string? option)
+    /// <summary>
+    /// Where the data lives: the --home option, else the NETPI_HOME environment variable, else ~/.netpi. ~ and
+    /// environment references are expanded. Shared with the desktop shell, which resolves the SAME home for its
+    /// window.json and WebView2 profile (a home read without expansion splits them from the server's).
+    /// </summary>
+    internal static string ResolveHome(string? option)
     {
         var raw = !string.IsNullOrWhiteSpace(option) ? option
             : Environment.GetEnvironmentVariable("NETPI_HOME") is { Length: > 0 } env ? env

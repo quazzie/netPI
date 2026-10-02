@@ -298,7 +298,8 @@ internal sealed class SettingsStore : ISettings, IDisposable
             {
                 try
                 {
-                    using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                    // The document holds API keys: on Unix the tmp is created owner-only, and the move keeps the mode.
+                    using (var fs = PathUtil.CreateOwnerOnly(tmp))
                     {
                         fs.Write(Utf8NoBom.GetBytes(text));
                         fs.Flush(flushToDisk: true);   // the move must never rename a file the disk has not received
