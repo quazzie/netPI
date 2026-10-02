@@ -13,8 +13,8 @@ A backlog of ideas, research, plans and deferred work for the user and for agent
   a hint, read and written by nothing), `ideas.recall`, `ideas.recallThreshold`,
   `ideas.saveCheck`, `ideas.attachThreshold`, `ideas.model`, `ideas.allowPaidModel`, `ideas.checkWaitSeconds`,
   `ideas.closeOnCommit`,
-  `ideas.linkThreshold`, `ideas.doneThreshold`, `ideas.tellAgentOnCommit`, `ideas.commitNoticesPerRun`
-  (docs/SETTINGS.md).
+  `ideas.linkThreshold`, `ideas.doneThreshold`, `ideas.tellAgentOnCommit`, `ideas.commitNoticesPerRun`,
+  `ideas.commitNoticeDebounceSec` (docs/SETTINGS.md).
 
 ## Where ideas are stored
 
@@ -441,7 +441,14 @@ there, all of it a reason to stay silent instead:
 - the working directory (the call's `cwd`, else the run's) is inside the session's **project**, and the run has a project
   and the `ideas` tool;
 - the project has at least one open idea (so a project without a backlog never pays an extra model call);
-- the run has not had `ideas.commitNoticesPerRun` (2) of them yet. Two commits inside one model call are one notice.
+- the run has not had `ideas.commitNoticesPerRun` (2) of them yet, and its last notice is more than
+  `ideas.commitNoticeDebounceSec` (30) old, so a burst of commits costs one notice. Two commits inside one model call
+  are one notice.
+
+The notice names the project's open ideas only when there are at most three of them (each clipped, `MaxTitleLength`):
+with a backlog that size any few of them are an arbitrary slice, so the notice says that a commit landed, offers the
+`ideas` tool and obliges the agent to nothing. With three or fewer it names them and asks for an update or a one-line
+"none of them".
 
 The card flow is unchanged and still needed: a commit the agent closed is no longer open, so it is not offered twice,
 and a commit nobody made in a chat is exactly what the watcher is for. Skips: `ideas.tellAgentOnCommit` off.

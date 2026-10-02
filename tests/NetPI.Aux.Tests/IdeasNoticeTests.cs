@@ -120,6 +120,7 @@ public static class IdeasNoticeTests
         {
             var env = new Env { Open = [Idea("Something")] };
             env.Ctx.SettingsFake.Set("ideas.commitNoticesPerRun", 2);
+            env.Ctx.SettingsFake.Set("ideas.commitNoticeDebounceSec", 0);   // the cap alone, so the loop reaches it
             var hook = env.Hook();
             var run = env.Run();
             var turn = TurnWithIdeas(run);
@@ -130,6 +131,40 @@ public static class IdeasNoticeTests
                 if (await After(hook, turn) is { Action: TurnAction.Inject }) asked++;
             }
             Check.Equal(2, asked);
+        });
+
+        r.Add("notice: a burst of commits costs one notice, and a later commit asks again", async () =>
+        {
+            var env = new Env { Open = [Idea("Something")] };
+            env.Ctx.SettingsFake.Set("ideas.commitNoticesPerRun", 5);
+            var hook = env.Hook();
+            var run = env.Run();
+            var turn = TurnWithIdeas(run);
+
+            await hook.OnAfterToolCallAsync(turn, Commit("git commit -m a"), Ok());
+            Check.True(await After(hook, turn) is { Action: TurnAction.Inject }, "the first commit asks");
+            await hook.OnAfterToolCallAsync(turn, Commit("git commit -m b"), Ok());
+            Check.True(await After(hook, turn) is null, "the next commit is inside the debounce window");
+            run.Items[IdeaCommitNoticeHook.LastNoticeKey] = DateTimeOffset.UtcNow.AddSeconds(-60);
+            await hook.OnAfterToolCallAsync(turn, Commit("git commit -m c"), Ok());
+            Check.True(await After(hook, turn) is { Action: TurnAction.Inject }, "a commit 60 s later asks again");
+        });
+
+        r.Add("notice: the debounce is ideas.commitNoticeDebounceSec long", async () =>
+        {
+            var env = new Env { Open = [Idea("Something")] };
+            env.Ctx.SettingsFake.Set("ideas.commitNoticesPerRun", 5);
+            env.Ctx.SettingsFake.Set("ideas.commitNoticeDebounceSec", 10);
+            var hook = env.Hook();
+            var run = env.Run();
+            var turn = TurnWithIdeas(run);
+
+            run.Items[IdeaCommitNoticeHook.LastNoticeKey] = DateTimeOffset.UtcNow.AddSeconds(-30);
+            await hook.OnAfterToolCallAsync(turn, Commit("git commit -m a"), Ok());
+            Check.True(await After(hook, turn) is { Action: TurnAction.Inject }, "30 s after the last notice: outside the 10 s window");
+            run.Items[IdeaCommitNoticeHook.LastNoticeKey] = DateTimeOffset.UtcNow.AddSeconds(-5);
+            await hook.OnAfterToolCallAsync(turn, Commit("git commit -m b"), Ok());
+            Check.True(await After(hook, turn) is null, "5 s after it: inside the window");
         });
 
         r.Add("notice: without the ideas tool there is nothing to ask", async () =>
@@ -157,6 +192,7 @@ public static class IdeasNoticeTests
         {
             var env = new Env { Open = [Idea("Something")] };
             env.Ctx.SettingsFake.Set("ideas.commitNoticesPerRun", 5);
+            env.Ctx.SettingsFake.Set("ideas.commitNoticeDebounceSec", 0);   // the attribution is what this checks
             var hook = env.Hook();
             var run = env.Run();
             var turn = TurnWithIdeas(run);
@@ -173,6 +209,7 @@ public static class IdeasNoticeTests
         {
             var env = new Env { Open = [Idea("Something")] };
             env.Ctx.SettingsFake.Set("ideas.commitNoticesPerRun", 5);
+            env.Ctx.SettingsFake.Set("ideas.commitNoticeDebounceSec", 0);
             var hook = env.Hook();
             var run = env.Run();
             var turn = TurnWithIdeas(run);
@@ -224,14 +261,30 @@ public static class IdeasNoticeTests
             Check.Equal(1, d.Text!.Split("A commit just landed").Length - 1);
         });
 
-        r.Add("notice: the open ideas are bounded and clipped", () =>
+        r.Add("notice: a small backlog is named and clipped, a large one is not", async () =>
         {
             var open = Enumerable.Range(1, 20).Select(i => Idea($"A very long idea title that goes on and on and on, number {i}, with more words after it")).ToList();
-            var titles = IdeaCommitNoticeHook.Titles(open);
-            Check.Equal(IdeaCommitNoticeHook.MaxTitles, titles.Count);
+            Check.Equal(0, IdeaCommitNoticeHook.Titles(open).Count, "a backlog this size: no idea of it is about this commit");
+            var text = IdeaCommitNoticeHook.Text(new IdeaCommitNoticeHook.Pending("NetPI", IdeaCommitNoticeHook.Titles(open)));
+            Check.True(!text.Contains("say so in one line"), "and nothing to answer");
+            Check.True(text.Length < 500, $"the notice stays short (was {text.Length})");
+
+            var few = open.Take(IdeaCommitNoticeHook.MaxNamedIdeas).ToList();
+            var titles = IdeaCommitNoticeHook.Titles(few);
+            Check.Equal(IdeaCommitNoticeHook.MaxNamedIdeas, titles.Count);
             Check.True(titles.All(t => t.Length <= IdeaCommitNoticeHook.MaxTitleLength + 4), "each title is clipped");
-            var text = IdeaCommitNoticeHook.Text(new IdeaCommitNoticeHook.Pending("NetPI", titles));
-            Check.True(text.Length < 1400, $"the notice stays short (was {text.Length})");
+            var named = IdeaCommitNoticeHook.Text(new IdeaCommitNoticeHook.Pending("NetPI", titles));
+            Check.Contains(named, "number 1");
+            Check.True(named.Length < 1400, $"and the notice stays short (was {named.Length})");
+
+            // The notice that reaches the model says the same thing.
+            var env = new Env { Open = open };
+            var hook = env.Hook();
+            var turn = TurnWithIdeas(env.Run());
+            await hook.OnAfterToolCallAsync(turn, Commit("git commit -m x"), Ok());
+            var d = await After(hook, turn);
+            Check.True(!d!.Text!.Contains("number 1"), "a large backlog names no title in the injected notice");
+            Check.True(d.Text.Length < 500, "and the injected notice stays short");
         });
 
         // The attribution checks below run against real temporary git repositories (the repository rule: never a fake

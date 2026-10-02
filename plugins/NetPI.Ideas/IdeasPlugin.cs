@@ -69,6 +69,8 @@ public sealed class IdeasPlugin : INetPiPlugin
                     "After the agent itself runs a successful git commit or git merge in the session's project, one notice asks it to mark the idea that commit finished (or to say that none of them is about it). Nothing happens when the project has no open idea. The cards above stay: they are what catches a commit made outside any chat."),
                 SettingInfo.Int("ideas.commitNoticesPerRun", "Commit notices per run", IdeaCommitNoticeHook.DefaultMaxPerRun,
                     "How many of those notices one run may get, so a run that commits in a loop is asked a bounded number of times.", 0, 10),
+                SettingInfo.Int("ideas.commitNoticeDebounceSec", "Commit notice debounce", IdeaCommitNoticeHook.DefaultDebounceSec,
+                    "Seconds a run waits after a commit notice before it may get the next one, so a burst of commits costs one notice instead of one each.", 0, 3600),
             ],
         });
 

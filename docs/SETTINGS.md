@@ -334,8 +334,9 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `ideas.closeOnCommit` | `true` | watch every project's repository: a commit is recorded on the open idea it works on, and when it may have finished one you get a card to mark it done (needs the Files plugin to read the commits and Decide for the questions) |
 | `ideas.linkThreshold` | `0.7` | the probability a commit has to be about an open idea before it is recorded on it (0.3–0.99); 0.7 linked no wrong idea in 187 commits |
 | `ideas.doneThreshold` | `0.8` | the probability an idea has to be finished before you are offered (0.3–0.99); 0.8 offered 4 of 5 finished ideas and nothing that was only advanced |
-| `ideas.tellAgentOnCommit` | `true` | after the agent itself runs a successful `git commit`/`git merge` in the session's project, one notice asks it to mark the idea that commit finished, or to say that none of them is about it. Silent when the project has no open idea. The cards above stay: they catch a commit made outside any chat |
+| `ideas.tellAgentOnCommit` | `true` | after the agent itself runs a successful `git commit`/`git merge` in the session's project, one notice asks it to mark the idea that commit finished. Silent when the project has no open idea, and when there are more than three of them the notice names none and asks for nothing (a backlog that size says nothing about this commit). The cards above stay: they catch a commit made outside any chat |
 | `ideas.commitNoticesPerRun` | `2` | how many of those notices one run may get (0–10), so a run that commits in a loop is asked a bounded number of times |
+| `ideas.commitNoticeDebounceSec` | `30` | seconds a run waits after a commit notice before it may get the next one (0–3600), so a burst of commits costs one notice instead of one each; 0 turns the debounce off and leaves only the per-run cap |
 
 ## Workspaces
 
