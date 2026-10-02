@@ -38,6 +38,10 @@ const compact = flag('--compact');
 // Declared before its first use: the read-only map from rpc.list, fetched on demand (see declaredReadOnly below).
 let declared = null;
 const home = option('--home') ?? process.env.NETPI_HOME ?? path.join(os.homedir(), '.netpi');
+
+// Every call is bounded: build.ps1 runs this inside the install lock to say what a publish would disturb, and a server
+// that never answers (half-dead, or a port held by something else) must not hold the lock forever.
+const CALL_TIMEOUT_MS = 5000;
 let method = args.shift() ?? 'diag.overview';
 let params = {};
 
@@ -102,10 +106,6 @@ function readOnly(m) {
   if (m.startsWith('diag.') || m === 'rpc.list' || m === 'app.info' || m === 'services.list') return true;
   return /\.(list|get|recent|status|summary|preview|snapshot|schema|messages|session|queue|tools|output|search)$/.test(m);
 }
-
-// Every call is bounded: build.ps1 runs this inside the install lock to say what a publish would disturb, and a server
-// that never answers (half-dead, or a port held by something else) must not hold the lock forever.
-const CALL_TIMEOUT_MS = 5000;
 
 async function call(m, p) {
   const file = path.join(home, 'server.json');
