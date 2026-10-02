@@ -17,14 +17,14 @@ namespace NetPI.Ideas;
 /// </summary>
 public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo, IdeasLocator locator)
 {
+    /// <summary>The model the checks are measured on (the setting's default; <c>ideas.model</c> names another one).</summary>
     public const string DefaultModel = "qwen3.8-27b";
     public const double DefaultThreshold = 0.8;
     public const int MinLength = 12;
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
-    // Single-token letters for the options (the last one used is "none"). More open ideas than letters: the newest
-    // ones stay out (the list is ordered as the backlog is).
-    private const string Letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    /// <summary>The one pick-one question the composer asks while the user types.</summary>
+    private readonly IdeaDecider _decider = new(ctx);
 
     [GeneratedRegex(@"\bidea-[a-z0-9]{6}\b", RegexOptions.IgnoreCase)]
     private static partial Regex IdeaIdPattern();
@@ -74,43 +74,22 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
         var system = "You match the first message of a new chat with an AI coding agent to the user's backlog of open ideas " +
                      "(planned features, fixes and experiments), so the agent can be given the idea's notes. Reply with the letter of the best option only.\n\n" +
                      "Open ideas:\n" + list;
-        var question = $"First message of a new chat:\n<<<\n{Clip(text, 2000)}\n>>>\n\n" +
+        var question = $"First message of a new chat:\n<<<\n{IdeaOps.Clip(text, 2000)}\n>>>\n\n" +
                        "Is this message about working on one of the open ideas (continuing, building, testing or discussing it)? Which one? " +
                        $"Pick {none} when it is about something else, even if the topic is near an idea.\nAnswer with one letter.";
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(Timeout);
-        object? answer;
-        try
-        {
-            var name = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel;
-            // Typed-ahead background work: it waits for the backend's slot, briefly, and never for a paid model. A drop
-            // here is a keystroke without a suggestion, not a failure to report: the composer moves on.
-            var admission = new IdeaAdmission(ctx);
-            var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
-            var admit = await admission.EnterAsync(model,
-                "recall", sessionId, project?.Id, ct, IdeaAdmission.InteractiveWait).ConfigureAwait(false);
-            if (!admit.Admitted) return Result(admit.Retryable ? "no_slot" : "skipped", error: admit.Reason);
-            using var slot = admit.Lease!;
-            answer = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.decision", new JsonObject
-            {
-                ["model"] = name,
-                ["messages"] = new JsonArray(new JsonObject { ["role"] = "system", ["content"] = system }),
-                ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["content"] = question, ["labels"] = labels }),
-            }, cts.Token, admit.Slot, model?.Ref, IdeaAdmission.Priority).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            return Result("error", error: $"no answer within {Timeout.TotalSeconds:0} s");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            ctx.Logger.LogWarning("Ideas recall: the decision failed: {Message}", ex.Message);
-            return Result("error", error: ex.Message);
-        }
+        // Typed-ahead background work: the decider waits for the backend's slot briefly (idea-np3a5g's rule for a drop)
+        // and never for a paid model. A drop here is a keystroke without a suggestion, not a failure to report: the
+        // composer moves on.
+        var answer = await _decider.AskAsync(
+            new JsonObject { ["role"] = "system", ["content"] = system }, question, labels, "recall",
+            sessionId, project?.Id, IdeaAdmission.InteractiveWait, Timeout, ct).ConfigureAwait(false);
+        if (answer.WillRepeat) return Result("skipped", error: answer.Reason);
+        if (answer.Kind == IdeaDecider.AnswerKind.Dropped) return Result("no_slot", error: answer.Reason);
+        if (answer.Probs is not { } probs) return Result("error", error: answer.Reason);
 
         // The answer is read the same way the other checks read it: only letters we offered count, "none" is not an idea.
-        var pick = IdeaMatch.Answer(answer as JsonNode ?? JsonSerializer.SerializeToNode(answer), window.Count);
+        var pick = IdeaMatch.Pick(probs, IdeaMatch.Names(labels));
         if (pick is null) return Result("error", error: "the decision returned no usable probabilities");
         var threshold = Math.Clamp(Setting("ideas.recallThreshold", DefaultThreshold), 0.3, 0.99);
         return pick.Clear(threshold)
@@ -155,7 +134,4 @@ public sealed partial class IdeaRecall(IPluginContext ctx, IdeasRepository repo,
         ["title"] = IdeaOps.Str(idea["title"]),
         ["p"] = Math.Round(p, 3),
     };
-
-    private static string OneLine(string? s) => string.Join(' ', (s ?? "").Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
-    private static string Clip(string s, int n) => s.Length > n ? s[..n] + "…" : s;
 }

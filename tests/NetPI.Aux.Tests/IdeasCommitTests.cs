@@ -51,6 +51,9 @@ public static class IdeasCommitTests
         public string Backlog => Path.Combine(Ctx.Paths.Home, "ideas.json");
         public string PendingFile => Path.Combine(Ctx.Paths.Home, "ideas-pending.json");
         public int Decisions { get; set; }
+        /// <summary>Hashes the repository cannot show a patch for: a commit from another repository, or one whose
+        /// history was rewritten away.</summary>
+        public HashSet<string> Unreadable { get; } = [];
         /// <summary>How the link question is answered (letters → probability).</summary>
         public Func<JsonArray, Dictionary<string, double>> Link { get; set; } = labels => new() { [labels[0]!.Str()!] = 0.95, [labels[^1]!.Str()!] = 0.03 };
         /// <summary>When set, the decision throws this many times before answering.</summary>
@@ -69,7 +72,9 @@ public static class IdeasCommitTests
             Session = Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "s", ProjectId = Project.Id });
             Ctx.RpcFake.Register("files.commits", (req, _) =>
             {
-                if (req.Str("hash") is { } patchHash) return Task.FromResult<object?>(new JsonObject { ["hash"] = patchHash, ["patch"] = "diff --git a/fix b/fix\n+scripted completed implementation", ["truncated"] = false });
+                if (req.Str("hash") is { } patchHash) return Task.FromResult<object?>(Unreadable.Contains(patchHash)
+                    ? new JsonObject { ["hash"] = patchHash }   // nothing here: the commit is not in this repository
+                    : new JsonObject { ["hash"] = patchHash, ["patch"] = "diff --git a/fix b/fix\n+scripted completed implementation", ["truncated"] = false });
                 var (commits, reachable) = Repo.Read(req.Str("since"), req.Str("until"), req.Int("limit") ?? 20);
                 var list = new JsonArray();
                 foreach (var (hash, subject) in commits)
@@ -125,6 +130,16 @@ public static class IdeasCommitTests
 
         /// <summary>The newest commit this NetPI has read for the repository, as the store holds it.</summary>
         public string? Cursor => IdeasRepository.Open(Ctx.Data, Ctx.Access, Ctx.Log, Ctx.Paths.Home).LastSeen(Repo.Path);
+
+        /// <summary>Age a repository's cursor past any keep window: what a repository nobody has read for months looks like.</summary>
+        public void AgeCursor()
+        {
+            var repos = Ctx.Data.Collection("repos", new CollectionSpec().Text("at"));
+            var doc = repos.Get(Repo.Path);
+            if (doc is null) return;
+            doc["at"] = "2020-01-01T00:00:00Z";
+            repos.Put(Repo.Path, doc);
+        }
 
         public async Task<List<string>> CommitsOn(string ideaId)
         {
@@ -527,6 +542,50 @@ public static class IdeasCommitTests
             await env.Check!.SweepNowAsync();
             Check.Equal(1, (await env.CommitsOn(idea)).Count, "the commit is recorded");
             Check.Equal(0, await env.Cards(), "but it is not an offer");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: a watched repository keeps its cursor when it is quiet for longer than the keep window", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var idea = await env.AddIdea("A repository nobody commits to");
+            env.Repo.Commit($"first {idea}");
+            await env.Check!.SweepNowAsync();
+            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "the first commit was read");
+
+            // The repository is watched but quiet for months. Its cursor is the progress made before the last restart:
+            // forgetting it makes the next sweep read the whole history again and record months-old commits on an idea
+            // that did not exist when they were made (idea-g6siz0).
+            env.AgeCursor();
+            env.Repo.Commit($"second {idea}");
+            await env.Check.SweepNowAsync();
+            Check.Equal(env.Repo.Commits[0].Hash, env.Repo.Asked[^1].Since, "the sweep continued from the cursor, not from the start of the history");
+            Check.Equal(env.Repo.Commits[1].Hash, env.Cursor, "and it read only what came after it");
+            Check.Equal(2, (await env.CommitsOn(idea)).Count);
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: a linked commit this repository cannot read is skipped, not read again for ever", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            var idea = await env.AddIdea("Finished somewhere else", "The commit that finishes it was made in another repository.");
+            env.Repo.Commit($"first {idea}");
+            await env.Check!.SweepNowAsync();
+            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "the first commit is linked");
+
+            // The completion evidence is read in the repository the sweep is on, and this hash is not in it: an
+            // unavailable patch is missing evidence, not a failure of the check (idea-g6siz0).
+            env.Unreadable.Add(env.Repo.Commits[0].Hash);
+            env.Repo.Commit($"second {idea}");
+            await env.Check.SweepNowAsync();
+            Check.Equal(env.Repo.Commits[1].Hash, env.Cursor, "the cursor moved past it instead of pinning the sweep");
+            Check.Equal(0, await env.Cards(), "no offer was made on evidence we do not have");
+            Check.Equal(0, IdeasRepository.Open(env.Ctx.Data, env.Ctx.Access, env.Ctx.Log, env.Ctx.Paths.Home).Unread().Count,
+                "and the commit is not recorded unread either: it was read, only its patch was missing");
+            Check.Contains(IdeaOps.Str((await env.Rpc("ideas.get", new JsonObject { ["id"] = idea }))["commits"]![0]!["repo"]), env.Repo.Path,
+                "every commit entry says which repository it was made in");
             env.Ctx.Unload();
         });
     }

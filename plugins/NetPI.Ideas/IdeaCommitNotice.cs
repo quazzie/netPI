@@ -9,13 +9,15 @@ namespace NetPI.Ideas;
 /// in a terminal belongs to no conversation. A commit made <em>by the agent</em> is the opposite case: the run that just
 /// wrote it knows what it was for, and it is still running. So after a <c>git commit</c> or <c>git merge</c> that
 /// succeeded inside the session's project, this hook injects one notice (kind <c>git-commit</c>) before the next model
-/// call: update the idea this commit finished or advanced, or say in one line that none of them is about it.
+/// call: update the idea this commit finished or advanced.
 /// <para>
 /// It is an instruction, not an action: the agent decides with the <c>ideas</c> tool and the user sees what it did, the
-/// same way a nudge is advice rather than a decision. Two bounds keep it cheap: nothing happens when the project has no
-/// open idea (so a project without a backlog never pays for it), and at most <c>ideas.commitNoticesPerRun</c> notices
-/// are injected into one run. The card flow stays: it is what catches a commit nobody made in a chat, and a commit the
-/// agent closed is no longer open, so it is not offered twice.
+/// same way a nudge is advice rather than a decision. Three bounds keep it cheap: nothing happens when the project has
+/// no open idea (so a project without a backlog never pays for it), commits in a burst cost one notice (the next one
+/// waits <c>ideas.commitNoticeDebounceSec</c>), and at most <c>ideas.commitNoticesPerRun</c> notices are injected
+/// into one run. A backlog too large to hint at says only that a commit landed and offers the tool, without naming an
+/// arbitrary slice of it or obliging the agent to answer. The card flow stays: it is what catches a commit nobody
+/// made in a chat, and a commit the agent closed is no longer open, so it is not offered twice.
 /// </para>
 /// </summary>
 public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func<string?, List<JsonObject>> openIdeas) : IAgentHook
@@ -25,9 +27,14 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
     public const string PendingKey = "netpi.ideas.commit-pending";
     /// <summary>How many notices this run already got (the cap is per run, not per commit).</summary>
     public const string CountKey = "netpi.ideas.commit-notices";
+    /// <summary>When this run last got a notice, so a burst of commits costs one.</summary>
+    public const string LastNoticeKey = "netpi.ideas.commit-notice-at";
     public const int DefaultMaxPerRun = 2;
-    /// <summary>Open ideas named in the notice. More than this and the notice costs more than the tool call it saves.</summary>
-    public const int MaxTitles = 8;
+    /// <summary>Seconds between two notices in one run. An agent that commits several things in a row is asked once.</summary>
+    public const int DefaultDebounceSec = 30;
+    /// <summary>Open ideas named in the notice. A larger backlog has no idea that is about this commit, so naming an
+    /// arbitrary few of them is noise the agent has to argue its way out of.</summary>
+    public const int MaxNamedIdeas = 3;
     public const int MaxTitleLength = 90;
 
     /// <summary>After the nudge (200), so a stalled run's nudge is the decision that lands and this one waits for the call after it.</summary>
@@ -68,9 +75,13 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
         if (run.CancellationToken.IsCancellationRequested) return ValueTask.FromResult<TurnDecision?>(null);
         if (!Get("ideas.tellAgentOnCommit", true)) return ValueTask.FromResult<TurnDecision?>(null);
 
+        // A burst of commits costs one notice: the run was just asked, and the answer to that ask is still ahead of it.
+        if (WithinDebounce(run)) return ValueTask.FromResult<TurnDecision?>(null);
+
         var count = run.Items.TryGetValue(CountKey, out var v) && v is int n ? n : 0;
         if (count >= Math.Clamp(Get("ideas.commitNoticesPerRun", DefaultMaxPerRun), 0, 10)) return ValueTask.FromResult<TurnDecision?>(null);
         run.Items[CountKey] = count + 1;
+        run.Items[LastNoticeKey] = DateTimeOffset.UtcNow;
         return ValueTask.FromResult<TurnDecision?>(TurnDecision.Inject(Text(pending), NoticeKind));
     }
 
@@ -78,10 +89,24 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
     public static string Text(Pending pending)
     {
         var titles = string.Join("; ", pending.Titles);
-        return $"A commit just landed in {pending.Project} (the git command you ran succeeded). " +
-            (titles.Length > 0 ? $"Open ideas of that project: {titles}. " : "") +
-            "If this commit finishes one of them, update that idea now with the ideas tool: mark it done, or leave it open and add a short section saying what landed. " +
-            "If none of them is about this commit, say so in one line and do not create an idea for it.";
+        return titles.Length == 0
+            // A backlog this size says nothing about this commit, so the notice only says that one landed and offers the
+            // tool: nothing to answer, nothing to argue with.
+            ? $"A commit just landed in {pending.Project} (the git command you ran succeeded). " +
+              "If it finished one of that project's open ideas, update that idea with the ideas tool."
+            : $"A commit just landed in {pending.Project} (the git command you ran succeeded). " +
+              $"Open ideas of that project: {titles}. " +
+              "If this commit finishes one of them, update that idea now with the ideas tool: mark it done, or leave it open and add a short section saying what landed. " +
+              "If none of them is about this commit, say so in one line and do not create an idea for it.";
+    }
+
+    /// <summary>The run got a notice less than <c>ideas.commitNoticeDebounceSec</c> ago (0 = never).</summary>
+    private bool WithinDebounce(AgentRunContext run)
+    {
+        var window = Math.Clamp(Get("ideas.commitNoticeDebounceSec", DefaultDebounceSec), 0, 3600);
+        if (window <= 0) return false;
+        if (!run.Items.TryGetValue(LastNoticeKey, out var v) || v is not DateTimeOffset last) return false;
+        return DateTimeOffset.UtcNow - last < TimeSpan.FromSeconds(window);
     }
 
     // ------------------------------------------------------------------ the checks
@@ -334,16 +359,20 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
         first is null ? next
         : new Pending(first.Project == next.Project ? first.Project : $"{first.Project}, {next.Project}", [.. first.Titles, .. next.Titles]);
 
-    /// <summary>The open idea titles the notice names: bounded, and each one clipped so one long title cannot flood it.</summary>
+    /// <summary>
+    /// The open idea titles the notice names: none at all when the backlog is larger than <see cref="MaxNamedIdeas"/>
+    /// (an arbitrary few of sixty says nothing about this commit), and otherwise each one clipped so one long title
+    /// cannot flood it.
+    /// </summary>
     public static List<string> Titles(List<JsonObject> open)
     {
         var titles = new List<string>();
+        if (open.Count > MaxNamedIdeas) return titles;
         foreach (var idea in open)
         {
             var title = IdeaOps.Str(idea["title"]);
             if (string.IsNullOrWhiteSpace(title)) continue;
             titles.Add($"\"{(title.Length > MaxTitleLength ? title[..MaxTitleLength] + "…" : title)}\"");
-            if (titles.Count >= MaxTitles) break;
         }
         return titles;
     }

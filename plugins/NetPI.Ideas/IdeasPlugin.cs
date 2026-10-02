@@ -69,6 +69,8 @@ public sealed class IdeasPlugin : INetPiPlugin
                     "After the agent itself runs a successful git commit or git merge in the session's project, one notice asks it to mark the idea that commit finished (or to say that none of them is about it). Nothing happens when the project has no open idea. The cards above stay: they are what catches a commit made outside any chat."),
                 SettingInfo.Int("ideas.commitNoticesPerRun", "Commit notices per run", IdeaCommitNoticeHook.DefaultMaxPerRun,
                     "How many of those notices one run may get, so a run that commits in a loop is asked a bounded number of times.", 0, 10),
+                SettingInfo.Int("ideas.commitNoticeDebounceSec", "Commit notice debounce", IdeaCommitNoticeHook.DefaultDebounceSec,
+                    "Seconds a run waits after a commit notice before it may get the next one, so a burst of commits costs one notice instead of one each.", 0, 3600),
             ],
         });
 
@@ -162,14 +164,14 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
 
     public void Register(IRpcRegistry rpc)
     {
-        rpc.Register("ideas.list", List, "The ideas backlog: { } → { storage: { backend, database, scope, schemaVersion }, ideas: [...], file?, fileName? (legacy hints) }");
-        rpc.Register("ideas.get", Get, "{ id } → idea (with its revision)");
+        rpc.RegisterReadOnly("ideas.list", List, "The ideas backlog: { } → { storage: { backend, database, scope, schemaVersion }, ideas: [...], file?, fileName? (legacy hints) }");
+        rpc.RegisterReadOnly("ideas.get", Get, "{ id } → idea (with its revision)");
         rpc.Register("ideas.add", Add, "{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections?, images? }, prepend? } → idea; stamped with projectId (a project id or name, \"global\" for unbound), else the session's project");
         rpc.Register("ideas.addImage", Attach,
             "Store an image for an idea and return its reference: { data (base64), mediaType, name? } → { path, name, mediaType, bytes }. " +
             $"The file lands in {IdeaImages.Dir} under the home and the idea keeps the reference; at most {IdeaImages.MaxPerIdea} per idea, {IdeaImages.MaxBytes / (1024 * 1024)} MB each");
         rpc.Register("ideas.removeImage", Detach, "Delete a stored idea image: { path } → true (only files this host wrote)");
-        rpc.Register("ideas.image", Image,
+        rpc.RegisterReadOnly("ideas.image", Image,
             "Read a stored idea image back for display: { path } → { path, name, mediaType, bytes, data (base64) }. Only files under " +
             $"{IdeaImages.Dir}; the card fetches one when it opens, so a backlog of ideas carries no image bytes");
         rpc.Register("ideas.update", Update,
@@ -177,7 +179,7 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
             "expectedRevision: refused with \"conflict\" when the idea changed since it was read (expectedUpdatedAt is the older, second-precision form of the same check)");
         rpc.Register("ideas.delete", Delete, "{ id } → true");
         rpc.Register("ideas.reorder", Reorder, "{ ids: string[] } → true");
-        rpc.Register("ideas.toPrompt", ToPrompt, "{ id } → markdown prompt text");
+        rpc.RegisterReadOnly("ideas.toPrompt", ToPrompt, "{ id } → markdown prompt text");
         rpc.Register("ideas.quickAdd", QuickAdd, "/idea command: { sessionId, args } → status text");
         rpc.Register("ideas.export", Export,
             "A portable snapshot of the backlog as JSON: { path?, json? } → { file?, json, validated? } — a versioned document with stable ids, the user's order and unknown fields; nothing is written to disk unless a path is given");

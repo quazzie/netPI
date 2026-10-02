@@ -643,6 +643,11 @@ public sealed class FakePluginContext : IPluginContext
         _storage?.Dispose();
         _storage = null;
     }
+
+    /// <summary>A stop without an unload: <see cref="Stopping"/> is cancelled and everything else stays open, the store
+    /// above all. A test that watches what a plugin's background work writes after it was cancelled uses this: closing
+    /// the store at that moment is what a test teardown does, not what a plugin reload does.</summary>
+    public void Stop() => _stopping.Cancel();
 }
 
 // ------------------------------------------------------------------ helpers

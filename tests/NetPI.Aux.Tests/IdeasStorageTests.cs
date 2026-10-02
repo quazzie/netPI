@@ -78,6 +78,33 @@ public static class IdeasStorageTests
             return id;
         }
 
+        /// <summary>A "save" card as the check leaves it: one plan one conversation.</summary>
+        public JsonObject Plan(string id, string title) => new()
+        {
+            ["id"] = id,
+            ["kind"] = "save",
+            ["sessionId"] = Session.Id,
+            ["sessionTitle"] = "s",
+            ["title"] = title,
+            ["summary"] = "what the chat left behind",
+            ["at"] = "2026-09-29T10:00:00Z",
+        };
+
+        /// <summary>A "done" card: this idea may be finished.</summary>
+        public JsonObject Done(string id, string ideaId) => new()
+        {
+            ["id"] = id,
+            ["kind"] = "done",
+            ["ideaId"] = ideaId,
+            ["ideaRevision"] = 1,
+            ["title"] = "Finished",
+            ["commits"] = new JsonArray(),
+            ["at"] = "2026-09-29T10:00:00Z",
+        };
+
+        /// <summary>An idea of the backlog, as the storage tests add them (through the repository: this suite needs no RPC).</summary>
+        public string AddIdea(string title = "An idea") => Repo.Add(IdeaOps.CreateIdea(
+            new JsonObject { ["title"] = title }, Repo.TakenIds(), "user", Session.Id)).Doc["id"]!.Str()!;
     }
 
     public static void Register(TestRunner r)
@@ -379,6 +406,48 @@ public static class IdeasStorageTests
             checks.Put("ses_1", mark);
             Check.Equal(1, repo.RecoverExpiredClaims());
             Check.True(repo.ClaimCheck("ses_1", 6, "12:100", 3, TimeSpan.FromMinutes(5)).Started, "and is not blocked for good");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas storage: a claim whose time ran out is claimable again, with or without a restart", () =>
+        {
+            var env = new Env();
+            var repo = env.Repo;
+            Check.True(repo.ClaimCheck("ses_3", 5, "10:99", 3, TimeSpan.FromMinutes(5)).Started, "the first close takes it");
+            var checks = env.Ctx.Data.Collection("checks", new CollectionSpec().Text("state").Text("at").Integer("claimUntil"));
+            var mark = checks.Get("ses_3")!;
+            mark["claimUntil"] = DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeMilliseconds();   // nobody is running it any more
+            checks.Put("ses_3", mark);
+
+            // A reload or a shutdown is not the only way a claim runs out: the recovery at the next start is one, and
+            // a chat closed again in between must not wait for it (idea-g6siz0).
+            var (again, reason, token) = repo.ClaimCheck("ses_3", 5, "10:99", 3, TimeSpan.FromMinutes(5));
+            Check.True(again, "the conversation is checked again: " + reason);
+            Check.True(token is { Length: > 0 } && token != mark["claim"]!.Str(), "under a new claim");
+            Check.Equal(0, repo.RecoverExpiredClaims(), "and nothing is left for the recovery at the next start to do");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas storage: a discarded card does not come back as a new one", async () =>
+        {
+            var env = new Env();
+            var repo = env.Repo;
+            var card = env.AddCard();
+            repo.ResolveCard(card, "discard", null);
+            Check.Equal(0, repo.CardCount(), "the card is answered");
+
+            // The check runs again on the next close of that conversation and drafts the same plan. The answer was a
+            // decision about it: discarding it means it is not wanted, so it must not be offered again (idea-g6siz0).
+            Check.False(repo.AddCard(env.Plan("sg_card00002", "Unsaved plan")), "the same plan, in the same conversation, stays discarded");
+            Check.False(repo.AddCard(env.Plan("sg_card00003", "  unsaved PLAN ")), "however it is written");
+            Check.True(repo.AddCard(env.Plan("sg_card00004", "Another plan the chat left behind")), "another plan is still offered");
+            Check.Equal(1, repo.CardCount(), "and the plan that was not answered still waits");
+
+            // A "done" card is keyed on its idea, so a dismissal is final for that idea too.
+            var idea = env.AddIdea();
+            Check.True(repo.AddCard(env.Done("sg_card00005", idea)), "the idea can be offered as finished");
+            repo.ResolveCard("sg_card00005", "discard", null);
+            Check.False(repo.AddCard(env.Done("sg_card00006", idea)), "and it is not offered again");
             env.Ctx.Unload();
         });
 

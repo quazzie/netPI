@@ -24,7 +24,6 @@ namespace NetPI.Ideas;
 /// </summary>
 public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, IdeaSaveCheck save) : IDisposable
 {
-    public const string DefaultModel = "qwen3.8-27b";
     public const double DefaultLinkThreshold = 0.7;
     public const double DefaultDoneThreshold = 0.8;
     /// <summary>Commits read per page. A burst (a rebase, a merge train) is read oldest first, in bounded pages.</summary>
@@ -44,9 +43,9 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     private static readonly TimeSpan Rescan = TimeSpan.FromMinutes(2);
     /// <summary>How long a repository's last-seen commit is remembered; an untouched repository is dropped from the file.</summary>
     private const int RepoKeepDays = 60;
-    private const string Letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-    private readonly IdeaAdmission _admission = new(ctx);
+    /// <summary>Every pick-one question the sweep asks, asked in one place.</summary>
+    private readonly IdeaDecider _decider = new(ctx);
     private readonly IdeasRepository _repo = repo;
     private readonly Lock _watchLock = new();
     private readonly Dictionary<string, Watch> _watches = new(StringComparer.OrdinalIgnoreCase); // repo path → its watcher
@@ -201,6 +200,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             catch (Exception ex) { ctx.Logger.LogWarning("Ideas: cannot watch the repository of project {Project}: {Message}", project.Name, ex.Message); }
         }
         DropStale(projects);
+        ForgetStale();
         foreach (var watch in Watches())
         {
             await watch.Gate.WaitAsync(ctx.Stopping).ConfigureAwait(false);
@@ -399,7 +399,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                 // attempts back off, and a commit that cannot be decided after its bound is recorded unread, so the
                 // cursor moves past it and the later commits are read. (A skip is not a failure: it advanced the
                 // cursor above, and only a drop lands here. — idea-np3a5g)
-                var shortHash = IdeaOps.Str(commit["short"]) ?? Clip(IdeaOps.Str(commit["hash"]) ?? "?", 7);
+                var shortHash = IdeaOps.Str(commit["short"]) ?? IdeaOps.Clip(IdeaOps.Str(commit["hash"]) ?? "?", 7);
                 var reason = why ?? "a check failed";
                 var tries = _repo.RecordCommitFailure(watch.Repo, reason);
                 if (tries >= MaxTries)
@@ -469,7 +469,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                 // question already counted as processed: a skip is a decision on both questions, and only a drop
                 // is retried. The log line says what was skipped and why, so it is never silent.
                 ctx.Logger.LogWarning("Ideas: {Short} in {Repo} is not linked: {Reason} — the cursor moves past it, and the skip is not retried.",
-                    IdeaOps.Str(commit["short"]) ?? Clip(IdeaOps.Str(commit["hash"]) ?? "?", 7), watch.Repo, skipped);
+                    IdeaOps.Str(commit["short"]) ?? IdeaOps.Clip(IdeaOps.Str(commit["hash"]) ?? "?", 7), watch.Repo, skipped);
                 return (true, null);
             }
             if (decision is { Failed: { } failed }) return (false, failed);   // the decision did not answer: this commit is still unseen
@@ -481,8 +481,11 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         {
             ["hash"] = hash,
             ["short"] = IdeaOps.Str(commit["short"]) ?? hash[..Math.Min(7, hash.Length)],
-            ["subject"] = Clip(subject, 200),
+            ["subject"] = IdeaOps.Clip(subject, 200),
             ["at"] = commit["at"]?.DeepClone() ?? IdeaOps.Now(),
+            // Where the commit was made: an idea collects commits from every repository, and the completion evidence
+            // is read in the repository the sweep is on (idea-g6siz0).
+            ["repo"] = watch.Repo,
         };
         var titles = new List<string>();
         foreach (var idea in linked) titles.Add(IdeaOps.Str(idea["title"]) ?? "?");
@@ -547,7 +550,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         foreach (var window in IdeaMatch.Windows(open, subject + " " + author))
         {
             var list = IdeaMatch.Options(window, "none of these: this commit is about something else", out var none, out var labels);
-            var decision = await DecideAsync(new JsonObject
+            var answer = await _decider.AskAsync(new JsonObject
             {
                 ["role"] = "system",
                 ["content"] = "You decide which of the user's backlog of open ideas a git commit was about, so the commit can be " +
@@ -555,9 +558,13 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                               $"Commit by {author}:\n{subject}\n\nOpen ideas:\n" + list,
             }, $"Which open idea is this commit about? Pick it when the commit works on it (implements it, or a step of it, " +
                $"or fixes it), pick it even when it only advances the idea. Pick {none} when it is about something else.",
-                labels, "the link question", projectId, ct).ConfigureAwait(false);
-            if (decision is { Skipped: not null } or { Failed: not null }) return new Decision(null, decision.Skipped, decision.Failed); // one commit, one question
-            var pick = IdeaMatch.Pick(decision!.Probs!, labels.OfType<JsonValue>().Select(v => IdeaOps.Str(v) ?? "").ToList());
+                labels, "the link question", sessionId: null, projectId: projectId, wait: null,
+                timeout: IdeaSaveCheck.Timeout, ct: ct).ConfigureAwait(false);
+            // One commit, one question: a skip (a decision the configuration will make again — idea-np3a5g) is not a
+            // failure, and a drop or a failure leaves the commit unseen.
+            if (answer.WillRepeat) return new Decision(null, answer.Reason, null);
+            if (answer.Probs is not { } probs) return new Decision(null, null, answer.Reason);
+            var pick = IdeaMatch.Pick(probs, IdeaMatch.Names(labels));
             if (pick is null || !pick.Clear(threshold)) break;   // no clear winner
             best = [window[pick.Index]];
             break;                                                          // one commit, one idea
@@ -584,7 +591,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             .Select(c => $"{IdeaOps.Str(c["short"])} {IdeaOps.Str(c["subject"])}").ToList();
         if (linked.Count == 0) return false;
 
-        var decision = await DecideAsync(new JsonObject
+        var answer = await _decider.AskAsync(new JsonObject
         {
             ["role"] = "system",
             ["content"] = "You decide whether a piece of work is finished, given the plan it belongs to and the commits " +
@@ -593,10 +600,11 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                           "or when it is not clear.\n\n" +
                           $"Idea: {text}\n\nCommits linked to it:\n" + string.Join('\n', linked.Select((s, k) => $"{k + 1}. {s}")),
         }, $"Is the idea finished now? These commits were just made for it ({string.Join(", ", committed)}).",
-            new JsonArray("DONE", "MORE"), "the done question", watch.ProjectId, ct).ConfigureAwait(false);
+            new JsonArray("DONE", "MORE"), "the done question", sessionId: null, projectId: watch.ProjectId, wait: null,
+            timeout: IdeaSaveCheck.Timeout, ct: ct).ConfigureAwait(false);
         // The done question is the one-card courtesy, not the commit's reading: a skip (a decision the configuration
         // will make again — idea-np3a5g) and a drop alike mean "no offer now", and the cursor moves either way.
-        if (decision.Probs is not { } probs) return false;
+        if (answer.Probs is not { } probs) return false;
         var threshold = Math.Clamp(Setting("ideas.doneThreshold", DefaultDoneThreshold), 0.3, 0.99);
         if (!DecisionConfidence.Clear(probs.GetValueOrDefault("DONE"), probs.GetValueOrDefault("MORE"), threshold)) return false;
         // The result judges this exact snapshot. A later revision must be judged again, never stamped onto old text.
@@ -618,7 +626,10 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             var request = new JsonObject { ["cwd"] = watch.Path, ["hash"] = hash };
             var raw = ctx.Services.Get<IGitHistory>() is { } history ? await history.ReadAsync(request, ct).ConfigureAwait(false)
                 : NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("files.commits", request, ct).ConfigureAwait(false)) as JsonObject;
-            if (raw?["patch"]?.GetValue<string>() is not { Length: > 0 } patch) return null;
+            // A commit this repository cannot read (it was linked from another one, or its history was rewritten) is
+            // evidence we do not have, not a failure of the check: the same question would be re-paid on every sweep
+            // and the idea would stay unanswerable until it is closed by hand (idea-g6siz0).
+            if (raw?["patch"]?.GetValue<string>() is not { Length: > 0 } patch) { ReportUnreadable(hash); return false; }
             if (raw["truncated"]?.GetValue<bool>() == true) { ReportEvidenceBound(); return false; }
             patches.AppendLine(patch);
             if (patches.Length > 64000) { ReportEvidenceBound(); return false; }
@@ -661,6 +672,24 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
             var skipped = work?.Begin("Completion verification", null, null, watch.ProjectId);
             if (skipped is not null) work!.Set(skipped, "skipped", "Commit patches exceed the automatic verification bound; review this idea manually");
         }
+
+        /// <summary>A linked commit this repository cannot read: the idea is not offered now, and it says why.</summary>
+        void ReportUnreadable(string hash)
+        {
+            var where = repoOf(hash);
+            ctx.Logger.LogWarning("Ideas: {Short} in {Repo} cannot be read there (it is recorded from {From}): the idea is not offered as finished, and the commits after it are read.",
+                hash.Length > 7 ? hash[..7] : hash, watch.Repo, where ?? "another repository");
+            var work = ctx.Services.Get<IBackgroundWork>();
+            var skipped = work?.Begin("Completion verification", null, null, watch.ProjectId);
+            if (skipped is not null)
+                work!.Set(skipped, "skipped", $"commit {hash[..Math.Min(7, hash.Length)]} is not in {watch.Repo} (recorded from {where ?? "another repository"}); review this idea manually");
+        }
+
+        // Where a linked commit was made, when the entry says (a commit is recorded on the idea it works on, wherever
+        // that repository is).
+        string? repoOf(string hash) =>
+            (idea["commits"] as JsonArray ?? []).OfType<JsonObject>()
+                .FirstOrDefault(c => IdeaOps.Str(c["hash"]) == hash) is { } entry ? IdeaOps.Str(entry["repo"]) : null;
     }
 
     // ------------------------------------------------------------------ the decisions
@@ -673,68 +702,6 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         return IdeaOps.Str(newest?["hash"]);
     }
 
-    /// <summary>
-    /// The outcome of one pick-one decision: the probabilities, or why there are none. A <b>skip</b> is a decision the
-    /// current configuration will make again on every retry (no model, or a paid one the user did not allow); a
-    /// <b>fail</b> is a transient "no answer" (a drop, a timeout, an answer that did not come back shaped)
-    /// (idea-np3a5g).
-    /// </summary>
-    private sealed record Answer(Dictionary<string, double>? Probs, string? Skipped, string? Failed)
-    {
-        public static Answer Skip(string reason) => new(null, reason, null);
-        public static Answer Fail(string reason) => new(null, null, reason);
-    }
-
-    /// <summary>One pick-one decision, or why it did not answer.</summary>
-    private async Task<Answer> DecideAsync(JsonObject system, string question, JsonArray labels, string purpose, string? project, CancellationToken ct)
-    {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Stopping);
-        cts.CancelAfter(IdeaSaveCheck.Timeout);
-        try
-        {
-            var name = Setting("ideas.model", DefaultModel) is { Length: > 0 } m ? m.Trim() : DefaultModel;
-            // The same admission as a chat's: the decision shares the backend, so it waits its turn like one.
-            var model = await ctx.Models.FindAsync(name, ct).ConfigureAwait(false);
-            // The same admission as a chat's: the decision shares the backend, so it waits its turn like one. A drop is
-            // the queue, and the same question can be asked again. A skip (no model, or a paid one the user did not
-            // allow) will not change on a retry, so it is a decision, not a failure (idea-np3a5g).
-            var admission = await _admission.EnterAsync(model, purpose, sessionId: null, projectId: project, ct).ConfigureAwait(false);
-            if (!admission.Admitted)
-                return admission.Retryable
-                    ? Answer.Fail(admission.Reason ?? "the queue was full")
-                    : Answer.Skip(admission.Reason ?? "the model is not available");
-            using var slot = admission.Lease!;
-            var raw = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.decision", new JsonObject
-            {
-                ["model"] = name,
-                ["messages"] = new JsonArray(system),
-                ["branches"] = new JsonArray(new JsonObject
-                {
-                    ["id"] = "pick",
-                    ["content"] = question,
-                    ["labels"] = labels,
-                }),
-            }, cts.Token, admission.Slot, model?.Ref, IdeaAdmission.Priority).ConfigureAwait(false);
-            var answer = raw as JsonObject ?? JsonSerializer.SerializeToNode(raw) as JsonObject;
-            if (answer?["branches"] is not JsonArray { Count: > 0 } branches || branches[0]?["probabilities"] is not JsonObject probs)
-                return Answer.Fail("the decision did not come back as a branch of probabilities");
-            var outp = new Dictionary<string, double>(StringComparer.Ordinal);
-            foreach (var (label, node) in probs)
-                if (node is JsonValue v && v.TryGetValue<double>(out var d)) outp[label] = d;
-            return outp.Count == labels.Count ? new Answer(outp, null, null) : Answer.Fail("a partial answer is not an answer");
-        }
-        catch (OperationCanceledException) when (!ctx.Stopping.IsCancellationRequested)
-        {
-            ctx.Logger.LogWarning("Ideas: the commit check got no answer within {Seconds:0} s.", IdeaSaveCheck.Timeout.TotalSeconds);
-            return Answer.Fail($"no answer within {IdeaSaveCheck.Timeout.TotalSeconds:0} s");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            ctx.Logger.LogWarning("Ideas: the commit check failed: {Message}", ex.Message);
-            return Answer.Fail(ex.Message);
-        }
-    }
-
     /// <summary>The open ideas a commit is linked against: the project's and the unbound ones, in backlog order.</summary>
     private List<JsonObject> OpenAsync(string? projectId, CancellationToken ct)
     {
@@ -744,8 +711,19 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
 
     // ------------------------------------------------------------------ the cursors (shared with the save check)
 
-    /// <summary>How long a repository's last-seen commit is remembered.</summary>
-    private void ForgetStale() => _repo.ForgetStaleRepos(RepoKeepDays);
+    /// <summary>
+    /// Forget a repository nothing has read for a while, so the collection does not grow with deleted projects — but
+    /// never one of the repositories being watched: a cursor is the progress made before a restart, and losing it makes
+    /// the next sweep read months of commits again, recording them on ideas that did not exist when they were made
+    /// (idea-g6siz0). A project that is gone is not watched any more, so its cursor still goes.
+    /// </summary>
+    private void ForgetStale() => _repo.ForgetStaleRepos(RepoKeepDays, IsWatched);
+
+    /// <summary>Whether a repository is one of the ones this rescan is watching.</summary>
+    private bool IsWatched(string repo)
+    {
+        lock (_watchLock) return _watches.ContainsKey(repo);
+    }
 
     // ------------------------------------------------------------------ helpers
 
@@ -754,7 +732,4 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         try { return ctx.Settings.Get(key, fallback) ?? fallback; }
         catch { return fallback; }
     }
-
-    private static string OneLine(string? s) => string.Join(' ', (s ?? "").Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
-    private static string Clip(string s, int n) => s.Length > n ? s[..n] + "…" : s;
 }

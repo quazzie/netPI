@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -155,6 +154,4 @@ public static class IdeaImages
               .Append(Absolute(home, IdeaOps.Str(o["path"])) ?? "").Append('\n');
         sb.Append("Read the ones that matter before you start; they are the report.\n");
     }
-
-    internal static string Format(int bytes) => bytes.ToString("0.##", CultureInfo.InvariantCulture);
 }
