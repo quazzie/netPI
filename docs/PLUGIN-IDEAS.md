@@ -9,8 +9,8 @@ A backlog of ideas, research, plans and deferred work for the user and for agent
 - Tab: `{ id: "ideas", title: "Ideas", panel: "right", icon: "idea", order: 20, module: "ui.js" }`. The UI module goes in
   `plugins/NetPI.Ideas/wwwroot/ui.js` (source in `plugins/NetPI.Ideas/ui/`) and is served at `/plugins/netpi.ideas/ui.js`.
 - Slash command: `{ name: "idea", argsHint: "<title>", rpc: "ideas.quickAdd" }`.
-- Settings: `ideas.fileName` (default `"ideas.json"`; the name the JSON backlog had — read once by the cutover and the
-  default name an export is written under, no longer a live file), `ideas.recall`, `ideas.recallThreshold`,
+- Settings: `ideas.fileName` (default `"ideas.json"`; the name the JSON backlog had — kept so an older UI still has
+  a hint, read and written by nothing), `ideas.recall`, `ideas.recallThreshold`,
   `ideas.saveCheck`, `ideas.attachThreshold`, `ideas.model`, `ideas.allowPaidModel`, `ideas.checkWaitSeconds`,
   `ideas.closeOnCommit`,
   `ideas.linkThreshold`, `ideas.doneThreshold`, `ideas.tellAgentOnCommit`, `ideas.commitNoticesPerRun`
@@ -18,19 +18,27 @@ A backlog of ideas, research, plans and deferred work for the user and for agent
 
 ## Where ideas are stored
 
-**In NetPI's own database.** The backlog is plugin-owned SQLite tables in `<home>/netpi.db`, in the migration scope
-`netpi.ideas` (storage version 1), reached through `ctx.Db` and one read/write entry point (`IdeasRepository`). There
-is no ideas file: the JSON files of the earlier versions are read once by the cutover and are never written again.
+**In the store's plugin data.** The backlog is this plugin's own **collections of JSON documents** under plugin id
+`netpi.ideas` (schema version 2), reached through `ctx.Data` and one read/write entry point (`IdeasRepository`). The
+store behind it is whatever `storage.provider` selected — `netpi.db` with the built-in `sqlite` provider, any other
+provider otherwise — and no SQL is written here: a collection is a set of documents under a string key with declared
+index fields, and a plugin transaction is the compare-and-set. The shapes are written down in one comment block at the
+top of `IdeasRepository.cs`. The JSON files of the earlier versions (`ideas.json`, `ideas-pending.json`,
+`ideas-migration.json`) are neither read nor written.
 
-| Table | Holds |
+| Collection | Holds |
 |---|---|
-| `ideas_items` | one row per idea: its id, `ord` (the order the user arranged), `revision`, the columns the queries read (title, status, priority, project, created/updated) and `doc` — the complete idea JSON |
-| `ideas_suggestions` | the cards waiting for an answer |
-| `ideas_resolutions` | how a card was answered, kept after the card is gone |
-| `ideas_checks` | the per-conversation check marks, with the claim token and expiry of a running check |
-| `ideas_repos` | the last commit read per repository |
-| `ideas_imports` | the receipts of the imports (the cutover writes one per source) |
-| `ideas_metadata` | the backend marker, and the root-level fields the JSON file had |
+| `items` | one document per idea (its own fields) plus `revision`, `ord` (the order the user arranged), `idLower` and `projectId`, indexed on `ord`, `status`, `projectId`, `idLower` |
+| `cards` | the suggestions waiting for an answer, with `ord`, `kind`, `sessionId`, `ideaId`, `title` as index fields |
+| `resolutions` | how a card was answered, kept after the card is gone |
+| `checks` | the per-conversation check marks, with the claim token and expiry of a running check (`state`, `at`, `claimUntil` indexed) |
+| `repos` | the last commit read per repository (`at` indexed) |
+| `imports` | the receipts of the imports (one per source taken in) |
+| `meta` | small values, one key each: the root-level fields the old JSON file had (`legacy-root`) |
+| `unread` | the commits a sweep could not decide, keyed by repository and hash |
+
+Moving a backlog between machines is deliberate: `ideas.export` writes a portable snapshot document and
+`ideas.import` takes one in. There is no automatic reading of old files.
 
 Every idea carries a **`project`** property — a `{ id, name }` snapshot of the project it belongs to, or absent when it
 is not bound to a project (the "global" ideas):
@@ -46,42 +54,26 @@ is not bound to a project (the "global" ideas):
 `projectId` wins over `sessionId`. An unknown `projectId`, or an unknown `sessionId` in `ideas.add`/`ideas.quickAdd`,
 gives an RPC error `not_found`.
 
-The columns are projections of `doc` written in the same statement, so the two cannot drift apart; and an idea is still
-only ever understood as the document it always was — sections, tags, chats, commits and every field another tool wrote
-by hand live in `doc`, which is why a save never drops anything. Every repository method is short and synchronous: the
-host serializes one connection, so a transaction is held for the length of a few statements and never across a model
-call, a file read or anything else that can block.
+The index fields (`ord`, `status`, `projectId`, `idLower`, the ones on the other collections) are properties of the
+document itself, written with it, so the two cannot drift apart; and an idea is still only ever understood as the
+document it always was — sections, tags, chats, commits and every field another tool wrote by hand live in it, which
+is why a save never drops anything. Every repository method is short and synchronous: a plugin transaction is held for
+the length of a few writes and never across a model call, a file read or anything else that can block.
 
-### The one-time cutover
+### The JSON files of earlier versions
 
-The earlier versions kept the backlog in `<home>/<ideas.fileName>` with a `ideas-pending.json` beside it, and before
-that one file per project (`<project.path>/.netpi/ideas.json`, and before that `<project.path>/ideas.json`). Those files
-are read once, at the plugin start, and only when at least one of them exists:
+The earlier versions kept the backlog in `<home>/ideas.json` with an `ideas-pending.json` beside it, and before that
+one file per project (`<project.path>/.netpi/ideas.json`, and before that `<project.path>/ideas.json`). This build
+reads no legacy file and writes none, so an `ideas.json` left anywhere is simply a file nothing looks at, and
+`ideas.fileName` survives only as the name that file had (reported by `ideas.list` for an older UI).
 
-- **Every source is read**: the global backlog, `ideas-pending.json`, the per-project receipt `ideas-migration.json`
-  and the per-project files of every project in the session store. A source the old build's own receipt says it had
-  already merged is recorded, not merged a second time. Reading a legacy file still takes the OS lock the old build
-  used, so an import never sees half of a write by a plugin that is still running.
-- **A malformed source fails the whole import** (`invalid_file`, naming the file and what is wrong with it): an empty
-  backlog is never substituted for ideas that could not be read, and the files are left exactly as they were. A source
-  that is merely *missing* is not a problem — that is what an unused optional file looks like.
-- **Everything is written in ONE transaction**, ending with the receipts and the durable backend marker: the ideas (with
-  their ids, their order and every field they carry, stamped with the project a per-project file did not have, and given
-  a new id on a collision rather than merged into somebody's idea), the cards, the check marks, the commit cursors, the
-  root-level fields of the file, the answers that were in flight when NetPI stopped, and the record that accounts for
-  it all. A failure before that commit leaves the old files authoritative and the backlog empty; a failure after it
-  leaves SQLite authoritative, whatever housekeeping failed afterwards.
-- **Then the originals are kept**: every source is copied byte for byte into `<home>/ideas-archive/<timestamp>/` — a
-  `manifest.json` with each file's sha256, and the file itself under `originals/` — and moved out of the place the old
-  build read it from. An older NetPI started afterwards therefore starts with an empty backlog instead of quietly
-  writing JSON that nothing reads. Nothing is deleted.
-- **Restarting does not import again**: the marker in `ideas_metadata` says the backend is SQLite. A file that
-  reappears afterwards is reported as `orphanedSources` by `ideas.migration`, and is only taken in on purpose, with
-  `ideas.migrate { confirm: true, force: true }` — never merged silently into a backlog that has moved on.
+A home that still holds such a file took it in once, through a one-off tool; what a fresh install or a converted
+home has is exactly what that tool wrote. To move a backlog now — to another machine, or into a new home — use the
+portable snapshot instead: `ideas.export` and `ideas.import` below.
 
 ## The idea document
 
-One idea is one JSON object — the `doc` column of its `ideas_items` row, and what an import reads and an export writes:
+One idea is one JSON object — the document stored under its id, and what an import reads and an export writes:
 
 ```jsonc
 {
@@ -115,33 +107,33 @@ A snapshot export wraps that in a versioned document (`{ "version": 1, "format":
 "cards": [ … ], … }`), and an export is not a live file: editing it changes nothing in the backlog, and nothing is
 re-imported because a file changed.
 
-This is the `doc` of an `ideas_items` row, and it is the format an import reads and an export writes — a document this
-build does not fully understand can be carried through it. `revision` is **not** in it: the revision is a column, and
-it is added to the copy a caller reads (so the document that is stored and the document an editor submits back are the
-same thing without a field of its own).
+This is the stored document, and the format an import reads and an export writes — a document this build does not
+fully understand can be carried through it. `revision` is not a field of the idea itself: it travels beside the
+document, and is added to the copy a caller reads (so the document that is stored and the document an editor submits
+back are the same thing without a field of its own).
 
 - Section `kind`: `note | research | plan | requirements | design | decision | blocker | links | todo`. Common synonyms
   are mapped (`spec` → `requirements`, `tasks` → `todo`, …). Anything else becomes `note`. `title` is optional.
 - Idea ids are unique within the backlog, and section ids are unique within their idea. A legacy id that is not of our
   making is stored and found exactly as it is; only an id that *collides* with an idea already here is given a new one.
-- The database is the source of truth, and there is no second copy of it in memory to go stale: a patch is read,
-  validated and applied to a detached copy of the current row **inside the transaction that writes it**. A patch that
-  fails validation (an empty title, an unknown status) therefore leaves nothing behind — not in the database, and not in
-  the copy a later write starts from.
-- A write is a transaction: either the whole change is stored or none of it is, and a patch that changes nothing is not
-  written at all (no new `revision`, no event). A hot reload is a swap, so two instances of this plugin are briefly live
-  against the same tables; the database serializes them, which is why there is no lock file and no watcher any more.
+- The store is the source of truth, and there is no second copy of it in memory to go stale: a patch is read,
+  validated and applied to a detached copy of the current document **inside the transaction that writes it**. A patch
+  that fails validation (an empty title, an unknown status) therefore leaves nothing behind — not in the store, and
+  not in the copy a later write starts from.
+- A write is a transaction: either the whole change is stored or none of it is, and a patch that changes nothing is
+  not written at all (no new `revision`, no event). A hot reload is a swap, so two instances of this plugin are
+  briefly live against the same collections; a plugin transaction is exclusive per plugin id across reload
+  generations, so they cannot interleave and no lock file or watcher is needed.
 - What a save preserves: **unknown fields at every level of the idea** (the idea, its sections, a card, an imported
-  state). The root-level fields of the old JSON file are kept whole in `ideas_metadata` and come back in an export's
-  `root`; the import does not have to understand them to preserve them.
-- `//` comments and trailing commas are accepted when a legacy file is read and not carried into the database. An
-  exported file is plain JSON (LF, two-space indent).
+  state). The root-level fields of the old JSON file are kept whole in the `meta` collection and come back in an
+  export's `root`; the import does not have to understand them to preserve them.
+- An exported snapshot is plain JSON (LF, two-space indent).
 
 ## Event
 
 | type | scoped | data |
 |---|---|---|
-| `ideas.changed` | no (broadcast) | the `ideas.list` `storage` descriptor — `{ backend: "sqlite", database, scope, schemaVersion, editableFile, importExport }` — plus `file` (the legacy name, kept for older listeners) and `reason?` — which write it was (`add`, `update`, `answer`, …) |
+| `ideas.changed` | no (broadcast) | the `ideas.list` `storage` descriptor — `{ backend, database, scope, schemaVersion, editableFile, importExport }`, with `backend` the id of the storage provider in use (`sqlite` by default) and `database` the file it keeps its data in — plus `file` (the legacy name, kept for older listeners) and `reason?` — which write it was (`add`, `update`, `answer`, …) |
 | `ideas.suggested` | no (broadcast) | `{ suggestion }`: a card a closed chat left waiting. Fires when the save check makes one; the cards also survive a restart, so a window reads them with `ideas.suggestions` on start |
 
 The event fires after every write that committed, whether it came from a tool, from an RPC or from another window, and
@@ -165,8 +157,7 @@ turned into a `conflict` instead of a silent overwrite.
 
 Error codes: `bad_request` (invalid input: the message says what is wrong, for example the list of valid statuses or
 projects), `not_found` (idea, session or project — also a card that is gone), `conflict` (an edit whose
-`expectedRevision`/`expectedUpdatedAt` is stale, an id that is already in the backlog, or a cutover that already
-happened), `invalid_file` (a legacy file we cannot read or do not understand — it is left alone, never replaced),
+`expectedRevision`/`expectedUpdatedAt` is stale, or an id that is already in the backlog),
 `io_error` (a file write that could not complete, an export for example).
 
 ### `ideas.list`
@@ -176,10 +167,10 @@ happened), `invalid_file` (a legacy file we cannot read or do not understand —
 ```ts
 {
   storage: {
-    backend: 'sqlite';          // there is no editable file behind the backlog
-    database: string;           // "netpi.db"
+    backend: 'sqlite';          // the storage provider in use (`sqlite` by default); there is no editable file behind the backlog
+    database: string;           // the file that provider keeps its data in ("netpi.db")
     scope: 'netpi.ideas';
-    schemaVersion: 1;
+    schemaVersion: 2;
     editableFile: false;
     importExport: 'json';
   };
@@ -307,7 +298,8 @@ the check waits for the run), `already` (this conversation revision was claimed 
 the skips: `no_session`, `subagent`, `short` (fewer than two user turns), `unfinished` (the last turn ended `aborted`,
 `error`, `length` or `content_filter`), `off` (`ideas.saveCheck` is false).
 
-Whether the check may run is recorded in `ideas_checks`, per **conversation revision** (the messages the chat has now),
+Whether the check may run is recorded in the `checks` collection, per **conversation revision** (the messages the
+chat has now),
 with a state: `running` is a claim in flight — it carries a token and an expiry, so a second close of an unchanged chat
 sees the claim instead of starting a second check, and a claim nobody owns any more (NetPI was stopped mid-check)
 becomes retryable at the next start. `done` is the only permanent state, and `failed` — with the reason — may be tried
@@ -336,7 +328,7 @@ What runs in the background, in this order:
 Both calls wait for a slot on the backend the chats use (through the agents' scheduler, behind them), and neither runs
 on a paid model unless `ideas.allowPaidModel` says so. A backlog larger than the 51 letters a decision can offer is
 ranked by what the conversation shares with each idea and asked about in bounded windows, so later ideas stay eligible.
-   A `SAVE` becomes a card in `ideas_suggestions` and the `ideas.suggested` event fires.
+   A `SAVE` becomes a card in the `cards` collection and the `ideas.suggested` event fires.
 
 **Admission is a bound, not a courtesy.** A check that cannot get a slot within `ideas.checkWaitSeconds` (30) is
 **dropped**, never run without one — running it anyway is what let a commit sweep, a save check and a recall put three
@@ -360,8 +352,8 @@ answered.
 `ideas.suggestions` takes no arguments → `{ suggestions: [{ id, kind, … }] }`, oldest first. It is a plain read:
 listing the cards writes nothing. Two kinds: `save` (a plan a closed chat left unsaved — `{ kind: "save", sessionId,
 sessionTitle, title, summary, at, project }`) and `done` (an idea a commit may have finished — `{ kind: "done", ideaId,
-ideaRevision, title, commits: string[], at, project }`). The cards are rows in `ideas_suggestions`; the check marks are in
-`ideas_checks` (kept 30 days) and the last commit read per repository in `ideas_repos` (kept 60 days). The same chat and
+ideaRevision, title, commits: string[], at, project }`). The cards are documents in `cards`; the check marks are in
+`checks` (kept 30 days) and the last commit read per repository in `repos` (kept 60 days). The same chat and
 the same plan make one card however often the check runs, and a `done` card is one per idea.
 
 `ideas.resolve { id, action: "save" | "done" | "discard", edit?: { title?, summary? } }` → `{ saved: idea | null,
@@ -372,30 +364,19 @@ are; `discard` drops the card. The action is checked against the card's kind fir
 `done` is a `bad_request` and the card stays.
 
 **Answering a card is one transaction**: check the action against the card, write the idea (or mark it done), record the
-resolution in `ideas_resolutions` and take the card out — all of it or none of it. A second window answering the same
+resolution in `resolutions` and take the card out — all of it or none of it. A second window answering the same
 card, or the same call retried after a timeout, reads the recorded answer back with `alreadyResolved: true` and the idea
 it produced, instead of saving a second idea. A card that is gone and has no recorded answer is `not_found`. There is **no
-answer journal any more**: the resolution row is the journal, and it is in the same transaction as its effect, so
+answer journal any more**: the recorded resolution is the journal, and it is in the same transaction as its effect, so
 nothing has to be replayed at the next start. `ideas.resolved { id, action, card }` tells every other window to drop the
 card. The UI shows the cards above the composer and as a "waiting for you" line in the Ideas tab; both re-read them
 with `ideas.suggestions` on reconnect and when they become visible.
 
-### `ideas.migration`, `ideas.migrate`, `ideas.export`, `ideas.import`
+### `ideas.export`, `ideas.import`
 
-The cutover runs by itself at the plugin start when there is a legacy file to read. These four are for looking at that,
-doing it on purpose, and moving the backlog between machines.
+Moving the backlog between machines, or into a fresh home, is deliberate — there is no automatic reading of old
+files:
 
-- **`ideas.migration` `{ }`** → `{ backend: "sqlite", storage, cutover?, sources: [...], imports: [...],
-  orphanedSources? }`. Read-only, and it writes nothing: every resolved source path with its sha256 and its counts
-  (ideas, cards, check marks, cursors, answers in flight), the duplicate or unnamed ids of a source, a source that could
-  not be parsed (`error`, and the file is not touched), the receipts already written, the backend marker, and — after
-  the cutover — a legacy file that reappeared afterwards (`orphanedSources`).
-- **`ideas.migrate` `{ confirm: true, force? }`** → `{ backend, cutover, counts, diagnostics, archive }`. Deliberate:
-  without `confirm: true` it is a `bad_request`, because an automatic import would be the one operation that must never
-  happen because nobody asked. It refuses with `conflict` when the cutover already happened — unless `force: true`,
-  which is how a file an older build wrote afterwards is taken in (merged into what is here, not over it). Everything is
-  written in one transaction or not at all; the archive follows the commit, and a housekeeping failure does not unmake
-  it.
 - **`ideas.export` `{ path?, json? }`** → `{ json, file? }`: a portable snapshot — `format: "netpi.ideas.export"`,
   `version`, `exportedAt`, the ideas with their ids and the user's order, the cards, the answers already given, the
   check marks, the repository cursors, and the preserved root-level fields under `root`. With a `path` it is written
@@ -403,14 +384,14 @@ doing it on purpose, and moving the backlog between machines.
 - **`ideas.import` `{ json | path, mode?: "merge" (default) | "replace" | "validate" }`** → `{ ideas, cards, conflicts,
   unknownFields, imported?, mode }`. `validate` is the preview: the counts, the ids that are already here (a conflict),
   and whatever in the document this build does not understand. `merge` adds what is not here yet and never overwrites
-  what is; `replace` empties the backlog and the cards first, which is why it has to be named. This is the deliberate
-  transfer, separate from the cutover: an exported file is never re-read because it changed on disk.
+  what is; `replace` empties the backlog and the cards first, which is why it has to be named. An imported document is
+  read once, when the call says so: nothing is re-read because a file changed on disk.
 
 ### Close on commit (phase 3)
 
 Every project with a git repository is watched (the git directories the Files plugin resolves — in a worktree `.git` is
 a *file* — debounced 250 ms, and swept every two minutes whether or not a watcher could be created). The last commit
-read per repository is kept in `ideas_repos`; a repository is anchored at HEAD only when nothing is remembered
+read per repository is kept in `repos`; a repository is anchored at HEAD only when nothing is remembered
 for it, so commits made while NetPI was closed are read rather than skipped. The commits themselves are read through the
 Files plugin's `files.commits` — a plugin cannot run `git`.
 
@@ -429,7 +410,7 @@ Each new commit is read twice over, in the order that measured best (docs/DECISI
 1. **Which idea is it about?** A commit message that names an idea id is the match with no model at all. Otherwise one
    pick-one decision over the ideas open at that moment, linking *every* option at p ≥ `ideas.linkThreshold` (0.7 linked
    no wrong idea in 187 commits) — a commit can finish two ideas, so it is not forced to pick one. The commit is recorded
-   on the idea as a `commits` entry `{ hash, short, subject, at }`, beside the idea's text, never inside it, and the row
+   on the idea as a `commits` entry `{ hash, short, subject, at }`, beside the idea's text, never inside it, and the card
    shows a mark.
 2. **Is the idea finished?** Asked with the idea's full text (its plan and what is left) **and all its linked commits**,
    because asking from one commit and the summary alone offered only 5/12. At p ≥ `ideas.doneThreshold` (0.8) and beating
@@ -467,7 +448,7 @@ and a commit nobody made in a chat is exactly what the watcher is for. Skips: `i
 
 ## The agent tool: `ideas` (category `ideas`)
 
-One tool with an `action`, so a single schema goes with every request. It works on the one backlog in the database.
+One tool with an `action`, so a single schema goes with every request. It works on the one backlog in the store.
 New ideas are stamped with the session's project by default; the `project` argument changes that (it is the agent's way
 to reach other projects' backlogs, and `update` can move an idea between projects). Its prompt guideline: *"Record
 research and plans that are deferred, out of scope or not feasible now in the ideas backlog (ideas, action add), and
@@ -498,7 +479,7 @@ the idea (`get`) and works from what it read. Invalid input comes back as an `is
 
 - Header: the project filter (the active project's name by default, following the active project until the user picks
   another; *All projects*, *Global (unbound)*, and every known project), a storage mark and a **+** button. The mark
-  says where the backlog is — *"The ideas backlog lives in the netpi.db database (netpi.ideas, version 1) — it is not a
+  says where the backlog is — *"The ideas backlog lives in the netpi.db database (netpi.ideas, version 2) — it is not a
   file you can edit"*, from `ideas.list().storage` — because there is no path to open any more.
 - Filters: search over title, summary, tags and sections; the project filter above; a status menu (**Active** = open,
   planned, in-progress; **All**; or one status) with counts; and a **#** tag menu (multi-select). Selected tags show as
@@ -529,45 +510,23 @@ the idea (`get`) and works from what it read. Invalid input comes back as an `is
 
 ## Upgrading and going back
 
-The backlog moved out of JSON files once, and the files are still readable afterwards. What each side does with them is
-deliberate, because a storage version is not something to find out by trying to write it.
+The backlog is documents in the store's plugin collections, so "an older shape" is the store's question, not this
+plugin's: a provider refuses a store it cannot open, and this build reads the documents as they are, keeping every
+field it does not understand.
 
-**The cutover happens on the first start, and the safe way to reach it is a restart.** Nothing has to be run by hand
-(see "The one-time cutover" above), but the first start of the new build is the moment a *still-running* older build
-could be writing the same JSON file — which is exactly what a plugin reload is. So: after the upgrade, stop NetPI and
-start it again rather than reloading the plugin into the running instance. If an old build did get a write in, the file
-reappears where the new build no longer looks, and `ideas.migration` reports it as `orphanedSources`; nothing merges it
-silently, and `ideas.migrate { confirm: true, force: true }` takes it in on purpose (with the ids and the order it had).
-
-**A database from a newer NetPI is refused.** The tables carry a storage version (1 now). A build that finds a higher
-one logs an error and registers neither the tab nor the tool, rather than reading a shape it would mangle on the next
-write. Nothing is written, the backlog stays exactly as the newer build left it, and the answer is "update NetPI" —
-that is the only supported direction of travel.
-
-**The marker cannot stop an old build.** The backend marker in `ideas_metadata` is a promise *this* build keeps. A
-NetPI that has already shipped does not read it: started against the same home, an old build finds an empty backlog and
-would write `ideas.json` that nothing reads. What actually protects you is the archive — after the cutover the
-originals are moved out of the place the old build read them from, so it has nothing to read and starts empty rather
-than half-right. There is no bridge release, and nothing here claims an old binary is safe against a database it does
-not know about: a pre-cutover build is protected from the *files*, not from the tables.
+**One home was converted, once.** The JSON files of the earlier versions were read for the owner's own home by a
+one-off tool; a home that still has only such a file takes it in on purpose, with
+`ideas.import { path, mode: "merge" }` — one file, one deliberate call, never at a start.
 
 **Going back, on purpose**, with the app **stopped**:
 
-- **Move the archived originals back.** Every cutover left a copy of each source and, under `originals/`, the file
-  itself; `<home>/ideas-archive/<timestamp>/manifest.json` says which path each one came from. Put them back and the
-  old build sees the backlog as it was at the cutover — and only that: everything changed since lives in the database
-  and nowhere else, so this loses it. Take an `ideas.export` first if that matters.
-- **Or transfer deliberately**: `ideas.export` gives a snapshot document, `ideas.import` takes one in (`merge` by
-  default). This is how ideas move to another machine, and it is the only way back that can carry the work done since
-  the cutover.
+- **Transfer deliberately**: `ideas.export` gives a snapshot document, `ideas.import` takes one in (`merge` by
+  default). This is how ideas move to another machine or into a fresh home, and the only path back that carries the
+  work done since.
+- **Or roll the store back, for the whole home.** The ideas collections live beside the sessions, messages, projects
+  and the ledger in the same store (`<home>/netpi.db` with the `sqlite` provider), so restoring an older copy of the
+  provider's files also rolls back every chat: a whole-home decision, not an Ideas one (docs/BACKUPS.md).
 
-**Rolling the database back is a different thing.** The ideas tables live in the shared `netpi.db` beside the sessions,
-messages, projects, agents and usage. Restoring a copy of that database from before the cutover therefore also rolls
-back every chat, and it drops the ideas tables with their data — a whole-home decision, not an Ideas one. The Ideas-only
-paths are the export and the archive above.
-
-**A backup is enough.** A snapshot is now `netpi.db` and `settings.json`, so the ideas, their cards, the answers given,
-the check marks and the cursors travel inside the consistent database copy: a backup needs no Ideas plugin and cannot
-be a snapshot that quietly left the backlog out (docs/BACKUPS.md). An older snapshot that still carries the JSON files
-verifies and restores too — restore it into a new home and the plugin imports those files at the first start, which is
-the cutover again, from a copy of the originals rather than from your live ones.
+**A backup is enough.** A snapshot is the files the provider wrote plus `settings.json`, so the ideas, their cards,
+the answers given, the check marks and the cursors travel inside the consistent copy: a backup needs no Ideas plugin
+and cannot be a snapshot that quietly left the backlog out (docs/BACKUPS.md).
