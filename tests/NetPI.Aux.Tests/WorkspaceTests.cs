@@ -38,6 +38,8 @@ public static class WorkspaceTests
         t.Add("workspaces: a junction in an intermediate parent is the same place, so the write is refused", JunctionInIntermediateParent);
         t.Add("workspaces: a long-path, admin-share or device spelling is the same local path, and a remote share is another place", SpellingsArePlaces);
         t.Add("workspaces: an isolated write is refused while git cannot answer, and the failure is not remembered", UnverifiableRefused);
+        t.Add("workspaces: a non-ASCII file is named as it is, not octal-escaped, in the probe's answers", NonAsciiNamedAsItIs);
+        t.Add("workspaces: a hung git is ended at the deadline, and the timeout is the answer, not a hang", HungGitTimesOut);
         t.Add("workspaces: the guard reads arguments as the tools do: names, order, string-encoded arguments, an ssh download's destination", GuardArguments);
         t.Add("workspaces: ssh copy refuses a download into another checkout of the repository and allows one into the worker's own", SshDownloadRefused);
         t.Add("workspaces: the notice names the checkout, the branch and what a write outside it does", NoticeText);
@@ -1167,6 +1169,63 @@ public static class WorkspaceTests
         }
         finally { try { Directory.Delete(otherRoot, true); } catch { } }
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// <c>core.quotepath=off</c> is part of the one git start (GitRunner): the probe names a non-ASCII file the way
+    /// the file system names it, not as git's quoted, octal-escaped form (which DescribeChanges would show verbatim).
+    /// </summary>
+    private static Task NonAsciiNamedAsItIs()
+    {
+        if (!GitAvailable()) Check.Skip("no git on PATH");
+        var repo = T.TempDir("ws-uni");
+        GitInit(repo);
+        var file = "übung-über.txt";
+        File.WriteAllText(Path.Combine(repo, file), "x\n");
+        var changes = new GitProbe(TimeSpan.Zero).DescribeChanges(repo);
+        Check.Contains(changes, file, "the path is not octal-escaped: " + changes);
+        Check.NotContains(changes, "\\303", "no quoted/escaped form of the UTF-8 name");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A git that never ends: the shared start's deadline (shortened for the test) ends the whole tree, and the
+    /// answer is the timeout — (124, "git timed out") where a code is wanted, null where only an answer is.
+    /// </summary>
+    private static async Task HungGitTimesOut()
+    {
+        if (!GitAvailable()) Check.Skip("no git on PATH");
+        var repo = T.TempDir("ws-hang");
+        GitInit(repo);
+        // A fake git that sleeps through the deadline (a full path: a bare name on PATH would never find a script).
+        var slow = T.TempDir("ws-hang-git");
+        string fake;
+        if (OperatingSystem.IsWindows())
+        {
+            fake = Path.Combine(slow, "git.cmd");
+            File.WriteAllText(fake, "@ping -n 4 127.0.0.1 >nul\nexit 0\n");
+        }
+        else
+        {
+            fake = Path.Combine(slow, "git");
+            File.WriteAllText(fake, "#!/bin/sh\nsleep 4\n");
+            File.SetUnixFileMode(fake, UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+        }
+        var oldExe = GitRunner.Executable;
+        var oldTimeout = GitRunner.Timeout;
+        try
+        {
+            GitRunner.Executable = fake;
+            GitRunner.Timeout = TimeSpan.FromSeconds(1);
+            var (code, output) = await new GitProbe(TimeSpan.Zero).ExecAsync(repo, CancellationToken.None, "status");
+            Check.Equal("124 git timed out", $"{code} {output}", "the timeout, not an endless wait or a start failure");
+            Check.Equal(null, new GitProbe(TimeSpan.Zero).Run(repo, "status"), "the same call where only an answer is wanted");
+        }
+        finally
+        {
+            GitRunner.Executable = oldExe;
+            GitRunner.Timeout = oldTimeout;
+        }
     }
 
     /// <summary>The shell plugin's answer about a busy directory, without a real process.</summary>

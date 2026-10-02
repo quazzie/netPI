@@ -1,6 +1,3 @@
-using System.Diagnostics;
-using System.Text;
-
 namespace NetPI.Workspaces;
 
 /// <summary>
@@ -15,7 +12,6 @@ namespace NetPI.Workspaces;
 public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
 {
     public static readonly TimeSpan DefaultCache = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
     /// <summary>The empty tree's hash, for a repository without commits (git's own well-known constant).</summary>
     public const string EmptyTreeHash = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -84,9 +80,10 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
 
     public async Task<string?> RunAsync(string cwd, CancellationToken ct, params string[] args)
     {
-        var psi = NewPsi(cwd);
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        return await StartAsync(psi, ct).ConfigureAwait(false);
+        var r = await GitRunner.RunAsync(cwd, ct, 0, args).ConfigureAwait(false);
+        if (r.Aborted) throw new OperationCanceledException(ct);
+        if (r.StartError is not null || r.TimedOut) return null;
+        return r.ExitCode == 0 ? r.Stdout.Trim() : null;
     }
 
     /// <summary>Run git and return stdout, or null when it failed, timed out or git is missing.</summary>
@@ -106,73 +103,11 @@ public sealed class GitProbe(TimeSpan? cacheFor = null) : IWorkspaceRepoProbe
     /// <summary>Run git and return (exit code, stdout, stderr) apart: an answer is stdout, a warning on stderr is not part of it.</summary>
     public async Task<(int Code, string Stdout, string Stderr)> ExecSplitAsync(string cwd, CancellationToken ct, params string[] args)
     {
-        var psi = NewPsi(cwd);
-        psi.RedirectStandardInput = true;
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        Process process;
-        try { process = Process.Start(psi)!; }
-        catch (Exception ex) { return (127, "", ex.Message); }
-        using (process)
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(Timeout);
-            try
-            {
-                var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
-                var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-                try { process.StandardInput.Close(); } catch { }
-                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-                return (process.ExitCode, await stdout.ConfigureAwait(false), await stderr.ConfigureAwait(false));
-            }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(entireProcessTree: true); } catch { }
-                if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
-                return (124, "", "git timed out");
-            }
-        }
-    }
-
-    private static ProcessStartInfo NewPsi(string cwd)
-    {
-        var psi = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-        };
-        psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
-        psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
-        return psi;
-    }
-
-    private static async Task<string?> StartAsync(ProcessStartInfo psi, CancellationToken ct)
-    {
-        Process process;
-        try { process = Process.Start(psi)!; }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { return null; }
-        using (process)
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(Timeout);
-            try
-            {
-                var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
-                _ = process.StandardError.ReadToEndAsync(timeout.Token);
-                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-                return process.ExitCode == 0 ? (await stdout.ConfigureAwait(false)).Trim() : null;
-            }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(entireProcessTree: true); } catch { }
-                if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
-                return null;
-            }
-        }
+        var r = await GitRunner.RunAsync(cwd, ct, 0, args).ConfigureAwait(false);
+        if (r.Aborted) throw new OperationCanceledException(ct);
+        if (r.StartError is not null) return (127, "", r.StartError);
+        if (r.TimedOut) return (124, "", "git timed out");
+        return (r.ExitCode, r.Stdout, r.Stderr);
     }
 
     private string? Ask(string path, params string[] args)

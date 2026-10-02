@@ -645,6 +645,32 @@ public static class SshTests
             finally { SshClient.Probe = real; SshClient.Forget(); }
         });
 
+        r.Add("ssh: the offline client probe is one deadline over start, read and wait", () =>
+        {
+            var dir = T.TempDir("cp");
+            string Exe(string name, string winBody, string posixBody)
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    var win = Path.Combine(dir, name + ".cmd");
+                    File.WriteAllText(win, winBody);
+                    return win;
+                }
+                var p = Path.Combine(dir, name);
+                File.WriteAllText(p, "#!/bin/sh\n" + posixBody);
+                File.SetUnixFileMode(p, UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+                return p;
+            }
+            var ok = ChildProcess.RunAsync(Exe("ok", "@echo the answer 1>&2\nexit 7\n", "echo the answer >&2\nexit 7\n"), ["-G"], TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+            Check.False(ok.TimedOut);
+            Check.Equal(7, ok.Exit, "the client's own exit code");
+            Check.Contains(ok.Err, "the answer", "the answer is read from stderr");
+
+            var slow = ChildProcess.RunAsync(Exe("slow", "@ping -n 4 127.0.0.1 >nul\nexit 0\n", "sleep 4\n"), [], TimeSpan.FromMilliseconds(300)).GetAwaiter().GetResult();
+            Check.True(slow.TimedOut, "the deadline ends the run, whatever the client is doing");
+            Check.Contains(slow.Err, "did not answer");
+        });
+
         r.Add("ssh: TextEdits (unique matches, replace_all, overlap, hunks and context)", () =>
         {
             var ten = string.Join("\n", Enumerable.Range(1, 12).Select(i => $"row{i:D2}")) + "\n";
