@@ -15,6 +15,8 @@ public static class InspectTests
         r.Add("inspect: problems (failed plugin, a broken settings file, waiters on an inactive agent, a long wait, errors in the log)", Problems);
         r.Add("inspect: settings without secrets, saved failed requests, the overview lists the diag methods", SettingsFailuresOverview);
         r.Add("inspect: a secret hiding in a value is masked too — a token in a baseUrl, a header no name pattern knows", SecretsInValues);
+        r.Add("inspect: the tool scans are paged and bounded — one page for a recent call id, and the old window reported", BoundedScans);
+        r.Add("inspect: every diag action is cut at the same limit, and a cut answer leaves no details behind", ActionsAreCapped);
         r.Add("inspect: the diag tool answers with the RPC's JSON, defaults to the calling session and refuses every write", DiagTool);
         r.Add("inspect: diag rpc reaches any read-only method and nothing else; a journal type query is global", DiagRpcAndJournalScope);
         r.Add("inspect: a reload says what it cost: the tools at stake, or that a hook-only plugin announces nothing", ReloadImpact);
@@ -142,7 +144,98 @@ public static class InspectTests
             Check.NotContains(printed, secret);
     }
 
-    // Only a plugin that registers tools can take a tool away. A hook-only reload (context, nudge) swaps under a
+    // Every wrapped action used to answer uncapped (only the rpc passthrough cut its text), and the runtime persists a tool
+// result's Details node in the session database while the model only sees Content: a big messages page was copied three
+// times and one of the copies was permanent (idea-5oitnm). Every answer now goes through the same cut.
+private static async Task ActionsAreCapped()
+{
+    var ctx = await StartAsync();
+    // Fully qualified: the class also has a test method called DiagTool, which would win the name in this scope.
+    const int max = NetPI.Diagnostics.DiagTool.RpcMaxChars;
+    var tool = ctx.ToolsFake.Tools.OfType<NetPI.Diagnostics.DiagTool>().Single();
+    var big = new string('z', max * 2);
+    ctx.RpcFake.Register("diag.journal", (_, _) => Task.FromResult<object?>(new JsonArray(new JsonObject { ["data"] = big })), "events", readOnly: true);
+
+    var cut = await Call(tool, """{ "action": "journal" }""");
+    Check.False(cut.IsError, cut.Content);
+    Check.True(cut.Content.Length <= max + 120, $"{cut.Content.Length} characters, cut at {max}");
+    Check.Contains(cut.Content, $"cut at {max} characters", "and it says so");
+    Check.True(cut.Details is null, "a cut answer leaves no details node for the session database to keep");
+
+    // a small answer is untouched: the UI reads the details node
+    ctx.RpcFake.Register("diag.settings", (_, _) => Task.FromResult<object?>(new JsonObject { ["settings"] = new JsonObject { ["a"] = 1 } }), "settings", readOnly: true);
+    var small = await Call(tool, """{ "action": "settings" }""");
+    Check.Contains(small.Content, "\"settings\"");
+    Check.True(small.Details is JsonObject, "the details the chat renders");
+
+    // the passthrough behaves the same, as it always did
+    ctx.RpcFake.Register("events.recent", (_, _) => Task.FromResult<object?>(new JsonArray(new JsonObject { ["data"] = big })), "recent bus events", readOnly: true);
+    var viaRpc = await Call(tool, """{ "action": "rpc", "method": "events.recent" }""");
+    Check.Contains(viaRpc.Content, $"cut at {max} characters");
+    Check.True(viaRpc.Details is null, "and no details either");
+}
+
+// The tool log holds the newest calls, but the store answered a question about one call id by deserialising the parts of
+// the last 2000 messages, and the list by doing the same for the last 300 of every session on screen: every tool result
+// and image in them, to render a 300-character preview. The scans are paged now and stop as soon as the ids asked for are
+// found; the numbers below are rows the store handed out (idea-5oitnm).
+private static async Task BoundedScans()
+{
+    const int History = 1200;
+    var ctx = await StartAsync();
+    static ChatMessage[] Pair(string callId, string result) =>
+    [
+        new() { Role = MessageRole.Assistant, Parts = [new ToolCallPart { Id = callId, Name = "read", Arguments = "{\"path\":\"a\"}" }] },
+        new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = callId, Name = "read", Content = result }] },
+    ];
+
+    // ses_1 holds 1200 messages with three tool calls at known depths: the newest two rows, 350 rows back, and the
+    // oldest two rows — behind the 1000-message window the scan reaches.
+    foreach (var m in Pair("c_ancient", "result of c_ancient").Concat(Filler(846)).Concat(Pair("c_mid", "result of c_mid"))
+             .Concat(Filler(346)).Concat(Pair("t_ses_1", "listed")).Concat(Pair("c_recent", "result of c_recent")))
+        ctx.SessionsFake.AppendMessage("ses_1", m);
+    foreach (var sid in new[] { "ses_2", "ses_3" })
+        foreach (var m in Filler(History).Concat(Pair($"t_{sid}", "listed")))
+            ctx.SessionsFake.AppendMessage(sid, m);
+    ctx.SessionsFake.Sessions.Add(new SessionInfo { Id = "ses_1", Title = "s", CreatedAt = DateTimeOffset.UtcNow });
+    ctx.SessionsFake.Sessions.Add(new SessionInfo { Id = "ses_2", Title = "t", CreatedAt = DateTimeOffset.UtcNow });
+    ctx.SessionsFake.Sessions.Add(new SessionInfo { Id = "ses_3", Title = "u", CreatedAt = DateTimeOffset.UtcNow });
+    foreach (var sid in new[] { "ses_1", "ses_2", "ses_3" })
+    {
+        ctx.Events.Publish(EventTypes.ToolStart, new JsonObject { ["sessionId"] = sid, ["callId"] = $"t_{sid}", ["name"] = "read", ["arguments"] = "{}" }, sid);
+        ctx.Events.Publish(EventTypes.ToolEnd, new JsonObject { ["sessionId"] = sid, ["callId"] = $"t_{sid}", ["name"] = "read", ["durationMs"] = 3 }, sid);
+    }
+    Check.Equal(History, ctx.SessionsFake.GetMessages("ses_1").Count, "the chat is 1200 messages long");
+
+    // A call id in the newest messages: one page of the session, not its whole history.
+    ctx.SessionsFake.MessagesRead = 0;
+    var recent = (JsonObject)(await ctx.RpcFake.Call("diag.tool", new JsonObject { ["callId"] = "c_recent", ["sessionId"] = "ses_1" }))!;
+    Check.Equal("result of c_recent", recent["result"].Str());
+    Check.Equal(Inspector.ToolPartPage, ctx.SessionsFake.MessagesRead, $"one page, not the {History} messages the old scan read");
+
+    // Deeper in the same session: found by paging back, and only the pages it took were read.
+    ctx.SessionsFake.MessagesRead = 0;
+    var mid = (JsonObject)(await ctx.RpcFake.Call("diag.tool", new JsonObject { ["callId"] = "c_mid", ["sessionId"] = "ses_1" }))!;
+    Check.Equal("result of c_mid", mid["result"].Str());
+    Check.Equal(4 * Inspector.ToolPartPage, ctx.SessionsFake.MessagesRead, "four pages back, then it stops");
+
+    // Older than the window: not found, and the error says how far back it looked.
+    ctx.SessionsFake.MessagesRead = 0;
+    var ancient = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("diag.tool", new JsonObject { ["callId"] = "c_ancient", ["sessionId"] = "ses_1" }));
+    Check.Contains(ancient.Message, $"newest {Inspector.ToolPartMessages} messages");
+    Check.Equal(Inspector.ToolPartMessages, ctx.SessionsFake.MessagesRead, "the window is the bound");
+
+    // The list: one page per session it shows, and the previews are still there.
+    ctx.SessionsFake.MessagesRead = 0;
+    var tools = (JsonArray)(await ctx.RpcFake.Call("diag.tools"))!;   // no session filter: every session the log holds
+    Check.Equal(3, tools.Count);
+    Check.True(tools.All(t => t!["result"].Str() == "listed"), "every row still carries its result preview");
+    Check.Equal(3 * Inspector.ToolPartPage, ctx.SessionsFake.MessagesRead, "one page per session on screen");
+
+    static IEnumerable<ChatMessage> Filler(int n) => Enumerable.Range(0, n).Select(i => ChatMessage.UserText($"filler {i}"));
+}
+
+// Only a plugin that registers tools can take a tool away. A hook-only reload (context, nudge) swaps under a
     // running turn and announces nothing, and the report must say that rather than claim a notice.
     private static async Task ReloadImpact()
     {

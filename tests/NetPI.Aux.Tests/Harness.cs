@@ -423,8 +423,18 @@ public sealed class FakeSessionStore : ISessionStore
 
     public ChatMessage? GetMessage(long id) => Messages.FirstOrDefault(m => m.Id == id);
 
-    public IReadOnlyList<ChatMessage> GetMessages(string sessionId, long? beforeSeq = null, int? limit = null) =>
-        Messages.Where(m => m.SessionId == sessionId).OrderBy(m => m.Seq).ToList();
+    /// <summary>How many message rows this store has handed out, so a test can measure what a scan really read (the
+    /// real store deserialises every row it returns).</summary>
+    public int MessagesRead { get; set; }
+
+    /// <summary>As the real store: seq ascending, <c>beforeSeq</c> exclusive, the newest <c>limit</c> when one is given.</summary>
+    public IReadOnlyList<ChatMessage> GetMessages(string sessionId, long? beforeSeq = null, int? limit = null)
+    {
+        var all = Messages.Where(m => m.SessionId == sessionId && (beforeSeq is null || m.Seq < beforeSeq)).OrderBy(m => m.Seq).ToList();
+        if (limit is > 0 && all.Count > limit) all = all.GetRange(all.Count - limit.Value, limit.Value);
+        MessagesRead += all.Count;
+        return all;
+    }
 
     public IReadOnlyList<ChatMessage> GetContextMessages(string sessionId)
     {

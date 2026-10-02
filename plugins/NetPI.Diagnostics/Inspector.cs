@@ -332,6 +332,13 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         return recorder.Call(id)?.ToJson(detail: true) ?? throw new RpcException("not_found", $"Call {id} is no longer in the call log (it keeps the last {Recorder.CallCapacity}).");
     }
 
+    /// <summary>How many messages one page of the tool-parts scan reads. The tool log holds the newest calls, so their
+    /// results are in the newest messages; a page this size finds them without deserialising a whole history.</summary>
+    public const int ToolPartPage = 100;
+
+    /// <summary>How far back the tool-parts scan pages (10 pages of <see cref="ToolPartPage"/>).</summary>
+    public const int ToolPartMessages = 1_000;
+
     public JsonArray Tools(RpcRequest r)
     {
         var limit = Math.Clamp(r.Int("limit") ?? 50, 1, Recorder.ToolCapacity);
@@ -343,7 +350,13 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
             .Where(t => (sid is null || t.SessionId == sid) && (name is null || string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase))
                         && (!errors || (t.EndedAt is not null && t.IsError)) && (!running || t.EndedAt is null))
             .Take(limit).ToList();
-        var results = ToolParts(rows.Select(t => t.SessionId));
+        // Only the ids of the rows on screen, per session, and a session stops being read once its own are found: a
+        // fixed 300 messages per session deserialised every tool result and image in it to render 300-character
+        // previews, and a session's page was kept going while another session's ids were still wanted (idea-5oitnm).
+        var wanted = rows.GroupBy(t => t.SessionId, StringComparer.Ordinal)
+            .Select(g => (g.Key, (HashSet<string>)g.Select(t => t.CallId).ToHashSet(StringComparer.Ordinal)))
+            .ToList();
+        var results = ToolParts(wanted, maxMessages: 3 * ToolPartPage);
         return new JsonArray([.. rows.Select(t =>
         {
             var j = t.ToJson();
@@ -362,9 +375,11 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         var record = recorder.Tools().FirstOrDefault(t => t.CallId == callId);
         var sessionId = r.Str("sessionId") ?? record?.SessionId
                         ?? throw new RpcException("not_found", $"Tool call {callId} is no longer in the tool log (it keeps the last {Recorder.ToolCapacity}): pass its sessionId.");
-        var parts = ToolParts([sessionId], 2000);
+        // Paged backwards in small pages until the id turns up, rather than reading 2000 messages (every tool result and
+        // image in them deserialised) to find one call — and the scan for the list of calls has the same shape (idea-5oitnm).
+        var parts = ToolParts([(sessionId, new HashSet<string>([callId], StringComparer.Ordinal))], maxMessages: ToolPartMessages);
         if (!parts.TryGetValue(callId, out var found) && record is null)
-            throw new RpcException("not_found", $"No tool call {callId} in the last 2000 messages of {sessionId}.");
+            throw new RpcException("not_found", $"No tool call {callId} in the newest {ToolPartMessages} messages of {sessionId}.");
         var o = record?.ToJson() ?? new JsonObject { ["callId"] = callId, ["sessionId"] = sessionId };
         if (found.Call is { } call)
         {
@@ -383,16 +398,35 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         return o;
     }
 
-    /// <summary>The tool calls and results in the recent messages of these sessions, by call id.</summary>
-    private Dictionary<string, (ToolCallPart? Call, ToolResultPart? Result)> ToolParts(IEnumerable<string?> sessionIds, int messages = 300)
+    /// <summary>
+    /// The tool calls and results in the recent messages of these sessions, by call id. Only the ids in a session's
+    /// <c>Wanted</c> are collected, and a session stops being read as soon as they are all found or
+    /// <paramref name="maxMessages"/> rows have been read for it. The store deserialises every row it returns — full
+    /// tool-result text and images — so the scan is paged and bounded rather than "the last N messages of every
+    /// session" to render a 300-character preview (idea-5oitnm).
+    /// </summary>
+    private Dictionary<string, (ToolCallPart? Call, ToolResultPart? Result)> ToolParts(
+        IEnumerable<(string? SessionId, HashSet<string> Wanted)> sessions, int maxMessages = ToolPartMessages)
     {
         var map = new Dictionary<string, (ToolCallPart? Call, ToolResultPart? Result)>();
-        foreach (var sid in sessionIds.Where(x => x is not null).Distinct())
+        foreach (var session in sessions.Where(s => s.SessionId is not null).GroupBy(s => s.SessionId))
         {
-            foreach (var m in ctx.Sessions.GetMessages(sid!, null, messages))
+            var wanted = session.SelectMany(s => s.Wanted).ToHashSet(StringComparer.Ordinal);
+            var found = new HashSet<string>(StringComparer.Ordinal);
+            long? before = null;
+            for (var read = 0; read < maxMessages; read += ToolPartPage)
             {
-                foreach (var c in m.ToolCalls) map[c.Id] = (c, map.GetValueOrDefault(c.Id).Result);
-                foreach (var t in m.ToolResults) map[t.CallId] = (map.GetValueOrDefault(t.CallId).Call, t);
+                var page = ctx.Sessions.GetMessages(session.Key!, before, ToolPartPage);
+                if (page.Count == 0) break;
+                foreach (var m in page)
+                {
+                    // a call and its result are two rows: both are collected, so the pair must not be "taken" by the first
+                    foreach (var c in m.ToolCalls) if (wanted.Contains(c.Id)) { map[c.Id] = (c, map.GetValueOrDefault(c.Id).Result); found.Add(c.Id); }
+                    foreach (var t in m.ToolResults) if (wanted.Contains(t.CallId)) { map[t.CallId] = (map.GetValueOrDefault(t.CallId).Call, t); found.Add(t.CallId); }
+                }
+                if (found.Count == wanted.Count) break; // everything this session was asked for is in hand
+                if (page.Count < ToolPartPage) break;   // the session has no older messages
+                before = page[0].Seq;                   // page further back
             }
         }
         return map;
