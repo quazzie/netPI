@@ -4,3 +4,7 @@
 *.sh text eol=lf
 *.png binary
 *.ico binary
+# Generated bundles: the build writes these byte-for-byte (LF). Git must not rewrite their line
+# endings or every build leaves them "modified" with an empty diff (CRLF checkout form vs LF build form).
+web/dist/** binary
+plugins/**/wwwroot/ui.js binary
