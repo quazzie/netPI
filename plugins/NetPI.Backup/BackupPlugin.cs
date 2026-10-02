@@ -150,6 +150,7 @@ public sealed class BackupPlugin : INetPiPlugin
         if (manifest["provider"] is not JsonValue named || !named.TryGetValue<string>(out var provider) || provider.Length == 0)
             throw new InvalidDataException("The backup manifest does not say which storage provider wrote it");
         if (!files.ContainsKey(SettingsFile)) throw new InvalidDataException($"The backup manifest does not list {SettingsFile}");
+        if (files.Count < 2) throw new InvalidDataException("The backup manifest lists no file of the store: a snapshot without its data is not a snapshot");
         return manifest;
     }
 

@@ -1,7 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
-using NetPI.Host.Data;
+using NetPI.Host.Settings;
+using NetPI.Host.Storage.Sqlite;
 using NetPI.Host.Events;
 using NetPI.Host.Sessions;
 
@@ -12,17 +13,30 @@ public static class SessionStoreTests
     private sealed class Fixture : IAsyncDisposable
     {
         public readonly string Dir = T.TempDir("sessions");
+        public readonly IStorage Storage;
+        /// <summary>The SQL engine behind the storage, for tests that stage or inspect rows directly.</summary>
         public readonly Database Db;
         public readonly EventBus Bus = new(NullLogger.Instance);
-        public readonly SessionStore Store;
+        public readonly SessionService Store;
         public readonly List<BusEvent> Events = [];
         private readonly IDisposable _sub;
 
         public Fixture()
         {
-            Db = new Database(Path.Combine(Dir, "netpi.db"));
-            Store = new SessionStore(Db, Bus, Path.Combine(Dir, "workspace"));
+            Storage = Open(Dir);
+            Db = ((SqliteStorage)Storage).Database;
+            Store = new SessionService(Storage, Bus, Path.Combine(Dir, "workspace"));
             _sub = Bus.Subscribe("*", e => { lock (Events) Events.Add(e); });
+        }
+
+        /// <summary>The sqlite storage of a home folder (a second one over the same folder is a simulated restart).</summary>
+        public static IStorage Open(string dir)
+        {
+            Directory.CreateDirectory(dir);
+            return new SqliteStorageProvider().Open(new StorageOpenOptions
+            {
+                Home = dir, Logger = NullLogger.Instance, Settings = new SettingsStore(Path.Combine(dir, "settings.json"), NullLogger.Instance),
+            });
         }
 
         public async Task<List<BusEvent>> EventsAsync(string type)
@@ -35,7 +49,7 @@ public static class SessionStoreTests
         {
             _sub.Dispose();
             await Bus.DisposeAsync();
-            Db.Dispose();
+            Storage.Dispose();
         }
     }
 
@@ -60,7 +74,7 @@ public static class SessionStoreTests
         {
             await using var f = new Fixture();
             var s = f.Store.CreateSession(new SessionInfo());
-            Check.Equal(SessionStore.DefaultTitle, s.Title);
+            Check.Equal(SessionService.DefaultTitle, s.Title);
             Check.True(s.Id.StartsWith("ses_"));
             var m = f.Store.AppendMessage(s.Id, Assistant("hello"));
             Check.True(m.Id > 0);
@@ -107,7 +121,7 @@ public static class SessionStoreTests
             await using var f = new Fixture();
             var s = f.Store.CreateSession(new SessionInfo { Title = "" });
             f.Store.AppendMessage(s.Id, ChatMessage.NoticeText("notice first", "system"));
-            Check.Equal(SessionStore.DefaultTitle, f.Store.GetSession(s.Id)!.Title, "notices do not title");
+            Check.Equal(SessionService.DefaultTitle, f.Store.GetSession(s.Id)!.Title, "notices do not title");
             f.Store.AppendMessage(s.Id, ChatMessage.UserText("  Fix the login bug in the authentication module please, it keeps failing on Windows\nsecond line"));
             var title = f.Store.GetSession(s.Id)!.Title;
             Check.True(title.Length <= 60, $"title length {title.Length}");
@@ -212,14 +226,14 @@ public static class SessionStoreTests
             f.Store.AppendMessage(s.Id, Assistant("first response"));
             f.Store.AppendMessage(s.Id, ChatMessage.UserText("second"));
             f.Store.UpdateSession(s.Id, x => { SessionPrompt.Invalidate(x); SessionPrompt.RecordSent(x, "prefix B", 1, 3); });
-            using var freshDb = new Database(Path.Combine(f.Dir, "netpi.db"));
-            var fresh = new SessionStore(freshDb, f.Bus, Path.Combine(f.Dir, "workspace"));
+            using var freshStorage = Fixture.Open(f.Dir);
+            var fresh = new SessionService(freshStorage, f.Bus, Path.Combine(f.Dir, "workspace"));
             var current = fresh.GetSession(s.Id)!;
-            var early = fresh.ForkSession(s.Id, 2, SessionFork.Template(current, 2, 0));
+            var early = fresh.ForkSession(s.Id, 2, SessionFork.Template(current, 2, 0, []));
             Check.Equal("prefix A", SessionPrompt.Fallback(fresh.GetSession(early.Id)!));
             Check.Equal(1, ((JsonArray)early.Meta![SessionPrompt.HistoryKey]!).Count);
             Check.Equal("prefix B", SessionPrompt.Fallback(current), "original unchanged");
-            var before = SessionFork.Template(current, 0, 0);
+            var before = SessionFork.Template(current, 0, 0, []);
             Check.True(SessionPrompt.Fallback(before) is null);
         });
 
@@ -235,7 +249,8 @@ public static class SessionStoreTests
                     ["forkedFrom"] = new JsonObject { ["sessionId"] = "ses_z" },
                 },
             };
-            var t = SessionFork.Template(from, 7, 1234, new HashSet<string> { "Chat", "Chat (fork)" });
+            var runState = new[] { "goal", "todo", "budgetAllowedFrom", "guardrailsAllowed" };   // what plugins declare as run state
+            var t = SessionFork.Template(from, 7, 1234, runState, new HashSet<string> { "Chat", "Chat (fork)" });
             Check.Equal("Chat (fork 2)", t.Title, "the first free number");
             Check.True(t is { ProjectId: "prj_1", Model: "m1", Reasoning: "high", Kind: "chat", ContextTokens: 1234 });
             Check.Equal("agent,forkedFrom,identity,profile,toolsOff", string.Join(",", t.Meta!.Select(kv => kv.Key).Order()));
@@ -246,6 +261,51 @@ public static class SessionStoreTests
             Check.Equal("Chat (fork 4)", SessionFork.Title("Chat (fork 2)", new HashSet<string> { "Chat (fork 2)", "Chat (fork 3)" }));
             Check.Equal(17L, SessionFork.ContextTokens([ChatMessage.UserText("x"), Assistant("a"), ChatMessage.UserText("y")]), "the last model call before the fork point");
             return Task.CompletedTask;
+        });
+
+        r.Add("sessions: declared run-state keys are dropped at a fork and remembered across a restart; meta.cwd is never copied", async () =>
+        {
+            await using var f = new Fixture();
+            f.Store.DeclareForkReset("goal", "todo");
+            var s = f.Store.CreateSession(new SessionInfo
+            {
+                Meta = new JsonObject { ["goal"] = new JsonObject { ["status"] = "active" }, ["todo"] = new JsonArray(), ["profile"] = "coder", [SessionCwd.MetaKey] = "C:/checkout" },
+            });
+            f.Store.AppendMessage(s.Id, ChatMessage.UserText("hello"));
+            Check.Equal("C:/checkout", f.Store.GetCwd(f.Store.GetSession(s.Id)!), "the folder a session carries is where it runs");
+
+            // A store started later, in a run where the plugin that declared the keys is not loaded: the keys are still known.
+            using var restarted = Fixture.Open(f.Dir);
+            var fresh = new SessionService(restarted, f.Bus, Path.Combine(f.Dir, "workspace"));
+            var current = fresh.GetSession(s.Id)!;
+            var fork = fresh.ForkSession(s.Id, 1, SessionFork.Template(current, 1, 0, fresh.ForkResetKeys()));
+            var meta = fresh.GetSession(fork.Id)!.Meta!;
+            Check.True(!meta.ContainsKey("goal") && !meta.ContainsKey("todo"), "run state a plugin declared does not reach a fork, even with that plugin absent");
+            Check.True(!meta.ContainsKey(SessionCwd.MetaKey), "a fork starts in its project's folder, not its parent's checkout");
+            Check.Equal("coder", meta["profile"]!.GetValue<string>(), "setup is kept");
+            await Task.CompletedTask;
+        });
+
+        r.Add("sessions: a plugin finds the sessions it attached something to, including ones with no message yet", async () =>
+        {
+            await using var f = new Fixture();
+            var stored = f.Store.CreateSession(new SessionInfo { Meta = new JsonObject { ["workspaceId"] = "wsp_1" } });
+            f.Store.AppendMessage(stored.Id, ChatMessage.UserText("hello"));
+            var archived = f.Store.CreateSession(new SessionInfo { Meta = new JsonObject { ["workspaceId"] = "wsp_1" } });
+            f.Store.AppendMessage(archived.Id, ChatMessage.UserText("hello"));
+            f.Store.UpdateSession(archived.Id, x => x.Archived = true);
+            var transient = f.Store.CreateSession(new SessionInfo { Meta = new JsonObject { ["workspaceId"] = "wsp_1" } });
+            f.Store.CreateSession(new SessionInfo { Meta = new JsonObject { ["workspaceId"] = "wsp_2" } });
+
+            List<string> Find(bool archivedToo, bool unmaterialized) => f.Store.ListSessions(new SessionQuery
+            {
+                AttachedKey = "workspaceId", AttachedValue = "wsp_1", IncludeArchived = archivedToo, IncludeUnmaterialized = unmaterialized,
+            }).Select(x => x.Id).Order().ToList();
+
+            Check.Equal(string.Join(",", new[] { stored.Id }.Order()), string.Join(",", Find(false, false)), "stored and not archived");
+            Check.Equal(string.Join(",", new[] { stored.Id, archived.Id }.Order()), string.Join(",", Find(true, false)), "archived ones when asked");
+            Check.Equal(string.Join(",", new[] { stored.Id, transient.Id }.Order()), string.Join(",", Find(false, true)), "a session with no message yet is found when asked");
+            await Task.CompletedTask;
         });
 
         r.Add("sessions: context = non-compacted messages with the latest summary first", async () =>
@@ -293,7 +353,7 @@ public static class SessionStoreTests
                 catch (Exception ex) { materializeFailed = ex; }
             }) { IsBackground = true };
 
-            var holder = Task.Run(() => f.Db.Transaction(_ =>
+            var holder = Task.Run(() => f.Storage.Sessions.Atomic(_ =>
             {
                 // this thread now holds the database gate; start the materialization and wait until it is blocked behind us
                 materializer.Start();
@@ -653,25 +713,6 @@ public static class SessionStoreTests
             Check.Equal(0, (await f.EventsAsync(EventTypes.SessionChanged)).Count);
         });
 
-        r.Add("sessions: the pinned column is added by a migration to a database that predates it", async () =>
-        {
-            await using var f = new Fixture();
-            var dir = T.TempDir("pinmig");
-            var db = new Database(Path.Combine(dir, "netpi.db"));
-            // The database as it was before the pin migration: every earlier migration applied
-            db.Migrate("core", SessionStore.Migrations[..^1]);
-            db.Execute(
-                "INSERT INTO sessions(id, title, kind, created_at, updated_at, archived, message_count, context_tokens) " +
-                "VALUES('ses_old', 'Before pinning', 'chat', 1, 2, 0, 0, 0)");
-
-            var store = new SessionStore(db, f.Bus, Path.Combine(dir, "ws"));
-            Check.Equal(false, store.GetSession("ses_old")!.Pinned, "a pre-existing row is not pinned");
-            Check.Equal("ses_old", store.ListSessions(new SessionQuery()).Single().Id);
-            store.UpdateSession("ses_old", x => x.Pinned = true);
-            Check.True(store.GetSession("ses_old")!.Pinned);
-            db.Dispose();
-        });
-
         r.Add("sessions: a meta change publishes session.changed with the keys that changed; a no-op or a field outside meta does not", async () =>
         {
             await using var f = new Fixture();
@@ -726,13 +767,13 @@ public static class SessionStoreTests
         {
             await using var f = new Fixture();
             var s = f.Store.CreateSession(new SessionInfo { Title = "", Meta = new JsonObject { ["a"] = 1 } });
-            Check.True(f.Store.GetSession(s.Id) is { Title: SessionStore.DefaultTitle });
+            Check.True(f.Store.GetSession(s.Id) is { Title: SessionService.DefaultTitle });
             Check.Equal(0, f.Store.ListSessions(new SessionQuery()).Count, "not listed while empty");
             Check.Equal(0, (await f.EventsAsync(EventTypes.SessionCreated)).Count, "not announced");
 
             // a fresh store over the same database (a simulated restart) does not know it
-            var freshDb = new Database(Path.Combine(f.Dir, "netpi.db"));
-            var freshStore = new SessionStore(freshDb, f.Bus, Path.Combine(f.Dir, "workspace"));
+            var freshDb = Fixture.Open(f.Dir);
+            var freshStore = new SessionService(freshDb, f.Bus, Path.Combine(f.Dir, "workspace"));
             Check.True(freshStore.GetSession(s.Id) is null, "no row in the database");
             freshDb.Dispose();
 
@@ -741,8 +782,8 @@ public static class SessionStoreTests
             Check.True(f.Store.ListSessions(new SessionQuery()).Any(x => x.Id == s.Id), "listed once it has a message");
             Check.Equal("the first words", f.Store.GetSession(s.Id)!.Title, "auto-title at materialization");
             Check.Equal(1L, f.Store.GetSession(s.Id)!.MessageCount);
-            var freshDb2 = new Database(Path.Combine(f.Dir, "netpi.db"));
-            var freshStore2 = new SessionStore(freshDb2, f.Bus, Path.Combine(f.Dir, "workspace"));
+            var freshDb2 = Fixture.Open(f.Dir);
+            var freshStore2 = new SessionService(freshDb2, f.Bus, Path.Combine(f.Dir, "workspace"));
             Check.Equal(1L, freshStore2.GetSession(s.Id)!.MessageCount, "visible to a fresh store");
             freshDb2.Dispose();
 

@@ -14,6 +14,7 @@
   <ItemGroup>
     <Compile Include="../NetPI.Aux.Tests/McpFixture.cs" Link="McpFixture.cs" />
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
+    <ProjectReference Include="../../src/NetPI.Contracts/NetPI.Contracts.csproj" />
     <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Backup/NetPI.Backup.csproj" />
   </ItemGroup>

@@ -42,8 +42,10 @@ public static class ModelCatalogTests
         }
     }
 
-    private sealed class StubGate : IBudgetGate
+    private sealed class Refusing : IModelMiddleware
     {
+        public IAsyncEnumerable<ModelStreamEvent> InvokeAsync(ModelRequest request, ModelCallDelegate next, CancellationToken ct) =>
+            throw new CallRefusedException("over the limit") { Kind = "budget" };
     }
 
     private static ModelInfo Model(string provider, string id, string? status = null) =>
@@ -145,7 +147,7 @@ public static class ModelCatalogTests
     {
         r.Add("model messages: a notice stored while tools ran waits behind their results; unanswered calls are still closed", NoticeDuringTools);
         r.Add("model messages: a notice body cannot forge a second notice, and its kind cannot escape the attribute", NoticeCannotBeForged);
-        r.Add("models: a paid model is refused without the budget gate; local models are not, and a gate lets it through", async () =>
+        r.Add("models: the catalog refuses nothing by price: a paid model streams like a local one (a limit is a middleware's business)", async () =>
         {
             var dir = T.TempDir("models");
             await using var bus = new EventBus(NullLogger.Instance);
@@ -155,19 +157,17 @@ public static class ModelCatalogTests
 
             var paidModel = new ModelInfo { Provider = "cloud", Id = "paid", IsLocal = false };
             services.Register<IModelProvider>(new FakeProvider("cloud", paidModel));
-            var paid = new ModelRequest { Model = paidModel, Messages = [ChatMessage.UserText("hi")] };
-            var refused = await Check.ThrowsAsync<ModelException>(async () => { await foreach (var _ in catalog.StreamAsync(paid, CancellationToken.None)) { } },
-                "a paid model without the budget gate is refused");
-            Check.Contains(refused.Message, "budget gate");
+            var events = 0;
+            await foreach (var _ in catalog.StreamAsync(new ModelRequest { Model = paidModel, Messages = [ChatMessage.UserText("hi")] }, CancellationToken.None)) events++;
+            Check.True(events > 0, "the paid model streamed: the core has no gate in front of it");
 
-            // A local model does not need the gate.
-            var localModel = Model("fake", "local");
-            services.Register<IModelProvider>(new FakeProvider("fake", localModel));
-            await foreach (var _ in catalog.StreamAsync(new ModelRequest { Model = localModel, Messages = [ChatMessage.UserText("hi")] }, CancellationToken.None)) { }
-
-            // The gate arrives (the Agents plugin loads) and the paid model goes through.
-            services.Register<IBudgetGate>(new StubGate());
-            await foreach (var _ in catalog.StreamAsync(paid, CancellationToken.None)) { }
+            // A middleware that refuses is how a limit is enforced: its refusal reaches the caller as it was thrown.
+            using var refusing = services.Register<IModelMiddleware>(new Refusing());
+            var refused = await Check.ThrowsAsync<CallRefusedException>(async () =>
+            {
+                await foreach (var _ in catalog.StreamAsync(new ModelRequest { Model = paidModel, Messages = [ChatMessage.UserText("hi")] }, CancellationToken.None)) { }
+            }, "a middleware's refusal is not swallowed or rewritten by the catalog");
+            Check.Equal("budget", refused.Kind);
         });
         r.Add("models: aggregate, find, default model, models.changed on provider registration", async () =>
         {

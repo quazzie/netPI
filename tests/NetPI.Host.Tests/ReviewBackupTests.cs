@@ -20,6 +20,7 @@ public static class ReviewBackupTests
             ["id"] = id,
             ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"),
             ["automatic"] = false,
+            ["provider"] = "sqlite",
             ["files"] = files,
         }.ToJsonString());
         return (home, id);

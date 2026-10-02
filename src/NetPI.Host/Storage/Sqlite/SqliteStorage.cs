@@ -132,6 +132,9 @@ internal sealed class SqliteStorage : IStorage, IStorageSnapshot
         }
     }
 
+    /// <summary>The SQL engine, for tests that stage or inspect rows directly.</summary>
+    internal Database Database => _db;
+
     public string ProviderId => "sqlite";
     public ISessionRepository Sessions { get; }
     public IKeyValueStore Values { get; }

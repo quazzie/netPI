@@ -24,7 +24,7 @@ public static class RegistryTests
         r.Add("resources: lifecycle snapshots survive cancellation without freeing capacity", async () =>
         {
             await using var bus = new NetPI.Host.Events.EventBus(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
-            var resources = new NetPI.Host.Registries.ResourceLeases(bus);
+            var resources = new ResourceLeases(bus);
             var request = new AgentSlotRequest { Key = "model", AgentId = "run", ExecutorGeneration = "old" };
             Check.True(resources.TryAcquire("local:model", 1, request, 1, out var lease));
             var id = ((IResourceLease)lease!).Id;

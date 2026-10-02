@@ -23,14 +23,12 @@ public static class SettingsTests
             var text = File.ReadAllText(file);
             Check.NotContains(text, "qwen", "nothing about one machine");
             Check.Equal(null, s.GetNode("defaultModel"), "no default model: the first loaded local model, else the first one");
-            Check.Equal("http://127.0.0.1:8090", s.Get<string>("providers.aiproxy.baseUrl"));
-            Check.Equal("responses", s.Get<string>("providers.aiproxy.transport"));
-            Check.Equal("", s.Get<string>("providers.anthropic.apiKey"));
+            Check.Equal(null, s.GetNode("providers"), "a provider's settings are its plugin's: it declares its own defaults");
             Check.Equal(null, s.GetNode("agents"), "no agents: they are set up in the app");
             Check.Equal(null, s.GetNode("lanes"), "no lanes (they became agents)");
-            Check.True(s.Get<bool>("compaction.enabled"));
-            Check.True(s.Get<bool>("nudge.enabled"));
-            Check.Equal(6, s.Get<int>("retry.maxAttempts"));
+            Check.Equal(null, s.GetNode("compaction"), "nor does the host seed what a plugin owns");
+            Check.Equal(null, s.GetNode("nudge"));
+            Check.Equal(null, s.GetNode("retry"));
             Check.Equal(0, s.Get<List<string>>("tools.disabled")!.Count);
             Check.Equal(0, s.Get<List<string>>("plugins.disabled")!.Count);
             Check.Equal(7431, s.Get<int>("server.port"));
@@ -205,7 +203,7 @@ public static class SettingsTests
             using var s = new SettingsStore(file, NullLogger.Instance);
             Check.True(s.InvalidOnDisk, "the store knows the file does not parse");
             Check.True(s.InvalidOnDiskError is { Length: > 0 }, "and it keeps the parse error");
-            Check.Equal("", s.Get<string>("providers.anthropic.apiKey"), "defaults are live");
+            Check.Equal(7431, s.Get<int>("server.port"), "defaults are live");
 
             Check.Throws<InvalidOperationException>(() => s.Set("a.b", JsonValue.Create(1)), "Set over the broken file is refused");
             Check.Throws<InvalidOperationException>(() => s.Replace(new JsonObject { ["x"] = true }), "Replace is refused too");
