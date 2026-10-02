@@ -2,6 +2,16 @@
   "note": "Flake ledger: how often each test has failed, and the runner\u0027s own diagnosis when it last did. Updated by every run; a pass marks an entry quiet rather than deleting it.",
   "flakes": [
     {
+      "id": "context.workspace-binding",
+      "runs": 4,
+      "failures": 3,
+      "rate": 0.75,
+      "firstSeen": "20261002-212304-85ab",
+      "lastFailure": "20261002-212332-b31e",
+      "cause": "timed out after 30000ms waiting for session.workspace after the delete. Last events: \u2014 responsive",
+      "quiet": true
+    },
+    {
       "id": "ui.idea-image",
       "runs": 7,
       "failures": 3,

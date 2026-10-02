@@ -26,6 +26,8 @@ public sealed class WorkspacePlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        // A fork is a new writer and must not share its parent's checkout: it starts unbound (the core never copies meta.cwd either).
+        context.Sessions.DeclareForkReset(SessionWorkspace.MetaKey);
         var store = new WorkspaceStore(context);
         context.Services.Register<IWorkspaceStore>(store);
         var git = new GitProbe();

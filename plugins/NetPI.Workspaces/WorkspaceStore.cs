@@ -91,7 +91,9 @@ internal sealed class WorkspaceStore : IWorkspaceStore
             SessionInfo session;
             try { session = _ctx.Sessions.UpdateSession(sessionId, s => Bind(s, null)); }
             catch (KeyNotFoundException) { continue; }   // deleted meanwhile
-            if (session.MessageCount == 0) continue;     // a message-less session is not announced
+            // Every session that was bound is told, the message-less ones too (the session service announces a change to a stored
+            // session itself, and nothing about one that is only in memory).
+            if (session.MessageCount == 0) _ctx.Events.Publish(EventTypes.SessionUpdated, new { session });
             _ctx.Events.Publish(WorkspaceEvents.SessionBound, new { sessionId, workspaceId = (string?)null, cwd = _ctx.Sessions.GetCwd(session), binding = (object?)null });
         }
         return true;
