@@ -159,8 +159,9 @@ try {
                 $failures.Add([pscustomobject]@{ Suite = $s; Name = $name })
             }
             # The exit code is the authority. A suite that exits non-zero without a FAIL line died
-            # part-way through — reporting that as green is how a broken run hides.
-            if ($code -ne 0 -and $failedLines.Count -eq 0) {
+            # part-way through — reporting that as green is how a broken run hides. A run that matched
+            # nothing is already reported above (the runner exits 2 for it), so it is not a crash here.
+            if ($code -ne 0 -and $failedLines.Count -eq 0 -and -not $noMatch) {
                 $failures.Add([pscustomobject]@{ Suite = $s; Name = "(suite process exited $code without reporting a failure - crash?)" })
             }
         }
