@@ -624,11 +624,12 @@ public static class SchedulerTests
         Check.Equal("any", SessionAgent.Of(h.Sessions.GetSession(any.Id)), "and the choice stays");
         Check.Equal("solo", SessionAgent.Running(h.Sessions.GetSession(any.Id)), "the run's agent is where its calls are billed");
 
-        // every agent is full: the run waits for a free agent, in no agent's queue
+        // every agent is full: the run waits for a free agent, in no agent's queue. The status turns queued before
+        // the run is parked in the scheduler, so wait for the parking, not just the status.
         await h.Rpc.CallAsync("agents.use", new { sessionId = also.Id, agent = "any" });
         await h.SendAsync(also.Id, "go");
         await Wait.Until(() => h.Runtime.GetBySession(also.Id)!.Status == AgentStatus.Queued, "waiting for a free agent");
-        Check.Equal(1, h.Scheduler!.Unassigned().Count);
+        await Wait.Until(() => h.Scheduler!.Unassigned().Count == 1, "the run is parked, waiting for any agent to free up");
         Check.Contains(h.Runtime.GetBySession(also.Id)!.Activity ?? "", "waiting for a free agent");
         var unassigned = (JsonArray)(await h.Rpc.CallAsync("agents.unassigned"))!;
         Check.Equal(1, unassigned.Count, "agents.unassigned lists it");
