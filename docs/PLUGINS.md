@@ -51,8 +51,12 @@ plugin **compiles it in** — shared source, never a shared assembly:
 ```
 
 `shared/ProviderKit/` is what the three provider plugins use (the SSE reader, JSON accessors, error mapping, the
-message assembler, secret resolution). Editing it changes all three, in one place, with no copies to fall out of
-step. A copy under `plugins/` instead is a bug waiting to happen: `tests/NetPI.Providers.Tests` fails on one.
+message assembler, secret resolution, the Chat Completions parser and message builder, the model-list cache). Editing
+it changes all three, in one place, with no copies to fall out of step. A copy under `plugins/` instead is a bug
+waiting to happen: `tests/NetPI.Providers.Tests` fails on one.
+
+The dialect keeps its own subclass and overrides only what differs (OpenRouter's reasoning_details, cost and
+generation id; AiProxy's `reasoning_content` and usage), so no shared class grows an `if (openrouter)` branch.
 
 ```csharp
 using System.Text.Json;

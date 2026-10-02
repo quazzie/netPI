@@ -210,6 +210,51 @@ await t.Run("provider kit: one shared source set, compiled into all three provid
     return Task.CompletedTask;
 });
 
+await t.Run("model list cache: one fetch per fingerprint, the last good list offline after a failure, an event only on change", async () =>
+{
+    using var ctx = new FakePluginContext(new JsonObject());
+    var cache = new Kit.ModelListCache("test", ctx.Log, ctx.Bus);
+    var good = new List<ModelInfo> { M("test", "m1"), M("test", "m2") };
+    var fetches = 0;
+    var down = false;
+    Task<IReadOnlyList<ModelInfo>> Fetch(CancellationToken _)
+    {
+        fetches++;
+        if (down) throw new HttpRequestException("boom");
+        return Task.FromResult<IReadOnlyList<ModelInfo>>(good);
+    }
+    var policy = new Kit.ModelListCache.Policy { Fingerprint = "k1", CanFetch = true, Ttl = TimeSpan.FromMinutes(10), Url = "https://x" };
+
+    var first = await cache.ListAsync(false, policy, Fetch, default);
+    t.Eq(2, first.Count, "first call fetches");
+    t.Eq(1, fetches, "one fetch");
+    await cache.ListAsync(false, policy, Fetch, default);
+    t.Eq(1, fetches, "a fresh list is served from the cache");
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(2, fetches, "refresh bypasses it");
+    t.Eq(1, ctx.Bus.Count(EventTypes.ModelsChanged), "one event for the list that changed");
+
+    down = true;
+    var offline = await cache.ListAsync(true, policy, Fetch, default);
+    t.Check(offline.Count == 2 && offline.All(m => m.Status == "offline"), "a failed fetch leaves the last good list, marked offline");
+    t.Check(good.All(m => m.Status is null), "and marks the copies, not the list it kept");
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Eq(1, ctx.Log.Lines.Count(l => l.StartsWith("Warning")), "the failure is logged once, not on every refetch");
+    t.Eq(2, ctx.Bus.Count(EventTypes.ModelsChanged), "the offline status is a change, and the catalog is told");
+    t.Check(cache.SettingsChanged("k2") && !cache.SettingsChanged("k1"), "another key or base url counts as changed");
+
+    down = false;
+    await cache.ListAsync(true, policy, Fetch, default);
+    t.Check(ctx.Log.Lines.Any(l => l.Contains("available again")), "and the recovery says so");
+
+    // Anthropic's policy: a bare id from the models API says nothing about what the model can do, so it serves its
+    // own static table rather than the last list.
+    var fallback = new Kit.ModelListCache.Policy { Fingerprint = "k3", CanFetch = true, Ttl = TimeSpan.FromMinutes(10), OnFailure = () => [M("test", "static")] };
+    var served = await cache.ListAsync(false, fallback, Fetch, default);
+    t.Eq(2, served.Count, "a working endpoint fetches, whatever the failure policy");
+    served = await cache.ListAsync(true, fallback, Fetch, default);
+    t.Eq(2, served.Count, "and the policy does not change a good list");
+});
 await t.Run("Effort mapping to catalog efforts", () =>
 {
     var r = new ReasoningInfo { Supported = true, Efforts = ["none", "low", "medium", "xhigh"], Default = "medium" };
