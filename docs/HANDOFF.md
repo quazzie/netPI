@@ -17,6 +17,18 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 
 ## Current state (2026-09-28)
 
+### Storage port and the core diet (2026-10-02)
+
+The swap-over of [docs/plans/2026-10-02-replaceable-parts.md](plans/2026-10-02-replaceable-parts.md) is in the
+working tree, and the revert point is the tag **`pre-swapover-2026-10-02`** (master before it; `git reset --hard
+pre-swapover-2026-10-02` or branch from it). Storage is now a port: `IStorageProvider` chosen by
+`storage.provider` (default `sqlite`, `--ephemeral` = `memory`), the only SQL lives in
+`src/NetPI.Host/Storage/Sqlite`, and a plugin keeps its data in `ctx.Data` as collections of JSON documents —
+`tests/NetPI.Storage.Tests` is the contract in executable form and a new provider must pass it. A session has no
+workspace column: the Workspaces plugin writes `meta.workspaceId` and `meta.cwd`, and the budget ledger belongs to
+the Agents plugin, so the core refuses no model and polices no money. `node scripts/core-size.mjs` keeps the kernel
+to the harness's own concepts.
+
 The review fixes are implemented in the working tree: unique approval IDs, cleared fork permissions, atomic
 spending reads, persistent per-attempt budget reservations, and the backup plugin plus offline restore.
 [STATUS.md](STATUS.md) is the current state and limitations; [TESTING.md](TESTING.md) records fresh validation.
@@ -32,7 +44,7 @@ machine state. Live Anthropic, paid billing reconciliation, and Linux/macOS stil
 
 ## Decisions and preferences to keep
 
-- **Everything is a runtime-reloadable plugin.** The host kernel stays small. Contracts in `src/NetPI.Abstractions` change freely when the design needs it (nothing outside this repository depends on them): no compatibility layers, and data a change strands is migrated for the owner's local setup by a one-off script, not by product code. Plugins never reference each other; they use services, RPC and events. See `docs/PLUGINS.md`.
+- **Everything is a runtime-reloadable plugin.** The host kernel stays small. Contracts in `src/NetPI.Abstractions` change freely when the design needs it (nothing outside this repository depends on them): no compatibility layers, and data a change strands is migrated for the owner's local setup by a one-off script, not by product code. The higher abstractions' vocabularies live in `src/NetPI.Contracts`, which the kernel must not reference; `node scripts/core-size.mjs` checks both rules. Plugins never reference each other; they use services, RPC and events. See `docs/PLUGINS.md`.
 - **Never rewrite what was sent; only append.** A session's system prompt is frozen at its first model call and contains nothing session-dependent. State changes (project, working directory, AGENTS.md) are appended as notices by the plugin that owns them; the host stores data and publishes events but writes no model-facing text. Tools are sent sorted by name. The only exceptions are compaction and tool-call repair. See `docs/PLUGINS.md`, "Never rewrite what was sent".
 - **Tools stay live in running sessions.** A tool added or removed mid-session (plugin enabled, disabled or rebuilt) is sent from the next model call and announced with a "tools" notice; the backend re-reads the conversation once. The user prefers that to freezing the tool list per session (decided 2026-09-24).
 - **Tools are switched per chat; globally, whole plugins are.** The composer's tools button (`meta.toolsOff`); a change
@@ -45,7 +57,8 @@ machine state. Live Anthropic, paid billing reconciliation, and Linux/macOS stil
   with instances; to use a model you set up an agent on it (no temporary agents). An agent is active only while its
   model is loaded: NetPI never makes AiProxy load a model, since that would unload what the other agents run on.
   Profiles stay separate (the role, not where it runs). Paid calls are recorded and stop (or ask) when the monthly
-  budget is spent (decided 2026-09-24/25).
+  budget is spent (decided 2026-09-24/25). The ledger, the caps and the reservations are the Agents plugin's own
+  (`ctx.Data`); the core's catalog refuses no model, so without that plugin nothing meters or limits a paid call.
 - **The Responses transport is standard and stateless.** It sends `store:false` and the full input every call, and replays reasoning items (`reasoning` → `message` → `function_call`). No `previous_response_id` chaining.
 - **No workarounds that hide backend problems.** No retries or self-healing for backend failures.
   - Errors show up unchanged, with the server's `x-request-id` and response id.

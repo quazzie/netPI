@@ -341,7 +341,7 @@ Events (broadcast):
 
 `plugins/NetPI.Workspaces` (`netpi.workspaces`). A session's working directory used to be its project's path, so two
 agents of one repository always wrote into the same checkout. A workspace is the checkout a session actually works in —
-a root, a branch, a starting commit, an owner; a session binds to at most one (`SessionInfo.workspaceId`), and the
+a root, a branch, a starting commit, an owner; a session binds to at most one (`meta.workspaceId` (and `meta.cwd`)), and the
 project stays the shared identity (backlog, defaults, which repository). A session that is not bound works in the
 project's folder exactly as before. Settings `workspaces.*` in `docs/SETTINGS.md`, the RPCs and events in
 `docs/PROTOCOL.md`.
