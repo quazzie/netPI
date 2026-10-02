@@ -192,7 +192,13 @@ internal static partial class AnthropicRequest
 
     private static List<JsonObject> AssistantBlocks(ChatMessage m, string providerId, bool hasTools)
     {
-        var blocks = new List<JsonObject>();
+        // Thinking leads the assistant turn: the API refuses a turn whose thinking block follows its text
+        // (invalid_request_error), and the stored parts are in arrival order — a model that speaks before it
+        // thinks, or a literal <think> split out of its answer, stores them interleaved. So the blocks are
+        // grouped here instead of walked in place. The Responses transport carries the same rule for its items.
+        var thinking = new List<JsonObject>();
+        var text = new List<JsonObject>();
+        var tools = new List<JsonObject>();
         var replayThinking = m.Provider is null || string.Equals(m.Provider, providerId, StringComparison.OrdinalIgnoreCase);
         foreach (var p in m.Parts)
         {
@@ -200,18 +206,18 @@ internal static partial class AnthropicRequest
             {
                 case ThinkingPart th when replayThinking:
                     if (!string.IsNullOrEmpty(th.Redacted))
-                        blocks.Add(new JsonObject { ["type"] = "redacted_thinking", ["data"] = th.Redacted });
+                        thinking.Add(new JsonObject { ["type"] = "redacted_thinking", ["data"] = th.Redacted });
                     else if (!string.IsNullOrEmpty(th.Signature))
-                        blocks.Add(new JsonObject { ["type"] = "thinking", ["thinking"] = th.Text, ["signature"] = th.Signature });
+                        thinking.Add(new JsonObject { ["type"] = "thinking", ["thinking"] = th.Text, ["signature"] = th.Signature });
                     break;
                 case TextPart t when !string.IsNullOrWhiteSpace(t.Text):
-                    blocks.Add(Text(t.Text));
+                    text.Add(Text(t.Text));
                     break;
                 case ToolCallPart c when !hasTools:
-                    blocks.Add(Text($"[Tool call {c.Name} ({c.Id})] {c.Arguments}"));
+                    text.Add(Text($"[Tool call {c.Name} ({c.Id})] {c.Arguments}"));
                     break;
                 case ToolCallPart c:
-                    blocks.Add(new JsonObject
+                    tools.Add(new JsonObject
                     {
                         ["type"] = "tool_use",
                         ["id"] = SanitizeId(c.Id),
@@ -221,7 +227,7 @@ internal static partial class AnthropicRequest
                     break;
             }
         }
-        return blocks;
+        return [.. thinking, .. text, .. tools];
     }
 
     public static JsonObject ParseInput(string? args)

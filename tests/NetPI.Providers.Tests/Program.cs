@@ -133,6 +133,45 @@ await t.Run("Think-tag splitter: tags split at every chunk boundary", () =>
     return Task.CompletedTask;
 });
 
+// Only a leading <think>…</think> is reasoning. A tag that arrives after visible text is content the model wrote
+// — a tag it is quoting, a file it is editing, a sentence about this very format. It used to be split out anyway,
+// which cut an answer in two and stored a thinking part after its text; the Responses transport then replayed that
+// turn as reasoning after a message item and the request was refused whole (400 invalid_assistant_history,
+// idea-kc80o5). The live payload: the model was auditing this splitter and wrote its test vector into its answer.
+await t.Run("Think-tag splitter: a tag after visible text stays text, a leading block is reasoning", () =>
+{
+    static (string Thinking, string Text) Split(string s, int size, bool openRouter)
+    {
+        var th = new StringBuilder(); var tx = new StringBuilder();
+        void Emit(bool thinking, string text) => (thinking ? th : tx).Append(text);
+        var ap = openRouter ? null : new AP.ThinkTagSplitter();
+        var or_ = openRouter ? new OR.ThinkTagSplitter() : null;
+        for (var i = 0; i < s.Length; i += size)
+        {
+            var chunk = s.Substring(i, Math.Min(size, s.Length - i));
+            if (ap is not null) ap.Process(chunk, Emit); else or_!.Process(chunk, Emit);
+        }
+        if (ap is not null) ap.Flush(Emit); else or_!.Flush(Emit);
+        return (th.ToString(), tx.ToString());
+    }
+
+    const string quoted = "Chunk 1: no \" (only \"<thi\") → hold=3 → emit \"I think \". Chunk 2: <think>nk> hello</think> world";
+    const string leading = "  <think>abc</think>\n\nhello <b>x</b>";
+    foreach (var size in new[] { 1, 3, 7, quoted.Length })
+    foreach (var openRouter in new[] { false, true })
+    {
+        var copy = openRouter ? "openrouter" : "aiproxy";
+        var (thinking, text) = Split(quoted, size, openRouter);
+        t.Eq("", thinking, $"{copy} size {size}: nothing split out of an answer that quotes the tags");
+        t.Eq(quoted, text, $"{copy} size {size}: the answer verbatim, tags included");
+
+        (thinking, text) = Split(leading, size, openRouter);
+        t.Eq("abc", thinking, $"{copy} size {size}: a leading block is still thinking");
+        t.Eq("hello <b>x</b>", text, $"{copy} size {size}: the answer after it");
+    }
+    return Task.CompletedTask;
+});
+
 await t.Run("Effort mapping to catalog efforts", () =>
 {
     var r = new ReasoningInfo { Supported = true, Efforts = ["none", "low", "medium", "xhigh"], Default = "medium" };
@@ -390,6 +429,40 @@ await t.Run("responses: reasoning is replayed by default (standard stateless usa
         t.Check(msgs.All(m => m?["reasoning_content"] is null), "chat: no reasoning_content by default");
     }
     finally { apCtx.SettingsImpl.Set("providers.aiproxy.transport", null); }
+});
+
+// The stored parts of an assistant turn are in arrival order, but the API fixes the order of its items:
+// reasoning, then message content, then function calls. A turn stored interleaved used to be replayed in that
+// order and the whole request was refused with 400 invalid_assistant_history (idea-kc80o5). This is the live
+// shape: reasoning, text, a <think> split out of the answer, text, function call.
+await t.Run("responses: an interleaved assistant turn replays reasoning → message → function calls", async () =>
+{
+    string Kind(JsonNode? n) => n?["type"]?.GetValue<string>() ?? n?["role"]?.GetValue<string>() ?? "?";
+    var messages = new List<ChatMessage>
+    {
+        ChatMessage.UserText("Read files"),
+        new()
+        {
+            Role = MessageRole.Assistant, Provider = "aiproxy",
+            Parts =
+            [
+                new ThinkingPart { Text = "I should read", Signature = "S1", ProviderData = new JsonObject { ["id"] = "rs_9" } },
+                new TextPart { Text = "world\". Chunk 1: no \"" },
+                new ThinkingPart { Text = " (only \"<thi\") → hold=3" },
+                new TextPart { Text = " → emit \"I think \". Chunk 2: …" },
+                new ToolCallPart { Id = "call:1", Name = "read", Arguments = """{"path":"a"}""" },
+            ],
+        },
+        new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "call:1", Name = "read", Content = "content A" }] },
+    };
+    await Collect(aiproxy, Req(M("aiproxy", "qwen3.8-27b"), messages));
+    var input = mock.Last("/v1/responses").Json["input"]!.AsArray();
+    t.Eq("user,reasoning,reasoning,message,function_call,function_call_output", string.Join(",", input.Select(Kind)), "reasoning → message → function calls");
+    t.Eq("rs_9", input[1]!["id"]?.GetValue<string>(), "the model's own reasoning leads");
+    t.Eq(2, input[3]!["content"]!.AsArray().Count, "both text parts in one message");
+    t.Eq("world\". Chunk 1: no \"", input[3]!["content"]![0]!["text"]!.GetValue<string>(), "first text part");
+    t.Eq(" → emit \"I think \". Chunk 2: …", input[3]!["content"]![1]!["text"]!.GetValue<string>(), "second text part");
+    t.Eq("call:1", input[4]!["call_id"]!.GetValue<string>(), "function_call after the message");
 });
 
 await t.Run("errors: server ids are added to the message and the failed request is saved", async () =>
@@ -779,6 +852,35 @@ await t.Run("anthropic: request body (cache_control placement, tool_result-first
     t.Check(u[^1]!["cache_control"] is not null, "cache_control on last block of last user message");
     t.Check(u.Take(u.Count - 1).All(x => x!["cache_control"] is null) && msgs[0]!["content"]!.AsArray().All(x => x!["cache_control"] is null), "only one message breakpoint");
     t.Eq("image/jpeg", u[3]!["source"]!["media_type"]!.GetValue<string>(), "image source");
+});
+
+// The twin of the Responses item order: thinking leads the assistant turn, and the stored parts are in arrival
+// order, so a turn stored interleaved has to be grouped before it is sent (idea-kc80o5).
+await t.Run("anthropic: an interleaved assistant turn replays thinking → text → tool_use", async () =>
+{
+    var messages = new List<ChatMessage>
+    {
+        ChatMessage.UserText("Read files"),
+        new()
+        {
+            Role = MessageRole.Assistant, Provider = "anthropic",
+            Parts =
+            [
+                new TextPart { Text = "world\". Chunk 1: no \"" },
+                new ThinkingPart { Text = " (only \"<thi\") → hold=3", Signature = "S1" },
+                new TextPart { Text = " → emit \"I think \"" },
+                new ToolCallPart { Id = "call:1", Name = "read", Arguments = """{"path":"a"}""" },
+            ],
+        },
+        new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "call:1", Name = "read", Content = "content A" }] },
+    };
+    await Collect(anthropic, Req(sonnet, messages, effort: "high"));
+    var a = mock.Last("/v1/messages").Json["messages"]![1]!["content"]!.AsArray();
+    t.Eq("thinking,text,text,tool_use", string.Join(",", a.Select(x => x!["type"]!.GetValue<string>())), "thinking leads the turn");
+    t.Eq(" (only \"<thi\") → hold=3", a[0]!["thinking"]!.GetValue<string>(), "the thinking text");
+    t.Eq("S1", a[0]!["signature"]!.GetValue<string>(), "signature replayed");
+    t.Eq("world\". Chunk 1: no \"", a[1]!["text"]!.GetValue<string>(), "the text that came before it in the stream");
+    t.Eq(" → emit \"I think \"", a[2]!["text"]!.GetValue<string>(), "and the text that came after");
 });
 
 await t.Run("anthropic: thinking modes (foreign assistant turn, adaptive, off, max budget, none)", async () =>

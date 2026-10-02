@@ -73,23 +73,27 @@ internal static class ResponsesTransport
             switch (m.Role)
             {
                 case MessageRole.Assistant:
+                {
+                    // An assistant turn's items have a fixed order — reasoning, then message content, then function
+                    // calls — while the stored parts are in arrival order. A model that speaks before it thinks, or a
+                    // literal <think> in its answer, stores them interleaved, and replaying that order is refused
+                    // whole: 400 invalid_assistant_history. So the order is imposed here, never taken from the history.
+                    // Already-stored turns are repaired by this alone: the gateway rejected the position, not the item.
+                    var reasoning = new List<JsonObject>();
+                    var texts = new List<JsonObject>();
+                    var calls = new List<JsonObject>();
                     foreach (var p in m.Parts)
                     {
                         switch (p)
                         {
                             case ThinkingPart th when replayReasoning:
-                                if (ReasoningItem(th) is { } r) input.Add(r);
+                                if (ReasoningItem(th) is { } r) reasoning.Add(r);
                                 break;
                             case TextPart t when !string.IsNullOrEmpty(t.Text):
-                                input.Add(new JsonObject
-                                {
-                                    ["type"] = "message",
-                                    ["role"] = "assistant",
-                                    ["content"] = new JsonArray(new JsonObject { ["type"] = "output_text", ["text"] = t.Text }),
-                                });
+                                texts.Add(new JsonObject { ["type"] = "output_text", ["text"] = t.Text });
                                 break;
                             case ToolCallPart c:
-                                input.Add(new JsonObject
+                                calls.Add(new JsonObject
                                 {
                                     ["type"] = "function_call",
                                     ["call_id"] = c.Id,
@@ -99,7 +103,12 @@ internal static class ResponsesTransport
                                 break;
                         }
                     }
+                    foreach (var r in reasoning) input.Add(r);
+                    if (texts.Count > 0)
+                        input.Add(new JsonObject { ["type"] = "message", ["role"] = "assistant", ["content"] = new JsonArray([.. texts]) });
+                    foreach (var c in calls) input.Add(c);
                     break;
+                }
 
                 case MessageRole.Tool:
                     foreach (var r in m.ToolResults)

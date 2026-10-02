@@ -50,7 +50,7 @@ so the default applies again). The agents and the budget have their own page; th
 | `replayReasoning` | Responses: `true`, Chat: `false` | send previous reasoning back. Standard stateless Responses usage appends every output item of a response (reasoning → message → function calls) to the next input |
 | `includeEncryptedReasoning` | `false` | also request `include: ["reasoning.encrypted_content"]` (OpenAI-hosted reasoning models; nInfer rejects non-empty `include` with HTTP 400) |
 | `dumpFailedRequests` | `true` | save the request body of failed calls to `~/.netpi/logs/failed-requests/` (newest 30) and add the server's `x-request-id` / response id to the error, for reproducing backend bugs |
-| `parseThinkTags` | `true` | split inline `<think>…</think>` into thinking blocks |
+| `parseThinkTags` | `true` | split a leading inline `<think>…</think>` into thinking blocks; a tag after visible text stays text (it is content the model wrote) |
 | `defaultMaxOutputTokens` | `16384` | when the catalog says `max_output_tokens: null` |
 | `modelsCacheSeconds` | `10` | `/v1/models` cache |
 | `reasoningSummary` | – | Responses `reasoning.summary` (nInfer rejects it with HTTP 400; leave unset for AiProxy/nInfer) |
@@ -80,7 +80,7 @@ model that produced them (required for tool calls with Claude, Gemini or OpenAI 
 | `provider` | – | routing preferences sent as the request's `provider` object, e.g. `{ "sort": "throughput" }` |
 | `promptCaching` | `true` | top-level `cache_control` for `anthropic/*` models (other providers cache automatically) |
 | `replayReasoning` | `true` | send `reasoning_details` back |
-| `parseThinkTags` | `true` | split inline `<think>…</think>` into thinking blocks |
+| `parseThinkTags` | `true` | split a leading inline `<think>…</think>` into thinking blocks; a tag after visible text stays text (it is content the model wrote) |
 | `headers` | – | extra HTTP headers, e.g. `HTTP-Referer` + `X-OpenRouter-Title` for OpenRouter's app attribution (creates a public app page) |
 | `dumpFailedRequests` | `true` | save failed request bodies to `~/.netpi/logs/failed-requests/`; errors carry the generation id |
 | `modelsCacheSeconds` | `600` | |
