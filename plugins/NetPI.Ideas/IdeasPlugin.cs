@@ -171,6 +171,9 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
     {
         rpc.RegisterReadOnly("ideas.list", List, "The ideas backlog: { } → { storage: { backend, database, scope, schemaVersion }, ideas: [...], file?, fileName? (legacy hints) }");
         rpc.RegisterReadOnly("ideas.get", Get, "{ id } → idea (with its revision)");
+        rpc.RegisterReadOnly("ideas.review", Review,
+            "Why an idea's completion is not judged automatically, and what a reviewer has to read: { id } → { ideaId, revision, review: { limit, at, revision, commits: [{ hash, short, subject, repo, files?, note? }], requirements: [...] } | null }. " +
+            "The automatic completion stays blocked until the requirements are supported; the same state is a \"Needs review\" section on the idea");
         rpc.Register("ideas.add", Add, "{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections?, images? }, prepend? } → idea; stamped with projectId (a project id or name, \"global\" for unbound), else the session's project");
         rpc.Register("ideas.addImage", Attach,
             "Store an image for an idea and return its reference: { data (base64), mediaType, name? } → { path, name, mediaType, bytes }. " +
@@ -235,6 +238,19 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
         ct.ThrowIfCancellationRequested();
         var id = req.Required("id");
         return Task.FromResult<object?>(_repo.Find(id)?.Doc ?? throw new RpcException("not_found", $"Idea {id} not found"));
+    });
+
+    public Task<object?> Review(RpcRequest req, CancellationToken ct) => Guard(() =>
+    {
+        ct.ThrowIfCancellationRequested();
+        var id = req.Required("id");
+        var found = _repo.Find(id) ?? throw new RpcException("not_found", $"Idea {id} not found");
+        return Task.FromResult<object?>(new JsonObject
+        {
+            ["ideaId"] = id,
+            ["revision"] = found.Revision,
+            ["review"] = IdeaReview.State(found.Doc),
+        });
     });
 
     public Task<object?> Add(RpcRequest req, CancellationToken ct) => Guard(() =>

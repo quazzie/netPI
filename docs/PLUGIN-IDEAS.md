@@ -195,6 +195,16 @@ and tag client-side.
 `{ id }` → `Idea` (with its `revision`). The id is matched exactly, then case-insensitively, then with an `idea-`
 prefix added.
 
+### `ideas.review`
+
+`{ id }` → `{ ideaId, revision, review }`, where `review` is null or
+`{ limit, at, revision, commits: [{ hash, short, subject, repo, files?, note? }], requirements: [...] }` — the exact
+automatic bound an idea's completion evidence reached, every linked commit with the repository (and the paths, where a
+patch was read) its evidence is in, and the idea's own requirements as the checklist a reviewer has to support. The same
+document is the "Needs review" section on the idea; `ideas.unread` is its sibling for the commits the sweep could not
+decide at all. The automatic completion stays blocked until the requirements are supported — read the evidence and
+update the idea yourself (the tab, or `ideas.verifyUpdate` with that evidence).
+
 ### `ideas.add`
 
 `{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections?, …extra }, prepend?: boolean }` → the created `Idea` (at `revision: 1`)
@@ -444,6 +454,26 @@ Each new commit is read twice over, in the order that measured best (docs/DECISI
 
 Skips: no repository, `ideas.closeOnCommit` off, no open idea in the project, no Decide plugin. Without the Files plugin
 there is nothing to read and the check does nothing at all.
+
+**Completion evidence past the bounds leaves a review state on the idea** (idea-n2jj97). The automatic question needs
+*complete* patches: at most 10 linked commits, no patch git cut, at most 64 000 characters of them, and a commit this
+repository cannot read is evidence that is missing. Each of those stops the check — a summary is not proof — but the
+outcome used to be a single "skipped" line in `ideas.work` saying "review this idea manually", which is gone by the time
+the user looks. The idea now carries a **"Needs review"** section instead:
+
+- the bound that was reached, in the check's own words (which commit, how many, which characters);
+- every linked commit `{ hash, short, subject, repo, files?, note? }` — the repository the evidence has to be read from,
+  the paths the patch named where one was read, and why a commit is missing or cut;
+- the idea's **own** requirements as an unchecked checklist (`- [ ] …`, from the list lines of its summary and its plan,
+  requirements and to-do sections). Nothing in it is claimed to be evidenced.
+
+The section ends with the way to finish it: read the patches yourself (`git show <hash>` in the repository named, or
+`files.commits` with `{ cwd, hash }`) and update the idea explicitly — in the tab, or with `ideas.verifyUpdate` and that
+evidence, which applies the update only if an independent verification of it accepts. `ideas.review { id }` answers the
+same document as JSON (null when the idea carries none), so a reviewing agent can find the hashes without scraping the
+section. Writing it never changes the bounds, never claims completion, and never over an edit: it is recorded on the
+revision the idea has when it is written, an unchanged state is not rewritten at all, and a completion that is later
+judged removes the section.
 
 ### Tell the run that committed (phase 4)
 

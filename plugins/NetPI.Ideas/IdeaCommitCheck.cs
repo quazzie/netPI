@@ -36,6 +36,10 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// repository — forever: the record stays in ideas_unread, and the later commits are read.
     /// </summary>
     public const int MaxTries = 5;
+    /// <summary>How many linked commits one idea's completion evidence may consist of (idea-n2jj97).</summary>
+    public const int MaxEvidenceCommits = 10;
+    /// <summary>How many characters of linked patches are read as one idea's completion evidence.</summary>
+    public const int MaxEvidenceChars = 64000;
     /// <summary>The first backoff after a failed check; the wait doubles with every failed attempt and caps at an hour.</summary>
     public const int DefaultRetrySeconds = 120;
     private const int MaxBackoffSeconds = 3600;
@@ -47,6 +51,8 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// <summary>Every pick-one question the sweep asks, asked in one place.</summary>
     private readonly IdeaDecider _decider = new(ctx);
     private readonly IdeasRepository _repo = repo;
+    /// <summary>What an idea carries when its completion evidence is more than the automatic bounds allow (idea-n2jj97).</summary>
+    private readonly IdeaReview _review = new(ctx, repo);
     private readonly Lock _watchLock = new();
     private readonly Dictionary<string, Watch> _watches = new(StringComparer.OrdinalIgnoreCase); // repo path → its watcher
     private Timer? _timer;
@@ -682,27 +688,49 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         if (current is null || IdeaOps.Str(current.Doc["status"]) is not ("open" or "planned" or "in-progress" or "parked")) return false;
         if (IdeaRuns.ProjectBusy(ctx, watch.ProjectId) || current.Revision != revision) return null;
 
-        var patches = new StringBuilder();
-        var hashes = (idea["commits"] as JsonArray ?? []).OfType<JsonObject>().Select(c => IdeaOps.Str(c["hash"])).OfType<string>().Distinct().ToList();
-        if (hashes.Count is 0 or > 10)
+        // Every linked commit is in the manifest from the start: what a reviewer is handed names the whole evidence,
+        // with the paths filled in for the patches that were read.
+        var entries = (idea["commits"] as JsonArray ?? []).OfType<JsonObject>()
+            .Where(c => IdeaOps.Str(c["hash"]) is { Length: > 0 })
+            .GroupBy(c => IdeaOps.Str(c["hash"])!).Select(g => g.First()).ToList();   // one patch per commit, as the evidence is read
+        var commits = entries.Select(e => _review.Commit(e)).ToList();
+        if (commits.Count is 0 or > MaxEvidenceCommits)
         {
-            var work = ctx.Services.Get<IBackgroundWork>();
-            var skipped = work?.Begin("Completion verification", null, null, watch.ProjectId);
-            if (skipped is not null) work!.Set(skipped, "skipped", "Complete evidence exceeds the automatic verification bound; review this idea manually");
+            NeedsReview($"{commits.Count} linked commits, where at most {MaxEvidenceCommits} complete patches are read");
             return false;
         }
-        foreach (var hash in hashes)
+        var patches = new StringBuilder();
+        for (var i = 0; i < entries.Count; i++)
         {
+            var hash = IdeaOps.Str(entries[i]["hash"])!;
             var request = new JsonObject { ["cwd"] = watch.Path, ["hash"] = hash };
             var raw = ctx.Services.Get<IGitHistory>() is { } history ? await history.ReadAsync(request, ct).ConfigureAwait(false)
                 : NetPiJson.ToNode(await ctx.Rpc.InvokeAsync("files.commits", request, ct).ConfigureAwait(false)) as JsonObject;
             // A commit this repository cannot read (it was linked from another one, or its history was rewritten) is
             // evidence we do not have, not a failure of the check: the same question would be re-paid on every sweep
             // and the idea would stay unanswerable until it is closed by hand (idea-g6siz0).
-            if (raw?["patch"]?.GetValue<string>() is not { Length: > 0 } patch) { ReportUnreadable(hash); return false; }
-            if (raw["truncated"]?.GetValue<bool>() == true) { ReportEvidenceBound(); return false; }
+            if (raw?["patch"]?.GetValue<string>() is not { Length: > 0 } patch)
+            {
+                ctx.Logger.LogWarning("Ideas: {Short} in {Repo} cannot be read there (it is recorded from {From}): the idea is not offered as finished, and the commits after it are read.",
+                    Short(hash), watch.Repo, RepoOf(entries[i]) ?? "another repository");
+                commits[i]["note"] = $"its patch is not in {watch.Repo} (it is recorded from {RepoOf(entries[i]) ?? "another repository"})";
+                NeedsReview($"the patch of {Short(hash)} is missing: this repository cannot read that commit");
+                return false;
+            }
+            var files = IdeaReview.Paths(patch);
+            commits[i]["files"] = new JsonArray(files.Select(f => (JsonNode)JsonValue.Create(f)!).ToArray());
+            if (raw["truncated"]?.GetValue<bool>() == true)
+            {
+                commits[i]["note"] = $"git cut this patch at {MaxEvidenceChars} characters, so it is not complete";
+                NeedsReview($"the patch of {Short(hash)} was cut by git and is not complete");
+                return false;
+            }
             patches.AppendLine(patch);
-            if (patches.Length > 64000) { ReportEvidenceBound(); return false; }
+            if (patches.Length > MaxEvidenceChars)
+            {
+                NeedsReview($"the linked patches of {commits.Count} commit(s) pass {MaxEvidenceChars} characters");
+                return false;
+            }
         }
         var verdict = await new IdeaVerifier(ctx).VerifyAsync("Mark the following idea done:\n" + text,
             "Linked commits:\n" + string.Join('\n', linked) + "\n\nCommit patches:\n" + patches, null, watch.ProjectId, ct).ConfigureAwait(false);
@@ -711,9 +739,11 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         if (current is null || IdeaRuns.ProjectBusy(ctx, watch.ProjectId) || current.Revision != revision) return null;
         if (Setting("ideas.applyVerifiedUpdates", true))
         {
-            _repo.Update(id, new JsonObject { ["status"] = "done", ["addSections"] = new JsonArray(new JsonObject
-                { ["kind"] = "research", ["title"] = "Completion verification", ["content"] = verdict.Reason + "\n\n" + string.Join('\n', linked) }) },
-                fromUi: true, expectedRevision: revision);
+            var patch = new JsonObject { ["status"] = "done", ["addSections"] = new JsonArray(new JsonObject
+            { ["kind"] = "research", ["title"] = "Completion verification", ["content"] = verdict.Reason + "\n\n" + string.Join('\n', linked) }) };
+            // The completion is judged now, so a review state an earlier, bigger evidence left on the idea is gone.
+            if (SectionId(idea) is { } review) patch["removeSectionIds"] = new JsonArray(JsonValue.Create(review));
+            _repo.Update(id, patch, fromUi: true, expectedRevision: revision);
             return true;
         }
 
@@ -736,30 +766,30 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
         // One offer per idea: a second commit that also finishes it changes nothing the user has not answered.
         return save.Offer(suggestion);
 
-        void ReportEvidenceBound()
+        /// <summary>
+        /// Completion the bounds above do not allow the automatic check to judge: it stays blocked, and the idea itself
+        /// carries what a reviewer needs (idea-n2jj97). The work entry stays too — this is where a background check
+        /// that did not run is seen — but it is no longer the only record of it.
+        /// </summary>
+        void NeedsReview(string limit)
         {
             var work = ctx.Services.Get<IBackgroundWork>();
             var skipped = work?.Begin("Completion verification", null, null, watch.ProjectId);
-            if (skipped is not null) work!.Set(skipped, "skipped", "Commit patches exceed the automatic verification bound; review this idea manually");
+            if (skipped is not null) work!.Set(skipped, "skipped", $"{limit}; the idea says what a reviewer has to read");
+            _review.Record(id, limit, commits);
         }
 
-        /// <summary>A linked commit this repository cannot read: the idea is not offered now, and it says why.</summary>
-        void ReportUnreadable(string hash)
-        {
-            var where = repoOf(hash);
-            ctx.Logger.LogWarning("Ideas: {Short} in {Repo} cannot be read there (it is recorded from {From}): the idea is not offered as finished, and the commits after it are read.",
-                hash.Length > 7 ? hash[..7] : hash, watch.Repo, where ?? "another repository");
-            var work = ctx.Services.Get<IBackgroundWork>();
-            var skipped = work?.Begin("Completion verification", null, null, watch.ProjectId);
-            if (skipped is not null)
-                work!.Set(skipped, "skipped", $"commit {hash[..Math.Min(7, hash.Length)]} is not in {watch.Repo} (recorded from {where ?? "another repository"}); review this idea manually");
-        }
+        /// <summary>The section id of the idea's review state, when it carries one.</summary>
+        static string? SectionId(JsonObject idea) =>
+            (idea["sections"] as JsonArray ?? []).OfType<JsonObject>()
+                .FirstOrDefault(s => IdeaOps.Str(s["title"]) == IdeaReview.Title) is { } section ? IdeaOps.Str(section["id"]) : null;
 
-        // Where a linked commit was made, when the entry says (a commit is recorded on the idea it works on, wherever
-        // that repository is).
-        string? repoOf(string hash) =>
-            (idea["commits"] as JsonArray ?? []).OfType<JsonObject>()
-                .FirstOrDefault(c => IdeaOps.Str(c["hash"]) == hash) is { } entry ? IdeaOps.Str(entry["repo"]) : null;
+        /// <summary>The short form of a commit hash, as the log lines have always named it.</summary>
+        static string Short(string hash) => hash[..Math.Min(7, hash.Length)];
+
+        /// <summary>Where a linked commit was made, when the entry says (a commit is recorded on the idea it works on,
+        /// wherever that repository is).</summary>
+        static string? RepoOf(JsonObject entry) => IdeaOps.Str(entry["repo"]);
     }
 
     // ------------------------------------------------------------------ the decisions
