@@ -4,8 +4,11 @@ NetPI is a .NET 10 agent harness: a small host kernel (`src/NetPI.Host`) plus ho
 and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for details.
 
 ## Layout
-- `src/NetPI.Abstractions` — contracts shared by host and plugins. Change them **additively** only; every plugin
-  depends on them. Rebuild all plugins after changing it.
+- `src/NetPI.Abstractions` — contracts shared by host and plugins: interfaces and plain data, no policy. Change them
+  whenever the design calls for it: NetPI runs on one machine and nothing outside this repository depends on them, so
+  there are **no compatibility shims, deprecated paths, mirrors or forwarders**. A contract change updates every plugin,
+  test and doc in the same change; rebuild all plugins. Existing local data that a change strands is migrated for the
+  owner's setup by a one-off script (see `docs/plans/2026-10-02-replaceable-parts.md`), never by product code.
 - `src/NetPI.Host` — kernel: plugin manager, event bus, registries, SQLite (P/Invoke, no NuGet), settings, session
   store, model catalog, Kestrel/WebSocket server. `src/NetPI.Server` = headless exe, `src/NetPI.Desktop` =
   WinForms + WebView2 shell (Windows only).
