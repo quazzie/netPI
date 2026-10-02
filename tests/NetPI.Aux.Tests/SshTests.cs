@@ -230,20 +230,63 @@ public static class SshTests
             await env.Run("ssh_write", new { host = "nuc", path = "log", content = "more\n", append = true });
             Check.Contains(Remote(env.Fake.Calls[^1].Args), "cat >>\"$p\"");
 
-            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_stat=18 1700000000\n__netpi_hash=sha256 f4f5\nalpha\nbeta\ngamma\n", "", false, false);
+            // a read does not hash the file (only ssh_edit needs the hash): the reply is stat + text, no hash line
+            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_stat=18 1700000000\nalpha\nbeta\ngamma\n", "", false, false);
             var read = await env.Run("ssh_read", new { host = "nuc", path = "/etc/demo" });
             Check.Equal("alpha\nbeta\ngamma", read.Content);
             Check.Equal(3, D(read).GetProperty("totalLines").GetInt32());
-            Check.Contains(Remote(env.Fake.Calls[^1].Args), "stat -c '__netpi_stat=%s %Y' -- \"$p\" && if command -v sha256sum");
-            Check.Contains(Remote(env.Fake.Calls[^1].Args), "echo \"__netpi_hash=$h\" && head -c ");
+            Check.Contains(Remote(env.Fake.Calls[^1].Args), "stat -c '__netpi_stat=%s %Y' -- \"$p\" && head -c ");
+            Check.NotContains(Remote(env.Fake.Calls[^1].Args), "sha256sum", "a read does not hash the whole file");
+            Check.NotContains(Remote(env.Fake.Calls[^1].Args), "__netpi_hash");
             var paged = await env.Run("ssh_read", new { host = "nuc", path = "/etc/demo", offset = 2, limit = 1 });
             Check.Equal("beta\n\n[Showing lines 2-2 of 3. Use offset=3 to continue.]", paged.Content);
-            Check.Equal("gamma", (await env.Run("ssh_read", new { host = "nuc", path = "/etc/demo", offset = -1 })).Content);
+            // a negative offset counts from the file's end, so the tool captures the tail, not the head
+            var fromEnd = await env.Run("ssh_read", new { host = "nuc", path = "/etc/demo", offset = -1 });
+            Check.Equal("gamma", fromEnd.Content);
+            Check.Contains(Remote(env.Fake.Calls[^1].Args), "tail -c ");
 
-            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_stat=4 1\n__netpi_hash=sha256 0\nab\0c", "", false, false);
+            env.Fake.Reply = (_, _) => new SshExec(0, "__netpi_stat=4 1\nab\0c", "", false, false);
             Check.Contains((await env.Run("ssh_read", new { host = "nuc", path = "bin" })).Content, "appears to be a binary file");
             env.Fake.Reply = (_, _) => new SshExec(2, "", "No such file: /x\n", false, false);
             Check.Equal("nuc: No such file: /x", (await env.Run("ssh_read", new { host = "nuc", path = "/x" })).Content);
+        });
+
+        r.Add("ssh_read: big-file windowing (no hash, tail for negatives, ssh_run hint), timeout and abort are named", async () =>
+        {
+            var env = new Env();
+            const long big = 40L * 1024 * 1024; // 40 MB
+            string Window(string tag) => "__netpi_stat=" + big + " 1700000000\n" + string.Join("\n", Enumerable.Range(0, 100).Select(i => $"{tag} {i}")) + "\n";
+
+            // the first 8 MB window: a head fetch reports the window and says further content is ssh_run's job
+            env.Fake.Reply = (_, _) => new SshExec(0, Window("head"), "", false, false);
+            var first = await env.Run("ssh_read", new { host = "nuc", path = "/var/log/huge.log" });
+            Check.False(first.IsError, first.Content);
+            Check.Contains(first.Content, "the first 8 MB of a 40 MB file");
+            Check.Contains(first.Content, "ssh_run");
+            Check.True(D(first).GetProperty("truncated").GetBoolean());
+
+            // an offset past the window cannot be reached by paging: it says so, and names the tool that can
+            var beyond = await env.Run("ssh_read", new { host = "nuc", path = "/var/log/huge.log", offset = 10_000_000 });
+            Check.True(beyond.IsError);
+            Check.Contains(beyond.Content, "beyond the first 8 MB");
+            Check.Contains(beyond.Content, "ssh_run");
+
+            // a negative offset reaches the window's end, which is the file's end
+            var atEnd = await env.Run("ssh_read", new { host = "nuc", path = "/var/log/huge.log", offset = -5 });
+            Check.False(atEnd.IsError, atEnd.Content);
+            Check.Contains(atEnd.Content, "the last 8 MB of a 40 MB file");
+            Check.Contains(atEnd.Content, "end of the file");
+            Check.False(D(atEnd).GetProperty("truncated").GetBoolean(), "the tail window ends at the file's end");
+            Check.Contains(Remote(env.Fake.Calls[^1].Args), "tail -c ");
+
+            // a timed-out read is named as such, with the escape hatches; an aborted one is not a remote failure
+            env.Fake.Reply = (_, _) => new SshExec(-1, "", "", true, false);
+            var slow = await env.Run("ssh_read", new { host = "nuc", path = "/var/log/huge.log" });
+            Check.True(slow.IsError);
+            Check.Contains(slow.Content, "timed out");
+            Check.Contains(slow.Content, "ssh_run");
+            env.Fake.Reply = (_, _) => new SshExec(-1, "", "", false, true);
+            Check.Contains((await env.Run("ssh_read", new { host = "nuc", path = "/var/log/huge.log" })).Content, "aborted");
         });
 
         r.Add("ssh_edit: exact replacements keep CRLF, write only when the file is unchanged, diff for the UI", async () =>
@@ -321,10 +364,13 @@ public static class SshTests
             var posix = PosixPath(target);
             var chmodWorks = ChmodWorks(bash);
             if (chmodWorks) RunRemote(bash, $"chmod 0640 '{posix}'", null);
-            // the read script the tool would send, run against the real file
-            env.Fake.Reply = (_, _) => new SshExec(0, "", "", false, false);
-            await env.Run("ssh_read", new { host = "nuc", path = posix });
+            // the read-with-hash script the tool sends (ssh_edit's own fetch carries the hash a read no longer does), run against the real file
+            env.Fake.Reply = (args, _) => Remote(args).Contains("head -c")
+                ? new SshExec(0, $"__netpi_stat=10 1700000000\n__netpi_hash=sha256 {new string('0', 64)}\n{File.ReadAllText(target)}", "", false, false)
+                : new SshExec(0, "", "", false, false);
+            await env.Run("ssh_edit", new { host = "nuc", path = posix, edits = new[] { new { oldText = "not present here", newText = "x" } } });
             var readScript = Remote(env.Fake.Calls[^1].Args);
+            Check.Contains(readScript, "__netpi_hash=", "the edit's read script still carries the hash");
             var (rex, rout, rerr) = RunRemote(bash, readScript, null);
             Check.Equal(0, rex, "the read script runs in a POSIX shell: " + rerr);
             Check.True(rout.StartsWith("__netpi_stat=10 "), "stat line first: " + Check.Show(rout));

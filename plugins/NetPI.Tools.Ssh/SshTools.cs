@@ -469,7 +469,11 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
     {
         var path = A.Str(args, "path", "file", "file_path")?.Trim();
         if (string.IsNullOrEmpty(path)) return ToolResult.Error("ssh_read needs a path.");
-        var file = await Fetch(o, host, path, A.Str(args, "cwd"), ct).ConfigureAwait(false);
+        var cwd = A.Str(args, "cwd");
+        var offsetArg = A.Int(args, "offset", "start_line", "line") ?? 1;
+        // A negative offset counts from the end of the file, which the first 8 MB (the default capture) does not reach;
+        // fetch the tail instead, so "from the end" means the file's end, not the window's end.
+        var file = await Fetch(o, host, path, cwd, hash: false, tail: offsetArg < 0, ct).ConfigureAwait(false);
         if (file.Error is not null) return ToolResult.Error(file.Error);
         var text = file.Text!;
         if (text.Contains('\0'))
@@ -478,10 +482,12 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
         var lines = text.Replace("\r\n", "\n").Split('\n');
         var total = text.EndsWith('\n') ? lines.Length - 1 : lines.Length;
         if (total == 0) return ToolResult.Ok("(empty file)", Details(host, path, 0, 0, 0, false, file.Size));
-        var offset = A.Int(args, "offset", "start_line", "line") ?? 1;
-        if (offset < 0) offset = Math.Max(1, total + offset + 1);
+        var offset = offsetArg < 0 ? Math.Max(1, total + offsetArg + 1) : offsetArg;
         if (offset == 0) offset = 1;
-        if (offset > total) return ToolResult.Error($"offset {offset} is past the end of the file: {Where(host, path)} has {total} lines.");
+        if (offset > total)
+            return ToolResult.Error(file.Cut
+                ? $"offset {offset} is beyond the {(offsetArg < 0 ? "last" : "first")} {MaxReadBytes / 1024 / 1024} MB of {Where(host, path)}, which is all ssh_read can see. The file is {file.Size / 1024 / 1024} MB; read a further window with ssh_run (tail, sed -n)."
+                : $"offset {offset} is past the end of the file: {Where(host, path)} has {total} lines.");
         var limit = Math.Clamp(A.Int(args, "limit", "lines", "count") ?? MaxLines, 1, MaxLines);
         var sb = new StringBuilder();
         var taken = 0;
@@ -493,8 +499,23 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
             taken++;
         }
         var end = offset + taken - 1;
-        var more = end < total || file.Cut;
-        if (more) sb.Append($"\n\n[Showing lines {offset}-{end} of {total}{(file.Cut ? "+ (the file is larger than " + MaxReadBytes / 1024 / 1024 + " MB)" : "")}. Use offset={end + 1} to continue.]");
+        // Beyond this window: a head window on a bigger file has content that no offset can reach (ssh_run's job),
+        // a tail window at its end is the file's end.
+        var more = end < total || (file.Cut && offsetArg > 0);
+        // A cut file always gets a window note (even at the file's end); a small file notes "continue" only when more is reachable.
+        if (more || file.Cut)
+        {
+            if (end < total)
+                sb.Append(file.Cut
+                    ? $"\n\n[Showing lines {offset}-{end} of the {(offsetArg < 0 ? "last" : "first")} {MaxReadBytes / 1024 / 1024} MB of a {file.Size / 1024 / 1024} MB file. Use offset={end + 1} to continue within it.]"
+                    : $"\n\n[Showing lines {offset}-{end} of {total}. Use offset={end + 1} to continue.]");
+            else
+                sb.Append(file.Cut
+                    ? (offsetArg < 0
+                        ? $"\n\n[Showing lines {offset}-{end}, the last {MaxReadBytes / 1024 / 1024} MB of a {file.Size / 1024 / 1024} MB file — this is the end of the file.]"
+                        : $"\n\n[Showing lines {offset}-{end}, the first {MaxReadBytes / 1024 / 1024} MB of a {file.Size / 1024 / 1024} MB file. ssh_read only sees the first {MaxReadBytes / 1024 / 1024} MB; read further with ssh_run (tail, sed -n).]")
+                    : $"\n\n[Showing lines {offset}-{end} of {total}]");
+        }
         return ToolResult.Ok(sb.ToString(), Details(host, path, offset, end, total, more, file.Size));
     }
 
@@ -504,15 +525,25 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
     internal sealed record Fetched(string? Text, long Size, string Stat, string Hash, bool Cut, string? Error);
 
     /// <summary>
-    /// The file's text (up to <see cref="SshToolBase.MaxReadBytes"/>), its <c>size mtime</c> stat, and the file's content
-    /// hash (<see cref="HashScript"/>). The hash is what <c>ssh_edit</c> re-checks before it writes back.
+    /// The file's text (up to <see cref="SshToolBase.MaxReadBytes"/> — the first part, or the last when <paramref name="tail"/>),
+    /// its <c>size mtime</c> stat, and — when <paramref name="hash"/> — the file's content hash
+    /// (<see cref="HashScript"/>), what <c>ssh_edit</c> re-checks before it writes back.
     /// </summary>
-    internal async Task<Fetched> Fetch(SshOptions o, SshHost host, string path, string? cwd, CancellationToken ct)
+    /// <param name="hash">Compute the whole-file hash. Only <c>ssh_edit</c> needs it; a read that hashed a multi-GB log
+    /// on every page paid for nothing and could time out on the hash alone.</param>
+    /// <param name="tail">Capture the last <see cref="SshToolBase.MaxReadBytes"/> instead of the first, so a negative offset
+    /// counts from the file's end rather than the end of the captured window.</param>
+    internal async Task<Fetched> Fetch(SshOptions o, SshHost host, string path, string? cwd, bool hash, bool tail, CancellationToken ct)
     {
+        var hashStep = hash ? $"{HashScript} && echo \"{HashMarker}$h\" && " : "";
+        var grab = tail ? "tail" : "head";
         var remote = Sh.Cd(cwd) + $"p={Sh.Path(path)}; if [ ! -e \"$p\" ]; then echo \"No such file: $p\" >&2; exit 2; fi; " +
                      "if [ -d \"$p\" ]; then echo \"$p is a directory\" >&2; exit 3; fi; " +
-                     $"stat -c '{StatMarker}%s %Y' -- \"$p\" && {HashScript} && echo \"{HashMarker}$h\" && head -c {MaxReadBytes} -- \"$p\"";
-        var r = await Ssh(o, host, remote, null, TimeSpan.FromSeconds(Math.Max(60, o.Timeout)), ct).ConfigureAwait(false);
+                     $"stat -c '{StatMarker}%s %Y' -- \"$p\" && {hashStep}{grab} -c {MaxReadBytes} -- \"$p\"";
+        var timeout = TimeSpan.FromSeconds(Math.Max(60, o.Timeout));
+        var r = await Ssh(o, host, remote, null, timeout, ct).ConfigureAwait(false);
+        if (r.Aborted) return new Fetched(null, 0, "", "", false, $"Reading {Where(host, path)} was aborted.");
+        if (r.TimedOut) return new Fetched(null, 0, "", "", false, $"Reading {Where(host, path)} timed out after {timeout.TotalSeconds:0}s{(hash ? " (hashing the whole file first)" : "")}. Read a smaller window with ssh_run (tail, sed -n) or raise ssh.timeoutSeconds.");
         if (r.ExitCode == 255) return new Fetched(null, 0, "", "", false, Failure(host, r));
         if (r.ExitCode == 125) return new Fetched(null, 0, "", "", false, $"The working directory {cwd} does not exist on {host.Alias}.");
         if (r.ExitCode != 0) return new Fetched(null, 0, "", "", false, r.Stderr.Trim() is { Length: > 0 } e ? $"{host.Alias}: {e}" : $"Reading {Where(host, path)} failed (exit {r.ExitCode}).");
@@ -520,11 +551,16 @@ internal sealed class SshReadTool(IPluginContext ctx, ISshLauncher launcher) : S
         if (!r.Stdout.StartsWith(StatMarker, StringComparison.Ordinal) || nl < 0) return new Fetched(null, 0, "", "", false, $"Unexpected reply reading {Where(host, path)}.");
         var stat = r.Stdout[StatMarker.Length..nl].Trim();
         var rest = r.Stdout[(nl + 1)..];
-        var nl2 = rest.IndexOf('\n');
-        if (!rest.StartsWith(HashMarker, StringComparison.Ordinal) || nl2 < 0) return new Fetched(null, 0, stat, "", false, $"Unexpected reply reading {Where(host, path)}.");
-        var hash = rest[HashMarker.Length..nl2].Trim();
+        string fileHash = "";
+        if (hash)
+        {
+            var nl2 = rest.IndexOf('\n');
+            if (!rest.StartsWith(HashMarker, StringComparison.Ordinal) || nl2 < 0) return new Fetched(null, 0, stat, "", false, $"Unexpected reply reading {Where(host, path)}.");
+            fileHash = rest[HashMarker.Length..nl2].Trim();
+            rest = rest[(nl2 + 1)..];
+        }
         long.TryParse(stat.Split(' ')[0], out var size);
-        return new Fetched(rest[(nl2 + 1)..], size, stat, hash, size > MaxReadBytes, null);
+        return new Fetched(rest, size, stat, fileHash, size > MaxReadBytes, null);
     }
 }
 
@@ -629,7 +665,7 @@ internal sealed class SshEditTool(IPluginContext ctx, ISshLauncher launcher) : S
         var cwd = A.Str(args, "cwd");
 
         var reader = new SshReadTool(Ctx, Launcher);
-        var file = await reader.Fetch(o, host, path, cwd, ct).ConfigureAwait(false);
+        var file = await reader.Fetch(o, host, path, cwd, hash: true, tail: false, ct).ConfigureAwait(false);
         if (file.Error is not null) return ToolResult.Error(file.Error);
         if (file.Cut) return ToolResult.Error($"{Where(host, path)} is larger than {MaxReadBytes / 1024 / 1024} MB; edit it with ssh_run (sed, python) instead.");
         if (file.Text!.Contains('\0')) return ToolResult.Error($"{Where(host, path)} is a binary file.");
