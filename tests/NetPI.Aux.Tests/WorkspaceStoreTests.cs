@@ -222,9 +222,9 @@ public static class WorkspaceStoreTests
             }
             Check.Equal(1, f.Sessions.GetMessages(live.Id).Count, "the messages are untouched");
 
-            // Every detached session that had announced anything is told, with the binding it now has (none).
+            // Every detached session is told, with the binding it now has (none): the message-less one too, as it always was.
             var announced = f.EventsOf(WorkspaceEvents.SessionBound);
-            Check.Equal(2, announced.Count, "the stored and the archived one; a message-less session had announced nothing: " +
+            Check.Equal(3, announced.Count, "the stored, the archived and the message-less one: " +
                 string.Join(", ", announced.Select(e => NetPiJson.ToNode(e.Data)!["sessionId"]!.Str())));
             Check.True(announced.All(e => !NetPiJson.ToNode(e.Data)!.AsObject().ContainsKey("workspaceId")),
                 "each is told the session is unbound, with the project folder it works in again");
