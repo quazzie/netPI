@@ -56,6 +56,16 @@ public interface IStorage : IDisposable
 /// <summary>What <c>app.info</c> and diagnostics say about the store. Everything but <see cref="Provider"/> may be null.</summary>
 public sealed record StorageInfo(string Provider, string? Version = null, string? Location = null, long? SizeBytes = null);
 
+/// <summary>
+/// The two storage facts a plugin may ask for without touching the store: what it is, and a consistent copy of it. The kernel
+/// registers this as a service (<c>ctx.Services.Get&lt;IStorageAccess&gt;()</c>); Backup and Diagnostics use it. It is not the store.
+/// </summary>
+public interface IStorageAccess
+{
+    StorageInfo Info { get; }
+    IStorageSnapshot Snapshot { get; }
+}
+
 public interface IKeyValueStore
 {
     string? Get(string key);
