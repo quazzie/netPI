@@ -14,6 +14,7 @@ public static class AskTests
         t.Add("ask_user: two chats with the same tool call id each get their own answer", SameCallIdInTwoChats);
         t.Add("ask_user: subagents can't ask", SubagentRefused);
         t.Add("ask_user: lenient arguments, limits, and the answer the model reads", Parsing);
+        t.Add("ask_user: an answer given while the provider's budget is spent is not lost - the slot failure lands on the next turn", AnswerSurvivesSlotFailure);
     }
 
     private static async Task<TestHost> StartAsync()
@@ -195,6 +196,52 @@ public static class AskTests
         var closed = h.Bus.OfType("ask.closed").Select(FakeBus.Data).ToList();
         Check.Equal(2, closed.Count, "each question closed on its own");
         Check.Equal(string.Join(",", new[] { idA, idB }.Order()), string.Join(",", closed.Select(c => (string?)c["id"]!).Order()), "both questions, each with its own id");
+    }
+
+    /// <summary>
+    /// A question out, then the provider's daily budget is spent while the user is typing: the slot the wait gave back
+    /// cannot be re-acquired. Re-acquiring is bookkeeping, so its failure must not throw away the answer: the tool
+    /// result keeps it, the card closes as answered, and the next turn's slot check reports the real failure (idea-633b6n).
+    /// </summary>
+    private static async Task AnswerSurvivesSlotFailure()
+    {
+        await using var h = await StartAsync();
+        var s = h.NewSession(model: "fake/solo");
+        h.Catalog.Handler = (r, ct) =>
+            r.Messages.SelectMany(m => m.ToolResults).Any(t => (t.Content ?? "").Contains("The user answered: A"))
+                ? Reply.Text("done")
+                : Reply.Tool("ask_user", new { questions = new[] { Q("Pick one?", "A", "B") } });
+        await h.SendAsync(s.Id, "pick");
+        var asked = await AskedAsync(h, s.Id);
+        await Wait.Until(() => h.Runtime.GetBySession(s.Id)?.Status == AgentStatus.Yielded, "the run waits with its slot given back");
+        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy), "the instance is free meanwhile");
+
+        // the provider's daily budget is spent while the user is typing (turn 1 already used tokens)
+        h.Settings.Set("budget.providers", new JsonObject { ["fake"] = new JsonObject { ["dailyTokens"] = 1 } });
+        await h.Bus.DrainAsync();
+
+        var id = (string)asked["id"]!;
+        Check.Equal(true, await h.Rpc.InvokeAsync("ask.answer", new { id, answers = new[] { new[] { "A" } } }));
+        await h.IdleAsync(s.Id);
+
+        var result = Result(h, s.Id);
+        Check.False(result.IsError, "the answer is not lost to a slot failure");
+        Check.Equal("The user answered: A", result.Content);
+        Check.Equal("answered", (string?)result.Details!["status"]);
+        Check.Equal("answered", (string?)FakeBus.Data(h.Bus.OfType("ask.closed").Single())["status"], "the card closes as answered, not cancelled");
+        Check.Equal(1, h.Catalog.Calls, "the next turn's slot check failed before a model call");
+        Check.Contains(h.Runtime.GetBySession(s.Id)!.Error ?? "", "daily token budget", "the real failure is reported by the next turn");
+        Check.Equal(0, h.Scheduler!.Snapshot().Where(x => x.Key == "fake/solo").Sum(x => x.Busy), "the slot is free");
+
+        // the budget is lifted: the answer is in the transcript, and it is what the model reads
+        h.Settings.Set("budget.providers", null);
+        await h.Bus.DrainAsync();
+        await h.SendAsync(s.Id, "now what?");
+        await h.IdleAsync(s.Id);
+        Check.Equal(2, h.Catalog.Calls);
+        Check.True(h.Catalog.Requests.Last().Messages.SelectMany(m => m.ToolResults).Any(t => (t.Content ?? "").Contains("The user answered: A")),
+            "the model reads the answer given while it was offline");
+        Check.Equal("done", h.Messages(s.Id)[^1].Text);
     }
 
     private static async Task SubagentRefused()

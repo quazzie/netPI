@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -1118,7 +1118,20 @@ internal sealed class AgentRuntime : IAgentRuntime
             if (caller is not null && !ct.IsCancellationRequested)
             {
                 if (yielded is not null && run is not null && model is not null)
-                    run.Lease = await AcquireSlotAsync(caller, run, model, YieldPriority, ct).ConfigureAwait(false);
+                {
+                    try
+                    {
+                        run.Lease = await AcquireSlotAsync(caller, run, model, YieldPriority, ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // the re-acquire is bookkeeping, not the result of the wait: a model that went offline, or a
+                        // budget spent while the user was typing, must not throw away the answer (idea-633b6n). The
+                        // next turn's slot check reports the failure with its own message.
+                        Ctx.Logger.LogWarning(ex, "Re-acquiring the slot of {Agent} after a wait failed", caller.Info.Id);
+                        SetStatus(caller, AgentStatus.Queued, ex.Message);
+                    }
+                }
                 else if (yielded is null)
                     SetActivity(caller, null);
             }
