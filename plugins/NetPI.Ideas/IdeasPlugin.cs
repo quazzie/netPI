@@ -56,6 +56,8 @@ public sealed class IdeasPlugin : INetPiPlugin
                     "Off: a check that would run on a cloud model is skipped, because an invoice for a background check is never what you meant. On: the same model as above, local or not."),
                 SettingInfo.Int("ideas.checkWaitSeconds", "Check queue wait", IdeaAdmission.DefaultWaitSeconds,
                     "How long a background check (the save check, the commit sweep) waits for a slot on the model before it is dropped instead of run without one. A drop is never silent: the save check's mark stays retryable, the commit sweep tries that commit again, and the log says what was dropped and why.", 1, 300),
+                SettingInfo.Int("ideas.commitRetrySeconds", "Commit check retry", IdeaCommitCheck.DefaultRetrySeconds,
+                    "How long a repository whose commit check failed waits before the check is tried again. The wait doubles with every failed attempt and caps at an hour; after five failed attempts in a row the commit is recorded unread (ideas.unread) and the cursor moves past it, so later commits are read.", 0, 86400),
                 SettingInfo.Bool("ideas.closeOnCommit", "Notice when a commit finishes an idea", true,
                     "Every project with a git repository is watched. A commit is recorded on the open idea it works on, and when a commit may have finished one you get a card to mark it done (needs the Files and Decide plugins)."),
                 SettingInfo.Number("ideas.linkThreshold", "Link threshold", IdeaCommitCheck.DefaultLinkThreshold,
@@ -111,6 +113,12 @@ public sealed class IdeasPlugin : INetPiPlugin
         // Every write announces itself once it has committed, so a second window re-reads the canonical state.
         var events = new IdeasEvents(context, repo, locator);
         repo.OnChanged = events.Changed;
+
+        // The commits the sweep could not decide after its bound of attempts (idea-kooctc): the cursor has moved past
+        // them, and the record is what is re-read on demand.
+        context.Rpc.RegisterReadOnly("ideas.unread", (_, _) => Task.FromResult<object?>(
+            new JsonArray(repo.Unread().Select(u => (JsonNode)u).ToArray())),
+            "The commits the commit sweep could not decide after its bound of attempts: { } → [{ repo, hash, subject, tries, error, at }]. The cursor has moved past them, so later commits are read; the record is what is re-read on demand");
 
         context.Tools.Register(new IdeasTool(repo, locator));
 

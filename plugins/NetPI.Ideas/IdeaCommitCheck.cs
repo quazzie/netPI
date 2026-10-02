@@ -31,6 +31,15 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     public const int MaxCommits = 20;
     /// <summary>Pages one sweep reads, so 45 unseen commits are read in three pages and none of them is skipped.</summary>
     public const int MaxPages = 5;
+    /// <summary>
+    /// How many failed checks in a row a commit may cost before it is recorded unread and the cursor moves past it
+    /// (idea-kooctc). A commit that cannot be decided must not pin the sweep — and every later commit of the
+    /// repository — forever: the record stays in ideas_unread, and the later commits are read.
+    /// </summary>
+    public const int MaxTries = 5;
+    /// <summary>The first backoff after a failed check; the wait doubles with every failed attempt and caps at an hour.</summary>
+    public const int DefaultRetrySeconds = 120;
+    private const int MaxBackoffSeconds = 3600;
     private static readonly TimeSpan Debounce = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan Rescan = TimeSpan.FromMinutes(2);
     /// <summary>How long a repository's last-seen commit is remembered; an untouched repository is dropped from the file.</summary>
@@ -317,13 +326,28 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
     /// <see cref="MaxCommits"/>. Reading them oldest first also means the decisions see a burst in the order it happened.
     /// </para>
     /// <para>
-    /// The cursor only moves past a commit that was handled. A decision that failed (the model is down, a timeout) stops
-    /// the sweep with the cursor where it was, so the next sweep tries that commit again instead of skipping it forever.
+    /// The cursor only moves past a commit that was handled. A decision that failed (the model is down, a timeout)
+    /// stops the sweep with the cursor where it was — but it does not re-pay on every trigger that wakes the sweep
+    /// (idea-kooctc): the failure is recorded on the repository's cursor, the attempts back off exponentially, and a
+    /// commit that cannot be decided after <see cref="MaxTries"/> attempts is recorded unread and the cursor moves
+    /// past it, so the later commits are read instead of being pinned behind it forever.
     /// </para>
     /// </summary>
     private async Task SweepAsync(Watch watch)
     {
         if (_stopped || !Setting("ideas.closeOnCommit", true) || IdeaRuns.ProjectBusy(ctx, watch.ProjectId)) return;
+        // A check that just failed is not retried on every trigger that wakes the sweep (the two-minute timer, an
+        // agent-status change, a burst of git file events): the attempts back off, and the setting names the first
+        // interval (0 disables the backoff, so sweeps can be driven back to back).
+        if (_repo.RepoFailure(watch.Repo) is { Tries: > 0, At: { } failedAt } failure)
+        {
+            var retryAt = BackoffUntil(failure.Tries, failedAt);
+            if (retryAt is { } until && DateTimeOffset.UtcNow < until)
+            {
+                ctx.Logger.LogDebug("Ideas: {Repo} is not swept again until about {Until:HH:mm:ss} ({Tries} failed check(s) back it off)", watch.Repo, until, failure.Tries);
+                return;
+            }
+        }
         var since = _repo.LastSeen(watch.Repo);
         var pages = new List<List<JsonObject>>();
         string? upper = null;
@@ -341,7 +365,7 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                     var newest = await HeadAsync(watch).ConfigureAwait(false);
                     ctx.Logger.LogWarning("Ideas: the history of {Repo} was rewritten or the branch changed: the cursor is re-anchored at {Hash} and the older history is not read.",
                         watch.Repo, newest ?? "HEAD");
-                    _repo.Remember(watch.Repo, newest, watch.ProjectId, watch.ProjectName, "the history was rewritten or the branch changed");
+                    _repo.Remember(watch.Repo, newest, watch.ProjectId, watch.ProjectName);
                 }
                 break;
             }
@@ -369,11 +393,49 @@ public sealed class IdeaCommitCheck(IPluginContext ctx, IdeasRepository repo, Id
                 _repo.Remember(watch.Repo, IdeaOps.Str(commit["hash"]), watch.ProjectId, watch.ProjectName);
             else
             {
-                ctx.Logger.LogWarning("Ideas: {Short} in {Repo} is not read yet (a check failed); the next sweep starts here again",
-                    IdeaOps.Str(commit["short"]) ?? IdeaOps.Str(commit["hash"]), watch.Repo);
+                // The check could not run (a drop, a timeout, an answer that did not come): the commit stays unread —
+                // but it is not re-paid on every trigger (idea-kooctc). The failure is recorded on the cursor, the
+                // attempts back off, and a commit that cannot be decided after its bound is recorded unread, so the
+                // cursor moves past it and the later commits are read.
+                var shortHash = IdeaOps.Str(commit["short"]) ?? Clip(IdeaOps.Str(commit["hash"]) ?? "?", 7);
+                var tries = _repo.RecordCommitFailure(watch.Repo, "a check failed");
+                if (tries >= MaxTries)
+                {
+                    _repo.Remember(watch.Repo, IdeaOps.Str(commit["hash"]), watch.ProjectId, watch.ProjectName);
+                    _repo.RecordUnread(watch.Repo, IdeaOps.Str(commit["hash"]) ?? "", IdeaOps.Str(commit["subject"]), tries, "a check failed");
+                    ctx.Logger.LogWarning("Ideas: {Short} in {Repo} is not read yet (a check failed, and {Tries} checks in a row did not answer); it is recorded unread and the cursor moves past it, so the later commits are read. It is listed in ideas.unread.",
+                        shortHash, watch.Repo, tries);
+                    return;
+                }
+                var retryIn = BackoffSeconds(tries);
+                ctx.Logger.LogWarning("Ideas: {Short} in {Repo} is not read yet (a check failed); attempt {Tries} of {Max}, and the next sweep tries it again in about {Seconds:0} s",
+                    shortHash, watch.Repo, tries, MaxTries, retryIn);
                 return; // the cursor stays: this commit, and every one after it, are still unseen
             }
         }
+    }
+
+    /// <summary>
+    /// The backoff after a failed check: the setting names the first interval, it doubles with every failed attempt
+    /// and caps at an hour — so a check that fails every sweep costs one attempt per backoff, not one per trigger.
+    /// 0 (the setting) means no backoff at all.
+    /// </summary>
+    private int BackoffSeconds(long tries)
+    {
+        var baseSeconds = Setting("ideas.commitRetrySeconds", DefaultRetrySeconds);
+        if (baseSeconds <= 0) return 0;
+        var shift = (int)Math.Min(tries - 1, 20);
+        return Math.Min(baseSeconds * (1 << shift), MaxBackoffSeconds);
+    }
+
+    /// <summary>When the next attempt at a repository that just failed <paramref name="tries"/> checks is due (null: now).</summary>
+    private DateTimeOffset? BackoffUntil(long tries, string? at)
+    {
+        var seconds = BackoffSeconds(tries);
+        if (seconds <= 0) return null;
+        if (DateTimeOffset.TryParse(at, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var when))
+            return when.AddSeconds(seconds);
+        return null; // an unreadable stamp: retry now rather than guess
     }
 
     // ------------------------------------------------------------------ one commit

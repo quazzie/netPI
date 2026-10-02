@@ -57,7 +57,7 @@ public sealed class IdeasRepository
     /// The storage shape this build writes. A database at a higher version is refused: a build that does not know a
     /// column must not read it as "absent" and write it back that way.
     /// </summary>
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 
     /// <summary>How long a running check owns its claim; an older claim is recoverable after a restart.</summary>
     public static readonly TimeSpan CheckClaimFor = TimeSpan.FromMinutes(10);
@@ -147,6 +147,24 @@ public sealed class IdeasRepository
         );
         """;
 
+    /// <summary>
+    /// Version 2 (idea-kooctc): a commit the sweep could not decide after its bound of attempts is recorded, so the
+    /// cursor can move past it without silently dropping the commit: it is listed (ideas.unread) and re-readable, and
+    /// later commits of the repository are read instead of being pinned behind it.
+    /// </summary>
+    private const string Migration2 = """
+        CREATE TABLE ideas_unread (
+            repo     TEXT NOT NULL,
+            hash     TEXT NOT NULL,
+            subject  TEXT NOT NULL DEFAULT '',
+            tries    INTEGER NOT NULL DEFAULT 0,
+            error    TEXT,
+            at       TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (repo, hash)
+        );
+        CREATE INDEX ideas_unread_at ON ideas_unread(at);
+        """;
+
     private readonly IDatabase _db;
     private readonly ILogger? _log;
     private readonly string _databaseName;
@@ -180,7 +198,7 @@ public sealed class IdeasRepository
             throw new IdeasStorageVersionException(
                 $"The Ideas tables in this database are at version {version}, and this build writes version {SchemaVersion}. " +
                 "Update NetPI: an older build must not write a storage it does not understand.");
-        db.Migrate(Scope, Migration1);
+        db.Migrate(Scope, Migration1, Migration2);
         return repository;
     }
 
@@ -727,13 +745,59 @@ public sealed class IdeasRepository
     public string? LastSeen(string repo) =>
         _db.QuerySingle("SELECT hash FROM ideas_repos WHERE repo = @r", new { r = repo }, x => x.GetStringOrNull("hash"));
 
-    /// <summary>Remember a repository's newest read commit, with the project it belongs to.</summary>
-    public void Remember(string repo, string? hash, string? projectId = null, string? projectName = null, string? error = null) => _db.Execute(
-        "INSERT INTO ideas_repos (repo, project_id, project_name, hash, at, tries, error) VALUES (@r, @p, @n, @h, @at, 1, @e) " +
+    /// <summary>
+    /// Remember a repository's newest read commit, with the project it belongs to. A read that succeeded clears the
+    /// failure state: <c>tries</c> counts the failed attempts at the commit that was just handled, and they do not
+    /// carry over to the next one.
+    /// </summary>
+    public void Remember(string repo, string? hash, string? projectId = null, string? projectName = null) => _db.Execute(
+        "INSERT INTO ideas_repos (repo, project_id, project_name, hash, at, tries, error) VALUES (@r, @p, @n, @h, @at, 0, NULL) " +
         "ON CONFLICT(repo) DO UPDATE SET project_id = COALESCE(excluded.project_id, ideas_repos.project_id), " +
         "project_name = COALESCE(excluded.project_name, ideas_repos.project_name), hash = excluded.hash, at = excluded.at, " +
-        "tries = ideas_repos.tries + 1, error = excluded.error",
-        new { r = repo, p = (object?)projectId, n = (object?)projectName, h = (object?)hash, at = IdeaOps.Now(), e = (object?)Clip(error, 200) });
+        "tries = 0, error = NULL",
+        new { r = repo, p = (object?)projectId, n = (object?)projectName, h = (object?)hash, at = IdeaOps.Now() });
+
+    /// <summary>
+    /// The failure state of a repository's cursor: how many checks in a row failed at the next commit (0: healthy),
+    /// the last reason and when that was — what the sweep's backoff is computed from (idea-kooctc).
+    /// </summary>
+    public (long Tries, string? Error, string? At)? RepoFailure(string repo) =>
+        _db.QuerySingle("SELECT tries, error, at FROM ideas_repos WHERE repo = @r", new { r = repo },
+            r => (r.GetInt64("tries"), r.GetStringOrNull("error"), r.GetStringOrNull("at")));
+
+    /// <summary>
+    /// Record that the check on a repository's next commit failed, and return the attempt count. The count grows with
+    /// every failure and is cleared by a successful read (<see cref="Remember"/>), so it is the attempts at this one
+    /// commit: the sweep backs off with it, and a commit that cannot be decided is recorded unread once it reaches its
+    /// bound, instead of blocking every later commit of the repository (idea-kooctc).
+    /// </summary>
+    public int RecordCommitFailure(string repo, string? error)
+    {
+        var tries = _db.Scalar<long?>("SELECT tries FROM ideas_repos WHERE repo = @r", new { r = repo }) ?? 0;
+        _db.Execute(
+            "INSERT INTO ideas_repos (repo, project_id, project_name, hash, at, tries, error) VALUES (@r, NULL, NULL, NULL, @at, 1, @e) " +
+            "ON CONFLICT(repo) DO UPDATE SET at = excluded.at, tries = ideas_repos.tries + 1, error = excluded.error",
+            new { r = repo, at = IdeaOps.Now(), e = (object?)Clip(error, 200) });
+        return (int)tries + 1;
+    }
+
+    /// <summary>
+    /// Record a commit the sweep could not decide after its bound of attempts: the cursor has moved past it
+    /// (<see cref="Remember"/>), and the record stays, so the commit is seen (ideas.unread, the export) and later
+    /// commits are read instead of being blocked behind it forever (idea-kooctc).
+    /// </summary>
+    public void RecordUnread(string repo, string hash, string? subject, int tries, string? error) => _db.Execute(
+        "INSERT INTO ideas_unread (repo, hash, subject, tries, error, at) VALUES (@r, @h, @s, @t, @e, @at) " +
+        "ON CONFLICT(repo, hash) DO UPDATE SET subject = excluded.subject, tries = excluded.tries, error = excluded.error, at = excluded.at",
+        new { r = repo, h = hash, s = (object?)Clip(subject, 200), t = (long)tries, e = (object?)Clip(error, 200), at = IdeaOps.Now() });
+
+    /// <summary>Every commit recorded unread, newest first.</summary>
+    public List<JsonObject> Unread() => _db.Query(
+        "SELECT repo, hash, subject, tries, error, at FROM ideas_unread ORDER BY at DESC, repo, hash", null, r => new JsonObject
+        {
+            ["repo"] = r.GetString("repo"), ["hash"] = r.GetString("hash"), ["subject"] = r.GetString("subject"),
+            ["tries"] = r.GetInt64("tries"), ["error"] = r.GetStringOrNull("error"), ["at"] = r.GetString("at"),
+        });
 
     /// <summary>
     /// Anchor a repository this plugin has never read at HEAD — and only then. A stored cursor is the progress made
@@ -747,9 +811,17 @@ public sealed class IdeasRepository
             new { r = repo, p = (object?)projectId, n = (object?)projectName, h = hash, at = IdeaOps.Now() });
     }
 
-    /// <summary>Forget repositories nothing has read for a while, so the table does not grow with deleted projects.</summary>
-    public int ForgetStaleRepos(int keepDays) =>
-        _db.Execute("DELETE FROM ideas_repos WHERE at < @cutoff", new { cutoff = StampOf(DateTimeOffset.UtcNow.AddDays(-keepDays)) });
+    /// <summary>
+    /// Forget repositories nothing has read for a while, so the table does not grow with deleted projects — and the
+    /// unread records of the repositories that go with them, so the two tables cannot drift apart.
+    /// </summary>
+    public int ForgetStaleRepos(int keepDays)
+    {
+        var cutoff = StampOf(DateTimeOffset.UtcNow.AddDays(-keepDays));
+        _db.Execute("DELETE FROM ideas_unread WHERE at < @cutoff", new { cutoff });
+        _db.Execute("DELETE FROM ideas_unread WHERE repo NOT IN (SELECT repo FROM ideas_repos)");
+        return _db.Execute("DELETE FROM ideas_repos WHERE at < @cutoff", new { cutoff });
+    }
 
     // ------------------------------------------------------------------ imports and metadata
 
