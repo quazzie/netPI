@@ -58,15 +58,18 @@
   }
 
   async function remove() {
+    // The dialog's own id (captured now: onclose() below nulls openId, which flows back into this prop,
+    // and the remove must still target the agent it was opened for)
+    const idToRemove = id;
     const ok = await confirmDialog({
-      title: `Remove the agent "${id}"?`,
+      title: `Remove the agent "${idToRemove}"?`,
       message: 'Chats on it take another agent on its model; with none, they stop with a notice until you choose one.',
       confirmLabel: 'Remove',
       danger: true,
     });
     if (!ok) return;
     onclose?.();
-    await setSetting(`agents.${id}`, null);
+    await setSetting(`agents.${idToRemove}`, null);
   }
 </script>
 

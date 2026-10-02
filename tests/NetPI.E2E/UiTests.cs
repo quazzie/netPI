@@ -86,6 +86,43 @@ public static class UiTests
             Check.Equal(0, proc.ExitCode, "pin exit code; stderr: " + err);
             Env.Log($"screenshots: {outDir}");
         }, 120);
+        r.Add("ui.remove-agent", "ui: settings → agents → remove agent — a confirmed removal removes the agent from the list and the settings document", async () =>
+        {
+            // Unique per run: a shared server (shards, -Repeat) keeps settings from earlier runs, so a fixed id
+            // could collide with a leftover. The C# side seeds it; the script drives the UI and cleans up after.
+            var agent = $"e2e-rm-{Guid.NewGuid().ToString("N")[..6]}";
+            await env.Rpc("settings.set", new { path = $"agents.{agent}", value = new { model = CoreTests.Qwen, use = "removed by the ui.remove-agent test" } });
+            try
+            {
+                var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "remove-agent.mjs");
+                var outDir = env.ScreenshotDir;
+                var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+                foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--agent", agent, "--out", outDir })
+                    psi.ArgumentList.Add(a);
+                using var proc = Process.Start(psi)!;
+                var stdout = proc.StandardOutput.ReadToEndAsync();
+                var stderr = proc.StandardError.ReadToEndAsync();
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+                try { await proc.WaitForExitAsync(cts.Token); }
+                catch (OperationCanceledException) { if (!proc.HasExited) proc.Kill(true); throw new AssertException("ui remove-agent timed out"); }
+                var output = await stdout;
+                var err = await stderr;
+                foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+                var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
+                Check.True(json is not null, "remove-agent output: " + output + err);
+                using var d = JsonDocument.Parse(json!);
+                foreach (var line in d.RootElement.Arr("dbg").Select(e => e.GetString())) Console.WriteLine("      [dbg] " + line);
+                var failedChecks = d.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
+                Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
+                    + (d.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", d.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
+                Check.Equal(0, proc.ExitCode, "remove-agent exit code; stderr: " + err);
+                Env.Log($"screenshots: {outDir}");
+            }
+            finally
+            {
+                await env.Rpc("settings.set", new { path = $"agents.{agent}", value = (object?)null });
+            }
+        }, 120);
     }
 
     /// <summary>Two ideas in the session's project, so the smoke can check the calm overview: status groups, one line per
