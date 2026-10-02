@@ -29,22 +29,131 @@ public static class EventBusTests
             Check.True(seen.Zip(seen.Skip(1)).All(p => p.Second.Seq == p.First.Seq + 1), "consecutive seq");
         });
 
-        r.Add("bus: exact, prefix and * patterns; async handlers; failing handler isolation", async () =>
+        r.Add("bus: exact, prefix and * patterns; async handlers; a failing handler only stops its own line", async () =>
         {
             await using var bus = new EventBus(NullLogger.Instance);
-            var log = new List<string>();
-            using var a = bus.Subscribe("agent.status", e => log.Add("exact:" + e.Type));
-            using var b = bus.Subscribe("agent.*", e => log.Add("prefix:" + e.Type));
-            using var c = bus.Subscribe("*", e => log.Add("all:" + e.Type));
-            using var d = bus.Subscribe("agent.status", _ => throw new InvalidOperationException("handler bug"));
-            using var e1 = bus.SubscribeAsync("agent.status", async e => { await Task.Delay(5); log.Add("async:" + e.Type); });
+            var exact = new List<string>(); var prefix = new List<string>(); var all = new List<string>();
+            var asyncSeen = new List<string>(); var failures = 0;
+            using var a = bus.Subscribe("agent.status", e => exact.Add(e.Type));
+            using var b = bus.Subscribe("agent.*", e => prefix.Add(e.Type));
+            using var c = bus.Subscribe("*", e => all.Add(e.Type));
+            using var d = bus.Subscribe("agent.status", _ => { failures++; throw new InvalidOperationException("handler bug"); });
+            using var e1 = bus.SubscribeAsync("agent.status", async e => { await Task.Delay(5); asyncSeen.Add(e.Type); });
             bus.Publish("agent.status");
             bus.Publish("agentx");
             bus.Publish("agent");
             bus.Publish("agent.queue.more");
             await bus.FlushAsync();
-            Check.Equal("exact:agent.status,prefix:agent.status,all:agent.status,async:agent.status,all:agentx,all:agent,prefix:agent.queue.more,all:agent.queue.more",
-                string.Join(",", log));
+            // Each subscriber sees exactly its own events, in publish order. The relative order across
+            // subscribers is no longer a contract: one stuck handler must not hold the others back.
+            Check.Equal("agent.status", string.Join(",", exact));
+            Check.Equal("agent.status,agent.queue.more", string.Join(",", prefix));
+            Check.Equal("agent.status,agentx,agent,agent.queue.more", string.Join(",", all));
+            Check.Equal("agent.status", string.Join(",", asyncSeen));
+            Check.Equal(1, failures);
+        });
+
+        r.Add("bus: a wedged subscriber only holds its own queue; the others keep flowing", async () =>
+        {
+            await using var bus = new EventBus(NullLogger.Instance);
+            var started = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            var fastSeen = new List<int>();
+            using var _ = bus.Subscribe("t", e => { started.Set(); release.Wait(5000); });   // wedges on its worker
+            using var fast = bus.Subscribe("t", e => fastSeen.Add((int)e.Data!));
+            for (var i = 1; i <= 10; i++) bus.Publish("t", i);
+            Check.True(started.Wait(5000), "the wedged subscriber started its handler");
+            await WaitFor(() => fastSeen.Count == 10, "the fast subscriber saw every event while the other is wedged");
+            release.Set();
+            await bus.FlushAsync();
+            Check.Equal(10, fastSeen.Count);
+        });
+
+        r.Add("bus: a subscriber that falls behind drops for itself only, and says so", async () =>
+        {
+            var log = new CapturingLogger();
+            await using var bus = new EventBus(log, queueCapacity: 32);
+            var started = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            var slowSeen = new List<int>(); var fastSeen = new List<int>();
+            using var _ = bus.Subscribe("t", e => { if (slowSeen.Count == 0) { started.Set(); release.Wait(5000); } slowSeen.Add((int)e.Data!); });
+            using var fast = bus.Subscribe("t", e => fastSeen.Add((int)e.Data!));
+            for (var i = 1; i <= 50; i++)
+            {
+                bus.Publish("t", i);
+                await Task.Delay(2);   // at a pace the fast line keeps up with; the wedged one cannot
+            }
+            Check.True(started.Wait(5000), "the slow subscriber started");
+            release.Set();
+            await bus.FlushAsync();
+            Check.Equal(50, fastSeen.Count, "the fast subscriber saw everything: it is not stopped by the other");
+            Check.True(slowSeen.Count < 50, "the slow one missed what it could not hold while wedged: " + slowSeen.Count);
+            Check.True(bus.Dropped >= 1, "the drops are counted");
+            Check.True(log.Lines.Any(l => l.Contains("dropping") && l.Contains("'t'")), "and the drop is logged, naming the subscription: " + log.Dump());
+        });
+
+        r.Add("bus: FlushAsync is a barrier: it completes when every subscriber has processed what came before it", async () =>
+        {
+            await using var bus = new EventBus(NullLogger.Instance);
+            var slow = new List<int>();
+            var started = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            using var _ = bus.Subscribe("t", e =>
+            {
+                slow.Add((int)e.Data!);
+                if (slow.Count == 1) { started.Set(); release.Wait(5000); }   // hold the first event
+            });
+            bus.Publish("t", 1);
+            bus.Publish("t", 2);
+            Check.True(started.Wait(5000), "the subscriber started on the first event");
+            var flushed = bus.FlushAsync();
+            await Task.Delay(100);
+            Check.False(flushed.IsCompleted, "the flush waits for the subscriber still inside the first event");
+            release.Set();
+            await flushed;
+            Check.Equal("1,2", string.Join(",", slow), "and then it saw everything, in order");
+        });
+
+        r.Add("bus: a fast line does not complete the flush before the marker reaches a line that cannot hold it yet", async () =>
+        {
+            await using var bus = new EventBus(NullLogger.Instance, queueCapacity: 4);
+            var bWoke = new ManualResetEventSlim();
+            var released = new ManualResetEventSlim();
+            var bRan = 0;
+            using var b = bus.Subscribe("t", e =>
+            {
+                Interlocked.Increment(ref bRan);
+                if (!bWoke.IsSet) bWoke.Set();
+                released.Wait(5000);   // wedge: this line stops, and its queue of 4 fills behind it
+            });
+            using var a = bus.Subscribe("t", e => { });   // a fast line: it passes the marker early and must not end the flush for b
+            for (var i = 1; i <= 10; i++) bus.Publish("t", i);   // b wedges; its queue fills while the marker cannot fit
+            Check.True(bWoke.Wait(5000), "b is wedged with a full queue");
+            var flush = bus.FlushAsync();
+            await Task.Delay(300);   // plenty for a fast line to pass the marker
+            Check.False(flush.IsCompleted, "the flush waits for b to receive its marker, even though a has long passed it");
+            released.Set();
+            await flush.WaitAsync(TimeSpan.FromSeconds(5));   // it does come back once b can take the marker
+            Check.True(bRan >= 1, "b ran (it is the line the flush waited for): " + bRan);
+        });
+
+        r.Add("bus: disposing a subscription lets its worker finish what was already queued", async () =>
+        {
+            await using var bus = new EventBus(NullLogger.Instance);
+            var seen = new List<int>();
+            var inside = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            var sub = bus.Subscribe("t", e =>
+            {
+                seen.Add((int)e.Data!);
+                if (seen.Count == 1) { inside.Set(); release.Wait(5000); }   // hold the first event: 2 and 3 queue behind it
+            });
+            for (var i = 1; i <= 3; i++) bus.Publish("t", i);
+            Check.True(inside.Wait(5000), "the worker is inside the first event, with two queued behind it");
+            sub.Dispose();
+            release.Set();
+            await bus.FlushAsync();
+            await WaitFor(() => seen.Count == 3, "the worker drained what was queued: " + string.Join(",", seen));
         });
 
         r.Add("bus: disposing a subscription is idempotent and stops delivery", async () =>
@@ -62,7 +171,7 @@ public static class EventBusTests
             Check.Equal(0, bus.SubscriberCount);
         });
 
-        r.Add("bus: Activity names the handler the dispatcher is inside, and says nothing between handlers", async () =>
+        r.Add("bus: Activity names the handler a subscriber's worker is inside, and says nothing between handlers", async () =>
         {
             await using var bus = new EventBus(NullLogger.Instance);
             var inside = new ManualResetEventSlim();
@@ -83,7 +192,7 @@ public static class EventBusTests
             Check.Equal(1L, after.Delivered, "one event delivered");
         });
 
-        r.Add("watchdog: a handler that holds the bus is named in the log, and its release is logged", async () =>
+        r.Add("watchdog: a wedged handler is named in the log with its own queue depth, and its release is logged", async () =>
         {
             var log = new CapturingLogger();
             await using var bus = new EventBus(NullLogger.Instance);
@@ -94,12 +203,12 @@ public static class EventBusTests
             bus.Publish("agent.status");
             bus.Publish("agent.status");
             Check.True(inside.Wait(5000), "the handler started");
-            await WaitFor(() => log.Has("inside the handler 'agent.status' on 'agent.status'"), "a stall report naming the handler");
-            Check.True(log.Has("1 event(s) wait behind it"), "it says how many events wait: " + log.Dump());
+            await WaitFor(() => log.Has("handler 'agent.status' has been running"), "a stall report naming the handler: " + log.Dump());
+            Check.True(log.Has("1 event(s) wait in its queue"), "it says how deep that subscription's queue is: " + log.Dump());
             release.Set();
-            await WaitFor(() => log.Has("left the handler it was stuck in"), "the release is logged");
+            await WaitFor(() => log.Has("handler it was stuck in came back"), "the release is logged");
             await bus.FlushAsync();
-            var reports = log.Lines.Count(l => l.Contains("inside the handler"));
+            var reports = log.Lines.Count(l => l.Contains("has been running"));
             Check.Equal(1, reports, "one report for one episode, not one per tick: " + log.Dump());
         });
 
@@ -145,7 +254,7 @@ public static class EventBusTests
             Check.True(log.Has("a thread holds it and is not coming back"), "with what it means: " + log.Dump());
             release.Set();
             holder.Join(5000);
-            await WaitFor(() => log.Has("The database gate is free again"), "its release is reported: " + log.Dump());
+            await WaitFor(() => log.Has("The database gate is free again"), "its release is logged: " + log.Dump());
             Check.Equal(1, log.Lines.Count(l => l.Contains("has not been free for")), "one report for the episode: " + log.Dump());
         });
 
@@ -177,7 +286,6 @@ public static class EventBusTests
             Check.Equal(1, reports.Count, "one report, not one per slow call: " + log.Dump());
             Check.Contains(reports[0], "'laggy.*'", "it names the subscription");
             Check.Contains(reports[0], "'laggy.one'", "and the event it was slow on");
-            Check.Contains(reports[0], "everything behind it", "and what that costs");
             Check.False(log.Lines.Any(l => l.Contains("'quick.*'")), "a fast handler is never named");
         });
 
@@ -231,4 +339,3 @@ internal sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger
         lock (_lines) _lines.Add(formatter(state, exception));
     }
 }
-

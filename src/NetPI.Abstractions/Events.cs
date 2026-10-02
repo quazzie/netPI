@@ -38,7 +38,9 @@ public interface IEventBus
 
     /// <summary>
     /// Subscribe to events. Pattern: exact type (<c>agent.status</c>), prefix wildcard (<c>agent.*</c>) or <c>*</c>.
-    /// Handlers run on the bus dispatcher in publish order; keep them fast.
+    /// Each subscriber gets its own line: one event at a time, in publish order, on its own worker. Keep handlers fast
+    /// — a slow one holds only its own line (and drops for itself if it falls far enough behind), but it is still the
+    /// one doing the waiting. What one event means to *different* subscribers in relative order is not a contract.
     /// </summary>
     IDisposable Subscribe(string pattern, Action<BusEvent> handler);
 

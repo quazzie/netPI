@@ -4,10 +4,10 @@ using Microsoft.Extensions.Logging;
 namespace NetPI.Host.Events;
 
 /// <summary>
-/// Says so, in the log, when the process stops making progress: the event bus inside one handler for too long (delivery is
-/// one task, so everything behind it waits, the UI fan-out included), the bus not delivering with events queued, the
-/// thread pool not starting work that was queued to it (every blocked call and every RPC then waits too), or the database gate
-/// that nothing can take (every statement of the process goes through it: a deadlock on it freezes all of them).
+/// Says so, in the log, when the process stops making progress: a subscriber's handler running too long (its own
+/// queue — and only it — falls behind), the bus not delivering with events queued, the thread pool not starting work
+/// that was queued to it (every blocked call and every RPC then waits too), or the database gate that nothing can take
+/// (every statement of the process goes through it: a deadlock on it freezes all of them).
 /// <para>
 /// It runs on a thread of its own, never on the pool: a watchdog that needs the thing it watches goes quiet exactly when it
 /// is needed. It only reads counters, logs on the edge of a stall (and now and then while it lasts) and again when it ends,
@@ -60,11 +60,14 @@ internal sealed class StallWatchdog : IDisposable
             try
             {
                 var a = _bus.Activity();
-                // one handler holding the dispatcher
+                // one handler holding its subscriber's line for too long
                 Report(ref _handler, a.Pattern is not null && a.Elapsed >= _threshold,
-                    () => $"The event bus has been inside the handler '{a.Pattern}' on '{a.Type}' for {a.Elapsed.TotalSeconds:0.#}s; " +
-                          $"{Math.Max(0, a.Backlog - 1)} event(s) wait behind it, and so does everything that listens to them (the UI included)",
-                    "The event bus left the handler it was stuck in");
+                    () => $"Event handler '{a.Pattern}' has been running for {a.Elapsed.TotalSeconds:0.#}s on '{a.Type}'; {a.Backlog} event(s) wait in its queue (only it is delayed, the other subscribers keep receiving)",
+                    "The handler it was stuck in came back");
+
+                // a flush that should be back by now: who is holding its marker
+                var stale = _bus.StaleFlush();
+                if (stale is not null) _log.LogWarning("{Stale}", stale);
 
                 // events queued and none delivered, with no handler to blame: the dispatcher itself is not running
                 if (a.Delivered != delivered || a.Backlog == 0) { delivered = a.Delivered; deliveredAt = Stopwatch.GetTimestamp(); }

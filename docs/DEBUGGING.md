@@ -114,18 +114,29 @@ web_fetch (plugin reload netpi.tools.web).` — and the diagnostics plugin recor
 
 When nothing is answering, `diag` cannot say why (it is an RPC like any other), so the host's **stall watchdog**
 (`src/NetPI.Host/Events/StallWatchdog.cs`) writes it in the log, from a thread of its own that never waits for the thread
-pool. Five things; the stalls are logged when they start (5 s), every 30 s while it lasts, and again when it ends:
+pool. A stall is logged when it starts (5 s), every 30 s while it lasts, and again when it ends; the bus itself says so
+when a line drops or the input ceiling is hit:
 
-- `The event bus has been inside the handler '<pattern>' on '<type>' for N s; M event(s) wait behind it` — delivery is one
-  task, so one handler that never returns holds back every later event, the UI fan-out included. The pattern and the event
-  name the culprit. (An async handler is let go of after 30 s with its own `Event handler … is stuck` error; a sync one
-  cannot be, which is why this one exists.)
-- `Event handler '<pattern>' is slow: N call(s) took over 250 ms since the last report, the slowest M ms on '<type>'` — not a stall,
-  but the reason a chat "feels laggy" when the model is not: delivery is one event at a time, so a handler that takes 400 ms holds
-  every event behind it (the UI's included) for 400 ms. Reported at once and then at most every 30 s per subscription, with the
-  calls since. A sync handler that does database work is the usual one.
-- `The event bus has not delivered anything … with N event(s) queued and no handler running` — the dispatcher is not being
-  scheduled at all.
+- `Event handler '<pattern>' has been running for N s on '<type>'; M event(s) wait in its queue (only it is delayed, the other
+  subscribers keep receiving)` — delivery is one worker per subscriber, so a handler that never returns holds back only its own
+  subscriber's queue; the others (the UI fan-out included) keep flowing. The pattern and the event name the culprit. (An async
+  handler is let go of after 30 s with its own `Event handler … is stuck` error; a sync one cannot be, which is why this one
+  exists. The only thing a wedged handler still holds is a `FlushAsync` waiting for its line — see the flush line below.)
+- `A flush has not completed for N s; M line(s) have not passed its marker; …` — a flush (`events.flush`, a test's end-of-test
+  sync, a plugin unload) waits for every subscriber to pass a marker. The log names who holds it: which line is inside a handler
+  (and for how long) or has events queued — or says so when no line has work and the marker simply never reached M lines,
+  which is the shape of a lost marker rather than a slow handler.
+- `Event handler '<pattern>' is slow: N call(s) took over 250 ms since the last report, the slowest M ms on '<type>'. Only its
+  own line waited for them; the other subscribers kept flowing` — not a stall, but the reason a chat "feels laggy" when the model
+  is not: a handler that takes 400 ms delays only its own subscriber (and only the flushes that wait for it). Reported at once
+  and then at most every 30 s per subscription, with the calls since. A sync handler that does database work is the usual one.
+- `Event handler '<pattern>' is falling behind: it is dropping events (its queue of N is full)` — a subscriber slower than the
+  bus: its queue (2048 events) filled, and the bus keeps flowing while it drops for itself. Only it is affected; the drop is
+  counted and this is said at most once per 30 s per line.
+- `The event bus has not delivered anything … with N event(s) queued and no handler running` — the dispatcher itself is not
+  being scheduled.
+- `The event bus input is full: dropped an event of type '<type>'` — last-resort ceiling: 65536 events ahead of the dispatcher.
+  If you see it, the dispatcher is effectively stopped; the other lines above say where.
 - `The thread pool has not started a queued work item for N s (threads, pending items, completed)` — every pool thread is
   blocked (usually a synchronous wait on async work), so no RPC, event or continuation can run until one frees up.
 - `The database gate has not been free for N s` — every statement of the process runs under one lock; a thread that holds it and
