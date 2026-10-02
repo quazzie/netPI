@@ -187,6 +187,26 @@ public static class EventBusTests
             finally { release.Set(); }
         });
 
+        r.Add("bus: a completed flush is never reported as stale, no matter how long ago it started", async () =>
+        {
+            await using var bus = new EventBus(NullLogger.Instance, staleFlushAfter: TimeSpan.FromMilliseconds(200));
+            var started = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            using var _ = bus.Subscribe("t", e => { started.Set(); release.Wait(5000); });   // wedged inside its handler
+            bus.Publish("t");
+            Check.True(started.Wait(5000), "the subscriber is inside its handler");
+            var flush = bus.FlushAsync();   // its marker waits on the wedged line
+            await Task.Delay(400);         // well past the stale threshold: while it lasts, it is named
+            Check.True(bus.StaleFlush() is not null, "the wedged flush is reported while it lasts: " + bus.StaleFlush());
+            release.Set();
+            await flush.WaitAsync(TimeSpan.FromSeconds(5));
+            for (var i = 0; i < 5; i++)
+            {
+                Check.Equal(null, bus.StaleFlush(), "a completed flush is never reported, however long ago it started");
+                await Task.Delay(50);
+            }
+        });
+
         r.Add("bus: disposing a subscription is idempotent and stops delivery", async () =>
         {
             await using var bus = new EventBus(NullLogger.Instance);

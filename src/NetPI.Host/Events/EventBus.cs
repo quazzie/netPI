@@ -40,7 +40,7 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     private readonly Channel<object> _queue;
     private readonly ILogger _log;
     private readonly int _queueCapacity;
-    private readonly TimeSpan _slowAfter, _slowEvery;
+    private readonly TimeSpan _slowAfter, _slowEvery, _staleAfter;
     private readonly Lock _subsLock = new();
     private readonly Lock _ringLock = new();
     private readonly BusEvent?[] _ring = new BusEvent?[RingSize];
@@ -59,11 +59,12 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     private readonly List<FlushMarker> _flushes = [];
     private readonly Lock _flushLock = new();
 
-    public EventBus(ILogger log, TimeSpan? slowHandler = null, TimeSpan? slowReportEvery = null, int? queueCapacity = null, int? inputCapacity = null)
+    public EventBus(ILogger log, TimeSpan? slowHandler = null, TimeSpan? slowReportEvery = null, int? queueCapacity = null, int? inputCapacity = null, TimeSpan? staleFlushAfter = null)
     {
         _log = log;
         _slowAfter = slowHandler ?? SlowHandler;
         _slowEvery = slowReportEvery ?? SlowReportEvery;
+        _staleAfter = staleFlushAfter ?? TimeSpan.FromSeconds(5);
         _queueCapacity = queueCapacity ?? DefaultQueueCapacity;
         _queue = Channel.CreateBounded<object>(new BoundedChannelOptions(inputCapacity ?? DefaultInputCapacity) { SingleReader = true });
         _dispatcher = Task.Run(DispatchLoopAsync);
@@ -84,6 +85,7 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
     public BusActivity Activity()
     {
         var best = -1L;
+        var bestSince = 0L;
         string? type = null, pattern = null;
         var depth = 0;
         foreach (var s in Volatile.Read(ref _subs))
@@ -94,6 +96,7 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
             if (ts - since > best)
             {
                 best = ts - since;
+                bestSince = since;
                 type = s.InType;
                 pattern = s.Pattern;
                 depth = s.Depth;
@@ -101,7 +104,7 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
         }
         return pattern is null
             ? new BusActivity(null, null, TimeSpan.Zero, Interlocked.Read(ref _delivered), Backlog)
-            : new BusActivity(type, pattern, TimeSpan.FromTicks(best), Interlocked.Read(ref _delivered), depth);
+            : new BusActivity(type, pattern, Stopwatch.GetElapsedTime(bestSince), Interlocked.Read(ref _delivered), depth);
     }
 
     public void Publish(BusEvent evt)
@@ -161,14 +164,15 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
         }
         catch (ChannelClosedException) { }
         if (!wrote) marker.Done.TrySetResult();   // the bus is going away: nothing is left to wait for
-        _ = marker.Done.Task.ContinueWith(f => { lock (_flushLock) _flushes.RemoveAll(m => ReferenceEquals(m, f)); },
+        _ = marker.Done.Task.ContinueWith(_ => { lock (_flushLock) _flushes.Remove(marker); },
             TaskContinuationOptions.ExecuteSynchronously);
         await marker.Done.Task.ConfigureAwait(false);   // done when every live line has passed the marker
     }
 
     /// <summary>
-    /// A flush that should be back by now (5 s and counting), with who holds it: which lines are inside a handler or
-    /// have work queued behind the marker — and the saying a stalled server leaves behind instead of an empty log.
+    /// A flush that should be back by now (past the stale threshold, 5 s by default), with who holds it: which lines
+    /// are inside a handler or have work queued behind the marker — and the saying a stalled server leaves behind
+    /// instead of an empty log. A flush that has come back is never named, however long ago it started.
     /// The watchdog logs it once per flush and then at most once per 10 s.
     /// </summary>
     public string? StaleFlush()
@@ -178,8 +182,9 @@ internal sealed class EventBus : IEventBus, IAsyncDisposable
         {
             foreach (var f in _flushes)
             {
+                if (f.Done.Task.IsCompleted) continue;   // coming back: it leaves the list and is not a stall
                 var age = Stopwatch.GetElapsedTime(f.Started);
-                if (age < TimeSpan.FromSeconds(5)) continue;
+                if (age < _staleAfter) continue;
                 if (oldest is null || age > Stopwatch.GetElapsedTime(oldest.Started)) oldest = f;
             }
         }
