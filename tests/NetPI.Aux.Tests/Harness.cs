@@ -358,6 +358,11 @@ public sealed class FakeSessionStore : ISessionStore
     public void DeleteProject(string id) => Projects.RemoveAll(p => p.Id == id);
 
     public IReadOnlyList<SessionInfo> ListSessions(SessionQuery query) => Sessions;
+    /// <summary>The exact answer, like the real store: every kind of session, no list window, archived opt-in, and the
+    /// in-memory (message-less) sessions included — they bind the same way and must count the same.</summary>
+    public IReadOnlyList<string> SessionIdsUsingWorkspace(string workspaceId, bool includeArchived = false) =>
+        Sessions.Where(s => string.Equals(s.WorkspaceId, workspaceId, StringComparison.Ordinal) && (includeArchived || !s.Archived))
+            .Select(s => s.Id).ToList();
     public SessionInfo? GetSession(string id) => Sessions.FirstOrDefault(s => s.Id == id);
     public SessionInfo CreateSession(SessionInfo template)
     {
@@ -441,6 +446,9 @@ public sealed class FakeModelCatalog : IModelCatalog
     public Func<ModelRequest, CancellationToken, Task<ChatMessage>>? AsyncResponder { get; set; }
     /// <summary>Explicit second-pass verification script, separate from draft generation.</summary>
     public Func<ModelRequest, ChatMessage>? VerifierResponder { get; set; }
+    /// <summary>When set, StreamAsync serves this instead of throwing: a scripted answer as stream events, so a test
+    /// can drive the runner's streaming path (the real loop).</summary>
+    public Func<ModelRequest, CancellationToken, IAsyncEnumerable<ModelStreamEvent>>? StreamResponder { get; set; }
     public List<ModelInfo> Models { get; } = [];
     public ConcurrentQueue<ModelRequest> Requests { get; } = new();
     public Func<ModelRequest, ChatMessage> Responder { get; set; } = _ => new ChatMessage
@@ -459,7 +467,12 @@ public sealed class FakeModelCatalog : IModelCatalog
     public IReadOnlyList<ModelInfo> Cached => Models;
     public IModelProvider? GetProvider(string providerId) => null;
     public IReadOnlyList<IModelProvider> Providers => [];
-    public IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken ct) => throw new NotSupportedException();
+    public IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken ct)
+    {
+        Requests.Enqueue(request);
+        if (StreamResponder is { } responder) return responder(request, ct);
+        throw new NotSupportedException();
+    }
     public Task<ChatMessage> CompleteAsync(ModelRequest request, CancellationToken ct)
     {
         Requests.Enqueue(request);

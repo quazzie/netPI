@@ -148,6 +148,15 @@ public interface ISessionStore
     SessionInfo SetSessionProject(string sessionId, string? projectId);
     /// <summary>Working directory for a session: its workspace root when it is bound to one, else its project folder or the default workspace.</summary>
     string GetCwd(SessionInfo session);
+    /// <summary>
+    /// The ids of the sessions currently bound to <paramref name="workspaceId"/> — chats and subagents alike, and
+    /// message-less (transient) sessions as well: the exact answer to "what is bound to this workspace?", not a
+    /// page of <see cref="ListSessions"/>. Archived sessions are not counted by default: an archived session is not
+    /// working in its workspace, and retiring the workspace unbinds it (the session falls back to its project).
+    /// Pass <paramref name="includeArchived"/> to see them too.
+    /// </summary>
+    IReadOnlyList<string> SessionIdsUsingWorkspace(string workspaceId, bool includeArchived = false) =>
+        throw new NotSupportedException("This store does not answer the exact question; implement SessionIdsUsingWorkspace.");
 
     // Messages
     /// <summary>Append a message (assigns Id/Seq, publishes message.added).</summary>

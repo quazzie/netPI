@@ -153,13 +153,18 @@ public sealed class WorkspacePlugin : INetPiPlugin
         {
             var id = req.Required("id");
             var workspace = ctx.Services.Require<IWorkspaceStore>().GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
-            var (ok, error) = await provisioner.IntegrateAsync(workspace, req.Str("into"), ct).ConfigureAwait(false);
+            // The branch to merge and verify: the one the worktree is actually on. A record that has gone stale is
+            // refused before anything is merged, so a no-op merge can never be reported as merged and verified.
+            var (branch, problem) = provisioner.IntegrateBranch(workspace);
+            if (branch is null) throw new RpcException("integration_failed", problem);
+            var into = req.Str("into");
+            var (ok, error) = await provisioner.IntegrateAsync(workspace, into, ct).ConfigureAwait(false);
             if (!ok) throw new RpcException("integration_failed", error!);
             // Ancestry, not "the command said OK": the commit has to be an ancestor of the integration branch afterwards.
-            var merged = workspace.Branch is { Length: > 0 } branch &&
-                         provisioner.IsAncestor(workspace.Path, branch, req.Str("into") ?? provisioner.ProjectBranchOf(workspace) ?? "master");
-            return new { id, merged, verified = merged };
-        }, "Merge a workspace's branch into the project's branch, serialized per repository: { id, into? } → { id, merged, verified }");
+            var merged = provisioner.IsAncestor(workspace.Path, branch, into ?? provisioner.ProjectBranchOf(workspace) ?? "master");
+            return new { id, branch, merged, verified = merged };
+        }, "Merge a workspace's branch into the project's branch, serialized per repository: { id, into? } → { id, branch, merged, verified } " +
+           "(the worktree's actual branch, refused when the record has gone stale; merged/verified from an ancestry check after the merge)");
 
         ctx.Rpc.Register("workspaces.canRetire", (req, _) =>
         {

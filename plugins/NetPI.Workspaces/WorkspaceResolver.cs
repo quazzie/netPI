@@ -26,7 +26,13 @@ public sealed class WorkspaceResolver(IPluginContext ctx, IWorkspaceStore store,
 {
     /// <summary>How stale a resolved root may be before it is re-checked (a deleted worktree must not be used for minutes).</summary>
     private static readonly TimeSpan VerifyAfter = TimeSpan.FromSeconds(2);
-    private readonly Dictionary<string, (DateTime At, WorkspaceBinding? Binding)> _cache = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Keyed by workspace AND the session's project: the cross-repository check in <see cref="Validate"/> is
+    /// per-session, and a binding verified for one project's session must not be handed to another project's
+    /// session within the window (idea-bz0i1j) — the check is the only barrier to a session working in another
+    /// repository's checkout.
+    /// </summary>
+    private readonly Dictionary<(string Workspace, string? Project), (DateTime At, WorkspaceBinding? Binding)> _cache = new();
     private readonly object _gate = new();
 
     /// <summary>
@@ -42,13 +48,14 @@ public sealed class WorkspaceResolver(IPluginContext ctx, IWorkspaceStore store,
             throw new WorkspaceUnavailableException(
                 $"This session is bound to workspace {id}, which no longer exists. Bind a workspace that exists (sessions.setWorkspace), " +
                 "or unbind it to work in the project folder again. Nothing will be written to the project checkout instead.");
+        var key = (id, session.ProjectId);
         lock (_gate)
-            if (_cache.TryGetValue(id, out var hit) && DateTime.UtcNow - hit.At < VerifyAfter && hit.Binding is { } b)
+            if (_cache.TryGetValue(key, out var hit) && DateTime.UtcNow - hit.At < VerifyAfter && hit.Binding is { } b)
                 return b;
         var binding = Validate(session, workspace);
         lock (_gate)
         {
-            _cache[id] = (DateTime.UtcNow, binding);
+            _cache[key] = (DateTime.UtcNow, binding);
             if (_cache.Count > 256) _cache.Clear();
         }
         return binding;
@@ -121,10 +128,12 @@ public sealed class WorkspaceResolver(IPluginContext ctx, IWorkspaceStore store,
         w.Kind, w.OwnerSessionId, w.OwnerAgentId, w.Managed,
         Version: w.UpdatedAt.ToUnixTimeMilliseconds());
 
-    /// <summary>Forget the cached check of a workspace (after it was rewritten or removed).</summary>
+    /// <summary>Forget the cached check of a workspace (after it was rewritten or removed) — for every project's session it was cached for.</summary>
     public void Forget(string workspaceId)
     {
-        lock (_gate) _cache.Remove(workspaceId);
+        lock (_gate)
+            foreach (var key in _cache.Keys.Where(k => k.Workspace == workspaceId).ToList())
+                _cache.Remove(key);
     }
 
     public void ForgetAll()

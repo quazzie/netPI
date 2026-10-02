@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetPI.Runtime;
 using NetPI.Tools.Ssh;
 using NetPI.Workspaces;
 
@@ -29,15 +30,19 @@ public static class WorkspaceTests
         t.Add("workspaces: a non-git project gets a plain folder, with no git workflow", NonGitProject);
         t.Add("workspaces: a failed provisioning leaves no runnable workspace", FailedProvisioning);
         t.Add("workspaces: integrations into one branch serialize", IntegrationSerializes);
+        t.Add("workspaces: integrate verifies the branch the worktree is on, and refuses a stale record", IntegrateRefusesStaleRecord);
         t.Add("workspaces: cleanup refuses a dirty, unbound or running worktree and removes a merged one", CleanupSafety);
         t.Add("workspaces: a background process keeps its workspace busy", BackgroundProcessHoldsWorkspace);
+        t.Add("workspaces: retirement ignores an archived bound session; a live one still blocks", RetirementIgnoresArchived);
         t.Add("workspaces: the guard is per spelling: relative, absolute, .. and a symlink into another checkout", GuardSpellings);
         t.Add("workspaces: the guard reads arguments as the tools do: names, order, string-encoded arguments, an ssh download's destination", GuardArguments);
         t.Add("workspaces: ssh copy refuses a download into another checkout of the repository and allows one into the worker's own", SshDownloadRefused);
         t.Add("workspaces: the notice names the checkout, the branch and what a write outside it does", NoticeText);
         t.Add("workspaces: a switch asked for mid-batch is applied at the next model call", DeferredSwitch);
+        t.Add("workspaces: the switch is in the next model call's batch and guard, not one call later", SwitchVisibleToNextModelCall);
         t.Add("workspaces: every consumer agrees on the assigned root", ConsumersAgree);
         t.Add("workspaces: the identity changes with the binding, so a stale answer is recognizably stale", IdentityChanges);
+        t.Add("workspaces: the resolve cache is per project, so a cross-repository bind is refused inside the window", ResolveCacheIsPerProject);
     }
 
     // ------------------------------------------------------------------ the fixture
@@ -485,6 +490,64 @@ public static class WorkspaceTests
         return;
     }
 
+    /// <summary>
+    /// integrate merges and verifies the branch the worktree is actually on. If the worktree switched branches and
+    /// committed there, the recorded branch no longer holds the work — a no-op merge of it would still answer
+    /// merged and verified. The stale record is refused with both branches named, and a record without a branch
+    /// resolves the branch from git (idea-ui6o31).
+    /// </summary>
+    private static async Task IntegrateRefusesStaleRecord()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("integrate, stale record"); return; }
+        var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
+        var w = env.Provision("work", "ses_w");
+        Check.True(w.Ok, w.Error ?? "");
+        var record = store.GetWorkspace(w.Binding!.WorkspaceId)!;
+        var root = w.Binding.Root;
+
+        // The record's branch is current: the work merges into the project's branch and verifies.
+        env.Write(root, "ok.txt", "work");
+        Git_(root, "add", "-A");
+        Git_(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "on the record");
+        var (okFirst, errFirst) = await env.Provisioner.IntegrateAsync(store.GetWorkspace(record.Id)!);
+        Check.True(okFirst, errFirst ?? "");
+        Check.Contains(GitOut(env.ProjectPath, "log", "--format=%s") ?? "", "on the record");
+
+        // The worktree switches branches and commits there: the record is now stale.
+        Check.True(Git_(root, "switch", "-c", "drifted"));
+        env.Write(root, "drift.txt", "work off the record");
+        Git_(root, "add", "-A");
+        Git_(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "drifted");
+
+        // The refusal names both branches, and the drifted work is not merged and not verified.
+        var (ok, err) = await env.Provisioner.IntegrateAsync(store.GetWorkspace(record.Id)!);
+        Check.False(ok, "a stale record was integrated");
+        Check.Contains(err!, "drifted");
+        Check.Contains(err, record.Branch!);
+        var driftedHead = GitOut(root, "rev-parse", "HEAD")!;
+        Check.False(env.Provisioner.IsAncestor(root, driftedHead, "main"), "the drifted work was merged after all");
+        Check.NotContains(GitOut(env.ProjectPath, "log", "--format=%s") ?? "", "drifted");
+
+        // Through the RPC the same refusal comes back, with the answer never claiming a merge that did not include the work.
+        var ex = await Check.ThrowsAsync<RpcException>(
+            async () => await env.Ctx.RpcFake.InvokeAsync("workspaces.integrate", new { id = record.Id }));
+        Check.Equal("integration_failed", ex.Code);
+        Check.Contains(ex.Message, "drifted");
+        Check.Contains(ex.Message, record.Branch!);
+
+        // A record without a branch resolves the branch from git and merges the work that is actually on it.
+        var bare = store.CreateWorkspace(new WorkspaceInfo
+        {
+            Name = "bare", Path = root, ProjectId = env.Project.Id, Kind = "worktree",
+            RepoCommonDir = w.Binding.RepoCommonDir, Managed = true,
+        });
+        var (okBare, errBare) = await env.Provisioner.IntegrateAsync(bare);
+        Check.True(okBare, errBare ?? "");
+        Check.Contains(GitOut(env.ProjectPath, "log", "--format=%s") ?? "", "drifted");
+        Check.True(env.Provisioner.IsAncestor(root, driftedHead, "main"), "the work resolved from git is merged and verified");
+    }
+
     private static async Task CleanupSafety()
     {
         using var env = new Env();
@@ -560,6 +623,41 @@ public static class WorkspaceTests
         Check.False(ok);
         Check.Contains(why!, "running process");
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// What counts as "still bound" when a worktree may be removed: a live session (any kind) blocks, an archived
+    /// one does not — it is not working in the checkout, and deleting the workspace unbinds it. The decision is
+    /// said in the refusal so it is visible (idea-2jiez8).
+    /// </summary>
+    private static async Task RetirementIgnoresArchived()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("retirement, archived"); return; }
+        var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
+        var w = env.Provision("arch", "ses_arch");
+        Check.True(w.Ok, w.Error ?? "");
+        var record = store.GetWorkspace(w.Binding!.WorkspaceId)!;
+
+        // Clean and merged: the only question left is who is bound.
+        env.Write(w.Binding!.Root, "work.txt", "work");
+        Git_(w.Binding.Root, "add", "-A");
+        Git_(w.Binding.Root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "arch work");
+        Check.True((await env.Provisioner.IntegrateAsync(record)).Ok);
+
+        // Bound and archived: not working in the worktree, so it does not block the retirement.
+        var archived = env.Session("arch", record.Id);
+        env.Ctx.SessionsFake.UpdateSession(archived.Id, s => s.Archived = true);
+        var (ok, why) = env.Provisioner.CanRetire(store.GetWorkspace(record.Id)!);
+        Check.True(ok, why ?? "an archived bound session blocked the retirement");
+
+        // Bound and live: still blocks, and the reason says archived sessions do not count.
+        var live = env.Session("live", record.Id);
+        var (ok2, why2) = env.Provisioner.CanRetire(store.GetWorkspace(record.Id)!);
+        Check.False(ok2, "a live bound session did not block the retirement");
+        Check.Contains(why2!, "still bound");
+        Check.Contains(why2, live.Id);
+        Check.Contains(why2, "Archived");
     }
 
     private static Task GuardSpellings()
@@ -686,6 +784,101 @@ public static class WorkspaceTests
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// The tool's promise, watched end to end through the real model/tool loop: a switch requested while a batch
+    /// is running takes effect in the <em>next</em> model call — the very call after the batch, with its tools and its
+    /// guard resolving against the new checkout. The turn's root is settled before the hook pass, so without a
+    /// re-resolution after it (idea-y0i6gu) the promised call still works in the checkout the session just left,
+    /// and the "moved" notice arrives one call late.
+    /// </summary>
+    private static async Task SwitchVisibleToNextModelCall()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("switch, next model call"); return; }
+
+        // The real host registers the session store as a service (the tools ask for it by contract).
+        env.Ctx.Services.Register<ISessionStore>(env.Ctx.Sessions);
+
+        // Two checkouts of the project's repository: the session starts in "from" and switches to "to" mid-run.
+        var from = env.Provision("from", "ses_from");
+        Check.True(from.Ok, from.Error ?? "");
+        var to = env.Provision("to", "ses_to");
+        Check.True(to.Ok, to.Error ?? "");
+        var session = env.Ctx.SessionsFake.CreateSession(new SessionInfo
+        {
+            Title = "switcher", ProjectId = env.Project.Id, Model = "scripted/m",
+        });
+        var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
+        store.SetSessionWorkspace(session.Id, from.Binding!.WorkspaceId);   // what sessions.setWorkspace does
+
+        // The real loop: the runtime plugin's model/tool loop, the workspaces plugin's hooks and tool, and a write tool
+        // as the probe the switch has to land in.
+        new RuntimePlugin().StartAsync(env.Ctx, CancellationToken.None).GetAwaiter().GetResult();
+        env.Ctx.Tools.Register(new NetPI.Tools.Files.WriteTool(env.Ctx.Settings));
+        env.Ctx.ModelsFake.Models.Add(new ModelInfo { Provider = "scripted", Id = "m", ContextWindow = 100_000 });
+
+        var script = new Queue<ChatMessage>(new[]
+        {
+            // Batch 1: the switch, asked while its own batch runs — parked, promised for the next call.
+            T.Assistant("", T.Call("c1", "workspace", Json(new { action = "switch", id = to.Binding!.WorkspaceId }).GetRawText())),
+            // Batch 2: the promised call. Its write and its info must resolve in the new checkout.
+            T.Assistant("",
+                T.Call("c2", "write", Json(new { path = "probe.txt", content = "landed" }).GetRawText()),
+                T.Call("c3", "workspace", Json(new { action = "info" }).GetRawText())),
+            // Batch 3: done.
+            T.Assistant("done"),
+        });
+        env.Ctx.ModelsFake.StreamResponder = (_, _) => StreamOf(script.Dequeue());
+
+        var runtime = env.Ctx.Services.Get<IAgentRuntime>()!;
+        await runtime.SendAsync(session.Id, new UserInput { Text = "switch and write" });
+        for (var i = 0; i < 400 && runtime.GetBySession(session.Id)?.Status is AgentStatus.Running or AgentStatus.Queued or AgentStatus.Yielded; i++)
+            await Task.Delay(25);
+        var agent = runtime.GetBySession(session.Id)!;
+        Check.Equal(AgentStatus.Idle, agent.Status, "the run ended (not still busy)");
+        Check.Equal(null, agent.Error, agent.Error ?? "the run failed");
+
+        // The promised call's write landed in the new checkout — not in the one the session just left.
+        Check.True(File.Exists(Path.Combine(to.Binding.Root, "probe.txt")), "the next model call's write did not land in the new workspace");
+        Check.False(File.Exists(Path.Combine(from.Binding.Root, "probe.txt")), "the next model call's write landed in the workspace the session left");
+
+        // The info the same batch asked for describes the new root.
+        var info = env.Ctx.SessionsFake.Messages.SelectMany(m => m.ToolResults).First(r => r.CallId == "c3");
+        Check.Contains(info.Content, to.Binding.Root);
+        Check.NotContains(info.Content, from.Binding.Root);
+
+        // The move is announced in the promised call's context — the model is told where it is before it works there.
+        var requests = env.Ctx.ModelsFake.Requests.ToArray();
+        Check.Equal(3, requests.Length, "one call per batch; the restarted pass spent no model call");
+        var moved = requests[1].Messages.FirstOrDefault(m =>
+            m.Role == MessageRole.Notice && m.MetaString("kind") == "workspace"
+            && m.Text.Contains("moved to workspace", StringComparison.Ordinal));
+        Check.True(moved is not null, "the promised call's context does not say the session moved");
+        Check.Contains(moved!.Text, to.Binding.Root);
+        Check.True(requests[0].Messages.All(m => m.Text.Contains("moved to workspace", StringComparison.Ordinal) is false),
+            "the first call was still in the old workspace");
+    }
+
+    /// <summary>A scripted assistant message as the stream events the runner consumes.</summary>
+    private static IAsyncEnumerable<ModelStreamEvent> StreamOf(ChatMessage message)
+    {
+        message.Role = MessageRole.Assistant;
+        message.StopReason ??= message.ToolCalls.Any() ? "tool_use" : "stop";
+        var events = new List<ModelStreamEvent>();
+        foreach (var part in message.Parts)
+        {
+            if (part is TextPart { Text.Length: > 0 } text) events.Add(new TextDelta(text.Text));
+            else if (part is ToolCallPart call) events.Add(new ToolCallStarted(call.Id, call.Name));
+        }
+        events.Add(new StreamCompleted(message));
+        return Events(events);
+
+        static async IAsyncEnumerable<ModelStreamEvent> Events(List<ModelStreamEvent> list)
+        {
+            foreach (var e in list) yield return e;
+        }
+    }
+
     private static Task ConsumersAgree()
     {
         using var env = new Env();
@@ -727,6 +920,47 @@ public static class WorkspaceTests
         Check.Contains(env.Resolver.IdentityOf(plain), "project:");
         Check.Contains(env.Resolver.IdentityOf(plain), env.Project.Id);
         try { Directory.Delete(dir, true); } catch { }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// The resolver's 2-second cache is keyed by workspace AND the session's project: a session of another project,
+    /// bound to the same workspace, gets its own Validate pass — the cross-repository check — even inside the window
+    /// in which the workspace was just resolved for its own project. Keyed by id alone, the check would be skipped for
+    /// the window (or never, if that project's session resolved first) (idea-bz0i1j).
+    /// </summary>
+    private static Task ResolveCacheIsPerProject()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("resolve cache"); return Task.CompletedTask; }
+        var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
+
+        // A second repository, its own project, and a workspace of the first project's repository.
+        var otherRoot = Path.Combine(Path.GetDirectoryName(env.Root)!, "other-repo-" + Guid.NewGuid().ToString("N")[..6]);
+        try
+        {
+            Directory.CreateDirectory(otherRoot);
+            if (!Git_(otherRoot, "init", "-q", "-b", "main")) { Skip("resolve cache"); return Task.CompletedTask; }
+            File.WriteAllText(Path.Combine(otherRoot, "x.txt"), "x");
+            Git_(otherRoot, "add", "-A");
+            Git_(otherRoot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
+            var projectB = env.Ctx.SessionsFake.CreateProject("Other", otherRoot);
+
+            var wA = store.CreateWorkspace(new WorkspaceInfo { Name = "a", Path = env.ProjectPath, ProjectId = env.Project.Id, Kind = "attached" });
+            var sessionA = env.Session("a");
+            store.SetSessionWorkspace(sessionA.Id, wA.Id);
+            Check.Equal(env.ProjectPath, env.Resolver.CwdOf(sessionA));
+
+            // A session of the other project, bound to the first project's workspace (sessions.setWorkspace allows
+            // the binding; the resolver's check is the barrier). Inside the cache window: refused, not answered.
+            var sessionB = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "b", ProjectId = projectB.Id, WorkspaceId = wA.Id });
+            var ex = Check.Throws<WorkspaceUnavailableException>(() => env.Resolver.CwdOf(sessionB));
+            Check.Contains(ex.Message, "different repository");
+
+            // And the first project's session keeps its answer in the same window.
+            Check.Equal(env.ProjectPath, env.Resolver.CwdOf(sessionA));
+        }
+        finally { try { Directory.Delete(otherRoot, true); } catch { } }
         return Task.CompletedTask;
     }
 

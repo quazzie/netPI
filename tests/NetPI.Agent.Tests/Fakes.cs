@@ -290,6 +290,14 @@ public sealed class FakeSessionStore(IEventBus bus, string workspace) : ISession
                 .OrderByDescending(s => s.UpdatedAt).ToList();
     }
 
+    /// <summary>The exact answer, like the real store: every bound session, no list window, archived opt-in.</summary>
+    public IReadOnlyList<string> SessionIdsUsingWorkspace(string workspaceId, bool includeArchived = false)
+    {
+        lock (_gate)
+            return _sessions.Values.Where(s => s.WorkspaceId == workspaceId && (includeArchived || !s.Archived))
+                .Select(s => s.Id).ToList();
+    }
+
     public SessionInfo? GetSession(string id) { lock (_gate) return _sessions.GetValueOrDefault(id); }
 
     public SessionInfo CreateSession(SessionInfo template)
