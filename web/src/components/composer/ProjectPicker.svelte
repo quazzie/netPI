@@ -16,7 +16,9 @@
 
   const project = $derived(projectOf(session));
   const scope = $derived(workspaceOf(session));
-  const workspace = $derived(session?.workspaceId ? (scope?.workspaceId === session.workspaceId ? scope : null) : null);
+  // The workspace a chat is bound to is attached to its meta by the Workspaces plugin.
+  const boundId = $derived(session?.meta?.workspaceId);
+  const workspace = $derived(boundId ? (scope?.workspaceId === boundId ? scope : null) : null);
 
   // What the chat works in: the workspace root when it has one, else the project's folder.
   const root = $derived(workspace?.root ?? project?.path ?? null);
