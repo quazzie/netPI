@@ -18,12 +18,21 @@ public static class SchedulerTests
         t.Add("scheduler: agents.changed is debounced, and only sent on changes", Debounce);
         t.Add("scheduler: the wait queue has a cap and a longest wait (agents.queueMax/queueTimeoutSeconds)", QueueCapAndTimeout);
         t.Add("scheduler: by default a waiting run stays queued (no queue timeout)", QueueHasNoTimeoutByDefault);
+        t.Add("scheduler: a run waits for any of several agents and the first to free up takes it", LateBinding);
+        t.Add("scheduler: unassigned runs queue with the others by priority and arrival, and are cancelled, timed out and refused like them", LateBindingOrderAndEnds);
+        t.Add("scheduler: any agent: every agent that can take work, a free one first, the last one as the tie-break", AnyAgentCandidates);
+        t.Add("agents: a chat's run goes to the first agent on its model that frees up, not the one it was queued behind", RunsGoToTheFirstFreeAgent);
+        t.Add("agents: a chat on \"any\" runs on whichever agent is free and its model follows (agents.use any, agent_spawn any)", ChatsOnAnyAgent);
         t.Add("scheduler: stop fails waiters; runs survive a reload of the agents plugin", ReloadDuringWait);
         t.Add("scheduler: budget exceeded + usage.summary", Budget);
         t.Add("scheduler: runs without the agents plugin", NoAgentsPlugin);
     }
 
     private static AgentSlotRequest Req(string pool, string agent, int priority = 0) => new() { Key = pool, AgentId = agent, Priority = priority, Label = agent };
+
+    /// <summary>A run that may go to any of the pools: it waits in none of their queues.</summary>
+    private static AgentSlotRequest Any(string agent, int priority, params string[] pools) =>
+        new() { Key = pools[0], Candidates = pools, AgentId = agent, Priority = priority, Label = agent };
 
     private static async Task ThirdQueues()
     {
@@ -134,11 +143,13 @@ public static class SchedulerTests
         b1.Dispose();
         var la2 = await a2.WaitAsync(TimeSpan.FromSeconds(2));
 
-        // the scheduler's choice for a chat: its own agent on the model, else the least busy agent on the model
-        Check.Equal("a", s.ChooseAgent(TestHost.LocalModel(), "a"));
-        Check.Equal("b", s.ChooseAgent(TestHost.LocalModel(), null), "a is full");
-        Check.Equal("b", s.ChooseAgent(TestHost.LocalModel(), "elsewhere"));
-        try { s.ChooseAgent(TestHost.SoloModel(), null); throw new AssertException("expected CallRefusedException"); }
+        // the agents a run on the model may go to, best first: a free one before one that is not, then the one it last ran on,
+        // then the lightest load. The model serves two at once and both are busy, so neither agent is free right now (b has
+        // an instance, the model has none left): the preferred one first, and the run waits for whichever frees up first.
+        Check.Equal("a|b", string.Join("|", s.Candidates(TestHost.LocalModel(), "a")), "neither is free: the preferred one first");
+        Check.Equal("b|a", string.Join("|", s.Candidates(TestHost.LocalModel(), null)), "no preference: the lighter load first");
+        Check.Equal("b|a", string.Join("|", s.Candidates(TestHost.LocalModel(), "elsewhere")));
+        try { s.Candidates(TestHost.SoloModel(), null); throw new AssertException("expected CallRefusedException"); }
         catch (CallRefusedException ex) { Check.Contains(ex.Message, "No agent runs fake/solo."); }
 
         // switched off: new runs are refused at once, waiters are told
@@ -150,7 +161,7 @@ public static class SchedulerTests
         try { await s.AcquireAsync(Req("b", "B3"), CancellationToken.None); throw new AssertException("expected CallRefusedException"); }
         catch (CallRefusedException) { }
         Check.False(s.TryAcquire(Req("b", "B4"), out _));
-        Check.Equal("a", s.ChooseAgent(TestHost.LocalModel(), null), "an active agent first");
+        Check.Equal("a", string.Join("|", s.Candidates(TestHost.LocalModel(), null)), "only an agent that can take work");
         a1.Dispose();
         la2.Dispose();
         Check.Equal(0, s.Snapshot().Sum(p => p.Busy + p.Queued));
@@ -406,6 +417,245 @@ public static class SchedulerTests
         Check.True(s.Snapshot().Single(p => p.Key == "solo").Waiters.Count == 0, "the timed-out waiter is gone");
         a2.Dispose();
         Check.Equal(0, s.Snapshot().Sum(p => p.Busy + p.Queued));
+    }
+
+    private static async Task LateBinding()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 1 }"""));
+            x.Settings.SetQuiet("agents.b", J("""{ "model": "fake/local", "instances": 1 }"""));
+        }, plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
+        var a1 = await s.AcquireAsync(Req("a", "A1"), CancellationToken.None);
+        var b1 = await s.AcquireAsync(Req("b", "B1"), CancellationToken.None);
+
+        // both full: the run is in nobody's queue, and the agent that frees up first takes it (not the one it was listed first for)
+        var f = s.AcquireAsync(Any("F", 0, "a", "b"), CancellationToken.None).AsTask();
+        await Task.Delay(50);
+        Check.False(f.IsCompleted);
+        Check.Equal(1, s.Unassigned().Count, "it waits unassigned");
+        Check.Equal(0, s.Snapshot().Sum(p => p.Queued), "and in no agent's queue");
+        Check.Equal("F", s.Unassigned()[0].Label);
+        b1.Dispose();
+        var lf = await f.WaitAsync(TimeSpan.FromSeconds(2));
+        Check.Equal("b", lf.Key, "b freed up first, so b took it");
+        Check.Equal(0, s.Unassigned().Count);
+        Check.Equal(1, s.Snapshot().Single(p => p.Key == "b").Busy);
+
+        // a free agent is used at once, without waiting
+        lf.Dispose();
+        var now = await s.AcquireAsync(Any("G", 0, "a", "b"), CancellationToken.None);
+        Check.Equal("b", now.Key, "a is full, b is free");
+        Check.True(s.TryAcquire(Any("H", 0, "a", "b"), out var none) is false && none is null, "none free: TryAcquire says no");
+        now.Dispose();
+        a1.Dispose();
+        Check.Equal(0, s.Snapshot().Sum(p => p.Busy + p.Queued));
+    }
+
+    private static async Task LateBindingOrderAndEnds()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 1 }"""));
+            x.Settings.SetQuiet("agents.b", J("""{ "model": "fake/local", "instances": 1 }"""));
+            x.Settings.SetQuiet("agents.queueTimeoutSeconds", JsonValue.Create(3));
+        }, plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
+        var a1 = await s.AcquireAsync(Req("a", "A1"), CancellationToken.None);
+        var b1 = await s.AcquireAsync(Req("b", "B1"), CancellationToken.None);
+
+        // arrival order across the two kinds of waiter: a run queued for a, then one for any agent, then another for a
+        var w1 = s.AcquireAsync(Req("a", "W1"), CancellationToken.None).AsTask();
+        await Task.Delay(30);
+        var f = s.AcquireAsync(Any("F", 0, "a", "b"), CancellationToken.None).AsTask();
+        await Task.Delay(30);
+        var w2 = s.AcquireAsync(Req("a", "W2"), CancellationToken.None).AsTask();
+        await Task.Delay(30);
+        a1.Dispose();
+        var lw1 = await w1.WaitAsync(TimeSpan.FromSeconds(2));
+        Check.Equal("a", lw1.Key, "the older run queued for a takes a");
+        Check.False(f.IsCompleted);
+        b1.Dispose();
+        var lf = await f.WaitAsync(TimeSpan.FromSeconds(2));
+        Check.Equal("b", lf.Key, "b takes the run that waits for any agent; a's queue is not its queue");
+        lw1.Dispose();
+        var lw2 = await w2.WaitAsync(TimeSpan.FromSeconds(2));
+        Check.Equal("a", lw2.Key);
+        lf.Dispose();
+        lw2.Dispose();
+
+        // priority: a run waiting for any agent with a higher priority goes before an older run queued for one agent
+        a1 = await s.AcquireAsync(Req("a", "A2"), CancellationToken.None);
+        b1 = await s.AcquireAsync(Req("b", "B2"), CancellationToken.None);
+        var low = s.AcquireAsync(Req("a", "LOW"), CancellationToken.None).AsTask();
+        await Task.Delay(30);
+        var high = s.AcquireAsync(Any("HIGH", 5, "a", "b"), CancellationToken.None).AsTask();
+        await Task.Delay(30);
+        a1.Dispose();
+        var lhigh = await high.WaitAsync(TimeSpan.FromSeconds(2));
+        Check.Equal("a", lhigh.Key);
+        Check.False(low.IsCompleted, "the lower priority run waits");
+        lhigh.Dispose();
+        (await low.WaitAsync(TimeSpan.FromSeconds(2))).Dispose();
+        b1.Dispose();
+
+        // cancelled: gone from the unassigned list
+        a1 = await s.AcquireAsync(Req("a", "A3"), CancellationToken.None);
+        b1 = await s.AcquireAsync(Req("b", "B3"), CancellationToken.None);
+        using var cts = new CancellationTokenSource();
+        var c = s.AcquireAsync(Any("C", 0, "a", "b"), cts.Token).AsTask();
+        await Task.Delay(30);
+        Check.Equal(1, s.Unassigned().Count);
+        cts.Cancel();
+        try { await c.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected cancellation"); }
+        catch (OperationCanceledException) { }
+        Check.Equal(0, s.Unassigned().Count, "a cancelled run leaves the list");
+
+        // timed out like a queued run (agents.queueTimeoutSeconds = 3)
+        var t = s.AcquireAsync(Any("T", 0, "a", "b"), CancellationToken.None).AsTask();
+        try { await t.WaitAsync(TimeSpan.FromSeconds(6)); throw new AssertException("expected CallRefusedException"); }
+        catch (CallRefusedException ex) { Check.Contains(ex.Message, "No agent had a free instance for 3 s"); }
+        Check.Equal(0, s.Unassigned().Count);
+
+        // refused when none of its agents can take work any more
+        var r = s.AcquireAsync(Any("R", 0, "a", "b"), CancellationToken.None).AsTask();
+        await Task.Delay(30);
+        h.Settings.Set("agents.a.disabled", JsonValue.Create(true));
+        await h.Bus.DrainAsync();
+        Check.False(r.IsCompleted, "b can still take it");
+        h.Settings.Set("agents.b.disabled", JsonValue.Create(true));
+        await h.Bus.DrainAsync();
+        try { await r.WaitAsync(TimeSpan.FromSeconds(2)); throw new AssertException("expected CallRefusedException"); }
+        catch (CallRefusedException ex) { Check.Contains(ex.Message, "None of the agents this run could use can take work now"); }
+        a1.Dispose();
+        b1.Dispose();
+    }
+
+    private static async Task AnyAgentCandidates()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 1 }"""));
+            x.Settings.SetQuiet("agents.solo", J("""{ "model": "fake/solo" }"""));
+        }, plugins: TestHost.Plugins.Agents);
+        var s = h.Scheduler!;
+        Check.Equal("a|solo", string.Join("|", s.Candidates(null, null)), "every agent, whatever its model");
+        Check.Equal("solo|a", string.Join("|", s.Candidates(null, "solo")), "equally free: the one the chat last ran on first");
+        var a1 = await s.AcquireAsync(Req("a", "A1"), CancellationToken.None);
+        Check.Equal("solo|a", string.Join("|", s.Candidates(null, "a")), "a free agent before the preferred one that is full");
+        Check.Equal("fake/local", s.ModelOf("a"));
+        Check.Equal("fake/solo", s.ModelOf("solo"));
+        Check.True(s.ModelOf("nope") is null);
+        h.Settings.Set("agents.solo.disabled", JsonValue.Create(true));
+        await h.Bus.DrainAsync();
+        Check.Equal("a", string.Join("|", s.Candidates(null, null)), "only agents that can take work");
+        h.Settings.Set("agents.a.disabled", JsonValue.Create(true));
+        await h.Bus.DrainAsync();
+        try { s.Candidates(null, null); throw new AssertException("expected CallRefusedException"); }
+        catch (CallRefusedException ex) { Check.Contains(ex.Message, "No agent can take work now"); }
+        a1.Dispose();
+    }
+
+    private static async Task RunsGoToTheFirstFreeAgent()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 1 }"""));
+            x.Settings.SetQuiet("agents.b", J("""{ "model": "fake/local", "instances": 1 }"""));
+        });
+        var gates = new Dictionary<string, TaskCompletionSource>();
+        TaskCompletionSource Gate(string? sid) { lock (gates) return gates.TryGetValue(sid ?? "", out var g) ? g : gates[sid ?? ""] = new(); }
+        h.Catalog.Handler = (r, ct) => Reply.Text("x", c => Gate(r.SessionId).Task.WaitAsync(c));
+        var s1 = h.NewSession();
+        var s2 = h.NewSession();
+        var s3 = h.NewSession();
+        await h.SendAsync(s1.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 1, "first running");
+        await h.SendAsync(s2.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 2, "second running");
+        Check.Equal("a", h.Runtime.GetBySession(s1.Id)!.Agent);
+        Check.Equal("b", h.Runtime.GetBySession(s2.Id)!.Agent);
+
+        // both agents are full: the third run is in nobody's queue, because it has not picked an agent
+        await h.SendAsync(s3.Id, "go");
+        await Wait.Until(() => h.Runtime.GetBySession(s3.Id)!.Status == AgentStatus.Queued, "the third run waits");
+        Check.Equal(1, h.Scheduler!.Unassigned().Count, "it waits for any agent on its model");
+        Check.Equal(0, h.Scheduler.Snapshot().Sum(p => p.Queued));
+        Check.Equal(null, h.Runtime.GetBySession(s3.Id)!.Agent);
+
+        // b frees up first: the run goes to b, not to a (the agent a freshly queued chat used to be given while both were full)
+        Gate(s2.Id).SetResult();
+        await Wait.Until(() => h.Catalog.Calls == 3, "the third run starts on the agent that freed up");
+        Check.Equal("b", h.Runtime.GetBySession(s3.Id)!.Agent);
+        Check.Equal("b", SessionAgent.Of(h.Sessions.GetSession(s3.Id)), "where the chat last ran, not a reservation");
+        Check.Equal("b", h.Sessions.GetSession(s3.Id)!.Meta![SessionAgent.RunKey]!.GetValue<string>());
+        Gate(s1.Id).SetResult();
+        Gate(s3.Id).SetResult();
+        await h.IdleAsync(s1.Id);
+        await h.IdleAsync(s2.Id);
+        await h.IdleAsync(s3.Id);
+    }
+
+    private static async Task ChatsOnAnyAgent()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.a", J("""{ "model": "fake/local", "instances": 1 }"""));
+            x.Settings.SetQuiet("agents.solo", J("""{ "model": "fake/solo" }"""));
+        });
+        var gates = new Dictionary<string, TaskCompletionSource>();
+        TaskCompletionSource Gate(string? sid) { lock (gates) return gates.TryGetValue(sid ?? "", out var g) ? g : gates[sid ?? ""] = new(); }
+        h.Catalog.Handler = (r, ct) => Reply.Text("x", c => Gate(r.SessionId).Task.WaitAsync(c));
+        var busy = h.NewSession(model: "fake/local");
+        var any = h.NewSession(model: "fake/local");
+        var also = h.NewSession(model: "fake/local");
+        await h.SendAsync(busy.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 1, "the first chat holds agent a");
+        Check.Equal("a", h.Runtime.GetBySession(busy.Id)!.Agent);
+
+        // agents.use "any": the chat keeps that choice; no model is forced on it
+        var used = (await h.Rpc.CallAsync("agents.use", new { sessionId = any.Id, agent = "any" }))!;
+        Check.Equal("any", used["meta"]!["agent"]!.GetValue<string>());
+        await h.SendAsync(any.Id, "go");
+        await Wait.Until(() => h.Catalog.Calls == 2, "a is full, so the chat runs on solo");
+        Check.Equal("solo", h.Runtime.GetBySession(any.Id)!.Agent);
+        Check.Equal("fake/solo", h.Sessions.GetSession(any.Id)!.Model, "its model followed the agent it got");
+        Check.Equal("any", SessionAgent.Of(h.Sessions.GetSession(any.Id)), "and the choice stays");
+        Check.Equal("solo", SessionAgent.Running(h.Sessions.GetSession(any.Id)), "the run's agent is where its calls are billed");
+
+        // every agent is full: the run waits for a free agent, in no agent's queue
+        await h.Rpc.CallAsync("agents.use", new { sessionId = also.Id, agent = "any" });
+        await h.SendAsync(also.Id, "go");
+        await Wait.Until(() => h.Runtime.GetBySession(also.Id)!.Status == AgentStatus.Queued, "waiting for a free agent");
+        Check.Equal(1, h.Scheduler!.Unassigned().Count);
+        Check.Contains(h.Runtime.GetBySession(also.Id)!.Activity ?? "", "waiting for a free agent");
+        var unassigned = (JsonArray)(await h.Rpc.CallAsync("agents.unassigned"))!;
+        Check.Equal(1, unassigned.Count, "agents.unassigned lists it");
+
+        // a frees up: the chat runs on a, and its model follows the agent again
+        Gate(busy.Id).SetResult();
+        await Wait.Until(() => h.Catalog.Calls == 3, "the waiting chat takes agent a");
+        Check.Equal("a", h.Runtime.GetBySession(also.Id)!.Agent);
+        Check.Equal("fake/local", h.Sessions.GetSession(also.Id)!.Model);
+        Gate(any.Id).SetResult();
+        Gate(also.Id).SetResult();
+        await h.IdleAsync(busy.Id);
+        await h.IdleAsync(any.Id);
+        await h.IdleAsync(also.Id);
+
+        // each run decides again: both agents are free now, so the next run of the first "any" chat goes to the one it last ran on
+        await h.SendAsync(any.Id, "again");
+        await Wait.Until(() => h.Catalog.Calls == 4, "the next run");
+        Check.Equal("solo", h.Runtime.GetBySession(any.Id)!.Agent, "equally free: the agent it last ran on");
+        await h.IdleAsync(any.Id);
+
+        // no agent can take work: the run says so
+        h.Settings.Set("agents.a.disabled", JsonValue.Create(true));
+        h.Settings.Set("agents.solo.disabled", JsonValue.Create(true));
+        await h.Bus.DrainAsync();
+        await h.SendAsync(any.Id, "nobody");
+        Check.Contains((await h.IdleAsync(any.Id)).Error, "No agent can take work now");
     }
 
     private static async Task QueueHasNoTimeoutByDefault()

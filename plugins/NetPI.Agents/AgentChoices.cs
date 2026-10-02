@@ -20,7 +20,7 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         Description =
             "List the agents the user set up to run subagents on: each is a model with a number of instances (runs at once), " +
             "its state (active, busy, not loaded, switched off), a note on when to use it, its price and today's spend; and " +
-            "the budget. Pass an agent's id to agent_spawn. Also shows who runs on them.",
+            "the budget. Pass an agent's id to agent_spawn, or \"any\" to let the first agent with a free instance take the subagent. Also shows who runs on them.",
         ReadOnly = true,
         Category = "agents",
         Parameters = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() },
@@ -47,7 +47,7 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
         var others = pools.Where(p => !p.Configured && (p.Busy > 0 || p.Queued > 0)).ToList();
         if (agents.Count > 0)
         {
-            sb.Append(runtime is null ? "Configured agents (execution unavailable):\n" : "Agents (pass the id to agent_spawn):\n");
+            sb.Append(runtime is null ? "Configured agents (execution unavailable):\n" : "Agents (pass the id to agent_spawn, or \"any\" for the first one with a free instance):\n");
             foreach (var p in agents) Line(sb, p, withModels: false, Who, context.AgentId);
             if (others.Count > 0)
             {
@@ -61,6 +61,8 @@ internal sealed class AgentChoicesTool(AgentScheduler scheduler, Ledger ledger) 
             if (others.Count > 0) sb.Append("Model calls in progress (busy/slots):\n");
             foreach (var p in others) Line(sb, p, withModels: true, Who, context.AgentId);
         }
+        if (scheduler.Unassigned() is { Count: > 0 } floating)
+            sb.Append("\nWaiting for any free agent: ").Append(string.Join(", ", floating.Select(Who))).Append('\n');
         if (runtime?.Get(context.AgentId)?.Agent is { } mine && agents.Any(p => p.Key == mine)) sb.Append("\nYou run on the agent ").Append(mine).Append('.');
         return Task.FromResult(ToolResult.Ok(sb.ToString().TrimEnd(), new JsonObject
         {

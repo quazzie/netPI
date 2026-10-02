@@ -18,6 +18,7 @@ public static class SubagentTests
         t.Add("subagents: failed subagent reports failure", FailedChild);
         t.Add("subagents: agent tools list / result / cancel / agent_choices", ToolsMisc);
         t.Add("subagents: a chat on a local agent spawns onto an agent on another provider; the subagent keeps that agent", SpawnOntoConfiguredPool);
+        t.Add("subagents: agent_spawn { agent: \"any\" } runs on whichever agent is free, and its model follows", SpawnOnAnyAgent);
         t.Add("subagents: inherit the parent's effective named-agent model and reasoning", InheritEffectiveModel);
         t.Add("subagents: one agent_spawn starts several together; waiting frees the caller's instance for one of them", BatchSpawn);
         t.Add("subagents: a batch with a bad entry starts none of them", BatchRefused);
@@ -506,6 +507,33 @@ public static class SubagentTests
         Check.Equal("main", SessionAgent.Of(h.Sessions.GetSession(parent.Id)));
         await Wait.Until(() => h.Messages(parent.Id).Any(m => m.Role == MessageRole.Assistant && m.Text == "thanks"), "the parent got the report");
         Check.Equal("fake/local", h.Catalog.Requests.First(r => r.SessionId == parent.Id).Model.Ref);
+    }
+
+    private static async Task SpawnOnAnyAgent()
+    {
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Settings.SetQuiet("agents.main", JsonNode.Parse("""{ "model": "fake/local", "instances": 1 }"""));
+            x.Settings.SetQuiet("agents.stealth", JsonNode.Parse("""{ "model": "cloud/big", "use": "Research." }"""));
+        });
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (r.Model.Ref == "cloud/big") return Reply.Text("child report: done on whichever agent was free");
+            var last = r.Messages[^1];
+            if (last.Role == MessageRole.Tool) return Reply.Text("spawned");
+            if (last.Text.Contains("<agent-result")) return Reply.Text("thanks");
+            return Reply.Tool("agent_spawn", new { task = "Look something up and report.", agent = "any", background = true });
+        };
+        var parent = h.NewSession(); // the parent holds the only instance of "main" while it runs
+        await h.SendAsync(parent.Id, "delegate it");
+        var p = h.Runtime.GetBySession(parent.Id)!;
+        await Wait.Until(() => h.Runtime.Get(p.Id)?.Children.Count == 1, "child spawned");
+        var child = await h.StatusAsync(h.Runtime.Get(p.Id)!.Children[0], AgentStatus.Completed);
+        Check.Equal("cloud/big", child.Model, "the model followed the agent that was free");
+        Check.Equal("stealth", child.Agent);
+        Check.Equal("any", SessionAgent.Of(h.Sessions.GetSession(child.SessionId)), "the subagent's chat keeps the choice");
+        Check.Equal("stealth", SessionAgent.Running(h.Sessions.GetSession(child.SessionId)));
+        await Wait.Until(() => h.Messages(parent.Id).Any(m => m.Role == MessageRole.Assistant && m.Text == "thanks"), "the parent got the report");
     }
 
     private static async Task InheritEffectiveModel()

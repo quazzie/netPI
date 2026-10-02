@@ -706,23 +706,32 @@ internal sealed class AgentRuntime : IAgentRuntime
 
     // ---------------------------------------------------------------- slots
 
+    /// <summary>The agent the chat last ran on: the scheduler's tie-break between agents that are equally free. None for a chat on "any" that has not run.</summary>
+    private string? PreferredAgent(string sessionId) => SessionAgent.Running(Ctx.Sessions.GetSession(sessionId));
+
     /// <summary>
-    /// The agent (<c>agents.&lt;id&gt;</c>) the session's run on <paramref name="model"/> goes to, chosen by the scheduler: the
-    /// chat's own agent when it runs the model, else an agent on the model, saved as the chat's agent (<c>meta.agent</c>).
-    /// Null when no agents are set up. Throws <see cref="CallRefusedException"/> (kind "unavailable") when none runs the model.
+    /// What a granted slot says about where the chat runs: the agent it holds is where the chat last ran (the picker shows it,
+    /// the scheduler prefers it next time, its calls are billed to it) — not a reservation, the next run goes to whichever
+    /// agent is free first. A chat on "any" keeps that choice and only records the agent of the run; the model of the agent
+    /// it got becomes the chat's model (<paramref name="model"/>).
     /// </summary>
-    internal string? AgentFor(string sessionId, ModelInfo model, IAgentScheduler scheduler)
+    private void NoteAgent(AgentState s, string agent, string? model = null)
     {
-        var session = Ctx.Sessions.GetSession(sessionId);
-        var current = SessionAgent.Of(session);
-        var agent = scheduler.ChooseAgent(model, current);
-        if (agent is not null && session is not null && !string.Equals(agent, current, StringComparison.Ordinal))
-            Ctx.Sessions.UpdateSession(sessionId, x =>
-            {
-                x.Meta ??= new JsonObject();
-                x.Meta[SessionAgent.MetaKey] = agent;
-            });
-        return agent;
+        Update(s, i => i.Agent = agent);
+        var session = Ctx.Sessions.GetSession(s.Info.SessionId);
+        if (session is null) return;
+        var running = session.Meta?[SessionAgent.RunKey] is JsonValue r && r.TryGetValue<string>(out var current) ? current : null;
+        var wanted = SessionAgent.IsAny(session) ? null : SessionAgent.Of(session);
+        if (string.Equals(running, agent, StringComparison.Ordinal) && (SessionAgent.IsAny(session) || string.Equals(wanted, agent, StringComparison.Ordinal))
+            && (model is null || string.Equals(session.Model, model, StringComparison.OrdinalIgnoreCase)))
+            return;
+        Ctx.Sessions.UpdateSession(s.Info.SessionId, x =>
+        {
+            x.Meta ??= new JsonObject();
+            x.Meta[SessionAgent.RunKey] = agent;
+            if (!SessionAgent.IsAny(x)) x.Meta[SessionAgent.MetaKey] = agent;
+            if (model is not null) x.Model = model;
+        });
     }
 
     /// <summary>
@@ -757,12 +766,15 @@ internal sealed class AgentRuntime : IAgentRuntime
                 SetStatus(s, AgentStatus.Running, null, keepActivity: true);
                 return null;
             }
-            var agent = AgentFor(s.Info.SessionId, model, scheduler);
-            var pool = scheduler.Resolve(model, agent);
-            Update(s, i => i.Agent = pool);
+            // Every agent on the model may take the run: it waits for the first with a free instance, not in one agent's queue.
+            var agents = scheduler.Candidates(model, PreferredAgent(s.Info.SessionId));
+            var pool = agents.Count == 0 ? scheduler.Resolve(model) : scheduler.Resolve(model, agents[0]);
+            var several = agents.Count > 1;
+            Update(s, i => i.Agent = several ? null : pool);
             var request = new AgentSlotRequest
             {
                 Key = pool,
+                Candidates = several ? agents : null,
                 AgentId = s.Info.Id,
                 SessionId = s.Info.SessionId,
                 Label = s.Info.Name,
@@ -773,14 +785,18 @@ internal sealed class AgentRuntime : IAgentRuntime
             if (scheduler.TryAcquire(request, out var lease) && lease is not null)
             {
                 run.Model = model;
+                if (agents.Count > 0) NoteAgent(s, lease.Key);
+                else Update(s, i => i.Agent = lease.Key);
                 SetStatus(s, AgentStatus.Running, null, keepActivity: true);
                 return lease;
             }
-            SetStatus(s, AgentStatus.Queued, agent is null ? $"waiting for a slot on {pool}" : $"waiting for agent {agent}");
+            SetStatus(s, AgentStatus.Queued, several ? "waiting for a free agent" : agents.Count == 0 ? $"waiting for a slot on {pool}" : $"waiting for agent {pool}");
             try
             {
                 lease = await scheduler.AcquireAsync(request, ct).ConfigureAwait(false);
                 run.Model = model;
+                if (agents.Count > 0) NoteAgent(s, lease.Key);
+                else Update(s, i => i.Agent = lease.Key);
                 SetStatus(s, AgentStatus.Running, "starting");
                 return lease;
             }
@@ -789,6 +805,55 @@ internal sealed class AgentRuntime : IAgentRuntime
                 // the scheduler was stopped (plugin reload): resolve the new one and retry
                 await Task.Delay(100, ct).ConfigureAwait(false);
             }
+        }
+    }
+
+    /// <summary>
+    /// A run of a chat on "any available agent": the first agent that can take work and has a free instance takes it, and
+    /// the chat's model becomes that agent's model. The slot comes first because the models differ per agent. Survives a
+    /// scheduler reload like <see cref="AcquireSlotAsync"/>.
+    /// </summary>
+    internal async Task<(IAgentSlot Slot, string ModelRef)> AcquireAnySlotAsync(AgentState s, int priority, CancellationToken ct)
+    {
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var scheduler = Ctx.Services.Get<IAgentScheduler>()
+                ?? throw new CallRefusedException("\"Any available agent\" needs the agents plugin.") { Kind = "unavailable" };
+            var agents = scheduler.Candidates(null, PreferredAgent(s.Info.SessionId));
+            if (agents.Count == 0) throw new CallRefusedException("No agent is set up. Set one up in Settings → Agents.") { Kind = "unavailable" };
+            var several = agents.Count > 1;
+            Update(s, i => i.Agent = several ? null : agents[0]);
+            var request = new AgentSlotRequest
+            {
+                Key = agents[0],
+                Candidates = several ? agents : null,
+                AgentId = s.Info.Id,
+                SessionId = s.Info.SessionId,
+                Label = s.Info.Name,
+                ExecutorGeneration = Generation,
+                Priority = priority,
+            };
+            if (!(scheduler.TryAcquire(request, out var lease) && lease is not null))
+            {
+                SetStatus(s, AgentStatus.Queued, several ? "waiting for a free agent" : $"waiting for agent {agents[0]}");
+                try { lease = await scheduler.AcquireAsync(request, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    // the scheduler was stopped (plugin reload): resolve the new one and retry
+                    await Task.Delay(100, ct).ConfigureAwait(false);
+                    continue;
+                }
+            }
+            var modelRef = scheduler.ModelOf(lease.Key);
+            if (modelRef is null)
+            {
+                lease.Dispose();
+                throw new CallRefusedException($"The agent \"{lease.Key}\" has no model.") { Kind = "unavailable" };
+            }
+            NoteAgent(s, lease.Key, modelRef);
+            SetStatus(s, AgentStatus.Running, "starting");
+            return (lease, modelRef);
         }
     }
 
@@ -820,9 +885,16 @@ internal sealed class AgentRuntime : IAgentRuntime
 
         var parentSession = parentInfo is null ? null : Ctx.Sessions.GetSession(parentInfo.SessionId);
         // an agent the user set up (by its id): the subagent runs on it
-        var agent = SetUpAgent(request.Agent ?? request.Model);
+        var anyAgent = string.Equals(request.Agent?.Trim(), SessionAgent.Any, StringComparison.OrdinalIgnoreCase);
+        var agent = anyAgent ? null : SetUpAgent(request.Agent ?? request.Model);
         string? modelRef;
-        if (agent is not null)
+        if (anyAgent)
+        {
+            if (!(Ctx.Services.Get<IAgentScheduler>()?.Snapshot().Any(p => p.Configured && p.Available) ?? false))
+                throw new InvalidOperationException("No agent can take work now, so \"any\" has nowhere to go. Choose an agent (agent_choices).");
+            modelRef = null; // the model follows the agent that takes the run
+        }
+        else if (agent is not null)
         {
             if (!agent.Available)
                 throw new InvalidOperationException(agent.Disabled
@@ -864,7 +936,8 @@ internal sealed class AgentRuntime : IAgentRuntime
             ["agentInstructions"] = instructions,
         };
         if (off.Count > 0) meta[SessionTools.MetaKey] = new JsonArray([.. off.Order(StringComparer.Ordinal).Select(n => (JsonNode?)n)]);
-        if (agent is not null) meta[SessionAgent.MetaKey] = agent.Key;
+        if (anyAgent) meta[SessionAgent.MetaKey] = SessionAgent.Any;
+        else if (agent is not null) meta[SessionAgent.MetaKey] = agent.Key;
         // The child's checkout is attached to its session like any other binding: the workspace and the folder it runs in.
         if (workspaceBinding is not null)
         {

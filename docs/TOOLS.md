@@ -590,9 +590,10 @@ without an agent that are running. Without agents: "No agents are set up", and a
 ### `agent_spawn` (summary arg `name`)
 
 `{ task, name?, agent?, model?, tools?, instructions?, background?, timeoutSeconds? }`. With agents set up `agent` is required
-(an id from `agent_choices`; a model ref is accepted as an agent on that model); an agent that can't take
-work is refused with the list. The subagent's session keeps the agent (`meta.agent`) and queues while all its
-instances are busy. Without agents, `model` (default: the caller's). `tools`: the subagent's tools, which may include
+(an id from `agent_choices`; a model ref is accepted as an agent on that model; `"any"`: the first agent with a free
+instance takes the subagent, whatever its model); an agent that can't take work is refused with the list. The
+subagent's session keeps the agent (`meta.agent`) as where it runs by preference: it waits for the first agent on that
+model with a free instance (with `"any"`, for any agent), not in one agent's queue. Without agents, `model` (default: the caller's). `tools`: the subagent's tools, which may include
 tools the caller doesn't have (default: the caller's). `details`: the subagent's `{ agentId, sessionId, name, status }`.
 
 Where the caller's model is inherited, it means the effective model: the session's explicit model, otherwise its

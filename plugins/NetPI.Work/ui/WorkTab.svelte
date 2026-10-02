@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { Section, Empty, IconButton, Menu, tokens, usd } from '@netpi/kit';
   import AgentPool from './AgentPool.svelte';
+  import WaitList from './WaitList.svelte';
   import RecentAgent from './RecentAgent.svelte';
   import ProcessRow from './ProcessRow.svelte';
   import { TERMINAL, upsert } from './util.js';
@@ -10,6 +11,7 @@
   let { ctx } = $props();
 
   let slots = $state.raw(null); // the agents with their instances (agents.list)
+  let unassigned = $state.raw([]); // runs waiting for any of several agents, in nobody's queue yet (agents.unassigned)
   let disposed = false;
   let agents = $state.raw(null);
   let processes = $state.raw(null);
@@ -36,6 +38,7 @@
         const s = await ctx.rpc('work.snapshot');
         if (disposed) return;
         slots = s?.agents ?? null;
+        unassigned = s?.unassigned ?? [];
         agents = s?.runs ?? null;
         processes = s?.processes ?? null;
         usage = s?.usage ?? null;
@@ -93,6 +96,7 @@
       ctx.on('agents.changed', (d) => {
         if (!visible) return void (dirty = true);
         if (Array.isArray(d?.agents)) slots = d.agents;
+        if (Array.isArray(d?.unassigned)) unassigned = d.unassigned;
       }),
       ctx.on('resources.changed', () => scheduleRefresh()),
       ctx.on('resources.released', () => scheduleRefresh()),
@@ -174,14 +178,17 @@
   const tokenBudgets = $derived(new Map((usage?.providers ?? []).filter((u) => u.budgetTokens).map((u) => [u.provider, u])));
   const budget = $derived(usage?.budget && (usage.budget.monthlyUsd || usage.budget.dailyUsd || usage.budget.spentUsd > 0) ? usage.budget : null);
 
-  // the agents the user set up (always listed) and model calls without an agent (a chip in the summary while they run)
+  // the agents the user set up (always listed) and model calls without an agent (a chip in the summary while they run). With no
+  // agents set up the model calls are all there is: they are listed like agents (a slot per model), while they run.
   const setUp = $derived((slots ?? []).filter((p) => p.configured));
   const others = $derived((slots ?? []).filter((p) => !p.configured));
-  const usableAgents = $derived(setUp.filter((p) => p.available !== false && !p.disabled));
+  const shown = $derived(setUp.length ? setUp : others);
+  const usableAgents = $derived(shown.filter((p) => p.available !== false && !p.disabled));
   const working = $derived(usableAgents.reduce((n, p) => n + (p.owners?.length ?? 0), 0));
-  const waiting = $derived(usableAgents.reduce((n, p) => n + (p.waiters?.length ?? 0), 0));
+  const waiting = $derived(usableAgents.reduce((n, p) => n + (p.waiters?.length ?? 0), 0) + unassigned.length);
+  const unassignedLabel = (w) => titles.get(w.sessionId ?? agentById.get(w.agentId)?.sessionId) ?? agentById.get(w.agentId)?.name ?? w.label ?? w.agentId;
   const free = $derived(usableAgents.reduce((n, p) => n + Math.max(0, (p.capacity ?? 0) - (p.owners?.length ?? 0)), 0));
-  const otherCalls = $derived(others.flatMap((p) => (p.owners ?? []).map((o) => ({ pool: p, o }))));
+  const otherCalls = $derived((setUp.length ? others : []).flatMap((p) => (p.owners ?? []).map((o) => ({ pool: p, o }))));
   const otherItems = $derived(
     otherCalls.map(({ pool, o }) => ({
       label: titles.get(o.sessionId ?? agentById.get(o.agentId)?.sessionId) ?? agentById.get(o.agentId)?.name ?? o.label ?? o.agentId,
@@ -236,11 +243,11 @@
     {/if}
 
     <!-- ---------------------------------------------------------------- agents: who works on what, what is free, what each has done -->
-    <div class="agents">
+    <div class="work-agents">
       {#if !slots}
         <div class="na">Agents not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
       {:else}
-        {#each setUp as pool (pool.key)}
+        {#each shown as pool (pool.key)}
           <AgentPool {pool} {agentById} {titles} {ctx} cmds={cmdsBySession} use={usageByAgent.get(pool.key) ?? null} budget={tokenBudgets.get(pool.provider) ?? null} period={usage?.budget?.periodStart ?? ''} />
         {:else}
           <div class="na">
@@ -248,6 +255,16 @@
             {#if ctx.app.openSettings}<button class="link" onclick={() => ctx.app.openSettings('agents')}>Set up agents</button>{/if}
           </div>
         {/each}
+      {/if}
+      {#if setUp.length}
+        <!-- runs that may go to any of several agents wait here, in nobody's queue; the line is always there, so it moves nothing -->
+        <div class="unassigned">
+          {#if unassigned.length}
+            <WaitList waiters={unassigned} label={unassignedLabel} {ctx} what="for any agent" />
+          {:else}
+            <span class="nobody np-line">no one waiting for any agent</span>
+          {/if}
+        </div>
       {/if}
       {#if errors.runs}<div class="na">Runs not available — {errors.runs}</div>{/if}
       {#if errors.usage}<div class="na">Usage not available — {errors.usage}</div>{/if}
@@ -346,9 +363,24 @@
   .other:hover {
     text-decoration: underline;
   }
-  .agents {
+  .work-agents {
     padding: 4px 12px 6px;
     border-bottom: 1px solid var(--border);
+  }
+  .unassigned {
+    /* a fixed height, whether the line says "no one waiting" or holds the button: it moves nothing when a run arrives */
+    box-sizing: border-box;
+    height: 30px;
+    margin-top: 2px;
+    padding-top: 5px;
+    border-top: 1px dashed var(--border);
+    display: flex;
+    align-items: center;
+  }
+  .nobody {
+    padding: 0 4px;
+    font-size: var(--fs-xs);
+    color: var(--fg-dim);
   }
   .usage.budget {
     padding: 6px 12px 8px;

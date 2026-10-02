@@ -16,6 +16,7 @@ Takes no parameters and returns:
 ```ts
 {
   agents: AgentSlots[] | null;       // agents.list        (netpi.agents)
+  unassigned: SlotHolder[] | null;   // agents.unassigned  (netpi.agents): runs waiting for any of several agents
   runs: AgentInfo[] | null;          // runs.list { includeFinished: true }   (netpi.runtime)
   processes: ProcessInfo[] | null;   // processes.list    (netpi.tools.shell)
   usage: UsageSummary | null;        // usage.summary     (netpi.agents)
@@ -54,7 +55,7 @@ Load `work.snapshot` when the tab is shown (`onShow`). Then patch the view from 
 | event | data | suggested handling |
 |---|---|---|
 | `agent.status` | `{ agent: AgentInfo }` | upsert the agent by `id` (no re-fetch needed) |
-| `agents.changed` | `{ agents: AgentSlots[] }` | replace `agents` |
+| `agents.changed` | `{ agents: AgentSlots[], unassigned: SlotHolder[] }` | replace `agents` and `unassigned` |
 | `process.started` | `{ process: ProcessInfo }` | upsert by `id` |
 | `process.exited` | `{ process: ProcessInfo }` | upsert by `id` |
 | `usage.recorded` | `{ provider, model, usage }` | re-fetch (or re-fetch only `usage.summary`) |

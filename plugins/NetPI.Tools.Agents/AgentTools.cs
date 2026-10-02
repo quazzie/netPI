@@ -175,7 +175,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     {
         ["task"] = Prop("string", "Self-contained: the subagent does not see your conversation"),
         ["name"] = Prop("string", ""),
-        ["agent"] = Prop("string", "An id from agent_choices"),
+        ["agent"] = Prop("string", "An id from agent_choices, or \"any\": the first agent with a free instance takes it (it runs on that agent's model)"),
         ["model"] = Prop("string", ""),
         ["tools"] = StringArray(""),
         ["instructions"] = Prop("string", ""),
@@ -303,7 +303,14 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         var agentArg = ToolArgs.Str(item, "agent");
         var modelArg = ToolArgs.Str(item, "model");
         string? spawnAgent = null, spawnModel;
-        if (agents.Count > 0)
+        if (agents.Count > 0 && string.Equals(agentArg?.Trim(), SessionAgent.Any, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!agents.Any(p => p.Available))
+                return (null, "No agent can take work now, so \"any\" has nowhere to go. The agents:\n" + AgentMenu(agents));
+            spawnAgent = SessionAgent.Any;
+            spawnModel = null;
+        }
+        else if (agents.Count > 0)
         {
             var wanted = agentArg ?? modelArg;
             // by id; a model ref takes an agent on that model (an active, free one first)

@@ -23,6 +23,8 @@ internal sealed class AgentScheduler : IAgentScheduler
     private readonly IResourceLeases? _resources;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Pool> _pools = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Runs waiting for any of several agents (<see cref="AgentSlotRequest.Candidates"/>): in nobody's queue until one takes them.</summary>
+    private readonly List<Waiter> _floating = [];
     /// <summary>Every model we have seen (catalog cache + models passed to <see cref="Resolve(ModelInfo)"/>), by ref.</summary>
     private readonly Dictionary<string, ModelInfo> _models = new(StringComparer.OrdinalIgnoreCase);
     private long _seq;
@@ -43,7 +45,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     // ---------------------------------------------------------------- agents
 
     /// <summary>Keys under <c>agents</c> that are settings, not agent ids.</summary>
-    internal static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase) { "maxDepth", "queueMax", "queueTimeoutSeconds" };
+    internal static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase) { "maxDepth", "queueMax", "queueTimeoutSeconds", SessionAgent.Any };
 
     internal sealed record AgentConfig(string Id, string Model, JsonObject Cfg)
     {
@@ -75,7 +77,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     internal (string Agent, JsonObject? Cfg) AgentOf(ModelInfo model, string? sessionId = null)
     {
         var agents = Agents();
-        if (sessionId is not null && SessionAgent.Of(_ctx.Sessions.GetSession(sessionId)) is { } sid
+        if (sessionId is not null && SessionAgent.Running(_ctx.Sessions.GetSession(sessionId)) is { } sid
             && agents.FirstOrDefault(a => string.Equals(a.Id, sid, StringComparison.OrdinalIgnoreCase)) is { } mine
             && string.Equals(mine.Model, model.Ref, StringComparison.OrdinalIgnoreCase))
             return (mine.Id, mine.Cfg);
@@ -125,6 +127,8 @@ internal sealed class AgentScheduler : IAgentScheduler
         public CancellationTokenRegistration Registration { get; set; }
         /// <summary>Fails the waiter when its longest wait (<see cref="QueueTimeoutSeconds"/>) is up; stopped on grant/cancel.</summary>
         public CancellationTokenSource? WaitTimeout { get; set; }
+        /// <summary>Waits for any of several agents instead of one (it is in <c>_floating</c>, not in a pool's queue).</summary>
+        public bool Floating => Request.Candidates is { Count: > 1 };
     }
 
     internal sealed class Lease(AgentScheduler owner, AgentSlotRequest request, string? localModel, IDisposable? physical) : IAgentSlot
@@ -286,27 +290,48 @@ internal sealed class AgentScheduler : IAgentScheduler
         return key;
     }
 
-    public string? ChooseAgent(ModelInfo model, string? agent)
+    public IReadOnlyList<string> Candidates(ModelInfo? model, string? preferred)
     {
         var agents = Agents();
-        if (agents.Count == 0) return null;
-        var mine = agents.FirstOrDefault(a => string.Equals(a.Id, agent, StringComparison.OrdinalIgnoreCase));
-        if (mine is not null && string.Equals(mine.Model, model.Ref, StringComparison.OrdinalIgnoreCase)) return mine.Id;
-        var onModel = agents.Where(a => string.Equals(a.Model, model.Ref, StringComparison.OrdinalIgnoreCase)).ToList();
-        if (onModel.Count == 0)
-            throw new CallRefusedException($"No agent runs {model.Ref}. Choose an agent for this chat, or set one up on this model (Settings → Agents).") { Kind = "unavailable" };
+        if (agents.Count == 0) return [];
+        var matching = model is null ? agents.ToList() : agents.Where(a => string.Equals(a.Model, model.Ref, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (matching.Count == 0)
+            throw new CallRefusedException(model is null
+                ? "No agent is set up. Set one up in Settings → Agents."
+                : $"No agent runs {model.Ref}. Choose an agent for this chat, or set one up on this model (Settings → Agents).") { Kind = "unavailable" };
         lock (_gate)
         {
-            _models[model.Ref] = model;
-            // an active agent with a free slot, else the active one with the shortest queue, else the first (its reason is the answer)
-            var ranked = onModel.Select(a =>
+            if (model is not null) _models[model.Ref] = model;
+            var ranked = matching.Select(a =>
             {
                 var pool = GetOrCreate(a.Id);
                 ApplyAgent(pool, a);
-                return (a.Id, Available: AvailabilityOf(pool).Available, Free: CanGrant(pool) && pool.Waiters.Count == 0, Load: pool.Owners.Count + pool.Waiters.Count);
+                var (available, reason) = AvailabilityOf(pool);
+                return (a.Id, Available: available, Reason: reason, Free: available && CanGrant(pool) && pool.Waiters.Count == 0,
+                    Preferred: string.Equals(a.Id, preferred, StringComparison.OrdinalIgnoreCase), Load: pool.Owners.Count + pool.Waiters.Count);
             }).ToList();
-            return ranked.OrderBy(r => r.Available ? 0 : 1).ThenBy(r => r.Free ? 0 : 1).ThenBy(r => r.Load).First().Id;
+            var usable = ranked.Where(r => r.Available).ToList();
+            if (usable.Count == 0)
+            {
+                if (model is null)
+                    throw new CallRefusedException("No agent can take work now: " + string.Join("; ", ranked.Select(r => $"{r.Id} ({r.Reason})")) + ". Load a model (AiSwitcher) or switch an agent on.") { Kind = "unavailable" };
+                // agents run the model but none can take work: the best of them, so the acquire says why
+                return [ranked.OrderBy(r => r.Preferred ? 0 : 1).ThenBy(r => r.Load).First().Id];
+            }
+            return usable.OrderBy(r => r.Free ? 0 : 1).ThenBy(r => r.Preferred ? 0 : 1).ThenBy(r => r.Load).Select(r => r.Id).ToList();
         }
+    }
+
+    public string? ModelOf(string agent) => Agent(agent)?.Model;
+
+    public IReadOnlyList<SlotHolder> Unassigned()
+    {
+        lock (_gate)
+            return _floating.Select(w => new SlotHolder
+            {
+                AgentId = w.Request.AgentId, SessionId = w.Request.SessionId, Label = w.Request.Label, Since = w.Since,
+                Priority = w.Request.Priority, WaitingFor = "a free agent",
+            }).ToList();
     }
 
     public string Resolve(ModelInfo model, string? agent)
@@ -359,6 +384,13 @@ internal sealed class AgentScheduler : IAgentScheduler
                     continue;
                 }
             }
+            foreach (var w in _floating.ToList())
+            {
+                var states = w.Request.Candidates!.Select(k => (Key: k, State: _pools.TryGetValue(k, out var cp) ? AvailabilityOf(cp) : (Available: false, Reason: "removed"))).ToList();
+                if (states.Any(x => x.State.Available)) continue;
+                _floating.Remove(w);
+                refused.Add((w, string.Join("; ", states.Select(x => $"{x.Key} ({x.State.Reason})"))));
+            }
             // Finish every removal/disable/capacity change before choosing work across the shared resources.
             Pump();
         }
@@ -366,7 +398,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         {
             w.Registration.Unregister();
             StopWaitTimeout(w);
-            w.Tcs.TrySetException(new CallRefusedException(UnavailableMessage(w.Request.Key, reason)) { Kind = "unavailable" });
+            w.Tcs.TrySetException(new CallRefusedException(w.Floating ? NoneAvailable(w.Request.Candidates!, reason) : UnavailableMessage(w.Request.Key, reason)) { Kind = "unavailable" });
         }
         var signature = Signature();
         var changed = !string.Equals(signature, Interlocked.Exchange(ref _signature, signature), StringComparison.Ordinal);
@@ -392,6 +424,35 @@ internal sealed class AgentScheduler : IAgentScheduler
         _ =>
             $"The agent \"{agent}\" can't take work now: {reason}. Load its model (AiSwitcher) or choose another agent.",
     };
+
+    internal static string NoneAvailable(IReadOnlyList<string> agents, string reasons) =>
+        $"None of the agents this run could use can take work now ({string.Join(", ", agents)}): {reasons}. Load a model (AiSwitcher) or switch an agent on.";
+
+    /// <summary>The request as it is granted: for the agent that took it.</summary>
+    private static AgentSlotRequest Bind(AgentSlotRequest r, Pool pool) => new()
+    {
+        Key = pool.Key, AgentId = r.AgentId, SessionId = r.SessionId, Label = r.Label, Priority = r.Priority,
+        Provider = pool.Provider ?? r.Provider, ExecutorGeneration = r.ExecutorGeneration,
+    };
+
+    private static AgentSlotRequest Copy(AgentSlotRequest r, string key, IReadOnlyList<string>? candidates) => new()
+    {
+        Key = key, Candidates = candidates, AgentId = r.AgentId, SessionId = r.SessionId, Label = r.Label, Priority = r.Priority,
+        Provider = r.Provider, ExecutorGeneration = r.ExecutorGeneration,
+    };
+
+    /// <summary>The candidates of a run whose provider is within its budget, in order (the message of one that is over it).</summary>
+    private List<string> Eligible(AgentSlotRequest request, out string? budgetMessage)
+    {
+        budgetMessage = null;
+        var list = new List<string>();
+        foreach (var key in request.Candidates ?? [request.Key])
+        {
+            if (_usage is not null && _usage.IsOverBudget(ProviderOf(key), out var message)) { budgetMessage ??= message; continue; }
+            list.Add(key);
+        }
+        return list;
+    }
 
     private Pool GetOrCreate(string key, string? provider = null)
     {
@@ -528,6 +589,7 @@ internal sealed class AgentScheduler : IAgentScheduler
     public bool TryAcquire(AgentSlotRequest request, out IAgentSlot? lease)
     {
         lease = null;
+        if (request.Candidates is { Count: > 1 }) return TryAcquireAny(request, out lease);
         if (_usage?.IsOverBudget(request.Provider ?? ProviderOf(request.Key), out _) == true) return false;
         lock (_gate)
         {
@@ -540,6 +602,29 @@ internal sealed class AgentScheduler : IAgentScheduler
             pool.Owners.Add(l);
             lease = l;
         }
+        SchedulePublish();
+        return true;
+    }
+
+    private bool TryAcquireAny(AgentSlotRequest request, out IAgentSlot? lease)
+    {
+        lease = null;
+        var eligible = Eligible(request, out _);
+        lock (_gate)
+        {
+            if (_stopped) return false;
+            Pump();
+            foreach (var key in eligible)
+            {
+                if (!_pools.TryGetValue(key, out var pool) || !AvailabilityOf(pool).Available || pool.Waiters.Count > 0 || !CanGrant(pool)) continue;
+                var l = NewLease(pool, Bind(request, pool));
+                if (l is null) continue;
+                pool.Owners.Add(l);
+                lease = l;
+                break;
+            }
+        }
+        if (lease is null) return false;
         SchedulePublish();
         return true;
     }
@@ -557,8 +642,54 @@ internal sealed class AgentScheduler : IAgentScheduler
     private static string QueueTimedOut(string poolKey, int seconds) =>
         $"The agent \"{poolKey}\" had no free slot for {seconds} s (agents.queueTimeoutSeconds). Run it again later, or use another agent.";
 
+    private static string QueueTimedOutAny(int seconds) =>
+        $"No agent had a free instance for {seconds} s (agents.queueTimeoutSeconds). Run it again later.";
+
+    /// <summary>
+    /// A run that may go to several agents waits in none of their queues: the first with a free instance takes it (see
+    /// <see cref="Pump"/>), so an agent that frees up first is not passed over because the run was queued behind another.
+    /// </summary>
+    private ValueTask<IAgentSlot> AcquireAnyAsync(AgentSlotRequest request, CancellationToken ct)
+    {
+        var eligible = Eligible(request, out var budgetMessage);
+        if (eligible.Count == 0) throw new CallRefusedException(budgetMessage!) { Kind = "budget" };
+        if (eligible.Count == 1) return AcquireAsync(Copy(request, eligible[0], null), ct);
+        ct.ThrowIfCancellationRequested();
+
+        Waiter waiter;
+        var maxWaiters = QueueMax();
+        lock (_gate)
+        {
+            if (_stopped) throw new OperationCanceledException("The agent scheduler was stopped (plugin reload).");
+            var pools = eligible.Select(k => GetOrCreate(k)).ToList();
+            if (!pools.Any(p => AvailabilityOf(p).Available))
+                throw new CallRefusedException(NoneAvailable(eligible, string.Join("; ", pools.Select(p => $"{p.Key} ({AvailabilityOf(p).Reason})")))) { Kind = "unavailable" };
+            Pump();
+            foreach (var pool in pools)
+            {
+                if (!AvailabilityOf(pool).Available || pool.Waiters.Count > 0 || !CanGrant(pool)) continue;
+                var lease = NewLease(pool, Bind(request, pool));
+                if (lease is null) continue;
+                pool.Owners.Add(lease);
+                SchedulePublish();
+                return ValueTask.FromResult<IAgentSlot>(lease);
+            }
+            if (_floating.Count >= maxWaiters)
+                throw new CallRefusedException(maxWaiters <= 0
+                    ? "Agents take no waiting runs (agents.queueMax is 0): run it when an instance is free."
+                    : $"No agent has a free instance and {maxWaiters} run(s) are already waiting for one (the cap is agents.queueMax = {maxWaiters}). Run it again later.") { Kind = "unavailable" };
+            waiter = new Waiter { Request = Copy(request, eligible[0], eligible), Seq = ++_seq };
+            var index = _floating.FindIndex(w => w.Request.Priority < request.Priority);
+            if (index < 0) _floating.Add(waiter); else _floating.Insert(index, waiter);
+            AttachWaiter(waiter, ct);
+        }
+        SchedulePublish();
+        return new ValueTask<IAgentSlot>(waiter.Tcs.Task);
+    }
+
     public ValueTask<IAgentSlot> AcquireAsync(AgentSlotRequest request, CancellationToken ct)
     {
+        if (request.Candidates is { Count: > 1 }) return AcquireAnyAsync(request, ct);
         var provider = request.Provider ?? ProviderOf(request.Key);
         if (_usage is not null && _usage.IsOverBudget(provider, out var message))
             throw new CallRefusedException(message!) { Kind = "budget" };
@@ -611,12 +742,12 @@ internal sealed class AgentScheduler : IAgentScheduler
             _ = Task.Delay(TimeSpan.FromSeconds(queueTimeout), waiter.WaitTimeout.Token).ContinueWith(_ =>
             {
                 bool dropped;
-                lock (_gate) dropped = _pools.TryGetValue(w.Request.Key, out var p) && p.Waiters.Remove(w);
+                lock (_gate) dropped = w.Floating ? _floating.Remove(w) : _pools.TryGetValue(w.Request.Key, out var p) && p.Waiters.Remove(w);
                 if (dropped)
                 {
                     StopWaitTimeout(w);
                     w.Registration.Unregister();
-                    tcs.TrySetException(new CallRefusedException(QueueTimedOut(w.Request.Key, queueTimeout)) { Kind = "unavailable" });
+                    tcs.TrySetException(new CallRefusedException(w.Floating ? QueueTimedOutAny(queueTimeout) : QueueTimedOut(w.Request.Key, queueTimeout)) { Kind = "unavailable" });
                     SchedulePublish();
                 }
                 // No ExecuteSynchronously: this runs on the pool, so a Cancel from a path holding _gate cannot deadlock.
@@ -645,7 +776,8 @@ internal sealed class AgentScheduler : IAgentScheduler
         var removed = false;
         lock (_gate)
         {
-            if (_pools.TryGetValue(waiter.Request.Key, out var pool))
+            if (waiter.Floating) removed = _floating.Remove(waiter);
+            else if (_pools.TryGetValue(waiter.Request.Key, out var pool))
                 removed = pool.Waiters.Remove(waiter);
         }
         if (removed)
@@ -668,27 +800,50 @@ internal sealed class AgentScheduler : IAgentScheduler
         SchedulePublish();
     }
 
-    /// <summary>Choose eligible work across pools by priority then arrival, skipping pools at their own cap.</summary>
+    private static bool Outranks(Waiter a, Waiter b) =>
+        a.Request.Priority > b.Request.Priority || (a.Request.Priority == b.Request.Priority && a.Seq < b.Seq);
+
+    /// <summary>The first of an unassigned run's agents that can take it now.</summary>
+    private Pool? PoolFor(Waiter w)
+    {
+        foreach (var key in w.Request.Candidates!)
+            if (_pools.TryGetValue(key, out var pool) && AvailabilityOf(pool).Available && CanGrant(pool)) return pool;
+        return null;
+    }
+
+    /// <summary>
+    /// Choose eligible work across pools by priority then arrival, skipping pools at their own cap. The work is the head of
+    /// each pool's queue and the runs that wait for any of several agents: one of those goes to the first of its agents
+    /// that can take it, so whichever agent frees up first serves the oldest run it is eligible for.
+    /// </summary>
     private void Pump()
     {
         while (true)
         {
-            var pool = _pools.Values
-                .Where(p => p.Waiters.Count > 0 && CanGrant(p) && AvailabilityOf(p).Available)
-                .OrderByDescending(p => p.Waiters[0].Request.Priority)
-                .ThenBy(p => p.Waiters[0].Seq)
-                .FirstOrDefault();
-            if (pool is null) return;
-            var w = pool.Waiters[0];
-            pool.Waiters.RemoveAt(0);
-            var lease = NewLease(pool, w.Request);
-            if (lease is null) { pool.Waiters.Insert(0, w); return; }
-            w.Registration.Unregister(); // never Dispose under the lock: it would wait for a running callback
-            StopWaitTimeout(w);
-            pool.Owners.Add(lease);
-            if (!w.Tcs.TrySetResult(lease))
+            Waiter? best = null;
+            Pool? bestPool = null;
+            foreach (var p in _pools.Values)
             {
-                pool.Owners.Remove(lease);
+                if (p.Waiters.Count == 0 || !CanGrant(p) || !AvailabilityOf(p).Available) continue;
+                if (best is null || Outranks(p.Waiters[0], best)) { best = p.Waiters[0]; bestPool = p; }
+            }
+            foreach (var w in _floating)
+            {
+                if (best is not null && !Outranks(w, best)) continue;
+                if (PoolFor(w) is not { } p) continue;
+                best = w;
+                bestPool = p;
+            }
+            if (best is null || bestPool is null) return;
+            var lease = NewLease(bestPool, best.Floating ? Bind(best.Request, bestPool) : best.Request);
+            if (lease is null) return;
+            if (best.Floating) _floating.Remove(best); else bestPool.Waiters.Remove(best);
+            best.Registration.Unregister(); // never Dispose under the lock: it would wait for a running callback
+            StopWaitTimeout(best);
+            bestPool.Owners.Add(lease);
+            if (!best.Tcs.TrySetResult(lease))
+            {
+                bestPool.Owners.Remove(lease);
                 lease.Dispose();
             }
         }
@@ -721,6 +876,8 @@ internal sealed class AgentScheduler : IAgentScheduler
                 waiters.AddRange(pool.Waiters);
                 pool.Waiters.Clear();
             }
+            waiters.AddRange(_floating);
+            _floating.Clear();
         }
         foreach (var w in waiters)
         {
@@ -748,7 +905,7 @@ internal sealed class AgentScheduler : IAgentScheduler
         try
         {
             var pools = Snapshot();
-            _ctx.Events.Publish(AgentSchedulerEvents.Changed, new JsonObject { ["agents"] = NetPiJson.ToNode(pools), ["resources"] = NetPiJson.ToNode(Resources()) });
+            _ctx.Events.Publish(AgentSchedulerEvents.Changed, new JsonObject { ["agents"] = NetPiJson.ToNode(pools), ["resources"] = NetPiJson.ToNode(Resources()), ["unassigned"] = NetPiJson.ToNode(Unassigned()) });
         }
         catch (Exception ex)
         {

@@ -81,6 +81,21 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
 
             // 1. session, model, project, cwd: re-read every turn (they can change mid-run)
             var session = Ctx.Sessions.GetSession(SessionId) ?? throw new RunFailedException("The session no longer exists.");
+            if (turnIndex == 0 && SessionAgent.IsAny(session) && run.Lease is not { IsReleased: false })
+            {
+                // the chat may use any agent: the first one with a free instance takes the run and its model becomes the chat's
+                try
+                {
+                    var (slot, _) = await rt.AcquireAnySlotAsync(state, 0, ct).ConfigureAwait(false);
+                    run.Lease = slot;
+                }
+                catch (CallRefusedException ex)
+                {
+                    rt.AppendNotice(state, ex.Message, "error");
+                    throw new RunFailedException(ex.Message, ex);
+                }
+                session = Ctx.Sessions.GetSession(SessionId) ?? throw new RunFailedException("The session no longer exists.");
+            }
             var modelRef = await SessionModel.ResolveRefAsync(session, Ctx.Models, Ctx.Settings,
                 Ctx.Services.Get<IAgentScheduler>(), ct).ConfigureAwait(false);
             ModelInfo? model = null;
@@ -368,8 +383,15 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             if (Info.Status != AgentStatus.Running) rt.SetStatus(state, AgentStatus.Running, null, keepActivity: true);
             return;
         }
-        var pool = scheduler.Resolve(model, rt.AgentFor(SessionId, model, scheduler));
-        if (run.Lease is { IsReleased: false } lease && string.Equals(lease.Key, pool, StringComparison.OrdinalIgnoreCase))
+        // a run stays on the agent it holds for as long as that agent runs the model (a run does not hop between agents)
+        if (run.Lease is { IsReleased: false } held && string.Equals(scheduler.ModelOf(held.Key), model.Ref, StringComparison.OrdinalIgnoreCase))
+        {
+            run.Model = model;
+            return;
+        }
+        var agents = scheduler.Candidates(model, SessionAgent.Running(Ctx.Sessions.GetSession(SessionId)));
+        var pool = agents.Count == 0 ? scheduler.Resolve(model) : scheduler.Resolve(model, agents[0]);
+        if (run.Lease is { IsReleased: false } lease && (agents.Contains(lease.Key, StringComparer.OrdinalIgnoreCase) || string.Equals(lease.Key, pool, StringComparison.OrdinalIgnoreCase)))
         {
             run.Model = model;
             return;

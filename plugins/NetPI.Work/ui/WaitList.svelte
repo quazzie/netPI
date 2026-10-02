@@ -7,7 +7,8 @@
   import { tick } from 'svelte';
   import { Elapsed, Icon, IconButton } from '@netpi/kit';
 
-  let { waiters, label, ctx } = $props();
+  // what: how the line says who they wait for ("for any agent"), when it is not the agent the line sits under
+  let { waiters, label, ctx, what = '' } = $props();
 
   const sorted = $derived(waiters.slice().sort((a, b) => (Date.parse(a.since) || 0) - (Date.parse(b.since) || 0)));
   const oldest = $derived(sorted[0]?.since ?? null);
@@ -83,7 +84,7 @@
 
 <button bind:this={anchor} class="waiting np-line" aria-expanded={open} title="Who is waiting for a free instance" onclick={toggle}>
   <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
-  <span class="np-grow np-ellipsis">{waiters.length} waiting<span class="np-dim">, longest</span><Elapsed since={oldest} class="np-mono longest" /></span>
+  <span class="np-grow np-ellipsis">{waiters.length} waiting{what ? ` ${what}` : ''}<span class="np-dim">, longest</span><Elapsed since={oldest} class="np-mono longest" /></span>
 </button>
 
 {#if open}

@@ -764,6 +764,8 @@ const handlers = {
   'mock.procStats': () => work.procStats(),
   // test helpers for the Work tab's fixed slots: a job ends (the first waiter takes its slot) / a job starts on a pool
   'mock.workRelease': (p = {}) => work.releaseOwner(need(p, 'sessionId')),
+  // test helper: runs waiting for any agent (in nobody's queue)
+  'mock.workSetUnassigned': (p = {}) => work.setUnassigned(p.items ?? []),
   'mock.workTake': (p = {}) => work.takeSlot(need(p, 'pool'), need(p, 'owner'), !!p.waiting),
   // e2e test helpers: slow the files.* responses and observe the served order (the workspace-switch checks)
   'mock.filesDelay': (p) => ((filesDelayMs = p.ms ?? 0), true),
@@ -921,10 +923,12 @@ const handlers = {
   },
   'processes.kill': (p) => work.procKill(need(p, 'id')),
   'agents.list': () => agentPools(),
+  'agents.unassigned': () => work.unassigned(),
   'agents.use': (p) => {
     const s = getSession(need(p, 'sessionId'));
     const id = p.agent || null;
-    if (id) {
+    if (id === 'any') s.meta = { ...(s.meta ?? {}), agent: 'any' }; // each run takes whichever agent is free; the model follows
+    else if (id) {
       const a = agentsInSettings().find(([k]) => k === id)?.[1];
       if (!a) throw new RpcError('not_found', `There is no agent "${id}"`);
       s.meta = { ...(s.meta ?? {}), agent: id };

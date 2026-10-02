@@ -48,7 +48,7 @@ public sealed class Recorder
     internal CallRecord Begin(ModelRequest request)
     {
         string? agent = null;
-        try { agent = request.SessionId is null ? null : SessionAgent.Of(_ctx.Sessions.GetSession(request.SessionId)); } catch { }
+        try { agent = request.SessionId is null ? null : SessionAgent.Running(_ctx.Sessions.GetSession(request.SessionId)); } catch { }
         var record = new CallRecord
         {
             Id = Interlocked.Increment(ref _callSeq),

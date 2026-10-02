@@ -59,6 +59,7 @@ public sealed class AgentsPlugin : INetPiPlugin
         leases.Rebind(context.Events);
         context.Services.Register<IResourceLeases>(leases);
         context.Sessions.DeclareForkReset(Ledger.AllowanceMetaKey);
+        context.Sessions.DeclareForkReset(SessionAgent.RunKey);
 
         var usage = new Ledger(context);
         usage.Initialize();
@@ -73,6 +74,8 @@ public sealed class AgentsPlugin : INetPiPlugin
 
         context.Rpc.RegisterReadOnly("agents.list", (_, _) => Task.FromResult<object?>(scheduler.Snapshot()),
             "The agents (always) and other model calls in progress, with instances, owners, waiters, state, price and today's spend → AgentSlots[]");
+        context.Rpc.RegisterReadOnly("agents.unassigned", (_, _) => Task.FromResult<object?>(scheduler.Unassigned()),
+            "Runs waiting for any of several agents, in nobody's queue yet: the first agent with a free instance takes them → SlotHolder[]");
         context.Rpc.RegisterReadOnly("agents.resources", (_, _) => Task.FromResult<object?>(scheduler.Resources()),
             "Shared model resources, including calls admitted before a scheduler replacement → ModelResourceSlots[]");
         context.Rpc.Register("agents.use", (r, _) =>
@@ -82,6 +85,13 @@ public sealed class AgentsPlugin : INetPiPlugin
             var id = r.Str("agent");
             if (string.IsNullOrWhiteSpace(id))
                 return Task.FromResult<object?>(context.Sessions.UpdateSession(sid, s => s.Meta?.Remove(SessionAgent.MetaKey)));
+            if (string.Equals(id.Trim(), SessionAgent.Any, StringComparison.OrdinalIgnoreCase))
+                // any agent that can take work: each run goes to the first with a free instance, and the chat's model follows it
+                return Task.FromResult<object?>(context.Sessions.UpdateSession(sid, s =>
+                {
+                    s.Meta ??= new JsonObject();
+                    s.Meta[SessionAgent.MetaKey] = SessionAgent.Any;
+                }));
             var agent = scheduler.Agent(id) ?? throw new RpcException("not_found", $"There is no agent \"{id}\"");
             return Task.FromResult<object?>(context.Sessions.UpdateSession(sid, s =>
             {
@@ -89,7 +99,7 @@ public sealed class AgentsPlugin : INetPiPlugin
                 s.Meta[SessionAgent.MetaKey] = agent.Id;
                 s.Model = agent.Model;
             }));
-        }, "Run a chat on an agent: { sessionId, agent } → SessionInfo (meta.agent, and the agent's model); agent null: none");
+        }, "Run a chat on an agent: { sessionId, agent } → SessionInfo (meta.agent, and the agent's model); agent \"any\": every run goes to whichever agent has a free instance first, and the chat's model follows it; agent null: none. The agent is where the chat runs by preference: a run goes to the first agent on that model with a free instance.");
         context.Rpc.Register("agents.setEnabled", (r, _) =>
         {
             var id = r.Required("id");

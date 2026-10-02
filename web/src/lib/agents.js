@@ -8,7 +8,10 @@ import { load, save } from './persist.js';
 
 const LAST_KEY = 'netpi.lastAgent';
 /** Keys under agents.* that are settings, not agents. */
-export const RESERVED = new Set(['maxDepth']);
+export const RESERVED = new Set(['maxDepth', 'any']);
+
+/** The choice that lets every run go to whichever agent has a free instance (meta.agent), the chat's model following the agent. */
+export const ANY = 'any';
 
 /** The agents the user set up, in the scheduler's order. */
 export function agentList() {
@@ -21,9 +24,10 @@ export function agentById(id) {
 
 /**
  * The agent a chat runs on: its own (meta.agent), else the one the runtime would take (the first agent on its model).
- * implicit: the chat hasn't chosen one yet.
+ * implicit: the chat hasn't chosen one yet. any: the chat is on "any available agent" (no agent of its own: each run takes one).
  */
 export function agentOf(session, modelRef) {
+  if (session?.meta?.agent === ANY) return { agent: null, implicit: false, any: true };
   const own = agentById(session?.meta?.agent);
   if (own) return { agent: own, implicit: false };
   const ref = session?.model || modelRef || app.defaultModel;

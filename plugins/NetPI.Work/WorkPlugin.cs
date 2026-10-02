@@ -24,6 +24,7 @@ public sealed class WorkPlugin : INetPiPlugin
     public static readonly (string Key, string Method, object? Params)[] Parts =
     [
         ("agents", "agents.list", null),
+        ("unassigned", "agents.unassigned", null),
         ("resources", "agents.resources", null),
         ("ideasWork", "ideas.work", null),
         ("runs", "runs.list", new JsonObject { ["includeFinished"] = true }),

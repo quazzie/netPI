@@ -36,7 +36,8 @@ export function createWork({ publish, log, agentsView }) {
   }
   const slots = () => pools.map(poolInfo);
   // agents.changed carries what agents.list returns (the server adds the agents set up in settings)
-  const agentsChanged = () => publish('agents.changed', { agents: (agentsView ?? slots)() });
+  const floating0 = [];
+  const agentsChanged = () => publish('agents.changed', { agents: (agentsView ?? slots)(), unassigned: floating0 });
 
   // ------------------------------------------------------------------ processes
   const procs = new Map(); // id -> { info, out }
@@ -255,8 +256,19 @@ export function createWork({ publish, log, agentsView }) {
     return true;
   }
 
+  // runs waiting for any of several agents (e2e: mock.workUnassign puts one there)
+  const floating = floating0;
+  const unassigned = () => floating;
+  const setUnassigned = (list) => {
+    floating.splice(0, floating.length, ...list);
+    agentsChanged();
+    return true;
+  };
+
   return {
     slots,
+    unassigned,
+    setUnassigned,
     agentsChanged,
     releaseOwner,
     takeSlot,

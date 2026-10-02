@@ -190,13 +190,20 @@ where a chat runs, the profile who it is.
   does not create more model capacity. Different model refs have separate limits.
   Settings/catalog changes refresh existing queues. Reducing capacity lets active calls finish before more start;
   changing an agent's model keeps its active calls counted against their original model until they finish.
-- **A chat without an agent** takes an agent on its model (a free one first) and keeps it; with no agent on its model it
-  stops with a notice. New chats start on the agent chosen last.
-- **Waiting:** a run whose agent is full waits in the agent's queue, which is capped (`agents.queueMax`) and can be
-  timed (`agents.queueTimeoutSeconds`, off by default): a burst past the cap is refused at once, and a run waits
-  as long as it takes unless a time limit is set, after which it fails with a clear error. Eligible queued calls across pools are admitted by priority,
-  then arrival order; a pool at its own instance limit does not hold up another eligible pool. A parent resuming
-  after a wait retains its higher priority. FIFO applies within a priority class; active calls are not preempted.
+- **A run picks no agent up front.** It is eligible for every agent on its chat's model that can take work, and the first
+  one with a free instance takes it (a free one before a busy one, then the agent the chat last ran on, then the lighter
+  load). The agent in the picker (`meta.agent`) is where the chat last ran, not a reservation; with no agent on its model
+  a chat stops with a notice. New chats start on the agent chosen last.
+- **Any available agent** (the picker's first entry, `agents.use { agent: "any" }`, `agent_spawn { agent: "any" }`): a run of
+  that chat is eligible for every agent that can take work, whatever its model, and the chat's model follows the agent
+  it gets. Each run decides again (a run keeps its agent while it lasts). `any` is not an agent id.
+- **Waiting:** a run waits for a free instance; with more than one agent it can use it waits **unassigned**, in nobody's
+  queue, and `agents.unassigned` / the Work tab list it. With one agent it waits in that agent's queue. Queues are capped
+  (`agents.queueMax`) and can be timed (`agents.queueTimeoutSeconds`, off by default): a burst past the cap is refused at
+  once, and a run waits as long as it takes unless a time limit is set, after which it fails with a clear error. Queued
+  calls across agents and unassigned runs are admitted by priority, then arrival order; a pool at its own instance limit
+  does not hold up another eligible pool. A parent resuming after a wait retains its higher priority. FIFO applies within
+  a priority class; active calls are not preempted.
 - **With no agents at all** (a settings file without any) every model call gets a slot per model:
   positive catalog concurrency, otherwise `models.localSlots` (1, clamped to at least 1), per local model;
   `models.cloudSlots` (4) per

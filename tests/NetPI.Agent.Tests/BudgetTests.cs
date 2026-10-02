@@ -244,7 +244,7 @@ public static class BudgetTests
         await h.IdleAsync(s.Id);
 
         Check.Contains(listing, "Budget: $0.00 of $50 this month (0 %), $0.00 today. Free models don't count.");
-        Check.Contains(listing, "Agents (pass the id to agent_spawn):");
+        Check.Contains(listing, "Agents (pass the id to agent_spawn, or \"any\" for the first one with a free instance):");
         Check.Contains(listing, "- small · fake/local · 1/2 busy (one is you: free for your subagents while you wait) · local · free · 100k ctx · \"Free: searches and small edits.\"");
         Check.Contains(listing, "- big · cloud/big · 0/1 busy · $3 / $15 per Mtok in/out · $0.00 today (cap $1) · 200k ctx · \"Costly: hard problems only.\"");
         Check.Contains(listing, "- solo · fake/solo · 0/1 busy · NOT ACTIVE: switched off by the user · local · free · 50k ctx");

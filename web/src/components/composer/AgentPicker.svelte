@@ -11,7 +11,7 @@
   import ModelMenu from '../ModelMenu.svelte';
   import { app, sessionModelRef } from '../../lib/state/app.svelte.js';
   import { modals, toast } from '../../lib/state/ui.svelte.js';
-  import { agentList, agentOf, agentState, createAgent, useAgent } from '../../lib/agents.js';
+  import { ANY, agentList, agentOf, agentState, createAgent, useAgent } from '../../lib/agents.js';
   import { usd } from '../../lib/format.js';
 
   let { session, open = $bindable(false) } = $props();
@@ -23,13 +23,16 @@
   const agents = $derived(agentList());
   const mine = $derived(agentOf(session));
   const current = $derived(mine.agent);
+  const isAny = $derived(mine.any === true);
   const currentState = $derived(agentState(current));
   const modelRef = $derived(sessionModelRef(session));
   const label = $derived(
-    current?.key ?? (agents.length ? 'Choose an agent' : app.modelsByRef.get(modelRef)?.displayName || modelRef?.split('/').pop() || 'No agent'),
+    isAny ? 'Any available' : current?.key ?? (agents.length ? 'Choose an agent' : app.modelsByRef.get(modelRef)?.displayName || modelRef?.split('/').pop() || 'No agent'),
   );
   const title = $derived(
-    current
+    isAny
+      ? 'Any available agent: each run goes to the first agent with a free instance, and this chat’s model follows it'
+      : current
       ? `Agent ${current.key} · ${current.model}${currentState.text ? ` · ${currentState.text}` : ''}`
       : agents.length
         ? `No agent runs ${modelRef ?? 'this chat’s model'}: choose one`
@@ -54,6 +57,10 @@
   async function choose(p) {
     open = false;
     if (p && (p.key !== session.meta?.agent || mine.implicit)) await useAgent(session.id, p.key);
+  }
+  async function chooseAny() {
+    open = false;
+    if (!isAny) await useAgent(session.id, ANY);
   }
   function newAgent() {
     open = false;
@@ -89,9 +96,9 @@
   }
 </script>
 
-{#if session.kind !== 'subagent' || current}
-  <button class="pick" class:none={!current} bind:this={btn} onclick={() => (open = !open)} {title} aria-label="Agent" aria-haspopup="listbox">
-    {#if current}<span class="np-dot" data-status={currentState.dot}></span>{:else}<Icon name="bot" size={13} />{/if}
+{#if session.kind !== 'subagent' || current || isAny}
+  <button class="pick" class:none={!current && !isAny} bind:this={btn} onclick={() => (open = !open)} {title} aria-label="Agent" aria-haspopup="listbox">
+    {#if current && !isAny}<span class="np-dot" data-status={currentState.dot}></span>{:else}<Icon name="bot" size={13} />{/if}
     <span class="np-ellipsis">{label}</span>
     <Icon name="chevron-down" size={11} />
   </button>
@@ -107,6 +114,24 @@
         </div>
       {/if}
       <div class="list np-scroll" role="listbox" tabindex="-1" onkeydown={onKey}>
+        {#if agents.length}
+          <button
+            class="opt any"
+            class:current={isAny}
+            role="option"
+            aria-selected={isAny}
+            data-agent={ANY}
+            title="Each run goes to whichever agent has a free instance first, whatever its model; the chat’s model follows the agent it gets"
+            onclick={chooseAny}
+          >
+            <Icon name="bot" size={13} />
+            <span class="name">
+              <span class="np-ellipsis">Any available</span>
+              <span class="sub np-ellipsis">the first free agent, whatever its model</span>
+            </span>
+            {#if isAny}<Icon name="check" size={13} />{/if}
+          </button>
+        {/if}
         {#each filtered as p, i (p.key)}
           {@const st = agentState(p)}
           <button
@@ -193,6 +218,11 @@
     padding: 4px;
     max-height: 340px;
     outline: none;
+  }
+  .opt.any {
+    margin-bottom: 4px;
+    border-bottom: 1px dashed var(--border);
+    border-radius: 6px 6px 0 0;
   }
   .opt {
     display: flex;

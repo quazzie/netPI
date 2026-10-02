@@ -424,6 +424,15 @@ log('composer popups');
   await page.locator('.popover .opt[data-agent="qwen"]').click();
   await page.waitForTimeout(200);
   check('back on qwen', (await agentBtn.innerText()).includes('qwen'), sid0);
+  // "Any available": no agent of its own, each run takes whichever is free
+  await agentBtn.click();
+  await page.locator('.popover .opt[data-agent="any"]').click();
+  await page.waitForTimeout(250);
+  check('"Any available" is a choice the button shows', (await agentBtn.innerText()).includes('Any available'), await agentBtn.innerText());
+  await agentBtn.click();
+  check('and the picker marks it', (await page.locator('.popover .opt[data-agent="any"].current').count()) === 1);
+  await page.locator('.popover .opt[data-agent="qwen"]').click();
+  await page.waitForTimeout(200);
   await rpcCall('settings.set', { path: 'agents.gemma-4', value: null });
 }
 await ta.fill('');
@@ -722,6 +731,16 @@ log('plugin tab: Work');
   await rpcCall('mock.workTake', { pool: surveyor.pool, owner: surveyor.promotedOwner, waiting: true });
   await page.waitForTimeout(500);
   check('work: the pools are back as they were', (await rowNames()).join() === 'surveyor,Index docs for semantic search' && /1 waiting/.test(await summary()), (await rowNames()).join() + ' | ' + (await summary()));
+  // runs that may go to any of several agents wait in nobody's queue: one line, always there, so it moves nothing
+  check('work: the line for runs waiting for any agent is there when no one waits', /no one waiting for any agent/.test(await page.locator('.work .unassigned').innerText()));
+  const geo0 = await geometry();
+  await rpcCall('mock.workSetUnassigned', { items: [{ agentId: 'ag_wait', sessionId: 'ses_bg_review', label: 'waiter', since: new Date(Date.now() - 90_000).toISOString() }] });
+  await page.waitForTimeout(500);
+  const geo1 = await geometry();
+  check('work: a run waiting for any agent is one line, counted as waiting, and nothing moves', /1 waiting for any agent/.test(await page.locator('.work .unassigned').innerText()) && /2 waiting/.test(await summary()) && JSON.stringify(geo0) === JSON.stringify(geo1), JSON.stringify([geo0, geo1]) + ' ' + (await summary()));
+  await rpcCall('mock.workSetUnassigned', { items: [] });
+  await page.waitForTimeout(300);
+
   check('work: a foreground command shows on the row of the chat that runs it, not in a list that changes size', /\$ python scripts\/embed\.py docs\//.test(await qwen.locator('.slot.busy', { hasText: 'Index docs for semantic search' }).innerText()) && (await page.locator('.work .proc', { hasText: 'embed.py' }).count()) === 0);
   check('work: what the agent has done is on the agent', /412 calls/.test(await qwen.locator('.use').innerText()) && /1\.2M/.test(await qwen.locator('.use').innerText()), await qwen.locator('.use').innerText());
   check('work: there is no Usage today section any more', (await page.locator('.work .np-section-label[title="Usage today"]').count()) === 0);
