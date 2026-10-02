@@ -61,7 +61,7 @@ internal static class CoreRpc
         });
 
         // ------------------------------------------------------------ sessions
-        Add("sessions.list", "Sessions, newest first: { projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, archivedOnly? (only archived; takes precedence over includeArchived), limit?, offset? } → SessionInfo[]",
+        Add("sessions.list", "Sessions, pinned first then newest first: { projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, archivedOnly? (only archived; takes precedence over includeArchived), limit?, offset? } → SessionInfo[]",
             req => k.Sessions.ListSessions(req.Bind<SessionQuery>()), readOnly: true);
 
         Add("sessions.create", "Create a session: { title?, projectId?, model?, reasoning? } → SessionInfo", req =>
@@ -92,13 +92,14 @@ internal static class CoreRpc
             return k.Sessions.GetSession(id) ?? throw new RpcException("not_found", $"Session {id} not found");
         }, readOnly: true);
 
-        Add("sessions.update", "Update a session: { id, title?, model?, reasoning?, archived?, meta? } → SessionInfo (null clears model/reasoning)", req =>
+        Add("sessions.update", "Update a session: { id, title?, model?, reasoning?, archived?, pinned?, meta? } → SessionInfo (null clears model/reasoning)", req =>
             k.Sessions.UpdateSession(req.Required("id"), s =>
             {
                 if (req.Prop("title") is { ValueKind: JsonValueKind.String } t) s.Title = t.GetString()!.Trim();
                 if (req.Prop("model") is { } m) s.Model = m.ValueKind == JsonValueKind.String && m.GetString() is { Length: > 0 } mv ? mv : null;
                 if (req.Prop("reasoning") is { } r) s.Reasoning = r.ValueKind == JsonValueKind.String && r.GetString() is { Length: > 0 } rv ? rv : null;
                 if (req.Bool("archived") is { } a) s.Archived = a;
+                if (req.Bool("pinned") is { } p) s.Pinned = p;
                 if (req.Prop("meta") is { } meta) s.Meta = meta.ValueKind == JsonValueKind.Object ? JsonNode.Parse(meta.GetRawText()) as JsonObject : null;
             }));
 

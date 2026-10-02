@@ -65,7 +65,7 @@ type Part =
   | { type: 'tool_result'; callId: string; name: string; content: string; isError: boolean; details?: any; durationMs?: number; images?: ImagePart[] }
   | { type: 'image'; mediaType: string; data: string /* base64 */ };
 
-interface SessionInfo { id; title; projectId?; workspaceId? /* the checkout it works in (WorkspaceInfo), or null: the project's path */; parentSessionId?; kind: 'chat'|'subagent'; model?; reasoning?; createdAt; updatedAt; archived; messageCount; contextTokens;
+interface SessionInfo { id; title; projectId?; workspaceId? /* the checkout it works in (WorkspaceInfo), or null: the project's path */; parentSessionId?; kind: 'chat'|'subagent'; model?; reasoning?; createdAt; updatedAt; archived; pinned; messageCount; contextTokens;
   meta?: { goal?: Goal; toolsOff?: string[] /* tools switched off for this chat */; profile?: string|null /* its profile */;
     identity?: string /* the opening of its system prompt, from the profile */; agent?: string /* the agent it runs on (agents.<id>) */;
     budgetAllowedFrom?: string; agentId?; parentAgentId?; [k: string]: any } }
@@ -104,11 +104,11 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `projects.create` | `{ name, path, create? }` | `ProjectInfo` |
 | `projects.update` | `{ id, name?, path?, meta? }` | `ProjectInfo` (`meta` is merged key by key; a null value removes a key) |
 | `projects.delete` | `{ id }` | `true` (its sessions are detached) |
-| `sessions.list` | `{ projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, archivedOnly?, limit?, offset? }` | `SessionInfo[]` (newest first) — `archivedOnly` returns archived sessions only (takes precedence over `includeArchived`), so an archived list pages over the archives alone instead of a newest-first window of active + archived |
+| `sessions.list` | `{ projectId?, search?, includeSubagents?, parentSessionId?, includeArchived?, archivedOnly?, limit?, offset? }` | `SessionInfo[]` (pinned first, then newest first) — `archivedOnly` returns archived sessions only (takes precedence over `includeArchived`), so an archived list pages over the archives alone instead of a newest-first window of active + archived |
 | `sessions.create` | `{ title?, projectId?, model?, reasoning? }` | `SessionInfo` — until its first message the session is **transient**: no database row, not in `sessions.list`, no `session.created`, and the project's `last_used_at` is untouched (the creating client gets the `SessionInfo` as the RPC result). The first message materializes it |
 | `sessions.fork` | `{ id, upToSeq? (the last) }` | `SessionInfo`: a new chat with the messages up to `upToSeq` (same seqs, times, parts and meta; compaction as it was at that point); the original is unchanged. It takes the setup (project, model, reasoning, meta such as the profile, `toolsOff`, the agent), not the run state (`goal`, `todo`, `budgetAllowedFrom`, `guardrailsAllowed`, subagent keys), and no workspace: a fork is a new writer, so it starts on the project's path (inheriting the original's checkout would put two writers in one tree), and gets `meta.forkedFrom { sessionId, title, seq }` and the title "Title (fork)", "Title (fork 2)"…. A subagent's chat gives `bad_request`. Publishes `session.created` (once the copy is complete), then `session.forked` — unless zero messages are copied, when the fork stays transient like a fresh `sessions.create` |
 | `sessions.get` | `{ id }` | `SessionInfo` |
-| `sessions.update` | `{ id, title?, model?, reasoning?, archived?, meta? }` | `SessionInfo` (null clears model / reasoning) |
+| `sessions.update` | `{ id, title?, model?, reasoning?, archived?, pinned?, meta? }` | `SessionInfo` (null clears model / reasoning) |
 | `sessions.delete` | `{ id }` | `true` (its subagent sessions are deleted too) |
 | `sessions.setProject` | `{ id, projectId: string\|null }` | `SessionInfo`; publishes `session.project` (the context plugin appends a `project` notice) |
 | `sessions.setWorkspace` | `{ id, workspaceId: string\|null }` | `SessionInfo`: binds a session to a workspace (at most one), or unbinds it with null (it works in its project's path again); publishes `session.workspace` with the resolved binding. Binding a workspace that does not exist is an error: a bound session never falls back to the project checkout, it gets a clear failure instead |

@@ -33,6 +33,9 @@ public sealed class SessionInfo
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public bool Archived { get; set; }
+    /// <summary>Pinned: the UI keeps it in a "Pinned" group at the top of the session list, above the recency groups, and the
+    /// list orders pinned sessions first so one stays inside the newest-first window even as it ages.</summary>
+    public bool Pinned { get; set; }
     public long MessageCount { get; set; }
     /// <summary>Last known context size in tokens (for the UI context meter).</summary>
     public long ContextTokens { get; set; }
