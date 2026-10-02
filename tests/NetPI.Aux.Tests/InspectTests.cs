@@ -144,7 +144,7 @@ public static class InspectTests
         var shapeJson = shape["input"]!["items"]!.ToJsonString();
         Check.True(shapeJson.Length < 20_000 && !shapeJson.Contains(new string('u', 50)) && !shapeJson.Contains(new string('o', 50)),
             $"the kinds, not the payload ({shapeJson.Length} chars)");
-        var kinds = ((JsonArray)shape["input"]!["kinds"]!).ToDictionary(k => k!["type"]!.Str()!, k => (int)k["count"]!);
+        var kinds = ((JsonArray)shape["input"]!["kinds"]!).ToDictionary(k => k!["type"]!.Str()!, k => (int)k!["count"]!);
         Check.Equal(1, kinds["reasoning"], "one reasoning item");
         Check.Equal(180, kinds.Values.Sum(), "the counts add up to the item count");
 
