@@ -38,7 +38,7 @@ public static class IdeasTests
         /// <summary>The name the JSON backlog had: nothing reads that file any more, it is reported as a hint.</summary>
         public string File => Path.Combine(Ctx.Paths.Home, "ideas.json");
 
-        /// <summary>The backlog as the UI reads it: tables in the database, not a file.</summary>
+        /// <summary>The backlog as the UI reads it: collections in the store, not a file.</summary>
         public async Task<List<JsonObject>> Ideas() =>
             ((JsonArray)(await Rpc("ideas.list", new JsonObject()))["ideas"]!).OfType<JsonObject>().ToList();
 

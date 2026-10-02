@@ -187,7 +187,7 @@ public static class IdeasStorageTests
             env.Ctx.Unload();
             await env.StartAsync();
             var got = await env.Call("ideas.get", new JsonObject { ["id"] = added["id"].Str() });
-            Check.Equal(2, got["revision"]!.GetValue<long>(), "the revision is in the database, not in memory");
+            Check.Equal(2, got["revision"]!.GetValue<long>(), "the revision is in the store, not in memory");
             Check.Equal("twice", got["summary"].Str());
             env.Ctx.Unload();
         });
