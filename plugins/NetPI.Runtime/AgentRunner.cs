@@ -1,8 +1,4 @@
-﻿using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Nodes;
+﻿using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
 namespace NetPI.Runtime;
@@ -435,60 +431,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex) { Ctx.Logger.LogWarning(ex, "System prompt builder failed; using the built-in prompt"); }
         }
-        var environment = $"Working directory: {cwd}\nProject: {project?.Name ?? "none"}\nModel: {model.Ref}";
-        if (session.Meta?["runtimeEnvironment"]?.GetValue<string>() != environment)
-        {
-            Ctx.Sessions.AppendMessage(session.Id, ChatMessage.NoticeText(environment, "environment"));
-            Ctx.Sessions.UpdateSession(session.Id, s => { s.Meta ??= new JsonObject(); s.Meta["runtimeEnvironment"] = environment; });
-        }
-        if (SessionPrompt.Fallback(session) is { } frozen) return frozen;
-        var sections = Ctx.Services.GetAll<IPromptSection>().OrderBy(s => s.Order).ToList();
-        var parts = new List<string>();
-        var identity = SessionIdentity.Of(session);
-        if (identity is not null) parts.Add(identity);
-        var renderedSections = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var section in sections)
-        {
-            if (identity is not null && section.Id == "identity") continue;
-            try
-            {
-                var text = await section.RenderAsync(pc, ct).ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(text)) { parts.Add(text.Trim()); renderedSections.Add(section.Id); }
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (Exception ex) { Ctx.Logger.LogWarning(ex, "Prompt section {Section} failed", section.Id); }
-        }
-        if (identity is null && !renderedSections.Contains("identity")) parts.Insert(0,
-            Ctx.Settings.Get("context.customPrompt", "") is { Length: > 0 } custom ? custom : FallbackPrompt(pc));
-        if (!renderedSections.Contains("tools"))
-        {
-            var guidelines = defs.SelectMany(t => t.PromptGuidelines ?? []).Where(g => !string.IsNullOrWhiteSpace(g)).Select(g => g.Trim()).Distinct(StringComparer.Ordinal);
-            parts.Add(string.Join("\n", guidelines.Select(g => "- " + g)));
-        }
-        if (!renderedSections.Contains("subagent") && !string.IsNullOrWhiteSpace(pc.Instructions)) parts.Add("# Your role\n" + pc.Instructions.Trim());
-        var rendered = string.Join("\n\n", parts.Where(p => !string.IsNullOrWhiteSpace(p)));
-        Ctx.Sessions.UpdateSession(session.Id, s =>
-        {
-            if (SessionPrompt.Revision(s) != capturedRevision) return;
-            s.Meta ??= new JsonObject();
-            s.Meta[SessionPrompt.FallbackKey] = rendered;
-            s.Meta[SessionPrompt.FallbackRevisionKey] = capturedRevision;
-        });
-        return rendered;
-    }
-
-    internal static string FallbackPrompt(PromptContext pc)
-    {
-        var sb = new StringBuilder();
-        // Only used without the context plugin (which freezes the prompt and announces the working directory in notices):
-        // no date or time, but the working directory has to be here.
-        sb.Append("You are a coding agent running in NetPI, an agent harness on the user's machine. ");
-        sb.Append("Be concise. Act, don't just describe: use your tools to do the work and check the result.\n\n");
-        sb.Append("OS: ").Append(RuntimeInformation.OSDescription).Append('\n');
-        sb.Append("Working directory: ").Append(pc.Cwd).Append('\n');
-        sb.Append("Project: ").Append(pc.Project is { } p ? $"{p.Name} ({p.Path})" : "none").Append('\n');
-        sb.Append("Model: ").Append(pc.Model.Ref);
-        return sb.ToString();
+        return await FallbackPromptBuilder.BuildAsync(Ctx, pc, capturedRevision, ct).ConfigureAwait(false);
     }
 
     /// <summary>
