@@ -200,8 +200,7 @@ internal static class SettingsExtensions
 /// <summary>Path formatting helpers shared by the tools.</summary>
 public static class PathDisplay
 {
-    public static readonly StringComparison PathComparison =
-        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+    public static readonly StringComparison PathComparison = WorkspacePaths.Comparison;
 
     /// <summary>Path relative to <paramref name="baseDir"/> with forward slashes, or the absolute path when outside of it.</summary>
     public static string Relative(string baseDir, string fullPath)

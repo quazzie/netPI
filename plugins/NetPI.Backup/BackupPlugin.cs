@@ -159,7 +159,7 @@ public sealed class BackupPlugin : INetPiPlugin
             throw new InvalidDataException($"The backup manifest names '{name}', which is not a file of the snapshot");
         var full = Path.GetFullPath(Path.Combine(Path.GetFullPath(dir), name));
         var root = Path.GetFullPath(dir) + Path.DirectorySeparatorChar;
-        if (!full.StartsWith(root, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        if (!full.StartsWith(root, WorkspacePaths.Comparison))
             throw new InvalidDataException($"The backup manifest names '{name}', which is outside the snapshot");
         return full;
     }

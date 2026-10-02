@@ -27,7 +27,8 @@ internal sealed partial class RuleSet
 {
     /// <summary>A rule that takes longer than this on one part counts as matching it (see <see cref="IsMatch"/>).</summary>
     private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(250);
-    private static readonly StringComparison PathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+    /// <summary>How path spellings are compared: case-insensitive on Windows and macOS (their default file systems), like the rest of the path checks.</summary>
+    private static readonly StringComparison PathComparison = WorkspacePaths.Comparison;
 
     /// <summary>Catastrophic commands only: none of these has a place in normal development work.</summary>
     public static readonly IReadOnlyList<string> DefaultCommands =

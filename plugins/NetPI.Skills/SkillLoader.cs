@@ -42,8 +42,7 @@ internal sealed partial class SkillLoader(IPluginContext ctx, string? userHome =
 
     private readonly ConcurrentDictionary<string, Parsed> _cache = new(PathComparer);
 
-    internal static StringComparer PathComparer => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
-        ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+    internal static StringComparer PathComparer => WorkspacePaths.Comparer;
 
     private string UserHome => userHome ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 

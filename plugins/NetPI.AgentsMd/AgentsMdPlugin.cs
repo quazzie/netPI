@@ -96,8 +96,7 @@ internal sealed class AgentsMdLoader(IPluginContext ctx)
     private sealed record CacheEntry(DateTime MtimeUtc, long Length, string Content, string Hash);
     private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(PathComparer);
 
-    internal static StringComparer PathComparer => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
-        ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+    internal static StringComparer PathComparer => WorkspacePaths.Comparer;
 
     private List<string> Setting(string path, IReadOnlyList<string> fallback)
     {

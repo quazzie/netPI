@@ -75,6 +75,6 @@ internal sealed class ProjectNotices(IPluginContext ctx) : IAgentHook
     {
         if (a is null || b is null) return false;
         static string Norm(string p) { try { return Path.TrimEndingDirectorySeparator(Path.GetFullPath(p)); } catch { return p; } }
-        return string.Equals(Norm(a), Norm(b), OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        return string.Equals(Norm(a), Norm(b), WorkspacePaths.Comparison);
     }
 }
