@@ -12,6 +12,7 @@ A backlog of ideas, research, plans and deferred work for the user and for agent
 - Settings: `ideas.fileName` (default `"ideas.json"`; the name the JSON backlog had — kept so an older UI still has
   a hint, read and written by nothing), `ideas.recall`, `ideas.recallThreshold`,
   `ideas.saveCheck`, `ideas.attachThreshold`, `ideas.model`, `ideas.allowPaidModel`, `ideas.checkWaitSeconds`,
+  `ideas.verifyRetrySeconds`,
   `ideas.closeOnCommit`,
   `ideas.linkThreshold`, `ideas.doneThreshold`, `ideas.tellAgentOnCommit`, `ideas.commitNoticesPerRun`,
   `ideas.commitNoticeDebounceSec` (docs/SETTINGS.md).
@@ -349,6 +350,17 @@ calls on a two-slot model. A drop is not silent and it is not lost:
 The recall is the one interactive caller and waits 2 s, not `ideas.checkWaitSeconds`: a longer wait there is a spinner in
 the composer, not a card. A paid model is never called on a check's own initiative whatever the queue does — that is
 `ideas.allowPaidModel`, and it is a skip rather than a drop, because a retry would skip it again.
+
+**A verification the model was too busy to judge waits for its turn.** The verifier holds its slot until the provider
+has acknowledged a cancellation, and gives up after three attempts when higher-priority work keeps arriving — it never
+spends the rest of its budget cancelling inference. That proposal is not lost: it waits in the plugin's own deferred
+queue, one job per conversation and revision, and is tried again when foreground work settles — at most
+`ideas.verifyRetrySeconds` (30 s, doubling, ten minutes at most) apart, at most 3 attempts. Every attempt asks the
+check what it would do *now*: a session that is gone or a conversation that moved on is given up with that reason, a
+chat with a run on it waits without spending an attempt, and the check's claim goes with the proposal (a reload hands
+every waiting proposal back, so nothing is left claimed). `ideas.work` shows what waits, why it waits, how often it has
+been tried and when it is looked at again. Past the bound the proposal is dropped with its reason and the check's mark
+is retryable again — the next close of that conversation runs it.
 
 Nothing reaches the backlog without a click, and a card is never an idea: it is an offer, and it stays one until it is
 answered.
