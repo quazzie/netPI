@@ -173,8 +173,8 @@ One-off tool `scripts/migrations/001-storage-port`: a C# console referencing the
 Decided by the owner (2026-10-02):
 - **Plugin data as documents in named collections** (`ctx.Data`, above). The checkpoint still proves it on Ideas and the ledger before the rest is built; SQL in the plugins is the fallback only if it fails.
 - **The core holds the concepts of a harness and no higher abstraction** (rule 6). Tools, context, projects and the loop's contract are core; agents, budget, workspaces, leases and decisions are plugins. Budget leaves with nothing replacing the refusal, not even a Diagnostics warning (section 3).
-- **The core stores no field it cannot interpret.** Plugins attach their data to a session's `meta`; the core has no `workspaceId` column (section 2). Price: the composer's `ProjectPicker.svelte` reads `session.meta.workspaceId` (two lines, the only use in `web/`).
-- Applied by me under the harness rule, for you to veto: **projects stay** (a name and a folder is the harness's basic "where", and the core understands `projectId`), and **workspaces leave** behind a small working-directory hook (section 2).
+- **The core stores no field it cannot interpret.** Plugins attach their data to a session's `meta`; the core has no `workspaceId` column (section 2). The owner accepts the price: the composer's `ProjectPicker.svelte` reads `session.meta.workspaceId` (two lines, the only use in `web/`).
+- **Projects are core** ("a session needs a place to run"), and **workspaces are a plugin** (a checkout is machinery on top of a project), behind a small working-directory hook (section 2).
 - **Permission granted** to copy `netpi.db` and `settings.json` read-only for the rehearsal. Nothing else under `%USERPROFILE%\.netpi` is touched, and the running NetPI is not stopped without asking.
 - **Freeze** the Host, the contract assembly and the plugins this change touches on master for the duration: nothing else is working on them.
 
