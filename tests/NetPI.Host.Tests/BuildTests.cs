@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 
 namespace NetPI.Host.Tests;
 
@@ -20,6 +21,7 @@ public static class BuildTests
         r.Add("build: a failed install frees the lock, a held one is waited for, a staged plugin is a whole folder", InstallRobustness);
         r.Add("build: the UI bundles are reproducible and CI compares them with the committed ones", BundlesAreReproducible);
         r.Add("build: the build scripts parse (a text check cannot see a PowerShell syntax error)", ScriptsParse);
+        r.Add("build: every plugin project is in the solution, so a bare build sees it too", SolutionHasEveryPlugin);
     }
 
     /// <summary>
@@ -37,6 +39,25 @@ public static class BuildTests
                 $"$e=$null; [System.Management.Automation.Language.Parser]::ParseFile('{path.Replace("'", "''")}', [ref]$null, [ref]$e) > $null; " +
                 "if ($e) { $e | ForEach-Object { $_.Message }; exit 1 }");
             Check.Equal(0, code, $"{script} does not parse: {errors}");
+        }
+    }
+
+    /// <summary>
+    /// NetPI.slnx is what a bare `dotnet build` in the repository root builds. A plugin missing from it only
+    /// compiles when a test project that names it pulls it in, so the suite count and the solution can drift
+    /// apart without a single build complaining.
+    /// </summary>
+    private static void SolutionHasEveryPlugin()
+    {
+        var slnx = File.ReadAllText(Path.Combine(T.RepoRoot, "NetPI.slnx"));
+        var listed = new HashSet<string>(
+            Regex.Matches(slnx, "<Project Path=\"([^\"]+)\"").Cast<Match>()
+                .Select(m => m.Groups[1].Value.Replace('\\', '/')));
+        foreach (var csproj in Directory.GetDirectories(Path.Combine(T.RepoRoot, "plugins"))
+                     .SelectMany(d => Directory.GetFiles(d, "*.csproj")))
+        {
+            var rel = Path.GetRelativePath(T.RepoRoot, csproj).Replace('\\', '/');
+            Check.True(listed.Contains(rel), $"{rel} is missing from NetPI.slnx: a bare build would not build it");
         }
     }
 
