@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
+using NetPI.Host.Sessions;
 
 namespace NetPI.Agent.Tests;
 
@@ -33,7 +34,7 @@ public sealed class TestPluginContext : IPluginContext
     public IUiRegistry Ui => throw new NotSupportedException();
     public IHttpRegistry Http => throw new NotSupportedException();
     public ISettings Settings => _host.Settings;
-    public IDatabase Db => _host.Db;
+    public IPluginData Data => _host.Storage.Plugins.For(PluginId);
     public ISessionStore Sessions => _host.Sessions;
     public IModelCatalog Models => _host.Catalog;
     public CancellationToken Stopping => _stopping.Token;
@@ -94,6 +95,10 @@ public sealed class TestPluginContext : IPluginContext
     }
 }
 
+/// <summary>
+/// A host for plugin tests: the real session service over the memory storage provider (the host's stand-in),
+/// the fake model catalog and bus, and the plugins under test.
+/// </summary>
 public sealed class TestHost : IAsyncDisposable
 {
     public static bool Verbose { get; set; }
@@ -124,11 +129,12 @@ public sealed class TestHost : IAsyncDisposable
     public FakeSettings Settings { get; }
     public FakeTools Tools { get; }
     public FakeRpc Rpc { get; } = new();
-    public FakeSessionStore Sessions { get; }
+    public ISessionStore Sessions { get; }
+    /// <summary>The store the plugins' <c>ctx.Data</c> and the session service live in (memory, in this process).</summary>
+    public IStorage Storage { get; }
     public FakeCatalog Catalog { get; }
-    public IDatabase Db { get; set; }
 
-    private TestHost(IDatabase? db)
+    private TestHost()
     {
         Root = Path.Combine(Environment.GetEnvironmentVariable("NETPI_TEST_ROOT") is { Length: > 0 } custom
             ? custom
@@ -140,27 +146,34 @@ public sealed class TestHost : IAsyncDisposable
         Paths = new NetPiPaths
         {
             AppDir = Root, Home = Home, LogsDir = Root, WebRoot = Root, SettingsFile = Path.Combine(Home, "settings.json"),
-            DatabaseFile = Path.Combine(Home, "netpi.db"), TempDir = Root, PluginDirs = [], DefaultWorkspace = Workspace,
+            TempDir = Root, PluginDirs = [], DefaultWorkspace = Workspace,
         };
         Settings = new FakeSettings(Bus);
         Tools = new FakeTools(Settings);
-        Sessions = new FakeSessionStore(Bus, Workspace);
+        // The host selects a provider by setting; the tests run the memory one (in process, nothing on disk).
+        Storage = new NetPI.Host.Storage.Memory.MemoryStorageProvider().Open(new StorageOpenOptions
+        {
+            Home = Home,
+            Logger = new ConsoleLogger("storage", TestHost.Verbose),
+            Settings = Settings,
+        });
+        Sessions = new SessionService(Storage, Bus, Workspace);
         Catalog = new FakeCatalog(Services);
-        Db = db ?? new NullDatabase();
         Services.Changed = type => ((IEventBus)Bus).Publish("services.changed", new { contract = type.FullName });
         // the host registers its core services too
         Services.Register<ISessionStore>(Sessions);
         Services.Register<IModelCatalog>(Catalog);
-        Services.Register<IResourceLeases>(new NetPI.Host.Registries.ResourceLeases(Bus));
+        // the physical registry of shared model resources: owned by the host, adopted by the agents plugin, and outlives a reload of it
+        Services.Register<IResourceLeases>(new ResourceLeases(Bus));
     }
 
     /// <summary>Which plugins <see cref="StartAsync"/> loads.</summary>
     [Flags]
     public enum Plugins { None = 0, Agents = 1, Context = 2, AgentsMd = 4, Runtime = 8, AgentTools = 16, All = 31 }
 
-    public static async Task<TestHost> StartAsync(Action<TestHost>? setup = null, Plugins plugins = Plugins.All, IDatabase? db = null)
+    public static async Task<TestHost> StartAsync(Action<TestHost>? setup = null, Plugins plugins = Plugins.All)
     {
-        var h = new TestHost(db);
+        var h = new TestHost();
         h.Catalog.AddModel(LocalModel());
         h.Catalog.AddModel(SoloModel());
         h.Catalog.AddModel(CloudModel());
@@ -213,6 +226,21 @@ public sealed class TestHost : IAsyncDisposable
     public Task<AgentInfo> SendAsync(string sessionId, string text, DeliveryMode mode = DeliveryMode.Auto) =>
         Runtime.SendAsync(sessionId, new UserInput { Text = text }, mode);
 
+    /// <summary>What the <c>sessions.fork</c> RPC does (CoreRpc): the fork template with the declared run-state keys dropped, and the copy.</summary>
+    public SessionInfo Fork(string sessionId, long? upToSeq = null)
+    {
+        var from = Sessions.GetSession(sessionId) ?? throw new KeyNotFoundException($"Session {sessionId} not found");
+        var last = Sessions.GetMessages(sessionId, null, 1).LastOrDefault()?.Seq ?? 0;
+        var upTo = upToSeq is { } u ? Math.Clamp(u, 0, last) : last;
+        var context = SessionFork.ContextTokens(Sessions.GetMessages(sessionId, upTo + 1, 50));
+        var taken = Sessions.ListSessions(new SessionQuery { Search = SessionFork.BaseTitle(from.Title), IncludeArchived = true, Limit = 1000 })
+            .Select(s => s.Title).ToHashSet(StringComparer.Ordinal);
+        return Sessions.ForkSession(sessionId, upTo, SessionFork.Template(from, upTo, context, ((SessionService)Sessions).ForkResetKeys(), taken));
+    }
+
+    /// <summary>A project's per-project data, the way <c>projects.update</c> writes it (merged key by key).</summary>
+    public ProjectInfo UpdateProject(string id, JsonObject? meta) => ((SessionService)Sessions).UpdateProject(id, null, null, meta);
+
     /// <summary>Wait until the session's agent is not busy (Running/Queued/Yielded).</summary>
     public async Task<AgentInfo> IdleAsync(string sessionId, int timeoutMs = 10_000)
     {
@@ -228,7 +256,7 @@ public sealed class TestHost : IAsyncDisposable
         return Runtime.Get(agentId)!;
     }
 
-    public List<ChatMessage> Messages(string sessionId) => Sessions.Messages(sessionId);
+    public List<ChatMessage> Messages(string sessionId) => [.. Sessions.GetMessages(sessionId)];
 
     public static JsonObject Json(object? o) => (NetPiJson.ToNode(o) as JsonObject) ?? new JsonObject();
 
@@ -241,6 +269,7 @@ public sealed class TestHost : IAsyncDisposable
             try { await StopPluginAsync(id); } catch (Exception ex) { Console.WriteLine($"    stop {id} failed: {ex.Message}"); }
         }
         Bus.Dispose();
+        Storage.Dispose();
         try { Directory.Delete(Root, recursive: true); } catch { }
     }
 }
