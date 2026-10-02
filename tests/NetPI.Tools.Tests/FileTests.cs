@@ -712,7 +712,7 @@ public static class FileTests
             FileIndex.MaxListedEntries = 500;
             try
             {
-                var list = (FileIndex.ListResult)await ctx.RpcFake.InvokeAsync("files.list", new { })!;
+                var list = (FileIndex.ListResult)(await ctx.RpcFake.InvokeAsync("files.list", new { }))!;
                 Check.Equal(500, list.Entries.Count, "the listing stops at the cap");
                 Check.True(list.Truncated);
                 Check.Equal(1200, list.Total);

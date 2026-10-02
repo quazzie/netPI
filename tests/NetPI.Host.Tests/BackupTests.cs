@@ -82,7 +82,7 @@ public static class BackupTests
     /// fresh home and reading the collection back is what shows it came back. A snapshot whose manifest names no provider is refused: it
     /// was written by a build that stored things differently, and only that build restores it.
     /// </summary>
-    private static async Task BackupIdeasRoundTrip(TestRunner r)
+    private static void BackupIdeasRoundTrip(TestRunner r)
     {
         r.Add("backup: a plugin's collections are in the snapshot, the manifest names the provider, and they come back on restore", async () =>
         {

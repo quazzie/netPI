@@ -502,10 +502,10 @@ public static class ShellTests
             Check.Contains(tool.Definition.Parameters!.ToJsonString(), "wait");
             Check.Contains(tool.Definition.Parameters!.ToJsonString(), "timeout");
             // The description carries the policy, not just the mechanics: background-then-wait must not become the default.
-            var guidelines = string.Join(" ", tool.Definition.PromptGuidelines);
+            var guidelines = string.Join(" ", tool.Definition.PromptGuidelines!);
             Check.Contains(guidelines, "block on one you already backgrounded");
             Check.Contains(guidelines, "known duration");
-            Check.Contains(tool.Definition.Help, "tells slow from hung");
+            Check.Contains(tool.Definition.Help!, "tells slow from hung");
         });
 
         r.Add("background: immediate exit is reported; timeout kills; StopAsync kills all", async () =>

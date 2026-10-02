@@ -184,7 +184,7 @@ public static class IdeasCommitTests
             var idea = await env.Rpc("ideas.get", new JsonObject { ["id"] = id });
             Check.Equal("done", idea["status"].Str());
             Check.Equal(0, await env.Cards());
-            Check.True(env.Ctx.ModelsFake.Requests.Any(q => q.SystemPrompt.StartsWith("Independently verify")));
+            Check.True(env.Ctx.ModelsFake.Requests.Any(q => q.SystemPrompt!.StartsWith("Independently verify")));
             env.Ctx.Unload();
         });
 
@@ -409,13 +409,13 @@ public static class IdeasCommitTests
                 await env.Check!.SweepNowAsync();
                 Check.Equal(null, env.Cursor, $"attempt {attempt} leaves the cursor at the commit");
             }
-            await env.Check.SweepNowAsync(); // the last allowed attempt
+            await env.Check!.SweepNowAsync(); // the last allowed attempt
             Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "after the bound the cursor moves past the commit");
             Check.Contains(string.Join("|", env.Ctx.Log.Lines), "recorded unread", "and it says so in the log");
             var repo = IdeasRepository.Open(env.Ctx.Data, env.Ctx.Access, env.Ctx.Log, env.Ctx.Paths.Home);
             var unread = repo.Unread().Single(u => u["hash"]!.Str() == env.Repo.Commits[0].Hash);
             Check.Equal(IdeaCommitCheck.MaxTries, unread["tries"]!.GetValue<long>(), "with its attempts");
-            Check.Equal(1, ((JsonArray)await env.Ctx.RpcFake.Call("ideas.unread", new JsonObject()))!.Count, "and it is listed in ideas.unread");
+            Check.Equal(1, ((JsonArray)(await env.Ctx.RpcFake.Call("ideas.unread", new JsonObject()))!).Count, "and it is listed in ideas.unread");
 
             // A later commit is read while the first one stays unread: it names the idea, so the link needs no model
             // at all (the done question runs on the recovered model and is refused: the verifier does not bless it).

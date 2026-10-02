@@ -173,7 +173,7 @@ public static class WorkspaceStoreTests
                 store.SetSessionWorkspace(s.Id, w.Id);
                 sessions.AppendMessage(s.Id, ChatMessage.UserText("hi"));
                 (sessionId, workspaceId, workspacePath) = (s.Id, w.Id, w.Path);
-                branch = w.Branch;
+                branch = w.Branch!;
             }
             finally { first.Unload(); }
 

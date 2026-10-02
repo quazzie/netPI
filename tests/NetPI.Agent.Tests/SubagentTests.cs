@@ -730,9 +730,9 @@ public static class SubagentTests
             bChildId ??= h.Runtime.List(true).FirstOrDefault(x => x.ParentAgentId == pb.Id)?.Id;
             return aChildId is not null && bChildId is not null;
         }, "both subagents spawned");
-        await Wait.Until(() => h.Runtime.Get(aChildId)!.Status == AgentStatus.Running && h.Runtime.Get(bChildId)!.Status == AgentStatus.Running,
+        await Wait.Until(() => h.Runtime.Get(aChildId!)!.Status == AgentStatus.Running && h.Runtime.Get(bChildId!)!.Status == AgentStatus.Running,
             "both subagents running");
-        var bChild = h.Runtime.Get(bChildId)!;
+        var bChild = h.Runtime.Get(bChildId!)!;
         await h.IdleAsync(a.Id);
         await h.IdleAsync(b.Id);
 
@@ -752,8 +752,8 @@ public static class SubagentTests
         Check.Contains(cancelOwn.Content, "Cancelled");
         Check.False(resultOwn.IsError, resultOwn.Content);
         Check.Contains(resultOwn.Content, aChildId!, "by name, A's own worker — B's identically named one never matches");
-        Check.Equal(AgentStatus.Running, h.Runtime.Get(bChildId)!.Status, "B's child is untouched");
+        Check.Equal(AgentStatus.Running, h.Runtime.Get(bChildId!)!.Status, "B's child is untouched");
         Check.False(h.Messages(bChild.SessionId).Any(m => m.Text.Contains("stop")), "no message reached B's child");
-        Check.Equal(AgentStatus.Cancelled, h.Runtime.Get(aChildId)!.Status);
+        Check.Equal(AgentStatus.Cancelled, h.Runtime.Get(aChildId!)!.Status);
     }
 }

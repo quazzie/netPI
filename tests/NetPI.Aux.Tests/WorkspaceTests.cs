@@ -491,7 +491,7 @@ public static class WorkspaceTests
         // Two integrations at once into the same branch: they must serialize, and both must land.
         var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
         var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(i => Task.Run(() =>
-            env.Provisioner.IntegrateAsync(store.GetWorkspace(i % 2 == 0 ? a.Binding.WorkspaceId : b.Binding.WorkspaceId)))));
+            env.Provisioner.IntegrateAsync(store.GetWorkspace(i % 2 == 0 ? a.Binding!.WorkspaceId : b.Binding!.WorkspaceId)!))));
         foreach (var (ok, error) in results)
         {
             // Re-integrating an already-merged branch is a no-op merge, which is the success case; a failure here is a

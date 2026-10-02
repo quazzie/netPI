@@ -221,7 +221,7 @@ public static class IdeasNoticeTests
             Check.Contains(d!.Text, "First");
             Check.Contains(d.Text, "Second");
             Check.Contains(d.Text, "Third");
-            Check.Equal(1, d!.Text.Split("A commit just landed").Length - 1);
+            Check.Equal(1, d.Text!.Split("A commit just landed").Length - 1);
         });
 
         r.Add("notice: the open ideas are bounded and clipped", () =>

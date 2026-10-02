@@ -78,7 +78,7 @@ public static class SubagentWorkspaceTests
         var record = store.GetWorkspace(SessionWorkspace.Of(child)!)!;
         Check.Equal("worktree", record.Kind);
         Check.True(Directory.Exists(record.Path), "the worktree was not created");
-        Check.Equal(child.Id, record.OwnerSessionId, "the owner is the worker session, not the agent or the slot");
+        Check.Equal(child!.Id, record.OwnerSessionId, "the owner is the worker session, not the agent or the slot");
     }
 
     private static async Task UnknownWorkspace()

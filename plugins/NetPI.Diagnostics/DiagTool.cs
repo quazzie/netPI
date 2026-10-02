@@ -134,20 +134,20 @@ public sealed class DiagTool(IPluginContext ctx) : IAgentTool
         var action = (a["action"]?.GetValue<string>() ?? "").Trim().ToLowerInvariant();
         if (action.Length == 0) return ToolResult.Error("Missing 'action'. The actions are: " + string.Join(", ", Actions.Select(x => x.Action)) + ".");
         var known = Actions.FirstOrDefault(x => x.Action == action);
-        if (known.Method is null && action != "rpc")
+        if (action == "rpc") return await RpcAsync(a, ct).ConfigureAwait(false);
+        if (known.Method is not { } method)
             return ToolResult.Error(
                 $"Unknown action \"{action}\". This tool only reads: use one of {string.Join(", ", Actions.Select(x => x.Action))}. " +
                 "Changing the app (reloading plugins, writing settings) is up to the user: /reload, or the Diagnostics tab.");
-        if (action == "rpc") return await RpcAsync(a, ct).ConfigureAwait(false);
 
         var parameters = Parameters(a, action, context.SessionId);
         try
         {
-            var result = await ctx.Rpc.InvokeAsync(known.Method, parameters, ct).ConfigureAwait(false);
+            var result = await ctx.Rpc.InvokeAsync(method, parameters, ct).ConfigureAwait(false);
             return Cut(NetPiJson.ToNode(result));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (RpcException ex) { return ToolResult.Error($"{known.Method} failed: {ex.Message}"); }
+        catch (RpcException ex) { return ToolResult.Error($"{method} failed: {ex.Message}"); }
         catch (Exception ex)
         {
             ctx.Logger.LogWarning(ex, "diag tool: {Action} failed", action);

@@ -96,7 +96,7 @@ public static class AskTests
         await h.SendAsync(s.Id, "go");
         var first = await AskedAsync(h, s.Id);
         var id = (string)first["id"]!;
-        Check.True(id != (string)first["callId"], "the question has an id of its own");
+        Check.True(id != (string?)first["callId"], "the question has an id of its own");
         Check.Equal(true, (bool?)(await AskedAsync(h, s.Id))["questions"]![1]!["multiple"], "options as plain strings, several may be picked");
 
         Check.Equal("bad_request", (await Check.ThrowsAsync<RpcException>(() => h.Rpc.InvokeAsync("ask.answer", new { id, text = "  " }), "an empty answer")).Code);
