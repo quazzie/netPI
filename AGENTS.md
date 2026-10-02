@@ -50,7 +50,9 @@ and a Svelte 5 UI (`web/`). Read `README.md` for the overview and `docs/` for de
   - `.\build.ps1 -Pending` — what a restart would bring. `.\build.ps1 -Discard` — drop the staged build.
   - `.\build.ps1 -Run` — publish and start the desktop app. `./build.sh` takes `--publish`, `--next-start`,
     `--pending`, `--discard`, `--app-dir`.
-  - One plugin only, on purpose: `dotnet build plugins/<Name> -p:AppOutDir=<app>/plugins/<Name>/`.
+  - One plugin only, on purpose: `dotnet build plugins/<Name> -p:AppOutDir=<app>/ -p:BuildProjectReferences=false`.
+    `AppOutDir` is the **app folder**, not the plugin's: a plugin's `OutDir` is `$(AppOutDir)plugins/<Name>/`, the
+    folder the host loads it from.
 - **A change is not done until the running app has it.** Merging into `master` and building land in `artifacts/dev/app` only;
   the running NetPI loads from the app folder, and a restart consumes `.pending` — not `master`. Before telling the user a
   change is done (or "you'll see it after a restart"), install it: `.uild.ps1 -Publish` (plugins hot-swap immediately),

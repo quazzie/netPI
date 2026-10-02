@@ -18,6 +18,11 @@
     <Version>0.1.0</Version>
     <Authors>NetPI</Authors>
     <Deterministic>true</Deterministic>
+    <!-- Every DLL carries the path of its PDB, which is absolute - so the same commit built in two checkouts (two
+         worktrees, a worktree and the main tree) produced different bytes, and a publish from a worktree never matched
+         the installed contracts and staged every plugin for the next start. Mapping the repo root to /_/ makes the
+         output depend on the sources alone. -->
+    <PathMap>$(RepoRoot)=/_/</PathMap>
     <!-- No commit hash in the informational version: after a commit, unchanged projects stay byte-identical, so a running
          NetPI does not hot-reload every plugin, and build.ps1 can tell whether the host really changed. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>

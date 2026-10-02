@@ -90,16 +90,36 @@ if [ "$PUBLISH" = 1 ]; then
     [ -f "$APP/$rel" ] && cmp -s "$DEV/$rel" "$APP/$rel" || changed="$changed$rel"$'\n'
   done < <(cd "$DEV" && find . -type f | sed 's|^\./||')
 
-  # --next-start: the host installs .pending/plugins/<name> and .pending/wwwroot at its next start
+  # --next-start: the host installs .pending/plugins/<name> and .pending/wwwroot at its next start as WHOLE folders (it
+  # moves the staged folder over the installed one), so a staged plugin or web UI must be complete: changed files only
+  # would leave the plugin without its plugin.json and the UI without the other hashed chunks.
   dest="$APP"
   if [ "$NEXTSTART" = 1 ]; then dest="$PENDING_DIR"; mkdir -p "$PENDING_DIR"; fi
   plugins=""
+  web_changed=0
   while IFS= read -r rel; do
     [ -z "$rel" ] && continue
+    case "$rel" in
+      plugins/*)
+        plugins="$plugins$(echo "$rel" | cut -d/ -f2)"$'\n'
+        if [ "$NEXTSTART" = 1 ]; then continue; fi
+        ;;
+      wwwroot/*)
+        web_changed=1
+        if [ "$NEXTSTART" = 1 ]; then continue; fi
+        ;;
+    esac
     mkdir -p "$dest/$(dirname "$rel")"
     cp "$DEV/$rel" "$dest/$rel"
-    case "$rel" in plugins/*) plugins="$plugins$(echo "$rel" | cut -d/ -f2)"$'\n' ;; esac
   done <<< "$changed"
+
+  if [ "$NEXTSTART" = 1 ]; then
+    for name in $(echo "$plugins" | sort -u); do
+      mkdir -p "$dest/plugins"
+      cp -R "$DEV/plugins/$name" "$dest/plugins/$name"
+    done
+    if [ "$web_changed" = 1 ]; then cp -R "$DEV/wwwroot" "$dest/wwwroot"; fi
+  fi
 
   if [ -n "$plugins" ]; then
     echo "Plugins: $(echo "$plugins" | sort -u | paste -sd, - | sed 's/,/, /g')"

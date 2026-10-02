@@ -103,6 +103,10 @@ function readOnly(m) {
   return /\.(list|get|recent|status|summary|preview|snapshot|schema|messages|session|queue|tools|output|search)$/.test(m);
 }
 
+// Every call is bounded: build.ps1 runs this inside the install lock to say what a publish would disturb, and a server
+// that never answers (half-dead, or a port held by something else) must not hold the lock forever.
+const CALL_TIMEOUT_MS = 5000;
+
 async function call(m, p) {
   const file = path.join(home, 'server.json');
   let server;
@@ -117,6 +121,7 @@ async function call(m, p) {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-NetPI-Token': server.token },
       body: JSON.stringify(p ?? {}),
+      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
     });
   } catch (e) {
     fail(2, `NetPI at ${server.url} (pid ${server.pid}) doesn't answer: ${e.cause?.code ?? e.message}. The file may be left from a crash: ${file}`);

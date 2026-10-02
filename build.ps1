@@ -173,9 +173,12 @@ function Enter-InstallLock([string] $path) {
             return $fs
         }
         catch [IO.IOException] {
-            if (Test-Path $path) {
-                $age = (Get-Date) - (Get-Item -LiteralPath $path).LastWriteTime
-                if ($age -gt [TimeSpan]::FromMinutes(1)) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; continue }
+            # A publisher that dies leaves the file behind, so an old one is taken over. One that survives the delete is
+            # held open by a live publisher (FileShare.None), and waiting for it is the answer: every retry sleeps, so
+            # "two minutes" is two minutes of waiting and not 120 attempts in a few milliseconds.
+            $held = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue   # the holder may release it between attempts
+            if ($held -and (Get-Date) - $held.LastWriteTime -gt [TimeSpan]::FromMinutes(1)) {
+                Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
             }
             if ($waited % 15 -eq 0) { Write-Host "Another publish is installing into $dir; waiting…" -ForegroundColor Yellow }
             Start-Sleep -Seconds 1
@@ -254,126 +257,131 @@ if ($Publish) {
             Start-Sleep -Seconds 5
         }
     }
-    # one install at a time; waiting above is before the lock, so a patient publisher does not block another one.
-    # A failed install throws and leaves the lock to go stale (a minute) rather than wrapping the whole block.
+    # one install at a time; waiting above is before the lock, so a patient publisher does not block another one. The
+    # lock is released whatever the install does, so a failed one does not make the next publisher wait a minute for a
+    # publisher that is already gone.
     $installLock = Enter-InstallLock $lockFile
-
-    # plugins that were renamed (2026-09-25: NetPI.Lanes is NetPI.Agents, NetPI.Agent is NetPI.Runtime): their old
-    # output would load next to the new one. A running app keeps them until it is closed and published again.
-    if (-not $running) {
-        foreach ($name in 'NetPI.Lanes', 'NetPI.Agent') {
-            $dir = Join-Path $app "plugins\$name"
-            if (Test-Path $dir) {
-                Remove-Item -Recurse -Force $dir
-                Write-Host "Removed the old plugin output $dir" -ForegroundColor Yellow
+    try {
+        # plugins that were renamed (2026-09-25: NetPI.Lanes is NetPI.Agents, NetPI.Agent is NetPI.Runtime): their old
+        # output would load next to the new one. A running app keeps them until it is closed and published again.
+        if (-not $running) {
+            foreach ($name in 'NetPI.Lanes', 'NetPI.Agent') {
+                $dir = Join-Path $app "plugins\$name"
+                if (Test-Path $dir) {
+                    Remove-Item -Recurse -Force $dir
+                    Write-Host "Removed the old plugin output $dir" -ForegroundColor Yellow
+                }
             }
         }
-    }
-    if (Test-Path $oldDir) {
-        Get-ChildItem $oldDir -Force | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
-        if (-not (Get-ChildItem $oldDir -Recurse -File -Force -ErrorAction SilentlyContinue)) { Remove-Item -Recurse -Force $oldDir -ErrorAction SilentlyContinue }
-    }
-    $oldHostRunning = (Test-Path $oldDir) -and [bool](Get-ChildItem $oldDir -Recurse -File -Force -ErrorAction SilentlyContinue)
-
-    $restart = @()
-    if (-not $running) {
-        # nothing holds the files: the whole tree, as a normal build would
-        if (Test-Path $pendingDir) { Remove-Item -Recurse -Force $pendingDir }
-        New-Item -ItemType Directory -Force $app | Out-Null
-        foreach ($f in Get-ChildItem $dev -Recurse -File -Force) {
-            $rel = $f.FullName.Substring($dev.Length + 1)
-            Copy-Rel $dev $app $rel
+        if (Test-Path $oldDir) {
+            Get-ChildItem $oldDir -Force | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+            if (-not (Get-ChildItem $oldDir -Recurse -File -Force -ErrorAction SilentlyContinue)) { Remove-Item -Recurse -Force $oldDir -ErrorAction SilentlyContinue }
         }
-        $pluginNames = @((Get-ChildItem (Join-Path $dev 'plugins') -Directory -ErrorAction SilentlyContinue) |
-            ForEach-Object {
-                $changed = @(Get-Changed $_.FullName (Join-Path $app "plugins\$($_.Name)"))
-                if ($changed.Count) { $_.Name }
-            })
-        Write-Host "Installed into artifacts\app ($($pluginNames.Count) plugin(s) changed: $(if ($pluginNames.Count) { $pluginNames -join ', ' } else { 'none' }))." -ForegroundColor Green
-    }
-    else {
-        Write-Host 'NetPI is running from artifacts\app: the install is file by file, so a failed one changes nothing.' -ForegroundColor Yellow
+        $oldHostRunning = (Test-Path $oldDir) -and [bool](Get-ChildItem $oldDir -Recurse -File -Force -ErrorAction SilentlyContinue)
 
-        # host: each changed file is moved into .old (the running NetPI keeps using it) and the new one copied in. All or
-        # nothing: if a file can't be moved, the ones already moved go back. Symbols in use stay (they only give line numbers).
-        $hostFiles = @(Get-Changed $dev $app 'plugins', 'wwwroot')
-        $aside = Join-Path $oldDir (Get-Date -Format 'yyyyMMdd-HHmmss')
-        $moved = @()
-        $keptSymbols = @()
-        foreach ($rel in $hostFiles) {
-            $dest = Join-Path $app $rel
-            if (-not (Test-Path -LiteralPath $dest)) { continue }
-            $to = Join-Path $aside $rel
-            New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
-            try {
-                Move-Item -LiteralPath $dest -Destination $to -ErrorAction Stop
-                $moved += $rel
+        $restart = @()
+        if (-not $running) {
+            # nothing holds the files: the whole tree, as a normal build would
+            if (Test-Path $pendingDir) { Remove-Item -Recurse -Force $pendingDir }
+            New-Item -ItemType Directory -Force $app | Out-Null
+            # which plugins this install changes, while the app folder still holds the old ones
+            $pluginNames = @((Get-ChildItem (Join-Path $dev 'plugins') -Directory -ErrorAction SilentlyContinue) |
+                ForEach-Object {
+                    $changed = @(Get-Changed $_.FullName (Join-Path $app "plugins\$($_.Name)"))
+                    if ($changed.Count) { $_.Name }
+                })
+            foreach ($f in Get-ChildItem $dev -Recurse -File -Force) {
+                $rel = $f.FullName.Substring($dev.Length + 1)
+                Copy-Rel $dev $app $rel
             }
-            catch {
-                if ($rel -like '*.pdb') { $keptSymbols += $rel; continue }
-                foreach ($m in $moved) { Move-Item -LiteralPath (Join-Path $aside $m) -Destination (Join-Path $app $m) }
-                throw "Could not replace $rel while NetPI runs ($($_.Exception.Message)): artifacts\app is unchanged. Close NetPI and publish again."
-            }
-        }
-        foreach ($rel in $hostFiles) { if ($keptSymbols -notcontains $rel) { Copy-Rel $dev $app $rel } }
-        $restart += @($hostFiles | Where-Object { $_ -match '\.(dll|exe|json)$' })
-
-        # what waits for the next start: -NextStart, and plugins built against contracts the running NetPI doesn't have
-        # (then every plugin's output changes); this publish supersedes an earlier one's
-        $builtContracts = @($contractNames | ForEach-Object { $_ + ':' + (Get-FileHash (Join-Path $dev $_)).Hash })
-        $newContracts = @($runningContracts | Where-Object { $builtContracts -notcontains $_ }).Count -gt 0
-        if (Test-Path $pendingDir) { Remove-Item -Recurse -Force $pendingDir }
-
-        # web UI: replaced as a whole, like a normal build does (a file being served may stay; it is overwritten then)
-        $web = Join-Path $app 'wwwroot'
-        $webChanged = @(Get-Changed (Join-Path $dev 'wwwroot') $web).Count -gt 0
-        if ($webChanged -and $defer) {
-            New-Item -ItemType Directory -Force $pendingDir | Out-Null
-            Copy-Item -Recurse (Join-Path $dev 'wwwroot') (Join-Path $pendingDir 'wwwroot')
-        }
-        elseif ($webChanged) {
-            Remove-Item -LiteralPath $web -Recurse -Force -ErrorAction SilentlyContinue
-            New-Item -ItemType Directory -Force $web | Out-Null
-            Copy-Item -Path (Join-Path $dev 'wwwroot\*') -Destination $web -Recurse -Force
-        }
-
-        # plugins: changed files go into place and the running NetPI reloads those plugins, or wait in .pending
-        $devPlugins = Join-Path $dev 'plugins'
-        $pluginFiles = @(Get-Changed $devPlugins (Join-Path $app 'plugins'))
-        $pluginNames = @($pluginFiles | ForEach-Object { $_.Split('\')[0] } | Sort-Object -Unique)
-        $pluginsWait = $defer -or $newContracts
-        if ($pluginsWait) {
-            foreach ($name in $pluginNames) {
-                New-Item -ItemType Directory -Force (Join-Path $pendingDir 'plugins') | Out-Null
-                Copy-Item -Recurse (Join-Path $devPlugins $name) (Join-Path $pendingDir "plugins\$name")
-            }
+            Write-Host "Installed into artifacts\app ($($pluginNames.Count) plugin(s) changed: $(if ($pluginNames.Count) { $pluginNames -join ', ' } else { 'none' }))." -ForegroundColor Green
         }
         else {
-            if ($pluginNames.Count) { Show-PublishCost $pluginNames }
-            foreach ($rel in $pluginFiles) { Copy-Rel $devPlugins (Join-Path $app 'plugins') $rel }
+            Write-Host 'NetPI is running from artifacts\app: the install is file by file, so a failed one changes nothing.' -ForegroundColor Yellow
+
+            # host: each changed file is moved into .old (the running NetPI keeps using it) and the new one copied in. All or
+            # nothing: if a file can't be moved, the ones already moved go back. Symbols in use stay (they only give line numbers).
+            $hostFiles = @(Get-Changed $dev $app 'plugins', 'wwwroot')
+            $aside = Join-Path $oldDir (Get-Date -Format 'yyyyMMdd-HHmmss')
+            $moved = @()
+            $keptSymbols = @()
+            foreach ($rel in $hostFiles) {
+                $dest = Join-Path $app $rel
+                if (-not (Test-Path -LiteralPath $dest)) { continue }
+                $to = Join-Path $aside $rel
+                New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
+                try {
+                    Move-Item -LiteralPath $dest -Destination $to -ErrorAction Stop
+                    $moved += $rel
+                }
+                catch {
+                    if ($rel -like '*.pdb') { $keptSymbols += $rel; continue }
+                    foreach ($m in $moved) { Move-Item -LiteralPath (Join-Path $aside $m) -Destination (Join-Path $app $m) }
+                    throw "Could not replace $rel while NetPI runs ($($_.Exception.Message)): artifacts\app is unchanged. Close NetPI and publish again."
+                }
+            }
+            foreach ($rel in $hostFiles) { if ($keptSymbols -notcontains $rel) { Copy-Rel $dev $app $rel } }
+            $restart += @($hostFiles | Where-Object { $_ -match '\.(dll|exe|json)$' })
+
+            # what waits for the next start: -NextStart, and plugins built against contracts the running NetPI doesn't have
+            # (then every plugin's output changes); this publish supersedes an earlier one's
+            $builtContracts = @($contractNames | ForEach-Object { $_ + ':' + (Get-FileHash (Join-Path $dev $_)).Hash })
+            $newContracts = @($runningContracts | Where-Object { $builtContracts -notcontains $_ }).Count -gt 0
+            if (Test-Path $pendingDir) { Remove-Item -Recurse -Force $pendingDir }
+
+            # web UI: replaced as a whole, like a normal build does (a file being served may stay; it is overwritten then)
+            $web = Join-Path $app 'wwwroot'
+            $webChanged = @(Get-Changed (Join-Path $dev 'wwwroot') $web).Count -gt 0
+            if ($webChanged -and $defer) {
+                New-Item -ItemType Directory -Force $pendingDir | Out-Null
+                Copy-Item -Recurse (Join-Path $dev 'wwwroot') (Join-Path $pendingDir 'wwwroot')
+            }
+            elseif ($webChanged) {
+                Remove-Item -LiteralPath $web -Recurse -Force -ErrorAction SilentlyContinue
+                New-Item -ItemType Directory -Force $web | Out-Null
+                Copy-Item -Path (Join-Path $dev 'wwwroot\*') -Destination $web -Recurse -Force
+            }
+
+            # plugins: changed files go into place and the running NetPI reloads those plugins, or wait in .pending
+            $devPlugins = Join-Path $dev 'plugins'
+            $pluginFiles = @(Get-Changed $devPlugins (Join-Path $app 'plugins'))
+            $pluginNames = @($pluginFiles | ForEach-Object { $_.Split('\')[0] } | Sort-Object -Unique)
+            $pluginsWait = $defer -or $newContracts
+            if ($pluginsWait) {
+                foreach ($name in $pluginNames) {
+                    New-Item -ItemType Directory -Force (Join-Path $pendingDir 'plugins') | Out-Null
+                    Copy-Item -Recurse (Join-Path $devPlugins $name) (Join-Path $pendingDir "plugins\$name")
+                }
+            }
+            else {
+                if ($pluginNames.Count) { Show-PublishCost $pluginNames }
+                foreach ($rel in $pluginFiles) { Copy-Rel $devPlugins (Join-Path $app 'plugins') $rel }
+            }
+
+            Write-Host ''
+            if ($pluginNames.Count -and -not $pluginsWait) {
+                Write-Host "Plugins updated in place (the running NetPI reloads them): $($pluginNames -join ', ')" -ForegroundColor Green
+            }
+            if ($pluginNames.Count -and $pluginsWait) {
+                $why = if ($newContracts) { 'The contracts changed: the running NetPI keeps its plugins' } else { 'The running NetPI keeps its plugins' }
+                Write-Host "$why; the rebuilt ones wait in artifacts\app\.pending for its next start: $($pluginNames -join ', ')" -ForegroundColor Yellow
+            }
+            if ($webChanged -and $defer) { Write-Host 'The new web UI waits in artifacts\app\.pending for the next start.' -ForegroundColor Yellow }
+            if ($keptSymbols.Count) {
+                Write-Host "Symbols in use were kept: $($keptSymbols -join ', ') (stack traces lack line numbers until a publish with NetPI closed)." -ForegroundColor DarkYellow
+            }
         }
 
-        Write-Host ''
-        if ($pluginNames.Count -and -not $pluginsWait) {
-            Write-Host "Plugins updated in place (the running NetPI reloads them): $($pluginNames -join ', ')" -ForegroundColor Green
+        if ($restart.Count -or $oldHostRunning) {
+            $what = if ($restart.Count) { " The new host: $($restart -join ', ')." } else { '' }
+            Write-Host "Ready for the next start: close NetPI and start it again (artifacts\app\NetPI.exe).$what" -ForegroundColor Yellow
         }
-        if ($pluginNames.Count -and $pluginsWait) {
-            $why = if ($newContracts) { 'The contracts changed: the running NetPI keeps its plugins' } else { 'The running NetPI keeps its plugins' }
-            Write-Host "$why; the rebuilt ones wait in artifacts\app\.pending for its next start: $($pluginNames -join ', ')" -ForegroundColor Yellow
-        }
-        if ($webChanged -and $defer) { Write-Host 'The new web UI waits in artifacts\app\.pending for the next start.' -ForegroundColor Yellow }
-        if ($keptSymbols.Count) {
-            Write-Host "Symbols in use were kept: $($keptSymbols -join ', ') (stack traces lack line numbers until a publish with NetPI closed)." -ForegroundColor DarkYellow
-        }
+        Write-Host "Installed into $app (the running app). artifacts\dev\app is what you just built; -Pending lists what a restart waits for." -ForegroundColor DarkGray
     }
-
-    if ($restart.Count -or $oldHostRunning) {
-        $what = if ($restart.Count) { " The new host: $($restart -join ', ')." } else { '' }
-        Write-Host "Ready for the next start: close NetPI and start it again (artifacts\app\NetPI.exe).$what" -ForegroundColor Yellow
+    finally {
+        $installLock.Dispose()   # whatever happened above: a failed install must not hold the next publisher
+        Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
     }
-    Write-Host "Installed into $app (the running app). artifacts\dev\app is what you just built; -Pending lists what a restart waits for." -ForegroundColor DarkGray
-    $installLock.Dispose()
-    Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
 }
 else {
     Write-Host "`nThe running app was not touched: $app is the installed build, artifacts\dev\app is this one." -ForegroundColor Green
