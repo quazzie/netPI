@@ -62,6 +62,7 @@ internal sealed class SkillTool(SkillLoader loader, IPluginContext ctx) : IAgent
             details["already"] = true;
             return Task.FromResult(ToolResult.Ok($"The skill \"{skill.Name}\" is already loaded above, unchanged: follow those instructions.", details));
         }
+        SkillNotices.RecordLoaded(ctx, context.SessionId, skill.Name);
         return Task.FromResult(ToolResult.Ok(loaded.Text, details));
     }
 

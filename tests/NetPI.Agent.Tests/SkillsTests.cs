@@ -12,6 +12,7 @@ public static class SkillsTests
         t.Add("skills: the catalog arrives as notices: all at first, then only changes, again after compaction with what was loaded", CatalogNotices);
         t.Add("skills: the skill tool returns the instructions with the folder and its files, once; refuses unknown, off and user-only skills", SkillTool);
         t.Add("skills: /skill:name at the start of a message loads that skill for it", SlashSkill);
+        t.Add("skills: a recorded load is announced after compaction from the session's meta, not a history walk", MetaLoadedList);
         t.Add("skills: a chat with the skill tool switched off gets no catalog until it is on again; /skill:name still works", ToolSwitchedOff);
     }
 
@@ -204,6 +205,7 @@ public static class SkillsTests
         // the model loads a skill; after compaction the catalog is announced again, with what was loaded before
         h.Catalog.Handler = (r, ct) => Reply.HasToolResult(r) ? Reply.Text("loaded") : Reply.Tool("skill", new { name = "deploy" });
         await Turn(h, s.Id, "deploy it");
+        Check.Equal("deploy", LoadedNames(h, s), "the load is recorded in the session's meta");
         h.Catalog.Handler = (r, ct) => Reply.Text("ok");
         h.Sessions.MarkCompacted(s.Id, h.Sessions.GetMessages(s.Id, null, 1000)[^1].Seq);
         await Turn(h, s.Id, "after compaction");
@@ -266,6 +268,15 @@ public static class SkillsTests
         Check.Contains(cut, fileLines[line - 2], "the line before is in");
         Check.NotContains(cut, fileLines[line - 1], "the line it names is not");
         Check.True(cut.Length < 20_000, "under the runtime's limit for a tool result");
+
+        Check.Equal("deploy,long", LoadedNames(h, s), "fresh loads are recorded once, in load order: the repeat (Deploy) adds nothing, nor do the errors");
+    }
+
+    /// <summary>The session's <c>meta.loadedSkills</c> as names.</summary>
+    private static string LoadedNames(TestHost h, SessionInfo s)
+    {
+        if (h.Sessions.GetSession(s.Id)?.Meta?[SkillNotices.LoadedMetaKey] is not JsonArray list) return "";
+        return string.Join(",", list.Select(n => n?.GetValue<string>() ?? ""));
     }
 
     private static async Task ToolSwitchedOff()
@@ -322,5 +333,22 @@ public static class SkillsTests
         var missing = Notices(h, s.Id, "skill").Last();
         Check.Equal("The user asked for the skill \"nope\", but there is no such skill here. The skills: deploy, manual.", missing.Text);
         Check.True(missing.Meta?["missing"] is not null);
+        Check.Equal("deploy,manual", LoadedNames(h, s), "user loads are recorded in the meta; the missing skill is not");
+    }
+
+    private static async Task MetaLoadedList()
+    {
+        var (h, repo, _, _, s) = await StartAsync();
+        await using var __ = h;
+        Skill(Path.Combine(repo, ".agents", "skills"), "deploy", "name: deploy\ndescription: Deploy the app.");
+        // A fresh session, no history at all: the announcement can only come from the meta, not a walk of the history.
+        h.Sessions.UpdateSession(s.Id, x =>
+        {
+            x.Meta ??= new JsonObject();
+            x.Meta[SkillNotices.LoadedMetaKey] = new JsonArray("deploy");
+        });
+        await Turn(h, s.Id, "hi");
+        var first = Notices(h, s.Id, "skills").Single();
+        Check.Contains(first.Text, "Before the conversation was compacted you had loaded: deploy. Load a skill again if you still need its instructions.");
     }
 }

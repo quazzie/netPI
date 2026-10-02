@@ -62,9 +62,11 @@ subagent's tool list), and a chat without it gets no catalog.
   No locations: the tool returns the skill's folder. Afterwards only changes are appended ("The skills changed. New or
   changed: … No longer available: …"), e.g. after a project switch or when a skill is added, renamed or its description
   edited. What the model has is read from the notices still in the context, so after compaction the catalog is announced
-  again, naming the skills it had loaded before ("Load a skill again if you still need its instructions"). No skills: no
+  again, naming the skills it had loaded before ("Load a skill again if you still need its instructions"): the loads are
+  recorded in the session's meta (`loadedSkills: [name]`) as they happen, and the announcement reads that, not the
+  session's whole history. No skills: no
   notice. A tool switched on later brings the catalog with it; switched off, the tools notice says so. Meta:
-  `skills: [{ name, hash, path }]`, `removed: [name]`.
+  `skills: [{ name, hash, path }]`, `removed: [name]`, `loadedSkills: [name]`.
 - **The `skill` tool** loads one (see [TOOLS.md](TOOLS.md)). Its guideline in the "# Tools" section says when: when a
   task matches a skill's description, load it before you start and follow it (the description only says what it loads).
   Like every tool definition it is part of every request (about 135 tokens with the guideline); the backend's prompt
