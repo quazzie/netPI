@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json.Nodes;
 using NetPI.Compaction;
 
@@ -55,6 +56,11 @@ public static class CompactionTests
         }
     }
 
+    /// <summary>How many sessions the service holds a compaction lock for.</summary>
+    private static int Locks(CompactionService service) =>
+        service.GetType().GetField("_locks", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(service)
+            is SessionState<SemaphoreSlim> locks ? locks.Count : -1;
+
     // ------------------------------------------------------------------ planner property test
 
     private static List<ChatMessage> RandomConversation(Random rnd)
@@ -90,6 +96,29 @@ public static class CompactionTests
 
     public static void Register(TestRunner r)
     {
+        // One semaphore per session was kept for the life of the process: a subagent's chat is created and deleted
+        // constantly, so the map grew with every compaction the host ever did and nothing ever removed an entry
+        // (idea-bv3iw4). The field is private, so the count is read the way a leak test must.
+        r.Add("compaction: a deleted session's lock goes with the session, another chat keeps its own", async () =>
+        {
+            var env = new Env();
+            var subagent = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "subagent", Model = env.Model.Ref });
+            env.Conversation(13);
+            env.Ctx.ModelsFake.Responder = req => new ChatMessage { Role = MessageRole.Assistant, StopReason = "stop", Parts = [new TextPart { Text = "## Task\nhalf" }] };
+
+            await env.Service.CompactAsync(new CompactionRequest { SessionId = env.Session.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            await env.Service.CompactAsync(new CompactionRequest { SessionId = subagent.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            Check.Equal(2, Locks(env.Service), "one lock per compacted chat");
+
+            env.Ctx.Events.Publish(EventTypes.SessionDeleted, new JsonObject { ["id"] = env.Session.Id });
+            Check.Equal(1, Locks(env.Service), "the deleted chat's lock is gone");
+
+            // and the other chat compacts on: the lock is taken again, for that session only
+            env.Ctx.SessionsFake.AppendMessage(subagent.Id, T.User("hello"));
+            env.Ctx.SessionsFake.AppendMessage(subagent.Id, T.Assistant("hi"));
+            await env.Service.CompactAsync(new CompactionRequest { SessionId = subagent.Id, Model = env.Model, Mode = CompactionMode.Manual }, CancellationToken.None);
+            Check.Equal(1, Locks(env.Service), "still just the live chat");
+        });
         r.Add("compaction: resolve the effective named-agent model without silently switching models", async () =>
         {
             var e = new Env();

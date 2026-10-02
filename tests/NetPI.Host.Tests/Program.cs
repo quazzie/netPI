@@ -18,6 +18,7 @@ PluginIndependenceTests.Register(runner);
 BackupTests.Register(runner);
 BuildTests.Register(runner);
 RunnerTests.Register(runner);
+SessionStateTests.Register(runner);
 ReviewBackupTests.Register(runner);
 var code = await runner.RunAsync(args);
 T.Cleanup();

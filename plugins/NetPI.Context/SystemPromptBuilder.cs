@@ -326,6 +326,7 @@ internal sealed class PromptStore(IPluginContext ctx)
     public void Delete(string sessionId)
     {
         Reset(sessionId);
+        _reset.TryRemove(sessionId, out _);   // Reset only ever writes it: without this it was the one entry a deleted chat left behind
         _sent.TryRemove(sessionId, out _);
         if (_db is null) return;
         try { _db.Execute("DELETE FROM context_sent WHERE session_id = @sessionId", new { sessionId }); }

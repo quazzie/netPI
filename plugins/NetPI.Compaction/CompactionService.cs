@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -78,7 +77,9 @@ public sealed class CompactionService(IPluginContext ctx)
 {
     public const string SystemPrompt = SummaryPrompts.System;
 
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new(StringComparer.Ordinal);
+    /// <summary>One compaction lock per session, released with the session: a subagent's chat is created and deleted
+    /// constantly, and a semaphore per chat would otherwise outlive every one of them (idea-bv3iw4).</summary>
+    private readonly SessionState<SemaphoreSlim> _locks = new(ctx.Events);
 
     public CompactionOptions Options() => CompactionOptions.From(ctx.Settings);
 
