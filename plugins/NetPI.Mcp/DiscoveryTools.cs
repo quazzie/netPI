@@ -35,7 +35,7 @@ internal sealed class McpSearchTool(IPluginContext ctx, ServerManager manager) :
     internal static IReadOnlyList<IAgentTool> Eligible(IPluginContext ctx, ToolContext context) =>
         context.EligibleTools?.Invoke() ?? ToolSelection.Eligible(ctx.Tools,
             ctx.Services.Get<IAgentRuntime>()?.GetBySession(context.SessionId), ctx.Sessions.GetSession(context.SessionId),
-            ctx.Settings.Get("agents.maxDepth", 3));
+            ToolSelection.MaxDepth(ctx.Settings));
 
     internal static List<RemoteTool> Rank(IEnumerable<RemoteTool> tools, string query, int limit) =>
         Score(tools, query, t => t.Definition.Name + " " + t.RemoteName, t => t.SearchText).Take(limit).Select(s => s.Item).ToList();

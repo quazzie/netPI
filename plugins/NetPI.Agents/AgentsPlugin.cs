@@ -6,8 +6,8 @@ namespace NetPI.Agents;
 /// <summary>
 /// Agents (<see cref="IAgentScheduler"/>), the ledger of every model call with its cost, and the budget.
 /// <para>Settings: <c>agents.&lt;id&gt;</c> <c>{ model, instances, use, disabled, budget: { limitUsd }, cost: { input, output } }</c>,
-/// <c>budget.*</c>; still read: <c>models.localSlots</c> (1) and <c>models.cloudSlots</c> (4) for model calls
-/// without an agent, <c>budget.providers.&lt;provider&gt;.dailyTokens</c>. The lanes of earlier versions become agents on the first
+/// <c>budget.*</c>; <c>models.localSlots</c> (1) and <c>models.cloudSlots</c> (4) for model calls
+/// without an agent; still read: <c>budget.providers.&lt;provider&gt;.dailyTokens</c>. The lanes of earlier versions become agents on the first
 /// start (<see cref="AgentUpgrade"/>).</para>
 /// <para>RPC: <c>agents.list</c>, <c>agents.use</c>, <c>agents.setEnabled</c>, <c>usage.summary</c>, <c>usage.session</c>,
 /// <c>budget.status</c>, <c>budget.allow</c>. Events: <c>agents.changed { agents }</c>, <c>usage.changed</c> (the budget
@@ -22,6 +22,17 @@ public sealed class AgentsPlugin : INetPiPlugin
 
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
+        context.Services.Register(new SettingsSection
+        {
+            Id = "modelSlots", Title = "Model slots", Group = "Models", Order = 10,
+            Settings =
+            [
+                SettingInfo.Int(ModelCapacity.LocalSetting, "Local model slots", ModelCapacity.DefaultLocal,
+                    "Concurrent runs of one local model without a catalog concurrency; agents on the model share them."),
+                SettingInfo.Int(ModelCapacity.CloudSetting, "Cloud provider slots", ModelCapacity.DefaultCloud,
+                    "Concurrent runs across one cloud provider's models."),
+            ],
+        });
         context.Services.Register(new SettingsSection
         {
             Id = "budget", Title = "Budget", Group = "Models", Order = 20,

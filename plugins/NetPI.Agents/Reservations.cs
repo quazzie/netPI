@@ -68,11 +68,11 @@ internal sealed partial class Ledger
     // would count at full size), priced at the cache-read rate — in an agent loop the context is re-read, not
     // re-sent, and a call that misses the cache is corrected by the settlement, while a 3-5x over-reservation
     // locks a tight budget for nothing. The output is the effective maximum the provider would accept.
-    internal static double Estimate(ModelRequest request, Price? price)
+    internal static double Estimate(ModelRequest request, Price? price, ISettings? settings)
     {
         if (price is null || price.Free) return 0;
         var input = EstimateInput(request);
-        var output = request.MaxOutputTokens is > 0 and var max ? max : request.Model.MaxOutputTokens ?? 16384;
+        var output = request.MaxOutputTokens is > 0 and var max ? max : OutputLimit.Model(request.Model, settings);
         if (request.Model.MaxOutputTokens is > 0 and var cap && output > cap) output = cap;   // the provider clamps to its own maximum
         return (input * price.CacheRead + output * price.Output) / 1_000_000;
     }
@@ -111,8 +111,8 @@ internal sealed partial class Ledger
         var price = PriceOf(request.Model, cfg);
         var paid = Paid(request.Model, price);
         if (paid && request.MaxOutputTokens is not > 0)
-            request.MaxOutputTokens = request.Model.MaxOutputTokens is > 0 ? request.Model.MaxOutputTokens : 16384;
-        var cost = paid ? Estimate(request, price) : 0;
+            request.MaxOutputTokens = OutputLimit.Model(request.Model, _ctx.Settings);
+        var cost = paid ? Estimate(request, price, _ctx.Settings) : 0;
         var o = Options();
         var limited = o.MonthlyUsd.HasValue || o.DailyUsd.HasValue || DailyCap(cfg).HasValue;
         var root = RootSession(request.SessionId);

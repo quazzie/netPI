@@ -127,12 +127,14 @@ turned off; models without effort levels only get on/off. Free models are limite
 | key | default | |
 |---|---|---|
 | `agent.maxTurns` | `200` | model calls per run |
-| `agent.defaultMaxOutputTokens` | `16384` | when a model has no limit |
+| `agent.defaultMaxOutputTokens` | `16384` | when a model has no limit (the run's request and the budget's reservation of its output) |
 | `agent.maxToolResultChars` | `20000` | a longer tool result is saved to a file: the agent gets its start and end and the path, to read the rest in parts or grep it (`read` pages, the bash and `ssh` `run` tails stay under it) |
 | `agent.parallelReadOnlyTools` | `true` | run several read-only calls of one turn concurrently |
 | `agents.maxDepth` | `3` | subagent nesting depth (deeper agents get no orchestration tools) |
 | `agents.queueMax` | `20` | the longest an agent's queue of waiting runs grows: beyond it a new run is refused with a clear error instead of waiting (0: no waiting at all) |
 | `agents.queueTimeoutSeconds` | `600` | a run that has waited this long for a free slot fails with a clear error instead of waiting forever (0: no time limit) |
+| `models.localSlots` | `1` | concurrent runs of one local model without a catalog `concurrency` (Settings → Models) |
+| `models.cloudSlots` | `4` | concurrent runs across one cloud provider's models (Settings → Models) |
 
 ## Profiles
 

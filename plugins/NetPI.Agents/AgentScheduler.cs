@@ -15,9 +15,6 @@ namespace NetPI.Agents;
 /// </summary>
 internal sealed class AgentScheduler : IAgentScheduler
 {
-    public const int DefaultCloudCapacity = 4;
-    public const int DefaultLocalCapacity = 1;
-
     private readonly IPluginContext _ctx;
     private readonly Ledger? _usage;
     private readonly IResourceLeases? _resources;
@@ -182,12 +179,11 @@ internal sealed class AgentScheduler : IAgentScheduler
     /// <summary>The slot key of a model call without an agent: the local model, or the cloud provider.</summary>
     private static string ModelKey(ModelInfo model) => model.IsLocal ? model.Ref : model.Provider;
 
-    private int LocalCapacity(ModelInfo model) => Math.Max(1,
-        model.Concurrency is > 0 ? model.Concurrency.Value : Setting("models.localSlots", DefaultLocalCapacity));
+    private int LocalCapacity(ModelInfo model) => ModelCapacity.Local(_ctx.Settings, model);
 
     private int ModelKeyCapacity(ModelInfo model) => model.IsLocal
         ? LocalCapacity(model)
-        : Setting("models.cloudSlots", DefaultCloudCapacity);
+        : ModelCapacity.Cloud(_ctx.Settings);
 
     /// <summary>Default instances of an agent: a local model's slots, 1 on a cloud model (it may cost money).</summary>
     internal int DefaultInstances(ModelInfo? model) =>
@@ -405,8 +401,8 @@ internal sealed class AgentScheduler : IAgentScheduler
         {
             // A pool we have never resolved: guess by the key shape ("provider/model" = local model, else cloud provider).
             pool.Capacity = key.Contains('/')
-                ? Math.Max(1, Setting("models.localSlots", DefaultLocalCapacity))
-                : Math.Max(1, Setting("models.cloudSlots", DefaultCloudCapacity));
+                ? ModelCapacity.Local(_ctx.Settings, null)
+                : ModelCapacity.Cloud(_ctx.Settings);
         }
         _pools[key] = pool;
         return pool;
@@ -434,7 +430,7 @@ internal sealed class AgentScheduler : IAgentScheduler
                     : held.Where(x => string.Equals(x.Resource, g.Key, StringComparison.OrdinalIgnoreCase)).Select(x => x.Holder).ToList();
                 return new ModelResourceSlots
                 {
-                    Key = g.Key, Model = model, Capacity = pool is not null ? ResourceCapacity(pool) : ModelSlots(model) ?? DefaultLocalCapacity,
+                    Key = g.Key, Model = model, Capacity = pool is not null ? ResourceCapacity(pool) : ModelSlots(model) ?? ModelCapacity.DefaultLocal,
                     Busy = owners.Count, Queued = g.Value.Sum(p => p.Waiters.Count), Owners = owners,
                     Available = canTakeWork,
                     Unavailable = unavailable,

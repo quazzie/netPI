@@ -13,7 +13,7 @@ public sealed class ResourceLeaseSlot(IDisposable held, AgentSlotRequest request
     public static async ValueTask<IAgentSlot?> AcquireAsync(IServiceRegistry services, ISettings settings, ModelInfo model, AgentSlotRequest request, CancellationToken ct)
     {
         if (!model.IsLocal || services.Get<IResourceLeases>() is not { } physical) return null;
-        var capacity = model.Concurrency is > 0 ? model.Concurrency.Value : Math.Max(1, settings.Get("models.localSlots", 2));
+        var capacity = ModelCapacity.Local(settings, model);
         while (true)
         {
             ct.ThrowIfCancellationRequested();

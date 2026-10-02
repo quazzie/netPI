@@ -16,6 +16,7 @@ public static class ReservationTests
         t.Add("budget: a 529 storm under a dollar cap no longer locks the day", FailedBeforeFirstByte);
         t.Add("budget: a hot swap runs two ledger generations: one reservation, one settle", Swap);
         t.Add("budget: budget.allow runs alongside reservations without wedging the gates", AllowParallel);
+        t.Add("budget: the output of a model without a limit comes from agent.defaultMaxOutputTokens", OutputLimitFromSetting);
     }
 
     private static ModelRequest Request() => new()
@@ -41,7 +42,7 @@ public static class ReservationTests
         await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
         var l = Create(h);
         var req = Request();
-        var estimate = Ledger.Estimate(req, Ledger.PriceOf(req.Model, null));
+        var estimate = Ledger.Estimate(req, Ledger.PriceOf(req.Model, null), h.Settings);
         h.Settings.SetQuiet("budget.monthlyUsd", JsonValue.Create(estimate * 1.5));
         var won = new System.Collections.Concurrent.ConcurrentBag<Ledger.Reservation>();
         await Task.WhenAll(Enumerable.Range(0, 12).Select(_ => Task.Run(() =>
@@ -142,7 +143,7 @@ public static class ReservationTests
             throw new OperationCanceledException();
         }
         await Check.ThrowsAsync<OperationCanceledException>(async () => { await foreach (var e in m.InvokeAsync(req, Cancel, default)) { } });
-        var estimate = Ledger.Estimate(req, Ledger.PriceOf(req.Model, null));
+        var estimate = Ledger.Estimate(req, Ledger.PriceOf(req.Model, null), h.Settings);
         Check.True(l.Spent().Period > 0.003, "a stop that streamed settles from the partial work");
         Check.True(l.Spent().Period < 0.003 + estimate, "no more than the reservation (the old code charged the full reservation)");
         Check.Equal(1L, Calls(h).Count(new DataQuery().Eq("costSource", "interrupted-estimate")));
@@ -219,5 +220,26 @@ public static class ReservationTests
         await Task.WhenAll(allow, reserve).WaitAsync(TimeSpan.FromSeconds(10));
         Check.True(Math.Abs(l.Spent().Today - 0.003) < 1e-9, $"every reservation settled ({l.Spent().Today})");
         Check.True(h.Sessions.GetSession(sid)!.Meta?["budgetAllowedFrom"] is JsonValue, "the allow landed in the session");
+    }
+
+    private static async Task OutputLimitFromSetting()
+    {
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
+        var l = Create(h);
+        var model = new ModelInfo
+        {
+            Provider = "cloud", Id = "no-limit", ContextWindow = 32000,
+            Extra = new JsonObject { ["pricing"] = new JsonObject { ["prompt"] = "0.000001", ["completion"] = "0.000002" } }
+        };
+        var defaulted = new ModelRequest { Model = model, Messages = [ChatMessage.UserText("hi")] };
+        var d = l.Reserve(defaulted, "a", null);
+        Check.Equal(OutputLimit.Default, defaulted.MaxOutputTokens, "the default for a model without a limit");
+        l.Settle(d, null, false, true);
+        h.Settings.SetQuiet("agent.defaultMaxOutputTokens", JsonValue.Create(1000));
+        var req = new ModelRequest { Model = model, Messages = [ChatMessage.UserText("hi")] };
+        var r = l.Reserve(req, "a", null);
+        Check.Equal(1000, req.MaxOutputTokens, "the reservation takes the model's output from agent.defaultMaxOutputTokens");
+        l.Settle(r, null, false, true);
+        Check.Equal(0.0, l.Spent().Period, "a rejected call is free");
     }
 }

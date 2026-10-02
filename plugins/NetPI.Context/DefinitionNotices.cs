@@ -24,7 +24,7 @@ internal static class DefinitionNotices
                 foreach (var (name, revision) in revisions) if (revision is not null) known[name] = revision.GetValue<string>();
         }
         if (known.Count == 0) return false;
-        var eligible = ToolSelection.Eligible(ctx.Tools, turn.Run.Agent, ctx.Sessions.GetSession(sessionId), ctx.Settings.Get("agents.maxDepth", 3));
+        var eligible = ToolSelection.Eligible(ctx.Tools, turn.Run.Agent, ctx.Sessions.GetSession(sessionId), ToolSelection.MaxDepth(ctx.Settings));
         var current = eligible.ToDictionary(t => t.Definition.Name, t => t.Definition.Revision, StringComparer.Ordinal);
         var visibleKnown = store.GetTools(sessionId) is { } names ? ToolNotices.Known(names, context) : new HashSet<string>();
         var updated = new List<string>(); var removed = new List<string>(); var revisionsOut = new JsonObject();

@@ -179,8 +179,7 @@ public sealed class ContextPlugin : INetPiPlugin
     /// </summary>
     internal static List<IAgentTool> ActiveTools(IPluginContext ctx, AgentInfo? agent, SessionInfo? session = null)
     {
-        var maxDepth = 3;
-        try { maxDepth = ctx.Settings.Get("agents.maxDepth", 3); } catch { }
+        var maxDepth = ToolSelection.MaxDepth(ctx.Settings);
         return ToolSelection.Eligible(ctx.Tools, agent, session, maxDepth).Where(t => !t.Definition.Deferred).ToList();
     }
 }

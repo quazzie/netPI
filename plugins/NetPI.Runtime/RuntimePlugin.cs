@@ -27,10 +27,10 @@ public sealed class RuntimePlugin : INetPiPlugin
             Settings =
             [
                 SettingInfo.Int("agent.maxTurns", "Model calls per run", 200, "A run stops after this many.", 1, 10000),
-                SettingInfo.Int("agents.maxDepth", "Subagent depth", 3, "How deep subagents may nest; the deepest get no orchestration tools.", 1, 10),
+                SettingInfo.Int("agents.maxDepth", "Subagent depth", ToolSelection.DefaultMaxDepth, "How deep subagents may nest; the deepest get no orchestration tools.", 1, 10),
                 SettingInfo.Bool("agent.parallelReadOnlyTools", "Run read-only tools in parallel", true, "Several read-only calls of one turn at once."),
                 SettingInfo.Int(ToolResultLimit.Setting, "Longest tool result", ToolResultLimit.Default, "Longer results go to a file: the agent sees their start and end and reads the rest from the file when it needs it.", 1000, null, "chars"),
-                SettingInfo.Int("agent.defaultMaxOutputTokens", "Output limit for models without one", 16384, null, 256, null, "tokens"),
+                SettingInfo.Int(OutputLimit.Setting, "Output limit for models without one", OutputLimit.Default, null, 256, null, "tokens"),
             ],
         });
         var runtime = new AgentRuntime(context);

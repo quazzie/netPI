@@ -26,8 +26,17 @@ public sealed class ResolvedToolCall
 /// <summary>One rule for eligibility across runtime, context preview and deferred search.</summary>
 public static class ToolSelection
 {
+    /// <summary><c>agents.maxDepth</c>: how deep subagents may nest (the runtime, context and mcp all read it from here).</summary>
+    public const int DefaultMaxDepth = 3;
+
+    /// <summary>The setting, clamped to at least 1 like the schema's minimum (a bad value is the default).</summary>
+    public static int MaxDepth(ISettings? settings)
+    {
+        try { return Math.Max(1, settings?.Get("agents.maxDepth", DefaultMaxDepth) ?? DefaultMaxDepth); } catch { return DefaultMaxDepth; }
+    }
+
     public static List<IAgentTool> Eligible(IToolRegistry registry, AgentInfo? agent, SessionInfo? session,
-        int maxDepth = 3, bool includeOff = false)
+        int maxDepth = DefaultMaxDepth, bool includeOff = false)
     {
         var all = registry.All;
         var names = all.Select(t => t.Definition.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);

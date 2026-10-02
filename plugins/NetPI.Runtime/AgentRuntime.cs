@@ -177,7 +177,7 @@ internal sealed class AgentRuntime : IAgentRuntime
     /// </summary>
     internal List<IAgentTool> ToolsFor(AgentInfo? agent, SessionInfo? session, bool includeOff = false)
     {
-        return ToolSelection.Eligible(Ctx.Tools, agent, session, IntSetting("agents.maxDepth", 3), includeOff);
+        return ToolSelection.Eligible(Ctx.Tools, agent, session, ToolSelection.MaxDepth(Ctx.Settings), includeOff);
     }
 
     // ---------------------------------------------------------------- registry
@@ -740,7 +740,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             {
                 if (model.IsLocal && Ctx.Services.Get<IResourceLeases>() is { } physical)
                 {
-                    var capacity = model.Concurrency is > 0 ? model.Concurrency.Value : Math.Max(1, IntSetting("models.localSlots", 2));
+                    var capacity = ModelCapacity.Local(Ctx.Settings, model);
                     if (!physical.TryAcquire("local:" + model.Ref, capacity, new AgentSlotRequest
                         { Key = model.Ref, AgentId = s.Info.Id, SessionId = s.Info.SessionId, Label = s.Info.Name, ExecutorGeneration = Generation, Priority = priority, Provider = model.Provider }, capacity, out var held))
                     {
@@ -814,7 +814,7 @@ internal sealed class AgentRuntime : IAgentRuntime
             parent = FindState(pid) ?? throw new ArgumentException($"Unknown parent agent '{pid}'.");
         var parentInfo = parent is null ? null : Snapshot(parent);
         var depth = (parentInfo?.Depth ?? 0) + 1;
-        var maxDepth = IntSetting("agents.maxDepth", 3);
+        var maxDepth = ToolSelection.MaxDepth(Ctx.Settings);
         if (depth > maxDepth)
             throw new InvalidOperationException($"Maximum subagent depth ({maxDepth}) reached: this agent cannot spawn subagents (setting agents.maxDepth).");
 
