@@ -149,7 +149,11 @@ public interface ISessionRepository
     ChatMessage? GetMessage(long id);
     /// <summary>Ascending by seq. With <paramref name="limit"/> (and optionally <paramref name="beforeSeq"/>): the page of that many messages ending just before it, still ascending.</summary>
     IReadOnlyList<ChatMessage> GetMessages(string sessionId, long? beforeSeq = null, int? limit = null);
-    /// <summary>The session's uncompacted messages ascending, and the highest uncompacted seq (0 when none), read as one consistent view.</summary>
+    /// <summary>
+    /// The session's uncompacted messages ascending, and the highest uncompacted seq (0 when none) read <b>after</b> the rows, so it is never
+    /// lower than the last row's seq. A message that committed between the two reads shows as Newest > the last row's seq, which the session
+    /// service takes as "this view is already stale: do not cache it".
+    /// </summary>
     (IReadOnlyList<ChatMessage> Rows, long Newest) ReadContext(string sessionId);
     /// <summary>Mark every message of the session with <c>Seq</c> &lt;= <paramref name="upToSeq"/> compacted.</summary>
     void MarkCompacted(string sessionId, long upToSeq);
@@ -192,7 +196,8 @@ public enum DataOp { Eq, Ne, Lt, Le, Gt, Ge, In, NotIn, IsNull, NotNull }
 /// One condition on an index field. <see cref="Value"/> is a string, long, double or bool (bool stores as 0/1 in an Integer field);
 /// for <see cref="DataOp.In"/> and <see cref="DataOp.NotIn"/> an <c>IEnumerable</c> of those; ignored for <see cref="DataOp.IsNull"/>
 /// and <see cref="DataOp.NotNull"/>. A comparison never matches a field with no value (including <c>Ne</c> and <c>NotIn</c>): ask for it with
-/// <c>IsNull</c>.
+/// <c>IsNull</c>. A null <see cref="Value"/> on a comparison, or a value of the wrong type for the field, throws <see cref="ArgumentException"/>;
+/// an empty <c>In</c> matches nothing and an empty <c>NotIn</c> matches every document that has a value.
 /// </summary>
 public sealed record DataFilter(string Field, DataOp Op, object? Value = null);
 
