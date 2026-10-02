@@ -115,7 +115,10 @@ internal sealed class PromptStore(IPluginContext ctx)
     }
 
     private static long Number(JsonObject? doc, string field, long fallback = 0) =>
-        doc?[field] is JsonValue v && v.TryGetValue<long>(out var n) ? n : fallback;
+        doc?[field] is JsonValue v
+            // the value comes back as the type it was written with: int in memory, long from a column
+            ? v.TryGetValue<long>(out var l) ? l : v.TryGetValue<int>(out var i) ? i : fallback
+            : fallback;
 
     private static string? Text(JsonObject? doc, string field) =>
         doc?[field] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
