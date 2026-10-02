@@ -184,7 +184,11 @@ three views: `list` (filter, new session, edit, remove), `new` (folder with Brow
 its skills and their problems from `skills.list { projectId }`, remove). The pickers' footer opens it (Edit "current"…, New project…, Manage projects…), as do the Projects tab (+,
 row click, the edit button) and the command palette. A project created from a picker is attached to that session, or
 in select mode becomes the project new sessions start in. Dialogs can stack (a confirm or the folder picker over the
-projects dialog): `Modal` keeps a stack, and Esc closes only the top one.
+projects dialog): `Modal` keeps a stack, and Esc closes only the top one. While a dialog is open it owns the keyboard:
+Tab cycles inside it (`trapTab`) and the rest of the app is `inert` (`inertBackground`), so nothing behind the overlay
+can take a click or a key — the app's own Ctrl shortcuts (`App.svelte` `anyModalOpen()`) return early for as long as
+one is open. The command palette and the lightbox are layers of their own, outside `Modal`, and join the same Esc
+stack with `escLayer()`.
 Components that close themselves (`onclose()`) or `await` a dialog read their props
 into locals first, because after the parent clears the modal state or the row re-renders, the props are gone.
 

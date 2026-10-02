@@ -1407,6 +1407,14 @@ log('projects dialog');
   await page.locator('.popover .manage', { hasText: 'Manage projects' }).click();
   await page.waitForSelector('.projects-dialog');
   check('Manage projects opens the projects dialog', (await page.locator('.projects-dialog .prow').count()) >= 3);
+  // the dialog owns the keyboard: Tab stays in it, and the app behind it neither takes a click nor a shortcut
+  await page.keyboard.press('Tab');
+  check('Tab stays inside the open dialog', await page.evaluate(() => !!document.activeElement?.closest('.dialog')));
+  check('the app behind the dialog is inert', await page.evaluate(() => document.querySelector('.app > .main')?.inert === true));
+  const tabsBehind = await page.locator('.topbar .tab').count();
+  await page.keyboard.press('Control+t');
+  await page.waitForTimeout(200);
+  check('Ctrl+T behind the dialog does not open a new chat', (await page.locator('.topbar .tab').count()) === tabsBehind);
   await page.waitForTimeout(200);
   await shot(page, '22a-projects-dialog');
   await page.locator('.projects-dialog .prow', { hasText: 'website' }).locator('.pmain').click();
