@@ -1,6 +1,6 @@
 name: CI
 
-# Build and run the five unit suites (Providers, Tools, Agent, Aux, Host) on every push and pull request.
+# Build and run the six unit suites (Providers, Tools, Agent, Aux, Host, Storage) on every push and pull request.
 #
 # The suites run on windows-latest on purpose:
 #   - the Aux suite drives a real browser (the screenshot test renders a page in a headless Edge/Chrome, and the
@@ -13,7 +13,7 @@ name: CI
 # unit suites are not run there yet: add a Linux job once the suites are green there, keeping the Aux browser
 # tests in mind (they need a browser, or they skip).
 #
-# No publishing, no secrets, no deployment: scripts/test.ps1 builds the five test projects (Release) into
+# No publishing, no secrets, no deployment: scripts/test.ps1 builds the six test projects (Release) into
 # artifacts/dev/app and runs each suite, exiting non-zero when any test fails. The e2e job runs the real-server suite
 # (scripts/e2e.ps1) the same way.
 on:
@@ -34,10 +34,10 @@ jobs:
         with:
           dotnet-version: '10.0'
 
-      - name: Restore the five test projects
+      - name: Restore the six test projects
         # the test projects pull in the plugins they exercise; the desktop shell is not in their graph
         run: |
-          foreach ($suite in 'Providers', 'Tools', 'Agent', 'Aux', 'Host') {
+          foreach ($suite in 'Providers', 'Tools', 'Agent', 'Aux', 'Host', 'Storage') {
             dotnet restore "tests/NetPI.$suite.Tests/NetPI.$suite.Tests.csproj"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }

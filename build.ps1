@@ -62,7 +62,7 @@ $app = Join-Path $PSScriptRoot 'artifacts\app'
 # Where to install. The app that is *running* says where it is (server.json's appDir), which is not this repository's
 # artifacts\app when the build happens in a worktree - installing into a folder nothing watches is the silent no-op that
 # makes "I published" a lie. -AppDir overrides both.
-if ($AppDir) { $app = (Resolve-Path -LiteralPath $AppDir -ErrorAction SilentlyContinue)?.Path ?? [IO.Path]::GetFullPath($AppDir) }
+if ($AppDir) { $r = Resolve-Path -LiteralPath $AppDir -ErrorAction SilentlyContinue; $app = if ($r) { $r.Path } else { [IO.Path]::GetFullPath($AppDir) } }
 else {
     $netpiHome = if ($env:NETPI_HOME) { $env:NETPI_HOME } else { Join-Path $HOME '.netpi' }   # $HOME is read-only
     $serverFile = Join-Path $netpiHome 'server.json'

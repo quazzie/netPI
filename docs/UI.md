@@ -12,7 +12,7 @@ Styling is plain CSS with design tokens.
 
 ```sh
 npm install
-npm run build            # build:web (→ artifacts/app/wwwroot) + build:plugins (plugins/*/ui → wwwroot/ui.js)
+npm run build            # build:web (→ web/dist; into artifacts/app/wwwroot with NETPI_COPY) + build:plugins (plugins/*/ui → wwwroot/ui.js)
 npm run dev              # Vite dev server on :5173, proxies /ws /api /plugins → http://127.0.0.1:7431
 npm run mock             # mock host on :7431 (serves the built UI + the sample plugin), token "dev"
 npm run e2e              # the whole Playwright walkthrough (starts its own mock on :7432; ~2.5 min): the gate before a merge,
@@ -36,8 +36,9 @@ node web/mock/fake-openai.mjs [port]  # scripted OpenAI-compatible model server 
 - **Against the mock:** `npm run build && npm run mock`, then open `http://127.0.0.1:7431/?token=dev`.
   `npm run dev` also works against the mock, because it listens on the same port. `MOCK_SPEED=3` runs the fake
   agent three times faster. `--no-auth` and `--port N` are also available.
-- **Plugin UI hot reload:** `build:plugins` also copies each bundle to `artifacts/app/plugins/<P>/wwwroot/ui.js`.
-  The host then bumps the tab `version` and emits `ui.changed`, and the tab remounts without a .NET build.
+- **Plugin UI hot reload:** `build:plugins --copy` (or `NETPI_COPY=1`, which `build.ps1 -Publish` sets) also copies
+  each bundle to `artifacts/app/plugins/<P>/wwwroot/ui.js`. The host then bumps the tab `version` and emits
+  `ui.changed`, and the tab remounts without a .NET build.
 - **Real host without a model:** start `node web/mock/fake-openai.mjs 7468`, then point the host at it with
   `settings.set { path: "providers.aiproxy", value: { baseUrl: "http://127.0.0.1:7468", transport: "chat" } }`.
   Sending `[demo] …` to a session produces real subagents (a model with 2 slots, so one queues), a background and a

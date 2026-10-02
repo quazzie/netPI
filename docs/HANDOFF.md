@@ -9,7 +9,7 @@ NetPI was built in a Linux cloud sandbox by several agents working in parallel, 
 | Repo | `C:\AI\Projects\NetPI` (this folder) |
 | Build output | `artifacts\dev\app\` (what a build makes: `NetPI.exe` — WinForms + WebView2 desktop shell, starts the server in-process — `netpi-server.exe`, `plugins\<Name>\`, `wwwroot\`), installed into `artifacts\app\` by `build.ps1 -Publish` |
 | User data | `%USERPROFILE%\.netpi\`: `settings.json`, `netpi.db` (SQLite), `logs\netpi-YYYYMMDD.log`, `logs\failed-requests\`, `window.json`, `webview\`, `workspace\` |
-| Old NetPI v1 | source `C:\AI\Projects\NetPI`; its data was moved to `%USERPROFILE%\.netpi\legacy-netpi-v1\`. Reference only; don't run it against the new data folder |
+| Old NetPI v1 | its data was moved to `%USERPROFILE%\.netpi\legacy-netpi-v1\`. Reference only; don't run it against the new data folder |
 | Model stack | AiProxy `http://127.0.0.1:8090` (AiSwitcher, `C:\AI\archived\apps\AiSwitcher-legacy`) → nInfer `:8080` (source `C:\AI\Projects\ninfer-windows`, AiSwitcher profile `quasar-v3`), serving `qwen3.8-27b` with concurrency 2 and 2 × 262k KV. See `docs/AIPROXY-AGENT-GUIDE.md` |
 | Claude | Anthropic Messages API with an API key (`providers.anthropic.apiKey` or `ANTHROPIC_API_KEY`). Only tested against a mock so far (no API key available) |
 | OpenRouter | `providers.openrouter.apiKey` or `OPENROUTER_API_KEY`; tested live with the free `stealth/space-bunny-alpha` |
@@ -34,14 +34,10 @@ workspace column: the Workspaces plugin writes `meta.workspaceId` and `meta.cwd`
 the Agents plugin, so the core refuses no model and polices no money. `node scripts/core-size.mjs` keeps the kernel
 to the harness's own concepts.
 
-The review fixes are implemented in the working tree: unique approval IDs, cleared fork permissions, atomic
+The review fixes are in master: unique approval IDs, cleared fork permissions, atomic
 spending reads, persistent per-attempt budget reservations, and the backup plugin plus offline restore.
 [STATUS.md](STATUS.md) is the current state and limitations; [TESTING.md](TESTING.md) records fresh validation.
 [BACKUPS.md](BACKUPS.md) explains snapshot scope, retention and recovery.
-
-Build output used for validation is isolated under `artifacts/review`; this task has not installed changes into
-`artifacts/app` or restarted the user's app. Deploy with `build.ps1 -Publish`, then restart and refresh open
-browser tabs: `guard.answer` now takes `approvalId`, not the model's `callId`.
 
 Earlier real-model results and deployment notes are historical, preserved in
 [archive/2026-09-25-status.md](archive/2026-09-25-status.md). Do not treat old “not yet deployed” notes as current
@@ -86,12 +82,6 @@ Source: `C:\AI\Projects\ninfer-windows\.local\stateless-agents-20260924\report.m
 
 ## Suggested next steps
 
-0. **Deploy the renamed plugins.** The lanes plugin is now `netpi.agents` (`plugins/NetPI.Agents`) and the runtime
-   `netpi.runtime` (`plugins/NetPI.Runtime`); `agents.list` lists the agents, `runs.list` the runs. Close NetPI and
-   `build` (cmd): with NetPI closed the build removes the old `artifacts\app\plugins\NetPI.Lanes` and `NetPI.Agent`
-   output (else both would load), and the first start moves `lanes.localDefaultCapacity`/`cloudDefaultCapacity` to
-   `models.localSlots`/`cloudSlots`. Then: switch the model in AiSwitcher and watch the Work tab's agents follow within
-   ~10 s; watch a local agent pick agents (and a paid OpenRouter call's cost reach the ledger).
 1. **Goals with a real model.** Run a goal on `qwen3.8-27b` (a throwaway server or the user's NetPI): does it keep
    working, call `goal_update` complete only when done, stay within the no-progress rule? Then consider an
    independent check of "complete" (a verifier subagent) if it declares done too early.
