@@ -1,7 +1,7 @@
 namespace NetPI.Host.Storage.Sqlite;
 
 /// <summary>One result row, read by column name. Internal to the sqlite provider: no plugin sees a row.</summary>
-internal interface IDbRow
+internal interface ISqlRow
 {
     int FieldCount { get; }
     string GetName(int ordinal);

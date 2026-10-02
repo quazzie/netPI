@@ -262,7 +262,7 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
     private static MessageRole ParseRole(string s) =>
         Enum.TryParse<MessageRole>(s, ignoreCase: true, out var r) ? r : MessageRole.Notice;
 
-    private static ChatMessage ReadMessage(IDbRow r) => new()
+    private static ChatMessage ReadMessage(ISqlRow r) => new()
     {
         Id = r.GetInt64("id"),
         SessionId = r.GetString("session_id"),
@@ -279,7 +279,7 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
         Meta = ParseObject(r.GetStringOrNull("meta")),
     };
 
-    private static SessionInfo ReadSession(IDbRow r) => new()
+    private static SessionInfo ReadSession(ISqlRow r) => new()
     {
         Id = r.GetString("id"),
         Title = r.GetString("title"),
@@ -297,7 +297,7 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
         Meta = ParseObject(r.GetStringOrNull("meta")),
     };
 
-    private static ProjectInfo ReadProject(IDbRow r) => new()
+    private static ProjectInfo ReadProject(ISqlRow r) => new()
     {
         Id = r.GetString("id"),
         Name = r.GetString("name"),
