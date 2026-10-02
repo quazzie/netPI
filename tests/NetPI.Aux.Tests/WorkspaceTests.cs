@@ -42,6 +42,7 @@ public static class WorkspaceTests
         t.Add("workspaces: the switch is in the next model call's batch and guard, not one call later", SwitchVisibleToNextModelCall);
         t.Add("workspaces: every consumer agrees on the assigned root", ConsumersAgree);
         t.Add("workspaces: the identity changes with the binding, so a stale answer is recognizably stale", IdentityChanges);
+        t.Add("workspaces: the resolve cache is per project, so a cross-repository bind is refused inside the window", ResolveCacheIsPerProject);
     }
 
     // ------------------------------------------------------------------ the fixture
@@ -919,6 +920,47 @@ public static class WorkspaceTests
         Check.Contains(env.Resolver.IdentityOf(plain), "project:");
         Check.Contains(env.Resolver.IdentityOf(plain), env.Project.Id);
         try { Directory.Delete(dir, true); } catch { }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// The resolver's 2-second cache is keyed by workspace AND the session's project: a session of another project,
+    /// bound to the same workspace, gets its own Validate pass — the cross-repository check — even inside the window
+    /// in which the workspace was just resolved for its own project. Keyed by id alone, the check would be skipped for
+    /// the window (or never, if that project's session resolved first) (idea-bz0i1j).
+    /// </summary>
+    private static Task ResolveCacheIsPerProject()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("resolve cache"); return Task.CompletedTask; }
+        var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
+
+        // A second repository, its own project, and a workspace of the first project's repository.
+        var otherRoot = Path.Combine(Path.GetDirectoryName(env.Root)!, "other-repo-" + Guid.NewGuid().ToString("N")[..6]);
+        try
+        {
+            Directory.CreateDirectory(otherRoot);
+            if (!Git_(otherRoot, "init", "-q", "-b", "main")) { Skip("resolve cache"); return Task.CompletedTask; }
+            File.WriteAllText(Path.Combine(otherRoot, "x.txt"), "x");
+            Git_(otherRoot, "add", "-A");
+            Git_(otherRoot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
+            var projectB = env.Ctx.SessionsFake.CreateProject("Other", otherRoot);
+
+            var wA = store.CreateWorkspace(new WorkspaceInfo { Name = "a", Path = env.ProjectPath, ProjectId = env.Project.Id, Kind = "attached" });
+            var sessionA = env.Session("a");
+            store.SetSessionWorkspace(sessionA.Id, wA.Id);
+            Check.Equal(env.ProjectPath, env.Resolver.CwdOf(sessionA));
+
+            // A session of the other project, bound to the first project's workspace (sessions.setWorkspace allows
+            // the binding; the resolver's check is the barrier). Inside the cache window: refused, not answered.
+            var sessionB = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "b", ProjectId = projectB.Id, WorkspaceId = wA.Id });
+            var ex = Check.Throws<WorkspaceUnavailableException>(() => env.Resolver.CwdOf(sessionB));
+            Check.Contains(ex.Message, "different repository");
+
+            // And the first project's session keeps its answer in the same window.
+            Check.Equal(env.ProjectPath, env.Resolver.CwdOf(sessionA));
+        }
+        finally { try { Directory.Delete(otherRoot, true); } catch { } }
         return Task.CompletedTask;
     }
 
