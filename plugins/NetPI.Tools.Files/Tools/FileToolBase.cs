@@ -32,8 +32,9 @@ public abstract class FileToolBase(ISettings? settings) : IAgentTool
         var binding = ctx.Workspace();
         if (binding is null || !binding.Isolated) return null;
         var probe = ctx.Services?.Get<IWorkspaceRepoProbe>();
-        return WorkspacePaths.CheckMutation(binding, fullPath, probe) == WorkspacePathVerdict.ForeignCheckout
-            ? WorkspacePaths.Refusal(binding, fullPath, probe)
+        var verdict = WorkspacePaths.CheckMutation(binding, fullPath, probe);
+        return verdict is WorkspacePathVerdict.ForeignCheckout or WorkspacePathVerdict.Unverifiable
+            ? WorkspacePaths.Refusal(binding, fullPath, probe, verdict)
             : null;
     }
 

@@ -142,6 +142,13 @@ public interface IWorkspaceRepoProbe
     string? BranchOf(string path);
     /// <summary>The commit HEAD is at, or null.</summary>
     string? HeadOf(string path);
+    /// <summary>
+    /// When <see cref="CommonDirOf"/> answered null for a path, what the probe itself had to say: git missing, a timeout,
+    /// or git's error. An answer (including "not a repository") has nothing to say, as does a path the probe never asked
+    /// about. A null here is what lets a guard tell the ordinary "elsewhere" from the unverifiable: only a failure is a
+    /// refusal in an isolated workspace, because it is the one case the probe cannot decide.
+    /// </summary>
+    string? ProbeProblem(string path);
 }
 
 /// <summary>
@@ -201,10 +208,12 @@ public enum WorkspacePathVerdict
 {
     /// <summary>Inside the session's workspace (or the session is not bound to one): allowed.</summary>
     Allow,
-    /// <summary>Outside the workspace, but not in another checkout of the same repository: the ordinary "outside the project" case.</summary>
+    /// <summary>Outside the workspace, and the probe could say it is not in another checkout of the same repository (a different repository, or not a repository at all): the ordinary "outside the project" case.</summary>
     Outside,
     /// <summary>Inside another checkout of the same repository (another worker, or the primary checkout): refused in an isolated workspace.</summary>
     ForeignCheckout,
+    /// <summary>Outside the workspace, and the probe could not say whether it is in another checkout of the same repository (git failed or timed out). Refused in an isolated workspace: an unverifiable path is not a pass, and the failure is not remembered.</summary>
+    Unverifiable,
 }
 
 /// <summary>
@@ -227,28 +236,87 @@ public static class WorkspacePaths
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     /// <summary>
-    /// The canonical spelling of a path: absolute, without a trailing separator, and with every existing segment
-    /// resolved to its real name (so a junction or symlink into a checkout is recognized as that checkout). Falls back
-    /// to the normalized path when it cannot be resolved.
+    /// The canonical spelling of a path: absolute, without a trailing separator, a local spelling (a <c>\\?\</c>
+    /// prefix, an admin share of this machine, the device namespace) in its own form, and every level that exists
+    /// resolved to the place it is — a junction or symlink at any depth, not only at the end, is recognized as the
+    /// place it points to. A level that does not exist ends the walk: the rest is only a name. Falls back to the
+    /// normalized spelling when it cannot be resolved.
     /// </summary>
     public static string Canonical(string path)
     {
         string full;
         try { full = Path.GetFullPath(path); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return path; }
+        full = LocalSpelling(full);
         try
         {
-            var info = new FileInfo(full);
-            if (info.Exists || info.LinkTarget is not null) return Trim(info.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? info.FullName);
-            var dir = new DirectoryInfo(full);
-            if (dir.Exists || dir.LinkTarget is not null) return Trim(dir.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? dir.FullName);
+            var root = Path.GetPathRoot(full);
+            if (string.IsNullOrEmpty(root) || !full.StartsWith(root, StringComparison.Ordinal))
+                return Path.TrimEndingDirectorySeparator(full);
+            // A top-down walk, level by level: a link is the place it points (the whole chain at that level followed),
+            // a plain existing level is itself, and the first level that does not exist ends the walk — everything
+            // below it is only a name. So a junction is recognized at any depth, and a link above it is too.
+            var hasTrailingSep = root.Length > 1 && root[root.Length - 1] is '\\' or '/';
+            var base_ = hasTrailingSep ? root[..^1] : root;
+            var parts = full[(hasTrailingSep ? root.Length - 1 : root.Length)..].Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < parts.Length; i++)
+            {
+                var next = Path.Combine(base_, parts[i]);
+                if (i == parts.Length - 1)
+                {
+                    // The last segment: a link to a place is that place; an existing file and a missing name stay.
+                    var file = new FileInfo(next);
+                    return Path.TrimEndingDirectorySeparator(LocalSpelling(
+                        file.LinkTarget is not null ? file.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? next : next));
+                }
+                var dir = new DirectoryInfo(next);
+                if (dir.LinkTarget is not null)
+                    base_ = LocalSpelling(dir.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? dir.FullName);
+                else if (dir.Exists)
+                    base_ = next;
+                else
+                {
+                    // The first level that does not exist: below it is only a name, joined with separators kept.
+                    var tail = string.Join(Path.DirectorySeparatorChar.ToString(), parts[(i + 1)..]);
+                    return Path.TrimEndingDirectorySeparator(tail.Length == 0 ? next : next + Path.DirectorySeparatorChar + tail);
+                }
+            }
+            return Path.TrimEndingDirectorySeparator(base_);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-        return Trim(full);
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { }
+        return Path.TrimEndingDirectorySeparator(full);
     }
 
-    private static string Trim(string path) =>
-        Path.TrimEndingDirectorySeparator(path).Length == 0 ? path : Path.TrimEndingDirectorySeparator(path);
+    /// <summary>
+    /// The local spelling of a path: the long-path prefix (<c>\\?\</c>) is dropped, a spelling through this machine's
+    /// admin shares (<c>\\localhost\C$\</c>, <c>\\127.0.0.1\C$\</c>) or the device namespace (<c>\\.\C:\</c>) becomes the
+    /// drive's own spelling. A share on another machine is a different place, not a spelling: it is left alone, so it is
+    /// never under a local root and no comparison with a local root can claim it.
+    /// </summary>
+    private static string LocalSpelling(string full)
+    {
+        if (!OperatingSystem.IsWindows()) return full;
+        if (full.StartsWith(@"\\?\", StringComparison.Ordinal) || full.StartsWith(@"\\?/", StringComparison.Ordinal))
+            return full.Length > 4 ? full[4..] : full;
+        if (!full.StartsWith(@"\\", StringComparison.Ordinal) || full.Length <= 4) return full;
+        var rest = full[2..];
+        var slash = rest.IndexOf('\\');
+        if (slash <= 0 || slash + 1 >= rest.Length) return full;
+        var server = rest[..slash];
+        var share = rest[(slash + 1)..];
+        if (server == ".")
+        {
+            // \\.\C:\x is the drive's own device spelling; \\.\COM1 and its kin are devices, not paths we can compare.
+            if (share.Length >= 3 && char.IsLetter(share[0]) && share[1] == ':' && share[2] is '\\' or '/') return share;
+            return full;
+        }
+        if (server.Equals("localhost", StringComparison.OrdinalIgnoreCase) || server == "127.0.0.1")
+        {
+            // An admin share of this machine is the drive: \\localhost\C$\rest is C:\rest.
+            if (share.Length >= 2 && char.IsLetter(share[0]) && share[1] == '$') return $"{share[0]}:{share[2..]}";
+        }
+        return full;
+    }
 
     /// <summary>Whether <paramref name="path"/> is <paramref name="root"/> or inside it.</summary>
     public static bool IsInside(string root, string path)
@@ -268,6 +336,12 @@ public static class WorkspacePaths
     /// the same repository</em> — then it is <see cref="WorkspacePathVerdict.ForeignCheckout"/>, and in an isolated
     /// workspace that is refused: it is another worker (or the primary checkout the worker was branched from).
     /// </para>
+    /// <para>
+    /// An isolated workspace has no third answer: a path the probe could not place (git missing, timed out, or an error)
+    /// is <see cref="WorkspacePathVerdict.Unverifiable"/> and refused. Git's own answers — "not a repository",
+    /// "no such directory" — still decide the ordinary <see cref="WorkspacePathVerdict.Outside"/>, and a probe that is
+    /// absent altogether cannot verify, so it decides nothing.
+    /// </para>
     /// </summary>
     public static WorkspacePathVerdict CheckMutation(WorkspaceBinding? binding, string fullPath, IWorkspaceRepoProbe? probe = null)
     {
@@ -276,15 +350,30 @@ public static class WorkspacePaths
         if (probe is null) return WorkspacePathVerdict.Outside;
         var here = probe.CommonDirOf(binding.Root);
         var there = probe.CommonDirOf(fullPath);
-        if (here is null || there is null || !string.Equals(Canonical(here), Canonical(there), Comparison))
-            return WorkspacePathVerdict.Outside;
-        return WorkspacePathVerdict.ForeignCheckout;
+        if (here is not null && there is not null)
+            return string.Equals(Canonical(here), Canonical(there), Comparison)
+                ? WorkspacePathVerdict.ForeignCheckout
+                : WorkspacePathVerdict.Outside;
+        // Outside the workspace, and one or both sides could not say. A null answer decides only when git answered
+        // ("not a repository", "no such directory"); a probe failure cannot decide, and an isolated workspace refuses.
+        var decided = (here is not null || probe.ProbeProblem(binding.Root) is null)
+                    && (there is not null || probe.ProbeProblem(fullPath) is null);
+        return decided ? WorkspacePathVerdict.Outside
+            : binding.Isolated ? WorkspacePathVerdict.Unverifiable : WorkspacePathVerdict.Outside;
     }
 
-    /// <summary>The message a refused mutation gets: which workspace it is in, and which checkout it aimed at.</summary>
-    public static string Refusal(WorkspaceBinding binding, string fullPath, IWorkspaceRepoProbe? probe = null)
+    /// <summary>The message a refused mutation gets: which workspace it is in, which checkout it aimed at, and — for
+    /// <see cref="WorkspacePathVerdict.Unverifiable"/> — what git could not say.</summary>
+    public static string Refusal(WorkspaceBinding binding, string fullPath, IWorkspaceRepoProbe? probe, WorkspacePathVerdict verdict)
     {
         var target = Canonical(fullPath);
+        if (verdict == WorkspacePathVerdict.Unverifiable)
+        {
+            var problem = probe?.ProbeProblem(fullPath) ?? probe?.ProbeProblem(binding.Root) ?? "git did not answer";
+            return $"Refused: {target} is not inside this session's workspace ({binding.Describe()}), and git could not say " +
+                   $"whether it is another checkout of the same repository ({problem}). In an isolated workspace a path that " +
+                   "cannot be verified is refused: the write does not run.";
+        }
         var line = $"Refused: {target} is not inside this session's workspace ({binding.Describe()}).";
         var repo = probe?.CommonDirOf(fullPath);
         if (repo is not null)

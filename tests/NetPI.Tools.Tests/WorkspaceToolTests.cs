@@ -103,6 +103,7 @@ public static class WorkspaceToolTests
             path.StartsWith(commonDir[..commonDir.LastIndexOf(Path.DirectorySeparatorChar)], StringComparison.OrdinalIgnoreCase) ? commonDir : null;
         public string? BranchOf(string path) => "main";
         public string? HeadOf(string path) => "abc123";
+        public string? ProbeProblem(string path) => null;   // this fake always answers
     }
 
     private static RpcRequest Req(object parameters) => new()

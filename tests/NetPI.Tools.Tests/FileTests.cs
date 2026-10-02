@@ -638,6 +638,45 @@ public static class FileTests
             Check.Equal("m.cs:3:     return;", res.Content);
         });
 
+        r.Add("grep: filesSearched counts the files actually searched when the cap stops the scan early", async () =>
+        {
+            // More than a chunk (64) of files, one match in each: a capped scan stops after the first chunk,
+            // and the number must say so instead of claiming the whole tree.
+            var dir = T.TempDir("grep");
+            for (var i = 0; i < 200; i++) T.WriteText(dir, $"f{i:000}.txt", "line 1\nhit\nline 3\n");
+            var grep = new GrepTool();
+
+            var res = await T.Run(grep, dir, new { pattern = "hit", maxResults = 5 });
+            Check.True(T.D(res).Bool("truncated"));
+            var searched = T.D(res).Int("filesSearched");
+            Check.True(searched < 200, $"the capped scan searched {searched} of 200 files and claimed all of them");
+            Check.True(searched > 0);
+
+            res = await T.Run(grep, dir, new { pattern = "hit", maxResults = 100_000 });
+            Check.False(T.D(res).Bool("truncated"));
+            Check.Equal(200, T.D(res).Int("filesSearched"), "a full scan searched every candidate");
+        });
+
+        r.Add("grep: concurrent greps share one work pool, so the in-flight work stays the size of one search", async () =>
+        {
+            // Files heavy enough that the searches overlap: without the shared pool, every grep would run its
+            // own full-processor scan on top of the others'.
+            var dir = T.TempDir("grep");
+            var filler = new string('x', 2_000_000);
+            for (var i = 0; i < 100; i++) T.WriteText(dir, $"f{i:000}.txt", $"hit {i}\n{filler}\n");
+
+            GrepEngine.PeakInFlight = 0;
+            var grep = new GrepTool();
+            var t1 = T.Run(grep, dir, new { pattern = "hit 1", maxResults = 100_000 });
+            var t2 = T.Run(grep, dir, new { pattern = "hit 2", maxResults = 100_000 });
+            var t3 = T.Run(grep, dir, new { pattern = "zzz-nothing", maxResults = 100_000 });
+            await Task.WhenAll(t1, t2, t3);
+
+            Check.True(GrepEngine.PeakInFlight > 1, "the searches ran in parallel");
+            Check.True(GrepEngine.PeakInFlight <= Math.Max(2, Environment.ProcessorCount),
+                $"three searches in flight drove {GrepEngine.PeakInFlight} file searches at once");
+        });
+
         // ------------------------------------------------ find / ls
         r.Add("find: globs, dirs suffixed, ignore rules, maxResults", async () =>
         {

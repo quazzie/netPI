@@ -198,8 +198,11 @@ parse `details.diff` for both `edit` and `write`.
   - **files**: one path per line.
   - **count**: `rel/path: N`.
 - The output is capped at `maxResults` (matching lines in content mode, files in the other modes) and 50KB, with the notice
-  `[Results truncated at 200 matches. …]`.
+  `[Results truncated at 200 matches. …]`. When the cap stops the scan early, `filesSearched` counts the files actually
+  searched, not the candidates that were left unexamined.
 - Binary files and files over 32MB are skipped. That is only reported when it could explain a missing result.
+- Searches share one work pool: however many agents grep at once, the file searches in flight stay the size of one
+  search, so concurrent greps divide the machine instead of stacking on it.
 
 ```ts
 details: { pattern, path /* absolute search root */, outputMode, matches: number, files: number,
@@ -303,10 +306,14 @@ processes are killed when the plugin stops.
 
 | tool | args | details |
 |---|---|---|
-| `process` `list` (reads only) | `{ action: "list" }` | `{ processes: ProcessInfo[] }` |
+| `process` `list` (reads only) | `{ action: "list", all? }` (all: every session's processes, each line with its session) | `{ processes: ProcessInfo[] }` |
 | `process` `output` (reads only) | `{ action: "output", id, tail? (200, max 2000) }` (the id may also be a pid) | `{ process: ProcessInfo, tail, truncated }` |
 | `process` `wait` (reads only) | `{ action: "wait", id, timeout? (120 s, max 1800), tail? }` | finished: `{ process, status, exitCode, durationMs, output, tail, truncated }` · still running: `{ process, status: "running", elapsedMs, waitedMs, lastLines: string[], tail, truncated }` |
 | `process` `kill` | `{ action: "kill", id }` | `{ process: ProcessInfo, killed: boolean }` |
+
+**`process` is scoped to the caller.** `list`, `output`, `wait` and `kill` reach only the caller's own session's
+processes and its subagents' (the session store carries the parent links; descendants included). A process from another
+chat is refused and the error says so — the UI's `processes.*` RPC stays global.
 
 `process` is one tool with four actions (`IReadOnlyCalls`: `list`, `output` and `wait` count as read-only, so several of
 them run in parallel).
@@ -392,8 +399,15 @@ Only an isolated workspace (its own worktree) is guarded, and the guard runs bef
 refusal names the workspace rather than a bare path. It works from git evidence, not from spelling: a path is "another
 checkout of the same repository" when it is outside the session's workspace and its `--git-common-dir` is the
 repository's — so a relative `../` that climbs out, an absolute path into the primary checkout, a differently cased
-spelling, and a junction or symlink that points there all reach the same answer, because every path is resolved to its
-canonical form first.
+spelling, a junction or symlink that points there (at any depth, not only at the end), a long-path (`\\?\`), admin-share
+(`\\localhost\C$\`) or device spelling of a local path all reach the same answer, because every path is resolved to one
+canonical form first — and a share on another machine is a different place, never under a local root. The guardrails' own
+path rules use the same canonical function, so a protected path is reached in no spelling.
+
+An isolated workspace has no third answer: when git itself cannot say where a path lives (git missing, timed out, or an
+error — not "not a repository", which is an answer), the write is refused and the refusal says what git could not say.
+A plain "not a repository" still decides the ordinary outside, and a session that is bound but not isolated keeps the
+old behavior: nothing there is guarded by the repository question.
 
 - The native writing tools (`write`, `edit`, `write_file`, `edit_file`, `notebook_edit`, `patch`) refuse a path argument
   that resolves into another checkout of the same repository: another worker's tree, or the primary checkout the worker
@@ -805,7 +819,7 @@ details: { host, path /* "host:path" */, created, append, bytes, lines }
 
 ### `ssh_edit` (summary arg `path`)
 
-`{ host, path, edits: { oldText, newText, replace_all? }[], cwd? }` (a single `oldText`/`newText` pair is accepted too).
+`{ host, path, edits: { oldText, newText, replace_all? }[], replace_all?, cwd? }` (a single `oldText`/`newText` pair is accepted too; a top-level `replace_all` is the default for every edit).
 Like `edit`: the edits are applied **in order to the evolving text**, so a second `oldText` may match what a first `newText`
 wrote (rename the declaration, then its first use); each `oldText` must match exactly once unless `replace_all` (in the text
 the earlier edits left), matching ignores CRLF vs LF and the file keeps its line endings. A failed edit applies nothing.

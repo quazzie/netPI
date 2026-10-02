@@ -43,6 +43,18 @@ public sealed class GrepResult
 /// </summary>
 public static class GrepEngine
 {
+    /// <summary>
+    /// The shared work pool for grep: every search on the machine draws its file searches from these slots, so
+    /// however many agents grep at once, the grep work in flight stays the size of one search — the CPU load and
+    /// the in-flight file buffers are bounded together instead of stacking per search. Measured with the pool at
+    /// the processor count: a single search is unchanged, and concurrent searches share the slots.
+    /// </summary>
+    private static readonly SemaphoreSlim Work = new(Math.Max(2, Environment.ProcessorCount));
+
+    /// <summary>The high water mark of file searches running at once: the bound the tests check.</summary>
+    internal static int PeakInFlight;
+    private static int _inFlight;
+
     private sealed record OutLine(int Line, bool IsMatch, string Text);
 
     private sealed class FileResult
@@ -97,6 +109,7 @@ public static class GrepEngine
 
         var results = new List<FileResult>();
         int totalMatches = 0, filesMatched = 0, binary = 0, large = 0, timedOut = 0, unreadable = 0;
+        var filesSearched = 0;
         var limitHit = false;
         const int chunk = 64;
         for (var start = 0; start < files.Count && !limitHit; start += chunk)
@@ -106,11 +119,21 @@ public static class GrepEngine
             var chunkResults = new FileResult?[slice.Count];
             Parallel.For(0, slice.Count, new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = Environment.ProcessorCount }, i =>
             {
-                chunkResults[i] = SearchFile(slice[i].Full, slice[i].Rel, regex, o, canPrecheck);
+                // Every grep on the machine draws from these shared slots: the work in flight is the size of one search.
+                Work.Wait(ct);
+                var inFlight = Interlocked.Increment(ref _inFlight);
+                if (inFlight > PeakInFlight) PeakInFlight = inFlight;
+                try { chunkResults[i] = SearchFile(slice[i].Full, slice[i].Rel, regex, o, canPrecheck); }
+                finally
+                {
+                    Interlocked.Decrement(ref _inFlight);
+                    Work.Release();
+                }
             });
             foreach (var r in chunkResults)
             {
                 if (r is null) continue;
+                filesSearched++;
                 switch (r.Skipped)
                 {
                     case "binary": binary++; continue;
@@ -187,7 +210,8 @@ public static class GrepEngine
             Output = sb.ToString().TrimEnd('\n'),
             Matches = o.Mode == GrepOutputMode.Content ? emittedMatches : totalMatches,
             FilesMatched = o.Mode == GrepOutputMode.Content ? emittedFiles : Math.Min(emittedFiles, filesMatched),
-            FilesSearched = files.Count,
+            // The files actually searched: the cap can stop the scan early, and the number must say so.
+            FilesSearched = filesSearched,
             Truncated = truncated,
             Notes = notes,
         };

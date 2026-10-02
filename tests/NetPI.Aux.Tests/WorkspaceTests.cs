@@ -35,6 +35,9 @@ public static class WorkspaceTests
         t.Add("workspaces: a background process keeps its workspace busy", BackgroundProcessHoldsWorkspace);
         t.Add("workspaces: retirement ignores an archived bound session; a live one still blocks", RetirementIgnoresArchived);
         t.Add("workspaces: the guard is per spelling: relative, absolute, .. and a symlink into another checkout", GuardSpellings);
+        t.Add("workspaces: a junction in an intermediate parent is the same place, so the write is refused", JunctionInIntermediateParent);
+        t.Add("workspaces: a long-path, admin-share or device spelling is the same local path, and a remote share is another place", SpellingsArePlaces);
+        t.Add("workspaces: an isolated write is refused while git cannot answer, and the failure is not remembered", UnverifiableRefused);
         t.Add("workspaces: the guard reads arguments as the tools do: names, order, string-encoded arguments, an ssh download's destination", GuardArguments);
         t.Add("workspaces: ssh copy refuses a download into another checkout of the repository and allows one into the worker's own", SshDownloadRefused);
         t.Add("workspaces: the notice names the checkout, the branch and what a write outside it does", NoticeText);
@@ -697,21 +700,9 @@ public static class WorkspaceTests
         }
 
         // A junction/symlink that points into another checkout is the same directory, not a new spelling of "outside".
-        var link = Path.Combine(w.Root, "link-to-primary");
-        try
+        Check.True(MakeLink(Path.Combine(w.Root, "link-to-primary"), env.ProjectPath), "the link into the primary checkout exists");
         {
-            if (OperatingSystem.IsWindows())
-                Directory.CreateSymbolicLink(link, env.ProjectPath);
-            else
-                Directory.CreateSymbolicLink(link, env.ProjectPath);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
-        {
-            // No symlink permission: the rule is still covered by the other two spellings and by WorkspacePaths' own tests.
-        }
-        if (Directory.Exists(link))
-        {
-            var (result, _) = env.Write_(session, w, Path.Combine(link, "victim.txt"));
+            var (result, _) = env.Write_(session, w, Path.Combine("link-to-primary", "victim.txt"));
             Check.True(result.IsError, "a symlink into another checkout was allowed");
             Check.Equal("primary", File.ReadAllText(Path.Combine(env.ProjectPath, "victim.txt")));
         }
@@ -730,6 +721,187 @@ public static class WorkspaceTests
     }
 
     private static string TempPath() => Path.Combine(Path.GetTempPath(), "netpi-ws-tests");
+
+    /// <summary>
+    /// A directory link the guard must see through. On Windows a junction (<c>mklink /J</c>): it needs no privilege,
+    /// unlike <c>Directory.CreateSymbolicLink</c>, which silently fails on a machine without Developer Mode — and a
+    /// test that swallows that failure passes without running the branch it names. Failing the test instead: a link
+    /// that does not exist is a red check, not weather.
+    /// </summary>
+    private static bool MakeLink(string link, string target)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("cmd")
+                {
+                    UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                };
+                psi.ArgumentList.Add("/c");
+                foreach (var a in new[] { "mklink", "/J", link, target }) psi.ArgumentList.Add(a);
+                using var p = System.Diagnostics.Process.Start(psi)!;
+                p.StandardOutput.ReadToEnd();
+                p.StandardError.ReadToEnd();
+                p.WaitForExit();
+            }
+            else
+            {
+                Directory.CreateSymbolicLink(link, target);
+            }
+            return Directory.Exists(link);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The case the old leaf-only resolution missed: the link is not the path written but a level below it, so the
+    /// written path does not exist and the link is an intermediate parent. The deepest existing ancestor is resolved,
+    /// the missing tail is appended, and the write lands where the junction points — so the guard refuses it.
+    /// </summary>
+    private static Task JunctionInIntermediateParent()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("intermediate junction"); return Task.CompletedTask; }
+        var w = env.Provision("junc", "ses_junc").Binding!;
+        var session = env.Session("junc", w.WorkspaceId);
+
+        // A directory in the primary checkout, and a junction to it below the worker's root.
+        var shared = Path.Combine(env.ProjectPath, "shared");
+        Directory.CreateDirectory(shared);
+        env.Write(shared, "existing.txt", "in the primary");
+        Check.True(MakeLink(Path.Combine(w.Root, "junction"), shared), "the junction into the primary checkout exists");
+
+        // A write through it. The leaf does not exist and the link is an intermediate parent: the old code saw
+        // "inside the worktree" and let it land in the primary checkout.
+        var (result, _) = env.Write_(session, w, Path.Combine("junction", "new.txt"));
+        Check.True(result.IsError, "a write through a junction in an intermediate parent was allowed: " + result.Content);
+        Check.Contains(result.Content, "Refused");
+        Check.False(File.Exists(Path.Combine(shared, "new.txt")), "the file was created in the primary checkout");
+
+        // And the worker's own directory, spelled through the same junction, is still its own.
+        var own = env.Write_(session, w, Path.Combine("junction", "..", "mine.txt"));
+        Check.False(own.Result.IsError, own.Result.Content);
+        Check.True(File.Exists(Path.Combine(w.Root, "mine.txt")), "the write landed in the worker's own workspace");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A path that names a local place in a non-local spelling is that place: the long-path prefix, this machine's
+    /// admin shares and the device namespace resolve to the drive's own spelling. A share on another machine is a
+    /// different place: it resolves nowhere local, and no local root can claim it.
+    /// </summary>
+    private static Task SpellingsArePlaces()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            // C:\ exists, so the walk resolves every spelling against the drive root: no checkout needed.
+            Check.Equal(@"C:\x", WorkspacePaths.Canonical(@"\\?\C:\x"));
+            Check.Equal(@"C:\x", WorkspacePaths.Canonical(@"\\localhost\C$\x"));
+            Check.Equal(@"C:\x", WorkspacePaths.Canonical(@"\\127.0.0.1\C$\x"));
+            Check.Equal(@"C:\x", WorkspacePaths.Canonical(@"\\.\C:\x"));
+            // A device that is not a drive stays a device: nothing local to compare it with, and no root may claim it.
+            Check.Equal(@"\\.\COM1", WorkspacePaths.Canonical(@"\\.\COM1"));
+            // A share that is not this machine's drive: canonical to itself, under no local root.
+            Check.Equal(@"\\localhost\share-x\out.txt", WorkspacePaths.Canonical(@"\\localhost\share-x\out.txt"));
+            Check.False(WorkspacePaths.IsInside(@"C:\", @"\\localhost\share-x\out.txt"), "a share that is not a drive is not under the drive");
+            Check.True(WorkspacePaths.IsInside(@"C:\x", @"\\?\C:\x\deep"), "the long-path spelling is the same place: under the root");
+            Check.True(WorkspacePaths.IsInside(@"C:\\", @"\\?\C:\x"), "the long-path spelling is the same place");
+            Check.True(WorkspacePaths.IsInside(@"C:\\", @"\\localhost\C$\x"), "an admin share of this machine is the drive");
+        }
+        else
+        {
+            // On Unix the escapes are Windows spellings; the canonical form is the absolute path itself.
+            Check.Equal("/x", WorkspacePaths.Canonical("/x"));
+            Check.Equal("/x/y", WorkspacePaths.Canonical("/x/../y"));
+        }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// An isolated workspace has no third answer: a path git could not place (it failed, not "not a repository") is
+    /// refused, the refusal says what git could not say, and the failure is not remembered — the next question asks
+    /// git again. A sound answer, and a non-isolated binding, keep the ordinary "outside".
+    /// </summary>
+    private static Task UnverifiableRefused()
+    {
+        var root = T.TempDir("ws-unv-root");
+        var elsewhere = Path.Combine(T.TempDir("ws-unv-else"), "elsewhere.txt");
+        var isolated = new WorkspaceBinding("wsp_unv", root, "b", null, null, "worktree");
+        var shared = new WorkspaceBinding("wsp_unv2", root, "b", null, null, "folder");
+        var probe = new ScriptedProbe();
+        try
+        {
+            // git cannot say about the target: isolated refuses, and the refusal names the failure.
+            probe.Answer = _ => null;
+            probe.Problem = p => string.Equals(p, elsewhere, StringComparison.Ordinal) ? "git timed out" : null;
+            Check.Equal(WorkspacePathVerdict.Unverifiable, WorkspacePaths.CheckMutation(isolated, elsewhere, probe));
+            var message = WorkspacePaths.Refusal(isolated, elsewhere, probe, WorkspacePathVerdict.Unverifiable);
+            Check.Contains(message, "could not say");
+            Check.Contains(message, "git timed out");
+
+            // git answered "not a repository" (no problem): the ordinary outside, allowed.
+            probe.Problem = _ => null;
+            Check.Equal(WorkspacePathVerdict.Outside, WorkspacePaths.CheckMutation(isolated, elsewhere, probe));
+
+            // the same failure with a non-isolated binding is the ordinary outside (nothing is guarded there).
+            probe.Problem = _ => "git timed out";
+            Check.Equal(WorkspacePathVerdict.Outside, WorkspacePaths.CheckMutation(shared, elsewhere, probe));
+
+            // both sides answered, same repository: still the foreign checkout.
+            probe.Answer = _ => @"C:\git\common";
+            probe.Problem = _ => null;
+            Check.Equal(WorkspacePathVerdict.ForeignCheckout, WorkspacePaths.CheckMutation(isolated, elsewhere, probe));
+
+            // a probe that is absent altogether cannot verify, so it decides nothing: outside, as before.
+            Check.Equal(WorkspacePathVerdict.Outside, WorkspacePaths.CheckMutation(isolated, elsewhere, null));
+
+            // A real probe: a plain directory is an answer, a broken .git is a failure that is reported and not remembered.
+            if (GitAvailable())
+            {
+                var git = new GitProbe();    // the default cache: a remembered failure would outlive the fix
+                var plain = T.TempDir("ws-unv-plain");
+                Check.Equal(null, git.CommonDirOf(plain), "a plain directory is not in a repository");
+                Check.Equal(null, git.ProbeProblem(plain), "an answer has nothing to say");
+
+                var broken = T.TempDir("ws-unv-broken");
+                File.WriteAllText(Path.Combine(broken, ".git"), "gitdir: C:/definitely/not/here\n");
+                Check.Equal(null, git.CommonDirOf(broken), "a broken .git is not an answer");
+                Check.True(git.ProbeProblem(broken) is { Length: > 0 }, "what git said is reported");
+
+                // The failure is not remembered as an answer: point the .git file at a live repository, and it answers.
+                var repo = T.TempDir("ws-unv-repo");
+                GitInit(repo);
+                File.WriteAllText(Path.Combine(broken, ".git"), "gitdir: " + Path.Combine(repo, ".git") + "\n");
+                Check.True(git.CommonDirOf(broken) is not null, "the fixed directory answers (the failure was not cached)");
+                Check.Equal(null, git.ProbeProblem(broken), "recovered: nothing is said");
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+            Directory.Delete(Path.GetDirectoryName(elsewhere)!, true);
+        }
+        return Task.CompletedTask;
+    }
+
+    private static bool GitAvailable() => GitOut(T.TempDir("ws-git"), "--version") is not null;
+
+    private static void GitInit(string dir) => Check.True(Git_(dir, "init", "-q", "-b", "main"), "git init");
+
+    /// <summary>A probe scripted per path, for the verdict table of <see cref="WorkspacePaths.CheckMutation"/>.</summary>
+    private sealed class ScriptedProbe : IWorkspaceRepoProbe
+    {
+        public Func<string, string?> Answer = _ => null;
+        public Func<string, string?> Problem = _ => null;
+        public string? CommonDirOf(string path) => Answer(path);
+        public string? BranchOf(string path) => null;
+        public string? HeadOf(string path) => null;
+        public string? ProbeProblem(string path) => Problem(path);
+    }
 
     private static Task NoticeText()
     {

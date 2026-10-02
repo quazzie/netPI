@@ -6,12 +6,16 @@ using System.Text.Json.Nodes;
 namespace NetPI.Tools.Agents;
 
 /// <summary>Shared helpers for the agent orchestration tools. Services are resolved per call (plugins reload).</summary>
-internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
+internal abstract class AgentToolBase(IPluginContext plugin)
 {
     public const int ReportChars = 12_000;
 
     protected IPluginContext Plugin { get; } = plugin;
-    public abstract ToolDefinition Definition { get; }
+    /// <summary>The action name ("wait", "send", …) or, for the stand-alone tools, the tool name: the dispatcher's key.</summary>
+    internal abstract string Name { get; }
+    /// <summary>What the action does: the dispatcher's help shows it under the name.</summary>
+    internal abstract string Summary { get; }
+    internal virtual bool ReadOnly => false;
 
     public async Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
@@ -169,7 +173,7 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
 
 // ------------------------------------------------------------------ agent_spawn
 
-internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plugin)
+internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plugin), IAgentTool
 {
     private static JsonObject ItemProperties() => new()
     {
@@ -183,7 +187,10 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
         ["isolated"] = Prop("boolean", "Give the subagent its own worktree and branch, so its writes cannot reach yours"),
     };
 
-    public override ToolDefinition Definition { get; } = new()
+    internal override string Name => "agent_spawn";
+    internal override string Summary => "Start subagents on tasks (one: task; several at once: subagents) on the agents from agent_choices; waits for their final reports unless background: true.";
+
+    public ToolDefinition Definition { get; } = new()
     {
         Name = "agent_spawn",
         Label = "Spawn agent",
@@ -387,7 +394,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
             WorkspaceOutcome outcome;
             try
             {
-                outcome = await provisioner.ForChildAsync(request, session, "", Name(request), ct).ConfigureAwait(false);
+                outcome = await provisioner.ForChildAsync(request, session, "", SpawnName(request), ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -415,7 +422,7 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
     }
 
     /// <summary>The name a provisioned workspace gets when the subagent did not name it.</summary>
-    private static string Name(SpawnRequest r) =>
+    private static string SpawnName(SpawnRequest r) =>
         string.IsNullOrWhiteSpace(r.Name) ? "subagent" : r.Name.Trim();
 
     private static string Describe(bool single, int index, string message) =>
@@ -440,18 +447,19 @@ internal sealed class AgentSpawnTool(IPluginContext plugin) : AgentToolBase(plug
 /// </summary>
 internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
 {
-    private readonly Dictionary<string, IAgentTool> _actions;
+    private readonly Dictionary<string, AgentToolBase> _actions;
 
     public AgentTool(IPluginContext plugin)
     {
-        _actions = new(StringComparer.OrdinalIgnoreCase)
+        var actions = new AgentToolBase[]
         {
-            ["wait"] = new AgentWaitTool(plugin),
-            ["send"] = new AgentSendTool(plugin),
-            ["list"] = new AgentListTool(plugin),
-            ["result"] = new AgentResultTool(plugin),
-            ["cancel"] = new AgentCancelTool(plugin),
+            new AgentWaitTool(plugin),
+            new AgentSendTool(plugin),
+            new AgentListTool(plugin),
+            new AgentResultTool(plugin),
+            new AgentCancelTool(plugin),
         };
+        _actions = actions.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
         Definition = new ToolDefinition
         {
             Name = "agent",
@@ -459,7 +467,7 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
             Category = "agents",
             SummaryArg = "action",
             Description = "Your subagents: wait {ids?} for their reports, send {to, message} (to=\"parent\" for your parent), list, result {id} or cancel {id}.",
-            Help = string.Join("\n", _actions.Select(a => $"- {a.Key}: {a.Value.Definition.Description}")),
+            Help = string.Join("\n", actions.Select(t => $"- {t.Name}: {t.Summary}")),
             Parameters = new JsonObject
             {
                 ["type"] = "object",
@@ -489,7 +497,7 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
         return a switch { "message" or "tell" => "send", "status" or "report" => "result", "stop" or "abort" => "cancel", _ => a };
     }
 
-    public bool IsReadOnly(JsonElement args) => ActionOf(args) is "list" or "result";
+    public bool IsReadOnly(JsonElement args) => ActionOf(args) is { } a && _actions.TryGetValue(a, out var t) && t.ReadOnly;
 
     public Task<ToolResult> ExecuteAsync(ToolContext context, JsonElement args, CancellationToken ct)
     {
@@ -504,19 +512,9 @@ internal sealed class AgentTool : IAgentTool, IReadOnlyCalls
 
 internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugin)
 {
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "agent_wait",
-        Label = "Wait for agents",
-        Description = "Wait for subagents to finish and return their final reports. While waiting your instance is released (yielded) so other runs, typically the ones you wait for, can use it; afterwards you resume with priority. Without ids it waits for all of your running subagents and also returns the reports that arrived while you were busy and you have not seen yet. A new user message interrupts the wait.",
-        Category = "agents",
-        Parameters = Schema(new JsonObject
-        {
-            ["ids"] = StringArray("Agent ids (or names of your subagents) to wait for. Default: all of your running subagents, plus finished ones whose report you have not seen."),
-            ["id"] = Prop("string", "A single agent id (alternative to ids)."),
-            ["timeoutSeconds"] = Prop("integer", "Maximum seconds to wait (default 3600). Agents still running are reported as such."),
-        }),
-    };
+    internal override string Name => "wait";
+    internal override string Summary =>
+        "Wait for subagents to finish and return their final reports. While waiting your instance is released (yielded) so other runs, typically the ones you wait for, can use it; afterwards you resume with priority. Without ids it waits for all of your running subagents and also returns the reports that arrived while you were busy and you have not seen yet. A new user message interrupts the wait.";
 
     protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
@@ -572,20 +570,9 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
 
 internal sealed class AgentSendTool(IPluginContext plugin) : AgentToolBase(plugin)
 {
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "agent_send",
-        Label = "Message agent",
-        Description = "Send a message to another agent: your parent (to=\"parent\"), or one of your subagents (id or name). It arrives as a notice; an idle agent is woken up. mode \"steer\" (default) delivers it at the agent's next step, \"queue\" after its current run. Only your own tree is reachable — agents of other chats are not.",
-        Category = "agents",
-        SummaryArg = "to",
-        Parameters = Schema(new JsonObject
-        {
-            ["to"] = Prop("string", "\"parent\", or an agent id or name."),
-            ["message"] = Prop("string", "The message."),
-            ["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("steer", "queue"), ["description"] = "steer (default) or queue." },
-        }, "to", "message"),
-    };
+    internal override string Name => "send";
+    internal override string Summary =>
+        "Send a message to another agent: your parent (to=\"parent\"), or one of your subagents (id or name). It arrives as a notice; an idle agent is woken up. mode \"steer\" (default) delivers it at the agent's next step, \"queue\" after its current run. Only your own tree is reachable — agents of other chats are not.";
 
     protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
@@ -623,18 +610,9 @@ internal sealed class AgentSendTool(IPluginContext plugin) : AgentToolBase(plugi
 
 internal sealed class AgentListTool(IPluginContext plugin) : AgentToolBase(plugin)
 {
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "agent_list",
-        Label = "Agents",
-        Description = "List your subagents (or all running agents with all=true) with status, activity, model, the agent they run on and usage.",
-        ReadOnly = true,
-        Category = "agents",
-        Parameters = Schema(new JsonObject
-        {
-            ["all"] = Prop("boolean", "List every agent, not only your subagents."),
-        }),
-    };
+    internal override string Name => "list";
+    internal override bool ReadOnly => true;
+    internal override string Summary => "List your subagents (or all running agents with all=true) with status, activity, model, the agent they run on and usage.";
 
     protected override Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
@@ -666,16 +644,9 @@ internal sealed class AgentListTool(IPluginContext plugin) : AgentToolBase(plugi
 
 internal sealed class AgentResultTool(IPluginContext plugin) : AgentToolBase(plugin)
 {
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "agent_result",
-        Label = "Agent result",
-        Description = "Get a subagent's status and final report (its last message) without waiting.",
-        ReadOnly = true,
-        Category = "agents",
-        SummaryArg = "id",
-        Parameters = Schema(new JsonObject { ["id"] = Prop("string", "Id or name of one of your subagents.") }, "id"),
-    };
+    internal override string Name => "result";
+    internal override bool ReadOnly => true;
+    internal override string Summary => "Get a subagent's status and final report (its last message) without waiting.";
 
     protected override Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
@@ -696,15 +667,8 @@ internal sealed class AgentResultTool(IPluginContext plugin) : AgentToolBase(plu
 
 internal sealed class AgentCancelTool(IPluginContext plugin) : AgentToolBase(plugin)
 {
-    public override ToolDefinition Definition { get; } = new()
-    {
-        Name = "agent_cancel",
-        Label = "Cancel agent",
-        Description = "Cancel a running subagent (its own subagents are cancelled too). Its partial work stays in its session.",
-        Category = "agents",
-        SummaryArg = "id",
-        Parameters = Schema(new JsonObject { ["id"] = Prop("string", "Agent id or name.") }, "id"),
-    };
+    internal override string Name => "cancel";
+    internal override string Summary => "Cancel a running subagent (its own subagents are cancelled too). Its partial work stays in its session.";
 
     protected override async Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {

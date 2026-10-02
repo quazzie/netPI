@@ -17,6 +17,7 @@ public static class SubagentTests
         t.Add("subagents: aborting a parent cancels its children", AbortCascade);
         t.Add("subagents: failed subagent reports failure", FailedChild);
         t.Add("subagents: agent tools list / result / cancel / agent_choices", ToolsMisc);
+        t.Add("subagents: the agent dispatcher's schema covers every action's arguments", DispatcherSchema);
         t.Add("subagents: a chat on a local agent spawns onto an agent on another provider; the subagent keeps that agent", SpawnOntoConfiguredPool);
         t.Add("subagents: agent_spawn { agent: \"any\" } runs on whichever agent is free, and its model follows", SpawnOnAnyAgent);
         t.Add("subagents: inherit the parent's effective named-agent model and reasoning", InheritEffectiveModel);
@@ -708,6 +709,32 @@ public static class SubagentTests
         Check.Contains(cancelOutput, "Cancelled slowpoke");
         var child = h.Runtime.List().Single(a => a.IsSubagent);
         Check.Equal(AgentStatus.Cancelled, child.Status);
+    }
+
+    /// <summary>
+    /// The handlers read their arguments themselves; the dispatcher's schema is all the model sees, so every
+    /// argument an action accepts must be a property of it, and the action enum must name every action.
+    /// </summary>
+    private static async Task DispatcherSchema()
+    {
+        await using var h = await TestHost.StartAsync();
+        var def = h.Tools.All.Single(t => t.Definition.Name == "agent").Definition;
+        var props = def.Parameters["properties"]!.AsObject();
+        void Covers(string action, params string[] args)
+        {
+            foreach (var a in args)
+                Check.True(props.ContainsKey(a), $"{action} reads {a} but the agent schema has no {a}");
+        }
+        var actions = props["action"]!.AsObject()["enum"]!.AsArray().Select(n => n!.GetValue<string>()!).ToHashSet();
+        Check.True(actions.SetEquals(["wait", "send", "list", "result", "cancel"]),
+            "the action enum names the actions: " + string.Join(", ", actions.OrderBy(x => x)));
+        foreach (var a in def.Parameters["required"]!.AsArray().Select(n => n!.GetValue<string>()!))
+            Check.True(props.ContainsKey(a), $"required {a} is not a property");
+        Covers("wait", "id", "ids", "timeoutSeconds");
+        Covers("send", "to", "message", "mode");
+        Covers("list", "all");
+        Covers("result", "id");
+        Covers("cancel", "id");
     }
 
     /// <summary>
