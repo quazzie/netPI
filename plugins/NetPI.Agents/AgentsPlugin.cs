@@ -17,6 +17,7 @@ namespace NetPI.Agents;
 public sealed class AgentsPlugin : INetPiPlugin
 {
     private AgentScheduler? _scheduler;
+    private Ledger? _usage;
 
     internal AgentScheduler? Scheduler => _scheduler;
 
@@ -72,6 +73,7 @@ public sealed class AgentsPlugin : INetPiPlugin
         context.Sessions.DeclareForkReset(Ledger.AllowanceMetaKey);
 
         var usage = new Ledger(context);
+        _usage = usage;
         usage.Initialize();
         var scheduler = new AgentScheduler(context, usage);
         _scheduler = scheduler;
@@ -169,6 +171,7 @@ public sealed class AgentsPlugin : INetPiPlugin
     public Task StopAsync(CancellationToken ct)
     {
         _scheduler?.Stop();
+        _usage?.Stop();
         return Task.CompletedTask;
     }
 }

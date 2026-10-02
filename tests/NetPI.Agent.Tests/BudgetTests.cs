@@ -13,6 +13,7 @@ public static class BudgetTests
         t.Add("agents: agent_choices shows the budget, state, price, spend and note; agent_spawn needs an active agent; an agent's daily cap", AgentsAndCap);
         t.Add("budget: the period starts on budget.resetDay", Period);
         t.Add("budget: settings changes refresh usage without a model call, including file reloads", SettingsRefresh);
+        t.Add("ledger: the in-flight usage.changed does not outlive the plugin's stop", StopMidNotification);
     }
 
     /// <summary>The ledger's call collection, read by the tests the way the migration tool will (the same declaration the ledger makes).</summary>
@@ -87,6 +88,30 @@ public static class BudgetTests
         h.Settings.Set("budget.monthlyUsd", JsonValue.Create(100));
         await h.Bus.DrainAsync();
         Check.Equal(count, h.Bus.OfType("usage.changed").Count, "unloading removes the settings listener");
+    }
+
+    private static async Task StopMidNotification()
+    {
+        // the usage ledger publishes usage.changed from a continuation nothing awaits: it must not touch the store
+        // after the plugin is gone (an access violation in the suite, a torn-down store in a reload) (idea-sx4xxx)
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
+        var ctx = new TestPluginContext(h, "ledger-test");
+        var l = new Ledger(ctx) { ChangeDelayMs = 100 };
+        l.Initialize();
+        ModelRequest Req() => new() { Model = new ModelInfo { Provider = "fake", Id = "local", IsLocal = true }, Messages = [ChatMessage.UserText("hi")] };
+        void Record() => l.RecordCall(Req(), new ChatMessage { Usage = new Usage { InputTokens = 1, OutputTokens = 1 } }, null, null);
+
+        // while alive: the two calls coalesce into one debounced notification
+        Record();
+        Record();
+        await Wait.Until(() => h.Bus.OfType("usage.changed").Count == 1, "the debounce publishes");
+
+        // a change scheduled at the moment of the stop: the plugin unloads before the debounce fires
+        Record();
+        l.Stop();
+        ctx.Unload();
+        await Task.Delay(400);
+        Check.Equal(1, h.Bus.OfType("usage.changed").Count, "the in-flight usage.changed does not outlive the plugin");
     }
 
     private static async Task Ledger()
