@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 
 namespace NetPI.Agent.Tests;
@@ -7,6 +9,7 @@ public static class SubagentTests
     public static void Register(TestRunner t)
     {
         t.Add("subagents: spawn + wait yields the only slot of a model (no deadlock)", SpawnWaitYield);
+        t.Add("subagents: spawn + wait under concurrent load: the parent is Yielded before its child takes the slot", SpawnWaitYieldStress);
         t.Add("subagents: parent auto-wake with agent-result", ParentAutoWake);
         t.Add("subagents: result steers a running parent", ResultSteersRunningParent);
         t.Add("subagents: agent_wait on several workers, one slot", WaitManyOneSlot);
@@ -293,6 +296,136 @@ public static class SubagentTests
         var parentStatuses = h.Bus.OfType(EventTypes.AgentStatus).Select(FakeBus.Data)
             .Where(d => (string?)d["agent"]!["id"] == p.Id).Select(d => (string)d["agent"]!["status"]!).ToList();
         Check.True(parentStatuses.Contains("yielded"), "yielded published");
+    }
+
+    /// <summary>
+    /// The spawn+wait yield ordering under load (idea-6bxcsr): the parent's yield must be recorded before its slot
+    /// is released, so a child that takes the slot never sees the parent still Running. The one-shot pair above met
+    /// that window twice in nine full-suite runs — under two suites running at once; here four hosts run the pair at
+    /// once, each under its own second concurrent runs, and every yield is checked from a tight watcher, from the
+    /// child's own call, and from the bus order of the status events.
+    /// </summary>
+    private static async Task SpawnWaitYieldStress()
+    {
+        await using var h1 = await TestHost.StartAsync();
+        await using var h2 = await TestHost.StartAsync();
+        await using var h3 = await TestHost.StartAsync();
+        await using var h4 = await TestHost.StartAsync();
+        var violations = new List<string>();
+        await Task.WhenAll(
+            StressHostAsync(h1, "A", violations),
+            StressHostAsync(h2, "B", violations),
+            StressHostAsync(h3, "C", violations),
+            StressHostAsync(h4, "D", violations));
+        Check.True(violations.Count == 0, "the parent was not recorded as Yielded before its child ran: "
+            + string.Join("; ", violations.Take(3)));
+    }
+
+    /// <summary>One host of the stress: spawn+wait pairs on a one-slot model, under two concurrent runs and a
+    /// tight watcher on the invariant "a slot-taking child's parent is Yielded".</summary>
+    private static async Task StressHostAsync(TestHost h, string tag, List<string> violations)
+    {
+        var solo = "fake/solo"; // one slot
+        var done = new CancellationTokenSource();
+
+        // What each status publish said, in bus order: the parent's yield must come out before the event that
+        // marks its child taking the slot.
+        var runningSeq = new ConcurrentDictionary<string, long>();
+        var queuedSeq = new ConcurrentDictionary<string, long>();
+        var yieldedSeq = new ConcurrentDictionary<string, long>();
+        var sub = h.Bus.Subscribe(EventTypes.AgentStatus, evt =>
+        {
+            var a = FakeBus.Data(evt)["agent"];
+            if ((string?)a!["id"] is not { } id || (string?)a!["status"] is not { } st) return;
+            switch (st)
+            {
+                case "running": runningSeq[id] = evt.Seq; break;
+                case "queued": queuedSeq[id] = evt.Seq; break;
+                case "yielded": yieldedSeq[id] = evt.Seq; break;
+            }
+        });
+
+        // Second concurrent runs: chats on another model that keep going, the load under which the race was seen.
+        var o1 = h.NewSession(title: "concurrent run");
+        var o2 = h.NewSession(title: "concurrent run");
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (r.SessionId == o1.Id || r.SessionId == o2.Id) return Reply.Text("tick");
+            if (IsChild(r))
+            {
+                // The child holds the slot here: its parent must already be recorded as Yielded.
+                var parent = h.Runtime.GetBySession(r.SessionId!)?.ParentSessionId is { } ps ? h.Runtime.GetBySession(ps) : null;
+                if (parent?.Status != AgentStatus.Yielded)
+                    lock (violations) violations.Add($"{tag}: the parent was {parent?.Status} while its child held the slot");
+                return Reply.Text("REPORT " + r.SessionId);
+            }
+            return Reply.HasToolResult(r)
+                ? Reply.Text("parent done")
+                : Reply.Tool("agent_spawn", new { task = "count the files", name = "counter" });
+        };
+        var loaders = new[] { o1.Id, o2.Id }.Select(id => Task.Run(async () =>
+        {
+            while (!done.IsCancellationRequested)
+            {
+                try { await h.SendAsync(id, "tick"); await h.IdleAsync(id, 5_000); }
+                catch { break; }
+            }
+        })).ToArray();
+
+        // A tight watcher on the invariant: a subagent that took the slot (Running after its Queued — a Running at
+        // run start precedes the slot) has its parent recorded as Yielded for as long as it runs on it.
+        var watcher = Task.Run(() =>
+        {
+            while (!done.IsCancellationRequested)
+            {
+                try
+                {
+                    foreach (var a in h.Runtime.List(true))
+                        if (a.IsSubagent && a.Status == AgentStatus.Running && a.Model == solo
+                            && queuedSeq.TryGetValue(a.Id, out var q) && runningSeq[a.Id] > q)
+                        {
+                            var parent = h.Runtime.GetBySession(a.ParentSessionId!);
+                            if (parent?.Status != AgentStatus.Yielded && h.Runtime.Get(a.Id)?.Status == AgentStatus.Running)
+                                // still running: not the hand-back (a finished child lets the parent take the slot back)
+                                lock (violations) violations.Add($"{tag}: the parent was {parent?.Status} while its child {a.Name} ran");
+                        }
+                }
+                catch { }
+                Thread.SpinWait(1);
+            }
+        });
+
+        // Readers racing the current parent's state gate (its status write takes it too): a little extra
+        // descheduling pressure on top of the concurrent runs.
+        var current = new ConcurrentDictionary<string, string>();
+        var readers = new[] { 0, 1 }.Select(_ => Task.Run(() =>
+        {
+            while (!done.IsCancellationRequested)
+            {
+                try { if (current.ContainsKey("p")) h.Runtime.GetBySession(current["p"]); } catch { }
+            }
+        })).ToArray();
+
+        // As many spawn+wait pairs as fit the budget: each is one chance for the window.
+        var budget = Stopwatch.StartNew();
+        for (var i = 0; i < 150 && budget.Elapsed < TimeSpan.FromSeconds(30); i++)
+        {
+            var parent = h.NewSession(model: solo);
+            current["p"] = parent.Id;
+            await h.SendAsync(parent.Id, "delegate " + i);
+            var p = await h.IdleAsync(parent.Id, 15_000);
+            var child = h.Runtime.Get(p.Children.Single())!;
+            Check.Equal(AgentStatus.Completed, child.Status, $"{tag} cycle {i}: the child finished");
+            // If the child waited for the slot, the parent's yield must have been recorded before the child took it.
+            if (queuedSeq.TryGetValue(child.Id, out var q) && runningSeq[child.Id] > q
+                && yieldedSeq.TryGetValue(p.Id, out var y) && !(y < runningSeq[child.Id]))
+                lock (violations) violations.Add($"{tag} cycle {i}: the yield was recorded after the child took the slot");
+        }
+
+        done.Cancel();
+        sub.Dispose();
+        try { await Task.WhenAll(loaders); } catch { }
+        await Task.WhenAll([watcher, .. readers]);
     }
 
     private static async Task ParentAutoWake()

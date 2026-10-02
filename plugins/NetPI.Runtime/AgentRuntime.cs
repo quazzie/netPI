@@ -122,8 +122,19 @@ internal sealed class AgentRuntime : IAgentRuntime
             info.Error ??= "interrupted";
         }
         info.Activity = null;
-        info.QueuedMessages = 0;
-        return new AgentState(info) { Instructions = rec.Instructions, NotifyParent = rec.NotifyParent };
+        var state = new AgentState(info) { Instructions = rec.Instructions, NotifyParent = rec.NotifyParent };
+        // The queue is the only copy of input that never reached a run: hand it back on reload so a
+        // plugin swap does not lose it (idea-6oulx0). A fresh SteerSignal is fine — nothing was steered to.
+        lock (state.Gate)
+        {
+            foreach (var q in rec.Queue)
+            {
+                if (string.Equals(q.Mode, "steer", StringComparison.Ordinal)) state.Steering.Add(q.Input);
+                else state.FollowUps.Add(q.Input);
+            }
+            info.QueuedMessages = state.Steering.Count + state.FollowUps.Count;
+        }
+        return state;
     }
 
     // ---------------------------------------------------------------- settings
@@ -318,13 +329,15 @@ internal sealed class AgentRuntime : IAgentRuntime
         AgentInfo snap;
         string? instructions;
         bool notify;
+        List<QueuedRecord> queue;
         lock (s.Gate)
         {
             snap = s.Info.Clone();
             instructions = s.Instructions;
             notify = s.NotifyParent;
+            queue = s.QueueRecords();
         }
-        _store.Save(snap, instructions, notify);
+        _store.Save(snap, instructions, notify, queue);
     }
 
     // ---------------------------------------------------------------- events
@@ -383,6 +396,9 @@ internal sealed class AgentRuntime : IAgentRuntime
             ["sessionId"] = s.Info.SessionId,
             ["items"] = NetPiJson.ToNode(items),
         }, s.Info.SessionId);
+        // The queue is the only copy of input that never reached a run: persist it on every change, so a
+        // reload hands it back instead of losing it (idea-6oulx0).
+        Save(s);
     }
 
     /// <summary>Set status/activity; persists and publishes when the status changed.</summary>
@@ -587,6 +603,7 @@ internal sealed class AgentRuntime : IAgentRuntime
         bool notify;
         UserInput? notice = null;
         RunState? next = null;
+        List<QueuedRecord> queue = [];
         TaskCompletionSource done;
         lock (s.Gate)
         {
@@ -628,10 +645,11 @@ internal sealed class AgentRuntime : IAgentRuntime
             if (!run.Aborted && !run.Stopping && !_stopping && (s.Steering.Count > 0 || s.FollowUps.Count > 0)
                 && (outcome == "completed" || run.Delivered))
                 next = BeginRunLocked(s);
+            queue = s.QueueRecords();
         }
 
         done.TrySetResult();
-        _store.Save(final, s.Instructions, s.NotifyParent);
+        _store.Save(final, s.Instructions, s.NotifyParent, queue);
         try
         {
             Ctx.Events.Publish(new BusEvent { Type = EventTypes.AgentStatus, Data = new JsonObject { ["agent"] = NetPiJson.ToNode(final) } });
@@ -1176,20 +1194,20 @@ internal sealed class AgentRuntime : IAgentRuntime
 
         IAgentSlot? yielded = null;
         var model = run?.Model;
-        if (yieldSlot && run?.Lease is { IsReleased: false } lease && model is not null)
-        {
-            run.Lease = null;
-            yielded = lease;
-            lease.Dispose();
-        }
         static string WaitingFor(int n) => $"waiting for {n} agent{(n == 1 ? "" : "s")}";
         var countdown = activity is null;
         activity ??= WaitingFor(tasks.Count);
-        if (caller is not null)
+        if (caller is not null && yieldSlot && run?.Lease is { IsReleased: false } lease && model is not null)
         {
-            if (yielded is not null) SetStatus(caller, AgentStatus.Yielded, activity);
-            else SetActivity(caller, activity);
+            run.Lease = null;
+            yielded = lease;
+            // Record the yield before releasing the slot: a child that takes the slot in that window must see the
+            // parent already Yielded, not still Running (the spawn+wait race, idea-6bxcsr).
+            SetStatus(caller, AgentStatus.Yielded, activity);
+            lease.Dispose();
         }
+        else if (caller is not null)
+            SetActivity(caller, activity);
         // keep the caller's activity current ("waiting for 2 agents" → "waiting for 1 agent") as workers finish
         var remaining = tasks.Count;
         var waiting = 1;

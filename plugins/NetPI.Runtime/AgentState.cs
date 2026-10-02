@@ -51,6 +51,15 @@ internal sealed class AgentState(AgentInfo info)
         foreach (var i in FollowUps) list.Add(new QueuedInput { Id = i.Id, Text = i.Text, Mode = "queue", Source = i.Source, CreatedAt = i.CreatedAt });
         return list;
     }
+
+    /// <summary>The queue as persisted in the agent record (caller holds <see cref="Gate"/>).</summary>
+    public List<QueuedRecord> QueueRecords()
+    {
+        var list = new List<QueuedRecord>(Steering.Count + FollowUps.Count);
+        foreach (var i in Steering) list.Add(new QueuedRecord("steer", i));
+        foreach (var i in FollowUps) list.Add(new QueuedRecord("queue", i));
+        return list;
+    }
 }
 
 /// <summary>One run: from input until the agent stops.</summary>

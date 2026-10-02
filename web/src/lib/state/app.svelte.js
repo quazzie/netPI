@@ -546,7 +546,8 @@ export async function dequeue(sessionId, id) {
  * The send action on a queued chip (after a stop, when the queue has no run left to run in): the queued copy
  * is removed first, and only then is the same text sent as the next turn. If the item no longer exists —
  * already delivered, or already removed — the removal fails and nothing is sent: a message that already
- * went out is never sent twice.
+ * went out is never sent twice. The chip leaves the UI either way, but a failed removal is said out loud so
+ * a click that sends nothing is never a silent drop.
  */
 export async function resendQueued(sessionId, id, text) {
   const c = peekChat(sessionId);
@@ -554,11 +555,15 @@ export async function resendQueued(sessionId, id, text) {
   let removed;
   try {
     removed = await rpc('agent.dequeue', { sessionId, id });
-  } catch {
-    return; // it left the queue by another route: nothing to send
+  } catch (e) {
+    toast(e.message || 'That queued message could not be removed.', 'error');
+    return; // it is still there (or the host is gone): keep the chip, say what happened
   }
   c.queue = c.queue.filter((q) => q.id !== id);
-  if (!removed) return; // it had already been delivered: do not send it again
+  if (!removed) {
+    toast('That queued message is no longer in the queue (it was delivered or removed), so it was not sent.', 'warn');
+    return;
+  }
   await sendMessage(sessionId, text, [], 'auto');
 }
 
