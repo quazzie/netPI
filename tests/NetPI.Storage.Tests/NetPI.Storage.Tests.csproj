@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- Console test runner for the storage port: the conformance suite every provider passes.
        No test framework: NuGet is not available.
-       Build: dotnet build tests/NetPI.Storage.Tests (after building src/NetPI.Host)
+       Build: dotnet build tests/NetPI.Storage.Tests (it builds src/NetPI.Host, which holds the providers)
        Run:   dotnet tests/NetPI.Storage.Tests/bin/Debug/NetPI.Storage.Tests.dll [name filter...]
        Every test runs against a store made by a factory (Providers.All), so the same scenario runs on
        each provider; one is registered today, the next joins with one line. -->
