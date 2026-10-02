@@ -30,7 +30,10 @@ public static class ResourceSchedulerTests
     }
 
     private static async Task<IAgentSlot> Take(IAgentScheduler s, string key, string id) =>
-        await s.AcquireAsync(Req(key, id), CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+        // 10 s, not 3: a deadlock is still caught long before the runner's per-test timeout, and a 3 s wall-clock
+        // budget is tighter than a box running two suite processes and a build at once (2026-10-02: Rebind tripped it
+        // once there and passed 15 of 16 runs, the logic being clean every time).
+        await s.AcquireAsync(Req(key, id), CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
 
     private static async Task Fallback(int? concurrency)
     {
