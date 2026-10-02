@@ -1,6 +1,6 @@
 # Ideas follow the session: recall, save on close, close on commit
 
-Status: phases 1 (recall) and 2 (save on close) built 2026-09-28; phase 3 (close on commit) next · idea-c7xyem
+Status: all three phases built 2026-09-28 (recall, save on close, close on commit) · idea-c7xyem
 
 ## Goal
 

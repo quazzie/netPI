@@ -1,6 +1,8 @@
 # Ideas: migrate authoritative storage to SQLite
 
-Status: implementation handoff; migration is not implemented or authorized for execution on live data by this document.
+Status: superseded by docs/plans/2026-10-02-replaceable-parts.md (implemented 2026-10-02): plugin data lives in the storage
+provider's own collections (`ctx.Data`), not in plugin-owned SQLite tables, and the review bugs this plan cites are fixed
+(0c5c6bb). Kept as the record of the reviewed design; the migration it describes was never executed.
 Date: 2026-09-29. Documentation baseline: 0ff5edc. Post-fix review baseline: 9bcb968.
 
 ## Outcome

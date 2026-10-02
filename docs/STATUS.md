@@ -1,4 +1,4 @@
-# Status (2026-09-28)
+# Status (2026-10-03)
 
 ## Current review fixes
 
@@ -22,22 +22,19 @@
 
 ## Validation
 
-Windows validation on 2026-09-28:
+Windows validation on 2026-10-03: the six unit suites (`scripts/test.ps1`) from fresh Release builds in this repository:
 
-| Check | Result |
+| Suite | Result |
 |---|---|
-| Full .NET solution build | Passed, 0 warnings/errors |
-| App and plugin UI builds | Passed (existing Ideas-tab Svelte warnings) |
-| Providers | 41 passed; 335 assertions |
-| Tools | 55 passed |
-| Agent | 122 passed |
-| Aux | 129 passed |
-| Host | 47 passed; updated backup regression also rerun independently |
-| UI mock walkthrough | 233/233 checks passed |
-| Full real-server E2E | 61 passed; 800 checks, including creating/verifying a backup in the browser |
+| Providers | 68 passed; 495 checks |
+| Tools | 79 passed |
+| Agent | 195 passed |
+| Aux | 335 passed |
+| Host | 170 passed |
+| Storage | 104 passed |
 
-Coverage details are in [TESTING.md](TESTING.md). Builds and tests use a separate `artifacts/review/app`
-output; these changes have not been installed into the user's running app by this task.
+Coverage details are in [TESTING.md](TESTING.md). The end-to-end and mock-UI gates run once per merge
+(`scripts/e2e.ps1`, `npm run e2e`; the CI workflow's jobs mirror them).
 
 ## Remaining limits
 

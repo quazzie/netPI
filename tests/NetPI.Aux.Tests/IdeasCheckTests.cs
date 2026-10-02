@@ -5,7 +5,7 @@ namespace NetPI.Aux.Tests;
 
 /// <summary>
 /// The checks that read a conversation: what they are asked, when they may run, and what they leave behind
-/// (docs/plans/2026-09-29-ideas-flow-storage-handoff.md, assignment B). Every test here is about a decision or a
+/// (docs/archive/2026-09-29-ideas-flow-storage-handoff.md, assignment B). Every test here is about a decision or a
 /// failure the old flow got wrong.
 /// </summary>
 public static class IdeasCheckTests

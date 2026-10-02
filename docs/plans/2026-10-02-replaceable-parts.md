@@ -1,7 +1,8 @@
 # Replaceable storage: a swap-over that changes nothing you can see
 
 Date: 2026-10-02
-Status: implemented on branch `netpi/arch-plan` (2026-10-02), not yet merged or installed; see "Outcome" at the end. One swap-over: all the code is written in one session, then a test/fix loop runs until the definition of done is met. Review snapshot: master at 59619d2. Reviewed three times the same day by one Opus agent (read-only, the third after the core was redefined); its findings are folded in and marked **(review)**.
+Status: implemented on branch `netpi/arch-plan` (2026-10-02), merged into master and installed in the owner's app (the one-off
+migration of their `netpi.db` ran on 2026-10-02); see "Outcome" at the end. One swap-over: all the code is written in one session, then a test/fix loop runs until the definition of done is met. Review snapshot: master at 59619d2. Reviewed three times the same day by one Opus agent (read-only, the third after the core was redefined); its findings are folded in and marked **(review)**.
 
 ## Goal
 

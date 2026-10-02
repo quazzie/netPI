@@ -1,6 +1,6 @@
 # Project picker: from the top bar into the composer
 
-Status: planned · 2026-09-27
+Status: implemented · 2026-09-27
 
 ## Goal
 

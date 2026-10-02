@@ -5,7 +5,7 @@ namespace NetPI.Aux.Tests;
 
 /// <summary>
 /// The notice a run gets after it commits: which tool calls count as a landed commit, when it is silent, and the bound
-/// on how often one run may be asked (docs/plans/2026-09-30-ideas-commit-notice.md).
+/// on how often one run may be asked (docs/archive/2026-09-30-ideas-commit-notice.md).
 /// </summary>
 public static class IdeasNoticeTests
 {
