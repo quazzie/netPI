@@ -12,7 +12,7 @@ public static class InspectTests
     {
         r.Add("inspect: model calls through the middleware (first token, retries, tokens, errors, cancel, running)", ModelCalls);
         r.Add("inspect: the journal leaves out per-token events and sums up messages; tool calls from tool.start/end", JournalAndTools);
-        r.Add("inspect: problems (failed plugin, waiters on an inactive agent, a long wait, errors in the log)", Problems);
+        r.Add("inspect: problems (failed plugin, a broken settings file, waiters on an inactive agent, a long wait, errors in the log)", Problems);
         r.Add("inspect: settings without secrets, saved failed requests, the overview lists the diag methods", SettingsFailuresOverview);
         r.Add("inspect: the diag tool answers with the RPC's JSON, defaults to the calling session and refuses every write", DiagTool);
         r.Add("inspect: diag rpc reaches any read-only method and nothing else; a journal type query is global", DiagRpcAndJournalScope);
@@ -307,6 +307,8 @@ public static class InspectTests
         broken.Error = "TypeLoadException: IOld";
         pm.Plugins.Add(broken);
         ctx.ServicesFake.Register<IPluginManager>(pm);
+        ctx.SettingsFake.InvalidOnDisk = true;
+        ctx.SettingsFake.InvalidOnDiskError = "'{' expected, got end of file. (line 3, column 5)";
         var long_ = DateTimeOffset.UtcNow.AddMinutes(-3);
         ctx.ServicesFake.Register<IAgentScheduler>(new FakeScheduler(
         [
@@ -324,6 +326,8 @@ public static class InspectTests
         var problems = (JsonArray)(await ctx.RpcFake.Call("diag.problems"))!;
         string Find(string text) => problems.Select(p => $"{p!["severity"]} {p["message"]}").FirstOrDefault(p => p.Contains(text)) ?? throw new AssertException($"no problem with '{text}': {problems.ToJsonString()}");
         Check.True(Find("netpi.broken failed").StartsWith("error"));
+        Check.True(Find("settings.json does not parse").StartsWith("error"), "a broken settings file is a problem in its own right");
+        Check.Contains(Find("settings.json does not parse"), "expected, got end of file", "the parse error the host saw");
         Check.True(Find("wait on agent qwen, which can't take work: qwen isn't loaded").StartsWith("error"));
         Check.True(Find("story-b (agt_w) has waited").StartsWith("warn"));
         Check.Contains(Find("1 error(s) logged"), "bad thing");
@@ -337,11 +341,27 @@ public static class InspectTests
         ctx.SettingsFake.Set("providers.anthropic.apiKey", "env:ANTHROPIC_API_KEY");
         ctx.SettingsFake.Set("providers.custom.password", "");
         ctx.SettingsFake.Set("tools.web.searxUrl", "http://127.0.0.1:8888");
+        ctx.SettingsFake.Set("providers.openaiCompatible", new JsonArray(
+            new JsonObject
+            {
+                ["id"] = "srv1",
+                ["baseUrl"] = "https://compat.example",
+                ["apiKey"] = "sk-or-v1-1234567890",
+                ["headers"] = new JsonObject { ["Authorization"] = "Bearer 1234567890", ["X-Api-Key"] = "key-9876543210" },
+            }));
         var settings = ((JsonObject)(await ctx.RpcFake.Call("diag.settings"))!)["settings"]!;
         Check.Equal("<secret, 12 chars>", settings["providers"]!["openrouter"]!["apiKey"].Str());
         Check.Equal("env:ANTHROPIC_API_KEY", settings["providers"]!["anthropic"]!["apiKey"].Str(), "a reference is not a secret");
         Check.Equal("", settings["providers"]!["custom"]!["password"].Str());
         Check.Equal("http://127.0.0.1:8888", settings["tools"]!["web"]!["searxUrl"].Str());
+
+        // an array of objects: the objects inside were never visited before, so their secrets leaked (idea-zu892z)
+        var compat = ((JsonArray)settings["providers"]!["openaiCompatible"]!)[0]!.AsObject();
+        Check.Equal("srv1", compat["id"].Str(), "non-secret values pass through");
+        Check.Equal("https://compat.example", compat["baseUrl"].Str());
+        Check.Equal("<secret, 19 chars>", compat["apiKey"].Str(), "an API key inside the array is redacted");
+        Check.Equal("<secret, 17 chars>", compat["headers"]!["Authorization"].Str(), "and headers by name");
+        Check.Equal("<secret, 14 chars>", compat["headers"]!["X-Api-Key"].Str());
 
         var dir = Path.Combine(ctx.Paths.LogsDir, "failed-requests");
         Directory.CreateDirectory(dir);

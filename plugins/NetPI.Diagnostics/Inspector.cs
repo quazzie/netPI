@@ -487,11 +487,35 @@ public sealed partial class Inspector(IPluginContext ctx, Recorder recorder, Rel
         foreach (var (key, value) in node.ToList())
         {
             var p = path.Length == 0 ? key : path + "." + key;
-            if (value is JsonObject child) Redact(child, p, secretKeys);
-            else if (value is JsonValue v && v.TryGetValue<string>(out var s) && (secretKeys.Contains(p) || SecretName().IsMatch(key)))
-                node[key] = s.Length == 0 ? "" : s.StartsWith("env:", StringComparison.Ordinal) || s.StartsWith('$') ? s : $"<secret, {s.Length} chars>";
+            switch (value)
+            {
+                case JsonObject child:
+                    Redact(child, p, secretKeys);
+                    break;
+                case JsonArray array:
+                    // An array of objects (providers.openaiCompatible[]): recurse into each element with an indexed path,
+                    // or the objects inside it were never visited and their apiKey/headers leaked. A bare string element is
+                    // masked when the array's own name or path says it is a secret.
+                    for (var i = 0; i < array.Count; i++)
+                    {
+                        var ep = $"{p}.{i}";
+                        if (array[i] is JsonObject o)
+                            Redact(o, ep, secretKeys);
+                        else if (array[i] is JsonValue ev && ev.TryGetValue<string>(out var txt) && (secretKeys.Contains(ep) || SecretName().IsMatch(key)))
+                            array[i] = Mask(txt);
+                    }
+                    break;
+                default:
+                    if (value is JsonValue v && v.TryGetValue<string>(out var s) && (secretKeys.Contains(p) || SecretName().IsMatch(key)))
+                        node[key] = Mask(s);
+                    break;
+            }
         }
     }
+
+    /// <summary>A secret value becomes a length marker; <c>env:</c> and <c>$</c> values are references, not secrets.</summary>
+    private static string Mask(string s) =>
+        s.Length == 0 ? "" : s.StartsWith("env:", StringComparison.Ordinal) || s.StartsWith('$') ? s : $"<secret, {s.Length} chars>";
 
     public async Task<JsonArray> LogsAsync(RpcRequest r, CancellationToken ct)
     {
