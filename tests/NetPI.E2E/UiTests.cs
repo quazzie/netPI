@@ -20,6 +20,28 @@ public static class UiTests
             catch { if (!proc.HasExited) proc.Kill(true); throw; }
             Check.Equal(0, proc.ExitCode, await stdout + await stderr);
         });
+        r.Add("ui.files-mount", "ui: the Files tab's teardown runs — unmounting it stops the focus listener, and three remounts leave none behind (idea-1zs9go)", async () =>
+        {
+            // No server needed: the script mounts the committed plugin bundle itself (the one that ships) with a stub
+            // ctx, then unmounts it the way PluginTabHost does — a plugin load bumps UiVersion and remounts the tab.
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            psi.ArgumentList.Add(Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "files-mount.mjs"));
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync(); var stderr = proc.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            try { await proc.WaitForExitAsync(timeout.Token); }
+            catch { if (!proc.HasExited) proc.Kill(true); throw; }
+            var output = await stdout;
+            var err = await stderr;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
+            Check.True(json is not null, "files-mount output: " + output + err);
+            using var doc = JsonDocument.Parse(json!);
+            var failedChecks = doc.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
+            Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
+                + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
+            Check.Equal(0, proc.ExitCode, "files-mount exit code; stderr: " + err);
+        }, 120);
         r.Add("ui.smoke", "ui: send [s:tools] in the browser, streamed text + tool rows, plugin tabs, no console errors (screenshots)", async () =>
         {
             var p = await env.NewProject("ui-demo", CoreTests.Seed);
