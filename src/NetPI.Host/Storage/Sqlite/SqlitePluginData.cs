@@ -32,15 +32,10 @@ internal sealed partial class SqlitePluginData(Database db, string pluginId) : I
     // Collections first declared inside a plugin transaction: their table is created inside it, so a rollback takes it away again.
     private readonly List<string> _createdInTransaction = [];
 
-    [GeneratedRegex("^[A-Za-z][A-Za-z0-9_]{0,63}$")]
-    private static partial Regex NamePattern();
-
     public IDataCollection Collection(string name, CollectionSpec spec)
     {
-        if (!NamePattern().IsMatch(name)) throw new ArgumentException($"'{name}' is not a collection name (letters, digits and underscores, starting with a letter)", nameof(name));
-        ArgumentNullException.ThrowIfNull(spec);
-        foreach (var field in spec.Fields.Keys)
-            if (!NamePattern().IsMatch(field)) throw new ArgumentException($"'{field}' is not an index field name", nameof(spec));
+        StorageNames.CheckCollection(name);
+        StorageNames.CheckSpec(spec);
         lock (db.Gate)
         {
             lock (_open)
@@ -191,13 +186,17 @@ internal sealed class SqliteCollection : IDataCollection
 
     // ------------------------------------------------------------------ documents
 
-    public JsonObject? Get(string key) => _db.QuerySingle($"SELECT doc FROM {_table} WHERE k = @k", new { k = key }, r => Parse(r.GetString("doc")));
+    public JsonObject? Get(string key) { StorageNames.CheckKey(key); return Read(key); }
 
-    public void Put(string key, JsonObject doc) => _db.Execute(_putSql, WriteArgs(key, doc));
+    private JsonObject? Read(string key) => _db.QuerySingle($"SELECT doc FROM {_table} WHERE k = @k", new { k = key }, r => Parse(r.GetString("doc")));
 
-    public bool Insert(string key, JsonObject doc) => _db.Execute(_insertSql, WriteArgs(key, doc)) > 0;
+    public void Put(string key, JsonObject doc) { StorageNames.CheckKey(key); _db.Execute(_putSql, WriteArgs(key, doc)); }
 
-    public bool Delete(string key) => _db.Execute($"DELETE FROM {_table} WHERE k = @k", new { k = key }) > 0;
+    public bool Insert(string key, JsonObject doc) { StorageNames.CheckKey(key); return _db.Execute(_insertSql, WriteArgs(key, doc)) > 0; }
+
+    public bool Delete(string key) { StorageNames.CheckKey(key); return DeleteRow(key); }
+
+    private bool DeleteRow(string key) => _db.Execute($"DELETE FROM {_table} WHERE k = @k", new { k = key }) > 0;
 
     public IReadOnlyList<DataDoc> Find(DataQuery? query = null)
     {

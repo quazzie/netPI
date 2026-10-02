@@ -188,6 +188,18 @@ public static class CollectionTests
             Check.Equal(1L, docs.Count());
         });
 
+        Providers.Add(r, "collections: names are checked alike by every provider: collection and field names, case-colliding fields, an empty key, a field's type", store =>
+        {
+            var data = store.Plugins.For("test");
+            Check.Throws<ArgumentException>(() => data.Collection("bad name", new CollectionSpec()), "a collection name is letters, digits and underscores");
+            Check.Throws<ArgumentException>(() => data.Collection("ok", new CollectionSpec().Text("bad-field")), "so is a field name");
+            Check.Throws<ArgumentException>(() => data.Collection("ok", new CollectionSpec().Text("Day").Text("day")), "field names are unique ignoring case");
+            var docs = data.Collection("things", new CollectionSpec().Integer("n"));
+            Check.Throws<ArgumentException>(() => docs.Put("", Build.Doc(("n", 1L))), "a key is not empty");
+            Check.Throws<ArgumentException>(() => docs.Get(""));
+            Check.Throws<StorageException>(() => data.Collection("things", new CollectionSpec().Text("n")), "a field's type cannot change");
+        });
+
         Providers.Add(r, "collections: a document whose index field holds the wrong kind of value is refused, and nothing of it is stored", store =>
         {
             var docs = store.Plugins.For("test").Collection("things", new CollectionSpec().Integer("n").Text("t"));

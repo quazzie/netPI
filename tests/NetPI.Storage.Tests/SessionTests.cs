@@ -151,6 +151,7 @@ public static class SessionTests
             Check.Equal("bound", string.Join(",", Bound(new SessionQuery { AttachedKey = "workspaceId", AttachedValue = "w1" })));
             Check.Equal("", string.Join(",", Bound(new SessionQuery { AttachedKey = "workspaceId", AttachedValue = "w3" })));
             Check.Equal("", string.Join(",", Bound(new SessionQuery { AttachedKey = "workspaceId" })), "a null value matches no string");
+            Check.Equal(5, Bound(new SessionQuery { AttachedKey = "", IncludeArchived = true }).Count, "an empty key is no filter at all");
             Check.Equal("", string.Join(",", Bound(new SessionQuery { AttachedKey = "workspaceId", AttachedValue = "7" })),
                 "a meta value of another type is not that string");
             Check.Equal("bound,archived", string.Join(",", Bound(new SessionQuery { AttachedKey = "workspaceId", AttachedValue = "w1", IncludeArchived = true })));

@@ -116,13 +116,24 @@ internal sealed class MemoryStorage : IStorage
             // the caller catches the exception and lets the outer one commit.
             var log = new UndoLog();
             _undo.Push(log);
-            try { return work(); }
+            var done = false;
+            try
+            {
+                var result = work();
+                done = true;
+                return result;
+            }
             catch
             {
                 log.Rollback();
                 throw;
             }
-            finally { _undo.Pop(); }
+            finally
+            {
+                _undo.Pop();
+                // a unit that finished hands what it kept to the one around it: if that one fails later, this one's writes go too
+                if (done && _undo.Count > 0) log.AppendTo(_undo.Peek());
+            }
         }
     }
 
@@ -244,6 +255,8 @@ internal sealed class MemoryStorage : IStorage
             var before = read();
             _entries.Add(() => restore(before));
         }
+
+        public void AppendTo(UndoLog outer) => outer._entries.AddRange(_entries);
 
         public void Rollback()
         {

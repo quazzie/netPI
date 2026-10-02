@@ -850,7 +850,7 @@ public sealed class IdeasRepository
     /// <summary>Where a new idea lands: before the first or after the last, in the user's order.</summary>
     private long MinOrd()
     {
-        var first = _items.Find(new DataQuery().Order("ord").Take(1));
+        var first = _items.Find(new DataQuery().NotNull("ord").Order("ord").Take(1));
         return first.Count == 0 ? 0 : Long_(first[0].Doc["ord"]) - 1;
     }
 

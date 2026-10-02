@@ -129,7 +129,7 @@ internal sealed class MemorySessionRepository(MemoryStorage store) : ISessionRep
             var needle = query.Search.Trim();
             rows = rows.Where(s => AsciiCase.Contains(s.Title, needle));
         }
-        if (query.AttachedKey is { } key)
+        if (query.AttachedKey is { Length: > 0 } key)
         {
             var value = query.AttachedValue;
             rows = rows.Where(s => Attached(s, key, value));

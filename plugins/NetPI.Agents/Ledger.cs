@@ -98,14 +98,19 @@ internal sealed partial class Ledger
     {
         try
         {
-            _calls = _ctx.Data.Collection("usage_calls", new CollectionSpec()
+            // All four or none: a half-opened ledger would let a free call through to a null collection and fail it.
+            var calls = _ctx.Data.Collection("usage_calls", new CollectionSpec()
                 .Integer("ts").Text("day").Text("sessionId").Text("rootSessionId").Text("lane")
                 .Real("costUsd").Text("costSource"));
-            _lanesUsage = _ctx.Data.Collection("lanes_usage", new CollectionSpec()
+            var lanesUsage = _ctx.Data.Collection("lanes_usage", new CollectionSpec()
                 .Text("day").Text("provider").Text("model").Integer("budgetTokens"));
-            _laneUsage = _ctx.Data.Collection("lane_usage", new CollectionSpec()
+            var laneUsage = _ctx.Data.Collection("lane_usage", new CollectionSpec()
                 .Text("day").Text("laneKey").Real("costUsd"));
-            _counters = _ctx.Data.Collection("counters", new CollectionSpec());
+            var counters = _ctx.Data.Collection("counters", new CollectionSpec());
+            _calls = calls;
+            _lanesUsage = lanesUsage;
+            _laneUsage = laneUsage;
+            _counters = counters;
         }
         catch (Exception ex)
         {

@@ -91,6 +91,17 @@ public static class StoreTests
                 "what the outer call wrote is there; what the failed nested call wrote is not");
         });
 
+        Providers.Add(r, "atomic: a nested call that finished is undone with the outer one when the outer one fails", store =>
+        {
+            Check.Throws<InvalidOperationException>(() => store.Sessions.Atomic(outer =>
+            {
+                outer.Atomic(inner => inner.InsertSession(Build.Session("inner")));
+                outer.InsertSession(Build.Session("s1"));
+                throw new InvalidOperationException("outer");
+            }));
+            Check.Equal("", string.Join(",", Build.Ids(store.Sessions.ListSessions(new SessionQuery()))), "what the finished nested call wrote went with it");
+        });
+
         Providers.Add(r, "atomic: the work is handed the repository it is running on", store =>
         {
             store.Sessions.Atomic(repo =>

@@ -81,7 +81,8 @@ public sealed class IdeaSnapshots(IdeasRepository repo)
             if (mode == "replace")
             {
                 foreach (var idea in r.All()) r.Delete(IdeaOps.Str(idea["id"]));
-                foreach (var card in r.Cards()) r.RemoveCard(IdeaOps.Str(card["id"]) ?? "");
+                foreach (var card in r.Cards())
+                    if (IdeaOps.Str(card["id"]) is { Length: > 0 } cardId) r.RemoveCard(cardId);
             }
             foreach (var idea in ideas)
             {

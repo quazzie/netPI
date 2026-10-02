@@ -48,11 +48,15 @@ internal sealed class MemoryPluginData(MemoryStorage store, string pluginId, Plu
 {
     public IDataCollection Collection(string name, CollectionSpec spec)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentNullException.ThrowIfNull(spec);
+        StorageNames.CheckCollection(name);
+        StorageNames.CheckSpec(spec);
         lock (store.Lock)
             return store.Apply(() =>
             {
+                if (data.Collections.TryGetValue(name, out var declared))
+                    foreach (var (field, type) in spec.Fields)
+                        if (declared.Fields.TryGetValue(field, out var was) && was != type)
+                            throw new StorageException($"Collection '{name}' of plugin '{pluginId}': field '{field}' was declared {was} and is now {type}; a field's type cannot change");
                 if (!data.Collections.TryGetValue(name, out var collection))
                 {
                     collection = new Collection(name);
@@ -97,7 +101,7 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
 
     public JsonObject? Get(string key)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        StorageNames.CheckKey(key);
         lock (store.Lock)
             return store.Read(() => collection.Docs.TryGetValue(key, out var doc) ? Copy(doc) : null);
     }
@@ -113,7 +117,7 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
 
     public void Put(string key, JsonObject doc)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        StorageNames.CheckKey(key);
         ArgumentNullException.ThrowIfNull(doc);
         CheckFieldTypes(doc);
         lock (store.Lock)
@@ -122,7 +126,7 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
 
     public bool Insert(string key, JsonObject doc)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        StorageNames.CheckKey(key);
         ArgumentNullException.ThrowIfNull(doc);
         CheckFieldTypes(doc);
         lock (store.Lock)
@@ -136,7 +140,7 @@ internal sealed class MemoryDataCollection(MemoryStorage store, string pluginId,
 
     public bool Delete(string key)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        StorageNames.CheckKey(key);
         lock (store.Lock)
             return store.Apply(() =>
             {

@@ -123,7 +123,7 @@ public interface ISessionRepository
     /// <summary>
     /// Pinned first, then <c>UpdatedAt</c> descending, then id descending. <see cref="SessionQuery.Search"/> is a substring match on the title,
     /// case-insensitive for ASCII, with <c>%</c>, <c>_</c> and <c>\</c> taken literally. <see cref="SessionQuery.ProjectId"/> of "" means "no project".
-    /// <see cref="SessionQuery.AttachedKey"/> keeps the sessions whose <c>Meta[key]</c> is the string <see cref="SessionQuery.AttachedValue"/>.
+    /// <see cref="SessionQuery.AttachedKey"/> keeps the sessions whose <c>Meta[key]</c> is the string <see cref="SessionQuery.AttachedValue"/>: an empty key is no filter, and a key with no value matches nothing.
     /// <c>Limit</c> is clamped to 1..5000 (0 or less means 100).
     /// </summary>
     IReadOnlyList<SessionInfo> ListSessions(SessionQuery query);
@@ -232,7 +232,7 @@ public sealed class DataQuery
 public sealed record DataDoc(string Key, JsonObject Doc);
 
 /// <summary>
-/// A named set of JSON documents, each under a string key (ordinal, case-sensitive). What comes back is the caller's own copy.
+/// A named set of JSON documents, each under a non-empty string key (ordinal, case-sensitive; compared by UTF-16 code unit, so keys outside the Basic Multilingual Plane may order differently between providers). What comes back is the caller's own copy.
 /// Calls outside <see cref="IPluginData.Transaction{T}"/> are each atomic.
 /// </summary>
 public interface IDataCollection
