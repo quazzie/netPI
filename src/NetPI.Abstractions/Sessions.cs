@@ -21,9 +21,6 @@ public sealed class SessionInfo
     public string Id { get; set; } = "";
     public string Title { get; set; } = "";
     public string? ProjectId { get; set; }
-    /// <summary>The checkout this conversation works in (<c>sessions.workspace_id</c>), or null to use the project's path.
-    /// Binding is per worker: two sessions of one project may be bound to different workspaces.</summary>
-    public string? WorkspaceId { get; set; }
     public string? ParentSessionId { get; set; }
     /// <summary>chat | subagent</summary>
     public string Kind { get; set; } = "chat";
@@ -115,6 +112,20 @@ public static class SessionIdentity
         session?.Meta?[MetaKey] is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;
 }
 
+/// <summary>
+/// The folder a session runs in when that is not simply its project's: <c>meta.cwd</c>. A session needs a place to run, so the
+/// core understands this key; whoever decides the folder (a plugin that binds a checkout to the session) writes it, and it
+/// stays right when that plugin is absent. <see cref="ISessionStore.GetCwd"/> is this folder, else the project's, else the
+/// default working folder. A fork never inherits it: a fork is a new writer and starts in its project's folder.
+/// </summary>
+public static class SessionCwd
+{
+    public const string MetaKey = "cwd";
+
+    public static string? Of(SessionInfo? session) =>
+        session?.Meta?[MetaKey] is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;
+}
+
 public sealed class SessionQuery
 {
     public string? ProjectId { get; set; }
@@ -151,17 +162,14 @@ public interface ISessionStore
     void DeleteSession(string id);
     /// <summary>Change the session's project and append a notice so the agent learns about it.</summary>
     SessionInfo SetSessionProject(string sessionId, string? projectId);
-    /// <summary>Working directory for a session: its workspace root when it is bound to one, else its project folder or the default workspace.</summary>
+    /// <summary>Working directory for a session: the folder it carries (<see cref="SessionCwd"/>), else its project folder, else the default working folder.</summary>
     string GetCwd(SessionInfo session);
+
     /// <summary>
-    /// The ids of the sessions currently bound to <paramref name="workspaceId"/> — chats and subagents alike, and
-    /// message-less (transient) sessions as well: the exact answer to "what is bound to this workspace?", not a
-    /// page of <see cref="ListSessions"/>. Archived sessions are not counted by default: an archived session is not
-    /// working in its workspace, and retiring the workspace unbinds it (the session falls back to its project).
-    /// Pass <paramref name="includeArchived"/> to see them too.
+    /// Name meta keys that are a plugin's run state (a goal, a checklist, an allowance…): a fork starts without them. The store remembers
+    /// every key ever declared, so a key is dropped at a fork even when its plugin is not loaded then. Call it when the plugin starts.
     /// </summary>
-    IReadOnlyList<string> SessionIdsUsingWorkspace(string workspaceId, bool includeArchived = false) =>
-        throw new NotSupportedException("This store does not answer the exact question; implement SessionIdsUsingWorkspace.");
+    void DeclareForkReset(params string[] keys);
 
     // Messages
     /// <summary>Append a message (assigns Id/Seq, publishes message.added).</summary>
@@ -178,21 +186,7 @@ public interface ISessionStore
     /// <summary>
     /// A new session (from <paramref name="template"/>) with a copy of the session's messages up to
     /// <paramref name="upToSeq"/>: the same seqs, times, parts, usage and meta, and compaction as it was at that point.
-    /// The host publishes session.created once the copy is complete, then session.forked. This default copies message by
-    /// message (and publishes what <see cref="AppendMessage"/> does).
+    /// The host publishes session.created once the copy is complete, then session.forked.
     /// </summary>
-    SessionInfo ForkSession(string sessionId, long upToSeq, SessionInfo template)
-    {
-        var fork = CreateSession(template);
-        foreach (var m in GetMessages(sessionId))
-        {
-            if (m.Seq > upToSeq) break;
-            AppendMessage(fork.Id, new ChatMessage
-            {
-                Role = m.Role, Parts = m.Parts, CreatedAt = m.CreatedAt, Provider = m.Provider, Model = m.Model, StopReason = m.StopReason,
-                Usage = m.Usage, DurationMs = m.DurationMs, Compacted = m.Compacted, Meta = m.Meta?.DeepClone() as JsonObject,
-            });
-        }
-        return GetSession(fork.Id) ?? fork;
-    }
+    SessionInfo ForkSession(string sessionId, long upToSeq, SessionInfo template);
 }

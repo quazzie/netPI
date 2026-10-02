@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using NetPI.Host.Data;
 using NetPI.Host.Logging;
 using NetPI.Host.Sessions;
 using NetPI.Host.Web;
@@ -33,7 +32,7 @@ internal static class CoreRpc
             desktop = k.Options.Desktop,
             pid = Environment.ProcessId,
             dotnet = Environment.Version.ToString(),
-            sqlite = Sqlite3.Version,
+            sqlite = k.Storage.Info is { Provider: "sqlite" } info ? info.Version : null,
             pathSeparator = Path.DirectorySeparatorChar.ToString(),
             maxMessageBytes = WsHub.MaxMessageBytes,
         }, readOnly: true);
@@ -83,7 +82,7 @@ internal static class CoreRpc
             var context = SessionFork.ContextTokens(k.Sessions.GetMessages(id, upTo + 1, 50));
             var taken = k.Sessions.ListSessions(new SessionQuery { Search = SessionFork.BaseTitle(from.Title), IncludeArchived = true, Limit = 1000 })
                 .Select(s => s.Title).ToHashSet(StringComparer.Ordinal);
-            return k.Sessions.ForkSession(id, upTo, SessionFork.Template(from, upTo, context, taken));
+            return k.Sessions.ForkSession(id, upTo, SessionFork.Template(from, upTo, context, k.Sessions.ForkResetKeys(), taken));
         });
 
         Add("sessions.get", "One session: { id } → SessionInfo", req =>
@@ -111,23 +110,6 @@ internal static class CoreRpc
 
         Add("sessions.setProject", "Attach/detach a project: { id, projectId: string|null } → SessionInfo (publishes session.project)",
             req => k.Sessions.SetSessionProject(req.Required("id"), req.Str("projectId")));
-
-        // ------------------------------------------------------------ workspaces
-        Add("workspaces.list", "Workspaces, newest first: { projectId? } → WorkspaceInfo[]", req => k.Sessions.ListWorkspaces(req.Str("projectId")), readOnly: true);
-
-        Add("workspaces.get", "One workspace: { id } → WorkspaceInfo", req =>
-        {
-            var id = req.Required("id");
-            return k.Sessions.GetWorkspace(id) ?? throw new RpcException("not_found", $"Workspace {id} not found");
-        }, readOnly: true);
-
-        Add("sessions.setWorkspace", "Bind/unbind a session's workspace: { id, workspaceId: string|null } → SessionInfo (publishes session.workspace). " +
-           "A bound workspace that is missing is an error, never a fall back to the project checkout.",
-            req =>
-            {
-                k.Sessions.SetSessionWorkspace(req.Required("id"), req.Str("workspaceId"));
-                return k.Sessions.GetSession(req.Required("id"));
-            });
 
         Add("sessions.messages", "Message page: { id, beforeSeq?, limit? (60) } → { messages, hasMore } ascending by seq", req =>
         {

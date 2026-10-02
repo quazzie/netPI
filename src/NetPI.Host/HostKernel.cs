@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
-using NetPI.Host.Data;
 using NetPI.Host.Events;
 using NetPI.Host.Logging;
 using NetPI.Host.Models;
@@ -9,6 +8,7 @@ using NetPI.Host.Registries;
 using NetPI.Host.Rpc;
 using NetPI.Host.Sessions;
 using NetPI.Host.Settings;
+using NetPI.Host.Storage;
 
 namespace NetPI.Host;
 
@@ -24,14 +24,14 @@ internal sealed class HostKernel : IAsyncDisposable
     public required LogSink LogSink { get; init; }
     public required ILoggerFactory LoggerFactory { get; init; }
     public required SettingsStore Settings { get; init; }
-    public required Database Db { get; init; }
+    public required IStorage Storage { get; init; }
     public required EventBus Bus { get; init; }
     public required ServiceRegistry Services { get; init; }
     public required RpcRegistry Rpc { get; init; }
     public required ToolRegistry Tools { get; init; }
     public required UiRegistry Ui { get; init; }
     public required HttpRegistry Http { get; init; }
-    public required SessionStore Sessions { get; init; }
+    public required SessionService Sessions { get; init; }
     public required ModelCatalog Models { get; init; }
     /// <summary>This app's hold on its home (one NetPI per home).</summary>
     internal HomeLock? HomeLock { get; init; }
@@ -66,12 +66,13 @@ internal sealed class HostKernel : IAsyncDisposable
             TryCreate(paths.TempDir);
             PendingBuild.Install(appDir, factory.CreateLogger("NetPI.Host")); // before anything loads or serves the app folder
 
-            Sqlite3.ConfiguredPath = settings.Get<string>("database.sqlitePath");
-            var db = new Database(paths.DatabaseFile, factory.CreateLogger("NetPI.Database"));
-            created.Push(db);
+            // The store is chosen once, here: a provider that cannot open stops the start with its message (never an empty fallback).
+            var provider = StorageProviders.Create(options.Ephemeral ? "memory" : settings.Get<string>("storage.provider") ?? "sqlite");
+            var storage = provider.Open(new StorageOpenOptions { Home = home, Logger = factory.CreateLogger("NetPI.Storage"), Settings = settings });
+            created.Push(storage);
             var bus = new EventBus(factory.CreateLogger("NetPI.Events"));
             created.Push(bus);
-            var watchdog = new StallWatchdog(bus, factory.CreateLogger("NetPI.Watchdog"), gate: db.Gate);
+            var watchdog = new StallWatchdog(bus, factory.CreateLogger("NetPI.Watchdog"), gate: storage.Lock);
             created.Push(watchdog);
             settings.AttachBus(bus);
             var services = new ServiceRegistry();
@@ -81,7 +82,7 @@ internal sealed class HostKernel : IAsyncDisposable
             created.Push(ui);
             var models = new ModelCatalog(services, settings, bus, factory.CreateLogger("NetPI.Models"));
             created.Push(models);
-            var sessions = new SessionStore(db, bus, paths.DefaultWorkspace);
+            var sessions = new SessionService(storage, bus, paths.DefaultWorkspace);
 
             var kernel = new HostKernel
             {
@@ -91,7 +92,7 @@ internal sealed class HostKernel : IAsyncDisposable
                 LogSink = sink,
                 LoggerFactory = factory,
                 Settings = settings,
-                Db = db,
+                Storage = storage,
                 Bus = bus,
                 Services = services,
                 Rpc = new RpcRegistry(),
@@ -144,10 +145,9 @@ internal sealed class HostKernel : IAsyncDisposable
         // Host services, also reachable through IServiceRegistry (e.g. from a ToolContext).
         _subscriptions.Add(Services.Register<IPluginManager>(Plugins));
         _subscriptions.Add(Services.Register<ISessionStore>(Sessions));
-        _subscriptions.Add(Services.Register<IWorkspaceStore>(Sessions));
         _subscriptions.Add(Services.Register<IModelCatalog>(Models));
         _subscriptions.Add(Services.Register<ISettings>(Settings));
-        _subscriptions.Add(Services.Register<IDatabase>(Db));
+        _subscriptions.Add(Services.Register<IStorageAccess>(new StorageAccess(Storage)));
         _subscriptions.Add(Services.Register<IEventBus>(Bus));
         _subscriptions.Add(Services.Register<IResourceLeases>(new ResourceLeases(Bus)));
         _subscriptions.Add(Services.Register<IToolRegistry>(Tools));
@@ -181,7 +181,6 @@ internal sealed class HostKernel : IAsyncDisposable
             LogsDir = logsDir,
             WebRoot = string.IsNullOrWhiteSpace(options.WebRoot) ? Path.Combine(appDir, "wwwroot") : PathUtil.Expand(options.WebRoot),
             SettingsFile = settings.FilePath,
-            DatabaseFile = Path.Combine(home, "netpi.db"),
             TempDir = Path.Combine(Path.GetTempPath(), "netpi"),
             PluginDirs = dirs.Select(PathUtil.Normalize).Distinct(PathUtil.Comparer).ToList(),
             DefaultWorkspace = string.IsNullOrWhiteSpace(workspace) ? Path.Combine(home, "workspace") : PathUtil.Expand(workspace, home),
@@ -215,7 +214,7 @@ internal sealed class HostKernel : IAsyncDisposable
         Settings.Dispose();
         Watchdog?.Dispose();
         await Bus.DisposeAsync().ConfigureAwait(false);
-        Db.Dispose();
+        Storage.Dispose();
         LoggerFactory.Dispose();
         LogSink.Dispose();
         HomeLock?.Dispose();

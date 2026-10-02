@@ -5,7 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace NetPI.Host.Data;
+namespace NetPI.Host.Storage.Sqlite;
 
 /// <summary>
 /// Resolves named SQL parameters from an argument object: anonymous/POCO objects (cached reflection, safe for

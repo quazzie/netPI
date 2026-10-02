@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace NetPI.Host.Data;
+namespace NetPI.Host.Storage.Sqlite;
 
 /// <summary>
 /// Minimal blittable P/Invoke surface of the SQLite C API. The logical library name <c>sqlite3</c> is mapped by a

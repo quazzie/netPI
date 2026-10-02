@@ -21,6 +21,8 @@ public sealed class NetPiServerOptions
     public string? WebRoot { get; set; }
     /// <summary>Also write log lines to the console.</summary>
     public bool ConsoleLogging { get; set; } = true;
+    /// <summary>Keep everything in memory (the <c>memory</c> storage provider): nothing is written to the home's database, and nothing survives the run. For tests and throwaway runs; never chosen by a missing or broken store.</summary>
+    public bool Ephemeral { get; set; }
 }
 
 /// <summary>

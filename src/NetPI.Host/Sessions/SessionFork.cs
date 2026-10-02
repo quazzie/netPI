@@ -5,32 +5,24 @@ using System.Text.RegularExpressions;
 namespace NetPI.Host.Sessions;
 
 /// <summary>
-/// <summary>
 /// What a fork of a chat takes along (<c>sessions.fork</c>): its setup (project, model, reasoning, and meta such as the
-/// profile, its identity, the tools switched off, the agent), not where it is in its work. Plugins with state of their
-/// own act on <c>session.forked</c> (the context plugin copies the system prompt in effect, the todo plugin the checklist).
-/// <para>A fork is a new writer, so it takes no workspace: it starts on the project's path and the user (or a spawned
-/// worker) binds one. Inheriting the original writer's worktree would put two writers in one checkout.</para>
+/// profile, its identity, the tools switched off), not where it is in its work. The meta keys it starts without are the
+/// ones plugins declared as run state (<see cref="ISessionStore.DeclareForkReset"/>) and the core's own (lineage, the prompt
+/// rule, and the folder: a fork is a new writer, so it starts in its project's folder). Plugins with state of their own
+/// act on <c>session.forked</c> (the context plugin copies the system prompt in effect, the todo plugin the checklist).
 /// </summary>
 public static class SessionFork
 {
-    /// <summary>
-    /// Meta a fork starts without: a goal would run on by itself, the checklist is the original's latest (the todo plugin
-    /// sets it from the copy), the budget allowance is a decision per chat, the rest belongs to subagents.
-    /// </summary>
-    public static readonly IReadOnlyList<string> RunState = ["goal", "todo", "budgetAllowedFrom", "guardrailsAllowed", "agentId", "parentAgentId", "agentInstructions", "forkedFrom", SessionPrompt.ForkResetKey, "runtimeEnvironment"];
-
-    public static SessionInfo Template(SessionInfo from, long upToSeq, long contextTokens, IReadOnlySet<string>? taken = null)
+    public static SessionInfo Template(SessionInfo from, long upToSeq, long contextTokens, IEnumerable<string> resetKeys, IReadOnlySet<string>? taken = null)
     {
         var meta = from.Meta?.DeepClone() as JsonObject ?? [];
-        foreach (var key in RunState) meta.Remove(key);
+        foreach (var key in resetKeys) meta.Remove(key);
         SessionPrompt.Fork(meta, upToSeq);
         meta["forkedFrom"] = new JsonObject { ["sessionId"] = from.Id, ["title"] = from.Title, ["seq"] = upToSeq };
         return new SessionInfo
         {
             Title = Title(from.Title, taken),
             ProjectId = from.ProjectId,
-            WorkspaceId = null,   // a fork is a new writer: it does not inherit the original's checkout
             Model = from.Model,
             Reasoning = from.Reasoning,
             Kind = "chat",

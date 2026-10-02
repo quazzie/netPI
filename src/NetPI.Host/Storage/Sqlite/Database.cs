@@ -5,19 +5,19 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
-namespace NetPI.Host.Data;
+namespace NetPI.Host.Storage.Sqlite;
 
 /// <summary>
-/// <see cref="IDatabase"/> over a single SQLite connection. Every call is serialized by a reentrant monitor, so a
+/// The SQL engine of the sqlite provider: a single SQLite connection. Every call is serialized by a reentrant monitor, so a
 /// <see cref="Transaction{T}"/> body (or a Query row mapper) can freely call other methods on the same thread.
 /// Statements are prepared once and cached per SQL text.
 /// </summary>
-internal sealed unsafe class Database : IDatabase, IDisposable
+internal sealed unsafe class Database : IDisposable
 {
     private const int MaxCachedCommands = 256;
 
     private readonly object _gate = new();
-    /// <summary>The one lock every statement and transaction runs under (re-entrant). <see cref="Sessions.SessionStore"/> guards its in-memory state with it too: two locks taken in opposite orders froze the process.</summary>
+    /// <summary>The one lock every statement and transaction runs under (re-entrant). the session service guards its in-memory state with the same lock (<see cref="IStorage.Lock"/>): two locks taken in opposite orders froze the process.</summary>
     internal object Gate => _gate;
     private readonly Dictionary<string, Command> _cache = new(StringComparer.Ordinal);
     private readonly ILogger? _log;
@@ -49,7 +49,7 @@ internal sealed unsafe class Database : IDatabase, IDisposable
         _log?.LogDebug("SQLite {Version} ({Lib}) opened {File}", Sqlite3.Version, Sqlite3.LoadedFrom, filePath);
     }
 
-    // ------------------------------------------------------------------ IDatabase
+    // ------------------------------------------------------------------ statements
 
     public int Execute(string sql, object? args = null)
     {
@@ -118,7 +118,7 @@ internal sealed unsafe class Database : IDatabase, IDisposable
         return rows.Count == 0 ? default : map(rows[0]);
     }
 
-    public T Transaction<T>(Func<IDatabase, T> work)
+    public T Transaction<T>(Func<Database, T> work)
     {
         ArgumentNullException.ThrowIfNull(work);
         lock (_gate)
@@ -147,7 +147,7 @@ internal sealed unsafe class Database : IDatabase, IDisposable
         }
     }
 
-    public void Transaction(Action<IDatabase> work)
+    public void Transaction(Action<Database> work)
     {
         ArgumentNullException.ThrowIfNull(work);
         Transaction<object?>(db => { work(db); return null; });

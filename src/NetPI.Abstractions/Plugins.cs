@@ -37,7 +37,6 @@ public sealed class NetPiPaths
     public required string LogsDir { get; init; }
     public required string WebRoot { get; init; }
     public required string SettingsFile { get; init; }
-    public required string DatabaseFile { get; init; }
     public required string TempDir { get; init; }
     public required IReadOnlyList<string> PluginDirs { get; init; }
     /// <summary>Global AGENTS.md (~/.netpi/AGENTS.md).</summary>
@@ -64,7 +63,6 @@ public interface IPluginContext
     IUiRegistry Ui { get; }
     IHttpRegistry Http { get; }
     ISettings Settings { get; }
-    IDatabase Db { get; }
     /// <summary>This plugin's own data: named collections of JSON documents with declared index fields (see <see cref="IPluginData"/>).</summary>
     IPluginData Data { get; }
     ISessionStore Sessions { get; }
