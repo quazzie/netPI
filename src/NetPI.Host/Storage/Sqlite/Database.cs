@@ -10,7 +10,8 @@ namespace NetPI.Host.Storage.Sqlite;
 /// <summary>
 /// The SQL engine of the sqlite provider: a single SQLite connection. Every call is serialized by a reentrant monitor, so a
 /// <see cref="Transaction{T}"/> body (or a Query row mapper) can freely call other methods on the same thread.
-/// Statements are prepared once and cached per SQL text.
+/// Statements are prepared once and cached per SQL text. With the WAL auto-checkpoint off, an idle timer truncates the
+/// write-ahead log when the database is quiet, so a checkpoint never runs inline with a commit (idea-z86rze).
 /// </summary>
 internal sealed unsafe class Database : IDisposable
 {
@@ -23,6 +24,19 @@ internal sealed unsafe class Database : IDisposable
     private readonly ILogger? _log;
     private IntPtr _db;
     private int _txDepth;
+
+    /// <summary>A backup copies this many pages (2 MiB at the default page size) per gate hold.</summary>
+    private const int BackupSlicePages = 512;
+    /// <summary>How often the idle timer looks: with wal_autocheckpoint off nothing else checkpoints, so a quiet database
+    /// truncates its WAL within a few seconds, and a busy one never does it inline with a commit.</summary>
+    private const int CheckpointIntervalMs = 10_000;
+    private const int CheckpointIdleMs = 5_000;
+    /// <summary>A WAL this big is truncated even while the app is busy, so a long burst cannot grow it without bound.</summary>
+    private const long WalMaxBytes = 32 * 1024 * 1024;
+
+    private readonly Timer _checkpointTimer;
+    /// <summary>Environment.TickCount64 of the last statement (0: none yet): the idle timer's notion of "quiet".</summary>
+    private long _lastActivity;
 
     public string FilePath { get; }
 
@@ -49,6 +63,13 @@ internal sealed unsafe class Database : IDisposable
         _db = db;
         Sqlite3.sqlite3_busy_timeout(_db, 5000);
         ExecScript("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY;");
+        // Reads: a cold context read was a row lookup per message of the session (16.8 ms on 12k rows); a memory map and a
+        // page cache that fits a database that outgrows the 2 MB default take it to ~4 ms. The WAL file on disk is capped.
+        ExecScript("PRAGMA mmap_size=1073741824; PRAGMA cache_size=-65536; PRAGMA journal_size_limit=67108864;");
+        // The built-in auto-checkpoint ran inline with the committing statement (50-350 ms of it under the gate), so it is
+        // off: the idle timer truncates the WAL when the database is quiet, and the one at close flushes what is left.
+        ExecScript("PRAGMA wal_autocheckpoint=0;");
+        _checkpointTimer = new Timer(IdleCheckpoint, null, CheckpointIntervalMs, CheckpointIntervalMs);
         _log?.LogDebug("SQLite {Version} ({Lib}) opened {File}", Sqlite3.Version, Sqlite3.LoadedFrom, filePath);
     }
 
@@ -240,7 +261,11 @@ internal sealed unsafe class Database : IDisposable
         int rc;
         fixed (byte* p = bytes)
             rc = Sqlite3.sqlite3_exec(_db, p, IntPtr.Zero, IntPtr.Zero, &err);
-        if (rc == Sqlite3.OK) return;
+        if (rc == Sqlite3.OK)
+        {
+            Interlocked.Exchange(ref _lastActivity, Environment.TickCount64);
+            return;
+        }
         var message = Utf8.FromZ(err);
         if (err != null) Sqlite3.sqlite3_free(err);
         var str = Utf8.FromZ(Sqlite3.sqlite3_errstr(rc));
@@ -289,6 +314,7 @@ internal sealed unsafe class Database : IDisposable
             Sqlite3.sqlite3_reset(st.Handle);
             Sqlite3.sqlite3_clear_bindings(st.Handle);
         }
+        Interlocked.Exchange(ref _lastActivity, Environment.TickCount64);
         cmd.InUse = false;
         if (!cmd.Cached) Finalize(cmd);
     }
@@ -614,6 +640,76 @@ internal sealed unsafe class Database : IDisposable
         }
     }
 
+    // ------------------------------------------------------------------ idle checkpoint and backup
+
+    /// <summary>
+    /// The WAL with auto-checkpoint off: a quiet database truncates its WAL (nothing a reader has to replay, a backup
+    /// copies the database alone), and a WAL that outgrows <see cref="WalMaxBytes"/> is truncated even while the app
+    /// is busy.
+    /// </summary>
+    private void IdleCheckpoint(object? state)
+    {
+        if (_db == IntPtr.Zero) return;
+        long walBytes = 0;
+        try
+        {
+            var wal = FilePath + "-wal";
+            walBytes = File.Exists(wal) ? new FileInfo(wal).Length : 0;
+        }
+        catch { return; }
+        if (Environment.TickCount64 - Interlocked.Read(ref _lastActivity) < CheckpointIdleMs && walBytes <= WalMaxBytes) return;
+        try
+        {
+            lock (_gate)
+            {
+                if (_db == IntPtr.Zero) return;
+                ExecScript("PRAGMA wal_checkpoint(TRUNCATE)");
+            }
+        }
+        catch (Exception ex) { _log?.LogWarning(ex, "Idle WAL checkpoint failed"); }
+    }
+
+    /// <summary>
+    /// A consistent copy of the database (the committed contents of the WAL included) as one file. Copied in slices with
+    /// the gate released between them: a <c>VACUUM INTO</c> held the gate for the whole length (seconds on a large
+    /// database), and a snapshot of a live database must not hold every other statement of the process with it.
+    /// </summary>
+    public void BackupTo(string destination)
+    {
+        IntPtr dest = IntPtr.Zero;
+        try
+        {
+            var destZ = Utf8.ToZ(destination);
+            fixed (byte* p = destZ)
+            {
+                var rc = Sqlite3.sqlite3_open_v2(p, &dest, Sqlite3.OPEN_READWRITE | Sqlite3.OPEN_CREATE, null);
+                if (rc != Sqlite3.OK) throw SqliteException.From(dest, rc, null, $"Cannot open backup destination '{destination}'");
+            }
+            var zDest = Utf8.ToZ("main");
+            var zSource = Utf8.ToZ("main");
+            IntPtr backup;
+            fixed (byte* zd = zDest)
+                fixed (byte* zs = zSource)
+                    backup = Sqlite3.sqlite3_backup_init(dest, zd, _db, zs);
+            if (backup == IntPtr.Zero) throw SqliteException.From(dest, Sqlite3.sqlite3_errcode(dest), null, $"Cannot start the backup to '{destination}'");
+            try
+            {
+                while (true)
+                {
+                    int rc;
+                    lock (_gate) rc = Sqlite3.sqlite3_backup_step(backup, BackupSlicePages);
+                    if (rc == Sqlite3.DONE) break;
+                    if (rc != Sqlite3.OK) throw SqliteException.From(_db, rc, null, $"Backup to '{destination}' failed");
+                }
+            }
+            finally { Sqlite3.sqlite3_backup_finish(backup); }
+        }
+        finally
+        {
+            if (dest != IntPtr.Zero) Sqlite3.sqlite3_close_v2(dest);
+        }
+    }
+
     // ------------------------------------------------------------------ lifetime
 
     private void ThrowIfDisposed()
@@ -623,9 +719,12 @@ internal sealed unsafe class Database : IDisposable
 
     public void Dispose()
     {
+        _checkpointTimer.Dispose();
         lock (_gate)
         {
             if (_db == IntPtr.Zero) return;
+            // The last checkpoint (TRUNCATE): the file left behind is the whole database, with nothing left to replay.
+            try { ExecScript("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { }
             try { ExecScript("PRAGMA optimize"); } catch { }
             foreach (var cmd in _cache.Values) Finalize(cmd);
             _cache.Clear();

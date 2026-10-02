@@ -34,7 +34,8 @@ internal sealed class SqliteStorageProvider : IStorageProvider
 internal sealed class SqliteStorage : IStorage, IStorageSnapshot
 {
     /// <summary>
-    /// The schema, as one step: this provider's own tables (projects, sessions, messages, kv). A session's project is a plain value (the
+    /// The schema, as two steps: this provider's own tables (projects, sessions, messages, kv), then the index the hot
+    /// reads seek. A session's project is a plain value (the
     /// session service checks it exists, and a deleted project's sessions are cleared first): no foreign key ties the two, as in every provider.
     /// A message id is never reused, even after the newest message is deleted (AUTOINCREMENT). A database written by an earlier
     /// shape of NetPI is brought to this one by the one-off storage migration, never by this code, and is refused until it is.
@@ -90,6 +91,12 @@ internal sealed class SqliteStorage : IStorage, IStorageSnapshot
             key TEXT PRIMARY KEY,
             value TEXT
         );
+        """,
+        // The context read (every turn, every session being worked on) selects the session's live rows, compacted = 0.
+        // The flag sits in the fat row, so the plain index made it a row lookup per message of the session (16.8 ms
+        // cold on 12k messages with 500 live); this partial index holds only the live rows (0.95 ms).
+        """
+        CREATE INDEX IF NOT EXISTS ix_messages_live ON messages(session_id, seq) WHERE compacted = 0;
         """,
     ];
 
@@ -155,10 +162,11 @@ internal sealed class SqliteStorage : IStorage, IStorageSnapshot
         }
     }
 
-    /// <summary>A consistent copy of the live database, with the committed contents of the WAL, as one file.</summary>
+    /// <summary>A consistent copy of the live database, with the committed contents of the WAL, as one file. The copy
+    /// runs in slices (a backup, not a <c>VACUUM INTO</c>), so the gate is released between them.</summary>
     public IReadOnlyList<string> Write(string directory)
     {
-        _db.Execute("VACUUM INTO @file", new { file = Path.Combine(directory, "netpi.db") });
+        _db.BackupTo(Path.Combine(directory, "netpi.db"));
         return ["netpi.db"];
     }
 

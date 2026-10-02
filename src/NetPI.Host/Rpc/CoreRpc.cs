@@ -121,6 +121,12 @@ internal static class CoreRpc
             return new { messages = hasMore ? page.Skip(1).ToList() : page, hasMore };
         }, readOnly: true);
 
+        Add("sessions.stats", "Session-service counters: → { contextCache: { hits, reads } } — the cached contexts: a hit is a read served without touching the store, a read went to it", _ =>
+        {
+            var (hits, reads) = k.Sessions.ContextCache;
+            return new { contextCache = new { hits, reads } };
+        }, readOnly: true);
+
         // ------------------------------------------------------------ models
         AddAsync("models.list", "Models of all providers: { refresh? } → { models, defaultModel }", async (req, ct) =>
         {

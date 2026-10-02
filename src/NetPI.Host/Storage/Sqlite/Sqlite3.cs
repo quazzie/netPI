@@ -134,6 +134,7 @@ internal static unsafe class Sqlite3
     [DllImport(Lib, ExactSpelling = true), SuppressGCTransition] public static extern int sqlite3_column_bytes(IntPtr stmt, int index);
 
     [DllImport(Lib, ExactSpelling = true)] public static extern byte* sqlite3_errmsg(IntPtr db);
+    [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_errcode(IntPtr db);
     [DllImport(Lib, ExactSpelling = true)] public static extern byte* sqlite3_errstr(int code);
     [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_changes(IntPtr db);
     [DllImport(Lib, ExactSpelling = true)] public static extern long sqlite3_last_insert_rowid(IntPtr db);
@@ -141,6 +142,15 @@ internal static unsafe class Sqlite3
     [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_exec(IntPtr db, byte* sql, IntPtr callback, IntPtr arg, byte** errmsg);
     [DllImport(Lib, ExactSpelling = true)] public static extern void sqlite3_free(void* p);
     [DllImport(Lib, ExactSpelling = true)] public static extern byte* sqlite3_libversion();
+
+    /// <summary>
+    /// The backup copies from the source connection to the destination connection through the object <see cref="sqlite3_backup_init"/>
+    /// returns (a <c>sqlite3_backup*</c>; NULL on error, with the error stored in the destination connection);
+    /// <see cref="sqlite3_backup_step"/> and <see cref="sqlite3_backup_finish"/> take that object.
+    /// </summary>
+    [DllImport(Lib, ExactSpelling = true)] public static extern IntPtr sqlite3_backup_init(IntPtr dest, byte* zDestName, IntPtr source, byte* zSourceName);
+    [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_backup_step(IntPtr backup, int nPage);
+    [DllImport(Lib, ExactSpelling = true)] public static extern int sqlite3_backup_finish(IntPtr backup);
 }
 
 /// <summary>UTF-8 helpers for native strings.</summary>

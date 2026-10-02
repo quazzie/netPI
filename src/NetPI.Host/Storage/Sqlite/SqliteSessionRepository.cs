@@ -192,9 +192,11 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
     {
         if (beforeSeq is null && limit is null)
             return db.Query($"SELECT {MessageColumns} FROM messages WHERE session_id = @sessionId ORDER BY seq", new { sessionId }, ReadMessage);
+        // A NULL @before means "no upper bound"; COALESCE keeps the predicate a range seek on (session_id, seq) — the
+        // OR form of it was not seekable (0.77 ms vs 0.12 ms on 15k rows).
         var page = db.Query($"""
             SELECT {MessageColumns} FROM messages
-            WHERE session_id = @sessionId AND (@before IS NULL OR seq < @before)
+            WHERE session_id = @sessionId AND seq < COALESCE(@before, 9223372036854775807)
             ORDER BY seq DESC LIMIT @limit
             """, new { sessionId, before = beforeSeq, limit = limit is > 0 ? limit.Value : -1 }, ReadMessage);
         page.Reverse();

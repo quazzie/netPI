@@ -534,9 +534,11 @@ private static async Task BoundedScans()
         var bad = await Check.ThrowsAsync<RpcException>(() => ctx.RpcFake.Call("diag.failure", new JsonObject { ["name"] = "../settings.json" }));
         Check.Equal("bad_request", bad.Code);
 
+        ctx.RpcFake.Register("sessions.stats", (_, _) => Task.FromResult<object?>(new { contextCache = new { hits = 3L, reads = 5L } }), "Session-service counters", readOnly: true);
         var overview = (JsonObject)(await ctx.RpcFake.Call("diag.overview"))!;
-        foreach (var key in new[] { "app", "process", "plugins", "models", "agents", "runs", "calls", "tools", "problems", "reloads", "more" })
+        foreach (var key in new[] { "app", "process", "plugins", "models", "agents", "sessions", "runs", "calls", "tools", "problems", "reloads", "more" })
             Check.True(((JsonObject)overview).ContainsKey(key), key);
+        Check.Equal(5, (int)overview["sessions"]!["contextCache"]!["reads"]!, "the session service's context-cache counters");
         Check.True((int)overview["process"]!["pid"]! > 0);
         Check.True(((JsonArray)overview["more"]!).Any(m => m.Str()!.StartsWith("diag.calls: ")), "it points at the other diag methods");
     }
