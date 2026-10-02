@@ -124,6 +124,18 @@ public sealed class EditTool(ISettings? settings = null) : FileToolBase(settings
             return ToolResult.Ok($"No changes: the edits leave {rel} unchanged.", new { path = full, diff = "", added = 0, removed = 0, edits = edits.Count });
 
         var eol = doc.DetectedEol ?? NewFileEol();
+        // A non-UTF-8 file decoded as Latin-1 round-trips byte-for-byte only while its text stays within U+00FF.
+        // An edit that introduces a character beyond it cannot be written back in the file's encoding, and
+        // TextCodec.Encode would fall back to UTF-8 and silently re-encode every unchanged byte (é E9 becomes
+        // C3 A9). A fragment edit must not be a whole-file conversion: that is what the write tool is for.
+        if (doc.Legacy && text.Any(c => c > 0xFF))
+        {
+            var bad = text.First(c => c > 0xFF);
+            return ToolResult.Error($"{rel} is not valid UTF-8 (it was decoded as Latin-1) and this edit introduces " +
+                $"U+{((int)bad):X4} ({bad}), which the file's encoding cannot hold. Writing back would re-encode the " +
+                "whole file to UTF-8 and change every unchanged byte, so nothing was written. If re-encoding the file " +
+                "to UTF-8 is deliberate, use the write tool with the full new content.");
+        }
         TextCodec.WriteAtomic(full, TextCodec.Encode(text, eol, doc.Bom, doc.Encoding));
 
         var diff = LineDiff.Unified(doc.Text, text, rel, context: 3, maxLines: WriteTool.MaxDiffLines);

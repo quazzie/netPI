@@ -105,6 +105,24 @@ public static class FileTests
             Check.True(T.D(await T.Run(Read, dir, new { path = "b.txt" })).Bool("bom"));
         });
 
+        r.Add("edit: a non-UTF-8 (Latin-1) file is not re-encoded to UTF-8 by an edit", async () =>
+        {
+            var dir = T.TempDir("edit");
+            // "café\nend\n" in Latin-1: the é is byte 0xE9, which is not valid UTF-8.
+            var f = T.WriteText(dir, "latin.txt", "café\nend\n", Encoding.Latin1);
+            Check.Equal("63-61-66-E9-0A-65-6E-64-0A", BitConverter.ToString(File.ReadAllBytes(f)));
+            var before = File.ReadAllBytes(f);
+            // An edit that introduces a character beyond U+00FF refuses, keeping every byte.
+            var res = await T.Run(Edit, dir, new { path = "latin.txt", oldText = "end", newText = "end — done" });
+            Check.Error(res, "re-encode");
+            Check.Contains(res.Content, "U+2014");
+            Check.Contains(res.Content, "write tool");
+            Check.Equal(BitConverter.ToString(before), BitConverter.ToString(File.ReadAllBytes(f)), "the file keeps every byte");
+            // An edit that stays within Latin-1 is applied with every unchanged byte intact.
+            Check.Ok(await T.Run(Edit, dir, new { path = "latin.txt", oldText = "end", newText = "fin" }));
+            Check.Equal("63-61-66-E9-0A-66-69-6E-0A", BitConverter.ToString(File.ReadAllBytes(f)));
+        });
+
         // ------------------------------------------------ edit: semantics
         r.Add("edit: multi-edit applies sequentially", async () =>
         {
