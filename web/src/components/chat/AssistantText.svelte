@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import Icon from '../../lib/kit/Icon.svelte';
   import { renderMarkdown, highlight, copyText } from '../../lib/markdown.js';
+  import { splitLive } from '../../lib/live.js';
   import { duration, tokens, stamp } from '../../lib/format.js';
   import { turnStats, turnTitle, cachedText, speedText } from '../../lib/turn.js';
 
@@ -9,6 +10,10 @@
    * item: { kind:'text', msg, text, last }, or while the answer streams { kind:'text', text, stream, msg:null }: then the
    * markdown is re-rendered at most every 100ms, never highlighted, with a caret that takes no room, in the same box as
    * the finished text so nothing moves when message.added replaces it.
+   *
+   * While it streams only the block being written is rendered again: the blocks above it are finished and are rendered
+   * once each and left alone (splitLive), so a long answer costs a parse of its last block every 100ms instead of a parse
+   * of the whole answer. web/scripts/bench-stream.mjs measures both and checks that the split renders the same.
    */
   /** onfork: a new chat with the conversation up to this answer (see MessageList) */
   let { item, onfork = null } = $props();
@@ -17,14 +22,22 @@
   const m = $derived(item.msg);
   const ts = $derived(m ? turnStats(m) : null);
 
-  let liveHtml = $state('');
+  let blocks = $state.raw([]); // the finished blocks, in order: rendered once, never touched again
+  let tail = $state(''); // the block still being written
+  let cut = 0; // how much of the text the blocks above already cover
   let timer = 0;
   let last = 0;
   function render() {
     timer = 0;
     last = performance.now();
+    const text = item.text;
+    const at = splitLive(text);
+    if (at > cut) {
+      blocks = [...blocks, renderMarkdown(text.slice(cut, at), { cache: false })];
+      cut = at;
+    }
     // the caret goes inside the last paragraph so it follows the text
-    liveHtml = renderMarkdown(item.text, { cache: false }).replace(/<\/p>\s*$/, '<span class="caret"></span></p>');
+    tail = renderMarkdown(text.slice(cut), { cache: false }).replace(/<\/p>\s*$/, '<span class="caret"></span></p>');
   }
   $effect(() => {
     const t = item.text;
@@ -47,7 +60,8 @@
 
 {#if streaming}
   <div class="assistant live">
-    <div class="md">{@html liveHtml}</div>
+    <!-- one {html} per finished block and one for the block being written: siblings, so the markdown reads as one answer -->
+    <div class="md">{#each blocks as b, i (i)}{@html b}{/each}{@html tail}</div>
   </div>
 {:else}
 <div class="assistant" class:compacted={m.compacted}>
