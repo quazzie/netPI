@@ -118,8 +118,12 @@ internal static class Wire
             case KeyNotFoundException:
                 return ("not_found", ex.Message, 404);
             case ArgumentException:
+                // Mapped to 400, but often it is the host that is at fault (a stored row it cannot parse, a query it
+                // built wrong) with the client blamed for nothing: leave a trace either way.
+                log.LogWarning(ex, "RPC {Method} rejected with a bad argument", method);
                 return ("bad_request", ex.Message, 400);
             case JsonException:
+                log.LogWarning(ex, "RPC {Method} rejected: its parameters do not parse", method);
                 return ("bad_request", "Invalid parameters: " + ex.Message, 400);
             case OperationCanceledException:
                 return ("cancelled", "The request was cancelled", 409);

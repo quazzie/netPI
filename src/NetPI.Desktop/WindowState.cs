@@ -15,11 +15,6 @@ internal sealed class WindowPlacement
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
-    public static string DefaultHome() =>
-        Environment.GetEnvironmentVariable("NETPI_HOME") is { Length: > 0 } h
-            ? h
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".netpi");
-
     public static WindowPlacement? Load(string file)
     {
         try

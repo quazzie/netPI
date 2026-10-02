@@ -102,7 +102,9 @@
     if (parseError) return;
     saving = true;
     try {
-      await rpc('settings.replace', { settings: JSON.parse(raw) });
+      // base = the document as loaded (or last saved): if it changed in the meantime the host answers with a
+      // conflict instead of silently clobbering the other change.
+      await rpc('settings.replace', { settings: JSON.parse(raw), base: JSON.parse(original) });
       original = raw = JSON.stringify(JSON.parse(raw), null, 2);
       toast('Settings saved');
     } catch (e) {

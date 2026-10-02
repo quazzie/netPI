@@ -34,7 +34,7 @@ internal sealed class MainForm : Form
     public MainForm(string[] args)
     {
         _args = args;
-        _home = Arg("--home") ?? WindowPlacement.DefaultHome();
+        _home = HostKernel.ResolveHome(Arg("--home"));
         _placementFile = Path.Combine(_home, "window.json");
 
         Text = "netPI";

@@ -283,22 +283,37 @@ internal sealed class SqliteSessionRepository(Database db) : ISessionRepository
     private static MessageRole ParseRole(string s) =>
         Enum.TryParse<MessageRole>(s, ignoreCase: true, out var r) ? r : MessageRole.Notice;
 
-    private static ChatMessage ReadMessage(ISqlRow r) => new()
+    private static ChatMessage ReadMessage(ISqlRow r)
     {
-        Id = r.GetInt64("id"),
-        SessionId = r.GetString("session_id"),
-        Seq = r.GetInt64("seq"),
-        Role = ParseRole(r.GetString("role")),
-        Parts = JsonSerializer.Deserialize<List<MessagePart>>(r.GetString("parts"), NetPiJson.Options) ?? [],
-        CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64("created_at")),
-        Provider = r.GetStringOrNull("provider"),
-        Model = r.GetStringOrNull("model"),
-        StopReason = r.GetStringOrNull("stop_reason"),
-        Usage = r.GetStringOrNull("usage") is { } u ? JsonSerializer.Deserialize<Usage>(u, NetPiJson.Options) : null,
-        DurationMs = r.GetInt64OrNull("duration_ms"),
-        Compacted = r.GetInt64("compacted") != 0,
-        Meta = ParseObject(r.GetStringOrNull("meta")),
-    };
+        var id = r.GetInt64("id");
+        return new ChatMessage
+        {
+            Id = id,
+            SessionId = r.GetString("session_id"),
+            Seq = r.GetInt64("seq"),
+            Role = ParseRole(r.GetString("role")),
+            Parts = ReadStored<List<MessagePart>>(r.GetString("parts"), id) ?? [],
+            CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64("created_at")),
+            Provider = r.GetStringOrNull("provider"),
+            Model = r.GetStringOrNull("model"),
+            StopReason = r.GetStringOrNull("stop_reason"),
+            Usage = r.GetStringOrNull("usage") is { } u ? ReadStored<Usage>(u, id) : null,
+            DurationMs = r.GetInt64OrNull("duration_ms"),
+            Compacted = r.GetInt64("compacted") != 0,
+            Meta = ParseObject(r.GetStringOrNull("meta")),
+        };
+    }
+
+    /// <summary>
+    /// A column of a stored row, back into the type it left as. A row that no longer parses is a data problem, not a
+    /// bad request: as a <see cref="JsonException"/> it would reach the caller as "Invalid parameters" with nothing
+    /// logged and the chat unreadable forever. Named after the row so the corruption is findable.
+    /// </summary>
+    private static T? ReadStored<T>(string json, long messageId)
+    {
+        try { return JsonSerializer.Deserialize<T>(json, NetPiJson.Options); }
+        catch (JsonException ex) { throw new InvalidDataException($"Stored message {messageId} is corrupted and cannot be read: {ex.Message}", ex); }
+    }
 
     private static SessionInfo ReadSession(ISqlRow r) => new()
     {

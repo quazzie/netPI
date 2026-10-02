@@ -22,5 +22,8 @@
     <InternalsVisibleTo Include="NetPI.Tools.Tests" />
     <InternalsVisibleTo Include="NetPI.Providers.Tests" />
     <InternalsVisibleTo Include="NetPI.Agent.Tests" />
+    <!-- the desktop shell (assembly NetPI) resolves the SAME home as the server (HostKernel.ResolveHome) so its
+         window.json and WebView2 profile cannot split from it -->
+    <InternalsVisibleTo Include="NetPI" />
   </ItemGroup>
 </Project>

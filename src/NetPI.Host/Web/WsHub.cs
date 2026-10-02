@@ -91,6 +91,7 @@ internal sealed class WsClient
     private readonly Channel<byte[]> _out = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
     private readonly CancellationTokenSource _cts = new();
     private volatile SessionFilter _filter = SessionFilter.None;
+    private volatile bool _aborted;
     private int _pending;
     private long _pendingBytes;
 
@@ -104,17 +105,32 @@ internal sealed class WsClient
 
     public string Id { get; }
 
+    /// <summary>For tests: whether <see cref="Abort"/> has cut this client off.</summary>
+    internal bool Aborted => _aborted;
+
+    /// <summary>For tests: what the backlog is right now.</summary>
+    internal (int Pending, long Bytes) Backlog => (Volatile.Read(ref _pending), Interlocked.Read(ref _pendingBytes));
+
     public bool WantsSession(string sessionId)
     {
         var f = _filter;
         return f.All || f.Ids.Contains(sessionId);
     }
 
+    /// <summary>
+    /// Queue a message for the send loop. The count and byte caps cut off a client that stops reading, so a backlog
+    /// cannot grow without bound — but only while something is ALREADY queued: one message on an empty queue gets in
+    /// however big it is, and a huge one is the handler's problem (InvokeAsync answers it with <c>too_large</c> when
+    /// it cannot even cross an empty queue) instead of a socket that dies and a client logged as "not reading".
+    /// </summary>
     public void Enqueue(byte[] message)
     {
-        if (Interlocked.Increment(ref _pending) > MaxPending ||
-            Interlocked.Add(ref _pendingBytes, message.Length) > MaxPendingBytes)
+        var hadWork = Volatile.Read(ref _pending) > 0 || Interlocked.Read(ref _pendingBytes) > 0;
+        var pending = Interlocked.Increment(ref _pending);
+        var bytes = Interlocked.Add(ref _pendingBytes, message.Length);
+        if (hadWork && (pending > MaxPending || bytes > MaxPendingBytes))
         {
+            Release(message.Length);
             _log.LogWarning("WebSocket client {Id} is not reading ({Pending} messages, {Bytes} bytes queued); disconnecting it",
                 Id, Volatile.Read(ref _pending), Interlocked.Read(ref _pendingBytes));
             Abort();
@@ -131,6 +147,7 @@ internal sealed class WsClient
 
     public void Abort()
     {
+        _aborted = true;
         _out.Writer.TryComplete();
         try { _cts.Cancel(); } catch (ObjectDisposedException) { }
     }
@@ -270,6 +287,14 @@ internal sealed class WsClient
         {
             var result = await _k.Rpc.InvokeAsync(method, p, Id, _cts.Token).ConfigureAwait(false);
             response = Wire.Result(id, result);
+            if (response.Length > MaxPendingBytes)
+            {
+                // One message bigger than the whole queue: it would make the byte cap trip on the next message of a
+                // reading client and never fit into a client that is not. The caller gets an error it can act on
+                // (request less: a shorter page, an earlier beforeSeq) instead of a socket that dies.
+                response = Wire.Error(id, "too_large",
+                    $"The response is {response.Length / (1024 * 1024)} MB, over the {MaxPendingBytes / (1024 * 1024)} MB a client can take in one message: request less (an earlier or shorter page)");
+            }
         }
         catch (Exception ex)
         {

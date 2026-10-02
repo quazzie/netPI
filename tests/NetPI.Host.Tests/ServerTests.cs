@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging.Abstractions;
 using NetPI.Host.Web;
 
 namespace NetPI.Host.Tests;
@@ -53,6 +54,14 @@ public sealed class WsTestClient : IAsyncDisposable
                 ValueWebSocketReceiveResult r;
                 do
                 {
+                    if (count == buffer.Length)
+                    {
+                        // Grow (like the server's own receive loop): responses can be several megabytes
+                        // (a sessions.messages page of 8 MiB is normal).
+                        var bigger = new byte[Math.Min(buffer.Length * 2, 64 * 1024 * 1024)];
+                        buffer.AsSpan(0, count).CopyTo(bigger);
+                        buffer = bigger;
+                    }
                     r = await _ws.ReceiveAsync(buffer.AsMemory(count), CancellationToken.None);
                     count += r.Count;
                 } while (!r.EndOfMessage);
@@ -549,6 +558,121 @@ public static class ServerTests
             // the home is free again
             var second = await NetPiServer.StartAsync(Options());
             await second.StopAsync();
+        });
+
+        r.Add("ws: a response over the client backlog cap is answered too_large, not a dead socket", async () =>
+        {
+            await using var server = await PluginTests.StartAsync(T.TempDir("bigmsg"), CreateWebRoot());
+            var s = server.Sessions.CreateSession(new SessionInfo());
+            // One message by itself over the 32 MiB a client can take in a single WebSocket message.
+            server.Sessions.AppendMessage(s.Id, ChatMessage.UserText(new string('x', 33 * 1024 * 1024)));
+
+            await using var ws = await WsTestClient.ConnectAsync(server);
+            var res = await ws.RpcAsync("sessions.messages", new { id = s.Id });
+            Check.Equal("too_large", res["e"]?["code"]?.GetValue<string>(), "the oversize answer is an error envelope: " + res.ToJsonString());
+
+            // The socket is still with us: a normal call round-trips.
+            var info = await ws.RpcAsync("app.info", null);
+            Check.True(info["r"] is not null, "the socket survived the too_large answer");
+        });
+
+        r.Add("sessions.messages: a page over its byte budget comes back shorter with hasMore, and the walk covers it all", async () =>
+        {
+            await using var server = await PluginTests.StartAsync(T.TempDir("pagebytes"), CreateWebRoot());
+            var s = server.Sessions.CreateSession(new SessionInfo());
+            const int mb = 1024 * 1024;
+            for (var i = 0; i < 10; i++)
+                server.Sessions.AppendMessage(s.Id, ChatMessage.UserText(new string('a', mb)));
+
+            await using var ws = await WsTestClient.ConnectAsync(server);
+            var res = await ws.RpcAsync("sessions.messages", new { id = s.Id, limit = 2000 });
+            var messages = (JsonArray)res["r"]!["messages"]!;
+            Check.True(messages.Count is > 0 and < 10, $"the byte budget splits the page ({messages.Count} messages)");
+            var hasMore = (bool)res["r"]!["hasMore"]!;
+            Check.True(hasMore, "hasMore while the page is split");
+
+            var seen = new List<long>();
+            var guard = 0;
+            while (true)
+            {
+                Check.True(++guard < 20, "the walk must end");
+                foreach (var m in messages) seen.Add((long)m!["seq"]!.GetValue<long>());
+                if (!hasMore) break;
+                // The page keeps the newest; the next call pages back from its oldest seq, like the UI's load-earlier.
+                var beforeSeq = (long)messages[0]!["seq"]!.GetValue<long>();
+                res = await ws.RpcAsync("sessions.messages", new { id = s.Id, limit = 2000, beforeSeq });
+                messages = (JsonArray)res["r"]!["messages"]!;
+                hasMore = (bool)res["r"]!["hasMore"]!;
+            }
+            Check.Equal(10, seen.Count, "the walk covers every message exactly once");
+            Check.True(seen.OrderBy(x => x).SequenceEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), "the walk covers every message exactly once: " + string.Join(",", seen.OrderBy(x => x)));
+        });
+
+        r.Add("settings.replace: a stale base is a conflict, not a lost update", async () =>
+        {
+            await using var server = await PluginTests.StartAsync(T.TempDir("settingsconflict"), CreateWebRoot());
+            using var http = NewHttp();
+            Action<HttpRequestMessage> Auth() => m => m.Headers.Add(WebServer.TokenHeader, server.Token);
+            string Url(string method) => server.BaseUrl + "/api/rpc/" + method;
+            string ReplaceBody(JsonNode settings, JsonNode? baseDoc)
+            {
+                // Cloned: a node keeps one parent, and the loaded document already has one.
+                var o = new JsonObject { ["settings"] = settings.DeepClone() };
+                if (baseDoc is not null) o["base"] = baseDoc.DeepClone();
+                return o.ToJsonString();
+            }
+
+            var getRes = await SendAsync(http, HttpMethod.Post, Url("settings.get"), "{}", Auth());
+            Check.Equal(HttpStatusCode.OK, getRes.Status);
+            var baseDoc = JsonNode.Parse(getRes.Body)!["settings"]!.DeepClone();
+
+            // Someone else changes a key (another tab, a plugin, settings.set).
+            var setRes = await SendAsync(http, HttpMethod.Post, Url("settings.set"), """{"path":"server.port","value":7432}""", Auth());
+            Check.Equal(HttpStatusCode.OK, setRes.Status);
+
+            // The raw editor saves the document it loaded, with that base: a conflict, and the other change survives.
+            var stale = await SendAsync(http, HttpMethod.Post, Url("settings.replace"), ReplaceBody(baseDoc, baseDoc), Auth());
+            Check.Equal(HttpStatusCode.Conflict, stale.Status);
+            Check.Contains(stale.Body, "conflict");
+            var get2 = await SendAsync(http, HttpMethod.Post, Url("settings.get"), "{}", Auth());
+            Check.Equal(7432L, JsonNode.Parse(get2.Body)!["settings"]!["server"]!["port"]!.GetValue<long>(), "the other change is not clobbered");
+
+            // A fresh base goes through.
+            var fresh = JsonNode.Parse(get2.Body)!["settings"]!.DeepClone();
+            var ok = await SendAsync(http, HttpMethod.Post, Url("settings.replace"), ReplaceBody(fresh, fresh), Auth());
+            Check.Equal(HttpStatusCode.OK, ok.Status);
+
+            // Without base the method stays permissive (other callers have not learned the protocol yet).
+            var noBase = await SendAsync(http, HttpMethod.Post, Url("settings.replace"), ReplaceBody(fresh, null), Auth());
+            Check.Equal(HttpStatusCode.OK, noBase.Status);
+        });
+
+        r.Add("ws: one oversized message on an empty queue is not an abort; the cap sheds a backlog", () =>
+        {
+            var client = new WsClient(new ClientWebSocket(), null!, NullLogger.Instance);
+            var big = new byte[25 * 1024 * 1024];
+            client.Enqueue(big);   // under the 32 MiB backlog cap, and the queue was empty
+            Check.False(client.Aborted, "an empty queue takes one message however big");
+            Check.Equal((1, (long)big.Length), client.Backlog);
+            client.Enqueue(new byte[1024]);
+            Check.False(client.Aborted);
+            client.Enqueue(big);   // now something is already queued, and the backlog goes over the cap
+            Check.True(client.Aborted, "a backlog over the cap cuts the client off");
+        });
+
+        r.Add("wire: a data error is an internal error; the 4xx mapping is unchanged but logged", () =>
+        {
+            var (c1, _, s1) = Wire.MapError(new InvalidOperationException("SQL has parameters but no arguments were given"), NullLogger.Instance, "sessions.messages");
+            Check.Equal(("internal", 500), (c1, s1), "a programmer error is a host failure, not the caller's fault");
+            var (c2, m2, s2) = Wire.MapError(new InvalidDataException("Stored message 7 is corrupted and cannot be read"), NullLogger.Instance, "sessions.messages");
+            Check.Equal(("internal", 500), (c2, s2), "a corrupted stored row is a data error");
+            Check.Contains(m2, "corrupted");
+            Check.Contains(m2, "7");
+            var (c3, _, s3) = Wire.MapError(new ArgumentException("bad"), NullLogger.Instance, "x");
+            Check.Equal(("bad_request", 400), (c3, s3), "the mapping itself is unchanged");
+            var (c4, m4, s4) = Wire.MapError(new JsonException("bad"), NullLogger.Instance, "x");
+            Check.Equal(("bad_request", 400), (c4, s4));
+            Check.Contains(m4, "Invalid parameters");
         });
     }
 }

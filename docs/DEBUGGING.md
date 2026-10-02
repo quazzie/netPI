@@ -46,6 +46,9 @@ runs with its own home (`netpi-server --home <dir>` or `NETPI_HOME`); the CLI's 
 The port can change (a busy one falls back to a random port) and the token is new every run, so read them here. Every
 RPC method is an HTTP endpoint: `POST {url}/api/rpc/<method>` with the header `X-NetPI-Token: <token>` and the params
 as a JSON body. The token guards the app like the API keys in settings.json next to it: only the same user reads either.
+On Unix that holds because the home and the files that hold the secrets (server.json, settings.json) are created
+owner-only; and a fixed token goes through the `NETPI_TOKEN` environment variable (or `--token`), so it does not sit
+in the process's argv, where every local user on a shared box can read it.
 
 **The CLI** does that for you (Node, no packages):
 

@@ -876,5 +876,105 @@ public static class SessionStoreTests
             Check.True(published.ToUnixTimeMilliseconds() > before.ToUnixTimeMilliseconds(), $"its stamp moved on ({published:O} after {before:O})");
             Check.Equal(f.Store.GetSession(s.Id)!.UpdatedAt.ToUnixTimeMilliseconds(), published.ToUnixTimeMilliseconds(), "and it is the stamp the row carries now");
         });
+
+        r.Add("sessions: a corrupted stored row is a data error naming the row, not a bad request", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo());
+            var m = f.Store.AppendMessage(s.Id, Assistant("hello"));
+            // Corrupt the parts of one row: the chat must fail saying WHICH row is broken and the host must log it,
+            // not blame the caller with "Invalid parameters" and leave no trace.
+            f.Db.Execute("UPDATE messages SET parts = 'not json{{' WHERE id = @id", new { id = m.Id });
+            var ex = Check.Throws<InvalidDataException>(() => f.Store.GetMessages(s.Id));
+            Check.Contains(ex.Message, m.Id.ToString());
+            Check.Contains(ex.Message, "corrupted");
+        });
+
+        r.Add("sessions: an update racing context reads leaves no pre-update rows in the context cache", async () =>
+        {
+            await using var f = new Fixture();
+            var s = f.Store.CreateSession(new SessionInfo());
+            var m = f.Store.AppendMessage(s.Id, Assistant("v0"));
+
+            // The race the cache must survive: a read that starts while an update commits in between its rows and
+            // its staleness check. Without the per-session generation, that read re-fills the slot with the old row
+            // after the drop, and the stale entry outlives the write. The writer's check right after each update is
+            // what the fixed cache must never fail: it may only see a version the writer has already committed.
+            using var stopper = new CancellationTokenSource();
+            var errors = new List<Exception>();
+            var reader = Task.Run(() =>
+            {
+                try
+                {
+                    while (!stopper.IsCancellationRequested)
+                    {
+                        var rows = f.Store.GetContextMessages(s.Id);
+                        if (rows.Count != 1 || rows[0].Parts.Count == 0) throw new AssertException($"context read came back odd ({rows.Count} rows)");
+                    }
+                }
+                catch (Exception ex) { lock (errors) errors.Add(ex); }
+            });
+            try
+            {
+                for (var i = 1; i <= 100; i++)
+                {
+                    f.Store.UpdateMessage(new ChatMessage
+                    {
+                        Id = m.Id, SessionId = s.Id, Seq = m.Seq, Role = MessageRole.Assistant,
+                        Parts = [new TextPart { Text = "v" + i }],
+                    });
+                    Check.Equal("v" + i, f.Store.GetContextMessages(s.Id).Single().Text, $"context after update {i}");
+                }
+            }
+            finally
+            {
+                stopper.Cancel();
+                reader.GetAwaiter().GetResult();
+            }
+            lock (errors)
+                Check.True(errors.Count == 0, "the racing reads failed: " + (errors.FirstOrDefault()?.Message ?? ""));
+            Check.Equal("v100", f.Store.GetContextMessages(s.Id).Single().Text, "the settled cache holds the last write");
+        });
+
+        r.Add("sessions: abandoned empty chats are evicted once the cap is passed", async () =>
+        {
+            await using var f = new Fixture();
+            var created = new List<SessionInfo>();
+            for (var i = 0; i < 101; i++) created.Add(f.Store.CreateSession(new SessionInfo { Title = "n" + i }));
+
+            // The cap (MaxTransientSessions) is below 101: one abandoned empty chat has been evicted, with the
+            // event that keeps a UI's list from ghosting it.
+            var listed = f.Store.ListSessions(new SessionQuery { IncludeUnmaterialized = true });
+            Check.Equal(100, listed.Count);
+            var deleted = await f.EventsAsync(EventTypes.SessionDeleted);
+            Check.Equal(1, deleted.Count, "one session.deleted for the evicted chat");
+            var evictedId = JsonSerializer.SerializeToNode(deleted[0].Data, NetPiJson.Options)!["id"]!.GetValue<string>();
+            Check.True(created.Any(s => s.Id == evictedId), "the event names one of the created chats");
+            Check.True(f.Store.GetSession(evictedId) is null, "the evicted chat is gone");
+
+            // A chat that got its first message is materialized and unaffected by the cap.
+            var kept = f.Store.CreateSession(new SessionInfo { Title = "kept" });
+            f.Store.AppendMessage(kept.Id, ChatMessage.UserText("hi"));
+            Check.True(f.Store.GetSession(kept.Id) is not null, "a materialized chat survives");
+            Check.Equal(100, f.Store.ListSessions(new SessionQuery { IncludeUnmaterialized = true }).Count, "99 empty transient + 1 materialized");
+        });
+
+        r.Add("host: the home is resolved the same way by server and desktop (option, env var, ~ expansion)", () =>
+        {
+            var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            // The desktop used to read NETPI_HOME without expansion, so NETPI_HOME=~/x split its window.json and
+            // WebView profile from the server's home. It now shares the server's resolution, which expands ~.
+            Check.Equal(PathUtil.Normalize(Path.Combine(profile, "netpi-home")), HostKernel.ResolveHome("~/netpi-home"));
+            Check.Equal(PathUtil.Normalize(Path.Combine(profile, ".netpi")), HostKernel.ResolveHome(null) /* default, env unset below */);
+
+            var old = Environment.GetEnvironmentVariable("NETPI_HOME");
+            try
+            {
+                Environment.SetEnvironmentVariable("NETPI_HOME", "~/netpi-env");
+                Check.Equal(PathUtil.Normalize(Path.Combine(profile, "netpi-env")), HostKernel.ResolveHome(null));
+                Check.Equal(PathUtil.Normalize(Path.Combine(profile, "from-arg")), HostKernel.ResolveHome("~/from-arg"), "the option wins over the env var");
+            }
+            finally { Environment.SetEnvironmentVariable("NETPI_HOME", old); }
+        });
     }
 }

@@ -389,7 +389,9 @@ internal sealed unsafe class Database : IDisposable
                 cur = tail;
             }
         }
-        if (list.Count == 0) throw new ArgumentException("SQL contains no statement: " + sql);
+        // A programmer error, not a caller's: the SQL came from this process. As an ArgumentException it would reach
+        // a client as a 400 "bad_request" and stay out of the log; as an InvalidOperationException it is a 500 with a log line.
+        if (list.Count == 0) throw new InvalidOperationException("SQL contains no statement: " + sql);
         return [.. list];
     }
 
@@ -400,7 +402,7 @@ internal sealed unsafe class Database : IDisposable
         var names = st.ParameterNames;
         if (names.Length == 0) return;
         if (args is null)
-            throw new ArgumentException($"SQL has parameters ({string.Join(", ", names.Select(n => n ?? "?"))}) but no arguments were given\n  SQL: {sql}");
+            throw new InvalidOperationException($"SQL has parameters ({string.Join(", ", names.Select(n => n ?? "?"))}) but no arguments were given\n  SQL: {sql}");
 
         var positional = SqlArgs.IsPositional(args);
         for (var i = 0; i < names.Length; i++)
@@ -409,7 +411,7 @@ internal sealed unsafe class Database : IDisposable
             object? value;
             if (raw is null || raw[0] == '?')
             {
-                if (!positional) throw new ArgumentException($"Positional parameter #{i + 1} needs an array/list argument\n  SQL: {sql}");
+                if (!positional) throw new InvalidOperationException($"Positional parameter #{i + 1} needs an array/list argument\n  SQL: {sql}");
                 var index = raw is { Length: > 1 } && int.TryParse(raw.AsSpan(1), out var n) ? n - 1 : i;
                 value = SqlArgs.GetPositional(args, index, sql);
             }
@@ -419,7 +421,7 @@ internal sealed unsafe class Database : IDisposable
             }
             else if (!SqlArgs.TryGet(args, raw[1..], out value))
             {
-                throw new ArgumentException($"Missing SQL parameter '{raw}'\n  SQL: {sql}");
+                throw new InvalidOperationException($"Missing SQL parameter '{raw}'\n  SQL: {sql}");
             }
             var rc = BindValue(st.Handle, i + 1, value);
             if (rc != Sqlite3.OK) throw SqliteException.From(_db, rc, sql, $"Binding parameter '{raw ?? "?"}' failed");
