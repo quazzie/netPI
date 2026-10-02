@@ -21,7 +21,7 @@ public sealed class RetryPlugin : INetPiPlugin
                 SettingInfo.Int("retry.maxAttempts", "Attempts", 6, null, 1, 20),
                 SettingInfo.Int("retry.firstEventTimeoutSeconds", "Wait for the first token", 600, "A slow prefill of a long context can take minutes.", 10, 3600, "s"),
                 SettingInfo.Int("retry.stallTimeoutSeconds", "Silence between tokens", 180, null, 10, 3600, "s"),
-                SettingInfo.Int("retry.maxTotalSeconds", "Give up after", 300, null, 10, 7200, "s"),
+                SettingInfo.Int("retry.maxTotalSeconds", "Give up after", 300, "The waiting between attempts; time a stream spent producing output does not count against it. At least firstEventTimeoutSeconds.", 10, 7200, "s"),
                 SettingInfo.Int("retry.baseDelayMs", "First delay", 1000, "Exponential backoff with jitter.", 100, 60000, "ms"),
                 SettingInfo.Int("retry.maxDelayMs", "Longest delay", 30000, null, 100, 600000, "ms"),
             ],
@@ -49,16 +49,18 @@ public sealed class RetryOptions
 
     public static RetryOptions From(ISettings? s)
     {
-        if (s is null) return new RetryOptions();
+        var firstEvent = s is null ? TimeSpan.FromSeconds(600) : Seconds(Get(s, "retry.firstEventTimeoutSeconds", 600.0));
+        var maxTotal = s is null ? TimeSpan.FromSeconds(300) : Seconds(Get(s, "retry.maxTotalSeconds", 300.0));
         return new RetryOptions
         {
-            Enabled = Get(s, "retry.enabled", true),
-            MaxAttempts = Math.Clamp(Get(s, "retry.maxAttempts", 6), 1, 100),
-            BaseDelay = TimeSpan.FromMilliseconds(Math.Max(0, Get(s, "retry.baseDelayMs", 1000.0))),
-            MaxDelay = TimeSpan.FromMilliseconds(Math.Max(0, Get(s, "retry.maxDelayMs", 30_000.0))),
-            FirstEventTimeout = Seconds(Get(s, "retry.firstEventTimeoutSeconds", 600.0)),
-            StallTimeout = Seconds(Get(s, "retry.stallTimeoutSeconds", 180.0)),
-            MaxTotal = Seconds(Get(s, "retry.maxTotalSeconds", 300.0)),
+            Enabled = s is null ? true : Get(s, "retry.enabled", true),
+            MaxAttempts = s is null ? 6 : Math.Clamp(Get(s, "retry.maxAttempts", 6), 1, 100),
+            BaseDelay = TimeSpan.FromMilliseconds(s is null ? 1000 : Math.Max(0, Get(s, "retry.baseDelayMs", 1000.0))),
+            MaxDelay = TimeSpan.FromMilliseconds(s is null ? 30_000 : Math.Max(0, Get(s, "retry.maxDelayMs", 30_000.0))),
+            FirstEventTimeout = firstEvent,
+            StallTimeout = s is null ? TimeSpan.FromSeconds(180) : Seconds(Get(s, "retry.stallTimeoutSeconds", 180.0)),
+            // a first-token stall alone may wait the whole first-event timeout, so the budget must cover it (idea-ohk2bz)
+            MaxTotal = firstEvent == Timeout.InfiniteTimeSpan ? maxTotal : (maxTotal >= firstEvent ? maxTotal : firstEvent),
         };
     }
 

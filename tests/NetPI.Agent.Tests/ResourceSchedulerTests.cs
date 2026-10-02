@@ -14,6 +14,7 @@ public static class ResourceSchedulerTests
         t.Add("scheduler resource: catalog and fallback changes refresh a plain pool without another resolve", RefreshCapacity);
         t.Add("scheduler resource: changing an agent model keeps its old running call counted", Rebind);
         t.Add("scheduler resource: named chats without concurrency metadata never exceed two provider calls", ProviderBound);
+        t.Add("scheduler resource: without a scheduler the physical fallback admits the scheduler's local slots default", FallbackDefault);
     }
 
     private static AgentSlotRequest Req(string key, string id, int priority = 0) =>
@@ -221,5 +222,24 @@ public static class ResourceSchedulerTests
             }
         }
         finally { release.TrySetResult(); }
+    }
+
+    private static async Task FallbackDefault()
+    {
+        // models.localSlots is not set: the physical fallback (no scheduler, the plugin's reload gap) must admit
+        // the same default as the scheduler (one), or the model's capacity changes with the plugin's state (idea-88ik5k)
+        await using var h = await TestHost.StartAsync(x =>
+        {
+            x.Catalog.Cached.Single(m => m.Ref == "fake/local").Concurrency = null;
+        }, plugins: TestHost.Plugins.None);
+        var model = h.Catalog.Cached.Single(m => m.Ref == "fake/local");
+        var acquired = await ResourceLeaseSlot.AcquireAsync(h.Services, h.Settings, model, Req("fake/local", "first"), CancellationToken.None);
+        Check.True(acquired is not null, "a local model without a concurrency falls back to the physical admission");
+        using var first = acquired!;
+        var second = ResourceLeaseSlot.AcquireAsync(h.Services, h.Settings, model, Req("fake/local", "second"), CancellationToken.None).AsTask();
+        await Task.Delay(150);
+        Check.False(second.IsCompleted, "the fallback default is one, the same as the scheduler's");
+        first.Dispose();
+        await second.WaitAsync(TimeSpan.FromSeconds(3));
     }
 }

@@ -128,12 +128,14 @@ turned off; models without effort levels only get on/off. Free models are limite
 | key | default | |
 |---|---|---|
 | `agent.maxTurns` | `200` | model calls per run |
-| `agent.defaultMaxOutputTokens` | `16384` | when a model has no limit |
+| `agent.defaultMaxOutputTokens` | `16384` | when a model has no limit (the run's request and the budget's reservation of its output) |
 | `agent.maxToolResultChars` | `20000` | a longer tool result is saved to a file: the agent gets its start and end and the path, to read the rest in parts or grep it (`read` pages, the bash and `ssh` `run` tails stay under it) |
 | `agent.parallelReadOnlyTools` | `true` | run several read-only calls of one turn concurrently |
 | `agents.maxDepth` | `3` | subagent nesting depth (deeper agents get no orchestration tools) |
 | `agents.queueMax` | `20` | the longest an agent's queue of waiting runs grows: beyond it a new run is refused with a clear error instead of waiting (0: no waiting at all) |
 | `agents.queueTimeoutSeconds` | `0` | a run that has waited this long for a free slot fails with a clear error (0, the default: no time limit, a waiting run stays queued until a slot is free) |
+| `models.localSlots` | `1` | concurrent runs of one local model without a catalog `concurrency` (Settings → Models) |
+| `models.cloudSlots` | `4` | concurrent runs across one cloud provider's models (Settings → Models) |
 
 ## Profiles
 
@@ -320,7 +322,7 @@ summarizer calls and shortens the result, so a smaller `compaction.model` shows 
 | `retry.baseDelayMs` / `retry.maxDelayMs` | `1000` / `30000` | exponential backoff with jitter; when the server says how long to wait (`Retry-After`, e.g. with a 429 or 529), at least that long |
 | `retry.firstEventTimeoutSeconds` | `600` | silence before the first token (slow prefill) |
 | `retry.stallTimeoutSeconds` | `180` | silence between tokens |
-| `retry.maxTotalSeconds` | `300` | give up after this long (AiProxy may hold each attempt 2 min) |
+| `retry.maxTotalSeconds` | `300` | give up once this much of the waiting between attempts has passed: the time a stream spent producing output does not count against it, and it is clamped to at least `firstEventTimeoutSeconds`, so a full first-token stall still gets its retry (AiProxy may hold each attempt 2 min) |
 
 ## Tools
 

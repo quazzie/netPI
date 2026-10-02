@@ -58,6 +58,7 @@ internal sealed partial class Ledger
 
     private readonly IPluginContext _ctx;
     private int _changeScheduled;
+    private int _stopped;
 
     // The ledger's own storage (ctx.Data), opened in Initialize; all null while the store is unavailable. Paid calls
     // under a limit are then refused (fail-closed, below), and nothing is kept in memory.
@@ -266,12 +267,28 @@ internal sealed partial class Ledger
     private void ScheduleChanged()
     {
         if (Interlocked.Exchange(ref _changeScheduled, 1) == 1) return;
-        _ = Task.Delay(ChangeDelayMs).ContinueWith(_ =>
+        _ = Task.Delay(ChangeDelayMs, _ctx.Stopping).ContinueWith(_ =>
         {
             Volatile.Write(ref _changeScheduled, 0);
+            // the plugin stopped while the debounce was running: its store goes with the load context, so the
+            // publish must not reach it (idea-sx4xxx)
+            if (Volatile.Read(ref _stopped) == 1 || _ctx.Stopping.IsCancellationRequested) return;
             try { _ctx.Events.Publish("usage.changed", BudgetStatus()); }
             catch (Exception ex) { _ctx.Logger.LogDebug(ex, "usage.changed publish failed"); }
         }, TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// The plugin is stopping: nothing scheduled may touch the store after this. The in-flight
+    /// <c>usage.changed</c> checks <see cref="_stopped"/> before publishing, and the reads below are null-guarded.
+    /// </summary>
+    public void Stop()
+    {
+        Volatile.Write(ref _stopped, 1);
+        _calls = null;
+        _lanesUsage = null;
+        _laneUsage = null;
+        _counters = null;
     }
 
     // ---------------------------------------------------------------- budget

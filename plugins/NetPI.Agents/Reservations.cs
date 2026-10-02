@@ -68,12 +68,13 @@ internal sealed partial class Ledger
     // would count at full size), priced at the cache-read rate — in an agent loop the context is re-read, not
     // re-sent, and a call that misses the cache is corrected by the settlement, while a 3-5x over-reservation
     // locks a tight budget for nothing. The output is the effective maximum the provider would accept: the same
-    // clamp the transports send, so what is reserved is what the call can spend (idea-begg3v).
-    internal static double Estimate(ModelRequest request, Price? price)
+    // clamp the transports send (the model's own maximum and the room the window leaves), so what is reserved is what
+    // the call can spend (idea-begg3v). A model with no limit of its own takes agent.defaultMaxOutputTokens.
+    internal static double Estimate(ModelRequest request, Price? price, ISettings? settings)
     {
         if (price is null || price.Free) return 0;
         var input = EstimateInput(request);
-        var output = ModelMessages.ClampMaxTokens(request, request.MaxOutputTokens is > 0 and var max ? max : request.Model.MaxOutputTokens ?? 16384);
+        var output = ModelMessages.ClampMaxTokens(request, request.MaxOutputTokens is > 0 and var max ? max : OutputLimit.Model(request.Model, settings));
         return (input * price.CacheRead + output * price.Output) / 1_000_000;
     }
 
@@ -111,8 +112,8 @@ internal sealed partial class Ledger
         var price = PriceOf(request.Model, cfg);
         var paid = Paid(request.Model, price);
         if (paid && request.MaxOutputTokens is not > 0)
-            request.MaxOutputTokens = request.Model.MaxOutputTokens is > 0 ? request.Model.MaxOutputTokens : 16384;
-        var cost = paid ? Estimate(request, price) : 0;
+            request.MaxOutputTokens = OutputLimit.Model(request.Model, _ctx.Settings);
+        var cost = paid ? Estimate(request, price, _ctx.Settings) : 0;
         var o = Options();
         var limited = o.MonthlyUsd.HasValue || o.DailyUsd.HasValue || DailyCap(cfg).HasValue;
         var root = RootSession(request.SessionId);

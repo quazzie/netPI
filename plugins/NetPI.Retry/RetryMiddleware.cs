@@ -28,7 +28,9 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
 
         var maxAttempts = Math.Max(1, o.MaxAttempts);
         var dirty = false; // something the consumer must discard was emitted since the last reset
-        var started = System.Diagnostics.Stopwatch.StartNew();
+        var waited = TimeSpan.Zero; // the retry budget spent so far: the waiting between attempts. Time the model
+                                    // spent producing events is not counted, so a drop after a long stream is still
+                                    // retried (idea-ohk2bz)
 
         for (var attempt = 1; ; attempt++)
         {
@@ -127,10 +129,10 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
             var asked = RetryAfterOf(failure!);
             var delay = Backoff(attempt, o);
             if (asked > delay) delay = asked.Value;
-            if (o.MaxTotal != Timeout.InfiniteTimeSpan && started.Elapsed + delay > o.MaxTotal)
+            if (o.MaxTotal != Timeout.InfiniteTimeSpan && waited + delay > o.MaxTotal)
             {
-                logger?.LogWarning("Model call failed after {Attempts} attempts in {Seconds:0}s (retry.maxTotalSeconds): {Reason}{Asked}",
-                    attempt, started.Elapsed.TotalSeconds, reason, asked is null ? "" : $" (the server asked to wait {asked.Value.TotalSeconds:0}s)");
+                logger?.LogWarning("Model call failed after {Attempts} attempts, {Seconds:0}s of waiting (retry.maxTotalSeconds): {Reason}{Asked}",
+                    attempt, waited.TotalSeconds, reason, asked is null ? "" : $" (the server asked to wait {asked.Value.TotalSeconds:0}s)");
                 ExceptionDispatchInfo.Capture(failure!).Throw();
             }
             logger?.LogWarning("Model call to {Model} failed (attempt {Attempt}/{Max}): {Reason}. Retrying in {Delay} ms",
@@ -150,6 +152,7 @@ public sealed class RetryMiddleware(Func<RetryOptions> options, ILogger? logger 
             if (asked is not null) what = $"The server asked to wait {Ago(asked.Value.TotalSeconds)}";
             yield return new StreamNotice($"{what}. Retrying in {secsText}s (attempt {attempt + 1}/{maxAttempts})…", "warn");
             if (delay > TimeSpan.Zero) await Task.Delay(delay, ct).ConfigureAwait(false);
+            waited += delay;
         }
     }
 

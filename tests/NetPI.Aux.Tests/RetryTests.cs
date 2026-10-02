@@ -8,10 +8,11 @@ public static class RetryTests
 {
     private static readonly ModelRequest Request = new() { Model = T.Model(), Messages = [T.User("hi")] };
 
-    private static RetryOptions Fast(int attempts = 4, int firstMs = 5000, int stallMs = 5000) => new()
+    private static RetryOptions Fast(int attempts = 4, int firstMs = 5000, int stallMs = 5000, int maxTotalMs = 300_000) => new()
     {
         MaxAttempts = attempts, BaseDelay = TimeSpan.FromMilliseconds(1), MaxDelay = TimeSpan.FromMilliseconds(5),
         FirstEventTimeout = TimeSpan.FromMilliseconds(firstMs), StallTimeout = TimeSpan.FromMilliseconds(stallMs),
+        MaxTotal = TimeSpan.FromMilliseconds(maxTotalMs),
     };
 
     private static StreamCompleted Done(string text = "hello") =>
@@ -199,6 +200,34 @@ public static class RetryTests
             Check.True(events[^1] is StreamCompleted);
         });
 
+        r.Add("retry: a first-token stall is still retried when maxTotalSeconds is below firstEventTimeoutSeconds", async () =>
+        {
+            // the default relationship (300 s budget, 600 s first-token wait) used to give up at once: a full stall
+            // alone outlived the budget, so the documented first-event retry never happened (idea-ohk2bz)
+            var o = new RetryOptions
+            {
+                MaxAttempts = 4, BaseDelay = TimeSpan.FromMilliseconds(1), MaxDelay = TimeSpan.FromMilliseconds(5),
+                FirstEventTimeout = TimeSpan.FromMilliseconds(200), StallTimeout = TimeSpan.FromMilliseconds(5000),
+                MaxTotal = TimeSpan.FromMilliseconds(100),
+            };
+            var script = new Script((n, ct) => n == 1 ? Hang(ct) : Events(new TextDelta("ok"), Done()));
+            var events = await Collect(new RetryMiddleware(() => o).InvokeAsync(Request, script.Next, CancellationToken.None));
+            Check.Equal(2, script.Calls);
+            Check.Equal("No response for 1s. Retrying in 1s (attempt 2/4)…", events.OfType<StreamNotice>().Single().Text);
+            Check.True(events[^1] is StreamCompleted);
+        });
+
+        r.Add("retry: the settings reader clamps maxTotalSeconds to at least firstEventTimeoutSeconds", () =>
+        {
+            var ctx = new FakePluginContext();
+            Check.Equal(TimeSpan.FromSeconds(600), RetryOptions.From(ctx.Settings).MaxTotal); // the defaults agree
+            ctx.SettingsFake.Set("retry.firstEventTimeoutSeconds", 300);
+            ctx.SettingsFake.Set("retry.maxTotalSeconds", 100);
+            Check.Equal(TimeSpan.FromSeconds(300), RetryOptions.From(ctx.Settings).MaxTotal);
+            ctx.SettingsFake.Set("retry.maxTotalSeconds", 600);
+            Check.Equal(TimeSpan.FromSeconds(600), RetryOptions.From(ctx.Settings).MaxTotal); // a larger budget stays
+        });
+
         r.Add("retry: stall between events (stallTimeout) → reset + retry", async () =>
         {
             var script = new Script((n, ct) => n == 1 ? Hang(ct, true, new TextDelta("partial")) : Events(new TextDelta("full"), Done()));
@@ -225,6 +254,23 @@ public static class RetryTests
                 consumerDelayMs: 450);
             Check.Equal(1, script.Calls);
             Check.Equal(4, events.Count);
+        });
+
+        r.Add("retry: a drop after a stream longer than maxTotalSeconds is still retried", async () =>
+        {
+            // a slow model streams for longer than the whole retry budget and then the connection drops:
+            // the productive time must not count against the budget, or this — the case retries exist for — is lost (idea-ohk2bz)
+            static async IAsyncEnumerable<ModelStreamEvent> SlowThenDrop([EnumeratorCancellation] CancellationToken ct)
+            {
+                for (var i = 0; i < 3; i++) { await Task.Delay(80, ct); yield return new TextDelta($"x{i}"); }
+                throw new IOException("reset by peer");
+            }
+            var script = new Script((n, ct) => n == 1 ? SlowThenDrop(ct) : Events(new TextDelta("ok"), Done()));
+            var events = await Collect(new RetryMiddleware(() => Fast(maxTotalMs: 150)).InvokeAsync(Request, script.Next, CancellationToken.None));
+            Check.Equal(2, script.Calls);
+            Check.True(events.Any(e => e is StreamReset));
+            Check.Equal("Connection lost. Retrying in 1s (attempt 2/4)…", events.OfType<StreamNotice>().Single().Text);
+            Check.True(events[^1] is StreamCompleted);
         });
 
         r.Add("retry: stall on the last attempt throws a transient 'stalled' ModelException", async () =>
@@ -340,6 +386,7 @@ public static class RetryTests
             var o = RetryOptions.From(ctx.Settings);
             Check.Equal(TimeSpan.FromSeconds(600), o.FirstEventTimeout);
             Check.Equal(TimeSpan.FromSeconds(180), o.StallTimeout);
+            Check.Equal(TimeSpan.FromSeconds(600), o.MaxTotal); // the budget clamps to the first-token wait, so the defaults agree
         });
     }
 }

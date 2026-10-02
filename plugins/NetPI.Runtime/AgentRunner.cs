@@ -534,7 +534,7 @@ internal sealed class AgentRunner(AgentRuntime rt, AgentState state, RunState ru
             Messages = [.. ContextOrder.FirstTurnNoticesFirst(turn.Messages)],
             Tools = turn.Tools,
             ReasoningEffort = session.Reasoning,
-            MaxOutputTokens = model.MaxOutputTokens ?? rt.IntSetting("agent.defaultMaxOutputTokens", 16384),
+            MaxOutputTokens = OutputLimit.Model(model, Ctx.Settings),
             SessionId = SessionId,
             AgentId = AgentId,
             Purpose = "agent",

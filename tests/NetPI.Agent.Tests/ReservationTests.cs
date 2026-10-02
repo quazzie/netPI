@@ -17,6 +17,7 @@ public static class ReservationTests
         t.Add("budget: a hot swap runs two ledger generations: one reservation, one settle", Swap);
         t.Add("budget: budget.allow runs alongside reservations without wedging the gates", AllowParallel);
         t.Add("budget: the reservation holds what the provider can actually send beside a full window", WindowClamp);
+        t.Add("budget: the output of a model without a limit comes from agent.defaultMaxOutputTokens", OutputLimitFromSetting);
     }
 
     private static ModelRequest Request() => new()
@@ -42,7 +43,7 @@ public static class ReservationTests
         await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
         var l = Create(h);
         var req = Request();
-        var estimate = Ledger.Estimate(req, Ledger.PriceOf(req.Model, null));
+        var estimate = Ledger.Estimate(req, Ledger.PriceOf(req.Model, null), h.Settings);
         h.Settings.SetQuiet("budget.monthlyUsd", JsonValue.Create(estimate * 1.5));
         var won = new System.Collections.Concurrent.ConcurrentBag<Ledger.Reservation>();
         await Task.WhenAll(Enumerable.Range(0, 12).Select(_ => Task.Run(() =>
@@ -143,7 +144,7 @@ public static class ReservationTests
             throw new OperationCanceledException();
         }
         await Check.ThrowsAsync<OperationCanceledException>(async () => { await foreach (var e in m.InvokeAsync(req, Cancel, default)) { } });
-        var estimate = Ledger.Estimate(req, Ledger.PriceOf(req.Model, null));
+        var estimate = Ledger.Estimate(req, Ledger.PriceOf(req.Model, null), h.Settings);
         Check.True(l.Spent().Period > 0.003, "a stop that streamed settles from the partial work");
         Check.True(l.Spent().Period < 0.003 + estimate, "no more than the reservation (the old code charged the full reservation)");
         Check.Equal(1L, Calls(h).Count(new DataQuery().Eq("costSource", "interrupted-estimate")));
@@ -229,17 +230,38 @@ public static class ReservationTests
         var price = new Ledger.Price(0.000001, 0.000002, 0.000001, 0.000002, "test");
         var req = Request();
         req.MaxOutputTokens = 100;
-        Check.True(Ledger.Estimate(req, price) > 0, "a small request reserves something");
+        Check.True(Ledger.Estimate(req, price, null) > 0, "a small request reserves something");
 
         // A prompt that fills most of the window: the transport sends the room that is left, not the 16k the caller
         // asked for, and the reservation holds exactly that much output.
         req.MaxOutputTokens = 16_000;
         req.Messages = [ChatMessage.UserText(new string('w', 100_000))];
-        var estimate = Ledger.Estimate(req, price);
+        var estimate = Ledger.Estimate(req, price, null);
         var input = ModelMessages.EstimateInputTokens(req);
         var room = req.Model.ContextWindow!.Value - input - Math.Max(ModelMessages.WindowMargin, req.Model.ContextWindow.Value * ModelMessages.WindowMarginShare);
         Check.True(room > 0 && room < 16_000, $"the window leaves {room} output tokens");
         Check.True(Math.Abs(estimate - (input * price.CacheRead + room * price.Output) / 1_000_000) < 1e-12,
             $"the reservation holds what the transport would send ({estimate})");
+    }
+
+    private static async Task OutputLimitFromSetting()
+    {
+        await using var h = await TestHost.StartAsync(plugins: TestHost.Plugins.None);
+        var l = Create(h);
+        var model = new ModelInfo
+        {
+            Provider = "cloud", Id = "no-limit", ContextWindow = 32000,
+            Extra = new JsonObject { ["pricing"] = new JsonObject { ["prompt"] = "0.000001", ["completion"] = "0.000002" } }
+        };
+        var defaulted = new ModelRequest { Model = model, Messages = [ChatMessage.UserText("hi")] };
+        var d = l.Reserve(defaulted, "a", null);
+        Check.Equal(OutputLimit.Default, defaulted.MaxOutputTokens, "the default for a model without a limit");
+        l.Settle(d, null, false, true);
+        h.Settings.SetQuiet("agent.defaultMaxOutputTokens", JsonValue.Create(1000));
+        var req = new ModelRequest { Model = model, Messages = [ChatMessage.UserText("hi")] };
+        var r = l.Reserve(req, "a", null);
+        Check.Equal(1000, req.MaxOutputTokens, "the reservation takes the model's output from agent.defaultMaxOutputTokens");
+        l.Settle(r, null, false, true);
+        Check.Equal(0.0, l.Spent().Period, "a rejected call is free");
     }
 }
