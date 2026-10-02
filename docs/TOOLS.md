@@ -573,6 +573,12 @@ details: { questions: { question, options: { label, description? }[], multiple }
 `plugins/NetPI.Tools.Agents` (`agent_spawn`, and `agent` with the actions `wait`, `send`, `list`, `result`, `cancel`) and
 `plugins/NetPI.Agents` (`agent_choices`, and the "# Agents" section of the system prompt for agents that can spawn).
 
+Reachability: `wait`, `send`, `result` and `cancel` resolve only within the caller's own tree — the caller, its
+subagents and their descendants (an id is validated by walking `ParentAgentId` up to the caller; names match a direct
+child before a deeper one). An id, session or name from another chat does not resolve, and the result says the scope
+rather than "unknown agent". `list all=true` keeps showing every agent in the process (visibility, documented), but
+acting on a foreign id is refused.
+
 ### `agent_choices` (read-only)
 
 The agents the user set up (`agents.<id>`) as an agent that delegates sees them: the budget line, then each agent (active

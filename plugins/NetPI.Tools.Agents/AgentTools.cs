@@ -89,15 +89,45 @@ internal abstract class AgentToolBase(IPluginContext plugin) : IAgentTool
         $"{a.Turns} turns, {a.ToolCalls} tool calls, {Tokens(a.InputTokens)} in / {Tokens(a.OutputTokens)} out" +
         (Duration(a) is { Length: > 0 } d ? $", {d}" : "");
 
-    /// <summary>Resolve an agent by id, session id, or name (the caller's children first).</summary>
-    protected static AgentInfo? Resolve(IAgentRuntime runtime, string callerId, string idOrName)
+    /// <summary>
+    /// Resolve an agent by id, session id, or name — only within the caller's own tree: the caller, its subagents and
+    /// their descendants. An id, session or name from another chat does not resolve; <paramref name="refusal"/>
+    /// then says the scope, for the caller to show. Names match a direct child before a deeper one.
+    /// </summary>
+    protected static AgentInfo? Resolve(IAgentRuntime runtime, string callerId, string idOrName, out string? refusal)
     {
+        refusal = null;
         idOrName = idOrName.Trim();
-        if (runtime.Get(idOrName) is { } a) return a;
-        if (runtime.GetBySession(idOrName) is { } b) return b;
+        var a = runtime.Get(idOrName) ?? runtime.GetBySession(idOrName);
+        if (a is not null)
+        {
+            if (InTree(runtime, a, callerId)) return a;
+            refusal = $"'{a.Name}' ({a.Id}) is not one of your subagents — this reaches only your own tree: your subagents and their descendants.";
+            return null;
+        }
         var all = runtime.List(true);
-        return all.FirstOrDefault(x => x.ParentAgentId == callerId && string.Equals(x.Name, idOrName, StringComparison.OrdinalIgnoreCase))
-               ?? all.FirstOrDefault(x => string.Equals(x.Name, idOrName, StringComparison.OrdinalIgnoreCase));
+        var own = all.Where(x => x.Id != callerId && InTree(runtime, x, callerId)).ToList();
+        var hit = own.FirstOrDefault(x => x.ParentAgentId == callerId && string.Equals(x.Name, idOrName, StringComparison.OrdinalIgnoreCase))
+                  ?? own.FirstOrDefault(x => string.Equals(x.Name, idOrName, StringComparison.OrdinalIgnoreCase));
+        if (hit is not null) return hit;
+        if (all.Any(x => string.Equals(x.Name, idOrName, StringComparison.OrdinalIgnoreCase)))
+            refusal = $"an agent named '{idOrName}' exists, but not in your tree — only your own subagents are reachable by name.";
+        return null;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="a"/> is the caller or one of its descendants: walking <c>ParentAgentId</c> up from
+    /// <paramref name="a"/> reaches <paramref name="callerId"/>. Agents of other chats never are.
+    /// </summary>
+    private static bool InTree(IAgentRuntime runtime, AgentInfo a, string callerId)
+    {
+        var hops = 0;
+        for (var cur = a; cur is not null && hops++ < 128; )
+        {
+            if (cur.Id == callerId) return true;
+            cur = cur.ParentAgentId is { } p ? runtime.Get(p) : null;
+        }
+        return false;
     }
 
     protected static string Report(AgentInfo a)
@@ -476,7 +506,7 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
         Category = "agents",
         Parameters = Schema(new JsonObject
         {
-            ["ids"] = StringArray("Agent ids (or names) to wait for. Default: all of your running subagents, plus finished ones whose report you have not seen."),
+            ["ids"] = StringArray("Agent ids (or names of your subagents) to wait for. Default: all of your running subagents, plus finished ones whose report you have not seen."),
             ["id"] = Prop("string", "A single agent id (alternative to ids)."),
             ["timeoutSeconds"] = Prop("integer", "Maximum seconds to wait (default 3600). Agents still running are reported as such."),
         }),
@@ -486,13 +516,13 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
     {
         var requested = ToolArgs.List(args, "ids", "agents", "agentIds") ?? ToolArgs.List(args, "id", "agentId", "agent");
         var ids = new List<string>();
-        var unknown = new List<string>();
+        var problems = new List<string>();
         if (requested is { Count: > 0 })
         {
             foreach (var r in requested)
             {
-                if (Resolve(runtime, context.AgentId, r) is { } a) ids.Add(a.Id);
-                else unknown.Add(r);
+                if (Resolve(runtime, context.AgentId, r, out var refusal) is { } a) ids.Add(a.Id);
+                else problems.Add(refusal ?? r);
             }
         }
         else
@@ -514,7 +544,7 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
                     : "You have no subagents. Use agent_spawn to start one.");
             }
         }
-        if (ids.Count == 0) return ToolResult.Error($"Unknown agent(s): {string.Join(", ", unknown)}. Use agent with action list to see your subagents.");
+        if (ids.Count == 0) return ToolResult.Error($"Unknown or out-of-reach agent(s): {string.Join(", ", problems)}. Use agent with action list to see your subagents.");
 
         var seconds = ToolArgs.Num(args, "timeoutSeconds", "timeout") is { } t && t > 0 ? t : 3600;
         var results = await runtime.WaitAsync(context.AgentId, ids, yieldSlot: true, TimeSpan.FromSeconds(seconds), ct).ConfigureAwait(false);
@@ -525,7 +555,7 @@ internal sealed class AgentWaitTool(IPluginContext plugin) : AgentToolBase(plugi
             ? $"{results.Count} agent{(results.Count == 1 ? "" : "s")} finished."
             : $"{results.Count - running} of {results.Count} agents finished; {running} still running (the wait timed out or a new message arrived).");
         foreach (var a in results) sb.Append("\n\n").Append(Report(a));
-        if (unknown.Count > 0) sb.Append("\n\nUnknown agent(s): ").Append(string.Join(", ", unknown));
+        if (problems.Count > 0) sb.Append("\n\nUnknown or out-of-reach agent(s): ").Append(string.Join(", ", problems));
         var arr = new JsonArray();
         foreach (var a in results) arr.Add(Details(a));
         return ToolResult.Ok(sb.ToString(), new JsonObject { ["agents"] = arr });
@@ -540,7 +570,7 @@ internal sealed class AgentSendTool(IPluginContext plugin) : AgentToolBase(plugi
     {
         Name = "agent_send",
         Label = "Message agent",
-        Description = "Send a message to another agent: your parent (to=\"parent\"), one of your subagents (id or name), or any agent id. It arrives as a notice; an idle agent is woken up. mode \"steer\" (default) delivers it at the agent's next step, \"queue\" after its current run.",
+        Description = "Send a message to another agent: your parent (to=\"parent\"), or one of your subagents (id or name). It arrives as a notice; an idle agent is woken up. mode \"steer\" (default) delivers it at the agent's next step, \"queue\" after its current run. Only your own tree is reachable — agents of other chats are not.",
         Category = "agents",
         SummaryArg = "to",
         Parameters = Schema(new JsonObject
@@ -568,8 +598,10 @@ internal sealed class AgentSendTool(IPluginContext plugin) : AgentToolBase(plugi
         }
         else
         {
-            target = Resolve(runtime, context.AgentId, to);
-            if (target is null) return ToolResult.Error($"Unknown agent '{to}'. Use agent with action list to see agents.");
+            target = Resolve(runtime, context.AgentId, to, out var refusal);
+            if (target is null) return ToolResult.Error(refusal is null
+                ? $"Unknown agent '{to}'. Use agent with action list to see agents."
+                : $"Agent '{to}': {refusal}");
         }
         if (target.Id == context.AgentId) return ToolResult.Error("You cannot message yourself.");
 
@@ -636,15 +668,17 @@ internal sealed class AgentResultTool(IPluginContext plugin) : AgentToolBase(plu
         ReadOnly = true,
         Category = "agents",
         SummaryArg = "id",
-        Parameters = Schema(new JsonObject { ["id"] = Prop("string", "Agent id or name.") }, "id"),
+        Parameters = Schema(new JsonObject { ["id"] = Prop("string", "Id or name of one of your subagents.") }, "id"),
     };
 
     protected override Task<ToolResult> RunAsync(IAgentRuntime runtime, ToolContext context, JsonElement args, CancellationToken ct)
     {
         var id = ToolArgs.Str(args, "id", "agentId", "agent", "name");
         if (string.IsNullOrWhiteSpace(id)) return Task.FromResult(ToolResult.Error("Missing 'id'."));
-        var a = Resolve(runtime, context.AgentId, id);
-        if (a is null) return Task.FromResult(ToolResult.Error($"Unknown agent '{id}'. Use agent with action list to see agents."));
+        var a = Resolve(runtime, context.AgentId, id, out var refusal);
+        if (a is null) return Task.FromResult(ToolResult.Error(refusal is null
+            ? $"Unknown agent '{id}'. Use agent with action list to see agents."
+            : $"Agent '{id}': {refusal}"));
         var text = Report(a);
         if (IsBusy(a.Status) && !string.IsNullOrWhiteSpace(a.Result))
             text += "\n\nLast report of a previous run:\n" + Truncate(a.Result.Trim(), ReportChars, $"See session {a.SessionId}.");
@@ -670,8 +704,16 @@ internal sealed class AgentCancelTool(IPluginContext plugin) : AgentToolBase(plu
     {
         var id = ToolArgs.Str(args, "id", "agentId", "agent", "name");
         if (string.IsNullOrWhiteSpace(id)) return ToolResult.Error("Missing 'id'.");
-        var a = Resolve(runtime, context.AgentId, id);
-        if (a is null) return ToolResult.Error($"Unknown agent '{id}'. Use agent with action list to see agents.");
+        var a = Resolve(runtime, context.AgentId, id, out var refusal);
+        if (a is null)
+        {
+            // the id of your own or one of your parent agents gets its own message (it is not "foreign")
+            for (var cur = runtime.Get(context.AgentId); cur is not null; cur = cur.ParentAgentId is { } p ? runtime.Get(p) : null)
+                if (cur.Id == id) return ToolResult.Error("You cannot cancel yourself or one of your parent agents.");
+            return ToolResult.Error(refusal is null
+                ? $"Unknown agent '{id}'. Use agent with action list to see agents."
+                : $"Agent '{id}': {refusal}");
+        }
         for (var cur = runtime.Get(context.AgentId); cur is not null; cur = cur.ParentAgentId is { } p ? runtime.Get(p) : null)
             if (cur.Id == a.Id) return ToolResult.Error("You cannot cancel yourself or one of your parent agents.");
         if (!IsBusy(a.Status)) return ToolResult.Ok($"{a.Name} ({a.Id}) is not running (status {Status(a.Status)}).", Details(a));

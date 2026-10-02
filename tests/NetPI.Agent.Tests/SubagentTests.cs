@@ -23,6 +23,7 @@ public static class SubagentTests
         t.Add("subagents: a batch with a bad entry starts none of them", BatchRefused);
         t.Add("subagents: agent_wait without ids also returns a report that arrived while the parent was busy, once", ReportBeforeWait);
         t.Add("subagents: a wait racing a child's finish still drops the agent-result notice", RacedWaitDropsNotice);
+        t.Add("subagents: cancel/send/wait/result are scoped to the caller's own tree (two sessions)", ForeignTreeScope);
     }
 
     /// <summary>
@@ -686,5 +687,80 @@ public static class SubagentTests
         Check.Contains(cancelOutput, "Cancelled slowpoke");
         var child = h.Runtime.List().Single(a => a.IsSubagent);
         Check.Equal(AgentStatus.Cancelled, child.Status);
+    }
+
+    /// <summary>
+    /// idea-pibext: two chats spawn subagents with the same name. Every action of one chat's agent (cancel, wait,
+    /// result, send) is refused against the other chat's subagent — by id and by name — and does not touch it,
+    /// while actions on its own subagent keep working.
+    /// </summary>
+    private static async Task ForeignTreeScope()
+    {
+        await using var h = await TestHost.StartAsync();
+        h.Catalog.Cached.Single(m => m.Ref == "fake/local").Concurrency = 4; // both parents and both children at once
+        var aGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var a = h.NewSession(title: "A");
+        var b = h.NewSession(title: "B");
+        string? aChildId = null, bChildId = null;
+        h.Catalog.Handler = (r, ct) =>
+        {
+            if (IsChild(r))
+                return Reply.LastUser(r).Contains("A") ? Reply.Text("A report", c => aGate.Task.WaitAsync(c))
+                                                      : Reply.Text("B report", c => bGate.Task.WaitAsync(c));
+            if (r.SessionId == b.Id)
+                return Reply.HasToolResult(r) ? Reply.Text("B done") : Reply.Tool("agent_spawn", new { task = "job B", name = "worker", background = true });
+            if (Reply.LastUser(r).Contains("attack"))
+            {
+                // one 'agent' tool result per step, in the order scripted below
+                var done = r.Messages.Count(m => m.Role == MessageRole.Tool && m.ToolResults.Any(x => x.Name == "agent"));
+                return done switch
+                {
+                    0 => Reply.Tool("agent", new { action = "cancel", id = bChildId }),
+                    1 => Reply.Tool("agent", new { action = "wait", ids = new[] { bChildId } }),
+                    2 => Reply.Tool("agent", new { action = "result", id = bChildId }),
+                    3 => Reply.Tool("agent", new { action = "send", to = bChildId, message = "stop" }),
+                    4 => Reply.Tool("agent", new { action = "cancel", id = aChildId }),
+                    5 => Reply.Tool("agent", new { action = "result", id = "worker" }), // by name: A's own worker, not B's
+                    _ => Reply.Text("A done"),
+                };
+            }
+            return Reply.HasToolResult(r) ? Reply.Text("A spawned") : Reply.Tool("agent_spawn", new { task = "job A", name = "worker", background = true });
+        };
+        await h.SendAsync(a.Id, "go");
+        await h.SendAsync(b.Id, "go");
+        await Wait.Until(() =>
+        {
+            var pa = h.Runtime.GetBySession(a.Id)!;
+            var pb = h.Runtime.GetBySession(b.Id)!;
+            aChildId ??= h.Runtime.List(true).FirstOrDefault(x => x.ParentAgentId == pa.Id)?.Id;
+            bChildId ??= h.Runtime.List(true).FirstOrDefault(x => x.ParentAgentId == pb.Id)?.Id;
+            return aChildId is not null && bChildId is not null;
+        }, "both subagents spawned");
+        await Wait.Until(() => h.Runtime.Get(aChildId)!.Status == AgentStatus.Running && h.Runtime.Get(bChildId)!.Status == AgentStatus.Running,
+            "both subagents running");
+        var bChild = h.Runtime.Get(bChildId)!;
+        await h.IdleAsync(a.Id);
+        await h.IdleAsync(b.Id);
+
+        await h.SendAsync(a.Id, "attack");
+        await h.IdleAsync(a.Id, 20_000);
+
+        var agentResults = h.Messages(a.Id).Where(m => m.Role == MessageRole.Tool).SelectMany(m => m.ToolResults).Where(x => x.Name == "agent").ToList();
+        Check.Equal(6, agentResults.Count, "the scripted cross-chat actions, in order");
+        var (cancelF, waitF, resultF, sendF, cancelOwn, resultOwn) = (agentResults[0], agentResults[1], agentResults[2], agentResults[3], agentResults[4], agentResults[5]);
+        foreach (var r in new[] { cancelF, waitF, resultF, sendF })
+        {
+            Check.True(r.IsError, r.Content);
+            Check.Contains(r.Content, "not one of your subagents", "the refusal names the scope, not just 'unknown'");
+        }
+        Check.Contains(waitF.Content, "Unknown or out-of-reach agent(s)", "a wait on a foreign id is refused, not a 3600 s wait");
+        Check.False(cancelOwn.IsError, cancelOwn.Content);
+        Check.Contains(cancelOwn.Content, "Cancelled");
+        Check.False(resultOwn.IsError, resultOwn.Content);
+        Check.Contains(resultOwn.Content, aChildId!, "by name, A's own worker — B's identically named one never matches");
+        Check.Equal(AgentStatus.Running, h.Runtime.Get(bChildId)!.Status, "B's child is untouched");
+        Check.False(h.Messages(bChild.SessionId).Any(m => m.Text.Contains("stop")), "no message reached B's child");
+        Check.Equal(AgentStatus.Cancelled, h.Runtime.Get(aChildId)!.Status);
     }
 }
