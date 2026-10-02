@@ -20,6 +20,8 @@ public static class IdeasCommitTests
         public bool Reachable { get; set; } = true;
         /// <summary>Every range the plugin asked for, oldest first — that is how a gap (or its absence) is seen.</summary>
         public List<(string? Since, string? Until)> Asked { get; } = [];
+        /// <summary>Every history read: what it was asked with (a null entry: the caller carried it not).</summary>
+        public List<(string? Cwd, string? GitDir, string? CommonDir)> Roots { get; } = [];
         public Func<(string? Since, string? Until, int Limit), (IReadOnlyList<(string, string)> Commits, bool Reachable)>? Answer { get; set; }
 
         public (IReadOnlyList<(string, string)> Commits, bool Reachable) Read(string? since, string? until, int limit)
@@ -70,6 +72,7 @@ public static class IdeasCommitTests
             Ctx.RpcFake.Register("files.commits", (req, _) =>
             {
                 if (req.Str("hash") is { } patchHash) return Task.FromResult<object?>(new JsonObject { ["hash"] = patchHash, ["patch"] = "diff --git a/fix b/fix\n+scripted completed implementation", ["truncated"] = false });
+                Repo.Roots.Add((req.Str("cwd"), req.Str("gitDir"), req.Str("commonDir")));
                 var (commits, reachable) = Repo.Read(req.Str("since"), req.Str("until"), req.Int("limit") ?? 20);
                 var list = new JsonArray();
                 foreach (var (hash, subject) in commits)
@@ -529,6 +532,69 @@ public static class IdeasCommitTests
             Check.Equal(0, await env.Cards(), "but it is not an offer");
             env.Ctx.Unload();
         });
+
+        r.Add("ideas commits: a sweep passes back the git directories it was answered with, so only git log runs", async () =>
+        {
+            var env = new Env();
+            await env.StartAsync();
+            await WaitAsked(env, 2, "the start's probe and sweep");
+
+            var (probeCwd, probeGit, probeCommon) = env.Repo.Roots[0];
+            Check.Equal(env.Project.Path, probeCwd, "the first contact asks from the project path");
+            Check.Equal(null, probeGit, "and carries no git directory it has not been told");
+            Check.Equal(null, probeCommon);
+
+            var (sweepCwd, sweepGit, sweepCommon) = env.Repo.Roots[1];
+            Check.Equal(env.Repo.Path, sweepCwd, "the sweep asks from the repository it was answered with");
+            Check.Equal(env.Repo.GitDir, sweepGit, "and carries the git directory, so the rev-parses do not run again");
+            Check.Equal(env.Repo.GitDir, sweepCommon, "and the common one");
+            env.Ctx.Unload();
+        });
+
+        r.Add("ideas commits: an unchanged repository skips the periodic sweep until a ref moves", async () =>
+        {
+            var env = new Env();
+            // The git directory the fake repository stands in for: what the periodic check marks (the HEAD, the refs
+            // directory, the packed refs) are real files here, so an unchanged repository really is unchanged.
+            var gitDir = env.Repo.GitDir;
+            Directory.CreateDirectory(Path.Combine(gitDir, "refs", "heads"));
+            File.WriteAllText(Path.Combine(gitDir, "HEAD"), "ref: refs/heads/main\n");
+            File.WriteAllText(Path.Combine(gitDir, "packed-refs"), string.Empty);
+            var refFile = Path.Combine(gitDir, "refs", "heads", "main");
+            File.WriteAllText(refFile, "1" + new string('0', 39) + "\n");
+
+            await env.StartAsync();
+            await WaitAsked(env, 2, "the start's probe and sweep");
+
+            var idea = await env.AddIdea("Skipped while it sits", "A plan long enough for the done question to see it in full.");
+            env.Ctx.RpcFake.Register("decide.decision", (req, _) =>
+            {
+                env.Decisions++;
+                var labels = req.Params.GetProperty("branches")[0].GetProperty("labels").EnumerateArray().Select(e => e.GetString() ?? "").ToList();
+                if (labels is ["DONE", "MORE"]) return Task.FromResult<object?>(Answer(new() { ["DONE"] = 0.2, ["MORE"] = 0.8 }));
+                return Task.FromResult<object?>(Answer(new() { [labels[0]!] = 0.95, [labels[^1]!] = 0.03 }));
+            });
+            env.Repo.Commit($"implement {idea}");   // in the fake repository: nothing on disk moves
+
+            env.Ctx.Bus.Publish(new BusEvent { Type = EventTypes.AgentStatus, Data = new JsonObject { ["agent"] = new JsonObject { ["status"] = "idle" } } });
+            await WaitLog(env, "the sweep is skipped");
+            Check.Equal(2, env.Repo.Roots.Count, "an unchanged repository is not re-read");
+            Check.Equal(0, env.Decisions, "nothing was decided");
+            Check.Equal(0, (await env.CommitsOn(idea)).Count, "and nothing was linked");
+            Check.Equal(null, env.Cursor, "the cursor did not move");
+
+            // A commit moves a ref: git writes a fresh file and renames it over the old one, so the refs
+            // directory's mark moves.
+            var fresh = Path.Combine(gitDir, "refs", "heads", "main.fresh");
+            File.WriteAllText(fresh, "2" + new string('1', 39) + "\n");
+            File.Move(fresh, refFile, overwrite: true);
+            env.Ctx.Bus.Publish(new BusEvent { Type = EventTypes.AgentStatus, Data = new JsonObject { ["agent"] = new JsonObject { ["status"] = "idle" } } });
+            await WaitCursor(env);
+            Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "a moved ref wakes the sweep");
+            Check.Equal(1, (await env.CommitsOn(idea)).Count, "and the commit is linked");
+            Check.Equal(0, await env.Cards(), "but not offered: the commits do not finish it");
+            env.Ctx.Unload();
+        });
     }
 
     private static JsonObject Answer(Dictionary<string, double> probs)
@@ -536,5 +602,36 @@ public static class IdeasCommitTests
         var answer = new JsonObject();
         foreach (var (k, v) in probs) answer[k] = v;
         return new JsonObject { ["branches"] = new JsonArray(new JsonObject { ["id"] = "pick", ["probabilities"] = answer }) };
+    }
+
+    /// <summary>The start sweeps in the background; these waits are the test's way in.</summary>
+    private static async Task WaitAsked(Env env, int count, string what, int ms = 5000)
+    {
+        for (var waited = 0; waited < ms; waited += 25)
+        {
+            if (env.Repo.Asked.Count >= count) return;
+            await Task.Delay(25);
+        }
+        Check.True(false, $"{env.Repo.Asked.Count} of {count} files.commits reads within {ms} ms ({what})");
+    }
+
+    private static async Task WaitLog(Env env, string text, int ms = 5000)
+    {
+        for (var waited = 0; waited < ms; waited += 25)
+        {
+            if (env.Ctx.Log.Lines.Any(l => l.Contains(text))) return;
+            await Task.Delay(25);
+        }
+        Check.True(false, $"no log line with \"{text}\" within {ms} ms");
+    }
+
+    private static async Task WaitCursor(Env env, int ms = 5000)
+    {
+        for (var waited = 0; waited < ms; waited += 25)
+        {
+            if (env.Cursor is not null) return;
+            await Task.Delay(25);
+        }
+        Check.True(false, $"the cursor did not move within {ms} ms");
     }
 }

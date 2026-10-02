@@ -69,16 +69,35 @@ internal static class GitStatus
     /// branch that no longer contains it, a repository that was replaced — the answer is an empty list with
     /// <see cref="CommitsResult.Reachable"/> false, so a caller that remembers a cursor learns it has to re-anchor
     /// instead of waiting forever for commits that will never be named again.
+    /// <para>
+    /// When <paramref name="gitDir"/> and <paramref name="commonDir"/> are given (and the git directory still exists),
+    /// the repository is the one <paramref name="root"/> is in and only the <c>git log</c> runs: the caller (the ideas
+    /// sweep) reuses the directories its first read was answered with, and the three rev-parses do not run again.
+    /// </para>
     /// </summary>
-    public static async Task<CommitsResult?> CommitsAsync(string root, string? since, string? until, int limit, CancellationToken ct)
+    public static Task<CommitsResult?> CommitsAsync(string root, string? since, string? until, int limit, CancellationToken ct)
+        => CommitsAsync(root, since, until, limit, null, null, ct);
+
+    public static async Task<CommitsResult?> CommitsAsync(string root, string? since, string? until, int limit,
+        string? gitDir, string? commonDir, CancellationToken ct)
     {
-        var top = (await GitAsync(root, ct, 64 * 1024, "rev-parse", "--show-toplevel").ConfigureAwait(false))?.Text?.Trim();
-        if (string.IsNullOrEmpty(top)) return null;
-        var repo = Path.GetFullPath(top);
-        // In a worktree .git is a file: the directory that holds this worktree's HEAD, and the one that holds the refs.
-        var gitDir = Path.GetFullPath((await GitAsync(repo, ct, 64 * 1024, "rev-parse", "--absolute-git-dir").ConfigureAwait(false))?.Text?.Trim() ?? Path.Combine(repo, ".git"));
-        var common = (await GitAsync(repo, ct, 64 * 1024, "rev-parse", "--path-format=absolute", "--git-common-dir").ConfigureAwait(false))?.Text?.Trim();
-        var commonDir = string.IsNullOrEmpty(common) ? gitDir : Path.GetFullPath(common);
+        string repo;
+        if (gitDir is { Length: > 0 } known && Directory.Exists(known))
+        {
+            repo = Path.GetFullPath(root);
+            gitDir = Path.GetFullPath(known);
+            commonDir = commonDir is { Length: > 0 } ? Path.GetFullPath(commonDir) : gitDir;
+        }
+        else
+        {
+            var top = (await GitAsync(root, ct, 64 * 1024, "rev-parse", "--show-toplevel").ConfigureAwait(false))?.Text?.Trim();
+            if (string.IsNullOrEmpty(top)) return null;
+            repo = Path.GetFullPath(top);
+            // In a worktree .git is a file: the directory that holds this worktree's HEAD, and the one that holds the refs.
+            gitDir = Path.GetFullPath((await GitAsync(repo, ct, 64 * 1024, "rev-parse", "--absolute-git-dir").ConfigureAwait(false))?.Text?.Trim() ?? Path.Combine(repo, ".git"));
+            var common = (await GitAsync(repo, ct, 64 * 1024, "rev-parse", "--path-format=absolute", "--git-common-dir").ConfigureAwait(false))?.Text?.Trim();
+            commonDir = string.IsNullOrEmpty(common) ? gitDir : Path.GetFullPath(common);
+        }
         var format = $"--format=%H{Field}%h{Field}%an{Field}%aI{Field}%s";
         var lower = Hash(since);
         var upper = Hash(until) ?? "HEAD";

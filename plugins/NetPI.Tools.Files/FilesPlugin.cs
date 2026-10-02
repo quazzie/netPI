@@ -80,7 +80,7 @@ public sealed class FilesPlugin : INetPiPlugin
         var history = new GitHistory(context);
         context.Services.Register<IGitHistory>(history);
         context.Rpc.RegisterReadOnly("files.commits", async (req, token) => await history.ReadAsync(NetPiJson.ToNode(req.Params) as System.Text.Json.Nodes.JsonObject ?? new(), token).ConfigureAwait(false),
-            "Repository history: { sessionId?, cwd?, since?, until?, limit? } → { repo, gitDir, commonDir, reachable, commits } | null");
+            "Repository history: { sessionId?, cwd?, gitDir?, commonDir?, since?, until?, limit? } → { repo, gitDir, commonDir, reachable, commits } | null (gitDir/commonDir, when given, are reused instead of re-resolved: only the git log runs)");
 
         // Left-panel file tree of the active session's workspace.
         context.Ui.AddTab(new UiTabInfo { Id = "files", Title = "Files", Panel = UiPanel.Left, Icon = "files", Order = 30, Module = "ui.js" });
@@ -97,7 +97,8 @@ public sealed class FilesPlugin : INetPiPlugin
             var since = req.Str("since");
             var until = req.Str("until");
             var limit = Math.Clamp(req.Int("limit") ?? 20, 1, 200);
-            return NetPiJson.ToNode(await GitStatus.CommitsAsync(ResolveRoot(context, req), since, until, limit, token).ConfigureAwait(false)) as System.Text.Json.Nodes.JsonObject;
+            return NetPiJson.ToNode(await GitStatus.CommitsAsync(ResolveRoot(context, req), since, until, limit,
+                req.Str("gitDir"), req.Str("commonDir"), token).ConfigureAwait(false)) as System.Text.Json.Nodes.JsonObject;
         }
     }
 
