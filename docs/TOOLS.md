@@ -198,8 +198,11 @@ parse `details.diff` for both `edit` and `write`.
   - **files**: one path per line.
   - **count**: `rel/path: N`.
 - The output is capped at `maxResults` (matching lines in content mode, files in the other modes) and 50KB, with the notice
-  `[Results truncated at 200 matches. …]`.
+  `[Results truncated at 200 matches. …]`. When the cap stops the scan early, `filesSearched` counts the files actually
+  searched, not the candidates that were left unexamined.
 - Binary files and files over 32MB are skipped. That is only reported when it could explain a missing result.
+- Searches share one work pool: however many agents grep at once, the file searches in flight stay the size of one
+  search, so concurrent greps divide the machine instead of stacking on it.
 
 ```ts
 details: { pattern, path /* absolute search root */, outputMode, matches: number, files: number,
