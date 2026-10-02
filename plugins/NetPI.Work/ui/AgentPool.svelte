@@ -54,7 +54,16 @@
     title="{agent ? `Agent ${pool.key} on ${pool.model}` : pool.key} — {pool.busy}/{pool.capacity} busy{pool.queued ? `, ${pool.queued} queued` : ''}{pool.use ? `\n${pool.use}` : ''}"
   >
     <StatusDot status={look.dot} />
-    <span class="key np-mono np-grow"><b>{name}</b></span>
+    {#if agent}
+      <button
+        class="key np-mono np-grow"
+        title="Open in Settings → Agents"
+        onclick={() => ctx.app.openSettings?.('agents', pool.key)}
+        ><b>{name}</b></button
+      >
+    {:else}
+      <span class="key np-mono np-grow"><b>{name}</b></span>
+    {/if}
     <span class="st" data-tone={look.tone}>{look.chip}</span>
     {#if agent}
       <input
@@ -112,6 +121,18 @@
   .key {
     font-size: 12px;
     color: var(--fg);
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    text-align: left;
+    cursor: default;
+  }
+  button.key {
+    cursor: pointer;
+  }
+  button.key:hover {
+    text-decoration: underline;
   }
   .key b {
     font-weight: 600;

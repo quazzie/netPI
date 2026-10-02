@@ -623,7 +623,18 @@ const handlers = {
     agents: agentPools(),
     physicalOwners: [{ resource: 'local:aiproxy/qwen3.8-27b', key: 'qwen', holder: { leaseId: 'mock-retiring', agentId: 'old-run', label: 'Reloaded worker', since: new Date(Date.now() - 30_000).toISOString(), executorGeneration: 'previous', correlationId: 'mock-held-call', purpose: 'agent', retiring: true, cancellationRequestedAt: new Date().toISOString(), providerReturnedAt: null } }],
     resources: [{ key: 'local:aiproxy/qwen3.8-27b', model: 'aiproxy/qwen3.8-27b', capacity: 2, busy: 2, queued: 1, available: true, owners: [] }],
-    ideasWork: [{ id: 'mock-verifier-dropped', purpose: 'Verify idea completion', model: 'aiproxy/qwen3.8-27b', status: 'dropped', reason: 'Model capacity did not open before the deadline', finishedAt: new Date().toISOString() }],
+    // eleven background checks in run order (oldest first): the Work tab keeps the last 10, so mock-check-01 never shows
+    ideasWork: [
+      ...Array.from({ length: 10 }, (_, k) => ({
+        id: `mock-check-${String(k + 1).padStart(2, '0')}`,
+        purpose: `Mock check ${k + 1}`,
+        model: 'aiproxy/qwen3.8-27b',
+        status: 'finished',
+        reason: null,
+        finishedAt: new Date(Date.now() - (11 - k) * 60_000).toISOString(),
+      })),
+      { id: 'mock-verifier-dropped', purpose: 'Verify idea completion', model: 'aiproxy/qwen3.8-27b', status: 'dropped', reason: 'Model capacity did not open before the deadline', finishedAt: new Date().toISOString() },
+    ],
     runs: [...store.agents.values()],
     processes: work.procList(),
     usage: { ...work.usageSummary(), budget: budgetStatus(), models: MOCK_SPEND },

@@ -290,7 +290,8 @@ export function mount(el, ctx) {
     newSession(opts?: { projectId?: string }): Promise<void>,
     insertText(text: string): void,              // into the composer
     openTab(tabKey: string): void,               // "pluginId/tabId"
-    openSettings(page?: string): void,           // the settings dialog, on a page ("agents", "profiles", …)
+    openSettings(page?: string, target?: string): void, // the settings dialog, on a page ("agents", "profiles", …);
+    // a target names an item on the page: "agents" + an agent id opens that agent's dialog
     toast(text: string, level?: 'info'|'warn'|'error'): void,
   }
 }

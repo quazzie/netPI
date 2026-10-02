@@ -483,19 +483,22 @@ Per-tab narrow layouts:
 Each one is a Svelte module in `plugins/<P>/ui/`, built by `build:plugins` like any other plugin tab. Bundle
 sizes (minified; Svelte runtime and kit included): Work 88KB, Ideas 90KB, Diagnostics 99KB, Files 67KB.
 
-**Work** (`netpi.work`, right). One `work.snapshot` feeds four collapsible sections, each with a count. The
+**Work** (`netpi.work`, right). One `work.snapshot` feeds five collapsible sections, each with a count. The
 open or closed state of each section is remembered (`storageKey`).
 
 - A summary line shows active runs, busy instances (+ queued), running processes and today's tokens.
 - **Agents** (`AgentPool`): every agent the user set up, always: a state dot and pill (`ready` `busy` `full` `queued`
   `not loaded` `off`), the model, an on/off switch (`agents.setEnabled`), why an inactive one can't take work, capacity
   pips (a bar when over 8) with `busy/instances`, and the runs on it and the ones waiting, with elapsed time (clicking
-  one opens its session). Model calls without an agent follow under "Other model calls" while they run. Without agents:
-  "No agents set up" and a link to the settings (`ctx.app.openSettings('agents')`).
+  one opens its session). The agent's name is a button that opens Settings → Agents on that agent's dialog
+  (`ctx.app.openSettings('agents', <id>)`). Model calls without an agent follow under "Other model calls" while they
+  run. Without agents: "No agents set up" and a link to the settings (`ctx.app.openSettings('agents')`).
 - **Runs:** the active runs as a tree (subagents nest under their parent). Each row shows a status dot,
   activity, elapsed time, the session title (or the task, for a subagent) and a one-line meta: model · turns ·
   tools · tokens · agent. Clicking a row opens the session, and the stop button calls `agent.abort { sessionId }`.
   Finished runs are listed below under **Recent** (result or error, TimeAgo), with **Show all** past 6.
+- **Idea checks:** the background idea checks the Ideas plugin runs (the save check, recall, the verifier, the commit
+  sweep) — purpose and status, the reason or model under it. The last 10, newest first; the server keeps the last 40.
 - **Processes:** running processes first, then **Recent**. Expanding a row fetches `processes.output` (tail
   300 lines) and appends live `process.output` chunks. It falls back to polling every 2s when no chunk has
   arrived for 3s, and fetches once more on `process.exited`. The kill button is a two-step `ConfirmButton`

@@ -11,7 +11,7 @@
   import { RESERVED, createAgent } from '../../lib/agents.js';
   import { usd } from '../../lib/format.js';
 
-  let { doc } = $props();
+  let { doc, open = null } = $props();
 
   const configured = $derived(
     Object.entries(doc?.agents ?? {}).filter(([id, v]) => !RESERVED.has(id) && v && typeof v === 'object' && typeof v.model === 'string'),
@@ -19,6 +19,15 @@
   const infoOf = (id) => app.slots.find((p) => p.configured && p.key === id) ?? null;
 
   let openId = $state(null);
+  // open: the agent to open on (the Work tab jumps here) — its dialog opens once the document has loaded;
+  // consumed so a closed dialog is not reopened by a later document change
+  let consumed = $state(false);
+  $effect(() => {
+    if (open && !consumed && !openId && doc?.agents?.[open]) {
+      consumed = true;
+      openId = open;
+    }
+  });
   let addBtn = $state();
   let adding = $state(false);
 

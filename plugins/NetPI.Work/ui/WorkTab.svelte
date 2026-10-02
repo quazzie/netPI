@@ -11,9 +11,6 @@
   let { ctx } = $props();
 
   let slots = $state.raw(null); // the agents with their instances (agents.list)
-  let resources = $state.raw(null);
-  let physicalOwners = $state.raw(null);
-  let ownerCall = $state(null);
   let ideasWork = $state.raw(null);
   let disposed = false;
   let agents = $state.raw(null);
@@ -41,8 +38,6 @@
         const s = await ctx.rpc('work.snapshot');
         if (disposed) return;
         slots = s?.agents ?? null;
-        resources = s?.resources ?? null;
-        physicalOwners = s?.physicalOwners ?? null;
         ideasWork = s?.ideasWork ?? null;
         agents = s?.runs ?? null;
         processes = s?.processes ?? null;
@@ -69,13 +64,6 @@
     }
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(refresh, ms);
-  }
-
-  async function inspectOwner(owner) {
-    try {
-      const call = await ctx.rpc('diag.call', { correlationId: owner.correlationId });
-      if (!disposed) ownerCall = `${call.model} · ${call.state} · ${call.durationMs} ms${call.error ? ` · ${call.error}` : ''}`;
-    } catch (e) { if (!disposed) ownerCall = e?.message ?? String(e); }
   }
 
   async function loadTitles() {
@@ -108,7 +96,6 @@
       ctx.on('agents.changed', (d) => {
         if (!visible) return void (dirty = true);
         if (Array.isArray(d?.agents)) slots = d.agents;
-        if (Array.isArray(d?.resources)) resources = d.resources;
       }),
       ctx.on('resources.changed', () => scheduleRefresh()),
       ctx.on('resources.released', () => scheduleRefresh()),
@@ -204,33 +191,6 @@
     <Empty><span class="np-spinner"></span></Empty>
   {:else}
     <!-- ---------------------------------------------------------------- agents (the ones the user set up) -->
-    <Section title="Model capacity" count={resources?.length || null} collapsible storageKey="work.resources">
-      {#each resources ?? [] as r (r.key)}
-        <div class="usage" data-resource={r.key}>
-          <div class="np-line"><span class="np-grow np-mono">{r.model ?? r.key}</span><b>{r.busy}/{r.capacity}</b></div>
-          <div class="na">{r.queued || 0} waiting{r.available === false ? ` · ${r.unavailable ?? 'unavailable'}` : ''}</div>
-          {#each r.owners ?? [] as owner}
-            <button class="link" onclick={() => owner.sessionId && ctx.app.openSession(owner.sessionId)}>{titles.get(owner.sessionId) ?? owner.label ?? owner.agentId}</button>
-          {/each}
-        </div>
-      {:else}<div class="na">{resources ? 'No model calls' : 'Capacity unavailable'}</div>{/each}
-    </Section>
-    {#if physicalOwners?.length}
-      <Section title="Physical owners" count={physicalOwners.length} collapsible storageKey="work.owners">
-        {#each physicalOwners as entry (entry.holder.leaseId)}
-          {@const owner = entry.holder}
-          <div class="usage" data-lease={owner.leaseId}>
-            <button class="link" onclick={() => owner.sessionId && ctx.app.openSession(owner.sessionId)}>{titles.get(owner.sessionId) ?? owner.label ?? owner.agentId}</button>
-            <div class="na">{entry.resource.replace(/^local:/, '')} · held since {new Date(owner.since).toLocaleTimeString()}</div>
-            <div class="na">{owner.retiring ? 'Retiring executor · ' : ''}{owner.cancellationRequestedAt && !owner.providerReturnedAt ? 'Cancellation requested; waiting for provider' : owner.providerReturnedAt ? 'Provider returned; run still owns capacity' : owner.correlationId ? 'Inference active' : 'Run owns capacity'}</div>
-            {#if owner.correlationId && ctx.hasRpc?.('diag.call') !== false}
-              <button class="link" onclick={() => inspectOwner(owner)}>Inspect model call</button>
-            {/if}
-          </div>
-        {/each}
-        {#if ownerCall}<div class="na" role="status">{ownerCall}</div>{/if}
-      </Section>
-    {/if}
     <Section title="Agents" count={setUp.length ? `${busySlots}/${activeCapacity} instances` : null} collapsible storageKey="work.agentSlots">
       {#if !slots}
         <div class="na">Agents not available{errors.agents ? ` — ${errors.agents}` : ''}</div>
@@ -277,7 +237,7 @@
     </Section>
 
     <Section title="Idea checks" count={ideasWork?.filter((w) => !w.finishedAt).length || null} collapsible storageKey="work.ideas">
-      {#each (ideasWork ?? []).toReversed() as work (work.id)}
+      {#each (ideasWork ?? []).toReversed().slice(0, 10) as work (work.id)}
         <div class="usage" data-background-work={work.id}><div class="np-line"><span class="np-grow">{work.purpose}</span><span>{work.status}</span></div>
           <div class="na">{work.reason ?? work.model ?? ''}</div>
         </div>

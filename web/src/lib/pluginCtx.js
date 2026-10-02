@@ -66,8 +66,9 @@ export function createPluginCtx(tab) {
       openTab: (key) => {
         openPanelTab(key);
       },
-      openSettings: (page) => {
-        modals.settings = page || true;
+      openSettings: (page, target) => {
+        // target (an agent id, say) rides along in the page string: 'agents:<id>' opens that agent's dialog
+        modals.settings = page ? (target ? `${page}:${target}` : page) : true;
       },
       toast: (text, level = 'info') => {
         toast(text, level);

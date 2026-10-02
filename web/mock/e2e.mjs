@@ -670,14 +670,12 @@ log('plugin tab: Work');
   const nums = (await qwen.locator('.nums').innerText().catch(() => '')).replace(/\s+/g, '');
   check('work: qwen pool 2/2 busy', nums.includes('2/2'), nums);
   check('work: pool shows queued waiter', (await qwen.locator('.owner.waiting').count()) > 0);
-  const physical = page.locator('.work [data-resource="local:aiproxy/qwen3.8-27b"]');
-  check('work: physical model capacity appears once', await physical.count() === 1 && (await physical.innerText()).includes('2/2'));
+  check('work: the Model capacity and Physical owners sections are gone', (await page.locator('.work [data-resource]').count()) === 0 && (await page.locator('.work [data-lease]').count()) === 0 && (await page.locator('.work .np-section-label[title="Model capacity"]').count()) === 0 && (await page.locator('.work .np-section-label[title="Physical owners"]').count()) === 0);
   check('work: dropped background checks show their reason', (await page.locator('.work [data-background-work="mock-verifier-dropped"]').innerText()).includes('Model capacity did not open before the deadline'));
-  const retiring = page.locator('.work [data-lease="mock-retiring"]');
-  check('work: retiring inference explains pending provider cancellation', (await retiring.innerText()).includes('Retiring executor') && (await retiring.innerText()).includes('waiting for provider'));
-  await retiring.getByRole('button', { name: 'Inspect model call' }).click();
-  await page.locator('.work [role="status"]').filter({ hasText: '30000 ms' }).waitFor();
-  check('work: physical owner resolves its stable model call', (await page.locator('.work [role="status"]').innerText()).includes('running'));
+  // the mock serves eleven checks: the tab shows the last ten, newest first, and the oldest never appears
+  const rows = page.locator('.work [data-background-work]');
+  const rowIds = await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-background-work')));
+  check('work: idea checks keep the last 10 of 11, newest first', rowIds.length === 10 && rowIds[0] === 'mock-verifier-dropped' && !rowIds.includes('mock-check-01') && rowIds[1] === 'mock-check-10' && rowIds[9] === 'mock-check-02', rowIds.join(' '));
   const ownerNames = await qwen.locator('.owner .name').allInnerTexts();
   check('work: a top-level lane owner shows its session title, not "main"',
     ownerNames.includes('Index docs for semantic search') && !ownerNames.includes('main') && ownerNames.includes('surveyor'), ownerNames.join(' | '));
