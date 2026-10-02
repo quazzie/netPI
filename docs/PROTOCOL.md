@@ -158,7 +158,7 @@ interface SettingInfo { key /* dotted path */; type: 'bool'|'int'|'number'|'stri
 | `agents.setEnabled` | netpi.agents | `{ id, enabled }` → `AgentSlots[]`: switch an agent off (`agents.<id>.disabled`; runs on it finish, new ones stop with a notice) or back on |
 | `usage.summary` | netpi.agents | → `{ day, providers: { provider, inputTokens, outputTokens, cacheReadTokens, calls, budgetTokens? }[] /* today */, budget: BudgetStatus, models: { agent, provider, model, calls, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, unknownCost }[] /* this period */ }` |
 | `usage.session` | netpi.agents | `{ sessionId }` → `{ sessionId, costUsd, calls, withSubagentsUsd, withSubagentsCalls }` |
-| `budget.status` | netpi.agents | → `BudgetStatus`: `{ monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, reservedOrUnsettledUsd, interruptedEstimateUsd, unknownCostCalls, warning, exhausted }` |
+| `budget.status` | netpi.agents | → `BudgetStatus`: `{ monthlyUsd, dailyUsd, warnPercent, resetDay, onLimit, periodStart, periodEnd, spentUsd, todayUsd, reservedOrUnsettledUsd, interruptedEstimateUsd, interruptedEstimateCalls, unknownCostCalls, warning, exhausted }` |
 | `budget.allow` | netpi.agents | `{ sessionId }` → `BudgetStatus`: the chat may go over the budget until the period ends, and continues (`budget.onLimit: "ask"`) |
 | `agentsmd.list` | netpi.agentsmd | `{ sessionId }` or `{ projectId }` → `{ path, bytes, scope }[]` (instruction files for the session's working directory or the project folder; scope `global`, `project` or `extra`) |
 | `skills.list` | netpi.skills | `{ sessionId }` or `{ projectId }` → `{ skills: [{ name, description, path, scope, listed, userOnly, disabled, license?, compatibility?, allowedTools? }], problems: [{ path, level, message }] }` (the skills for the session's working directory or the project folder, in precedence order; scope `project`, `extra` or `global`; level `warning` or `error`; see [PLUGIN-SKILLS.md](PLUGIN-SKILLS.md)) |
@@ -319,8 +319,18 @@ A provider's `callId` remains display/correlation data, never an authorization i
 and fetch pending approvals; callId-only answers fail validation. `guard.closed` includes the approvalId it closes.
 
 Budget amounts include persistent reservations. `reservedOrUnsettledUsd` identifies the active/crash-left portion;
-`interruptedEstimateUsd` identifies calls whose final bill was unavailable, and `unknownCostCalls` counts unpriced
-calls. Every retry attempt gets its own ledger row. Amounts are attributed to the day the attempt started.
+`interruptedEstimateUsd` / `interruptedEstimateCalls` identify calls that were interrupted before the provider reported
+the final bill (settled from the partial usage, or estimated from what was sent and streamed) — never from the full
+reservation; `unknownCostCalls` counts unpriced calls. A failure or stop before the first byte settles at $0
+(`cost_source 'rejected'`), so a storm of 503/529s cannot lock a budget. Every retry attempt gets its own ledger row,
+and each generation of the ledger meters a call exactly once (a hot swap keeps two generations in the pipeline
+briefly; the second sees the first's mark and passes through). Amounts are attributed to the day the attempt started.
+
+Reservations are a gate, not a bill: the input is counted in tokens (not serialised bytes) at the cache-read rate —
+in an agent loop the context is re-read, and a call that misses the cache is corrected by the settlement — and the
+output is the effective maximum the provider accepts. Paid (non-local) models need the budget gate (the ledger,
+registered by the Agents plugin); the model catalog refuses a paid model while no gate is registered, so a disabled
+or failing Agents plugin fails closed instead of running paid calls un-metered.
 
 ## MCP plugin
 

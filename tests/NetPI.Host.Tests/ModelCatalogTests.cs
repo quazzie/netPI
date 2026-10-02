@@ -42,6 +42,10 @@ public static class ModelCatalogTests
         }
     }
 
+    private sealed class StubGate : IBudgetGate
+    {
+    }
+
     private static ModelInfo Model(string provider, string id, string? status = null) =>
         new() { Provider = provider, Id = id, Status = status, IsLocal = true };
 
@@ -101,6 +105,30 @@ public static class ModelCatalogTests
     public static void Register(TestRunner r)
     {
         r.Add("model messages: a notice stored while tools ran waits behind their results; unanswered calls are still closed", NoticeDuringTools);
+        r.Add("models: a paid model is refused without the budget gate; local models are not, and a gate lets it through", async () =>
+        {
+            var dir = T.TempDir("models");
+            await using var bus = new EventBus(NullLogger.Instance);
+            using var settings = new SettingsStore(Path.Combine(dir, "settings.json"), NullLogger.Instance);
+            var services = new ServiceRegistry();
+            using var catalog = new ModelCatalog(services, settings, bus, NullLogger.Instance);
+
+            var paidModel = new ModelInfo { Provider = "cloud", Id = "paid", IsLocal = false };
+            services.Register<IModelProvider>(new FakeProvider("cloud", paidModel));
+            var paid = new ModelRequest { Model = paidModel, Messages = [ChatMessage.UserText("hi")] };
+            var refused = await Check.ThrowsAsync<ModelException>(async () => { await foreach (var _ in catalog.StreamAsync(paid, CancellationToken.None)) { } },
+                "a paid model without the budget gate is refused");
+            Check.Contains(refused.Message, "budget gate");
+
+            // A local model does not need the gate.
+            var localModel = Model("fake", "local");
+            services.Register<IModelProvider>(new FakeProvider("fake", localModel));
+            await foreach (var _ in catalog.StreamAsync(new ModelRequest { Model = localModel, Messages = [ChatMessage.UserText("hi")] }, CancellationToken.None)) { }
+
+            // The gate arrives (the Agents plugin loads) and the paid model goes through.
+            services.Register<IBudgetGate>(new StubGate());
+            await foreach (var _ in catalog.StreamAsync(paid, CancellationToken.None)) { }
+        });
         r.Add("models: aggregate, find, default model, models.changed on provider registration", async () =>
         {
             var dir = T.TempDir("models");

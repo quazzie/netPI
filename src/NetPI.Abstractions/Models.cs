@@ -39,6 +39,12 @@ public sealed class ModelRequest
     public string? CorrelationId { get; init; }
     public bool CaptureDecisionContext { get; set; }
     public JsonObject? DecisionContext { get; set; }
+    /// <summary>
+    /// Bookkeeping shared by the middlewares of one call. A hot swap briefly runs two generations of the same
+    /// middleware (the old one is removed only after the new one serves); a mark here is how the second one sees
+    /// that the first already reserved, so the call is metered exactly once.
+    /// </summary>
+    public JsonObject? PipelineState { get; set; }
     public required ModelInfo Model { get; init; }
     public string? SystemPrompt { get; set; }
     public required IReadOnlyList<ChatMessage> Messages { get; set; }
@@ -114,6 +120,15 @@ public interface IModelMiddleware
 {
     int Order => 0;
     IAsyncEnumerable<ModelStreamEvent> InvokeAsync(ModelRequest request, ModelCallDelegate next, CancellationToken ct);
+}
+
+/// <summary>
+/// The budget gate: registered by the ledger (the Agents plugin) and required by the model catalog for non-local
+/// models. While no gate is registered — the Agents plugin disabled or failing — paid calls are refused, so a
+/// missing ledger can never run them un-metered.
+/// </summary>
+public interface IBudgetGate
+{
 }
 
 /// <summary>Aggregated model catalog over all registered providers (host service).</summary>

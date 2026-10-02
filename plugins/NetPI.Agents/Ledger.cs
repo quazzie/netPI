@@ -20,7 +20,7 @@ namespace NetPI.Agents;
 /// (<c>session.meta.budgetAllowedFrom</c> = the start of the period).</item>
 /// </list>
 /// </summary>
-internal sealed partial class Ledger
+internal sealed partial class Ledger : IBudgetGate
 {
     public const double CacheReadShare = 0.1;   // of the input price, when no cache price is known (Anthropic's rate)
     public const double CacheWriteShare = 1.25;
@@ -340,12 +340,18 @@ internal sealed partial class Ledger
         session.Meta?["budgetAllowedFrom"] is JsonValue v && v.TryGetValue<string>(out var s) && s == PeriodStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
     /// <summary>budget.allow: this chat may go over the budget until the period ends; subagents still stop.</summary>
-    public void Allow(string sessionId) =>
+    public void Allow(string sessionId)
+    {
+        // The period is computed OUTSIDE the session update: the update runs inside a database transaction, and
+        // nothing under the database gate may take this gate — Reserve takes them in the opposite order (ledger
+        // first, then the database), so doing it in the update wedged the two gates across threads.
+        var from = PeriodStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         _ctx.Sessions.UpdateSession(sessionId, s =>
         {
             s.Meta ??= new JsonObject();
-            s.Meta["budgetAllowedFrom"] = PeriodStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            s.Meta["budgetAllowedFrom"] = from;
         });
+    }
 
     /// <summary>$50, $12.40, $0.02, $0.0005.</summary>
     internal static string Usd(double v) => "$" + v.ToString(
@@ -364,6 +370,7 @@ internal sealed partial class Ledger
         {
             ["reservedOrUnsettledUsd"] = estimates.Reserved,
             ["interruptedEstimateUsd"] = estimates.Interrupted,
+            ["interruptedEstimateCalls"] = estimates.InterruptedCalls,
             ["unknownCostCalls"] = estimates.Unknown,
             ["monthlyUsd"] = o.MonthlyUsd,
             ["dailyUsd"] = o.DailyUsd,
