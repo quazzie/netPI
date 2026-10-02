@@ -127,7 +127,7 @@ internal sealed class IdeaAdmission(IPluginContext ctx)
                 purpose, sw.ElapsedMilliseconds, reason);
             return Admission.Dropped(reason);
         }
-        catch (AgentUnavailableException ex)
+        catch (CallRefusedException ex) when (ex.Kind == "unavailable")
         {
             if (workId is not null) work!.Set(workId, "dropped", ex.Message);
             return Admission.Dropped(ex.Message);
