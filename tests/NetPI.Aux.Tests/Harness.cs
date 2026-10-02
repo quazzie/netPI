@@ -358,6 +358,11 @@ public sealed class FakeSessionStore : ISessionStore
     public void DeleteProject(string id) => Projects.RemoveAll(p => p.Id == id);
 
     public IReadOnlyList<SessionInfo> ListSessions(SessionQuery query) => Sessions;
+    /// <summary>The exact answer, like the real store: every kind of session, no list window, archived opt-in, and the
+    /// in-memory (message-less) sessions included — they bind the same way and must count the same.</summary>
+    public IReadOnlyList<string> SessionIdsUsingWorkspace(string workspaceId, bool includeArchived = false) =>
+        Sessions.Where(s => string.Equals(s.WorkspaceId, workspaceId, StringComparison.Ordinal) && (includeArchived || !s.Archived))
+            .Select(s => s.Id).ToList();
     public SessionInfo? GetSession(string id) => Sessions.FirstOrDefault(s => s.Id == id);
     public SessionInfo CreateSession(SessionInfo template)
     {

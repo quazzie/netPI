@@ -33,6 +33,7 @@ public static class WorkspaceTests
         t.Add("workspaces: integrate verifies the branch the worktree is on, and refuses a stale record", IntegrateRefusesStaleRecord);
         t.Add("workspaces: cleanup refuses a dirty, unbound or running worktree and removes a merged one", CleanupSafety);
         t.Add("workspaces: a background process keeps its workspace busy", BackgroundProcessHoldsWorkspace);
+        t.Add("workspaces: retirement ignores an archived bound session; a live one still blocks", RetirementIgnoresArchived);
         t.Add("workspaces: the guard is per spelling: relative, absolute, .. and a symlink into another checkout", GuardSpellings);
         t.Add("workspaces: the guard reads arguments as the tools do: names, order, string-encoded arguments, an ssh download's destination", GuardArguments);
         t.Add("workspaces: ssh copy refuses a download into another checkout of the repository and allows one into the worker's own", SshDownloadRefused);
@@ -621,6 +622,41 @@ public static class WorkspaceTests
         Check.False(ok);
         Check.Contains(why!, "running process");
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// What counts as "still bound" when a worktree may be removed: a live session (any kind) blocks, an archived
+    /// one does not — it is not working in the checkout, and deleting the workspace unbinds it. The decision is
+    /// said in the refusal so it is visible (idea-2jiez8).
+    /// </summary>
+    private static async Task RetirementIgnoresArchived()
+    {
+        using var env = new Env();
+        if (!env.GitAvailable) { Skip("retirement, archived"); return; }
+        var store = env.Ctx.Services.Get<IWorkspaceStore>()!;
+        var w = env.Provision("arch", "ses_arch");
+        Check.True(w.Ok, w.Error ?? "");
+        var record = store.GetWorkspace(w.Binding!.WorkspaceId)!;
+
+        // Clean and merged: the only question left is who is bound.
+        env.Write(w.Binding!.Root, "work.txt", "work");
+        Git_(w.Binding.Root, "add", "-A");
+        Git_(w.Binding.Root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "arch work");
+        Check.True((await env.Provisioner.IntegrateAsync(record)).Ok);
+
+        // Bound and archived: not working in the worktree, so it does not block the retirement.
+        var archived = env.Session("arch", record.Id);
+        env.Ctx.SessionsFake.UpdateSession(archived.Id, s => s.Archived = true);
+        var (ok, why) = env.Provisioner.CanRetire(store.GetWorkspace(record.Id)!);
+        Check.True(ok, why ?? "an archived bound session blocked the retirement");
+
+        // Bound and live: still blocks, and the reason says archived sessions do not count.
+        var live = env.Session("live", record.Id);
+        var (ok2, why2) = env.Provisioner.CanRetire(store.GetWorkspace(record.Id)!);
+        Check.False(ok2, "a live bound session did not block the retirement");
+        Check.Contains(why2!, "still bound");
+        Check.Contains(why2, live.Id);
+        Check.Contains(why2, "Archived");
     }
 
     private static Task GuardSpellings()

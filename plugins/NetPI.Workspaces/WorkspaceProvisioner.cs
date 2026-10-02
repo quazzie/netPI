@@ -189,7 +189,8 @@ public sealed class WorkspaceProvisioner(
             return (true, null);   // already gone: nothing to delete
         var bound = SessionsUsing(workspace.Id);
         if (bound.Count > 0)
-            return (false, $"{workspace.Name} is still bound to {bound.Count} session(s): {string.Join(", ", bound)}. Unbind them first.");
+            return (false, $"{workspace.Name} is still bound to {bound.Count} live session(s): {string.Join(", ", bound)}. Unbind them first. " +
+                           "Archived sessions do not count: they are not working in the workspace, and retiring it unbinds them.");
         if (isDirectoryBusy?.Invoke(workspace.Path) == true)
             return (false, $"{workspace.Name} still has a running process working in it. Stop it first.");
         var changes = git.DescribeChanges(workspace.Path);
@@ -302,13 +303,14 @@ public sealed class WorkspaceProvisioner(
         return git.Run(repo, "merge-base", "--is-ancestor", commit, @ref) is not null;
     }
 
-    /// <summary>The sessions bound to a workspace.</summary>
+    /// <summary>
+    /// The sessions bound to a workspace, exactly: the store's indexed answer, not a page of the session list — a
+    /// bound session must not fall out of a newest-first window and let the worktree be retired under it
+    /// (idea-2jiez8). Archived sessions are not counted: they are not working in their workspace, and retiring the
+    /// workspace unbinds them (the session falls back to its project).
+    /// </summary>
     public IReadOnlyList<string> SessionsUsing(string workspaceId) =>
-        [.. ctx.Sessions.ListSessions(new SessionQuery { Limit = 5000 })
-            .Concat(ctx.Sessions.ListSessions(new SessionQuery { Limit = 5000, IncludeSubagents = true }))
-            .Where(s => string.Equals(s.WorkspaceId, workspaceId, StringComparison.Ordinal))
-            .Select(s => s.Id)
-            .Distinct(StringComparer.Ordinal)];
+        ctx.Sessions.SessionIdsUsingWorkspace(workspaceId);
 
     /// <summary>The lock that serializes integration for one repository.</summary>
     public SemaphoreSlim IntegrationLock(string repoCommonDir)

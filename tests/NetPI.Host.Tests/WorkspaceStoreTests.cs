@@ -196,6 +196,43 @@ public static class WorkspaceStoreTests
             Check.Equal(project.Path, f.Store.GetCwd(f.Store.GetSession(transient.Id)!));
         });
 
+        r.Add("workspaces: SessionIdsUsingWorkspace sees every bound session, past the list's window", async () =>
+        {
+            await using var f = new Fixture();
+            var w = Workspace(f, "wt");
+
+            // A bound session older than any of the 5000 newest sessions below: outside of every ListSessions window
+            // (the shape of the old bug — a bound session that fell off the newest-5000 page), but visible to the
+            // exact query.
+            var hidden = f.Store.CreateSession(new SessionInfo { Title = "bound", WorkspaceId = w.Id });
+            f.Store.AppendMessage(hidden.Id, ChatMessage.UserText("hi"));
+            f.Db.Execute("UPDATE sessions SET updated_at = @old WHERE id = @id", new { old = 1, id = hidden.Id });
+            for (var i = 0; i < 5000; i++)
+            {
+                var filler = f.Store.CreateSession(new SessionInfo { Title = $"filler {i}" });
+                f.Store.AppendMessage(filler.Id, ChatMessage.UserText("a"));
+            }
+            Check.False(f.Store.ListSessions(new SessionQuery { Limit = 5000 }).Any(s => s.Id == hidden.Id),
+                "the bound session is outside the newest-5000 window");
+            Check.Equal(hidden.Id, f.Store.SessionIdsUsingWorkspace(w.Id).Single(), "the exact query still sees it");
+
+            // Kinds and states: subagents count, transient (message-less) bindings count, archived sessions opt in.
+            var sub = f.Store.CreateSession(new SessionInfo { Title = "sub", Kind = "subagent", WorkspaceId = w.Id });
+            f.Store.AppendMessage(sub.Id, ChatMessage.UserText("a"));
+            var transient = f.Store.CreateSession(new SessionInfo { Title = "new", WorkspaceId = w.Id });
+            var archived = f.Store.CreateSession(new SessionInfo { Title = "arch", WorkspaceId = w.Id });
+            f.Store.AppendMessage(archived.Id, ChatMessage.UserText("a"));
+            f.Store.UpdateSession(archived.Id, x => x.Archived = true);
+
+            var live = f.Store.SessionIdsUsingWorkspace(w.Id);
+            Check.True(live.Contains(hidden.Id) && live.Contains(sub.Id) && live.Contains(transient.Id),
+                "live, subagent and transient bindings count");
+            Check.False(live.Contains(archived.Id), "an archived session is not working in its workspace");
+            Check.Equal(live.Count + 1, f.Store.SessionIdsUsingWorkspace(w.Id, includeArchived: true).Count);
+            // Nothing bound to another workspace leaks in.
+            Check.Equal(0, f.Store.SessionIdsUsingWorkspace("wsp_nope").Count);
+        });
+
         r.Add("workspaces: deleting a workspace detaches every bound session in one pass, other bindings untouched", async () =>
         {
             await using var f = new Fixture();

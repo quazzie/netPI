@@ -546,6 +546,24 @@ internal sealed class SessionStore : ISessionStore, IWorkspaceStore
     public WorkspaceInfo? GetSessionWorkspace(string sessionId) =>
         GetSession(sessionId)?.WorkspaceId is { } id && id.Length > 0 ? GetWorkspace(id) : null;
 
+    /// <summary>
+    /// The ids of the sessions bound to a workspace — every kind (chats and subagents), and the message-less (in-memory
+    /// only) ones as well: one indexed query, not a page of the session list, so a bound session cannot fall out of a
+    /// newest-first window and let its workspace be retired under it. Archived sessions are not counted by default:
+    /// they are not working in their workspace, and <see cref="DeleteWorkspace"/> unbinds them.
+    /// </summary>
+    public IReadOnlyList<string> SessionIdsUsingWorkspace(string workspaceId, bool includeArchived = false)
+    {
+        if (string.IsNullOrWhiteSpace(workspaceId)) return [];
+        var ids = _db.Query("SELECT id FROM sessions WHERE workspace_id = @id" + (includeArchived ? "" : " AND archived = 0"),
+            new { id = workspaceId }, r => r.GetString("id"));
+        lock (_transientLock)
+            foreach (var s in _transient.Values)
+                if (s.WorkspaceId == workspaceId && (includeArchived || !s.Archived))
+                    ids.Add(s.Id);
+        return ids;
+    }
+
     public void SetSessionWorkspace(string sessionId, string? workspaceId)
     {
         if (!string.IsNullOrWhiteSpace(workspaceId)) workspaceId = workspaceId.Trim();
