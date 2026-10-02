@@ -162,6 +162,8 @@ export class ChatStore {
   #endTimer = 0;
   #noticeTimer = 0;
   #loadSeq = 0;
+  #msgEvents = null; // message events that landed while a load was in flight (its page cannot have them)
+  #queueRev = 0; // bumped by every queue change, so a snapshot taken before one cannot undo it
 
   constructor(id) {
     this.id = id;
@@ -183,6 +185,11 @@ export class ChatStore {
     const seq = ++this.#loadSeq;
     this.loading = true;
     this.error = null;
+    // The answer is the page the server read when the request went out, so a message published since then is
+    // applied to the window first and that older page would drop it. Hold those events and apply them over the
+    // page (in the finally) — appending is by id, so a message that is in both stays one entry.
+    this.#msgEvents = [];
+    const qrev = this.#queueRev; // the queue snapshot below must not undo a removal made while it was in flight
     try {
       const res = await rpc('sessions.messages', { id: this.id, limit: PAGE });
       if (seq !== this.#loadSeq) return;
@@ -196,14 +203,27 @@ export class ChatStore {
     } catch (e) {
       if (seq === this.#loadSeq) this.error = e?.message ?? String(e);
     } finally {
-      if (seq === this.#loadSeq) this.loading = false;
+      // a load that started after this one holds the buffer now, and replays it over its own page
+      if (seq === this.#loadSeq) {
+        const held = this.#msgEvents;
+        this.#msgEvents = null;
+        this.loading = false;
+        for (const [type, d] of held) this.handle(type, d);
+      }
     }
     rpc('agent.queue', { sessionId: this.id }, { timeout: 8000 })
       .then((items) => {
-        if (Array.isArray(items)) this.queue = items;
+        if (qrev === this.#queueRev && Array.isArray(items)) this.queue = items;
       })
       .catch(() => {});
     this.loadPrompts();
+  }
+
+  /** The queue with one of the person's own inputs gone (sent or dequeued): a snapshot taken before this must
+   *  not bring it back — the chip's send button would then do nothing, the server having no such item. */
+  dropQueued(id) {
+    this.#queueRev++;
+    this.queue = this.queue.filter((q) => q.id !== id);
   }
 
   /** The system prompts sent so far (none without the context plugin). */
@@ -265,6 +285,11 @@ export class ChatStore {
 
   /** Scoped event for this session. */
   handle(type, d) {
+    // the message window is read as a whole: what lands during a load is newer than the page it waits for
+    if (this.#msgEvents && (type === 'message.added' || type === 'message.updated')) {
+      this.#msgEvents.push([type, d]);
+      return;
+    }
     switch (type) {
       case 'message.added': {
         const m = d.message;
@@ -338,6 +363,7 @@ export class ChatStore {
         this.live.get(d.callId)?.end(d);
         break;
       case 'agent.queue':
+        this.#queueRev++;
         this.queue = d.items ?? [];
         break;
       case 'agent.notice': {

@@ -332,6 +332,7 @@ function uiTabs() {
 let procTailDelayMs = 0; // e2e test helper: delay the tail responses so the UI can collapse a row inside its fetchTail() await
 let filesDelayMs = 0; // e2e test helper: delay the files.* responses so a workspace switch lands mid-fetch
 let thinkDelayMs = 0; // e2e test helper: hold the live thinking line so a waitForSelector can see it (mock.thinkDelay)
+let msgHold = null; // e2e test helper: read a session's message page, publish a message while it is held, then answer with the older page (mock.messagesHold)
 let offlineUntil = 0; // e2e test helper: while in effect the /ws upgrades are refused and open sockets dropped — the server keeps running, its events are just lost (the browser is offline)
 let filesCalls = []; // e2e test helper: the files.* responses served, in order, for the late-response checks
 let listCalls = []; // e2e test helper: the sessions.list calls with their params (the archived-only check)
@@ -469,7 +470,7 @@ const handlers = {
     publish('session.updated', { session: s });
     return s;
   },
-  'sessions.messages': (p) => {
+  'sessions.messages': async (p) => {
     const id = need(p, 'id');
     msgLoads.set(id, (msgLoads.get(id) ?? 0) + 1);
     getSession(id);
@@ -477,7 +478,17 @@ const handlers = {
     if (p.beforeSeq != null) msgs = msgs.filter((m) => m.seq < p.beforeSeq);
     const limit = p.limit ?? 60;
     const page = msgs.slice(Math.max(0, msgs.length - limit));
-    return { messages: page, hasMore: msgs.length > page.length };
+    const answer = { messages: page, hasMore: msgs.length > page.length };
+    // the hold: the page is read, a message is committed and published while the answer is still on its way, and
+    // the older page answers last — the client has shown that message already, so it must not lose it
+    if (msgHold?.id === id) {
+      const hold = msgHold;
+      msgHold = null;
+      await new Promise((r) => setTimeout(r, hold.ms ?? 400));
+      const m = pushMessage(id, 'assistant', [text(hold.text ?? 'Committed while the page was being read.')]);
+      publish('message.added', { sessionId: id, message: m }, id);
+    }
+    return answer;
   },
 
   'models.list': () => ({ models: MODELS, defaultModel: store.settings.defaultModel ?? DEFAULT_MODEL }),
@@ -766,6 +777,9 @@ const handlers = {
   'mock.diagCallsDelay': (p) => ((diagCallsDelayMs = p.ms ?? 0), (diagCallsServed = 0), (diagCallsMaxInFlight = 0), true),
   // e2e test helper: stretch the agent's thinking phase so its live line is observable (0 restores normal speed)
   'mock.thinkDelay': (p) => ((thinkDelayMs = p.ms ?? 0), agent.setThinkDelay(thinkDelayMs), true),
+  // e2e test helper: hold the next sessions.messages answer for a session and publish a message during it
+  // (the snapshot-vs-event check: the answer is the page as it was read, before that message)
+  'mock.messagesHold': (p) => ((msgHold = p?.id ? { id: p.id, ms: p.ms ?? 400, text: p.text } : null), true),
   // e2e forensics: the last rpc frames received, and the connected clients with their subscriptions
   'mock.wsLog': () => ({ frames: wsLog, clients: [...clients].map((c) => ({ id: c.id, open: c.ws.readyState === 1, subs: [...c.subs].length })) }),
   'mock.diagCallsStats': () => ({ served: diagCallsServed, inFlight: diagCallsInFlight, maxInFlight: diagCallsMaxInFlight }),
@@ -943,6 +957,7 @@ const handlers = {
     procTailDelayMs = 0;
     filesDelayMs = 0;
     thinkDelayMs = 0;
+    msgHold = null;
     agent.setThinkDelay(0);
     offlineUntil = 0;
     filesCalls = [];
