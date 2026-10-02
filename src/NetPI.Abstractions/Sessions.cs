@@ -125,6 +125,11 @@ public sealed class SessionQuery
     public bool IncludeArchived { get; set; }
     /// <summary>Only archived sessions; takes precedence over <see cref="IncludeArchived"/>.</summary>
     public bool ArchivedOnly { get; set; }
+    /// <summary>With <see cref="AttachedValue"/>: only sessions whose <c>meta[AttachedKey]</c> is that string. The way a plugin finds the sessions it attached something to.</summary>
+    public string? AttachedKey { get; set; }
+    public string? AttachedValue { get; set; }
+    /// <summary>Also return message-less (in-memory) sessions that match; they are not stored and never show in the session list.</summary>
+    public bool IncludeUnmaterialized { get; set; }
     public int Limit { get; set; } = 100;
     public int Offset { get; set; }
 }
