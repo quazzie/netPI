@@ -5,6 +5,34 @@ using Microsoft.Extensions.Logging;
 
 namespace NetPI.Agents;
 
+// The ledger's storage (ctx.Data, plugin "netpi.agents"). Document shapes, kept here for the one-off store migration:
+//
+// usage_calls — one document per model call: reserved when the call starts, settled in place when it ends.
+//   key:   the call id, a decimal string allocated from the "usage_calls" counter in "counters" (never reused;
+//          migrate the old ids, and set the counter to the old maximum)
+//   doc:   { ts, day, sessionId?, rootSessionId?, agentId?, lane?, provider, model, purpose,
+//            inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, costSource }
+//          (the old usage_calls columns one-to-one; costSource: "reserved", "reported", "estimated", "free",
+//           "unknown", "rejected", "interrupted-estimate")
+//   index: ts Integer, day Text, sessionId Text, rootSessionId Text, lane Text, costUsd Real, costSource Text
+//
+// lanes_usage — tokens per (day, provider, model), upserted with every recorded call.
+//   key:   <day>|<provider>|<model>
+//   doc:   { day, provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, calls,
+//            budgetTokens }            (budgetTokens = inputTokens + outputTokens + cacheWriteTokens)
+//   index: day Text, provider Text, model Text, budgetTokens Integer
+//
+// lane_usage — the cost per (day, lane): the lane's day gets the call's cost when it is recorded (a reservation at
+//   its estimate), and Settle replaces the estimate with the settled cost.
+//   key:   <day>|<laneKey>             (laneKey = the lane lower-cased; a call with no lane has no document)
+//   doc:   { day, lane, laneKey, costUsd }
+//   index: day Text, laneKey Text, costUsd Real
+//
+// counters — the plugin's sequences.
+//   key:   the counter name ("usage_calls")
+//   doc:   { value }
+//   index: none
+
 /// <summary>
 /// Every model call with its tokens and cost, and the budgets.
 /// <list type="bullet">
@@ -26,20 +54,14 @@ internal sealed partial class Ledger : IBudgetGate
     public const double CacheWriteShare = 1.25;
 
     private readonly IPluginContext _ctx;
-    private readonly Lock _gate = new();
-    private readonly Dictionary<(string Day, string Provider, string Model), Totals> _totals = [];
-    private bool _dbReady;
-
-    // Monetary snapshots read atomically from the ledger, including persistent reservations
-    private string _costDay = "";
-    private DateTime _periodStart;
-    private double _periodSpent, _todaySpent;
-    private readonly Dictionary<string, double> _agentToday = new(StringComparer.OrdinalIgnoreCase);
     private int _changeScheduled;
-    // In-memory charges (no database): _memorySeq counts every add/settle and _memorySeqRolled is its value when the
-    // snapshot was last rescanned, so a roll skips the rescan while the day is unchanged and nothing was recorded.
-    private long _memorySeq, _memorySeqRolled = -1;
-    private int _memoryScans;   // test seam: how often the in-memory charge list was rescanned
+
+    // The ledger's own storage (ctx.Data), opened in Initialize; all null while the store is unavailable. Paid calls
+    // under a limit are then refused (fail-closed, below), and nothing is kept in memory.
+    private IDataCollection? _calls;        // usage_calls: one document per call
+    private IDataCollection? _lanesUsage;   // lanes_usage: tokens per day, provider and model
+    private IDataCollection? _laneUsage;    // lane_usage: the cost per day and lane (an agent's pool for the day)
+    private IDataCollection? _counters;     // per-plugin sequences
 
     public sealed class Totals
     {
@@ -71,65 +93,20 @@ internal sealed partial class Ledger : IBudgetGate
 
     public void Initialize()
     {
-        var db = _ctx.Db;
-        if (db is null) return;
         try
         {
-            db.Migrate("lanes",
-                """
-                CREATE TABLE IF NOT EXISTS lanes_usage (
-                  day TEXT NOT NULL,
-                  provider TEXT NOT NULL,
-                  model TEXT NOT NULL,
-                  input_tokens INTEGER NOT NULL DEFAULT 0,
-                  output_tokens INTEGER NOT NULL DEFAULT 0,
-                  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-                  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-                  calls INTEGER NOT NULL DEFAULT 0,
-                  PRIMARY KEY (day, provider, model)
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS usage_calls (
-                  id INTEGER PRIMARY KEY,
-                  ts INTEGER NOT NULL,
-                  day TEXT NOT NULL,
-                  session_id TEXT,
-                  root_session_id TEXT,
-                  agent_id TEXT,
-                  lane TEXT,
-                  provider TEXT NOT NULL,
-                  model TEXT NOT NULL,
-                  purpose TEXT NOT NULL,
-                  input_tokens INTEGER NOT NULL DEFAULT 0,
-                  output_tokens INTEGER NOT NULL DEFAULT 0,
-                  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-                  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-                  cost_usd REAL NOT NULL DEFAULT 0,
-                  cost_source TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS usage_calls_ts ON usage_calls(ts);
-                CREATE INDEX IF NOT EXISTS usage_calls_root ON usage_calls(root_session_id);
-                """,
-                "CREATE INDEX IF NOT EXISTS usage_calls_day_lane ON usage_calls(day, lane)");
-            var day = Today;
-            var rows = db.Query("SELECT provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, calls FROM lanes_usage WHERE day = @day",
-                new Dictionary<string, object?> { ["day"] = day },
-                r => (Provider: r.GetString("provider"), Model: r.GetString("model"), T: new Totals
-                {
-                    InputTokens = r.GetInt64("input_tokens"),
-                    OutputTokens = r.GetInt64("output_tokens"),
-                    CacheReadTokens = r.GetInt64("cache_read_tokens"),
-                    CacheWriteTokens = r.GetInt64("cache_write_tokens"),
-                    Calls = r.GetInt64("calls"),
-                }));
-            lock (_gate)
-                foreach (var (provider, model, t) in rows) _totals[(day, provider, model)] = t;
-            _dbReady = true;
+            _calls = _ctx.Data.Collection("usage_calls", new CollectionSpec()
+                .Integer("ts").Text("day").Text("sessionId").Text("rootSessionId").Text("lane")
+                .Real("costUsd").Text("costSource"));
+            _lanesUsage = _ctx.Data.Collection("lanes_usage", new CollectionSpec()
+                .Text("day").Text("provider").Text("model").Integer("budgetTokens"));
+            _laneUsage = _ctx.Data.Collection("lane_usage", new CollectionSpec()
+                .Text("day").Text("laneKey").Real("costUsd"));
+            _counters = _ctx.Data.Collection("counters", new CollectionSpec());
         }
         catch (Exception ex)
         {
-            _ctx.Logger.LogWarning(ex, "Usage tables unavailable; usage is tracked in memory only");
+            _ctx.Logger.LogWarning(ex, "Usage storage unavailable; paid calls are stopped until it is repaired");
         }
     }
 
@@ -199,11 +176,18 @@ internal sealed partial class Ledger : IBudgetGate
         if (u is null) return;
         var model = request.Model;
         var (cost, source) = CostOf(model, u, agentCfg);
-        lock (_gate)
+        var root = RootSession(request.SessionId);
+        if (_calls is null)
         {
-            AddCharge(request, agent, u, cost, source);
-            Record(message.Provider ?? model.Provider, model.Id, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens);
+            _ctx.Logger.LogWarning("Usage store unavailable; the call's usage is not recorded");
+            return;
         }
+        // One transaction: the call's row, the lane's cost and the token roll-up commit together.
+        _ctx.Data.Transaction(() =>
+        {
+            AddCharge(request, agent, root, u, cost, source);
+            RecordTx(message.Provider ?? model.Provider, model.Id, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens);
+        });
         ScheduleChanged();
     }
 
@@ -230,79 +214,45 @@ internal sealed partial class Ledger : IBudgetGate
         return id;
     }
 
-    /// <summary>Refresh the monetary snapshot under the same lock as recording and reservation.</summary>
-    private void Roll(DateTime now)
+    /// <summary>The two spend totals summed from the calls (each read is atomic): the period's and today's.</summary>
+    private (double Period, double Today) ReadSpent(DateTime now)
     {
-        lock (_gate)
-        {
-            var day = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            var dayChanged = day != _costDay;
-            _costDay = day;
-            (_periodStart, _) = Period(now, Options().ResetDay);
-            var from = new DateTimeOffset(_periodStart).ToUnixTimeMilliseconds();
-            if (_dbReady)
-            {
-                // Read through the database: another ledger may still be settling a call after hot reload.
-                // Never publish a stale snapshot over increments made by a different thread.
-                _agentToday.Clear();
-                var totals = _ctx.Db.Query("""
-                    SELECT lane,
-                        SUM(CASE WHEN ts >= @from THEN cost_usd ELSE 0 END) AS period,
-                        SUM(CASE WHEN day = @day THEN cost_usd ELSE 0 END) AS today
-                    FROM usage_calls WHERE ts >= @from OR day = @day GROUP BY lane
-                    """, new { from, day = _costDay },
-                    r => (Agent: r.GetStringOrNull("lane"), Period: r.GetDouble("period"), Today: r.GetDouble("today")));
-                _periodSpent = totals.Sum(t => t.Period);
-                _todaySpent = totals.Sum(t => t.Today);
-                foreach (var t in totals.Where(t => t.Agent is not null)) _agentToday[t.Agent!] = t.Today;
-            }
-            else if (!dayChanged && _memorySeqRolled == _memorySeq)
-            {
-                // The in-memory snapshot is current: the same day (hence the same period) and nothing was
-                // recorded or settled since the last roll, so the charge list needs no rescanning.
-                return;
-            }
-            else
-            {
-                _memoryScans++;
-                _agentToday.Clear();
-                _periodSpent = _memoryCharges.Values.Where(c => c.Ts >= from).Sum(c => c.Cost);
-                var today = _memoryCharges.Values.Where(c => c.Day == _costDay).ToList();
-                _todaySpent = today.Sum(c => c.Cost);
-                foreach (var c in today.Where(c => c.Agent is not null))
-                    _agentToday[c.Agent!] = _agentToday.GetValueOrDefault(c.Agent!) + c.Cost;
-                _memorySeqRolled = _memorySeq;
-            }
-        }
-    }
-
-    /// <summary>Test seam: how many in-memory charges are kept and how often their list was rescanned.</summary>
-    internal (int Charges, int Scans) MemoryStats
-    {
-        get { lock (_gate) return (_memoryCharges.Count, _memoryScans); }
+        // Today is always inside the current period, so the two sums need no join: the period starts on the reset
+        // day of the current (or previous) month and today's calls all fall from then on.
+        var (start, _) = Period(now, Options().ResetDay);
+        var from = new DateTimeOffset(start).ToUnixTimeMilliseconds();
+        var calls = _calls!;
+        return (calls.Sum("costUsd", new DataQuery().Ge("ts", from)),
+                calls.Sum("costUsd", new DataQuery().Eq("day", now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))));
     }
 
     public (double Period, double Today) Spent()
     {
-        lock (_gate) { Roll(DateTime.Now); return (_periodSpent, _todaySpent); }
+        if (_calls is null) return (0, 0);
+        return ReadSpent(DateTime.Now);
     }
 
+    /// <summary>What one lane (agent) has spent today: its cost roll-up, case-insensitive on the lane.</summary>
     public double SpentToday(string agent)
     {
-        lock (_gate) { Roll(DateTime.Now); return _agentToday.GetValueOrDefault(agent); }
+        if (_laneUsage is null) return 0;
+        return _laneUsage.Sum("costUsd", new DataQuery().Eq("day", Today).Eq("laneKey", agent.ToLowerInvariant()));
     }
 
     /// <summary>
-    /// What every agent has spent today in one roll: the agent list shows every pool at once, so a snapshot must not
-    /// roll (a database read) once per pool.
+    /// What every lane has spent today in one read: the agent list shows every pool at once, so a snapshot must not
+    /// read once per pool.
     /// </summary>
     public IReadOnlyDictionary<string, double> SpentTodayByAgent()
     {
-        lock (_gate)
+        var byAgent = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        if (_laneUsage is null) return byAgent;
+        foreach (var d in _laneUsage.Find(new DataQuery().Eq("day", Today)))
         {
-            Roll(DateTime.Now);
-            return new Dictionary<string, double>(_agentToday, StringComparer.OrdinalIgnoreCase);
+            if (d.Doc["lane"]?.GetValue<string>() is { } lane)
+                byAgent[lane] = D(d.Doc["costUsd"]);
         }
+        return byAgent;
     }
 
     private void ScheduleChanged()
@@ -348,14 +298,7 @@ internal sealed partial class Ledger : IBudgetGate
     /// <summary>An agent's own daily cap: <c>agents.&lt;id&gt;.budget.limitUsd</c>.</summary>
     internal static double? DailyCap(JsonObject? agentCfg) => Positive((agentCfg?["budget"] as JsonObject)?["limitUsd"]);
 
-    private DateTime PeriodStart
-    {
-        get
-        {
-            Roll(DateTime.Now);
-            lock (_gate) return _periodStart;
-        }
-    }
+    private DateTime PeriodStart => Period(DateTime.Now, Options().ResetDay).Start;
 
     private bool AllowedNow(SessionInfo session) =>
         session.Meta?["budgetAllowedFrom"] is JsonValue v && v.TryGetValue<string>(out var s) && s == PeriodStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -363,9 +306,9 @@ internal sealed partial class Ledger : IBudgetGate
     /// <summary>budget.allow: this chat may go over the budget until the period ends; subagents still stop.</summary>
     public void Allow(string sessionId)
     {
-        // The period is computed OUTSIDE the session update: the update runs inside a database transaction, and
-        // nothing under the database gate may take this gate — Reserve takes them in the opposite order (ledger
-        // first, then the database), so doing it in the update wedged the two gates across threads.
+        // The period is computed OUTSIDE the session update: the update runs inside the session store's transaction,
+        // and nothing under it may touch the ledger's storage transactions (which take the storage lock in their own
+        // order); PeriodStart reads nothing of it (it is pure arithmetic on the settings), so there is no lock pair.
         var from = PeriodStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         _ctx.Sessions.UpdateSession(sessionId, s =>
         {
@@ -429,15 +372,19 @@ internal sealed partial class Ledger : IBudgetGate
     {
         double own = 0, all = 0;
         long calls = 0, allCalls = 0;
-        if (_dbReady)
+        if (_calls is not null)
         {
-            var args = new Dictionary<string, object?> { ["sid"] = sessionId };
             try
             {
-                own = _ctx.Db.Scalar<double?>("SELECT SUM(cost_usd) FROM usage_calls WHERE session_id = @sid", args) ?? 0;
-                calls = _ctx.Db.Scalar<long?>("SELECT COUNT(*) FROM usage_calls WHERE session_id = @sid", args) ?? 0;
-                all = _ctx.Db.Scalar<double?>("SELECT SUM(cost_usd) FROM usage_calls WHERE root_session_id = @sid OR session_id = @sid", args) ?? 0;
-                allCalls = _ctx.Db.Scalar<long?>("SELECT COUNT(*) FROM usage_calls WHERE root_session_id = @sid OR session_id = @sid", args) ?? 0;
+                own = _calls.Sum("costUsd", new DataQuery().Eq("sessionId", sessionId));
+                calls = _calls.Count(new DataQuery().Eq("sessionId", sessionId));
+                // root_session_id = session_id on the session's own calls, so the "with subagents" total is the
+                // union of the two roots: |root| + |own| − |both|.
+                var root = _calls.Sum("costUsd", new DataQuery().Eq("rootSessionId", sessionId));
+                var rootCalls = _calls.Count(new DataQuery().Eq("rootSessionId", sessionId));
+                var overlap = new DataQuery().Eq("rootSessionId", sessionId).Eq("sessionId", sessionId);
+                all = root + own - _calls.Sum("costUsd", overlap);
+                allCalls = rootCalls + calls - _calls.Count(overlap);
             }
             catch (Exception ex) { _ctx.Logger.LogDebug(ex, "Session cost query failed"); }
         }
@@ -455,32 +402,37 @@ internal sealed partial class Ledger : IBudgetGate
     private JsonArray ModelsThisPeriod()
     {
         var arr = new JsonArray();
-        if (!_dbReady) return arr;
+        if (_calls is null) return arr;
         try
         {
             var from = new DateTimeOffset(PeriodStart).ToUnixTimeMilliseconds();
-            foreach (var row in _ctx.Db.Query(
-                         """
-                         SELECT lane, provider, model, COUNT(*) AS calls, SUM(input_tokens) AS i, SUM(output_tokens) AS o,
-                           SUM(cache_read_tokens) AS cr, SUM(cache_write_tokens) AS cw, SUM(cost_usd) AS c,
-                           SUM(CASE WHEN cost_source = 'unknown' THEN 1 ELSE 0 END) AS unknown
-                         FROM usage_calls WHERE ts >= @from GROUP BY lane, provider, model ORDER BY c DESC, calls DESC
-                         """,
-                         new Dictionary<string, object?> { ["from"] = from },
-                         r => new JsonObject
-                         {
-                             ["agent"] = r.GetStringOrNull("lane"),
-                             ["provider"] = r.GetString("provider"),
-                             ["model"] = r.GetString("model"),
-                             ["calls"] = r.GetInt64("calls"),
-                             ["inputTokens"] = r.GetInt64("i"),
-                             ["outputTokens"] = r.GetInt64("o"),
-                             ["cacheReadTokens"] = r.GetInt64("cr"),
-                             ["cacheWriteTokens"] = r.GetInt64("cw"),
-                             ["costUsd"] = Math.Round(r.GetDouble("c"), 6),
-                             ["unknownCost"] = r.GetInt64("unknown") > 0,
-                         }))
-                arr.Add(row);
+            // No group-by in the port: the period's calls are grouped in memory (one row per lane, provider and model).
+            var groups = new Dictionary<(string? Lane, string? Provider, string? Model), (long Calls, long In, long Out, long Cr, long Cw, double Cost, long Unknown)>();
+            foreach (var d in _calls.Find(new DataQuery().Ge("ts", from)))
+            {
+                var doc = d.Doc;
+                var key = (doc["lane"]?.GetValue<string>(), doc["provider"]?.GetValue<string>(), doc["model"]?.GetValue<string>());
+                var unknown = doc["costSource"]?.GetValue<string>() == "unknown" ? 1L : 0L;
+                if (groups.TryGetValue(key, out var g))
+                    groups[key] = (g.Calls + 1, g.In + L(doc["inputTokens"]), g.Out + L(doc["outputTokens"]), g.Cr + L(doc["cacheReadTokens"]),
+                        g.Cw + L(doc["cacheWriteTokens"]), g.Cost + D(doc["costUsd"]), g.Unknown + unknown);
+                else
+                    groups[key] = (1, L(doc["inputTokens"]), L(doc["outputTokens"]), L(doc["cacheReadTokens"]), L(doc["cacheWriteTokens"]), D(doc["costUsd"]), unknown);
+            }
+            foreach (var (k, agg) in groups.OrderByDescending(x => x.Value.Cost).ThenByDescending(x => x.Value.Calls))
+                arr.Add(new JsonObject
+                {
+                    ["agent"] = k.Lane,
+                    ["provider"] = k.Provider,
+                    ["model"] = k.Model,
+                    ["calls"] = agg.Calls,
+                    ["inputTokens"] = agg.In,
+                    ["outputTokens"] = agg.Out,
+                    ["cacheReadTokens"] = agg.Cr,
+                    ["cacheWriteTokens"] = agg.Cw,
+                    ["costUsd"] = Math.Round(agg.Cost, 6),
+                    ["unknownCost"] = agg.Unknown > 0,
+                });
         }
         catch (Exception ex) { _ctx.Logger.LogDebug(ex, "Usage per model query failed"); }
         return arr;
@@ -488,40 +440,42 @@ internal sealed partial class Ledger : IBudgetGate
 
     // ---------------------------------------------------------------- tokens per day (lanes_usage) and the legacy token budget
 
+    /// <summary>
+    /// The per-(day, provider, model) token roll-up: upserted with every recorded call. When called inside the
+    /// caller's storage transaction (as RecordCall and Settle do) it joins it, so the roll-up commits with the
+    /// call's row.
+    /// </summary>
     public void Record(string provider, string model, long input, long output, long cacheRead, long cacheWrite)
     {
+        if (_lanesUsage is null) return;
+        _ctx.Data.Transaction(() => RecordTx(provider, model, input, output, cacheRead, cacheWrite));
+    }
+
+    private void RecordTx(string provider, string model, long input, long output, long cacheRead, long cacheWrite)
+    {
         var day = Today;
-        lock (_gate)
-        {
-            if (!_totals.TryGetValue((day, provider, model), out var t)) _totals[(day, provider, model)] = t = new Totals();
-            t.InputTokens += input; t.OutputTokens += output; t.CacheReadTokens += cacheRead; t.CacheWriteTokens += cacheWrite; t.Calls++;
-            // forget previous days
-            foreach (var k in _totals.Keys.Where(k => k.Day != day).ToList()) _totals.Remove(k);
-        }
-        if (!_dbReady) return;
-        try
-        {
-            _ctx.Db.Execute(
-                """
-                INSERT INTO lanes_usage (day, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, calls)
-                VALUES (@day, @provider, @model, @input, @output, @cacheRead, @cacheWrite, 1)
-                ON CONFLICT(day, provider, model) DO UPDATE SET
-                  input_tokens = input_tokens + excluded.input_tokens,
-                  output_tokens = output_tokens + excluded.output_tokens,
-                  cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
-                  cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
-                  calls = calls + 1
-                """,
-                new Dictionary<string, object?>
-                {
-                    ["day"] = day, ["provider"] = provider, ["model"] = model,
-                    ["input"] = input, ["output"] = output, ["cacheRead"] = cacheRead, ["cacheWrite"] = cacheWrite,
-                });
-        }
-        catch (Exception ex)
-        {
-            _ctx.Logger.LogWarning(ex, "Failed to persist usage");
-        }
+        var key = day + "|" + provider + "|" + model;
+        var doc = _lanesUsage!.Get(key);
+        if (doc is null)
+            doc = new JsonObject
+            {
+                ["day"] = day,
+                ["provider"] = provider,
+                ["model"] = model,
+                ["inputTokens"] = 0L,
+                ["outputTokens"] = 0L,
+                ["cacheReadTokens"] = 0L,
+                ["cacheWriteTokens"] = 0L,
+                ["calls"] = 0L,
+            };
+        doc["inputTokens"] = L(doc["inputTokens"]) + input;
+        doc["outputTokens"] = L(doc["outputTokens"]) + output;
+        doc["cacheReadTokens"] = L(doc["cacheReadTokens"]) + cacheRead;
+        doc["cacheWriteTokens"] = L(doc["cacheWriteTokens"]) + cacheWrite;
+        doc["calls"] = L(doc["calls"]) + 1;
+        // What the legacy per-provider token budgets count.
+        doc["budgetTokens"] = L(doc["inputTokens"]) + L(doc["outputTokens"]) + L(doc["cacheWriteTokens"]);
+        _lanesUsage.Put(key, doc);
     }
 
     public long? Budget(string provider)
@@ -543,10 +497,12 @@ internal sealed partial class Ledger : IBudgetGate
 
     public long UsedToday(string provider)
     {
-        var day = Today;
-        lock (_gate)
-            return _totals.Where(kv => kv.Key.Day == day && string.Equals(kv.Key.Provider, provider, StringComparison.OrdinalIgnoreCase))
-                .Sum(kv => kv.Value.BudgetTokens);
+        if (_lanesUsage is null) return 0;
+        var used = 0L;
+        foreach (var d in _lanesUsage.Find(new DataQuery().Eq("day", Today)))
+            if (string.Equals(d.Doc["provider"]?.GetValue<string>(), provider, StringComparison.OrdinalIgnoreCase))
+                used += L(d.Doc["budgetTokens"]);
+        return used;
     }
 
     public bool IsOverBudget(string? provider, out string? message)
@@ -566,16 +522,16 @@ internal sealed partial class Ledger : IBudgetGate
     {
         var day = Today;
         var byProvider = new SortedDictionary<string, Totals>(StringComparer.OrdinalIgnoreCase);
-        lock (_gate)
-        {
-            foreach (var (key, t) in _totals)
+        if (_lanesUsage is not null)
+            foreach (var d in _lanesUsage.Find(new DataQuery().Eq("day", day)))
             {
-                if (key.Day != day) continue;
-                if (!byProvider.TryGetValue(key.Provider, out var agg)) byProvider[key.Provider] = agg = new Totals();
-                agg.InputTokens += t.InputTokens; agg.OutputTokens += t.OutputTokens;
-                agg.CacheReadTokens += t.CacheReadTokens; agg.CacheWriteTokens += t.CacheWriteTokens; agg.Calls += t.Calls;
+                var p = d.Doc["provider"]?.GetValue<string>();
+                if (p is null) continue;
+                if (!byProvider.TryGetValue(p, out var agg)) byProvider[p] = agg = new Totals();
+                agg.InputTokens += L(d.Doc["inputTokens"]); agg.OutputTokens += L(d.Doc["outputTokens"]);
+                agg.CacheReadTokens += L(d.Doc["cacheReadTokens"]); agg.CacheWriteTokens += L(d.Doc["cacheWriteTokens"]);
+                agg.Calls += L(d.Doc["calls"]);
             }
-        }
         // providers with a budget but no usage yet
         try
         {
@@ -606,4 +562,10 @@ internal sealed partial class Ledger : IBudgetGate
         }
         return new JsonObject { ["day"] = day, ["providers"] = arr, ["budget"] = BudgetStatus(), ["models"] = ModelsThisPeriod() };
     }
+
+    // ----------------------------------------------------------------
+
+    // The roll-up documents store plain JSON numbers; read them with a zero default for a fresh document.
+    private static double D(JsonNode? n) => n is JsonValue v && v.TryGetValue<double>(out var d) ? d : 0;
+    private static long L(JsonNode? n) => n is JsonValue v && v.TryGetValue<long>(out var x) ? x : 0;
 }
