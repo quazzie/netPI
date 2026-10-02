@@ -329,7 +329,7 @@ public sealed class OpenAiCompatibleProvider : IModelProvider
         var mo = o.ForModel(request.Model.Id);
         var allowImages = !_imageSupport.TryGetValue(request.Model.Id, out var img) || img;
         var chat = mo.Transport == OpenAiTransport.Chat;
-        var body = chat ? ChatTransport.BuildBody(request, mo, allowImages) : ResponsesTransport.BuildBody(request, mo, allowImages);
+        var body = chat ? ChatTransport.BuildBody(request, mo, allowImages) : ResponsesTransport.BuildBody(request, mo, allowImages, Id);
         if (request.CaptureDecisionContext)
         {
             var snapshot = ChatTransport.BuildBody(request, mo, allowImages);

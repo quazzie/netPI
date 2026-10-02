@@ -9,11 +9,11 @@ internal static class ResponsesTransport
 {
     public const string Path = "/v1/responses";
 
-    public static JsonObject BuildBody(ModelRequest req, ModelOptions mo, bool allowImages)
+    public static JsonObject BuildBody(ModelRequest req, ModelOptions mo, bool allowImages, string? providerId = null)
     {
         var body = new JsonObject { ["model"] = req.Model.Id };
         if (!string.IsNullOrWhiteSpace(req.SystemPrompt)) body["instructions"] = req.SystemPrompt;
-        body["input"] = BuildInput(req.Messages, mo.ReplayReasoning, allowImages);
+        body["input"] = BuildInput(req.Messages, mo.ReplayReasoning, allowImages, providerId ?? req.Model.Provider, req.Model.Id);
 
         if (req.Tools.Count > 0)
         {
@@ -49,10 +49,21 @@ internal static class ResponsesTransport
         return body;
     }
 
-    public static JsonArray BuildInput(IReadOnlyList<ChatMessage> messages, bool replayReasoning, bool allowImages)
+    /// <summary>
+    /// The conversation as Responses input items. Reasoning goes back only to the model that produced it: a mid-chat
+    /// model switch used to replay another model's reasoning item (a foreign <c>encrypted_content</c> blob, or plain
+    /// reasoning to a backend that does not take it) and the turn was refused whole with a non-transient 400
+    /// (idea-d9k11o). A turn with no recorded provider or model (older history) is replayed, as before.
+    /// </summary>
+    public static JsonArray BuildInput(IReadOnlyList<ChatMessage> messages, bool replayReasoning, bool allowImages,
+        string? providerId = null, string? modelId = null)
     {
         var input = new JsonArray();
         var toolImages = new List<(string CallId, ImagePart Image)>();
+
+        bool IsOurs(ChatMessage m) =>
+            (m.Provider is null || providerId is null || string.Equals(m.Provider, providerId, StringComparison.OrdinalIgnoreCase))
+            && (m.Model is null || modelId is null || string.Equals(m.Model, modelId, StringComparison.Ordinal));
 
         void FlushToolImages()
         {
@@ -86,7 +97,7 @@ internal static class ResponsesTransport
                     {
                         switch (p)
                         {
-                            case ThinkingPart th when replayReasoning:
+                            case ThinkingPart th when replayReasoning && IsOurs(m):
                                 if (ReasoningItem(th) is { } r) reasoning.Add(r);
                                 break;
                             case TextPart t when !string.IsNullOrEmpty(t.Text):

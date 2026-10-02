@@ -494,6 +494,42 @@ await t.Run("responses: an interleaved assistant turn replays reasoning → mess
     t.Eq("call:1", input[4]!["call_id"]!.GetValue<string>(), "function_call after the message");
 });
 
+// The twin of the OpenRouter and Anthropic guards: reasoning items (encrypted_content included) go back only to the
+// model that produced them. Switching a chat's model mid-chat used to replay the previous model's reasoning and the
+// next turn was refused with a non-transient 400 (idea-d9k11o).
+await t.Run("responses: reasoning is replayed only to the model that produced it", async () =>
+{
+    string Kind(JsonNode? n) => n?["type"]?.GetValue<string>() ?? n?["role"]?.GetValue<string>() ?? "?";
+    ThinkingPart Th(string text) => new() { Text = text, ProviderData = new JsonObject { ["id"] = "rs_x", ["encrypted_content"] = "ENC_" + text } };
+    var history = new List<ChatMessage>
+    {
+        ChatMessage.UserText("read a.txt"),
+        new() { Role = MessageRole.Assistant, Provider = "aiproxy", Model = "qwen3.8-27b",
+                Parts = [Th("ours"), new TextPart { Text = "Read it" }, new ToolCallPart { Id = "call:1", Name = "read", Arguments = "{}" }] },
+        new() { Role = MessageRole.Tool, Parts = [new ToolResultPart { CallId = "call:1", Name = "read", Content = "A" }] },
+        new() { Role = MessageRole.Assistant, Provider = "openrouter", Model = "stealth/bunny", Parts = [Th("foreign model"), new TextPart { Text = "Earlier" }] },
+        new() { Role = MessageRole.Assistant, Provider = "vllm", Model = "qwen3.8-27b", Parts = [Th("foreign provider"), new TextPart { Text = "Before" }] },
+        new() { Role = MessageRole.Assistant, Parts = [Th("no origin"), new TextPart { Text = "Long ago" }] },
+        ChatMessage.UserText("go on"),
+    };
+    await Collect(aiproxy, Req(Cat("qwen3.8-27b"), history));
+    var input = mock.Last("/v1/responses").Json["input"]!.AsArray();
+    t.Eq("user,reasoning,message,function_call,function_call_output,message,message,reasoning,message,user",
+        string.Join(",", input.Select(Kind)), "only our own reasoning item is replayed (a turn with no recorded origin still is)");
+    t.Eq("ENC_ours", input[1]!["encrypted_content"]?.GetValue<string>(), "our own encrypted_content goes back");
+    t.Eq("ENC_no origin", input[7]!["encrypted_content"]?.GetValue<string>(), "a turn without provider/model is replayed, as before");
+    t.Check(!mock.Last("/v1/responses").Json.ToJsonString().Contains("ENC_foreign"), "no foreign encrypted_content, from model or provider");
+    t.Eq("Read it", input[2]!["content"]![0]!["text"]?.GetValue<string>(), "the rest of each turn is still replayed");
+
+    // a model switch drops the reasoning items of the model that produced them (the turn with no recorded
+    // origin is still replayed: nothing says it came from elsewhere)
+    await Collect(aiproxy, Req(Cat("qwen38-27b-iq3s"), history));
+    input = mock.Last("/v1/responses").Json["input"]!.AsArray();
+    t.Eq("user,message,function_call,function_call_output,message,message,reasoning,message,user", string.Join(",", input.Select(Kind)), "a model switch drops the reasoning items");
+    var sent = mock.Last("/v1/responses").Json.ToJsonString();
+    t.Check(!sent.Contains("ENC_ours") && !sent.Contains("ENC_foreign"), "and their encrypted_content with them");
+});
+
 await t.Run("errors: server ids are added to the message and the failed request is saved", async () =>
 {
     var dir = Path.Combine(Path.GetTempPath(), "netpi-dump-" + Guid.NewGuid().ToString("N"));
