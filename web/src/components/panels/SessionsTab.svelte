@@ -46,11 +46,18 @@
     );
   });
 
+  const pinned = $derived.by(() =>
+    roots
+      .filter((s) => s.pinned && !s.archived)
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)),
+  );
+  const pinnedIds = $derived(new Set(pinned.map((s) => s.id)));
+
   const groups = $derived.by(() => {
     const now = new Date();
     const order = ['Today', 'Yesterday', 'Previous 7 days', 'Earlier'];
     const map = new Map(order.map((k) => [k, []]));
-    for (const s of roots) map.get(recencyBucket(s.updatedAt, now)).push(s);
+    for (const s of roots) if (!pinnedIds.has(s.id)) map.get(recencyBucket(s.updatedAt, now)).push(s);
     return order.map((label) => ({ label, items: map.get(label) })).filter((g) => g.items.length);
   });
 
@@ -108,6 +115,9 @@
   async function archive(s, value = true) {
     await updateSession(s.id, { archived: value });
     if (showArchived) loadArchived();
+  }
+  async function togglePin(s) {
+    await updateSession(s.id, { pinned: !s.pinned });
   }
   async function remove(s) {
     const ok = await confirmDialog({
@@ -198,6 +208,15 @@
     </div>
     {#if editing !== s.id}
       <div class="actions">
+        {#if depth === 0 && !s.archived}
+          <IconButton
+            icon="pin"
+            title={s.pinned ? 'Unpin' : 'Pin to top'}
+            size="sm"
+            pressed={!!s.pinned}
+            onclick={(e) => (e.stopPropagation(), togglePin(s))}
+          />
+        {/if}
         <IconButton icon="rename" title="Rename (F2)" size="sm" onclick={(e) => (e.stopPropagation(), startRename(s))} />
         <IconButton icon={s.archived ? 'refresh' : 'archive'} title={s.archived ? 'Unarchive' : 'Archive'} size="sm" onclick={(e) => (e.stopPropagation(), archive(s, !s.archived))} />
         <IconButton icon="trash" title="Delete" size="sm" onclick={(e) => (e.stopPropagation(), remove(s))} />
@@ -230,18 +249,25 @@
   </div>
 
   <div class="list np-scroll">
+    {#if pinned.length}
+      <div class="glabel">Pinned</div>
+      {#each pinned as s (s.id)}
+        {@render row(s, 0)}
+      {/each}
+    {/if}
     {#each groups as g (g.label)}
       <div class="glabel">{g.label}</div>
       {#each g.items as s (s.id)}
         {@render row(s, 0)}
       {/each}
-    {:else}
+    {/each}
+    {#if !pinned.length && !groups.length}
       <div class="np-empty">
         <Icon name="sessions" size={22} />
         {#if q}No sessions match “{q}”{:else}No sessions yet{/if}
         {#if !q}<button class="np-btn np-btn-sm" onclick={() => newSession()}>New session</button>{/if}
       </div>
-    {/each}
+    {/if}
 
     {#if !q && app.sessionsMore}
       <button class="more np-dim" onclick={loadOlder}>Show older</button>

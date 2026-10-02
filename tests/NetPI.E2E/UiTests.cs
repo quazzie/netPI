@@ -52,6 +52,40 @@ public static class UiTests
             Check.Equal("ALPHA-UI line\nbeta line\ngamma line\n", File.ReadAllText(Path.Combine(p.S("path")!, "notes.txt")), "the UI run edited the file");
             Env.Log($"screenshots: {outDir}");
         }, 180);
+        r.Add("ui.pinned-sessions", "ui: pin a session — a Pinned group above the recency groups, and unpinning removes it (idea-k8nghc)", async () =>
+        {
+            // Unique per run: a shared server (shards, -Repeat) keeps sessions from earlier runs, so a fixed title
+            // would make the "exactly one such row" assertions race. NewProject already suffixes the project.
+            var stamp = Guid.NewGuid().ToString("N")[..6];
+            var p = await env.NewProject("pin-demo", CoreTests.Seed);
+            var s = await env.NewSession(projectId: p.S("id"), title: $"Pin me {stamp}");
+            await env.Run(s.S("id")!, "hello [s:echo]");
+            // a second, newer session: the pinned one must be recognisable as the exception in the recency order
+            var n = await env.NewSession(projectId: p.S("id"), title: $"Just newer {stamp}");
+            await env.Run(n.S("id")!, "hi [s:echo]");
+            var script = Path.Combine(env.RepoRoot, "tests", "NetPI.E2E", "ui", "pin.mjs");
+            var outDir = env.ScreenshotDir;
+            var psi = new ProcessStartInfo("node") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            foreach (var a in new[] { script, "--url", env.BaseUrl, "--token", Env.Token, "--session", $"Pin me {stamp}", "--out", outDir })
+                psi.ArgumentList.Add(a);
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            try { await proc.WaitForExitAsync(cts.Token); }
+            catch (OperationCanceledException) { if (!proc.HasExited) proc.Kill(true); throw new AssertException("ui pinned-sessions timed out"); }
+            var output = await stdout;
+            var err = await stderr;
+            foreach (var line in output.Split('\n').Where(l => l.StartsWith("  ", StringComparison.Ordinal))) Console.WriteLine("      " + line.Trim());
+            var json = output.Split('\n').LastOrDefault(l => l.StartsWith("{\"ok\"", StringComparison.Ordinal));
+            Check.True(json is not null, "pin output: " + output + err);
+            using var doc = JsonDocument.Parse(json!);
+            var failedChecks = doc.RootElement.Arr("checks").Where(c => !c.B("ok")).Select(c => $"ui check '{c.S("name")}' {c.S("detail")}").ToList();
+            Check.True(failedChecks.Count == 0, $"{failedChecks.Count} ui check(s) failed:\n      " + string.Join("\n      ", failedChecks)
+                + (doc.RootElement.Arr("errors").Any() ? "\n      browser errors: " + string.Join(" | ", doc.RootElement.Arr("errors").Select(e => e.GetString())) : ""));
+            Check.Equal(0, proc.ExitCode, "pin exit code; stderr: " + err);
+            Env.Log($"screenshots: {outDir}");
+        }, 120);
     }
 
     /// <summary>Two ideas in the session's project, so the smoke can check the calm overview: status groups, one line per
