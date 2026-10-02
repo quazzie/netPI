@@ -118,7 +118,7 @@ internal sealed class LoopHook(IPluginContext ctx) : IAgentHook
         cts.CancelAfter(ModelTimeout);
         try
         {
-            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.ask", request, cts.Token, run.AdmissionLease, run.Model.Ref).ConfigureAwait(false);
+            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.ask", request, cts.Token, run.AdmissionLease(), run.Model.Ref).ConfigureAwait(false);
             var answers = result as JsonObject ?? JsonSerializer.SerializeToNode(result) as JsonObject;
             if (answers?["stuck"]?["noul"] is not JsonValue pv || !pv.TryGetValue<double>(out var p) || !DecisionConfidence.Yes(p, StuckThreshold)) return null;
             var tools = string.Join(", ", last.GroupBy(s => s.Tool).OrderByDescending(g => g.Count()).Select(g => $"{g.Key} ×{g.Count()}"));

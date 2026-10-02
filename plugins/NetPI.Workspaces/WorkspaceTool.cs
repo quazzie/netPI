@@ -60,7 +60,7 @@ internal sealed class WorkspaceTool(IPluginContext ctx, WorkspaceResolver resolv
 
     private ToolResult Info(ToolContext context, SessionInfo? session)
     {
-        var binding = context.Workspace;
+        var binding = context.Workspace();
         var project = context.Project;
         var lines = new List<string>();
         if (binding is null)

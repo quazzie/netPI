@@ -30,7 +30,7 @@ public sealed class WorkspaceManager(
     /// </summary>
     public async Task<WorkspaceOutcome> ForChildAsync(SpawnRequest request, SessionInfo? parentSession, string childSessionId, string childName, CancellationToken ct)
     {
-        var named = request.WorkspaceId;
+        var named = request.Workspace()?.WorkspaceId;
         if (named is { Length: > 0 } && !string.Equals(named, "new", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(named, "own", StringComparison.OrdinalIgnoreCase) && !Isolated(request, ctx.Services.Get<IToolRegistry>()))
         {
@@ -70,11 +70,11 @@ public sealed class WorkspaceManager(
 
         return await provisioner.ProvisionAsync(new WorkspaceRequest(
             projectId,
-            string.IsNullOrWhiteSpace(request.WorkspaceName) ? childName : request.WorkspaceName.Trim(),
-            request.WorkspaceOwnerSessionId ?? childSessionId,
+            string.IsNullOrWhiteSpace(request.Workspace()?.Name) ? childName : request.Workspace()!.Name!.Trim(),
+            request.Workspace()?.OwnerSessionId ?? childSessionId,
             request.ParentAgentId,
             Isolated: Isolated(request),
-            Base: request.WorkspaceBase), ct).ConfigureAwait(false);
+            Base: request.Workspace()?.Base), ct).ConfigureAwait(false);
     }
 
     /// <summary>The tools that make a worker a writer: without one of these its writes cannot reach the checkout.</summary>
@@ -90,7 +90,7 @@ public sealed class WorkspaceManager(
     /// </summary>
     public bool Isolated(SpawnRequest request, IToolRegistry? registry = null)
     {
-        if (request.Isolated) return true;
+        if (request.Workspace()?.Isolated == true) return true;
         if (!provisioner.IsolationEnabled) return false;
         var allow = request.Tools;
         if (allow is null)

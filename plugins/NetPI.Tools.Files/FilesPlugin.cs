@@ -122,7 +122,7 @@ public sealed class FilesPlugin : INetPiPlugin
             var session = context.Sessions?.GetSession(sessionId);
             if (session is not null)
             {
-                if (session.WorkspaceId is { Length: > 0 })
+                if (SessionWorkspace.Of(session) is not null)
                 {
                     var resolver = context.Services.Get<IWorkspaceResolver>();
                     if (resolver is not null)

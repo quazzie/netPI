@@ -99,7 +99,7 @@ internal sealed class DecideTool(IPluginContext ctx, DecisionClient client) : IA
                 results[i] = await client.EvaluateAnswerAsync(new DecisionRequest
                 {
                     Model = model, Body = new JsonObject { ["state"] = text, ["questions"] = questions.DeepClone() },
-                    ExistingLease = context.AdmissionLease, HeldModel = context.Model?.Ref,
+                    ExistingLease = context.AdmissionLease(), HeldModel = context.Model?.Ref,
                 }, ct).ConfigureAwait(false);
             }
             catch (DecisionException ex) { failure ??= ex; }

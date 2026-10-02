@@ -310,7 +310,7 @@ public sealed class WorkspaceProvisioner(
     /// workspace unbinds them (the session falls back to its project).
     /// </summary>
     public IReadOnlyList<string> SessionsUsing(string workspaceId) =>
-        ctx.Sessions.SessionIdsUsingWorkspace(workspaceId);
+        WorkspaceStore.BoundSessions(ctx.Sessions, workspaceId);
 
     /// <summary>The lock that serializes integration for one repository.</summary>
     public SemaphoreSlim IntegrationLock(string repoCommonDir)

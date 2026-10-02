@@ -83,7 +83,7 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         // The default is the session's workspace root, so a call without a cwd runs where the session works - and the
         // result says so when it is somewhere else, because a command that changes directory itself is invisible here:
         // what this reports is where the shell was started, which is the only place the tool knows.
-        var workspace = ctx.Workspace;
+        var workspace = ctx.Workspace();
         var elsewhere = workspace is not null && !WorkspacePaths.IsInside(workspace.Root, cwd);
 
         var background = args.Bool("background", "run_in_background", "runInBackground", "detach", "async") ?? false;
@@ -102,7 +102,7 @@ public sealed class ShellService(ProcessRegistry registry, ISettings? settings, 
         {
             mp = ManagedProcess.Start(id, spec, command, cwd, capture, live,
                 background ? TimeSpan.FromMilliseconds(250) : TimeSpan.FromMilliseconds(50),
-                ctx.SessionId, ctx.AgentId, background, Registry.OnExited, Registry.Add, ctx.Workspace?.WorkspaceId, ctx.Workspace?.Branch);
+                ctx.SessionId, ctx.AgentId, background, Registry.OnExited, Registry.Add, ctx.Workspace()?.WorkspaceId, ctx.Workspace()?.Branch);
         }
         catch (Exception ex)
         {

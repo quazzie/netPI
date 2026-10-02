@@ -43,11 +43,17 @@ public sealed class WorkspaceResolver(IPluginContext ctx, IWorkspaceStore store,
     /// </summary>
     public WorkspaceBinding? Resolve(SessionInfo? session)
     {
-        if (session?.WorkspaceId is not { Length: > 0 } id) return null;
+        if (SessionWorkspace.Of(session) is not { } id) return null;
         var workspace = store.GetWorkspace(id) ??
             throw new WorkspaceUnavailableException(
                 $"This session is bound to workspace {id}, which no longer exists. Bind a workspace that exists (sessions.setWorkspace), " +
                 "or unbind it to work in the project folder again. Nothing will be written to the project checkout instead.");
+        // The session's folder is what the core hands every caller of GetCwd, so it has to be this workspace's root: a binding whose folder
+        // differs or is missing (meta rewritten by hand) would send a worker into the shared checkout through any caller that does not ask here.
+        if (session!.Id.Length > 0 && !WorkspacePaths.Comparer.Equals(SessionCwd.Of(session) ?? "", workspace.Path))
+            throw new WorkspaceUnavailableException(
+                $"This session is bound to workspace {workspace.Name} ({workspace.Path}), but the folder it runs in is {SessionCwd.Of(session) ?? "its project's"}. " +
+                "Bind the workspace again (sessions.setWorkspace) to put them right. Nothing will be written to the project checkout instead.");
         var key = (id, session.ProjectId);
         lock (_gate)
             if (_cache.TryGetValue(key, out var hit) && DateTime.UtcNow - hit.At < VerifyAfter && hit.Binding is { } b)
@@ -74,7 +80,7 @@ public sealed class WorkspaceResolver(IPluginContext ctx, IWorkspaceStore store,
     public WorkspaceBinding Require(SessionInfo session)
     {
         ArgumentNullException.ThrowIfNull(session);
-        if (session.WorkspaceId is not { Length: > 0 }) throw new WorkspaceUnavailableException(NoWorkspace(session));
+        if (SessionWorkspace.Of(session) is null) throw new WorkspaceUnavailableException(NoWorkspace(session));
         return Resolve(session) ?? throw new WorkspaceUnavailableException(NoWorkspace(session));
     }
 
@@ -82,7 +88,7 @@ public sealed class WorkspaceResolver(IPluginContext ctx, IWorkspaceStore store,
     public string CwdOf(SessionInfo session)
     {
         ArgumentNullException.ThrowIfNull(session);
-        return session.WorkspaceId is { Length: > 0 } ? Require(session).Root : ctx.Sessions.GetCwd(session);
+        return SessionWorkspace.Of(session) is not null ? Require(session).Root : ctx.Sessions.GetCwd(session);
     }
 
     /// <summary>
@@ -92,7 +98,7 @@ public sealed class WorkspaceResolver(IPluginContext ctx, IWorkspaceStore store,
     public string IdentityOf(SessionInfo session)
     {
         ArgumentNullException.ThrowIfNull(session);
-        if (session.WorkspaceId is not { Length: > 0 } id) return $"project:{session.ProjectId ?? "-"}";
+        if (SessionWorkspace.Of(session) is not { } id) return $"project:{session.ProjectId ?? "-"}";
         var workspace = store.GetWorkspace(id);
         if (workspace is null) return $"workspace:{id}:missing";
         return $"workspace:{workspace.Id}:{workspace.UpdatedAt.ToUnixTimeMilliseconds()}";
@@ -152,5 +158,5 @@ public sealed class WorkspaceResolver(IPluginContext ctx, IWorkspaceStore store,
         : $"Session {session.Id} has no usable workspace.";
 
     /// <summary>A stand-in session for resolving a workspace by id (no project to check it against).</summary>
-    private static SessionInfo SessionFor(WorkspaceInfo w) => new() { Id = "", ProjectId = null, WorkspaceId = w.Id };
+    private static SessionInfo SessionFor(WorkspaceInfo w) => new() { Id = "", ProjectId = null, Meta = new System.Text.Json.Nodes.JsonObject { [SessionWorkspace.MetaKey] = w.Id } };
 }

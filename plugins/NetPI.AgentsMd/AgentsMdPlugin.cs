@@ -248,7 +248,7 @@ internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader load
     internal static string CwdOf(IPluginContext ctx, SessionInfo session)
     {
         var resolver = ctx.Services.Get<IWorkspaceResolver>();
-        return session.WorkspaceId is { Length: > 0 } && resolver is not null ? resolver.CwdOf(session) : ctx.Sessions.GetCwd(session);
+        return SessionWorkspace.Of(session) is not null && resolver is not null ? resolver.CwdOf(session) : ctx.Sessions.GetCwd(session);
     }
 
 
@@ -269,7 +269,7 @@ internal sealed class InstructionNotices(IPluginContext ctx, AgentsMdLoader load
     {
         // A session in a workspace of its own stops the instruction walk at that checkout's root: the main checkout's
         // AGENTS.md is an ancestor file, not an instruction about this tree.
-        var ownCheckout = turn.Run.Workspace is { Isolated: true };
+        var ownCheckout = turn.Run.Workspace() is { Isolated: true };
         if (!Pending(turn.Messages, turn.Run.Cwd, ownCheckout).Any) return;
         if (Announce(turn.Run.Session.Id)) await turn.ReloadMessagesAsync().ConfigureAwait(false);
     }

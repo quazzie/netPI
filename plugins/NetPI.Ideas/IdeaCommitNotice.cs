@@ -195,7 +195,7 @@ public sealed partial class IdeaCommitNoticeHook(Func<ISettings?> settings, Func
 
         // 3. The session's home checkout: the root of its workspace when the session is bound to one, else the
         //    project's path.
-        var workspace = run.Workspace;
+        var workspace = run.Workspace();
         var home = workspace?.Root ?? project.Path;
 
         // 4. Repository evidence, when there is any: compare the repository of the home and the repository of the

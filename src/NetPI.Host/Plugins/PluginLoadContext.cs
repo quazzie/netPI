@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
+using Microsoft.Extensions.Logging;
 
 namespace NetPI.Host.Plugins;
 
@@ -74,11 +75,31 @@ internal static class SharedAssemblies
         return set;
     });
 
+    /// <summary>
+    /// The contract assemblies every plugin shares: the core's, and the one that carries the vocabularies of the higher abstractions
+    /// (agent slots, workspaces, decisions…). The host does not reference the second one; it is a host file all the same, loaded by
+    /// path before any plugin (<see cref="PreloadContracts"/>), so every plugin that speaks one of those contracts sees the same types.
+    /// </summary>
+    internal const string ContractsAssembly = "NetPI.Contracts";
+
+    /// <summary>Load <c>NetPI.Contracts.dll</c> from the app folder into the default context, so plugins resolve it there and not from a copy of their own.</summary>
+    public static void PreloadContracts(string appDir, Microsoft.Extensions.Logging.ILogger log)
+    {
+        var path = Path.Combine(appDir, ContractsAssembly + ".dll");
+        if (!File.Exists(path))
+        {
+            log.LogWarning("{File} is not in the app folder: plugins that use the agent, workspace or decision contracts cannot load", path);
+            return;
+        }
+        if (AssemblyLoadContext.Default.Assemblies.Any(a => a.GetName().Name == ContractsAssembly)) return;
+        AssemblyLoadContext.Default.LoadFromAssemblyPath(path);
+    }
+
     public static bool IsShared(AssemblyName name)
     {
         var simple = name.Name;
         if (string.IsNullOrEmpty(simple)) return false;
-        if (simple == "NetPI.Abstractions" || Tpa.Value.Contains(simple)) return true;
+        if (simple == "NetPI.Abstractions" || simple == ContractsAssembly || Tpa.Value.Contains(simple)) return true;
         foreach (var a in AssemblyLoadContext.Default.Assemblies)
             if (string.Equals(a.GetName().Name, simple, StringComparison.OrdinalIgnoreCase)) return true;
         if (Tpa.Value.Count == 0)

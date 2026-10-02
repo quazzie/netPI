@@ -41,7 +41,7 @@ internal sealed class WorkspaceGuard(GitProbe git) : IAgentHook
     public ValueTask<ToolCallDecision?> OnBeforeToolCallAsync(AgentTurnContext turn, ToolCallPart call)
     {
         var run = turn.Run;
-        var binding = run.Workspace;
+        var binding = run.Workspace();
         if (binding is null || !binding.Isolated) return ValueTask.FromResult<ToolCallDecision?>(null);
         var args = Arguments(call.Arguments);
         if (args is null) return ValueTask.FromResult<ToolCallDecision?>(null);
@@ -158,14 +158,15 @@ internal static class WorkspaceGuardExtensions
     /// <summary>Resolve a path argument against the turn's tool context (the run's cwd is the workspace root).</summary>
     public static string Resolve(this AgentTurnContext turn, ToolCallPart call, string path)
     {
-        var binding = turn.Run.Workspace;
+        var binding = turn.Run.Workspace();
         var cwd = binding?.Root ?? turn.Run.Cwd;
         var context = new ToolContext
         {
             SessionId = turn.Run.Session.Id, AgentId = turn.Run.Agent.Id, CallId = call.Id,
-            Cwd = cwd, Project = turn.Run.Project, Workspace = binding,
+            Cwd = cwd, Project = turn.Run.Project,
             Services = turn.Run.Services, Events = turn.Run.Events,
         };
+        context.Features.Set(binding);
         return context.ResolvePath(path);
     }
 }

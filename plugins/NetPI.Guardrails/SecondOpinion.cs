@@ -91,7 +91,7 @@ internal sealed class SecondOpinion(IPluginContext ctx)
         cts.CancelAfter(Timeout);
         try
         {
-            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.ask", new JsonObject { ["state"] = state, ["questions"] = Questions(), ["model"] = model }, cts.Token, run?.AdmissionLease, run?.Model.Ref).ConfigureAwait(false);
+            var result = await DecisionCapabilities.InvokeAsync(ctx.Services, ctx.Rpc, "decide.ask", new JsonObject { ["state"] = state, ["questions"] = Questions(), ["model"] = model }, cts.Token, run?.AdmissionLease(), run?.Model.Ref).ConfigureAwait(false);
             var answers = result as JsonObject ?? JsonSerializer.SerializeToNode(result) as JsonObject;
             var p = new Dictionary<string, double>(StringComparer.Ordinal);
             foreach (var key in Questions().Select(q => q.Key))

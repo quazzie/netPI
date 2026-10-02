@@ -29,7 +29,7 @@ public abstract class FileToolBase(ISettings? settings) : IAgentTool
     /// </summary>
     protected static string? WorkspaceRefusal(ToolContext ctx, string fullPath)
     {
-        var binding = ctx.Workspace;
+        var binding = ctx.Workspace();
         if (binding is null || !binding.Isolated) return null;
         var probe = ctx.Services?.Get<IWorkspaceRepoProbe>();
         return WorkspacePaths.CheckMutation(binding, fullPath, probe) == WorkspacePathVerdict.ForeignCheckout

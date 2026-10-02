@@ -143,7 +143,7 @@ internal abstract class SshToolBase(IPluginContext ctx, ISshLauncher launcher) :
     /// </summary>
     protected static string? WorkspaceRefusal(ToolContext context, string fullPath)
     {
-        var binding = context.Workspace;
+        var binding = context.Workspace();
         if (binding is null || !binding.Isolated) return null;
         var probe = context.Services?.Get<IWorkspaceRepoProbe>();
         return WorkspacePaths.CheckMutation(binding, fullPath, probe) == WorkspacePathVerdict.ForeignCheckout

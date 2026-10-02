@@ -25,7 +25,7 @@ internal sealed class WorkspaceNotices(IPluginContext ctx, WorkspaceResolver res
     public async ValueTask OnBeforeModelCallAsync(AgentTurnContext turn)
     {
         var run = turn.Run;
-        if (!Needed(Last(turn.Messages), run.Workspace, run.Cwd)) return;
+        if (!Needed(Last(turn.Messages), run.Workspace(), run.Cwd)) return;
         if (Announce(run.Session.Id)) await turn.ReloadMessagesAsync().ConfigureAwait(false);
     }
 

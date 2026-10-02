@@ -14,7 +14,8 @@ namespace NetPI.Workspaces;
 /// <item>It provisions workspaces (a worktree and branch for a writing worker in a git project, a plain folder otherwise),
 /// attaches existing checkouts, integrates a worker's branch into the project's branch one at a time, and retires only
 /// the worktrees it created whose work is durable.</item>
-/// <item>The host only stores the records and the session reference, and the guards are in the tools themselves. Every
+/// <item>It stores the records in its own collection and attaches the session's binding to the session (the core stores no workspace
+/// field), and the guards are in the tools themselves. Every
 /// other part of the harness resolves through the service, so none of them has to know how a workspace is made.</item>
 /// </list>
 /// </summary>
@@ -25,7 +26,8 @@ public sealed class WorkspacePlugin : INetPiPlugin
 {
     public Task StartAsync(IPluginContext context, CancellationToken ct)
     {
-        var store = context.Services.Get<IWorkspaceStore>() ?? context.Services.Require<IWorkspaceStore>();
+        var store = new WorkspaceStore(context);
+        context.Services.Register<IWorkspaceStore>(store);
         var git = new GitProbe();
         var resolver = new WorkspaceResolver(context, store, git);
         var provisioner = new WorkspaceProvisioner(context, store, resolver, git, context.Settings);
@@ -57,13 +59,30 @@ public sealed class WorkspacePlugin : INetPiPlugin
             ],
         });
 
-        RegisterRpcs(context, resolver, provisioner, git);
+        RegisterRpcs(context, store, resolver, provisioner, git);
         context.Logger.LogInformation("Workspaces ready (isolation {Isolation})", provisioner.IsolationEnabled);
         return Task.CompletedTask;
     }
 
-    private static void RegisterRpcs(IPluginContext ctx, WorkspaceResolver resolver, WorkspaceProvisioner provisioner, GitProbe git)
+    private static void RegisterRpcs(IPluginContext ctx, WorkspaceStore store, WorkspaceResolver resolver, WorkspaceProvisioner provisioner, GitProbe git)
     {
+        ctx.Rpc.RegisterReadOnly("workspaces.list", (req, _) => Task.FromResult<object?>(store.ListWorkspaces(req.Str("projectId"))),
+            "Workspaces, newest first: { projectId? } → WorkspaceInfo[]");
+
+        ctx.Rpc.RegisterReadOnly("workspaces.get", (req, _) =>
+        {
+            var id = req.Required("id");
+            return Task.FromResult<object?>(store.GetWorkspace(id) ?? throw new RpcException("not_found", $"Workspace {id} not found"));
+        }, "One workspace: { id } → WorkspaceInfo");
+
+        ctx.Rpc.Register("sessions.setWorkspace", (req, _) =>
+        {
+            try { store.SetSessionWorkspace(req.Required("id"), req.Str("workspaceId")); }
+            catch (KeyNotFoundException ex) { throw new RpcException("not_found", ex.Message); }
+            return Task.FromResult<object?>(ctx.Sessions.GetSession(req.Required("id")));
+        }, "Bind/unbind a session's workspace: { id, workspaceId: string|null } → SessionInfo (publishes session.workspace). " +
+           "A bound workspace that is missing is an error, never a fall back to the project checkout.");
+
         // A directory is busy when a process the shell registry knows about is running in it: a background process keeps
         // its workspace's ownership, and a workspace with a live process in it is not one to delete under it.
         Func<string, bool>? busy = path =>
@@ -91,8 +110,8 @@ public sealed class WorkspacePlugin : INetPiPlugin
                 projectId = session?.ProjectId,
                 projectPath = session?.ProjectId is { } pid ? ctx.Sessions.GetProject(pid)?.Path : null,
                 identity = session is null ? null : resolver.IdentityOf(session),
-                available = binding is not null || session?.WorkspaceId is null,
-                error = session?.WorkspaceId is { Length: > 0 } && binding is null ? Missing(session) : null,
+                available = binding is not null || SessionWorkspace.Of(session) is null,
+                error = SessionWorkspace.Of(session) is { Length: > 0 } && binding is null ? Missing(session) : null,
             });
         }, "What a session's workspace resolves to: { sessionId } → { workspaceId, root, branch, baseCommit, kind, isolated, ownerSessionId, identity, projectId, available, error? }");
 
@@ -114,7 +133,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
         }, "Git evidence about a session's workspace root: { sessionId?, cwd? } → { root, topLevel?, commonDir?, branch?, head?, changes, isRepository }");
 
         ctx.Rpc.RegisterReadOnly("workspaces.listForProject", (req, _) =>
-            Task.FromResult<object?>(ctx.Services.Require<IWorkspaceStore>()
+            Task.FromResult<object?>(store
                 .ListWorkspaces(req.Str("projectId"))
                 .Select(Describe)), "The workspaces of a project, with their branches and owners: { projectId } → WorkspaceInfo[]");
 
@@ -142,7 +161,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
         ctx.Rpc.Register("workspaces.delete", (req, _) =>
         {
             var id = req.Required("id");
-            var workspace = ctx.Services.Require<IWorkspaceStore>().GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
+            var workspace = store.GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
             var (ok, error) = provisioner.RetireAsync(workspace, busy).GetAwaiter().GetResult();
             if (!ok) throw new RpcException("workspace_busy", error!);
             return Task.FromResult<object?>(new { id, removed = true });
@@ -152,7 +171,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
         ctx.Rpc.Register("workspaces.integrate", async (req, ct) =>
         {
             var id = req.Required("id");
-            var workspace = ctx.Services.Require<IWorkspaceStore>().GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
+            var workspace = store.GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
             // The branch to merge and verify: the one the worktree is actually on. A record that has gone stale is
             // refused before anything is merged, so a no-op merge can never be reported as merged and verified.
             var (branch, problem) = provisioner.IntegrateBranch(workspace);
@@ -169,7 +188,7 @@ public sealed class WorkspacePlugin : INetPiPlugin
         ctx.Rpc.Register("workspaces.canRetire", (req, _) =>
         {
             var id = req.Required("id");
-            var workspace = ctx.Services.Require<IWorkspaceStore>().GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
+            var workspace = store.GetWorkspace(id) ?? throw new RpcException("not_found", $"No workspace {id}");
             var (ok, reason) = provisioner.CanRetire(workspace, busy);
             return Task.FromResult<object?>(new { id, canRetire = ok, reason });
         }, "Whether a workspace's checkout may be removed, and why not: { id } → { id, canRetire, reason? }", readOnly: true);
@@ -228,5 +247,5 @@ public sealed class WorkspacePlugin : INetPiPlugin
     };
 
     private static string Missing(SessionInfo session) =>
-        $"The workspace of this session ({session.WorkspaceId}) cannot be used; bind another one with sessions.setWorkspace.";
+        $"The workspace of this session ({SessionWorkspace.Of(session)}) cannot be used; bind another one with sessions.setWorkspace.";
 }

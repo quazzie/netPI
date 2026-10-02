@@ -65,6 +65,7 @@ internal sealed class HostKernel : IAsyncDisposable
             TryCreate(paths.DefaultWorkspace);
             TryCreate(paths.TempDir);
             PendingBuild.Install(appDir, factory.CreateLogger("NetPI.Host")); // before anything loads or serves the app folder
+            SharedAssemblies.PreloadContracts(appDir, factory.CreateLogger("NetPI.Host")); // the higher abstractions' contracts, shared by every plugin
 
             // The store is chosen once, here: a provider that cannot open stops the start with its message (never an empty fallback).
             var provider = StorageProviders.Create(options.Ephemeral ? "memory" : settings.Get<string>("storage.provider") ?? "sqlite");
