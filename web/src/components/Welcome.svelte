@@ -6,7 +6,8 @@
   import { conn } from '../lib/rpc.svelte.js';
 
   const recent = $derived(app.sessions.filter((s) => !s.archived && !s.parentSessionId).slice(0, 6));
-  // the project new sessions start in: the one last worked in (Ctrl+T and the + tab use it too); the chip changes it
+  // the project new sessions start in from the start screen: the one last worked in; the chip changes it (Ctrl+T and the
+  // + tab follow the active session instead, and a session made with no tab open gets no project)
   const target = $derived(app.lastProjectId ? (app.projectsById.get(app.lastProjectId) ?? null) : null);
   let targetEl = $state();
 

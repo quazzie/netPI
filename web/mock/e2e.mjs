@@ -1372,6 +1372,29 @@ log('start screen: the project new sessions start in');
   const id = await page.locator('.topbar .tab.active').getAttribute('data-tab');
   const s = id ? await rpcCall('sessions.get', { id }) : null;
   check('New session starts in the chosen project', s?.projectId === idOf('website'), String(s?.projectId));
+
+  // the other way round: with no tab open, Ctrl+T does not carry the last project over — the new session
+  // starts without one, even though the start screen still remembers it
+  await page.locator('.topbar .tab .tab-close').first().click();
+  await page.waitForSelector('.welcome .target');
+  check('the last project is still remembered', await page.evaluate(() => JSON.parse(localStorage.getItem('netpi.lastProject') ?? 'null')) === idOf('website'), await page.evaluate(() => localStorage.getItem('netpi.lastProject')));
+  await page.keyboard.press('Control+t');
+  await page.waitForTimeout(500);
+  const id2 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const s2 = id2 ? await rpcCall('sessions.get', { id: id2 }) : null;
+  check('a new session with no tab open starts without a project', s2?.projectId === null, String(s2?.projectId));
+  // the next section works from the "website" session: close this one and recreate it from the start screen
+  await page.locator('.topbar .tab .tab-close').first().click();
+  await page.waitForSelector('.welcome .target');
+  await chip.click();
+  await page.waitForSelector('.popover .item');
+  await page.locator('.popover .item', { hasText: 'website' }).first().click();
+  await page.waitForTimeout(300);
+  await page.locator('.welcome .np-btn-primary').click();
+  await page.waitForTimeout(500);
+  const id3 = await page.locator('.topbar .tab.active').getAttribute('data-tab');
+  const s3 = id3 ? await rpcCall('sessions.get', { id: id3 }) : null;
+  check('the start screen recreates a session in the chosen project', s3?.projectId === idOf('website'), String(s3?.projectId));
 }
 
 }

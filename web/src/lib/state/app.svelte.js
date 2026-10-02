@@ -375,7 +375,7 @@ export function cycleTab(dir) {
   activate(tabs[(i + dir + tabs.length) % tabs.length]);
 }
 
-/** Remember the active session's project so a new session made with no tab open lands in it too. */
+/** Remember the last project used (preselects the project pickers and the start screen). */
 export function noteProject(projectId) {
   if (projectId === app.lastProjectId) return;
   app.lastProjectId = projectId ?? null;
@@ -383,15 +383,10 @@ export function noteProject(projectId) {
 }
 
 export async function newSession(opts = {}) {
-  // explicit projectId (null = none) › the active session's project › the last project used
+  // explicit projectId (null = none) › the active session's project (a new session made with no
+  // tab open has no project of its own — the last project used no longer carries over)
   const projectId =
-    opts?.projectId !== undefined
-      ? opts.projectId
-      : app.activeSession
-        ? (app.activeSession.projectId ?? null)
-        : app.lastProjectId && app.projectsById.has(app.lastProjectId)
-          ? app.lastProjectId
-          : null;
+    opts?.projectId !== undefined ? opts.projectId : (app.activeSession?.projectId ?? null);
   try {
     const params = {};
     if (projectId) params.projectId = projectId;
