@@ -15,10 +15,12 @@ namespace NetPI.Guardrails;
 /// waits with its instance given back (<see cref="IAgentRuntime.WaitYieldedAsync"/>). In a subagent an ask rule blocks:
 /// nobody watches its chat. With <c>guardrails.secondOpinion</c> on, a decision model reads a shell command before an ask
 /// rule asks, and a confidently read-only one runs without asking (<see cref="SecondOpinion"/>, <c>guard.cleared</c>).
+/// A deliberate wait longer than <c>guardrails.maxSleepSeconds</c> is a rule of its own (<see cref="Sleeps"/>), because a
+/// regular expression cannot tell a five-minute sleep from a one-second one.
 /// The checks catch the plain cases (a command named in a variable or built at run time gets through); they are not a
 /// sandbox.
 /// </summary>
-[NetPiPlugin("netpi.guardrails", Name = "Guardrails", Description = "Checks tool calls before they run: blocks dangerous commands and changes to protected paths, or asks you first", Order = 67)]
+[NetPiPlugin("netpi.guardrails", Name = "Guardrails", Description = "Checks tool calls before they run: blocks dangerous commands, long deliberate waits and changes to protected paths, or asks you first", Order = 67)]
 public sealed class GuardrailsPlugin : INetPiPlugin
 {
     private Approvals? _approvals;
@@ -37,6 +39,10 @@ public sealed class GuardrailsPlugin : INetPiPlugin
                     "Regular expressions, tried on each part of a bash, pwsh or ssh run command (split at new lines, ; && || | &), ignoring case. Start a line with ask: to ask you first instead of blocking."),
                 SettingInfo.List("guardrails.paths", "Protected paths", RuleSet.DefaultPaths,
                     "Files and folders the agent may not change: write and edit refuse them, and so do bash and pwsh commands that name them (the read tool still reads them). ~ is your home. Start a line with ask: to ask you first."),
+                SettingInfo.Number("guardrails.maxSleepSeconds", "Longest deliberate wait", Sleeps.DefaultMaxSeconds,
+                    "A bash, pwsh or ssh run command that waits longer than this (sleep, Start-Sleep, ping -n/-c, the script a shell runs with -c) is refused or asks, so the agent waits for a command instead of sleeping through the wait. 0 switches it off.", 0, 3600, "s"),
+                SettingInfo.Choice("guardrails.maxSleepAction", "On a long wait", "block", ["block", "ask"],
+                    "block: the call does not run and the model reads why (a shell call with a matching timeout is the wait). ask: you are asked on the tool's row in the chat, and can allow it for the rest of that chat."),
                 SettingInfo.Bool("guardrails.secondOpinion", "Second opinion before asking", false,
                     "Before an ask: rule asks you about a shell command, a decision model reads it (the Decide plugin, through AiGateway); a command it finds confidently harmless runs without asking. Blocking rules and write/edit are never relaxed; without an answer you are asked."),
                 SettingInfo.Str("guardrails.secondOpinionModel", "Second-opinion model", SecondOpinion.DefaultModel,
@@ -192,7 +198,8 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
         {
             if (!Enabled()) return null;
             var rules = Rules();
-            if (rules.Count == 0) return null;
+            var maxSleep = MaxSleep();
+            if (rules.Count == 0 && maxSleep <= 0) return null;
             JsonElement args;
             try
             {
@@ -201,7 +208,9 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
             }
             catch (JsonException) { return null; } // the tool refuses invalid JSON itself: nothing runs
             var run = turn.Run;
-            var verdict = rules.Check(call.Name, args, path => Resolve(run, call, path));
+            // The typed sleep rule first: no regular expression can say "longer than N seconds".
+            var verdict = Sleeps.Check(call.Name, args, maxSleep, AskOnSleep())
+                ?? (rules.Count == 0 ? null : rules.Check(call.Name, args, path => Resolve(run, call, path)));
             if (verdict is null) return null;
             if (verdict.Action == GuardAction.Block) return Block(Why(verdict) + " Nothing ran. If it is really needed, tell the user what and why: they can do it themselves or change the rule.");
             // The user allowed this ask rule for the rest of the chat (guard.answer scope "session").
@@ -214,11 +223,11 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
                 });
                 return null;
             }
-            // An ask rule on a command: a decision model may clear a confidently read-only one (SecondOpinion). A path
-            // verdict never does: it is about where the call writes, and the model reads the command text, which can look
-            // harmless while still writing into a protected path — so a path ask always asks the user.
+            // An ask rule on a command: a decision model may clear a confidently read-only one (SecondOpinion). Neither a
+            // path verdict nor a long sleep is one: a path ask is about where the call writes, which the model does not
+            // read, and a long wait is a deliberate sleep the rule has already priced.
             Opinion? opinion = null;
-            if (verdict.Kind != "path" && RuleSet.CommandOf(call.Name, args) is { Length: > 0 } command)
+            if (verdict.Kind == "command" && RuleSet.CommandOf(call.Name, args) is { Length: > 0 } command)
             {
                 opinion = await secondOpinion.AskAsync(call.Name, command, run.Cwd, RuleSet.HostOf(args), ct, run).ConfigureAwait(false);
                 if (opinion is { Harmless: true })
@@ -281,11 +290,15 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
 
     private static ToolCallDecision Block(string reason) => new() { Block = true, Reason = reason };
 
-    private static string Subject(Verdict v) => v.Kind == "command" ? $"`{v.Subject}`" : $"changing {v.Subject}";
+    private static string Subject(Verdict v) => v.Kind == "path" ? $"changing {v.Subject}" : $"`{v.Subject}`";
 
-    private static string Why(Verdict v) => v.Kind == "command"
-        ? $"`{v.Subject}` matches the guardrail `{v.Rule}` (guardrails.commands)."
-        : $"{v.Subject} is protected by the guardrail `{v.Rule}` (guardrails.paths).";
+    private static string Why(Verdict v) => v.Kind switch
+    {
+        "sleep" => $"`{v.Subject}` waits {v.Detail} (guardrails.maxSleepSeconds). Run the work itself with a matching " +
+            "`timeout` \u2014 the call returns the moment it finishes \u2014 or start it with `background: true` and wait for it with `process wait`.",
+        "command" => $"`{v.Subject}` matches the guardrail `{v.Rule}` (guardrails.commands).",
+        _ => $"{v.Subject} is protected by the guardrail `{v.Rule}` (guardrails.paths).",
+    };
 
     private static string Resolve(AgentRunContext run, ToolCallPart call, string path) => new ToolContext
     {
@@ -301,6 +314,20 @@ internal sealed class GuardHook(IPluginContext ctx, Approvals approvals, SecondO
     {
         try { return ctx.Settings.Get("guardrails.enabled", true); }
         catch { return true; }
+    }
+
+    /// <summary>The longest wait a command may sleep through (0: the rule is off).</summary>
+    private double MaxSleep()
+    {
+        try { return ctx.Settings.Get("guardrails.maxSleepSeconds", Sleeps.DefaultMaxSeconds); }
+        catch { return Sleeps.DefaultMaxSeconds; }
+    }
+
+    /// <summary>Whether a long wait blocks or asks you first.</summary>
+    private bool AskOnSleep()
+    {
+        try { return ctx.Settings.Get("guardrails.maxSleepAction", "block") is { Length: > 0 } action && action.Trim().Equals("ask", StringComparison.OrdinalIgnoreCase); }
+        catch { return false; }
     }
 
     private List<string> List(string path, IReadOnlyList<string> fallback)
