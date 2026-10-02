@@ -7,14 +7,22 @@
 
   const MAX = 1000;
   const NOISE = /^(stream\.delta|tool\.output|process\.output)$/;
+  let hideNoise = $state(true);
   let rows = $state.raw(
-    untrack(() => initial.map((e) => ({ seq: e.seq, type: e.type, sid: e.sessionId ?? null, ts: Date.parse(e.time), source: e.source, d: undefined })).reverse()),
+    untrack(() => {
+      const seeded = initial
+        .map((e) => ({ seq: e.seq, type: e.type, sid: e.sessionId ?? null, ts: Date.parse(e.time), source: e.source, d: undefined }))
+        .reverse();
+      return hideNoise ? seeded.filter((r) => !NOISE.test(r.type)) : seeded; // the snapshot carries the noise the live tail drops
+    }),
   );
   let q = $state('');
-  let hideNoise = $state(true);
   let paused = $state(false);
   let open = $state(null); // seq
   let detail = $state(null); // { seq, data | error }
+  // output noise is dropped where it arrives: kept in rows it fills the 1000 rows in seconds (at ~40 stream.delta/s
+  // the visible history was ~25s), and here only the count of what was dropped is kept
+  let dropped = $state(0);
   let pending = [];
   let raf = 0;
 
@@ -29,6 +37,10 @@
   onMount(() => {
     const off = ctx.on('*', (d, env) => {
       if (paused || !visible) return;
+      if (hideNoise && NOISE.test(env.type)) {
+        dropped++;
+        return;
+      }
       pending.push({ seq: env.seq, type: env.type, sid: env.sid ?? null, ts: env.ts ?? Date.now(), source: env.source, d });
       if (!raf) raf = requestAnimationFrame(flush);
     });
@@ -38,18 +50,21 @@
     };
   });
 
+  function clear() {
+    rows = [];
+    dropped = 0;
+  }
+
   const shown = $derived.by(() => {
     const f = q.trim().toLowerCase();
     const out = [];
     for (const r of rows) {
-      if (hideNoise && NOISE.test(r.type)) continue;
       if (f && !(f.endsWith('*') ? r.type.startsWith(f.slice(0, -1)) : r.type.includes(f) || (r.sid ?? '').includes(f))) continue;
       out.push(r);
       if (out.length >= 300) break;
     }
     return out;
   });
-  const noiseCount = $derived(rows.filter((r) => NOISE.test(r.type)).length);
 
   async function toggle(r) {
     if (open === r.seq) {
@@ -79,11 +94,11 @@
 <div class="bar">
   <SearchInput bind:value={q} placeholder="Filter type or session" title="Event type (agent.* for a prefix) or session id" />
   <IconButton icon={paused ? 'play' : 'pause'} title={paused ? 'Resume' : 'Pause'} size="sm" pressed={paused} onclick={() => (paused = !paused)} />
-  <IconButton icon="trash" title="Clear" size="sm" onclick={() => (rows = [])} />
+  <IconButton icon="trash" title="Clear" size="sm" onclick={clear} />
 </div>
 <div class="opts np-line">
-  <label class="np-check np-grow" title="Hide stream.delta, tool.output and process.output events"
-    ><input type="checkbox" bind:checked={hideNoise} /> <span class="np-ellipsis">Hide output noise ({noiseCount})</span></label
+  <label class="np-check np-grow" title="Hide stream.delta, tool.output and process.output events (what arrives while they are hidden is counted, not kept)"
+    ><input type="checkbox" bind:checked={hideNoise} /> <span class="np-ellipsis">Hide output noise{hideNoise && dropped ? ` (${dropped} hidden)` : ''}</span></label
   >
   <span class="state" class:paused title="Newest first">{paused ? 'paused' : 'live'}</span>
 </div>

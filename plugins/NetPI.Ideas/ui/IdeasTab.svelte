@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { Icon, IconButton, SearchInput, Menu, Empty, Button, basename, prepareImage } from '@netpi/kit';
+  import { Icon, IconButton, SearchInput, Menu, Empty, Button, basename, prepareImage, useRefresh } from '@netpi/kit';
   import IdeaCard from './IdeaCard.svelte';
   import NewIdea from './NewIdea.svelte';
   import { STATUSES, ACTIVE, STATUS_TONE, matches, GROUP_ORDER, CLOSED_ORDER } from './model.js';
@@ -19,8 +19,6 @@
   let openGroups = $state.raw(new Set()); // collapsed statuses the user opened (parked, done, rejected)
   let dragId = $state(null);
   let dropTarget = $state(null); // { id, after }
-  let visible = true;
-  let dirty = false;
   // The project filter: 'all' | 'global' | a project id. It follows the active project until the user picks one, so it
   // cannot be $derived - picking 'All projects' has to stick when the project changes. onChange below keeps both in step.
   // svelte-ignore state_referenced_locally
@@ -70,17 +68,18 @@
       list = null;
     } finally {
       loading = false;
-      dirty = false;
     }
   }
 
+  // svelte-ignore state_referenced_locally
+  const tab = useRefresh(ctx, { load, events: ['ideas.changed'] });
+
+  /** Called by main.js (onShow / onHide): what lands while the tab is hidden only marks it stale. */
   export function setVisible(v) {
-    visible = v;
-    if (v && dirty) load();
+    tab.setVisible(v);
   }
 
   onMount(() => {
-    load();
     loadUnsaved();
     const offChange = ctx.app.onChange(() => {
       const pid = ctx.app.activeProject?.id ?? null;
@@ -89,12 +88,8 @@
         if (followsActive) projectFilter = pid ?? 'global'; // the default follows the active project
       }
     });
-    const offEv = ctx.on('ideas.changed', () => {
-      if (visible) load();
-      else dirty = true;
-    });
     const offCards = ctx.on('ideas.suggested', () => {
-      if (visible) loadUnsaved();
+      if (tab.visible) loadUnsaved();
     });
     // A card answered in the composer or in another window is gone: drop it here too.
     const offResolved = ctx.on('ideas.resolved', (d) => {
@@ -102,7 +97,6 @@
     });
     return () => {
       offChange();
-      offEv();
       offCards();
       offResolved();
     };

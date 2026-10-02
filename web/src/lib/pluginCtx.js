@@ -23,10 +23,17 @@ const plain = (v) => (v == null ? null : JSON.parse(JSON.stringify(v)));
 /**
  * Create a ctx for one mounted tab. Everything registered through it (event handlers, onChange
  * listeners) is released by dispose() when the tab unmounts or reloads, even if the plugin forgets.
+ * Registering after that releases it at once and hands back a no-op, so a handler that arrives from
+ * a pending await (an onMount that crossed one) cannot outlive the tab it was registered for.
  */
 export function createPluginCtx(tab) {
   const disposers = new Set();
+  let disposed = false;
   const track = (off) => {
+    if (disposed) {
+      off();
+      return () => {};
+    }
     disposers.add(off);
     return () => {
       if (disposers.delete(off)) off();
@@ -79,6 +86,7 @@ export function createPluginCtx(tab) {
   return {
     ctx: Object.freeze(ctx),
     dispose() {
+      disposed = true;
       for (const off of disposers) {
         try {
           off();

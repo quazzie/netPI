@@ -33,6 +33,7 @@ export function pickFolder({ initial = null, title = 'Choose a folder' } = {}) {
     });
   }
   return new Promise((resolve) => {
+    modals.folder?.resolve?.(null); // a second picker replaces the first: the first caller's answer is 'nothing chosen'
     modals.folder = { initial, title, resolve };
   });
 }

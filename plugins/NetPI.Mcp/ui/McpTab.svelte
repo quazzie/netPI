@@ -1,20 +1,28 @@
 <script>
-  import { onMount } from 'svelte';
-  import { Menu, IconButton } from '@netpi/kit';
+  import { Menu, IconButton, useRefresh } from '@netpi/kit';
   let { ctx } = $props();
   let servers = $state([]), tools = $state([]), selected = $state(''), error = $state(''), busy = $state(false);
   let editing = $state(false), id = $state(''), draft = $state(''), query = $state('');
   const filtered = $derived(tools.filter(t => (t.name + ' ' + t.description).toLowerCase().includes(query.toLowerCase())));
-  export async function refresh() {
+  async function load() {
+    // which server this load is about: two clicks in a row race, and the slower answer must not list the first
+    // server's tools under the second one
+    const sid = selected;
     try {
       servers = (await ctx.rpc('mcp.list', {})).servers ?? [];
-      if (selected) tools = (await ctx.rpc('mcp.tools', { serverId: selected })).tools ?? [];
+      const list = sid ? ((await ctx.rpc('mcp.tools', { serverId: sid })).tools ?? []) : null;
+      if (selected !== sid) return;
+      if (list) tools = list;
     } catch (e) { error = e.message ?? String(e); }
   }
-  async function choose(server) { selected = server.id; query = ''; await refresh(); }
+  // svelte-ignore state_referenced_locally
+  const tab = useRefresh(ctx, { load, events: ['mcp.toolsChanged', 'mcp.serverChanged'] });
+  /** Called by main.js (onShow): the list is stale after the tab was hidden. */
+  export function setVisible(v) { if (v) tab.refresh(); }
+  async function choose(server) { selected = server.id; query = ''; await tab.refresh(); }
   async function action(method, args) {
     busy = true; error = '';
-    try { await ctx.rpc(method, args); await refresh(); }
+    try { await ctx.rpc(method, args); await tab.refresh(); }
     catch (e) { error = e.message ?? String(e); }
     finally { busy = false; }
   }
@@ -38,7 +46,7 @@
     busy = true; error = '';
     try {
       await ctx.rpc('mcp.save', { id, config: JSON.parse(draft) });
-      selected = id; editing = false; await refresh();
+      selected = id; editing = false; await tab.refresh();
     } catch (e) { error = e.message ?? String(e); }
     finally { busy = false; }
   }
@@ -53,12 +61,6 @@
     config[key] = [...new Set(enabled ? [...(config[key] ?? []), tool.name] : (config[key] ?? []).filter(n => n !== tool.name))];
     await action('mcp.save', { id: server.id, config });
   }
-  onMount(() => {
-    refresh();
-    const off = ctx.on('mcp.toolsChanged', refresh);
-    const status = ctx.on('mcp.serverChanged', refresh);
-    return () => { off(); status(); };
-  });
 </script>
 
 <div class="mcp">
@@ -106,17 +108,15 @@
 
 <style>
   .mcp { padding:12px; overflow:auto; min-width:0; font-size:13px; }
+  button { padding:5px 8px; color:inherit; background:var(--bg-2); border:1px solid var(--border, #555); border-radius:4px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
   header,.actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
   header { justify-content:space-between; }
-  button { padding:5px 8px; color:inherit; background:var(--bg-secondary, #252525); border:1px solid var(--border, #555); border-radius:4px; cursor:pointer; }
-  button:disabled { opacity:.5; cursor:default; }
   .head { display:flex; align-items:flex-start; gap:6px; }
-  button { padding:5px 8px; color:inherit; background:var(--bg-secondary, #252525); border:1px solid var(--border, #555); border-radius:4px; cursor:pointer; }
-  button:disabled { opacity:.5; cursor:default; }
   .hint { opacity:.7; line-height:1.5; }
-  .error { color:var(--danger, #ff8a80); overflow-wrap:anywhere; }
+  .error { color:var(--err); overflow-wrap:anywhere; }
   label { display:block; margin:8px 0; }
-  input:not([type=checkbox]),textarea { display:block; box-sizing:border-box; width:100%; padding:6px; margin-top:4px; color:inherit; background:var(--bg-secondary, #252525); border:1px solid var(--border, #555); border-radius:4px; }
+  input:not([type=checkbox]),textarea { display:block; box-sizing:border-box; width:100%; padding:6px; margin-top:4px; color:inherit; background:var(--bg-2); border:1px solid var(--border, #555); border-radius:4px; }
   textarea,code,pre { font-family:monospace; font-size:11px; }
   section { padding:9px 0; border-top:1px solid var(--border, #555); }
   .server { flex:1 1 auto; min-width:0; text-align:left; border:0; background:transparent; padding:0 0 8px; display:flex; flex-direction:column; gap:3px; }

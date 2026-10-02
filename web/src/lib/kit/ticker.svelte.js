@@ -1,23 +1,37 @@
-// Shared clocks for relative / elapsed times (one interval each, started on first use).
-let now = $state(Date.now());
-let started = false;
-let sec = $state(Date.now());
-let secStarted = false;
+// Shared clocks for relative / elapsed times: one interval for every row that reads one, and none left running once the
+// last of them is gone (a plugin tab bundles its own copy of the kit, and its clocks used to outlive the tab).
+const clocks = new Map(); // ms → { value: $state, timer, users }
 
-/** Updates every 30s (for "5m ago" labels). */
-export function clockNow() {
-  if (!started && typeof window !== 'undefined') {
-    started = true;
-    setInterval(() => (now = Date.now()), 30_000);
+/**
+ * A clock that ticks every `ms`. Call it from a component's script — that is where it subscribes — and call the getter it
+ * returns inside a `$derived`: that read is what ties the row to the clock.
+ */
+export function clock(ms) {
+  let c = clocks.get(ms);
+  if (!c) {
+    const value = $state(Date.now());
+    clocks.set(ms, (c = { value, timer: 0, users: 0 }));
   }
-  return now;
+  c.users++;
+  if (!c.timer) {
+    c.value = Date.now();
+    c.timer = setInterval(() => (c.value = Date.now()), ms);
+  }
+  onDestroy(() => {
+    if (--c.users === 0) {
+      clearInterval(c.timer);
+      c.timer = 0;
+    }
+  });
+  return () => c.value;
 }
 
-/** Updates every second (for live elapsed timers). */
+/** The 30s clock for "5m ago" labels. */
+export function clockNow() {
+  return clock(30_000);
+}
+
+/** The 1s clock for live elapsed timers. */
 export function secondNow() {
-  if (!secStarted && typeof window !== 'undefined') {
-    secStarted = true;
-    setInterval(() => (sec = Date.now()), 1000);
-  }
-  return sec;
+  return clock(1000);
 }

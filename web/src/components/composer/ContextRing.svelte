@@ -20,11 +20,13 @@
   let el = $state();
   let open = $state(false);
   let preview = $state.raw(null); // context.preview: { systemPrompt, frozen, tools, estimatedTokens }
-  let previewState = $state('idle'); // idle | loading | ready | error
+  let previewState = $state('idle'); // idle | loading | ready | error (per open)
 
   async function show() {
     open = !open;
-    if (!open || previewState !== 'idle' || !sessionId) return;
+    if (!open || !sessionId) return;
+    // every time it is opened, not once per mount: the breakdown describes the prompt as it is now, and a session that
+    // has run a while sends a different one than the ring was mounted with (a reload or a new tool changes it too)
     previewState = 'loading';
     try {
       preview = await rpc('context.preview', { sessionId });

@@ -1,6 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import { Icon, IconButton, SearchInput, Menu, Empty, bytes, basename, copyText, desktop } from '@netpi/kit';
+  import { Icon, IconButton, SearchInput, Menu, Empty, bytes, basename, copyText, desktop, useRefresh } from '@netpi/kit';
 
   let { ctx } = $props();
 
@@ -19,7 +19,6 @@
   let listEl = $state();
   let visible = true;
   let dirty = false;
-  let gitDirty = false;
   let scopeKey = $state(''); // workspace generation (session + workspace identity/version): an answer applies only while its generation is still current
   let scope = $state.raw(null); // files.scope: the workspace this tab shows (root, branch, owner), null until loaded
 
@@ -86,10 +85,7 @@
   // The git line: loaded with the tree, after tools ran (debounced) and when the window gets the focus back (a
   // commit made in a terminal); while the tab is hidden it only notes that it is out of date.
   let gitSeq = 0;
-  let gitTimer = 0;
   async function loadGit() {
-    clearTimeout(gitTimer);
-    gitDirty = false;
     const seq = ++gitSeq;
     const gen = scopeKey;
     let r = null;
@@ -102,19 +98,13 @@
     git = r ?? null;
     if (!git) gitOpen = false;
   }
-  function gitSoon(ms = 800) {
-    if (!visible) {
-      gitDirty = true;
-      return;
-    }
-    clearTimeout(gitTimer);
-    gitTimer = setTimeout(loadGit, ms);
-  }
+  // svelte-ignore state_referenced_locally
+  const gitTab = useRefresh(ctx, { load: loadGit, events: ['tool.end'], delayMs: 800 });
 
   export function setVisible(v) {
     visible = v;
+    gitTab.setVisible(v);
     if (v && dirty) refresh();
-    else if (v && gitDirty) loadGit();
   }
 
   // Set when this instance is torn down. onMount has to stay synchronous for Svelte to register the teardown below
@@ -132,8 +122,7 @@
       loadDir('');
       loadGit();
     })();
-    const offToolEnd = ctx.on('tool.end', () => gitSoon());
-    const onFocus = () => gitSoon(300);
+    const onFocus = () => gitTab.schedule(300);
     window.addEventListener('focus', onFocus);
     const off = ctx.app.onChange(() => {
       // The new identity is read asynchronously; every load below waits for it, and the generation it yields is what the
@@ -159,10 +148,8 @@
     });
     return () => {
       disposed = true;
-      offToolEnd?.();
       off?.();
       window.removeEventListener('focus', onFocus);
-      clearTimeout(gitTimer);
     };
   });
 

@@ -1,6 +1,6 @@
 <script>
-  import { onMount, untrack } from 'svelte';
-  import { SearchInput, Segmented, Empty } from '@netpi/kit';
+  import { untrack } from 'svelte';
+  import { SearchInput, Segmented, Empty, useRefresh } from '@netpi/kit';
 
   /** logs.recent (host), polled while visible. Newest first. */
   let { initial = null, ctx, visible = true } = $props();
@@ -9,7 +9,7 @@
   let error = $state('');
   let q = $state('');
   let level = $state('all');
-  let open = $state(null);
+  let open = $state(null); // the key of the row whose stack trace is shown (the list is replaced on every poll)
 
   const RANK = { trc: 0, dbg: 1, inf: 2, wrn: 3, err: 4, crt: 5 };
   const norm = (l) => {
@@ -25,11 +25,9 @@
       error = e.message;
     }
   }
-  onMount(() => {
-    load();
-    const t = setInterval(() => visible && load(), 3000);
-    return () => clearInterval(t);
-  });
+  // one poll in flight, armed by the one before it (the tab's visibility comes from the tab, which passes it down)
+  // svelte-ignore state_referenced_locally
+  useRefresh(ctx, { load, pollMs: 3000, visible: () => visible });
 
   const min = $derived({ all: 0, info: 2, warn: 3, error: 4 }[level]);
   const shown = $derived(
@@ -51,6 +49,8 @@
     const d = new Date(t);
     return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-GB');
   };
+  /** A row's identity: every poll hands back new objects, so an expanded stack trace was closing as soon as it opened. */
+  const key = (l) => `${l.time}|${l.category}|${l.message}`;
 </script>
 
 <div class="bar">
@@ -73,10 +73,10 @@
   <Empty icon="alert">logs.recent unavailable: {error}</Empty>
 {:else}
   <div class="list">
-    {#each shown as l, i (i + l.time + l.message.length)}
+    {#each shown as l (key(l))}
       {@const lv = norm(l.level)}
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-      <div class="log" data-l={lv} class:open={open === l} onclick={() => (open = open === l ? null : l)}>
+      <div class="log" data-l={lv} class:open={open === key(l)} onclick={() => (open = open === key(l) ? null : key(l))}>
         <div class="row np-line">
           <span class="t np-mono">{time(l.time)}</span>
           <span class="lvl np-mono">{lv}</span>
@@ -84,7 +84,7 @@
           {#if l.exception}<span class="x" title="Has an exception (click to show)">exception</span>{/if}
         </div>
         <div class="msg">{l.message}</div>
-        {#if l.exception && open === l}<pre class="exc np-mono">{l.exception}</pre>{/if}
+        {#if l.exception && open === key(l)}<pre class="exc np-mono">{l.exception}</pre>{/if}
       </div>
     {:else}
       <Empty>No log entries{q || level !== 'all' ? ' match the filter' : ''}</Empty>

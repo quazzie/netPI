@@ -413,6 +413,11 @@ The browser is also what measures the chat's markdown: `node web/scripts/bench-s
 both render strategies in a headless browser, checks that splitting the answer at `web/src/lib/live.js` renders exactly what
 the whole answer renders (exit 1 if it does not), and prints the per-tick cost of each.
 
+`node web/scripts/check-tab-lifecycle.mjs` is the unit suite for the plugin tab lifecycle (`web/src/lib/kit/tab.js`,
+`refresh.svelte.js`): it compiles both the way the build compiles them, drives them in a headless browser with a fake
+`ctx`, and checks one load on mount, events coalesced, a poll that never stacks a second load, a hidden tab that loads
+nothing, and nothing running after unmount.
+
 On Windows bash scenarios run in Git Bash (which shows directories under `%TEMP%`, where the work dir lives, as
 `/tmp/…`); the shutdown test kills the process instead of sending SIGTERM and only checks persistence.
 

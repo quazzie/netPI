@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { Section, Empty, IconButton, Menu, tokens, usd } from '@netpi/kit';
+  import { Section, Empty, IconButton, Menu, tokens, usd, useRefresh } from '@netpi/kit';
   import AgentPool from './AgentPool.svelte';
   import WaitList from './WaitList.svelte';
   import RecentAgent from './RecentAgent.svelte';
@@ -12,7 +12,6 @@
 
   let slots = $state.raw(null); // the agents with their instances (agents.list)
   let unassigned = $state.raw([]); // runs waiting for any of several agents, in nobody's queue yet (agents.unassigned)
-  let disposed = false;
   let agents = $state.raw(null);
   let processes = $state.raw(null);
   let usage = $state.raw(null);
@@ -20,50 +19,28 @@
   let loading = $state(true);
   let failed = $state('');
   let updatedAt = $state(null);
-  let visible = true;
-  let dirty = false;
   let titles = $state.raw(new Map()); // sessionId -> title
   let showAllRecent = $state(false);
   let showAllProcs = $state(false);
 
   // ------------------------------------------------------------------ data
-  let refreshTimer = 0;
-  let inflight = null;
-
-  async function refresh() {
-    clearTimeout(refreshTimer);
-    if (inflight) return inflight;
-    inflight = (async () => {
-      try {
-        const s = await ctx.rpc('work.snapshot');
-        if (disposed) return;
-        slots = s?.agents ?? null;
-        unassigned = s?.unassigned ?? [];
-        agents = s?.runs ?? null;
-        processes = s?.processes ?? null;
-        usage = s?.usage ?? null;
-        errors = s?.errors ?? {};
-        failed = '';
-        updatedAt = new Date().toISOString();
-      } catch (e) {
-        failed = e?.message ?? String(e);
-      } finally {
-        loading = false;
-        dirty = false;
-        inflight = null;
-      }
-    })();
-    return inflight;
-  }
-
-  function scheduleRefresh(ms = 250) {
-    if (disposed) return;
-    if (!visible) {
-      dirty = true;
-      return;
+  async function load() {
+    try {
+      const s = await ctx.rpc('work.snapshot');
+      if (!tab.alive) return;
+      slots = s?.agents ?? null;
+      unassigned = s?.unassigned ?? [];
+      agents = s?.runs ?? null;
+      processes = s?.processes ?? null;
+      usage = s?.usage ?? null;
+      errors = s?.errors ?? {};
+      failed = '';
+      updatedAt = new Date().toISOString();
+    } catch (e) {
+      failed = e?.message ?? String(e);
+    } finally {
+      loading = false;
     }
-    clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(refresh, ms);
   }
 
   async function loadTitles() {
@@ -79,52 +56,45 @@
     titles = m;
   }
 
-  /** Called by main.js (onShow / onHide). Events are ignored while hidden; a fresh snapshot is taken on show. */
+  // The snapshot follows what can change it, and is polled as a safety net (the elapsed labels tick on their own). What
+  // lands while the tab is hidden only marks it stale: a fresh snapshot is taken when it is shown again.
+  // svelte-ignore state_referenced_locally
+  const tab = useRefresh(ctx, {
+    load,
+    events: ['resources.changed', 'resources.released', 'rpc.changed', 'services.changed', 'usage.recorded', 'usage.changed', 'plugins.changed'],
+    pollMs: 30_000,
+    delayMs: 250,
+  });
+
+  /** Called by main.js (onShow / onHide). */
   export function setVisible(v) {
-    visible = v;
-    if (v && dirty) refresh();
+    tab.setVisible(v);
   }
 
   onMount(() => {
-    refresh();
     loadTitles();
     const offs = [
       ctx.on('agent.status', (d) => {
-        if (!visible) return void (dirty = true);
+        if (!tab.visible) return void tab.schedule();
         agents = upsert(agents, d?.agent);
       }),
       ctx.on('agents.changed', (d) => {
-        if (!visible) return void (dirty = true);
+        if (!tab.visible) return void tab.schedule();
         if (Array.isArray(d?.agents)) slots = d.agents;
         if (Array.isArray(d?.unassigned)) unassigned = d.unassigned;
       }),
-      ctx.on('resources.changed', () => scheduleRefresh()),
-      ctx.on('resources.released', () => scheduleRefresh()),
-      ctx.on('rpc.changed', () => scheduleRefresh(600)),
-      ctx.on('services.changed', () => scheduleRefresh(600)),
       ctx.on('process.started', (d) => {
-        if (!visible) return void (dirty = true);
+        if (!tab.visible) return void tab.schedule();
         processes = upsert(processes, d?.process);
       }),
       ctx.on('process.exited', (d) => {
-        if (!visible) return void (dirty = true);
+        if (!tab.visible) return void tab.schedule();
         processes = upsert(processes, d?.process);
       }),
-      // a turn's tokens, then the ledger's costs (coalesced into one refresh)
-      ctx.on('usage.recorded', () => scheduleRefresh(400)),
-      ctx.on('usage.changed', () => scheduleRefresh(400)),
       ctx.on('session.created', (d) => setTitle(d?.session)),
       ctx.on('session.updated', (d) => setTitle(d?.session)),
-      ctx.on('plugins.changed', () => scheduleRefresh(600)),
     ];
-    // safety net: a slow full refresh while visible (elapsed labels tick on their own)
-    const slow = setInterval(() => visible && refresh(), 30_000);
-    return () => {
-      disposed = true;
-      offs.forEach((off) => off());
-      clearInterval(slow);
-      clearTimeout(refreshTimer);
-    };
+    return () => offs.forEach((off) => off());
   });
 
   // ------------------------------------------------------------------ derived views
@@ -213,7 +183,7 @@
         </Menu>
       {/if}
     </span>
-    <IconButton icon="refresh" title={updatedAt ? `Refresh (updated ${new Date(updatedAt).toLocaleTimeString()})` : 'Refresh'} size="sm" onclick={refresh} />
+    <IconButton icon="refresh" title={updatedAt ? `Refresh (updated ${new Date(updatedAt).toLocaleTimeString()})` : 'Refresh'} size="sm" onclick={() => tab.refresh()} />
   </div>
 
   {#if failed && !agents && !slots}
