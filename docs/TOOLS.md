@@ -797,8 +797,10 @@ details: { host, path /* "host:path" */, created, append, bytes, lines }
 ### `ssh_edit` (summary arg `path`)
 
 `{ host, path, edits: { oldText, newText, replace_all? }[], cwd? }` (a single `oldText`/`newText` pair is accepted too).
-Like `edit`: each `oldText` must match exactly once unless `replace_all`, overlapping edits are refused, matching
-ignores CRLF vs LF and the file keeps its line endings. The file is read (with its content hash), edited locally and
+Like `edit`: the edits are applied **in order to the evolving text**, so a second `oldText` may match what a first `newText`
+wrote (rename the declaration, then its first use); each `oldText` must match exactly once unless `replace_all` (in the text
+the earlier edits left), matching ignores CRLF vs LF and the file keeps its line endings. A failed edit applies nothing.
+The file is read (with its content hash), edited locally and
 written back only if the hash is unchanged — a same-size edit inside one second, which size plus mtime could not see,
 is refused; otherwise nothing is written and the agent is told to read it again. The new content is written to a
 temporary file in the same directory and put in place with an atomic rename (mode preserved), so an interrupted

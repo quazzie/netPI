@@ -614,8 +614,39 @@ public static class SshTests
             Check.Equal(2, all.Replacements);
             try { TextEdits.Apply("x y x", [new TextEdit("x", "z", false)], "f"); throw new AssertException("expected an error"); }
             catch (EditException ex) { Check.Contains(ex.Message, "matches 2 times"); }
+            // Edits apply to the evolving text, like the local edit: "bc" no longer exists once "ab" became "1"
             try { TextEdits.Apply("abc", [new TextEdit("ab", "1", false), new TextEdit("bc", "2", false)], "f"); throw new AssertException("expected an error"); }
-            catch (EditException ex) { Check.Contains(ex.Message, "overlap"); }
+            catch (EditException ex) { Check.Contains(ex.Message, "oldText not found"); }
+            // ...and a second edit may match what a first one wrote (rename the declaration, then its first use)
+            var seq = TextEdits.Apply("alpha beta\n", [new TextEdit("alpha beta", "alpha gamma", false), new TextEdit("alpha gamma", "omega gamma", false)], "f");
+            Check.Equal("omega gamma\n", seq.Text);
+            Check.Equal("--- a/f\n+++ b/f\n@@ -1,1 +1,1 @@\n-alpha beta\n+omega gamma\n", seq.Diff);
+        });
+
+        r.Add("ssh: ssh_edit and edit agree on one edit list (each edit sees what the earlier ones wrote)", async () =>
+        {
+            var dir = T.TempDir("parity");
+            var file = Path.Combine(dir, "f.txt");
+            var original = "one\ntwo\nthree\n";
+            File.WriteAllText(file, original);
+            var list = new[] { new { oldText = "one\ntwo", newText = "ONE two" }, new { oldText = "ONE two", newText = "TWO" } };
+            var remote = TextEdits.Apply(original, [new TextEdit("one\ntwo", "ONE two", false), new TextEdit("ONE two", "TWO", false)], file);
+            Check.Equal("TWO\nthree\n", remote.Text, "the second edit's oldText only exists after the first edit");
+            var local = await new NetPI.Tools.Files.EditTool().ExecuteAsync(
+                new ToolContext { SessionId = "s", AgentId = "a", CallId = "c", Cwd = dir, Services = new FakeServices(), Events = new FakeBus() },
+                T.Args(new { path = file, edits = list }), CancellationToken.None);
+            Check.False(local.IsError, local.Content);
+            Check.Equal(remote.Text, File.ReadAllText(file), "the local edit tool lands on the same text");
+
+            // and what neither tool accepts, both refuse without writing: a failed edit applies nothing
+            var failed = await new NetPI.Tools.Files.EditTool().ExecuteAsync(
+                new ToolContext { SessionId = "s", AgentId = "a", CallId = "c", Cwd = dir, Services = new FakeServices(), Events = new FakeBus() },
+                T.Args(new { path = file, edits = new[] { new { oldText = "missing", newText = "x" }, new { oldText = "TWO", newText = "3" } } }), CancellationToken.None);
+            Check.True(failed.IsError);
+            Check.Contains(failed.Content, "Edit 1 of 2 failed");
+            var ex = Check.Throws<EditException>(() => TextEdits.Apply("TWO\nthree\n", [new TextEdit("missing", "x", false), new TextEdit("TWO", "3", false)], file));
+            Check.Contains(ex.Message, "oldText not found");
+            Check.Equal("TWO\nthree\n", File.ReadAllText(file), "the file is untouched by the failed list");
         });
 
         r.Add("ssh_write: the remote write script, run in a local bash (a new file gets 644, an existing one keeps its mode, an interrupted stream leaves the original intact)", async () =>
