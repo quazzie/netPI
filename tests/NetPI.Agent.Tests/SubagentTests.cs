@@ -650,11 +650,14 @@ public static class SubagentTests
             x.Settings.SetQuiet("agents.main", JsonNode.Parse("""{ "model": "fake/local", "instances": 1 }"""));
             x.Settings.SetQuiet("agents.stealth", JsonNode.Parse("""{ "model": "cloud/big", "use": "Research." }"""));
         });
+        // the parent keeps the only instance of "main" until the child has run: a parent that finished first would free it,
+        // and an equally free "main" could take the child (the order of the agents breaks the tie)
+        var parentHolds = new TaskCompletionSource();
         h.Catalog.Handler = (r, ct) =>
         {
             if (r.Model.Ref == "cloud/big") return Reply.Text("child report: done on whichever agent was free");
             var last = r.Messages[^1];
-            if (last.Role == MessageRole.Tool) return Reply.Text("spawned");
+            if (last.Role == MessageRole.Tool) return Reply.Text("spawned", c => parentHolds.Task.WaitAsync(c));
             if (last.Text.Contains("<agent-result")) return Reply.Text("thanks");
             return Reply.Tool("agent_spawn", new { task = "Look something up and report.", agent = "any", background = true });
         };
@@ -667,6 +670,7 @@ public static class SubagentTests
         Check.Equal("stealth", child.Agent);
         Check.Equal("any", SessionAgent.Of(h.Sessions.GetSession(child.SessionId)), "the subagent's chat keeps the choice");
         Check.Equal("stealth", SessionAgent.Running(h.Sessions.GetSession(child.SessionId)));
+        parentHolds.SetResult();
         await Wait.Until(() => h.Messages(parent.Id).Any(m => m.Role == MessageRole.Assistant && m.Text == "thanks"), "the parent got the report");
     }
 
