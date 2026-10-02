@@ -72,17 +72,7 @@ public sealed class IdeasPlugin : INetPiPlugin
             ],
         });
 
-        IdeasRepository repo;
-        try
-        {
-            // A database written by a newer NetPI: refuse rather than read a shape this build would mangle on a write.
-            repo = IdeasRepository.Open(context.Db, context.Logger, context.Paths.DatabaseFile, context.Paths.Home);
-        }
-        catch (IdeasStorageVersionException ex)
-        {
-            context.Logger.LogError("Ideas: {Message} The Ideas tab and the ideas tool stay off until NetPI is updated.", ex.Message);
-            return;
-        }
+        var repo = IdeasRepository.Open(context.Data, context.Services.Get<IStorageAccess>(), context.Logger, context.Paths.Home);
         var locator = new IdeasLocator(() => context.Sessions, context.Paths, () => context.Settings);
         var snapshots = new IdeaSnapshots(repo);
 
@@ -172,7 +162,7 @@ public sealed class IdeasRpc(IdeasRepository repo, IdeasLocator locator, IdeasEv
 
     public void Register(IRpcRegistry rpc)
     {
-        rpc.Register("ideas.list", List, "The ideas backlog: { } → { storage: { backend: \"sqlite\", database, scope, schemaVersion }, ideas: [...], file?, fileName? (legacy hints) }");
+        rpc.Register("ideas.list", List, "The ideas backlog: { } → { storage: { backend, database, scope, schemaVersion }, ideas: [...], file?, fileName? (legacy hints) }");
         rpc.Register("ideas.get", Get, "{ id } → idea (with its revision)");
         rpc.Register("ideas.add", Add, "{ sessionId?, projectId?, idea: { title, summary?, status?, priority?, tags?, sections?, images? }, prepend? } → idea; stamped with projectId (a project id or name, \"global\" for unbound), else the session's project");
         rpc.Register("ideas.addImage", Attach,
