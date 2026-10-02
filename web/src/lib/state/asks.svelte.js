@@ -55,13 +55,13 @@ export function approvalIn(sessionId) {
   return null;
 }
 
-// On (re)connect: what waits now. Without the ask or guardrails plugin nothing does.
-// The server read its waiting state when the request went out, so an ask.asked / guard.asked that lands while
-// the answer is on its way is not in it, and the clear() below would drop it (no card, and the agent waits).
-// Such events are handed to the load in flight and replayed over its answer.
+// What a load in flight holds: the server read its waiting state when the request went out, so an ask.asked /
+// guard.asked that lands while the answer is on its way is not in it, and the clear() below would drop it (no
+// card, and the agent waits). Those events are handed to the load and replayed over its answer.
 let inFlight = null; // { seq, events: [[type, d]] }
 let loadSeq = 0;
 
+/** On (re)connect: what waits now. Without the ask or guardrails plugin nothing does. */
 export async function loadAsks() {
   const seq = ++loadSeq;
   const events = [];
