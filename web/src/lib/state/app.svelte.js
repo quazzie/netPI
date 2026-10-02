@@ -479,6 +479,13 @@ function removeSessionLocal(id) {
   saidJustNow.delete(id);
   recall.prune(id);
   pruneSession(id);
+  app.agents.delete(id); // its last run state (agent.status), a subagent's included
+  app.context.delete(id); // its context ring (session.context)
+  if (app.workspaces.has(id)) {
+    const workspaces = new Map(app.workspaces); // $state.raw: a copy, or nothing that reads it re-renders
+    workspaces.delete(id);
+    app.workspaces = workspaces;
+  }
 }
 
 export async function setSessionProject(id, projectId) {
