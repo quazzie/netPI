@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using NetPI.Host.Data;
 using NetPI.Ideas;
 
 namespace NetPI.Aux.Tests;
@@ -17,7 +16,7 @@ public static class ReviewStorageTests
         r.Add("review: rejected patch must not leak into a later successful save", async () =>
         {
             var env = new FakePluginContext(T.TempDir("review-patch"));
-            var repo = IdeasRepository.Open(env.Db, env.Log, env.Paths.DatabaseFile);
+            var repo = IdeasRepository.Open(env.Data, env.Access, env.Log, env.Paths.Home);
             var idea = IdeaOps.CreateIdea(new JsonObject { ["title"] = "Original" }, repo.TakenIds(), "user", null);
             repo.Add(idea);
             var id = idea["id"]!.Str()!;
@@ -35,12 +34,13 @@ public static class ReviewStorageTests
 
         r.Add("review: two instances must not write a stale snapshot over each other", async () =>
         {
-            var env = new FakePluginContext(T.TempDir("review-two-instances"));
-            var first = IdeasRepository.Open(env.Db, env.Log, env.Paths.DatabaseFile);
-            // A second connection to the same database, as the new instance of a hot-reload swap has. There is no file
+            var home = T.TempDir("review-two-instances");
+            var env = new FakePluginContext(home);
+            var first = IdeasRepository.Open(env.Data, env.Access, env.Log, env.Paths.Home);
+            // A second store over the same home folder, as the new instance of a hot-reload swap has. There is no file
             // lock to take and no watcher to miss: a stale tree is impossible, because nothing is cached.
-            using var other = new Database(env.Paths.DatabaseFile);
-            var second = IdeasRepository.Open(other, env.Log, env.Paths.DatabaseFile);
+            var swapped = new FakePluginContext(home);
+            var second = IdeasRepository.Open(swapped.Data, swapped.Access, swapped.Log, swapped.Paths.Home);
 
             first.Add(IdeaOps.CreateIdea(new JsonObject { ["title"] = "First" }, first.TakenIds(), "user", null));
             second.Add(IdeaOps.CreateIdea(new JsonObject { ["title"] = "Second" }, second.TakenIds(), "user", null));
@@ -50,6 +50,7 @@ public static class ReviewStorageTests
             Check.Equal(3, titles.Count, "every independently committed update must survive: " + string.Join(", ", titles));
             Check.Equal(3, second.All().Count, "and the other instance sees all of them");
             Check.Equal(3, second.TakenIds().Distinct().Count(), "with distinct ids");
+            swapped.Unload();
             env.Unload();
         });
     }

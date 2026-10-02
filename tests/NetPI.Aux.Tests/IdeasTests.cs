@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using NetPI.Ideas;
@@ -36,17 +35,17 @@ public static class IdeasTests
 
         public async Task StartAsync() => await new IdeasPlugin().StartAsync(Ctx, CancellationToken.None);
 
-        /// <summary>The name the JSON backlog had: the cutover reads that file, nothing writes it any more.</summary>
+        /// <summary>The name the JSON backlog had: nothing reads that file any more, it is reported as a hint.</summary>
         public string File => Path.Combine(Ctx.Paths.Home, "ideas.json");
 
-        /// <summary>The backlog as the UI reads it: tables in the database, not a file.</summary>
+        /// <summary>The backlog as the UI reads it: collections in the store, not a file.</summary>
         public async Task<List<JsonObject>> Ideas() =>
             ((JsonArray)(await Rpc("ideas.list", new JsonObject()))["ideas"]!).OfType<JsonObject>().ToList();
 
         public async Task<List<string>> Titles() => (await Ideas()).Select(i => i["title"].Str()).ToList();
 
         /// <summary>The repository itself, for a test that writes where the plugin writes.</summary>
-        public IdeasRepository Repo => IdeasRepository.Open(Ctx.Db, Ctx.Log, Ctx.Paths.DatabaseFile);
+        public IdeasRepository Repo => IdeasRepository.Open(Ctx.Data, Ctx.Access, Ctx.Log, Ctx.Paths.Home);
 
         public IAgentTool Tool(string name) => Ctx.ToolsFake.Get(name) ?? throw new AssertException("no tool " + name);
 
@@ -673,7 +672,7 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: one backlog in the database for all (project and projectless); ideas.fileName is only a hint", async () =>
+        r.Add("ideas: one backlog in the store for all (project and projectless); ideas.fileName is only a hint", async () =>
         {
             var env = new Env();
             await env.StartAsync();
@@ -700,107 +699,29 @@ public static class IdeasTests
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: the JSON files of earlier versions are imported once, archived, and not imported again", async () =>
+        r.Add("ideas: unknown fields survive every write", async () =>
         {
             var env = new Env();
-            var dotNetPi = Path.Combine(env.ProjectDir, ".netpi");
-            Directory.CreateDirectory(dotNetPi);
-            System.IO.File.WriteAllText(Path.Combine(dotNetPi, "ideas.json"),
-                "{\n  \"version\": 1,\n  \"ideas\": [\n    { \"id\": \"idea-mig001\", \"title\": \"From .netpi\" },\n" +
-                "    { \"id\": \"idea-take01\", \"title\": \"Collides\" }\n  ]\n}\n");
-            System.IO.File.WriteAllText(Path.Combine(env.ProjectDir, "ideas.json"), // the legacy place
-                "{ \"ideas\": [ { \"id\": \"idea-root01\", \"title\": \"From the root\" } ] }\n");
-            System.IO.File.WriteAllText(env.File,
-                "{ \"version\": 1, \"ideas\": [ { \"id\": \"idea-take01\", \"title\": \"Stays\" } ] }\n");
-
-            await env.StartAsync(); // the cutover runs at the start
-            var ideas = await env.Ideas();
-            Check.Equal(4, ideas.Count);
-            Check.Equal("Stays", ideas.Single(i => i["id"].Str() == "idea-take01")["title"].Str(), "the global one keeps its id");
-            var colliding = ideas.Single(i => i["title"].Str() == "Collides");
-            Check.True(colliding["id"]!.Str() != "idea-take01", "the colliding one was given a new id");
-            var fromDotNetPi = ideas.Single(i => i["title"].Str() == "From .netpi");
-            Check.Equal(env.Project.Id, fromDotNetPi["project"]!["id"].Str(), "stamped");
-            Check.Equal("Demo", fromDotNetPi["project"]!["name"].Str());
-            Check.Equal(env.Project.Id, ideas.Single(i => i["title"].Str() == "From the root")["project"]!["id"].Str());
-            Check.True(colliding.ContainsKey("project"), "the renamed one is stamped too");
-
-            // The originals are kept byte for byte, and out of the place an older build would read them from.
-            var archived = Directory.GetDirectories(Path.Combine(env.Ctx.Paths.Home, "ideas-archive"));
-            Check.Equal(1, archived.Length, "one archive folder");
-            var kept = Directory.GetFiles(Path.Combine(archived[0], "originals"));
-            Check.Equal(3, kept.Length, "every source is kept: " + string.Join(", ", kept.Select(Path.GetFileName)));
-            Check.False(System.IO.File.Exists(env.File), "and the live one is moved away");
-
-            // a restart imports nothing (there is nothing left to read)
-            env.Ctx.Unload();
             await env.StartAsync();
-            Check.Equal(4, (await env.Ideas()).Count);
-            Check.Equal(1, Directory.GetDirectories(Path.Combine(env.Ctx.Paths.Home, "ideas-archive")).Length, "no second archive");
-            env.Ctx.Unload();
-        });
+            var added = await env.Rpc("ideas.add", new JsonObject
+            {
+                ["idea"] = new JsonObject
+                {
+                    ["title"] = "Handwritten",
+                    ["estimate"] = new JsonObject { ["days"] = 3 },
+                    ["sections"] = new JsonArray(new JsonObject { ["kind"] = "note", ["content"] = "x", ["author"] = "bob" }),
+                },
+            });
+            Check.Equal("{\"days\":3}", added["estimate"]!.ToJsonString(), "a field this build does not know is stored");
 
-        r.Add("ideas: a source that cannot be parsed fails the whole import and is left exactly as it was", async () =>
-        {
-            var env = new Env();
-            var dotNetPi = Path.Combine(env.ProjectDir, ".netpi");
-            Directory.CreateDirectory(dotNetPi);
-            System.IO.File.WriteAllText(Path.Combine(dotNetPi, "ideas.json"),
-                "{ \"version\": 1, \"ideas\": [ { \"id\": \"idea-wait01\", \"title\": \"Waiting\" } ] }\n");
-            System.IO.File.WriteAllText(env.File, "{ \"ideas\": [ { \"title\": ");
-            const string broken = "{ \"ideas\": [ { \"title\": ";
-
-            await env.StartAsync();
-            Check.Equal(0, (await env.Ideas()).Count, "an invalid source never becomes an empty backlog with a guess in it");
-            Check.Equal(broken, System.IO.File.ReadAllText(env.File), "never overwritten");
-            Check.True(System.IO.File.Exists(Path.Combine(dotNetPi, "ideas.json")), "the good source stays where it is");
-            var logged = env.Ctx.Log.Lines.FirstOrDefault(l => l.Contains("not imported")) ?? "";
-            Check.True(logged.Length > 0, "the failure is logged: " + string.Join(" | ", env.Ctx.Log.Lines.Take(5)));
-
-            // The report says which file and why, and the import runs again once it is fixed.
-            var report = await env.Rpc("ideas.migration", new JsonObject());
-            var sources = ((JsonArray)report["sources"]!).OfType<JsonObject>().ToList();
-            Check.True(sources.Any(s => s["error"] is not null), "the malformed source is reported with its error");
-            Check.False(sources.Any(s => s["path"]!.Str() == env.File && s["error"] is null), "and it is not reported as read");
-
-            System.IO.File.Delete(env.File);
-            env.Ctx.Unload();
-            await env.StartAsync();
-            Check.Contains(string.Join(",", await env.Titles()), "Waiting");
-            Check.False(System.IO.File.Exists(Path.Combine(dotNetPi, "ideas.json")), "the source is archived now");
-            env.Ctx.Unload();
-        });
-
-        r.Add("ideas: unknown fields survive the import and every write after it", async () =>
-        {
-            var env = new Env();
-            var original =
-                "{\r\n    \"version\": 1,\r\n    \"owner\": \"team-a\",\r\n    \"ideas\": [\r\n        {\r\n            \"id\": \"idea-abc123\",\r\n" +
-                "            \"title\": \"Handwritten\",\r\n            \"status\": \"open\",\r\n            \"estimate\": { \"days\": 3 },\r\n" +
-                "            \"sections\": [ { \"id\": \"sec-aa\", \"kind\": \"note\", \"content\": \"x\", \"author\": \"bob\" } ]\r\n        }\r\n    ],\r\n" +
-                "    // comments are tolerated\r\n    \"extra\": [1, 2],\r\n}\r\n";
-            System.IO.File.WriteAllBytes(env.File, [0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes(original)]);
-            await env.StartAsync();
-
-            var idea = (await env.Ideas()).Single();
-            Check.Equal("team-a", ((JsonObject)env.Repo.MetaObject(IdeasMigration.RootMetaKey)!)["owner"].Str(), "the root fields are kept");
-            Check.Equal("{\"days\":3}", idea["estimate"]!.ToJsonString(), "a field this build does not know");
-            Check.Equal("bob", idea["sections"]![0]!["author"].Str(), "and one on a section");
-
-            Ok(await env.Run("ideas", new { action = "update", id = "idea-abc123", priority = "high", addSections = new[] { new { kind = "plan", content = "multi\nline" } } }));
+            Ok(await env.Run("ideas", new { action = "update", id = added["id"]!.Str(), priority = "high", addSections = new[] { new { kind = "plan", content = "multi\nline" } } }));
             var again = (await env.Ideas()).Single();
-            Check.Equal("{\"days\":3}", again["estimate"]!.ToJsonString(), "still there after a write");
-            Check.Equal("bob", again["sections"]![0]!["author"].Str());
+            Check.Equal("{\"days\":3}", again["estimate"]!.ToJsonString(), "and still there after a write");
+            Check.Equal("bob", again["sections"]![0]!["author"].Str(), "on a section too");
             Check.Equal("high", again["priority"].Str());
             Check.Equal("multi\nline", again["sections"]![1]!["content"].Str());
             Check.Equal(2, ((JsonArray)again["sections"]!).Count);
             Check.True(again["revision"]!.GetValue<long>() >= 1, "and it carries the revision an editor submits back");
-
-            // the archived copy is the file as it was, byte for byte
-            var archived = Directory.GetFiles(Directory.GetDirectories(Path.Combine(env.Ctx.Paths.Home, "ideas-archive"))[0])
-                .First(p => Path.GetFileName(p).StartsWith("backlog-", StringComparison.Ordinal));
-            var bytes = System.IO.File.ReadAllBytes(archived);
-            Check.Equal(original, Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3), "the archive keeps the original bytes");
             env.Ctx.Unload();
         });
 
@@ -819,13 +740,13 @@ public static class IdeasTests
             Check.Equal(after, bus.OfType(IdeasPlugin.ChangedEvent).Count, "one event per write, no storm");
 
             // A second plugin instance (a reload swap) writes: there is no watcher and no cache to miss it.
-            var other = IdeasRepository.Open(env.Ctx.Db, env.Ctx.Log, env.Ctx.Paths.DatabaseFile);
+            var other = IdeasRepository.Open(env.Ctx.Data, env.Ctx.Access, env.Ctx.Log, env.Ctx.Paths.Home);
             other.Add(IdeaOps.CreateIdea(new JsonObject { ["title"] = "From the other instance" }, other.TakenIds(), "user", null));
             Check.Contains(string.Join(",", await env.Titles()), "From the other instance", "seen at once, with no watcher event involved");
             env.Ctx.Unload();
         });
 
-        r.Add("ideas: concurrent adds are serialized by the database", async () =>
+        r.Add("ideas: concurrent adds are serialized by the store", async () =>
         {
             var env = new Env();
             await env.StartAsync();
@@ -882,19 +803,6 @@ public static class IdeasTests
             Check.Equal("note", IdeaOps.NormalizeKind("whatever"));
             Check.Equal("a|b", string.Join("|", IdeaOps.ParseTags(JsonValue.Create("a, #b, A"))));
             Check.Equal("x|y", string.Join("|", IdeaOps.ParseTags(JsonValue.Create("[\"x\",\"y\"]"))));
-        });
-
-        r.Add("ideas: the legacy file shapes the cutover reads (bare array, empty file, comments)", () =>
-        {
-            var bare = LegacyBacklog.Parse("x.json", System.Text.Encoding.UTF8.GetBytes("[ { \"id\": \"idea-a\" } ]"));
-            Check.Equal(1, bare.Ideas.Count, "a bare array is wrapped");
-            var empty = LegacyBacklog.Parse("x.json", System.Text.Encoding.UTF8.GetBytes(""));
-            Check.Equal(0, empty.Ideas.Count);
-            var comments = LegacyBacklog.Parse("x.json", System.Text.Encoding.UTF8.GetBytes("{\n // a note\n \"ideas\": []\n}"));
-            Check.Equal(0, comments.Ideas.Count, "comments and trailing commas are tolerated");
-            var broken = Check.Throws<IdeasFileException>(() => LegacyBacklog.Parse("x.json", System.Text.Encoding.UTF8.GetBytes("{ broken")));
-            Check.Contains(broken.Message, "is not valid JSON");
-            Check.Equal(64, LegacyBacklog.HashOf(new byte[] { 1, 2, 3 }).Length);
         });
 
         // Recall on the first message: a fake decide.decision answers with the probabilities set per test and records

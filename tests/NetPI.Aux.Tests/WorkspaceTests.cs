@@ -78,7 +78,6 @@ public static class WorkspaceTests
                 Git_(ProjectPath, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
             }
             Project = Ctx.SessionsFake.CreateProject("Repo", ProjectPath);
-            Ctx.Services.Register<IWorkspaceStore>(new MemoryWorkspaceStore(Ctx.SessionsFake));
             Plugin = new WorkspacePlugin();
             Plugin.StartAsync(Ctx, CancellationToken.None).GetAwaiter().GetResult();
             Resolver = (WorkspaceResolver)Ctx.Services.Get<IWorkspaceResolver>()!;
@@ -86,14 +85,28 @@ public static class WorkspaceTests
             Manager = (WorkspaceManager)Ctx.Services.Get<IWorkspaceProvisioner>()!;
         }
 
+        /// <summary>The plugin's own store, over the real plugin data (the core stores no workspace record).</summary>
+        public WorkspaceStore Store => (WorkspaceStore)Ctx.Services.Get<IWorkspaceStore>()!;
+
         /// <summary>A session of the project, optionally bound to a workspace.</summary>
-        public SessionInfo Session(string title = "s", string? workspaceId = null) =>
-            Ctx.SessionsFake.CreateSession(new SessionInfo { Title = title, ProjectId = Project.Id, WorkspaceId = workspaceId });
+        public SessionInfo Session(string title = "s", string? workspaceId = null)
+        {
+            var session = Ctx.SessionsFake.CreateSession(new SessionInfo { Title = title, ProjectId = Project.Id });
+            if (workspaceId is not null) Store.SetSessionWorkspace(session.Id, workspaceId);
+            return session;
+        }
 
         /// <summary>Give a worker its own workspace, exactly as a spawn would (with a parent session of the project).</summary>
         public WorkspaceOutcome Provision(string name, string sessionId, bool isolated = true) =>
-            Manager.ForChildAsync(new SpawnRequest { Task = "t", Name = name, Isolated = isolated, WorkspaceOwnerSessionId = sessionId },
-                Session("parent-" + sessionId), sessionId, name, CancellationToken.None).GetAwaiter().GetResult();
+            Manager.ForChildAsync(Spawn(name, sessionId, isolated), Session("parent-" + sessionId), sessionId, name, CancellationToken.None).GetAwaiter().GetResult();
+
+        /// <summary>The spawn a worker is provisioned from: what it asks of the workspace rides in the typed bag.</summary>
+        public SpawnRequest Spawn(string name, string sessionId, bool isolated = true)
+        {
+            var request = new SpawnRequest { Task = "t", Name = name };
+            request.Features.Set(new SpawnWorkspace(Isolated: isolated, OwnerSessionId: sessionId));
+            return request;
+        }
 
         public string Write(string dir, string relative, string content)
         {
@@ -103,25 +116,26 @@ public static class WorkspaceTests
             return path;
         }
 
-        public ToolContext Context(SessionInfo session, WorkspaceBinding? binding = null) => new()
+        /// <summary>A tool call in a workspace (or in the project's own folder when there is none).</summary>
+        public ToolContext Context(SessionInfo session, WorkspaceBinding? binding = null, string callId = "call_1")
         {
-            SessionId = session.Id, AgentId = "agt_test", CallId = "call_1",
-            Cwd = binding?.Root ?? ProjectPath, Project = Project, Workspace = binding,
-            Services = Ctx.Services, Events = Ctx.Events,
-        };
+            var context = new ToolContext
+            {
+                SessionId = session.Id, AgentId = "agt_test", CallId = callId,
+                Cwd = binding?.Root ?? ProjectPath, Project = Project, Services = Ctx.Services, Events = Ctx.Events,
+            };
+            context.Features.Set(binding);
+            return context;
+        }
 
         /// <summary>Run the write tool against a session and say whether it was refused.</summary>
         public (ToolResult Result, string Full) Write_(SessionInfo session, WorkspaceBinding? binding, string pathArg)
         {
-            var full = new ToolContext
-            {
-                SessionId = session.Id, AgentId = "agt", CallId = "c", Cwd = binding?.Root ?? ProjectPath,
-                Project = Project, Workspace = binding, Services = Ctx.Services, Events = Ctx.Events,
-            }.ResolvePath(pathArg);
+            var context = Context(session, binding, callId: "c");
             var tool = new NetPI.Tools.Files.WriteTool(Ctx.Settings);
-            var result = tool.ExecuteAsync(Context(session, binding), Json(new { path = pathArg, content = "x" }), CancellationToken.None)
+            var result = tool.ExecuteAsync(context, Json(new { path = pathArg, content = "x" }), CancellationToken.None)
                 .GetAwaiter().GetResult();
-            return (result, full);
+            return (result, context.ResolvePath(pathArg));
         }
 
         public void Dispose()
@@ -307,8 +321,11 @@ public static class WorkspaceTests
     private static Task MissingWorkspaceFails()
     {
         using var env = new Env();
-        // No git needed: the failure is about a workspace that does not exist.
-        var session = env.Session("s", "wsp_does_not_exist");
+        // No git needed: the failure is about a workspace that does not exist. A stale binding (the record is gone,
+        // the session still names it) is written by hand — the store refuses to bind a session to a missing workspace,
+        // which WorkspaceStoreTests asserts separately.
+        var session = env.Session("s");
+        env.Ctx.SessionsFake.UpdateSession(session.Id, s => s.Meta = new JsonObject { ["workspaceId"] = "wsp_does_not_exist" });
         var ex = Check.Throws<WorkspaceUnavailableException>(() => env.Resolver.CwdOf(session));
         Check.Contains(ex.Message, "no longer exists");
         Check.Contains(ex.Message, "sessions.setWorkspace");
@@ -446,8 +463,7 @@ public static class WorkspaceTests
         var target = Path.Combine(env.ProjectPath, WorkspaceProvisioner.DefaultWorktreeFolder, "taken");
         Directory.CreateDirectory(target);
         File.WriteAllText(Path.Combine(target, "keep.txt"), "someone else's work");
-        var outcome = env.Manager.ForChildAsync(
-            new SpawnRequest { Task = "t", Name = "taken", Isolated = true, WorkspaceOwnerSessionId = "ses_t" },
+        var outcome = env.Manager.ForChildAsync(env.Spawn("taken", "ses_t"),
             env.Session("parent"), "ses_t", "taken", CancellationToken.None).GetAwaiter().GetResult();
         Check.False(outcome.Ok);
         Check.Contains(outcome.Error!, "already exists");
@@ -779,7 +795,7 @@ public static class WorkspaceTests
         Directory.Delete(second, recursive: true);
         WorkspaceSwitchApplier.Request(session.Id, w2.Id);
         hook.OnBeforeModelCallAsync(turn).AsTask().GetAwaiter().GetResult();   // must not throw
-        Check.Equal(w2.Id, env.Ctx.SessionsFake.GetSession(session.Id)!.WorkspaceId, "the failed switch changed the binding");
+        Check.Equal(w2.Id, SessionWorkspace.Of(env.Ctx.SessionsFake.GetSession(session.Id)), "the failed switch changed the binding");
         try { Directory.Delete(first, true); Directory.Delete(second, true); } catch { }
         return Task.CompletedTask;
     }
@@ -896,7 +912,7 @@ public static class WorkspaceTests
         var ctx = env.Context(session, w);
         Check.Equal(w.Root, ctx.Cwd);
         Check.Equal(Path.Combine(w.Root, "x.txt"), ctx.ResolvePath("x.txt"));
-        Check.Equal(w, ctx.Workspace);
+        Check.Equal(w, ctx.Workspace());
         return Task.CompletedTask;
     }
 
@@ -953,7 +969,8 @@ public static class WorkspaceTests
 
             // A session of the other project, bound to the first project's workspace (sessions.setWorkspace allows
             // the binding; the resolver's check is the barrier). Inside the cache window: refused, not answered.
-            var sessionB = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "b", ProjectId = projectB.Id, WorkspaceId = wA.Id });
+            var sessionB = env.Ctx.SessionsFake.CreateSession(new SessionInfo { Title = "b", ProjectId = projectB.Id });
+            store.SetSessionWorkspace(sessionB.Id, wA.Id);
             var ex = Check.Throws<WorkspaceUnavailableException>(() => env.Resolver.CwdOf(sessionB));
             Check.Contains(ex.Message, "different repository");
 
@@ -962,76 +979,6 @@ public static class WorkspaceTests
         }
         finally { try { Directory.Delete(otherRoot, true); } catch { } }
         return Task.CompletedTask;
-    }
-
-    /// <summary>
-    /// The store in memory, standing in for the host's (which is exercised in NetPI.Host.Tests, against SQLite). Same
-    /// contract: a workspace id that does not exist is an error, and deleting one unbinds the sessions that used it.
-    /// </summary>
-    private sealed class MemoryWorkspaceStore(FakeSessionStore sessions) : IWorkspaceStore
-    {
-        private FakeSessionStore Sessions { get; } = sessions;
-
-        private readonly Lock _gate = new();
-        private readonly Dictionary<string, WorkspaceInfo> _workspaces = new(StringComparer.Ordinal);
-
-        public IReadOnlyList<WorkspaceInfo> ListWorkspaces(string? projectId = null)
-        {
-            lock (_gate)
-                return [.. _workspaces.Values
-                    .Where(w => projectId is null || w.ProjectId == projectId)
-                    .OrderByDescending(w => w.UpdatedAt)];
-        }
-
-        public WorkspaceInfo? GetWorkspace(string id) { lock (_gate) return _workspaces.GetValueOrDefault(id); }
-
-        public WorkspaceInfo CreateWorkspace(WorkspaceInfo template)
-        {
-            lock (_gate)
-            {
-                var w = new WorkspaceInfo
-                {
-                    Id = string.IsNullOrEmpty(template.Id) ? Ids.New("wsp") : template.Id,
-                    Name = template.Name, Path = WorkspacePaths.Canonical(template.Path), ProjectId = template.ProjectId,
-                    Kind = template.Kind, Branch = template.Branch, BaseCommit = template.BaseCommit,
-                    RepoCommonDir = template.RepoCommonDir, OwnerSessionId = template.OwnerSessionId,
-                    OwnerAgentId = template.OwnerAgentId, Managed = template.Managed,
-                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
-                };
-                return _workspaces[w.Id] = w;
-            }
-        }
-
-        public WorkspaceInfo UpdateWorkspace(string id, Action<WorkspaceInfo> mutate)
-        {
-            lock (_gate)
-            {
-                var w = _workspaces[id];
-                mutate(w);
-                w.UpdatedAt = DateTimeOffset.UtcNow;
-                return w;
-            }
-        }
-
-        public bool DeleteWorkspace(string id)
-        {
-            lock (_gate) return _workspaces.Remove(id);
-        }
-
-        public WorkspaceInfo? GetSessionWorkspace(string sessionId)
-        {
-            var id = Sessions.GetSession(sessionId)?.WorkspaceId;
-            return id is null ? null : GetWorkspace(id);
-        }
-
-        public void SetSessionWorkspace(string sessionId, string? workspaceId)
-        {
-            if (workspaceId is not null && GetWorkspace(workspaceId) is null)
-                throw new KeyNotFoundException($"Workspace {workspaceId} not found");
-            if (Sessions.GetSession(sessionId) is null) return;
-            Sessions.UpdateSession(sessionId, s => s.WorkspaceId = workspaceId);
-            if (workspaceId is not null) Sessions.WorkspaceRoots[workspaceId] = GetWorkspace(workspaceId)!.Path;
-        }
     }
 
     /// <summary>The shell plugin's answer about a busy directory, without a real process.</summary>

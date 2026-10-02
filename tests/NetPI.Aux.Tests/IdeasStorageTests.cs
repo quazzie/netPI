@@ -1,13 +1,12 @@
 using System.Text.Json.Nodes;
-using NetPI.Host.Data;
 using NetPI.Ideas;
 
 namespace NetPI.Aux.Tests;
 
 /// <summary>
-/// The storage half of the Ideas flow: what the database guarantees, and what it refuses. Every test here drives the
-/// real repository against a real temporary SQLite file — an in-memory fake could not prove a rollback, a unique id or
-/// two instances seeing each other, which is the whole point of the tests below.
+/// The storage half of the Ideas flow: what the store guarantees, and what it refuses. Every test here drives the
+/// real repository against a real temporary SQLite store — an in-memory fake could not prove a rollback, a unique id
+/// or two instances seeing each other, which is the whole point of the tests below.
 /// </summary>
 public static class IdeasStorageTests
 {
@@ -17,9 +16,6 @@ public static class IdeasStorageTests
         public string ProjectDir { get; }
         public ProjectInfo Project { get; }
         public SessionInfo Session { get; }
-        /// <summary>The file the JSON versions wrote; the cutover reads it, nothing writes it.</summary>
-        public string LegacyFile => Path.Combine(Ctx.Paths.Home, "ideas.json");
-        public string LegacyPending => Path.Combine(Ctx.Paths.Home, IdeasMigration.PendingFileName);
 
         public Env()
         {
@@ -31,15 +27,15 @@ public static class IdeasStorageTests
 
         public Task StartAsync() => new IdeasPlugin().StartAsync(Ctx, CancellationToken.None);
 
-        /// <summary>A second connection to the same database, as a hot-reload swap's new instance has.</summary>
-        public (Database Db, IdeasRepository Repo) Second()
+        /// <summary>A second store over the same home folder, as a hot-reload swap's new instance has.</summary>
+        public (FakePluginContext Ctx2, IdeasRepository Repo) Second()
         {
-            var db = new Database(Ctx.Paths.DatabaseFile);
-            return (db, IdeasRepository.Open(db, Ctx.Log, Ctx.Paths.DatabaseFile));
+            var second = new FakePluginContext(Ctx.Paths.Home, Ctx.PluginId);
+            return (second, IdeasRepository.Open(second.Data, second.Access, second.Log, second.Paths.Home));
         }
 
         /// <summary>The repository the plugin writes through, for a test that writes where the plugin writes.</summary>
-        public IdeasRepository Repo => IdeasRepository.Open(Ctx.Db, Ctx.Log, Ctx.Paths.DatabaseFile);
+        public IdeasRepository Repo => IdeasRepository.Open(Ctx.Data, Ctx.Access, Ctx.Log, Ctx.Paths.Home);
 
         /// <summary>An RPC's answer as the UI reads it (an object), or the assertion when it failed.</summary>
         public async Task<JsonObject> Rpc(string method, JsonObject p) => (JsonObject)(await Ctx.RpcFake.Call(method, p))!;
@@ -78,7 +74,7 @@ public static class IdeasStorageTests
                 ["project"] = new JsonObject { ["id"] = Project.Id, ["name"] = Project.Name },
             };
             if (ideaId is not null) card["ideaId"] = ideaId;
-            IdeasRepository.Open(Ctx.Db, Ctx.Log, Ctx.Paths.DatabaseFile).AddCard(card);
+            Repo.AddCard(card);
             return id;
         }
 
@@ -118,10 +114,10 @@ public static class IdeasStorageTests
         {
             var env = new Env();
             await env.StartAsync();
-            var (db, second) = env.Second();
+            var (other, second) = env.Second();
             try
             {
-                // Nothing coordinates these two: no file lock, no watcher, no shared object. The database is the only
+                // Nothing coordinates these two: no file lock, no watcher, no shared object. The store is the only
                 // thing they have in common, and it is what makes both updates survive.
                 await Task.WhenAll(
                     Task.Run(() => env.Repo.Add(IdeaOps.CreateIdea(new JsonObject { ["title"] = "From the first" }, env.Repo.TakenIds(), "user", null))),
@@ -131,7 +127,7 @@ public static class IdeasStorageTests
                 Check.True(titles.Contains("From the first") && titles.Contains("From the second"));
                 Check.Equal(2, second.Count(), "and the second instance sees both");
             }
-            finally { db.Dispose(); env.Ctx.Unload(); }
+            finally { other.Unload(); env.Ctx.Unload(); }
         });
 
         r.Add("review: a stale editor is a conflict, and its edit is not lost silently", async () =>
@@ -191,7 +187,7 @@ public static class IdeasStorageTests
             env.Ctx.Unload();
             await env.StartAsync();
             var got = await env.Call("ideas.get", new JsonObject { ["id"] = added["id"].Str() });
-            Check.Equal(2, got["revision"]!.GetValue<long>(), "the revision is in the database, not in memory");
+            Check.Equal(2, got["revision"]!.GetValue<long>(), "the revision is in the store, not in memory");
             Check.Equal("twice", got["summary"].Str());
             env.Ctx.Unload();
         });
@@ -202,7 +198,7 @@ public static class IdeasStorageTests
             await env.StartAsync();
             var repo = env.Repo;
             var kept = repo.Add(IdeaOps.CreateIdea(new JsonObject { ["title"] = "Kept" }, repo.TakenIds(), "user", null));
-            var rolled = Check.Throws<InvalidOperationException>(() => env.Ctx.Db.Transaction<object?>(_ =>
+            var rolled = Check.Throws<InvalidOperationException>(() => env.Ctx.Data.Transaction<object?>(() =>
             {
                 repo.Add(IdeaOps.CreateIdea(new JsonObject { ["title"] = "Rolled back" }, repo.TakenIds(), "user", null));
                 repo.SetMeta("half", "written");
@@ -377,7 +373,10 @@ public static class IdeasStorageTests
             Check.False(repo.ClaimCheck("ses_1", 6, "12:100", 3, TimeSpan.FromMinutes(5)).Started, "a finished check stays finished");
 
             // A claim left behind by a stopped run: the start recovers it, and the check runs again.
-            env.Ctx.Db.Execute("UPDATE ideas_checks SET state = 'running', claim = 'gone', claim_until = 1 WHERE session_id = 'ses_1'");
+            var checks = env.Ctx.Data.Collection("checks", new CollectionSpec().Text("state").Text("at").Integer("claimUntil"));
+            var mark = checks.Get("ses_1")!;
+            mark["state"] = "running"; mark["claim"] = "gone"; mark["claimUntil"] = 1;
+            checks.Put("ses_1", mark);
             Check.Equal(1, repo.RecoverExpiredClaims());
             Check.True(repo.ClaimCheck("ses_1", 6, "12:100", 3, TimeSpan.FromMinutes(5)).Started, "and is not blocked for good");
             env.Ctx.Unload();
@@ -425,9 +424,9 @@ public static class IdeasStorageTests
             await env.StartAsync();
             var idea = await env.Call("ideas.add", new JsonObject { ["idea"] = new JsonObject { ["title"] = "Survives a reload" } });
             var card = env.AddCard("sg_reload01", "Waiting through a reload");
-            // A reload is a swap: the new instance starts while the old one is still registered. The tables are the only
+            // A reload is a swap: the new instance starts while the old one is still registered. The store is the only
             // thing the two share, and neither of them holds a second copy of the backlog.
-            var (db, second) = env.Second();
+            var (other, second) = env.Second();
             try
             {
                 Check.Equal(1, second.All().Count, "the new instance reads what the old one wrote");
@@ -438,7 +437,7 @@ public static class IdeasStorageTests
                 Check.Equal("Waiting through a reload", saved["saved"]!["title"].Str(), "and the card the new instance sees can be answered by the old one");
                 Check.Equal(0, second.CardCount(), "the card is gone for both");
             }
-            finally { db.Dispose(); env.Ctx.Unload(); }
+            finally { other.Unload(); env.Ctx.Unload(); }
         });
 
         r.Add("ideas storage: ideas.list describes the storage instead of pretending it is a file", async () =>
@@ -447,7 +446,7 @@ public static class IdeasStorageTests
             await env.StartAsync();
             var list = await env.Rpc("ideas.list", new JsonObject());
             var storage = list["storage"]!.AsObject();
-            Check.Equal("sqlite", storage["backend"].Str());
+            Check.Equal("sqlite", storage["backend"].Str(), "the provider's own name, asked of the store: " + storage.ToJsonString());
             Check.Equal("netpi.db", storage["database"].Str());
             Check.Equal("netpi.ideas", storage["scope"].Str());
             Check.Equal(IdeasRepository.SchemaVersion, storage["schemaVersion"]!.GetValue<int>());
