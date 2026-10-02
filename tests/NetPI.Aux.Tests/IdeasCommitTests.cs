@@ -123,8 +123,8 @@ public static class IdeasCommitTests
             return idea["id"].Str()!;
         }
 
-        /// <summary>The newest commit this NetPI has read for the repository, as the database holds it.</summary>
-        public string? Cursor => IdeasRepository.Open(Ctx.Db, Ctx.Log, Ctx.Paths.DatabaseFile).LastSeen(Repo.Path);
+        /// <summary>The newest commit this NetPI has read for the repository, as the store holds it.</summary>
+        public string? Cursor => IdeasRepository.Open(Ctx.Data, Ctx.Access, Ctx.Log, Ctx.Paths.Home).LastSeen(Repo.Path);
 
         public async Task<List<string>> CommitsOn(string ideaId)
         {
@@ -412,7 +412,7 @@ public static class IdeasCommitTests
             await env.Check.SweepNowAsync(); // the last allowed attempt
             Check.Equal(env.Repo.Commits[0].Hash, env.Cursor, "after the bound the cursor moves past the commit");
             Check.Contains(string.Join("|", env.Ctx.Log.Lines), "recorded unread", "and it says so in the log");
-            var repo = IdeasRepository.Open(env.Ctx.Db, env.Ctx.Log, env.Ctx.Paths.DatabaseFile);
+            var repo = IdeasRepository.Open(env.Ctx.Data, env.Ctx.Access, env.Ctx.Log, env.Ctx.Paths.Home);
             var unread = repo.Unread().Single(u => u["hash"]!.Str() == env.Repo.Commits[0].Hash);
             Check.Equal(IdeaCommitCheck.MaxTries, unread["tries"]!.GetValue<long>(), "with its attempts");
             Check.Equal(1, ((JsonArray)await env.Ctx.RpcFake.Call("ideas.unread", new JsonObject()))!.Count, "and it is listed in ideas.unread");

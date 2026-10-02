@@ -577,6 +577,7 @@ public sealed class FakePluginContext : IPluginContext
         };
         Bus = new FakeBus(Owner);
         ServicesFake = new FakeServices(Owner);
+        ServicesFake.Register<IStorageAccess>(new StorageAccessFake(this));   // what the kernel registers for every plugin
         RpcFake = new FakeRpc(Owner);
         ToolsFake = new FakeTools(Owner);
         UiFake = new FakeUi(Owner);
@@ -611,11 +612,12 @@ public sealed class FakePluginContext : IPluginContext
     public IPluginData Data => Storage.Plugins.For(PluginId);
     /// <summary>The whole store behind <see cref="Data"/>, for tests that read what a plugin wrote under another plugin id.</summary>
     /// <summary>What the kernel registers for plugins that ask what the store is (<see cref="IStorageAccess"/>): its info and its snapshot.</summary>
-    public IStorageAccess Access => new StorageAccessFake(Storage);
-    private sealed class StorageAccessFake(IStorage storage) : IStorageAccess
+    public IStorageAccess Access => new StorageAccessFake(this);
+    /// <summary>Reads the store on demand, so registering it opens nothing until a plugin asks.</summary>
+    private sealed class StorageAccessFake(FakePluginContext ctx) : IStorageAccess
     {
-        public StorageInfo Info => storage.Info;
-        public IStorageSnapshot Snapshot => storage.Snapshot;
+        public StorageInfo Info => ctx.Storage.Info;
+        public IStorageSnapshot Snapshot => ctx.Storage.Snapshot;
     }
     public IStorage Storage => _storage ??= new SqliteStorageProvider().Open(new StorageOpenOptions
     {

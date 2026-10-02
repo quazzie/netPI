@@ -11,6 +11,9 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/NetPI.Abstractions/NetPI.Abstractions.csproj" />
+    <!-- The contracts the plugins share (workspace bindings, event names): reached through the plugins, but the test
+         runner has to load the assembly itself, so it is a reference here too. -->
+    <ProjectReference Include="../../src/NetPI.Contracts/NetPI.Contracts.csproj" />
     <!-- The real SQLite, so the plugins that own tables (netpi.ideas) are tested against actual databases. -->
     <ProjectReference Include="../../src/NetPI.Host/NetPI.Host.csproj" />
     <ProjectReference Include="../../plugins/NetPI.Mcp/NetPI.Mcp.csproj" />

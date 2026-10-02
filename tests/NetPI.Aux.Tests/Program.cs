@@ -14,7 +14,7 @@ CompactionTests.Register(runner);
 WorkspaceTests.Register(runner);
 IdeasTests.Register(runner);
 IdeasStorageTests.Register(runner);
-IdeasMigrationTests.Register(runner);
+IdeasSnapshotTests.Register(runner);
 IdeasCheckTests.Register(runner);
 IdeasCommitTests.Register(runner);
 IdeasNoticeTests.Register(runner);

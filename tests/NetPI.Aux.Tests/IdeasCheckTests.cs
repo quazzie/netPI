@@ -83,9 +83,9 @@ public static class IdeasCheckTests
             throw new AssertException($"expected {count} card(s), got {(await Cards()).Count}");
         }
 
-        /// <summary>One conversation's check mark, as the database holds it.</summary>
+        /// <summary>One conversation's check mark, as the store holds it.</summary>
         public JsonObject Mark(string sessionId) =>
-            IdeasRepository.Open(Ctx.Db, Ctx.Log, Ctx.Paths.DatabaseFile).Checks()
+            IdeasRepository.Open(Ctx.Data, Ctx.Access, Ctx.Log, Ctx.Paths.Home).Checks()
                 .FirstOrDefault(m => m["sessionId"]!.Str() == sessionId)
             ?? new JsonObject { ["state"] = "none" };
 
