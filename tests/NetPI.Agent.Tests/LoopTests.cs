@@ -865,10 +865,9 @@ public static class LoopTests
         Check.Equal("calling echo", msgs[2].Text);
         Check.Equal("tool_use", msgs[2].StopReason);
         Check.Equal("call_rep", msgs[2].ToolCalls.Single().Id);
-        Check.True(h.Sessions.UpdateMessageCalls >= 1, "UpdateMessage called");
         Check.Equal("echo:repaired", msgs[3].ToolResults.Single().Content);
         Check.Equal(1, echo.Calls);
-        Check.True(h.Bus.OfType(EventTypes.MessageUpdated).Count >= 1);
+        Check.True(h.Bus.OfType(EventTypes.MessageUpdated).Count >= 1, "the repaired message is written back (message.updated)");
     }
 
     private static async Task HookStop()

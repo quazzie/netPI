@@ -46,13 +46,13 @@ public static class ProfilesTests
     {
         await using var h = await Start();
         var ops = h.Sessions.CreateProject("ops", h.Workspace);
-        ops.Meta = new JsonObject { ["profile"] = "admin" };
+        h.UpdateProject(ops.Id, new JsonObject { ["profile"] = "admin" });
 
-        // session.created gives the new chat its project's default, so the UI shows it before the first message
+        // a message-less session is transient: its first message materializes it and publishes session.created,
+        // which gives the chat its project's default
         var s = h.NewSession(projectId: ops.Id);
-        await h.Bus.DrainAsync();
-        Check.Equal("admin", ProfileOf(h, s.Id));
         await Turn(h, s.Id, "hi");
+        Check.Equal("admin", ProfileOf(h, s.Id));
         var prompt = Last(h, s.Id).SystemPrompt!;
         Check.True(prompt.StartsWith(Admin), "the profile's text opens the prompt");
         Check.NotContains(prompt, "coding agent running in NetPI");
@@ -68,7 +68,7 @@ public static class ProfilesTests
 
         // a project that says "none"
         var bare = h.Sessions.CreateProject("bare", h.Workspace);
-        bare.Meta = new JsonObject { ["profile"] = "none" };
+        h.UpdateProject(bare.Id, new JsonObject { ["profile"] = "none" });
         var n = h.NewSession(projectId: bare.Id);
         await Turn(h, n.Id, "hi");
         Check.True(h.Sessions.GetSession(n.Id)!.Meta?.ContainsKey("profile") != true, "no profile");

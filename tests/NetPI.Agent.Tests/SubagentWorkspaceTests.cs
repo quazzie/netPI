@@ -20,14 +20,13 @@ public static class SubagentWorkspaceTests
         t.Add("subagent workspaces: without the workspace plugin a spawn behaves exactly as before", NoPlugin);
     }
 
-    /// <summary>A host with the workspace plugin loaded, its store in memory and a provisioner over a real repository.</summary>
-    private static async Task<(TestHost Host, MemoryWorkspaceStore Store)> HostAsync(GitRepo repo)
+    /// <summary>A host with the workspace plugin loaded (its real store over the plugin's own collection) and a provisioner over a real repository.</summary>
+    private static async Task<(TestHost Host, IWorkspaceStore Store)> HostAsync(GitRepo repo)
     {
         var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.a", JsonNode.Parse("""{ "model": "fake/local" }""")));
-        var store = new MemoryWorkspaceStore(h.Sessions);
-        h.Services.Register<IWorkspaceStore>(store);   // the host registers it before the plugins start, so this does too
-        await h.StartPluginAsync(new WorkspacePlugin());
-        // The plugin's own manager and provisioner do the work (real git, real worktrees); only the store is a double.
+        await h.StartPluginAsync(new NetPI.Workspaces.WorkspacePlugin());
+        var store = h.Services.Get<IWorkspaceStore>()!;
+        // The plugin's own manager and provisioner do the work (real git, real worktrees), the store is the real one.
         repo.Bind(h);   // the project the sessions of these tests belong to
         return (h, store);
     }
@@ -48,7 +47,7 @@ public static class SubagentWorkspaceTests
         var parent = h.NewSession(projectId: repo.ProjectId);
         var workspace = new WorkspaceInfo { Id = "wsp_parent", Name = "parent", Path = repo.RepoPath, ProjectId = repo.ProjectId, Kind = "worktree" };
         store.CreateWorkspace(workspace);
-        h.Sessions.UpdateSession(parent.Id, s => s.WorkspaceId = workspace.Id);
+        store.SetSessionWorkspace(parent.Id, workspace.Id);
 
         h.Catalog.Handler = (r, ct) => IsChild(r) || Reply.HasToolResult(r)
             ? Reply.Text("done")
@@ -56,7 +55,7 @@ public static class SubagentWorkspaceTests
         await h.SendAsync(parent.Id, "go");
         await h.IdleAsync(parent.Id);
         var child = await ChildNamed(h, "reader");
-        Check.Equal(workspace.Id, child!.WorkspaceId, "the child did not inherit its parent's workspace");
+        Check.Equal(workspace.Id, SessionWorkspace.Of(child!), "the child did not inherit its parent's workspace");
     }
 
     private static async Task IsolatedChild()
@@ -73,10 +72,10 @@ public static class SubagentWorkspaceTests
         await h.SendAsync(parent.Id, "go");
         await h.IdleAsync(parent.Id);
         var child = await ChildNamed(h, "writer");
-        Check.True(child!.WorkspaceId is { Length: > 0 }, "the writing child got no workspace of its own");
-        NotEqual(repo.RepoPath, store.GetWorkspace(child.WorkspaceId)!.Path);
+        Check.True(SessionWorkspace.Of(child) is { Length: > 0 }, "the writing child got no workspace of its own");
+        NotEqual(repo.RepoPath, store.GetWorkspace(SessionWorkspace.Of(child)!)!.Path);
         // The workspace is a real worktree on a branch of the project's repository, from its HEAD.
-        var record = store.GetWorkspace(child.WorkspaceId)!;
+        var record = store.GetWorkspace(SessionWorkspace.Of(child)!)!;
         Check.Equal("worktree", record.Kind);
         Check.True(Directory.Exists(record.Path), "the worktree was not created");
         Check.Equal(child.Id, record.OwnerSessionId, "the owner is the worker session, not the agent or the slot");
@@ -141,8 +140,7 @@ public static class SubagentWorkspaceTests
         using var repo = new GitRepo();
         if (!repo.Available) { Console.WriteLine("    (no git on PATH: skipped)"); return; }
         await using var h = await TestHost.StartAsync(x => x.Settings.SetQuiet("agents.a", JsonNode.Parse("""{ "model": "fake/local" }""")));
-        h.Services.Register<IWorkspaceStore>(new MemoryWorkspaceStore(h.Sessions));
-        await h.StartPluginAsync(new WorkspacePlugin());
+        await h.StartPluginAsync(new NetPI.Workspaces.WorkspacePlugin());
         h.Services.Register<IWorkspaceProvisioner>(new FailingProvisioner(), priority: 10);   // provisioning cannot work here
         repo.Bind(h);
         var parent = h.NewSession(projectId: repo.ProjectId);
@@ -171,7 +169,7 @@ public static class SubagentWorkspaceTests
         await h.SendAsync(parent.Id, "go");
         await h.IdleAsync(parent.Id);
         var child = await ChildNamed(h, "plain");
-        Check.Equal(null, child!.WorkspaceId, "without the workspace plugin nothing should be bound");
+        Check.Equal(null, SessionWorkspace.Of(child!), "without the workspace plugin nothing should be bound");
     }
 
     private static bool IsChild(ModelRequest r) =>
@@ -254,48 +252,6 @@ public static class SubagentWorkspaceTests
             {
                 try { Directory.Delete(dir, true); } catch { }
             }
-        }
-    }
-
-    /// <summary>The workspace store in memory, with the host's contract (an unknown id is an error).</summary>
-    private sealed class MemoryWorkspaceStore(ISessionStore sessions) : IWorkspaceStore
-    {
-        private readonly Dictionary<string, WorkspaceInfo> _workspaces = new(StringComparer.Ordinal);
-
-        public IReadOnlyList<WorkspaceInfo> ListWorkspaces(string? projectId = null) =>
-            [.. _workspaces.Values.Where(w => projectId is null || w.ProjectId == projectId)];
-
-        public WorkspaceInfo? GetWorkspace(string id) => _workspaces.GetValueOrDefault(id);
-
-        public WorkspaceInfo CreateWorkspace(WorkspaceInfo template)
-        {
-            var w = new WorkspaceInfo
-            {
-                Id = string.IsNullOrEmpty(template.Id) ? Ids.New("wsp") : template.Id,
-                Name = template.Name, Path = template.Path, ProjectId = template.ProjectId, Kind = template.Kind,
-                Branch = template.Branch, BaseCommit = template.BaseCommit, RepoCommonDir = template.RepoCommonDir,
-                OwnerSessionId = template.OwnerSessionId, OwnerAgentId = template.OwnerAgentId, Managed = template.Managed,
-                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
-            };
-            _workspaces[w.Id] = w;
-            return w;
-        }
-
-        public WorkspaceInfo UpdateWorkspace(string id, Action<WorkspaceInfo> mutate)
-        {
-            var w = GetWorkspace(id) ?? throw new KeyNotFoundException(id);
-            mutate(w);
-            w.UpdatedAt = DateTimeOffset.UtcNow;
-            return w;
-        }
-
-        public bool DeleteWorkspace(string id) => _workspaces.Remove(id);
-        public WorkspaceInfo? GetSessionWorkspace(string sessionId) => sessions.GetSession(sessionId)?.WorkspaceId is { } id ? GetWorkspace(id) : null;
-
-        public void SetSessionWorkspace(string sessionId, string? workspaceId)
-        {
-            if (workspaceId is not null && GetWorkspace(workspaceId) is null) throw new KeyNotFoundException(workspaceId);
-            sessions.UpdateSession(sessionId, s => s.WorkspaceId = workspaceId);
         }
     }
 }
